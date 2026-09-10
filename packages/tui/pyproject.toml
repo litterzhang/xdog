@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "xdog-tui"
-version = "2.1.2"
+version = "2.2.0"
 description = "Terminal UI library with differential rendering"
 requires-python = ">=3.12"
 classifiers = [

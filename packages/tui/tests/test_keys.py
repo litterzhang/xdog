@@ -7,6 +7,16 @@ from xdog.tui.keys import (
 )
 
 
+def test_kitty_navigation_event_types_and_modifiers():
+    for sequence, key in [(b"1;5:3A", "up"), (b"6;5:3~", "pagedown")]:
+        assert parse_key_events(b"\x1b[" + sequence) == [
+            KeyEvent(key=key, ctrl=True, event_type=KeyEventType.RELEASE),
+        ]
+    assert parse_key_events(b"\x1b[1;2:2B") == [
+        KeyEvent(key="down", shift=True, event_type=KeyEventType.REPEAT),
+    ]
+
+
 def test_escape():
     events = parse_key_events(b'\x1b')
     assert len(events) == 1
@@ -66,7 +76,7 @@ def test_kitty_shifted_alternate_codepoint():
 
 
 def test_kitty_release_event():
-    """CSI 97;1:3u  →  'a' key release (event type 3)."""
+    """CSI 97;1:3u produces an ``a`` key release."""
     events = parse_key_events(b"\x1b[97;1:3u")
     assert len(events) == 1
     assert events[0].key == "a"
@@ -74,3 +84,16 @@ def test_kitty_release_event():
     assert is_key_release(events[0])
     assert not is_key_repeat(events[0])
 
+
+def test_complete_frames_do_not_turn_unknown_control_reports_into_keys() -> None:
+    assert parse_key_events(b"\x1b[12;4R") == []
+    assert parse_key_events(b"\x1b[?62;22c") == []
+
+
+def test_ctrl_c_and_escape_parse_without_sticking() -> None:
+    assert parse_key_events(b"\x03") == [KeyEvent(key="c", ctrl=True)]
+    assert parse_key_events(b"\x1b") == [KeyEvent(key="escape")]
+
+
+def test_invalid_utf8_is_not_replaced_with_a_key_event() -> None:
+    assert parse_key_events(b"\xe7\x95") == []

@@ -54,4 +54,4 @@ Subcommands of the ai console script.
 | `chat <provider> <model> [msg]` | One-shot or interactive chat (`-s`, `-t`, `--max-tokens`, `--thinking`, `-i`, `--web-search`…). |
 | `embed` | Embed text to a vector. |
 | `search` | Run a web search through the provider. |
-| `proxy [--host --port --api-key]` | Serve the Anthropic-compatible `/v1/messages` proxy. |
+| `proxy [--host --port --api-key]` | Serve `/v1/messages`, `/v1/messages/count_tokens`, `/v1/responses`, and native-only `/v1/chat/completions`. |

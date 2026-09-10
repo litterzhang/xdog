@@ -23,6 +23,7 @@ from typing import Any
 
 import httpx
 from xdog.ai.core import AuthResult, BaseProtocol
+from xdog.ai.native import NativeEventStream, NativeResponse, ProtocolRequest
 from xdog.ai.protocols._message_builder import MessageBuilder
 from xdog.ai.types import (
     AssistantMessage,
@@ -50,6 +51,7 @@ from xdog.ai.types import (
     ToolCallDeltaEvent,
     ToolCallDoneEvent,
     ToolCallStartEvent,
+    ToolChoice,
     ToolResultMessage,
     Usage,
     UsageEvent,
@@ -271,6 +273,50 @@ def _convert_tools(tools: tuple[Tool, ...]) -> list[dict[str, Any]]:
     ]
 
 
+def _tool_choice(choice: ToolChoice) -> str | dict[str, Any]:
+    """Convert provider-neutral tool choice to Responses format."""
+    if choice.type == "any":
+        return "required"
+    if choice.type in ("auto", "none"):
+        return choice.type
+    if not choice.name:
+        raise ValueError("Named tool choice requires a tool name")
+    return {"type": "function", "name": choice.name}
+
+
+def _response_format(options: StreamOptions) -> dict[str, Any] | None:
+    value = options.response_format
+    if value is None:
+        return None
+    result: dict[str, Any] = {
+        "type": "json_schema", "name": value.name, "schema": value.schema(),
+    }
+    if value.description is not None:
+        result["description"] = value.description
+    if value.strict is not None:
+        result["strict"] = value.strict
+    return result
+
+
+def _reasoning_effort(model: Model, requested: str) -> str:
+    supported = model.supported_efforts
+    if not supported or requested in supported:
+        return requested
+    order = ("minimal", "low", "medium", "high", "xhigh")
+    requested_index = order.index(requested)
+    candidates = tuple(
+        effort
+        for effort in supported
+        if effort in order
+    )
+    if not candidates:
+        return requested
+    return min(
+        candidates,
+        key=lambda effort: (abs(order.index(effort) - requested_index), -order.index(effort)),
+    )
+
+
 # ---------------------------------------------------------------------------
 # SSE parsing
 # ---------------------------------------------------------------------------
@@ -352,6 +398,29 @@ async def _stream_impl(
     if options.temperature is not None:
         body["temperature"] = options.temperature
 
+    text_options: dict[str, Any] = {}
+    if options.verbosity is not None:
+        text_options["verbosity"] = options.verbosity
+    response_format = _response_format(options)
+    if response_format is not None:
+        text_options["format"] = response_format
+    if text_options:
+        body["text"] = text_options
+
+    if options.parallel_tool_calls is not None:
+        body["parallel_tool_calls"] = options.parallel_tool_calls
+
+    if options.prompt_cache_key is not None:
+        body["prompt_cache_key"] = options.prompt_cache_key
+    if options.top_p is not None:
+        body["top_p"] = options.top_p
+    if options.tool_choice is not None:
+        body["tool_choice"] = _tool_choice(options.tool_choice)
+    if options.metadata is not None:
+        body["metadata"] = dict(options.metadata)
+    if options.service_tier is not None:
+        body["service_tier"] = options.service_tier
+
     if context.tools:
         body["tools"] = _convert_tools(context.tools)
 
@@ -364,7 +433,7 @@ async def _stream_impl(
     # Reasoning support
     if model.reasoning and options.thinking:
         body["reasoning"] = {
-            "effort": options.thinking,
+            "effort": _reasoning_effort(model, options.thinking),
             "summary": "auto",
         }
         body["include"] = ["reasoning.encrypted_content"]
@@ -424,7 +493,13 @@ async def _stream_impl(
 
                         if item_type == "reasoning":
                             current_block_type = "reasoning"
-                            output.push_block({"type": "thinking", "thinking": "", "thinking_signature": None, "redacted": False})
+                            # Retain the upstream item identity from the first event.
+                            # Encrypted reasoning delivered at item.done is bound to
+                            # this ID; downstream facades must not invent a new one.
+                            output.push_block({
+                                "type": "thinking", "thinking": "",
+                                "thinking_signature": json.dumps(item), "redacted": False,
+                            })
                             yield ThinkingStartEvent(index=output.block_index, partial=output.snapshot())
 
                         elif item_type == "message":
@@ -760,3 +835,28 @@ class OpenAIResponsesProtocol(BaseProtocol):
         auth: AuthResult,
     ) -> EventStream[AssistantMessage]:
         return stream(model, context, options, auth)
+
+    def native_auth_context(self, request: ProtocolRequest) -> Context:
+        from xdog.ai.protocols.native_auth import responses_native_auth_context
+
+        return responses_native_auth_context(request.json())
+
+    async def request_complete(
+        self,
+        model: Model,
+        request: ProtocolRequest,
+        auth: AuthResult,
+    ) -> NativeResponse:
+        from xdog.ai.protocols.openai_native import RESPONSES, request_complete
+
+        return await request_complete(RESPONSES, model, request, auth)
+
+    async def request_stream(
+        self,
+        model: Model,
+        request: ProtocolRequest,
+        auth: AuthResult,
+    ) -> NativeEventStream:
+        from xdog.ai.protocols.openai_native import RESPONSES, request_stream
+
+        return await request_stream(RESPONSES, model, request, auth)

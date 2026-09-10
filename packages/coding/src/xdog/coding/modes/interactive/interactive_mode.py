@@ -25,6 +25,7 @@ import random
 import threading
 import time
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -56,8 +57,10 @@ from xdog.coding.modes.interactive.components.footer import FooterComponent
 from xdog.coding.modes.interactive.components.permission_prompt import PermissionPromptComponent
 from xdog.coding.modes.interactive.components.tool_execution import ToolExecutionComponent
 from xdog.coding.modes.interactive.theme import create_default_theme
-from xdog.tui.components.loader import Loader
+from xdog.tui.components.bounded_details import BoundedDetails
+from xdog.tui.components.inline_layout import CompactText, InlineLayout
 from xdog.tui.components.text import Text
+from xdog.tui.event_queue import EventQueue, thaw_event
 from xdog.tui.tui import TUI, Container
 from xdog.tui.utils import sanitize_terminal_text
 
@@ -80,6 +83,7 @@ _TURN_EVENT_TYPES = frozenset({
     "permission_request",
     "turn_footer_update",
     "queued_message_started",
+    "restore_draft",
     "queue_changed",
     "turn_end",
     "error",
@@ -146,6 +150,7 @@ class InteractiveMode:
         self._permission_prompt: PermissionPromptComponent | None = None
         self._awaiting_permission = False
         self._details_expanded = verbose
+        self._details_open = verbose
         self._pending_messages: deque[tuple[str, bool]] = deque()
         self._queue_lock = threading.Lock()
         self._worker_active = False
@@ -156,37 +161,39 @@ class InteractiveMode:
         self._dispatch_stamp: _TurnStamp | None = None
 
         # Event queue for thread-safe UI updates from agent events
-        self._event_queue: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._event_queue = EventQueue()
 
         # Build component tree
         self._tui = TUI()
 
         self._header = Text("", 1, 0)
         self._chat_log = ChatLog(self._theme)
-        self._chat_log.set_details_expanded(self._details_expanded)
+        self._chat_log.set_details_expanded(False)
         self._status_container = Container()
         self._footer = FooterComponent(self._theme)
         self._editor = CustomEditorComponent(self._theme)
         self._message_queue_container = Container()
+        self._queue_text = CompactText("", 0, 0)
+        self._message_queue_container.add_child(self._queue_text)
         self._permission_container = Container()
+        self._work_container = Container()
+        self._details_panel = BoundedDetails(self._chat_log.detail_records, max_rows=8)
+        self._banner_added = False
 
-        # Status components
-        self._status_text: Text | None = Text(self._theme.dim("ready"), 1, 0)
-        self._status_loader: Loader | None = None
-        self._status_container.add_child(self._status_text)
-
-        root = Container()
-        root.add_child(self._header)
-        root.add_child(self._chat_log)
-        root.add_child(self._status_container)
-        root.add_child(self._footer)
-        root.add_child(self._editor)
-        root.add_child(self._message_queue_container)
-        # Approval belongs directly after the input, not over conversation
-        # history. The container is empty except while a call is pending.
-        root.add_child(self._permission_container)
-
-        self._tui.add_child(root)
+        # Compatibility handles retained for callers/tests; activity and metadata
+        # now occupy one stable footer row.
+        self._status_text: Text | None = None
+        self._status_loader = None
+        self._layout = InlineLayout(
+            transcript=self._chat_log,
+            work=self._work_container,
+            status=self._footer,
+            editor=self._editor,
+            permission=None,
+            details=self._details_panel if self._details_open else None,
+            queue=None,
+        )
+        self._tui.add_child(self._layout)
         self._tui.set_focus(self._editor)
         self._editor.set_focus(True)
         self._tui.add_input_listener(self._handle_global_input)
@@ -202,7 +209,17 @@ class InteractiveMode:
         self._unsubscribe = self._session.agent.subscribe(self._on_agent_event)
 
     def _handle_global_input(self, event: Any) -> dict[str, object] | None:
-        """Handle global detail toggling and active-turn cancellation."""
+        """Handle bounded details, suspension, and active-turn cancellation."""
+        if self._permission_prompt is not None or self._editor.autocomplete_active:
+            return None
+        if self._details_open and self._permission_prompt is None:
+            if event.matches("escape"):
+                self._close_details()
+                return {"consume": True}
+            if event.matches("left") or event.matches("right") or event.matches("pageup") or event.matches("pagedown"):
+                self._details_panel.handle_input(event)
+                self._tui.request_render()
+                return {"consume": True}
         if event.matches("escape") and self._is_busy:
             self._handle_escape()
             return {"consume": True}
@@ -212,11 +229,20 @@ class InteractiveMode:
                 self._tui.request_render()
             return {"consume": True}
         if event.matches("ctrl+o"):
-            self._details_expanded = not self._details_expanded
-            self._chat_log.set_details_expanded(self._details_expanded)
+            self._details_open = not self._details_open
+            if self._details_open:
+                self._details_panel.show_latest()
+            self._layout.details = self._details_panel if self._details_open else None
             self._tui.request_render()
             return {"consume": True}
         return None
+
+    def _close_details(self) -> None:
+        self._details_open = False
+        self._layout.details = None
+        self._tui.set_focus(self._editor)
+        self._editor.set_focus(True)
+        self._tui.request_render()
 
     def run(self) -> None:
         """Start the interactive TUI (blocking)."""
@@ -274,10 +300,13 @@ class InteractiveMode:
     # -- Header / Footer --
 
     def _update_header(self) -> None:
+        """Add the startup banner to durable history exactly once."""
+        if self._banner_added:
+            return
         model_name = self._session.model or "unknown"
-        self._header.set_text(
-            self._theme.header(f"  coding | {model_name}")
-        )
+        self._header.set_text(self._theme.header(f"  coding | {model_name}"))
+        self._chat_log.add_child(self._header)
+        self._banner_added = True
 
     def _update_footer(self) -> None:
         model_name = self._session.model or "unknown"
@@ -296,29 +325,16 @@ class InteractiveMode:
     # -- Status management --
 
     def _set_status_text(self, text: str) -> None:
-        """Show a static status message."""
-        if self._status_loader is not None:
-            self._status_loader.stop()
-            self._status_loader = None
-        self._status_container.clear()
-        self._status_text = Text(self._theme.dim(text), 1, 0)
-        self._status_container.add_child(self._status_text)
+        """Set the static activity portion of the single status row."""
+        self._last_busy_label = text
+        self._footer.set_activity(text)
 
     def _set_status_busy(self, message: str = "thinking...") -> None:
-        """Show an animated loader status."""
-        self._last_busy_label = message
-        if self._status_loader is not None:
-            self._status_loader.set_message(message)
+        """Set the busy activity portion without replacing status metadata."""
+        if message == self._last_busy_label:
             return
-        self._status_container.clear()
-        self._status_text = None
-        self._status_loader = Loader(
-            self._tui,
-            lambda s: self._theme.accent(s),
-            lambda t: self._theme.accent_soft(t),
-            message,
-        )
-        self._status_container.add_child(self._status_loader)
+        self._last_busy_label = message
+        self._footer.set_activity(message)
 
     def _set_busy(self, busy: bool) -> None:
         self._is_busy = busy
@@ -364,19 +380,22 @@ class InteractiveMode:
         """Render messages waiting behind the active turn."""
         with self._queue_lock:
             pending = list(self._pending_messages)
-        self._message_queue_container.clear()
+        self._footer.set_queue_count(len(pending))
         if not pending:
+            self._queue_text.set_text("")
+            self._layout.queue = None
             return
         previews: list[str] = []
-        for index, (message, _echo) in enumerate(pending, 1):
+        for index, (message, _echo) in enumerate(pending[:2], 1):
             preview = sanitize_terminal_text(message).replace("\n", " ↵ ")
             if len(preview) > 120:
                 preview = preview[:120] + "…"
             previews.append(f"  {index}. {preview}")
         text = f"Queued messages ({len(pending)}):\n" + "\n".join(previews)
-        self._message_queue_container.add_child(
-            Text(self._theme.system(text), 1, 0),
-        )
+        if len(pending) > 2:
+            text += f"\n  … {len(pending) - 2} more queued"
+        self._queue_text.set_text(self._theme.system(text))
+        self._layout.queue = self._message_queue_container
 
     def _start_turn(self, message: str, *, echo: bool = True) -> None:
         """Start immediately or enqueue behind the active worker."""
@@ -417,6 +436,8 @@ class InteractiveMode:
             return
 
         # Run async commands in a new event loop
+        stamp = self._active_stamp
+
         def _run() -> None:
             result = asyncio.run(execute_command(cmd, args, self._session))
             self._event_queue.put({
@@ -424,6 +445,7 @@ class InteractiveMode:
                 "output": result.output,
                 "exit": result.exit_requested,
                 "prompt": result.prompt,
+                "stamp": stamp,
             })
 
         thread = threading.Thread(target=_run, daemon=True)
@@ -479,6 +501,7 @@ class InteractiveMode:
 
         self._session.cancel()
         self._permission_container.clear()
+        self._layout.permission = None
         self._permission_prompt = None
         self._awaiting_permission = False
         self._tui.set_focus(self._editor)
@@ -493,6 +516,9 @@ class InteractiveMode:
 
     def _handle_escape(self) -> None:
         """Escape cancels the active model turn or running tool task."""
+        if self._details_open:
+            self._close_details()
+            return
         if self._is_busy:
             self._cancel_active_work()
 
@@ -510,27 +536,35 @@ class InteractiveMode:
         """Drain the active turn and every message queued behind it."""
         try:
             asyncio.run(self._async_agent_queue(message, generation))
-        except Exception as exc:
+        except (Exception, asyncio.CancelledError) as exc:
             with self._queue_lock:
                 self._worker_active = False
-                queued = list(self._pending_messages)
+                queued = tuple(message for message, _echo in self._pending_messages)
                 self._pending_messages.clear()
-            if queued:
-                queued_text = "\n\n".join(text for text, _echo in queued)
-                draft = self._editor.get_text()
-                restored = "\n\n".join(
-                    text for text in (queued_text, draft) if text.strip()
-                )
-                if restored:
-                    self._editor.set_text(restored)
+            stamp = _TurnStamp(generation, self._active_stamp.cancel_epoch)
             self._event_queue.put({
                 "type": "queue_changed",
                 "generation": generation,
+                "stamp": stamp,
             })
+            if isinstance(exc, asyncio.CancelledError):
+                self._event_queue.put({
+                    "type": "restore_draft",
+                    "messages": queued,
+                    "stamp": stamp,
+                })
+                self._event_queue.put({
+                    "type": "turn_end",
+                    "generation": generation,
+                    "stamp": stamp,
+                })
+                return
             self._event_queue.put({
                 "type": "error",
                 "message": str(exc),
                 "generation": generation,
+                "restore": queued,
+                "stamp": stamp,
             })
 
     async def _async_agent_queue(
@@ -547,31 +581,27 @@ class InteractiveMode:
 
             with self._queue_lock:
                 if self._cancel_requested:
-                    # Escape restored the pre-existing queue into the editor.
-                    # Anything submitted while cancellation settles remains
-                    # queued for the next explicit worker cycle.
                     self._cancel_requested = False
-                    settling = list(self._pending_messages)
+                    settling = tuple(text for text, _echo in self._pending_messages)
                     self._pending_messages.clear()
                     next_item = None
                     self._worker_active = False
-                    if settling:
-                        queued_text = "\n\n".join(
-                            text for text, _echo in settling
-                        )
-                        draft = self._editor.get_text()
-                        restored = "\n\n".join(
-                            text for text in (queued_text, draft) if text.strip()
-                        )
-                        if restored:
-                            self._editor.set_text(restored)
                 elif self._pending_messages:
+                    settling = ()
                     next_item = self._pending_messages.popleft()
                 else:
+                    settling = ()
                     next_item = None
                 if next_item is None:
                     self._worker_active = False
 
+            stamp = _TurnStamp(generation, self._active_stamp.cancel_epoch)
+            if settling:
+                self._event_queue.put({
+                    "type": "restore_draft",
+                    "messages": settling,
+                    "stamp": stamp,
+                })
             if next_item is None:
                 break
 
@@ -580,10 +610,12 @@ class InteractiveMode:
                 "type": "queued_message_started",
                 "message": message,
                 "echo": echo,
+                "stamp": stamp,
             })
 
-        self._event_queue.put({"type": "queue_changed", "generation": generation})
-        self._event_queue.put({"type": "turn_end", "generation": generation})
+        stamp = _TurnStamp(generation, self._active_stamp.cancel_epoch)
+        self._event_queue.put({"type": "queue_changed", "generation": generation, "stamp": stamp})
+        self._event_queue.put({"type": "turn_end", "generation": generation, "stamp": stamp})
 
     async def _async_agent_turn(self, message: str) -> None:
         """Run one agent turn without releasing the queue worker."""
@@ -592,6 +624,7 @@ class InteractiveMode:
         self._session.permissions.set_request_handler(
             lambda request: self._put_turn_event(
                 "permission_request",
+                stamp=stamp,
                 request=request,
             )
         )
@@ -608,9 +641,9 @@ class InteractiveMode:
             self._dispatch_stamp = None
             self._session.permissions.set_request_handler(None)
 
-    def _put_turn_event(self, event_type: str, **payload: Any) -> None:
+    def _put_turn_event(self, event_type: str, *, stamp: _TurnStamp | None = None, **payload: Any) -> None:
         dispatch_stamp = getattr(self, "_dispatch_stamp", None)
-        stamp = dispatch_stamp or getattr(self, "_active_stamp", _TurnStamp(0, 0))
+        stamp = stamp or dispatch_stamp or getattr(self, "_active_stamp", _TurnStamp(0, 0))
         self._event_queue.put({
             "type": event_type,
             "stamp": stamp,
@@ -726,15 +759,12 @@ class InteractiveMode:
             except queue.Empty:
                 break
 
-        if self._is_busy and not self._awaiting_permission:
+        if self._is_busy and not self._awaiting_permission and not self._cancel_requested:
             elapsed = self._format_elapsed()
             label = f"thinking... • {elapsed}"
-            # The spinner has its own 80 ms render timer. Only change its text
-            # when the elapsed label changes instead of invalidating the whole
-            # TUI on every 30 FPS poll.
-            if self._status_loader and label != self._last_busy_label:
-                self._status_loader.set_message(label)
-                self._last_busy_label = label
+            # Only repaint when the elapsed label changes.
+            if label != self._last_busy_label:
+                self._set_status_busy(label)
                 changed = True
 
         if changed:
@@ -743,10 +773,14 @@ class InteractiveMode:
     def _show_permission_request(self, request: PermissionRequest) -> None:
         """Display a focused approval panel immediately after the input."""
         self._permission_container.clear()
+        stamp = self._active_stamp
 
         def _decide(decision: PermissionDecision) -> None:
+            if self._permission_prompt is not prompt or self._active_stamp != stamp:
+                return
             self._session.permissions.resolve(request.id, decision)
             self._permission_container.clear()
+            self._layout.permission = None
             self._permission_prompt = None
             self._awaiting_permission = False
             self._tui.set_focus(self._editor)
@@ -758,10 +792,21 @@ class InteractiveMode:
         prompt = PermissionPromptComponent(request, self._theme, _decide)
         self._permission_prompt = prompt
         self._permission_container.add_child(prompt)
+        self._layout.permission = prompt
         self._editor.set_focus(False)
         self._tui.set_focus(prompt)
         self._awaiting_permission = True
         self._set_status_text("awaiting tool permission")
+
+    def _restore_editor_messages(self, messages: Any) -> None:
+        """Restore queued text on the UI thread while preserving the live draft."""
+        if not isinstance(messages, (tuple, list)):
+            return
+        queued = "\n\n".join(str(message) for message in messages if str(message).strip())
+        draft = self._editor.get_text()
+        restored = "\n\n".join(text for text in (queued, draft) if text.strip())
+        if restored:
+            self._editor.set_text(restored)
 
     def _finalize_streaming_assistant(self) -> None:
         """Finish the current model message without crossing tool boundaries."""
@@ -774,8 +819,9 @@ class InteractiveMode:
         self._streaming_text = ""
         self._streaming_thinking = ""
 
-    def _handle_ui_event(self, event: dict[str, Any]) -> None:
+    def _handle_ui_event(self, event: Mapping[str, Any]) -> None:
         """Handle a UI event from the event queue."""
+        event = thaw_event(event)
         event_type = event.get("type")
         if event_type in _TURN_EVENT_TYPES:
             stamp = event.get("stamp")
@@ -848,6 +894,9 @@ class InteractiveMode:
                 self._chat_log.add_user(event.get("message", ""))
             self._update_message_queue()
 
+        elif event_type == "restore_draft":
+            self._restore_editor_messages(event.get("messages", ()))
+
         elif event_type == "queue_changed":
             generation = event.get("generation")
             if generation is not None and generation != self._worker_generation:
@@ -883,6 +932,7 @@ class InteractiveMode:
             generation = event.get("generation")
             if generation is not None and generation != self._worker_generation:
                 return
+            self._restore_editor_messages(event.get("restore", ()))
             message = event.get("message", "Unknown error")
             self._set_busy(False)
             self._chat_log.drop_assistant(self._stream_id)

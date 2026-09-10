@@ -8,6 +8,7 @@ from xdog.coding.modes.interactive.components.assistant_message import Assistant
 from xdog.coding.modes.interactive.components.tool_execution import ToolExecutionComponent
 from xdog.coding.modes.interactive.components.user_message import UserMessageComponent
 from xdog.coding.modes.interactive.theme import Theme
+from xdog.tui.components.bounded_details import DetailRecord
 from xdog.tui.components.details import set_details_expanded
 from xdog.tui.components.text import Text
 from xdog.tui.tui import Component, Container
@@ -106,6 +107,25 @@ class ChatLog(Container):
         """Clear all messages."""
         self.clear()
         self._streaming.clear()
+        self._last_tool = None
+
+    def detail_records(self) -> tuple[DetailRecord, ...]:
+        """Snapshot tool and reasoning details without changing transcript state."""
+        records: list[DetailRecord] = []
+        for child in self.children:
+            if isinstance(child, AssistantMessageComponent) and child.detail_body.strip():
+                records.append(DetailRecord(
+                    title=child.detail_title,
+                    body=child.detail_body,
+                    kind="reasoning",
+                ))
+            elif isinstance(child, ToolExecutionComponent) and child.detail_body:
+                records.append(DetailRecord(
+                    title=child.detail_title,
+                    body=child.detail_body,
+                    kind="tool",
+                ))
+        return tuple(records)
 
     def set_details_expanded(self, expanded: bool) -> None:
         """Apply a presentation-only detail mode to retained components."""

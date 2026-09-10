@@ -29,6 +29,8 @@ class ProviderType(StrEnum):
 
 
 ThinkingLevel = Literal["minimal", "low", "medium", "high", "xhigh"]
+TextVerbosity = Literal["low", "medium", "high"]
+ToolChoiceType = Literal["auto", "any", "tool", "none"]
 
 
 InputModality = Literal["text", "image"]
@@ -308,6 +310,9 @@ class Model:
     headers: dict[str, str] = field(default_factory=dict)
     compat: OpenAICompletionsCompat | None = None
     supported_protocols: tuple[str, ...] | None = None
+    # Exact native generation protocols advertised by provider endpoints.
+    # None marks legacy/manual metadata; an empty tuple explicitly means none.
+    supported_generation_protocols: tuple[str, ...] | None = None
     preferred_protocol: str | None = None
     # Capability flags from the provider API
     supports_tool_calls: bool = True
@@ -355,6 +360,52 @@ class ThinkingBudgets:
 
 
 @dataclass(frozen=True)
+class ToolChoice:
+    """Provider-neutral tool selection policy."""
+
+    type: ToolChoiceType = "auto"
+    name: str | None = None
+
+
+@dataclass(frozen=True)
+class JsonSchemaFormat:
+    """Immutable structured-output schema for cross-provider requests."""
+
+    schema_json: str
+    name: str = "response"
+    description: str | None = None
+    strict: bool | None = None
+
+    @classmethod
+    def from_schema(
+        cls,
+        schema: dict[str, Any],
+        *,
+        name: str = "response",
+        description: str | None = None,
+        strict: bool | None = None,
+    ) -> JsonSchemaFormat:
+        import json
+
+        return cls(
+            schema_json=json.dumps(
+                schema, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
+            ),
+            name=name,
+            description=description,
+            strict=strict,
+        )
+
+    def schema(self) -> dict[str, Any]:
+        import json
+
+        value = json.loads(self.schema_json)
+        if not isinstance(value, dict):
+            raise ValueError("JSON Schema must be an object")
+        return value
+
+
+@dataclass(frozen=True)
 class StreamOptions:
     """User-facing options for stream/complete calls."""
 
@@ -363,6 +414,19 @@ class StreamOptions:
     max_tokens: int | None = None
     cancel: asyncio.Event | None = None
     web_search: bool = False
+    # Optional upstream Responses cache-routing hint; other protocols may ignore it.
+    prompt_cache_key: str | None = None
+    # None preserves the upstream default; False requests at most one tool call per turn.
+    parallel_tool_calls: bool | None = None
+    # OpenAI output-detail hint; ignored by protocols without a native equivalent.
+    verbosity: TextVerbosity | None = None
+    # Cross-provider generation controls used by best-effort protocol adapters.
+    top_p: float | None = None
+    stop_sequences: tuple[str, ...] | None = None
+    tool_choice: ToolChoice | None = None
+    response_format: JsonSchemaFormat | None = None
+    metadata: tuple[tuple[str, str], ...] | None = None
+    service_tier: str | None = None
 
 
 # ---------------------------------------------------------------------------

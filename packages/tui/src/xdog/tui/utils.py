@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 import wcwidth
+from xdog.tui.editor_layout import grapheme_clusters
 
 # Regex to match ANSI escape sequences (CSI, OSC, APC)
 _ANSI_RE = re.compile(
@@ -59,13 +60,8 @@ def string_width(text: str) -> int:
     cleaned = strip_ansi(text)
     # Replace tabs with 3 spaces for consistent rendering
     cleaned = cleaned.replace("\t", "   ")
-    width = 0
-    for ch in cleaned:
-        w = wcwidth.wcwidth(ch)
-        if w < 0:
-            continue
-        width += w
-    return width
+    printable = "".join(ch for ch in cleaned if wcwidth.wcwidth(ch) >= 0)
+    return max(0, wcwidth.wcswidth(printable))
 
 
 # Alias matching TypeScript API name
@@ -117,28 +113,15 @@ def truncate_to_width(text: str, max_width: int, ellipsis: str = "...") -> str:
 
     result: list[str] = []
     current_width = 0
-    in_escape = False
-    escape_buf: list[str] = []
-
-    for ch in text:
-        if in_escape:
-            escape_buf.append(ch)
-            if ch.isalpha() or ch == "\x07":
-                result.append("".join(escape_buf))
-                escape_buf.clear()
-                in_escape = False
-            continue
-
-        if ch == "\x1b":
-            in_escape = True
-            escape_buf.append(ch)
-            continue
-
-        w = char_width(ch)
-        if current_width + w > target:
-            break
-        result.append(ch)
-        current_width += w
+    for segment in parse_ansi_segments(text):
+        if segment.escape:
+            result.append(segment.escape)
+        for _start, _end, cluster in grapheme_clusters(segment.text):
+            w = string_width(cluster)
+            if current_width + w > target:
+                return "".join(result) + ellipsis
+            result.append(cluster)
+            current_width += w
 
     return "".join(result) + ellipsis
 

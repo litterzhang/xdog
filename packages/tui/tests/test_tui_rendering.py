@@ -31,15 +31,17 @@ def test_full_redraw_preserves_terminal_scrollback(monkeypatch) -> None:
 
     output.seek(0)
     output.truncate(0)
-    component.lines = ["one"]  # shrinking content takes the full-redraw path
+    component.lines = ["one"]
     tui._do_render()
 
     rendered = output.getvalue()
     assert "\x1b[2J" not in rendered
     assert "\x1b[3J" not in rendered
     assert "\x1b[2K" in rendered
-    # Repainting 24 rows uses 23 line feeds and never scrolls at the bottom.
-    assert rendered.count("\r\n") == 23
+    # Only the two vacated rows are erased; shrinking never scrolls or replays.
+    assert rendered.count("\x1b[2K") == 2
+    assert "\n" not in rendered
+    assert "one" not in rendered
 
 
 def test_full_redraw_does_not_replay_offscreen_history(monkeypatch) -> None:
@@ -57,16 +59,13 @@ def test_full_redraw_does_not_replay_offscreen_history(monkeypatch) -> None:
 
     output.seek(0)
     output.truncate(0)
-    # A change above the viewport takes the clear/full-redraw path.
+    # Native scrollback is immutable; an offscreen change needs no repaint.
     component.lines[0] = "changed-offscreen-history"
     tui._do_render()
 
     rendered = output.getvalue()
     assert "\x1b[2J" not in rendered
-    assert rendered.count("\r\n") == 2
-    assert "changed-offscreen-history" not in rendered
-    assert "history-3" in rendered
-    assert "history-5" in rendered
+    assert rendered == ""
 
 
 def test_shrinking_transient_panel_does_not_replay_input_box(monkeypatch) -> None:
@@ -95,8 +94,10 @@ def test_shrinking_transient_panel_does_not_replay_input_box(monkeypatch) -> Non
     tui._do_render()
 
     rendered = output.getvalue()
-    assert rendered.count("> input") == 1
-    assert rendered.count("\r\n") == 3
+    # The existing input stays in place while the two permission rows clear.
+    assert "> input" not in rendered
+    assert rendered.count("\x1b[2K") == 2
+    assert "\n" not in rendered
     assert "\x1b[2J" not in rendered
 
 

@@ -8,6 +8,7 @@ from typing import Any
 
 from xdog.ai.types import ImageContent, ToolResultContentPart
 from xdog.coding.modes.interactive.theme import Theme
+from xdog.tui.components.bounded_details import streaming_preview
 from xdog.tui.components.diff import Diff
 from xdog.tui.components.image import Image
 from xdog.tui.components.text import Text
@@ -55,6 +56,16 @@ class ToolExecutionComponent(Container):
             if summary:
                 self.add_child(Text(theme.dim(f"    {summary}"), 0, 0))
 
+    @property
+    def detail_title(self) -> str:
+        """Stable title used by bounded detail providers."""
+        return self._tool_name
+
+    @property
+    def detail_body(self) -> str:
+        """Return the complete raw result retained independently of previews."""
+        return self._result
+
     def _make_header(self) -> str:
         """Build header string with state-appropriate icon and color."""
         icons = {
@@ -80,11 +91,10 @@ class ToolExecutionComponent(Container):
 
     def set_streaming(self, text: str) -> None:
         """Show live streaming output preview (e.g. bash stdout)."""
-        # Show last 10 lines of sanitized streaming output.
+        # Retain full output; the transcript previews the newest complete cells.
         safe_text = sanitize_terminal_text(text)
-        lines = safe_text.strip().split("\n")
-        preview = "\n".join(lines[-10:]) if len(lines) > 10 else safe_text.strip()
-        display = _truncate(preview, 500)
+        self._result = safe_text
+        display = streaming_preview(safe_text)
         if self._result_text is not None:
             self._result_text.set_text(self._theme.dim(f"    ⏳ {display}"))
         else:
@@ -161,10 +171,13 @@ class ToolExecutionComponent(Container):
 
         if self._expanded:
             display = result
-        elif len(result) > _COLLAPSE_THRESHOLD:
-            preview = result[:200].replace("\n", " ").replace("\r", "")
-            line_count = len(result.splitlines())
-            display = f"{preview} [...{len(result) - 200} more chars, {line_count} lines; Ctrl+O to expand]"
+        elif len(result) > _COLLAPSE_THRESHOLD or len(result.splitlines()) > 3:
+            lines = result.splitlines()
+            excerpt = "\n".join(lines[:3])[:200]
+            preview = excerpt.replace("\n", " ").replace("\r", "")
+            hidden = len(lines) - len(excerpt.splitlines())
+            display = (f"{preview} [...{len(result) - len(excerpt)} more chars, "
+                       f"{hidden} hidden lines; Ctrl+O for details]")
         else:
             display = _truncate(result, 200)
         self._set_result_text(display)

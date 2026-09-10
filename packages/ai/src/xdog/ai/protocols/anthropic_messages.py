@@ -21,6 +21,7 @@ from typing import Any
 
 import httpx
 from xdog.ai.core import AuthResult, BaseProtocol
+from xdog.ai.native import NativeEventStream, NativeOperation, NativeResponse, ProtocolRequest
 from xdog.ai.protocols._message_builder import MessageBuilder
 from xdog.ai.types import (
     AssistantMessage,
@@ -67,7 +68,11 @@ _STOP_REASON_MAP: dict[str, tuple[StopReason, str | None]] = {
     "end_turn": ("stop", None),
     "stop_sequence": ("stop", None),
     "max_tokens": ("length", None),
+    "model_context_window_exceeded": ("length", None),
     "tool_use": ("toolUse", None),
+    "pause_turn": ("stop", None),
+    "refusal": ("stop", None),
+    "compaction": ("stop", None),
 }
 
 
@@ -170,20 +175,30 @@ def _convert_message(msg: Message) -> dict[str, Any] | None:
         return {"role": "assistant", "content": content_parts}
 
     if isinstance(msg, ToolResultMessage):
-        text_parts = [
-            sanitize_unicode(p.text)
-            for p in msg.content
-            if isinstance(p, TextContent)
-        ]
-        text = "\n".join(text_parts) if text_parts else ""
-        return {
-            "role": "user",
-            "content": [{
-                "type": "tool_result",
-                "tool_use_id": _anthropic_tool_call_id(msg.tool_call_id),
-                "content": sanitize_unicode(text),
-            }],
+        result_content: list[dict[str, Any]] = []
+        for result_part in msg.content:
+            if isinstance(result_part, TextContent):
+                result_content.append({
+                    "type": "text",
+                    "text": sanitize_unicode(result_part.text),
+                })
+            elif isinstance(result_part, ImageContent):
+                result_content.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": result_part.mime_type or "image/png",
+                        "data": result_part.data or "",
+                    },
+                })
+        block: dict[str, Any] = {
+            "type": "tool_result",
+            "tool_use_id": _anthropic_tool_call_id(msg.tool_call_id),
+            "content": result_content,
         }
+        if msg.is_error:
+            block["is_error"] = True
+        return {"role": "user", "content": [block]}
 
     if isinstance(msg, UserMessage):
         content = msg.content
@@ -298,8 +313,12 @@ async def _stream_impl(
 
     if tools:
         body["tools"] = tools
+        if options.parallel_tool_calls is not None:
+            body["tool_choice"] = {
+                "type": "auto", "disable_parallel_tool_use": not options.parallel_tool_calls,
+            }
 
-    body["max_tokens"] = options.max_tokens or 4096
+    body["max_tokens"] = 4096 if options.max_tokens is None else options.max_tokens
 
     if options.temperature is not None:
         body["temperature"] = options.temperature
@@ -356,6 +375,7 @@ async def _stream_impl(
     active_block_index: int = -1
     active_block_type: str | None = None
     started = False
+    message_stopped = False
 
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
@@ -378,6 +398,8 @@ async def _stream_impl(
                     return
 
                 async for event_type, data in _iter_sse_events(response):
+                    if data.get("type", event_type) == "message_stop":
+                        message_stopped = True
                     events = _handle_sse_event(
                         event_type, data, output,
                         active_block_index, active_block_type,
@@ -407,6 +429,17 @@ async def _stream_impl(
         output.mark_dirty()
         yield ErrorEvent(
             error=str(exc),
+            stop_reason="error",
+            message=output.snapshot(),
+        )
+        return
+
+    if not message_stopped:
+        output.stop_reason = "error"
+        output.error_message = "Upstream stream ended without message_stop"
+        output.mark_dirty()
+        yield ErrorEvent(
+            error=output.error_message,
             stop_reason="error",
             message=output.snapshot(),
         )
@@ -476,8 +509,9 @@ def _handle_sse_event(
 
         if block_type == "text":
             output.push_block({"type": "text", "text": content_block.get("text", "")})
-            results.append(TextStartEvent(index=index, partial=output.snapshot()))
-            results.append((index, "text"))
+            normalized_index = output.block_index
+            results.append(TextStartEvent(index=normalized_index, partial=output.snapshot()))
+            results.append((normalized_index, "text"))
 
         elif block_type == "thinking":
             output.push_block({
@@ -486,18 +520,20 @@ def _handle_sse_event(
                 "thinking_signature": None,
                 "redacted": False,
             })
-            results.append(ThinkingStartEvent(index=index, partial=output.snapshot()))
-            results.append((index, "thinking"))
+            normalized_index = output.block_index
+            results.append(ThinkingStartEvent(index=normalized_index, partial=output.snapshot()))
+            results.append((normalized_index, "thinking"))
 
         elif block_type == "redacted_thinking":
             output.push_block({
                 "type": "thinking",
-                "thinking": "",
+                "thinking": content_block.get("data", ""),
                 "thinking_signature": None,
                 "redacted": True,
             })
-            results.append(ThinkingStartEvent(index=index, partial=output.snapshot()))
-            results.append((index, "thinking"))
+            normalized_index = output.block_index
+            results.append(ThinkingStartEvent(index=normalized_index, partial=output.snapshot()))
+            results.append((normalized_index, "thinking"))
 
         elif block_type == "tool_use":
             tool_id = content_block.get("id", "")
@@ -509,11 +545,12 @@ def _handle_sse_event(
                 "arguments": {},
                 "partial_args": "",
             })
+            normalized_index = output.block_index
             results.append(ToolCallStartEvent(
-                index=index, id=tool_id, name=tool_name,
+                index=normalized_index, id=tool_id, name=tool_name,
                 partial=output.snapshot(),
             ))
-            results.append((index, "tool_use"))
+            results.append((normalized_index, "tool_use"))
 
     elif anthropic_type == "content_block_delta":
         delta = data.get("delta", {})
@@ -565,7 +602,7 @@ def _handle_sse_event(
                 ))
 
     elif anthropic_type == "content_block_stop":
-        index = data.get("index", active_block_index)
+        index = active_block_index
         if output.content and 0 <= index < len(output.content):
             block = output.content[index]
             btype = block.get("type")
@@ -579,6 +616,7 @@ def _handle_sse_event(
                 results.append(ThinkingDoneEvent(
                     index=index, thinking=block.get("thinking", ""),
                     thinking_signature=block.get("thinking_signature"),
+                    redacted=block.get("redacted", False),
                     partial=output.snapshot(),
                 ))
             elif btype == "toolCall":
@@ -702,3 +740,31 @@ class AnthropicMessagesProtocol(BaseProtocol):
         auth: AuthResult,
     ) -> EventStream[AssistantMessage]:
         return stream(model, context, options, auth)
+
+    def supports_native_operation(self, operation: NativeOperation) -> bool:
+        return operation in (NativeOperation.GENERATE, NativeOperation.COUNT_TOKENS)
+
+    def native_auth_context(self, request: ProtocolRequest) -> Context:
+        from xdog.ai.protocols.native_auth import anthropic_native_auth_context
+
+        return anthropic_native_auth_context(request.json())
+
+    async def request_complete(
+        self,
+        model: Model,
+        request: ProtocolRequest,
+        auth: AuthResult,
+    ) -> NativeResponse:
+        from xdog.ai.protocols.anthropic_native import request_complete
+
+        return await request_complete(model, request, auth)
+
+    async def request_stream(
+        self,
+        model: Model,
+        request: ProtocolRequest,
+        auth: AuthResult,
+    ) -> NativeEventStream:
+        from xdog.ai.protocols.anthropic_native import request_stream
+
+        return await request_stream(model, request, auth)

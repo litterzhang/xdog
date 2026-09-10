@@ -2,8 +2,16 @@
 
 **Terminal UI library with differential rendering.**
 
-A small terminal UI toolkit that redraws only what changed, so a full-screen
-interface stays responsive over SSH. No curses dependency.
+A small terminal UI toolkit that redraws owned rows in the main terminal buffer
+while preserving native scrollback. No curses dependency.
+
+`PromptEditor` supplies shared Unicode editing, undo/redo, history and atomic
+paste. `InlineLayout` budgets the editor and prioritized auxiliary panels from
+terminal height. The renderer uses cursor reports at startup, resize and resume.
+
+See [terminal stability and verification](../../docs/tui-pi-parity.md) for scope,
+test commands, and platform limitations. Fullscreen applications and remote
+coding are outside this stability work.
 
 ## Part of xdog
 

@@ -1706,7 +1706,7 @@ wheels = [
 
 [[package]]
 name = "xdog"
-version = "2.1.2"
+version = "2.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "xdog-agent" },
@@ -1749,7 +1749,7 @@ dev = [
 
 [[package]]
 name = "xdog-agent"
-version = "2.1.2"
+version = "2.2.0"
 source = { editable = "packages/agent" }
 dependencies = [
     { name = "fastjsonschema" },
@@ -1766,7 +1766,7 @@ requires-dist = [
 
 [[package]]
 name = "xdog-ai"
-version = "2.1.2"
+version = "2.2.0"
 source = { editable = "packages/ai" }
 dependencies = [
     { name = "httpx" },
@@ -1792,7 +1792,7 @@ provides-extras = ["openai", "all"]
 
 [[package]]
 name = "xdog-claw"
-version = "2.1.2"
+version = "2.2.0"
 source = { editable = "packages/claw" }
 dependencies = [
     { name = "aiosqlite" },
@@ -1802,7 +1802,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "qrcode" },
     { name = "xdog-agent" },
-    { name = "xdog-ai" },
+    { name = "xdog-ai", extra = ["openai"] },
     { name = "xdog-tui" },
 ]
 
@@ -1835,21 +1835,21 @@ requires-dist = [
     { name = "sqlite-vec", marker = "extra == 'all'", specifier = ">=0.1.1" },
     { name = "sqlite-vec", marker = "extra == 'search'", specifier = ">=0.1.1" },
     { name = "xdog-agent", editable = "packages/agent" },
-    { name = "xdog-ai", editable = "packages/ai" },
+    { name = "xdog-ai", extras = ["openai"], editable = "packages/ai" },
     { name = "xdog-tui", editable = "packages/tui" },
 ]
 provides-extras = ["search", "all"]
 
 [[package]]
 name = "xdog-coding"
-version = "2.1.2"
+version = "2.2.0"
 source = { editable = "packages/coding" }
 dependencies = [
     { name = "click" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "xdog-agent" },
-    { name = "xdog-ai" },
+    { name = "xdog-ai", extra = ["openai"] },
     { name = "xdog-tui" },
 ]
 
@@ -1859,13 +1859,13 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "xdog-agent", editable = "packages/agent" },
-    { name = "xdog-ai", editable = "packages/ai" },
+    { name = "xdog-ai", extras = ["openai"], editable = "packages/ai" },
     { name = "xdog-tui", editable = "packages/tui" },
 ]
 
 [[package]]
 name = "xdog-flow"
-version = "2.1.2"
+version = "2.2.0"
 source = { editable = "packages/flow" }
 dependencies = [
     { name = "fastjsonschema" },
@@ -1888,7 +1888,7 @@ requires-dist = [
 
 [[package]]
 name = "xdog-site"
-version = "2.1.2"
+version = "2.2.0"
 source = { editable = "packages/site" }
 dependencies = [
     { name = "flask" },
@@ -1909,7 +1909,7 @@ requires-dist = [
 
 [[package]]
 name = "xdog-tui"
-version = "2.1.2"
+version = "2.2.0"
 source = { editable = "packages/tui" }
 dependencies = [
     { name = "wcwidth" },

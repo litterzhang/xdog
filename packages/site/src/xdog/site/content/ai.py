@@ -33,8 +33,8 @@ _FEATURES = (
             "a Copilot JWT — no API key to paste.", "Providers"),
     Feature("Three wire protocols", "Copilot models are reached over openai-completions, "
             "anthropic-messages, or openai-responses, chosen per model.", "Providers"),
-    Feature("Anthropic-compatible proxy", "proxy.py serves /v1/messages so Anthropic-SDK clients can "
-            "target the same backend unchanged.", "Interop"),
+    Feature("Local API proxy", "proxy.py serves /v1/messages, /v1/messages/count_tokens, "
+            "/v1/responses, and /v1/chat/completions through the same provider runtime.", "Interop"),
 )
 
 _FEATURE_CATEGORIES = ("Model calls", "Accounting", "Providers", "Interop")
@@ -51,7 +51,7 @@ _ROADMAP = (
         "Three wire protocols (openai-completions / anthropic-messages / openai-responses)",
         "Model catalog sync with 24h cache + offline fallback",
         "Usage / cost accounting with premium-request multipliers",
-        "Anthropic-compatible /v1/messages proxy",
+        "Messages, token count, Responses, and Chat Completions API proxy",
     ), done=True),
     Phase("2026", "Beyond one vendor", (
         "Additional first-party vendors behind the same Provider surface",

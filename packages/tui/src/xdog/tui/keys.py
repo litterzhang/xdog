@@ -294,6 +294,19 @@ def _parse_modifiers(param: str) -> tuple[bool, bool, bool]:
     return shift, alt, ctrl
 
 
+def _parse_key_modifiers(param: str) -> tuple[bool, bool, bool, KeyEventType]:
+    """Preserve Kitty event subparameters on legacy navigation sequences."""
+    parts = param.split(":")
+    shift, alt, ctrl = _parse_modifiers(parts[0])
+    event_type = KeyEventType.PRESS
+    if len(parts) >= 2:
+        event_type = {
+            "2": KeyEventType.REPEAT,
+            "3": KeyEventType.RELEASE,
+        }.get(parts[1], KeyEventType.PRESS)
+    return shift, alt, ctrl, event_type
+
+
 def parse_key_events(data: bytes) -> list[KeyEvent]:
     """Parse raw terminal input *data* into a list of :class:`KeyEvent` objects.
 
@@ -327,7 +340,12 @@ def parse_key_events(data: bytes) -> list[KeyEvent]:
                     events.append(parsed_event)
                     i += consumed
                 else:
-                    events.append(KeyEvent(key="escape"))
+                    # The framer only supplies whole CSI tokens. Unknown terminal
+                    # reports are protocol data, not literal Escape/user input.
+                    while i < length and not 0x40 <= buf[i] <= 0x7E:
+                        i += 1
+                    if i < length:
+                        i += 1
                 continue
 
             # SS3 sequence: ESC O
@@ -461,7 +479,7 @@ def _parse_csi(buf: bytes, start: int, length: int) -> tuple[KeyEvent, int] | No
                     shift, alt, ctrl = False, False, False
                     event_type = KeyEventType.PRESS
                     if len(params) >= 2:
-                        shift, alt, ctrl = _parse_modifiers(params[1])
+                        shift, alt, ctrl, event_type = _parse_key_modifiers(params[1])
                     return KeyEvent(key=tilde_key, ctrl=ctrl, alt=alt, shift=shift, event_type=event_type), consumed
                 return None
 
@@ -469,11 +487,12 @@ def _parse_csi(buf: bytes, start: int, length: int) -> tuple[KeyEvent, int] | No
             special_key = _CSI_SPECIAL.get(final)
             if special_key:
                 shift, alt, ctrl = False, False, False
+                event_type = KeyEventType.PRESS
                 if len(params) >= 2 and params[1]:
-                    shift, alt, ctrl = _parse_modifiers(params[1])
+                    shift, alt, ctrl, event_type = _parse_key_modifiers(params[1])
                 elif len(params) >= 1 and params[0] == "1" and len(params) < 2:
                     pass  # CSI 1 A  -- just the key, no modifier
-                return KeyEvent(key=special_key, ctrl=ctrl, alt=alt, shift=shift), consumed
+                return KeyEvent(key=special_key, ctrl=ctrl, alt=alt, shift=shift, event_type=event_type), consumed
 
             # Backtab: CSI Z is Shift+Tab on legacy xterm-style terminals.
             if final == "Z":

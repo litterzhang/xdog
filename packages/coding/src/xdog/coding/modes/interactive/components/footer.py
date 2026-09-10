@@ -4,14 +4,28 @@ from __future__ import annotations
 
 from xdog.coding.modes.interactive.theme import Theme, format_tokens
 from xdog.tui.components.text import Text
+from xdog.tui.utils import truncate_to_width
 
 
 class FooterComponent(Text):
     """Bottom status bar showing model, session, tokens, and working directory."""
 
     def __init__(self, theme: Theme) -> None:
-        super().__init__("", 1, 0)
+        super().__init__("", 0, 0)
         self._theme = theme
+        self._activity = "ready"
+        self._metadata: tuple[str, ...] = ()
+        self._queued = 0
+
+    def set_queue_count(self, count: int) -> None:
+        self._queued = count
+
+    def set_activity(self, activity: str) -> None:
+        """Set the single activity label without rebuilding metadata."""
+        if activity == self._activity:
+            return
+        self._activity = activity
+        self.invalidate()
 
     def update(
         self,
@@ -47,4 +61,14 @@ class FooterComponent(Text):
             short = "/".join(segments[-2:]) if len(segments) > 2 else working_dir
             parts.append(short)
 
-        self.set_text(self._theme.dim(" | ".join(parts)))
+        metadata = tuple(parts)
+        if metadata == self._metadata:
+            return
+        self._metadata = metadata
+        self.invalidate()
+
+    def render(self, width: int) -> list[str]:
+        """Render exactly one activity/metadata row, elided to terminal width."""
+        queue = (f"queued {self._queued}",) if self._queued else ()
+        content = " | ".join((self._activity, *queue, *self._metadata))
+        return [self._theme.dim(truncate_to_width(content, max(1, width), "…"))]

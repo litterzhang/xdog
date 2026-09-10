@@ -148,9 +148,9 @@ class TestPermissionPromptComponent:
         mode = InteractiveMode(session)
         root = mode._tui.children[0]
 
-        assert root.children[-3] is mode._editor
-        assert root.children[-2] is mode._message_queue_container
-        assert root.children[-1] is mode._permission_container
+        assert root is mode._layout
+        assert root.editor is mode._editor
+        assert root.permission is None
         assert mode._permission_container.children == []
 
         mode._show_permission_request(PermissionRequest(
@@ -304,7 +304,8 @@ class TestInteractiveMessageHandling:
         session.cancel.assert_called_once_with()
         assert mode._cancel_requested
         assert list(mode._pending_messages) == []
-        assert mode._message_queue_container.children == []
+        assert mode._message_queue_container.render(80) == []
+        assert mode._layout.queue is None
         assert mode._editor.get_text() == "queued"
 
         mode._handle_global_input(KeyEvent(key="escape"))
@@ -316,7 +317,7 @@ class TestInteractiveMessageHandling:
         ]
         assert len(cancellation_notices) == 1
 
-    def test_ctrl_o_toggles_retained_details(self):
+    def test_ctrl_o_opens_details_without_rewriting_transcript(self):
         from unittest.mock import MagicMock
 
         from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
@@ -329,12 +330,13 @@ class TestInteractiveMessageHandling:
         mode = InteractiveMode(session)
         mode._chat_log.add_assistant("answer", thinking="THINKING-DETAIL")
 
-        collapsed = "\n".join(strip_ansi(line) for line in mode._chat_log.render(80))
-        assert "THINKING-DETAIL" not in collapsed
+        transcript = "\n".join(strip_ansi(line) for line in mode._chat_log.render(80))
+        assert "THINKING-DETAIL" not in transcript
 
         assert mode._handle_global_input(KeyEvent(key="o", ctrl=True)) == {"consume": True}
-        expanded = "\n".join(strip_ansi(line) for line in mode._chat_log.render(80))
-        assert "THINKING-DETAIL" in expanded
+        assert "\n".join(strip_ansi(line) for line in mode._chat_log.render(80)) == transcript
+        details = "\n".join(strip_ansi(line) for line in mode._details_panel.render(80))
+        assert "THINKING-DETAIL" in details
 
     def test_message_end_displays_non_streamed_text(self):
         import queue
@@ -475,6 +477,7 @@ class TestInteractiveMessageHandling:
         mode._event_queue = queue.Queue()
         mode._is_busy = True
         mode._awaiting_permission = False
+        mode._cancel_requested = False
         mode._format_elapsed = Mock(return_value="0s")
         mode._status_loader = Mock()
         mode._last_busy_label = "thinking... • 0s"

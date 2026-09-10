@@ -11,8 +11,10 @@ from unittest.mock import patch
 import pytest
 from xdog.ai.types import Model, ModelCost, OpenAICompletionsCompat, ThinkingBudgetRange
 from xdog.ai.vendors.copilot._model_sync import (
+    _CACHE_SCHEMA_VERSION,
     _model_from_dict,
     _model_to_dict,
+    _parse_api_model,
     _read_cache,
     _write_cache,
     get_synced_model,
@@ -54,6 +56,67 @@ def _make_api_model(model_id="claude-sonnet-4.6", vendor="Anthropic",
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
+# Generation protocol discovery
+# ---------------------------------------------------------------------------
+
+
+def test_generation_endpoints_populate_exact_native_protocols():
+    raw = _make_api_model(endpoints=[
+        "/v1/responses",
+        "/chat/completions",
+        "/v1/messages",
+        "/responses",
+        "/v1/chat/completions",
+    ])
+
+    model = _parse_api_model(raw)
+
+    assert model is not None
+    assert model.supported_protocols == (
+        "openai-completions",
+        "anthropic-messages",
+        "openai-responses",
+    )
+    assert model.supported_generation_protocols == (
+        "openai-completions",
+        "anthropic-messages",
+        "openai-responses",
+    )
+
+
+def test_embedding_endpoint_does_not_advertise_native_generation():
+    raw = _make_api_model(endpoints=["/v1/embeddings"])
+    raw["capabilities"]["type"] = "embeddings"
+
+    model = _parse_api_model(raw)
+
+    assert model is not None
+    assert model.api == "openai-completions"
+    assert model.supported_protocols == ("openai-completions",)
+    assert model.supported_generation_protocols == ()
+
+
+def test_endpointless_picker_model_has_no_exact_native_generation():
+    raw = _make_api_model(endpoints=[])
+    raw["model_picker_enabled"] = True
+
+    model = _parse_api_model(raw)
+
+    assert model is not None
+    assert model.supported_generation_protocols == ()
+
+
+@pytest.mark.parametrize("endpoints", [None, "/responses", [1], [{"path": "/responses"}]])
+def test_malformed_supported_endpoints_fail_closed(endpoints: Any):
+    raw = _make_api_model()
+    raw["supported_endpoints"] = endpoints
+
+    model = _parse_api_model(raw)
+
+    assert model is None
+
+
+# ---------------------------------------------------------------------------
 # Cache round-trip
 # ---------------------------------------------------------------------------
 
@@ -65,13 +128,28 @@ def test_full_cache_round_trip():
         context_window=200_000, max_tokens=32_000,
         compat=OpenAICompletionsCompat(supports_store=True, supports_strict_mode=True),
         thinking_budget_range=ThinkingBudgetRange(min_budget=512, max_budget=64000),
+        headers={"anthropic-beta": "feature-20260901"},
+        supported_protocols=("openai-completions", "anthropic-messages"),
+        supported_generation_protocols=("openai-completions", "anthropic-messages"),
         vendor="Anthropic",
     )
     restored = _model_from_dict(_model_to_dict(original))
     assert restored.id == original.id
     assert restored.reasoning == original.reasoning
     assert restored.thinking_budget_range == original.thinking_budget_range
+    assert restored.headers == original.headers
+    assert restored.supported_protocols == original.supported_protocols
+    assert restored.supported_generation_protocols == original.supported_generation_protocols
     assert restored.compat.supports_strict_mode is True
+
+
+def _cache_payload(models: list[dict[str, Any]], *, timestamp: float | None = None) -> dict[str, Any]:
+    return {
+        "schema_version": _CACHE_SCHEMA_VERSION,
+        "timestamp": time.time() if timestamp is None else timestamp,
+        "models": models,
+    }
+
 
 def test_cache_file_write_and_read(tmp_path: Path):
     models = (Model(id="copilot/t1", name="T1"), Model(id="copilot/t2", name="T2"))
@@ -82,6 +160,23 @@ def test_cache_file_write_and_read(tmp_path: Path):
         result = _read_cache()
     assert result is not None
     assert len(result[0]) == 2
+    payload = json.loads(cache_file.read_text())
+    assert payload["schema_version"] == _CACHE_SCHEMA_VERSION
+
+
+@pytest.mark.parametrize("version", [None, 0, _CACHE_SCHEMA_VERSION + 1, True, "2"])
+def test_read_cache_rejects_incompatible_schema_versions(tmp_path: Path, version: Any):
+    cache_file = tmp_path / "models_cache.json"
+    payload: dict[str, Any] = {
+        "timestamp": time.time(),
+        "models": [_model_to_dict(Model(id="copilot/legacy", name="Legacy"))],
+    }
+    if version is not None:
+        payload["schema_version"] = version
+    cache_file.write_text(json.dumps(payload))
+
+    with patch("xdog.ai.vendors.copilot._model_sync._CACHE_FILE", cache_file):
+        assert _read_cache() is None
 
 # ---------------------------------------------------------------------------
 # sync / list / get
@@ -90,7 +185,7 @@ def test_cache_file_write_and_read(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_sync_returns_cached_when_fresh(tmp_path: Path):
     cache_file = tmp_path / "c.json"
-    payload = {"timestamp": time.time(), "models": [_model_to_dict(Model(id="copilot/cached", name="C"))]}
+    payload = _cache_payload([_model_to_dict(Model(id="copilot/cached", name="C"))])
     cache_file.write_text(json.dumps(payload))
     with patch("xdog.ai.vendors.copilot._model_sync._CACHE_FILE", cache_file):
         result = await sync_models(ttl=3600)
@@ -99,6 +194,16 @@ async def test_sync_returns_cached_when_fresh(tmp_path: Path):
 def test_list_models_returns_generated_when_no_cache(tmp_path: Path):
     with patch("xdog.ai.vendors.copilot._model_sync._CACHE_FILE", tmp_path / "nope.json"):
         assert len(list_models()) > 0
+
+
+def test_generated_anthropic_models_advertise_native_messages(tmp_path: Path):
+    with patch("xdog.ai.vendors.copilot._model_sync._CACHE_FILE", tmp_path / "nope.json"):
+        models = list_models()
+
+    anthropic_models = tuple(model for model in models if model.id.startswith("copilot/claude-"))
+    assert anthropic_models
+    assert all("anthropic-messages" in (model.supported_protocols or ()) for model in anthropic_models)
+    assert all(model.preferred_protocol == "anthropic-messages" for model in anthropic_models)
 
 
 def test_list_models_returns_stale_cache_over_fallback(tmp_path: Path):
@@ -111,7 +216,7 @@ def test_list_models_returns_stale_cache_over_fallback(tmp_path: Path):
     cache_file = tmp_path / "c.json"
     stale_ts = time.time() - (48 * 60 * 60)  # 48h old, well past the 24h TTL
     models = [_model_to_dict(Model(id=f"copilot/stale-{i}", name=f"S{i}")) for i in range(12)]
-    cache_file.write_text(json.dumps({"timestamp": stale_ts, "models": models}))
+    cache_file.write_text(json.dumps(_cache_payload(models, timestamp=stale_ts)))
     with patch("xdog.ai.vendors.copilot._model_sync._CACHE_FILE", cache_file):
         result = list_models()
     ids = {m.id for m in result}

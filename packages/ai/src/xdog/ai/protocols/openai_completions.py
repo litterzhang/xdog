@@ -29,6 +29,7 @@ from typing import Any
 
 import httpx
 from xdog.ai.core import AuthResult, BaseProtocol
+from xdog.ai.native import NativeEventStream, NativeResponse, ProtocolRequest
 from xdog.ai.protocols._message_builder import MessageBuilder
 from xdog.ai.protocols._transform_messages import context_to_openai
 from xdog.ai.types import (
@@ -54,6 +55,7 @@ from xdog.ai.types import (
     ToolCallDeltaEvent,
     ToolCallDoneEvent,
     ToolCallStartEvent,
+    ToolChoice,
     Usage,
     UsageEvent,
 )
@@ -125,6 +127,29 @@ def _map_stop_reason(raw: str | None) -> tuple[StopReason, str | None]:
     if result is not None:
         return result
     return ("error", f"Provider finish_reason: {raw}")
+
+
+def _tool_choice(choice: ToolChoice) -> str | dict[str, Any]:
+    """Convert provider-neutral tool choice to Chat Completions format."""
+    if choice.type == "any":
+        return "required"
+    if choice.type in ("auto", "none"):
+        return choice.type
+    if not choice.name:
+        raise ValueError("Named tool choice requires a tool name")
+    return {"type": "function", "function": {"name": choice.name}}
+
+
+def _response_format(options: StreamOptions) -> dict[str, Any] | None:
+    value = options.response_format
+    if value is None:
+        return None
+    schema: dict[str, Any] = {"name": value.name, "schema": value.schema()}
+    if value.description is not None:
+        schema["description"] = value.description
+    if value.strict is not None:
+        schema["strict"] = value.strict
+    return {"type": "json_schema", "json_schema": schema}
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +304,26 @@ def stream(
 
         if options.max_tokens is not None:
             body[compat.max_tokens_field] = options.max_tokens
+
+        if options.verbosity is not None:
+            body["verbosity"] = options.verbosity
+
+        if context.tools and options.parallel_tool_calls is not None:
+            body["parallel_tool_calls"] = options.parallel_tool_calls
+
+        if options.top_p is not None:
+            body["top_p"] = options.top_p
+        if options.stop_sequences is not None:
+            body["stop"] = list(options.stop_sequences)
+        if options.tool_choice is not None:
+            body["tool_choice"] = _tool_choice(options.tool_choice)
+        response_format = _response_format(options)
+        if response_format is not None:
+            body["response_format"] = response_format
+        if options.metadata is not None:
+            body["metadata"] = dict(options.metadata)
+        if options.service_tier is not None:
+            body["service_tier"] = options.service_tier
 
         # -- reasoning_effort ---------------------------------------------
         if compat.supports_reasoning_effort and reasoning_level:
@@ -533,6 +578,31 @@ class OpenAICompletionsProtocol(BaseProtocol):
         auth: AuthResult,
     ) -> EventStream[AssistantMessage]:
         return stream(model, context, options, auth)
+
+    def native_auth_context(self, request: ProtocolRequest) -> Context:
+        from xdog.ai.protocols.native_auth import chat_native_auth_context
+
+        return chat_native_auth_context(request.json())
+
+    async def request_complete(
+        self,
+        model: Model,
+        request: ProtocolRequest,
+        auth: AuthResult,
+    ) -> NativeResponse:
+        from xdog.ai.protocols.openai_native import CHAT_COMPLETIONS, request_complete
+
+        return await request_complete(CHAT_COMPLETIONS, model, request, auth)
+
+    async def request_stream(
+        self,
+        model: Model,
+        request: ProtocolRequest,
+        auth: AuthResult,
+    ) -> NativeEventStream:
+        from xdog.ai.protocols.openai_native import CHAT_COMPLETIONS, request_stream
+
+        return await request_stream(CHAT_COMPLETIONS, model, request, auth)
 
     async def embed(
         self,

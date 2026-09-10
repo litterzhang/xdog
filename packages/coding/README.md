@@ -10,6 +10,20 @@ A terminal coding agent with session management, built on
 uv run xdog-coding
 ```
 
+## Interactive terminal
+
+The interface uses native scrollback, one status row, and a shared multiline
+editor. Enter submits or queues; Shift/Alt+Enter inserts a newline. Ctrl+O opens
+recent tool/reasoning details: Left/Right chooses an entry and Page Up/Page Down
+scrolls. Escape closes autocomplete/details first, then cancels active work and
+restores queued text ahead of the current draft. Ctrl+Z suspends on POSIX.
+
+Permission prompts take priority. Up/Down chooses an action, Enter confirms,
+Escape denies that call, and Page Up/Page Down scrolls the command summary.
+The editor draft stays intact when panels open or the terminal resizes.
+See [terminal verification](../../docs/tui-pi-parity.md); remote coding and
+fullscreen application modes are excluded.
+
 ## Tool permissions
 
 Potentially mutating tool calls are gated immediately before execution. By

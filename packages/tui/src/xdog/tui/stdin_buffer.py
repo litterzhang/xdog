@@ -1,9 +1,4 @@
-"""Stdin buffering for non-blocking terminal input.
-
-Wraps ``sys.stdin`` with raw-mode handling and provides a buffer that
-accumulates bytes between reads.  Includes escape sequence boundary
-detection so partial sequences are not emitted prematurely.
-"""
+"""Incremental framing for non-blocking terminal input."""
 
 from __future__ import annotations
 
@@ -11,123 +6,100 @@ import os
 import select
 import sys
 import time
+from dataclasses import dataclass, field
+from typing import Any, Callable
 
 try:
     import termios
     import tty
-except ImportError:  # Windows
+except ImportError:
     termios = None  # type: ignore[assignment]
     tty = None  # type: ignore[assignment]
-from dataclasses import dataclass, field
-from typing import Any, Callable
+
+_ESCAPE = 0x1B
+_PASTE_START = b"\x1b[200~"
+_PASTE_END = b"\x1b[201~"
+_DEFAULT_MAX_PASTE_BYTES = 1024 * 1024
+
+
+def _utf8_token_length(data: bytes, index: int) -> int:
+    first = data[index]
+    if first < 0x80:
+        return 1
+    if 0xC2 <= first <= 0xDF:
+        expected = 2
+    elif 0xE0 <= first <= 0xEF:
+        expected = 3
+    elif 0xF0 <= first <= 0xF4:
+        expected = 4
+    else:
+        return 1
+    if index + expected > len(data):
+        return 0
+    token = data[index : index + expected]
+    try:
+        token.decode("utf-8")
+    except UnicodeDecodeError:
+        return 1
+    return expected
+
+
+def _string_sequence_length(data: bytes, index: int, *, allow_bel: bool) -> int:
+    cursor = index + 2
+    while cursor < len(data):
+        if allow_bel and data[cursor] == 0x07:
+            return cursor - index + 1
+        if data[cursor : cursor + 2] == b"\x1b\\":
+            return cursor - index + 2
+        cursor += 1
+    return 0
+
+
+def _escape_sequence_length(data: bytes, index: int) -> int:
+    if index + 1 >= len(data):
+        return 0
+    introducer = data[index + 1]
+    if introducer == 0x5B:
+        cursor = index + 2
+        while cursor < len(data):
+            if 0x40 <= data[cursor] <= 0x7E:
+                return cursor - index + 1
+            cursor += 1
+        return 0
+    if introducer in (0x4E, 0x4F):
+        cursor = index + 2
+        while cursor < len(data):
+            if 0x40 <= data[cursor] <= 0x7E:
+                return cursor - index + 1
+            cursor += 1
+        return 0
+    if introducer == 0x5D:
+        return _string_sequence_length(data, index, allow_bel=True)
+    if introducer == 0x50:
+        return _string_sequence_length(data, index, allow_bel=False)
+    if introducer == 0x5F:
+        return _string_sequence_length(data, index, allow_bel=True)
+    return 2
+
+
+def complete_prefix_length(data: bytes) -> int:
+    """Return the byte length ending immediately before a partial token."""
+    index = 0
+    while index < len(data):
+        token_length = (
+            _escape_sequence_length(data, index)
+            if data[index] == _ESCAPE
+            else _utf8_token_length(data, index)
+        )
+        if token_length == 0:
+            break
+        index += token_length
+    return index
 
 
 def is_complete_sequence(data: bytes) -> bool:
-    """Return ``True`` if *data* contains only complete escape sequences.
-
-    Incomplete CSI, OSC, DCS, APC, SS2/SS3, or Kitty sequences cause
-    ``False`` to be returned so the caller can wait for more bytes.
-    """
-    i = 0
-    length = len(data)
-
-    while i < length:
-        b = data[i]
-
-        if b != 0x1B:
-            # Regular byte — always complete
-            i += 1
-            continue
-
-        # ESC at end of buffer — incomplete
-        if i + 1 >= length:
-            return False
-
-        next_b = data[i + 1]
-
-        # CSI: ESC [
-        if next_b == 0x5B:  # '['
-            i += 2
-            # Scan for final byte (0x40–0x7E)
-            while i < length:
-                if 0x40 <= data[i] <= 0x7E:
-                    i += 1
-                    break
-                i += 1
-            else:
-                return False  # Ran off end — incomplete
-            continue
-
-        # SS3: ESC O
-        if next_b == 0x4F:  # 'O'
-            if i + 2 >= length:
-                return False
-            i += 3  # ESC O <char>
-            continue
-
-        # SS2: ESC N
-        if next_b == 0x4E:  # 'N'
-            if i + 2 >= length:
-                return False
-            i += 3
-            continue
-
-        # OSC: ESC ]  — terminated by BEL (0x07) or ST (ESC \)
-        if next_b == 0x5D:  # ']'
-            i += 2
-            while i < length:
-                if data[i] == 0x07:  # BEL
-                    i += 1
-                    break
-                if data[i] == 0x1B and i + 1 < length and data[i + 1] == 0x5C:  # ST
-                    i += 2
-                    break
-                i += 1
-            else:
-                return False
-            continue
-
-        # DCS: ESC P  — terminated by ST (ESC \)
-        if next_b == 0x50:  # 'P'
-            i += 2
-            while i < length:
-                if data[i] == 0x1B and i + 1 < length and data[i + 1] == 0x5C:
-                    i += 2
-                    break
-                i += 1
-            else:
-                return False
-            continue
-
-        # APC: ESC _  — terminated by BEL or ST
-        if next_b == 0x5F:  # '_'
-            i += 2
-            while i < length:
-                if data[i] == 0x07:
-                    i += 1
-                    break
-                if data[i] == 0x1B and i + 1 < length and data[i + 1] == 0x5C:
-                    i += 2
-                    break
-                i += 1
-            else:
-                return False
-            continue
-
-        # ESC + printable — Alt+key (2 bytes total)
-        if 0x20 <= next_b < 0x7F:
-            i += 2
-            continue
-
-        # ESC + control — Alt+Ctrl+key
-        if next_b < 0x20:
-            i += 2
-            continue
-
-        # Unknown ESC sequence — treat as bare ESC
-        i += 1
-
-    return True
+    """Return whether *data* consists entirely of whole input tokens."""
+    return complete_prefix_length(data) == len(data)
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,68 +112,119 @@ class Paste:
     text: str
 
 
-InputFrame = KeyBytes | Paste
+@dataclass(frozen=True, slots=True)
+class RejectedPaste:
+    reason: str
+    bytes_received: int
+
+
+@dataclass(frozen=True, slots=True)
+class EndOfInput:
+    pass
+
+
+InputFrame = KeyBytes | Paste | RejectedPaste | EndOfInput
 
 
 @dataclass
 class StdinBuffer:
-    """Non-blocking stdin reader with buffering and sequence detection.
-
-    Call :meth:`enter_raw` to switch the terminal into raw mode and
-    :meth:`restore` to return to the original settings.
-    """
+    """Non-blocking stdin reader and incremental input framer."""
 
     _original_termios: Any = field(default=None, repr=False)
     _buffer: bytearray = field(default_factory=bytearray)
     _fd: int = field(default=-1)
     on_data: Callable[[bytes], None] | None = field(default=None, repr=False)
-    _paste: bytearray | None = field(default=None, repr=False)
-    _pending_since: float | None = field(default=None, repr=False)
+    max_paste_bytes: int = _DEFAULT_MAX_PASTE_BYTES
+    clock: Callable[[], float] = field(default=time.monotonic, repr=False)
+    _paste: bytearray | None = field(default=None, init=False, repr=False)
+    _paste_bytes_received: int = field(default=0, init=False, repr=False)
+    _paste_rejected: bool = field(default=False, init=False, repr=False)
+    _pending_since: float | None = field(default=None, init=False, repr=False)
+    _eof: bool = field(default=False, init=False, repr=False)
 
     def feed(self, data: bytes) -> list[InputFrame]:
-        """Incrementally frame key bytes and atomic bracketed paste payloads."""
+        """Frame complete key bytes and atomic bracketed paste payloads."""
+        if self._eof or not data:
+            return []
         self._buffer.extend(data)
-        if self._buffer and self._pending_since is None:
-            self._pending_since = time.monotonic()
+        if self._pending_since is None:
+            self._pending_since = self.clock()
         frames: list[InputFrame] = []
-        paste_start = b"\x1b[200~"
-        paste_end = b"\x1b[201~"
 
         while self._buffer:
             if self._paste is not None:
-                end = self._buffer.find(paste_end)
-                if end < 0:
-                    # Preserve a possible split terminator suffix.
-                    keep = min(len(paste_end) - 1, len(self._buffer))
-                    if len(self._buffer) > keep:
-                        self._paste.extend(self._buffer[:-keep])
-                        del self._buffer[:-keep]
+                if not self._consume_paste(frames):
                     break
-                self._paste.extend(self._buffer[:end])
-                del self._buffer[:end + len(paste_end)]
-                frames.append(Paste(self._paste.decode("utf-8", errors="replace")))
-                self._paste = None
                 continue
 
-            start = self._buffer.find(paste_start)
+            start = self._buffer.find(_PASTE_START)
             if start >= 0:
                 if start:
-                    frames.extend(self._emit_complete_prefix(start))
-                    if self._buffer and self._buffer.find(paste_start) != 0:
+                    emitted = self._emit_complete_prefix(start)
+                    frames.extend(emitted)
+                    if not emitted:
                         break
-                if self._buffer.startswith(paste_start):
-                    del self._buffer[:len(paste_start)]
-                    self._paste = bytearray()
                     continue
+                del self._buffer[: len(_PASTE_START)]
+                self._paste = bytearray()
+                self._paste_bytes_received = 0
+                self._paste_rejected = False
+                continue
 
-            if paste_start.startswith(bytes(self._buffer)):
+            if _PASTE_START.startswith(self._buffer):
                 break
             frames.extend(self._emit_complete_prefix(len(self._buffer)))
             break
 
-        if not self._buffer:
-            self._pending_since = None
+        self._refresh_pending_time()
         return frames
+
+    def _consume_paste(self, frames: list[InputFrame]) -> bool:
+        paste = self._paste
+        if paste is None:
+            return True
+        end = self._buffer.find(_PASTE_END)
+        if end < 0:
+            keep = self._possible_suffix_length(self._buffer, _PASTE_END)
+            consumed = bytes(self._buffer[:-keep]) if keep else bytes(self._buffer)
+            self._append_paste(consumed)
+            del self._buffer[: len(self._buffer) - keep]
+            return False
+
+        self._append_paste(bytes(self._buffer[:end]))
+        del self._buffer[: end + len(_PASTE_END)]
+        if self._paste_rejected:
+            frames.append(
+                RejectedPaste(
+                    reason=f"paste exceeds {self.max_paste_bytes} bytes",
+                    bytes_received=self._paste_bytes_received,
+                )
+            )
+        else:
+            frames.append(Paste(bytes(paste).decode("utf-8", errors="replace")))
+        self._paste = None
+        return True
+
+    @staticmethod
+    def _possible_suffix_length(data: bytearray, marker: bytes) -> int:
+        maximum = min(len(data), len(marker) - 1)
+        for length in range(maximum, 0, -1):
+            if bytes(data[-length:]) == marker[:length]:
+                return length
+        return 0
+
+    def _append_paste(self, data: bytes) -> None:
+        paste = self._paste
+        if paste is None:
+            return
+        self._paste_bytes_received += len(data)
+        if self._paste_rejected:
+            return
+        if self._paste_bytes_received > self.max_paste_bytes:
+            self._paste_rejected = True
+            paste.clear()
+            return
+        paste.extend(data)
 
     def flush_expired(
         self,
@@ -210,10 +233,10 @@ class StdinBuffer:
         escape_timeout: float | None = None,
         sequence_timeout: float = 0.05,
     ) -> list[InputFrame]:
-        """Flush a stalled partial sequence after terminal/SSH-safe timeout."""
-        if not self._buffer or self._pending_since is None:
+        """Resolve a stalled bare Escape or discard a partial control token."""
+        if self._paste is not None or not self._buffer or self._pending_since is None:
             return []
-        current = time.monotonic() if now is None else now
+        current = self.clock() if now is None else now
         esc_timeout = (
             0.1 if escape_timeout is None and os.environ.get("SSH_CONNECTION")
             else (0.01 if escape_timeout is None else escape_timeout)
@@ -221,25 +244,41 @@ class StdinBuffer:
         timeout = esc_timeout if self._buffer == b"\x1b" else sequence_timeout
         if current - self._pending_since < timeout:
             return []
-        data = bytes(self._buffer)
+        if self._buffer == b"\x1b":
+            self._buffer.clear()
+            self._pending_since = None
+            return [KeyBytes(b"\x1b")]
         self._buffer.clear()
         self._pending_since = None
-        return [KeyBytes(data)]
+        return []
 
     def _emit_complete_prefix(self, limit: int) -> list[InputFrame]:
-        candidate = bytes(self._buffer[:limit])
-        if not candidate:
+        prefix_length = complete_prefix_length(bytes(self._buffer[:limit]))
+        if prefix_length == 0:
             return []
-        # UTF-8 and terminal escape sequences must remain buffered until whole.
-        try:
-            candidate.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            if exc.reason == "unexpected end of data":
-                return []
-        if not is_complete_sequence(candidate):
+        data = bytes(self._buffer[:prefix_length])
+        del self._buffer[:prefix_length]
+        return [KeyBytes(data)]
+
+    def _refresh_pending_time(self) -> None:
+        if not self._buffer:
+            self._pending_since = None
+        elif self._paste is None:
+            self._pending_since = self.clock()
+
+    def close(self) -> list[InputFrame]:
+        """Close the input stream and discard any unfinished token or paste."""
+        if self._eof:
             return []
-        del self._buffer[:limit]
-        return [KeyBytes(candidate)]
+        self._eof = True
+        self._buffer.clear()
+        self._paste = None
+        self._pending_since = None
+        return [EndOfInput()]
+
+    @property
+    def eof(self) -> bool:
+        return self._eof
 
     def enter_raw(self) -> None:
         """Switch stdin to raw mode, saving the original terminal settings."""
@@ -256,37 +295,19 @@ class StdinBuffer:
             self._original_termios = None
 
     def read(self, timeout: float = 0.0) -> bytes:
-        """Read available bytes from stdin.
-
-        Args:
-            timeout: Seconds to wait for data.  ``0`` means non-blocking.
-                     Negative means block indefinitely.
-
-        Returns:
-            Raw bytes read from stdin (may be empty if nothing was available
-            within the timeout).
-        """
+        """Read available bytes, returning empty bytes for no data or EOF."""
         fd = self._fd if self._fd >= 0 else sys.stdin.fileno()
-
-        if timeout < 0:
-            ready, _, _ = select.select([fd], [], [])
-        elif timeout == 0:
-            ready, _, _ = select.select([fd], [], [], 0)
-        else:
-            ready, _, _ = select.select([fd], [], [], timeout)
-
+        select_timeout = None if timeout < 0 else timeout
+        ready, _, _ = select.select([fd], [], [], select_timeout)
         if not ready:
             return b""
-
         data = os.read(fd, 4096)
+        if not data:
+            self._eof = True
         return data
 
     def read_buffered(self, timeout: float = 0.0) -> bytes:
-        """Read bytes and append to internal buffer, returning the full buffer.
-
-        The internal buffer is cleared after this call so callers get a
-        complete snapshot of accumulated input.
-        """
+        """Read bytes and return them with the legacy internal byte buffer."""
         new_data = self.read(timeout)
         if new_data:
             self._buffer.extend(new_data)
@@ -295,39 +316,29 @@ class StdinBuffer:
         return result
 
     def read_complete(self, timeout: float = 0.0, wait: float = 0.005) -> bytes:
-        """Read bytes, waiting for complete escape sequences.
-
-        First reads with *timeout*, then drains with short *wait* intervals
-        until the accumulated buffer contains only complete sequences.
-        """
+        """Read bytes, briefly waiting for a complete terminal sequence."""
         data = self.read(timeout)
         if not data:
             return b""
-
         self._buffer.extend(data)
-
-        # Keep reading while the buffer has incomplete sequences
         while not is_complete_sequence(bytes(self._buffer)):
             more = self.read(wait)
             if not more:
                 break
             self._buffer.extend(more)
-
         result = bytes(self._buffer)
         self._buffer.clear()
-
         if self.on_data is not None:
             self.on_data(result)
-
         return result
 
     def has_data(self, timeout: float = 0.0) -> bool:
-        """Return ``True`` if there is data waiting on stdin."""
+        """Return whether stdin is readable."""
         fd = self._fd if self._fd >= 0 else sys.stdin.fileno()
         ready, _, _ = select.select([fd], [], [], timeout)
         return bool(ready)
 
     @property
     def is_raw(self) -> bool:
-        """Return ``True`` if the terminal is currently in raw mode."""
+        """Return whether raw mode was entered and can be restored."""
         return self._original_termios is not None

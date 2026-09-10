@@ -67,6 +67,8 @@ def test_embedding_model_parsed_correctly():
     assert model is not None
     assert model.model_type == "embeddings"
     assert model.api == "openai-completions"
+    assert model.supported_protocols == ("openai-completions",)
+    assert model.supported_generation_protocols == ()
     assert model.reasoning is False
     assert model.supports_streaming is False
 

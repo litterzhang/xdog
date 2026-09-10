@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "xdog-claw"
-version = "2.1.2"
+version = "2.2.0"
 description = "AI agent orchestration runtime with long-term memory"
 requires-python = ">=3.12"
 classifiers = [
@@ -21,9 +21,9 @@ readme = "README.md"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE", "LICENSE-EXCEPTION.md"]
 dependencies = [
-    "xdog-ai>=2.1.2",
-    "xdog-agent>=2.1.2",
-    "xdog-tui>=2.1.2",
+    "xdog-ai[openai]>=2.2.0",
+    "xdog-agent>=2.2.0",
+    "xdog-tui>=2.2.0",
     "click>=8.1.0",
     "pyyaml>=6.0",
     "aiosqlite>=0.20.0",

@@ -1,8 +1,8 @@
-"""Anthropic API proxy — exposes /v1/messages backed by the ai package.
+"""API proxy for Anthropic Messages and OpenAI generation endpoints.
 
-Accepts requests in the Anthropic Messages API format, routes them through
-the ai package's multi-provider backend, and streams responses back as
-Anthropic-compatible SSE events.
+Native-capable models receive lossless Messages, Responses, or Chat Completions
+requests. Responses falls back to a strict stateless adapter when its native
+protocol is unavailable; Chat Completions requires native model support.
 
 Usage::
 
@@ -31,10 +31,13 @@ import json
 import logging
 import ssl
 import uuid
-from collections.abc import AsyncIterator, Iterator
-from typing import Any
+from collections.abc import AsyncIterator, Iterable, Iterator, Mapping
+from typing import Any, Literal
 
 import httpx
+from xdog.ai import proxy_anthropic, proxy_openai, proxy_responses
+from xdog.ai.native import NativeHTTPError, NativeResponse, NativeSSEEvent
+from xdog.ai.proxy_anthropic_diagnostics import target_projection_issues
 from xdog.ai.types import (
     AssistantMessage,
     AuthExpiredError,
@@ -58,6 +61,8 @@ logger = logging.getLogger(__name__)
 
 _INITIAL_STREAM_RETRY_DELAYS = (0.05, 0.15)
 _UPSTREAM_TRANSPORT_ERROR = "Upstream connection failed; retry later"
+ProxyFormat = Literal["anthropic-messages", "openai-responses", "openai-completions"]
+
 _RETRYABLE_NETWORK_ERRNOS = {
     errno.ECONNABORTED,
     errno.ECONNREFUSED,
@@ -558,12 +563,18 @@ async def _read_http_request(
         decoded = line.decode("utf-8", errors="replace").strip()
         if ":" in decoded:
             key, value = decoded.split(":", 1)
-            headers[key.strip().lower()] = value.strip()
+            name = key.strip().lower()
+            normalized_value = value.strip()
+            if name == "anthropic-beta" and name in headers:
+                headers[name] = f"{headers[name]},{normalized_value}"
+            else:
+                headers[name] = normalized_value
 
     body = b""
-    content_length = int(headers.get("content-length", "0"))
-    if content_length > 0:
-        body = await reader.readexactly(content_length)
+    if "chunked" not in headers.get("transfer-encoding", "").lower():
+        content_length = int(headers.get("content-length", "0"))
+        if content_length > 0:
+            body = await reader.readexactly(content_length)
 
     return method, path, headers, body
 
@@ -573,9 +584,15 @@ def _http_response(
     status_text: str,
     body: bytes,
     content_type: str = "application/json",
-    extra_headers: dict[str, str] | None = None,
+    extra_headers: Mapping[str, str] | Iterable[tuple[str, str]] | None = None,
 ) -> bytes:
     """Build a complete HTTP/1.1 response."""
+    extra_items = extra_headers.items() if isinstance(extra_headers, Mapping) else extra_headers or ()
+    filtered_extra = tuple(
+        (name, value)
+        for name, value in extra_items
+        if name.lower() not in {"content-type", "content-length", "connection", "transfer-encoding"}
+    )
     headers = [
         f"HTTP/1.1 {status} {status_text}",
         f"Content-Type: {content_type}",
@@ -584,25 +601,31 @@ def _http_response(
         "Access-Control-Allow-Headers: *",
         "Access-Control-Allow-Methods: POST, OPTIONS",
         "Connection: close",
+        *(f"{name}: {value}" for name, value in filtered_extra),
     ]
-    if extra_headers:
-        for k, v in extra_headers.items():
-            headers.append(f"{k}: {v}")
     header_block = "\r\n".join(headers) + "\r\n\r\n"
     return header_block.encode() + body
 
 
-def _sse_response_headers() -> bytes:
+def _sse_response_headers(
+    extra_headers: dict[str, str] | None = None,
+    *,
+    content_type: str = "text/event-stream",
+    status: int = 200,
+    status_text: str = "OK",
+) -> bytes:
     """Build HTTP headers for an SSE streaming response closed at EOF."""
     headers = [
-        "HTTP/1.1 200 OK",
-        "Content-Type: text/event-stream",
+        f"HTTP/1.1 {status} {status_text}",
+        f"Content-Type: {content_type}",
         "Cache-Control: no-cache",
         "Connection: close",
         "Access-Control-Allow-Origin: *",
         "Access-Control-Allow-Headers: *",
         "Access-Control-Allow-Methods: POST, OPTIONS",
     ]
+    if extra_headers:
+        headers.extend(f"{name}: {value}" for name, value in extra_headers.items())
     return ("\r\n".join(headers) + "\r\n\r\n").encode()
 
 
@@ -637,12 +660,35 @@ async def _prepend_events(
         yield event
 
 
-def _error_response(status: int, status_text: str, message: str) -> bytes:
-    body = json.dumps({
-        "type": "error",
-        "error": {"type": "api_error", "message": message},
-    }).encode()
-    return _http_response(status, status_text, body)
+def _openai_format(format: ProxyFormat) -> bool:
+    return format in ("openai-responses", "openai-completions")
+
+
+def _error_payload(
+    format: ProxyFormat,
+    message: str,
+    *,
+    kind: str,
+    param: str | None = None,
+) -> dict[str, Any]:
+    if _openai_format(format):
+        return proxy_openai.error_body(message, kind=kind, param=param)
+    return {"type": "error", "error": {"type": kind, "message": message}}
+
+
+def _error_response(
+    status: int,
+    status_text: str,
+    message: str,
+    *,
+    format: ProxyFormat = "anthropic-messages",
+) -> bytes:
+    kind = "server_error" if _openai_format(format) else "api_error"
+    return _http_response(
+        status,
+        status_text,
+        json.dumps(_error_payload(format, message, kind=kind)).encode(),
+    )
 
 
 async def _close_writer(writer: asyncio.StreamWriter) -> None:
@@ -661,6 +707,7 @@ async def _handle_connection(
     api_key: str = "",
 ) -> None:
     """Handle a single HTTP connection."""
+    format: ProxyFormat = "anthropic-messages"
     try:
         req = await _read_http_request(reader)
         if req is None:
@@ -671,6 +718,10 @@ async def _handle_connection(
 
         # Strip query string for routing
         route_path = path.split("?")[0]
+        if route_path == "/v1/responses":
+            format = "openai-responses"
+        elif route_path == "/v1/chat/completions":
+            format = "openai-completions"
 
         logger.debug("Request: %s %s", method, path)
 
@@ -699,17 +750,35 @@ async def _handle_connection(
             elif x_api_key:
                 provided = x_api_key
             if provided != api_key:
-                resp = json.dumps({
-                    "type": "error",
-                    "error": {
-                        "type": "authentication_error",
-                        "message": "Invalid API key",
-                    },
-                }).encode()
+                resp = json.dumps(_error_payload(
+                    format,
+                    "Invalid API key",
+                    kind="authentication_error",
+                )).encode()
                 writer.write(_http_response(401, "Unauthorized", resp))
                 await writer.drain()
                 writer.close()
                 return
+
+        if (
+            method == "POST"
+            and route_path in (
+                "/v1/messages",
+                "/v1/messages/count_tokens",
+                "/v1/responses",
+                "/v1/chat/completions",
+            )
+            and "chunked" in headers.get("transfer-encoding", "").lower()
+        ):
+            resp = json.dumps(_error_payload(
+                format,
+                "Chunked request bodies are unsupported",
+                kind="invalid_request_error",
+            )).encode()
+            writer.write(_http_response(400, "Bad Request", resp))
+            await writer.drain()
+            await _close_writer(writer)
+            return
 
         # GET /v1/models — list available models
         if method == "GET" and route_path == "/v1/models":
@@ -737,9 +806,35 @@ async def _handle_connection(
             writer.close()
             return
 
-        # POST /v1/messages — Anthropic Messages API
+        # Anthropic token counting never enters a generation path.
+        if method == "POST" and route_path == "/v1/messages/count_tokens":
+            await _handle_count_tokens(
+                writer,
+                provider,
+                body,
+                request_headers=headers,
+            )
+            return
+
+        # Generation endpoints
         if method == "POST" and route_path == "/v1/messages":
-            await _handle_messages(reader, writer, provider, body)
+            await _handle_messages(
+                writer,
+                provider,
+                body,
+                format="anthropic-messages",
+                request_headers=headers,
+            )
+            return
+
+        if method == "POST" and route_path in ("/v1/responses", "/v1/chat/completions"):
+            await _handle_openai(
+                writer,
+                provider,
+                body,
+                format=format,
+                request_headers=headers,
+            )
             return
 
         # Stub: /v1/organizations — Claude Code checks this at startup
@@ -760,10 +855,11 @@ async def _handle_connection(
 
         # Not found — respond immediately so clients don't hang
         logger.debug("Unhandled route: %s %s", method, path)
-        resp = json.dumps({
-            "type": "error",
-            "error": {"type": "not_found", "message": f"Not found: {method} {path}"},
-        }).encode()
+        resp = json.dumps(_error_payload(
+            format,
+            f"Not found: {method} {path}",
+            kind="not_found_error" if _openai_format(format) else "not_found",
+        )).encode()
         writer.write(_http_response(404, "Not Found", resp))
         await writer.drain()
         writer.close()
@@ -783,10 +879,11 @@ async def _handle_connection(
         # login would fix it.
         logger.error("%s", exc)
         try:
-            resp = json.dumps({
-                "type": "error",
-                "error": {"type": "authentication_error", "message": str(exc)},
-            }).encode()
+            resp = json.dumps(_error_payload(
+                format,
+                str(exc),
+                kind="authentication_error",
+            )).encode()
             writer.write(_http_response(401, "Unauthorized", resp))
             await writer.drain()
         except Exception:
@@ -794,13 +891,14 @@ async def _handle_connection(
         finally:
             writer.close()
 
-    except Exception as exc:
+    except Exception:
         logger.exception("Proxy request failed")
         try:
-            resp = json.dumps({
-                "type": "error",
-                "error": {"type": "api_error", "message": str(exc)},
-            }).encode()
+            resp = json.dumps(_error_payload(
+                format,
+                "Proxy request failed",
+                kind="server_error" if _openai_format(format) else "api_error",
+            )).encode()
             writer.write(_http_response(500, "Internal Server Error", resp))
             await writer.drain()
         except Exception:
@@ -841,28 +939,527 @@ def _get_model(provider: Any, model_id: str) -> dict[str, Any] | None:
     }
 
 
-async def _handle_messages(
-    reader: asyncio.StreamReader,
+def _model_protocol(provider: Any, model_id: str) -> str | None:
+    model_lookup = getattr(provider, "model", None)
+    if not callable(model_lookup):
+        return None
+    model = model_lookup(model_id)
+    if model is None:
+        return None
+    preferred = getattr(model, "preferred_protocol", None)
+    api = getattr(model, "api", None)
+    return preferred if isinstance(preferred, str) else api if isinstance(api, str) else None
+
+
+def _native_anthropic_capable(provider: Any, model_id: str) -> bool:
+    complete = getattr(provider, "request_complete", None)
+    stream = getattr(provider, "request_stream", None)
+    if not callable(complete) or not callable(stream):
+        return False
+    model_lookup = getattr(provider, "model", None)
+    if not callable(model_lookup):
+        return True
+    model = model_lookup(model_id)
+    if model is None:
+        return False
+    supported = getattr(model, "supported_protocols", None)
+    if supported is None:
+        return True
+    return "anthropic-messages" in supported
+
+
+def _native_openai_capable(
+    provider: Any,
+    model_id: str,
+    protocol: proxy_openai.OpenAIProtocol,
+) -> bool:
+    """Return whether model metadata advertises exact native generation."""
+    if not callable(getattr(provider, "request_complete", None)) or not callable(
+        getattr(provider, "request_stream", None),
+    ):
+        return False
+    model_lookup = getattr(provider, "model", None)
+    if not callable(model_lookup):
+        return False
+    model = model_lookup(model_id)
+    if model is None:
+        return False
+    supported = getattr(model, "supported_generation_protocols", None)
+    if supported is None:
+        if getattr(model, "model_type", "chat") == "embeddings":
+            supported = ()
+        else:
+            supported = getattr(model, "supported_protocols", None)
+            if supported is None:
+                api = getattr(model, "api", None)
+                supported = (api,) if isinstance(api, str) else ()
+    return protocol in supported
+
+
+def _native_headers(response: NativeResponse) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (name, value)
+        for name, value in response.headers
+        if name.lower() not in {
+            "content-type",
+            "content-length",
+            "connection",
+            "transfer-encoding",
+            "set-cookie",
+            "authorization",
+            "x-api-key",
+        }
+    )
+
+
+def _native_content_type(response: NativeResponse, default: str) -> str:
+    return response.header("content-type") or default
+
+
+def _native_sse_is_error(event: Any) -> bool:
+    if event.event == "error":
+        return True
+    try:
+        payload = event.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return False
+    return isinstance(payload, dict) and payload.get("type") == "error"
+
+
+async def _write_native_error(
+    writer: asyncio.StreamWriter,
+    error: NativeHTTPError,
+) -> None:
+    response = error.response
+    writer.write(_http_response(
+        response.status,
+        "Upstream Error",
+        response.body,
+        content_type=_native_content_type(response, "application/json"),
+        extra_headers=_native_headers(response),
+    ))
+    await writer.drain()
+    await _close_writer(writer)
+
+
+async def _write_native_transport_error(
+    writer: asyncio.StreamWriter,
+    *,
+    format: ProxyFormat = "anthropic-messages",
+) -> None:
+    writer.write(_error_response(
+        502,
+        "Bad Gateway",
+        _UPSTREAM_TRANSPORT_ERROR,
+        format=format,
+    ))
+    await writer.drain()
+    await _close_writer(writer)
+
+
+async def _handle_count_tokens(
     writer: asyncio.StreamWriter,
     provider: Any,
     body: bytes,
+    *,
+    request_headers: dict[str, str],
 ) -> None:
-    """Handle POST /v1/messages."""
     try:
         request_body = json.loads(body)
-    except json.JSONDecodeError as exc:
-        resp = json.dumps({
+        parsed = proxy_anthropic.parse_count_tokens_request(request_body, request_headers)
+    except (
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+        proxy_anthropic.InvalidRequest,
+        ValueError,
+    ) as exc:
+        response = json.dumps(_error_payload(
+            "anthropic-messages",
+            str(exc),
+            kind="invalid_request_error",
+            param=getattr(exc, "param", None),
+        )).encode()
+        writer.write(_http_response(400, "Bad Request", response))
+        await writer.drain()
+        await _close_writer(writer)
+        return
+
+    model_lookup = getattr(provider, "model", None)
+    if not callable(model_lookup) or model_lookup(parsed.model) is None:
+        response = json.dumps(_error_payload(
+            "anthropic-messages",
+            f"Model not found: {parsed.model}",
+            kind="not_found_error",
+            param="model",
+        )).encode()
+        writer.write(_http_response(404, "Not Found", response))
+        await writer.drain()
+        await _close_writer(writer)
+        return
+
+    preflight = getattr(provider, "supports_native_request", None)
+    native = callable(preflight) and preflight(parsed.model, parsed.native)
+    if not native:
+        estimate = proxy_anthropic._estimate_count_tokens(parsed.native.json())
+        response = json.dumps({"input_tokens": estimate}, separators=(",", ":")).encode()
+        writer.write(_http_response(
+            200,
+            "OK",
+            response,
+            extra_headers=(("x-xdog-upstream-protocol", "best-effort"),),
+        ))
+        await writer.drain()
+        await _close_writer(writer)
+        return
+
+    try:
+        response = await provider.request_complete(parsed.model, parsed.native)
+    except NativeHTTPError as exc:
+        await _write_native_error(writer, exc)
+        return
+    except Exception as exc:
+        if not _is_retryable_transport_error(exc):
+            raise
+        logger.error("Native Anthropic count request failed before response")
+        await _write_native_transport_error(writer)
+        return
+
+    writer.write(_http_response(
+        response.status,
+        "OK",
+        response.body,
+        content_type=_native_content_type(response, "application/json"),
+        extra_headers=_native_headers(response),
+    ))
+    await writer.drain()
+    await _close_writer(writer)
+
+
+async def _handle_native_anthropic(
+    writer: asyncio.StreamWriter,
+    provider: Any,
+    request: proxy_anthropic.ParsedRequest,
+) -> bool:
+    if not _native_anthropic_capable(provider, request.model):
+        return False
+
+    if not request.stream:
+        try:
+            response = await provider.request_complete(request.model, request.native)
+        except NotImplementedError:
+            return False
+        except NativeHTTPError as exc:
+            await _write_native_error(writer, exc)
+            return True
+        except Exception as exc:
+            if not _is_retryable_transport_error(exc):
+                raise
+            logger.error("Native Anthropic request failed before response")
+            await _write_native_transport_error(writer)
+            return True
+        writer.write(_http_response(
+            response.status,
+            "OK",
+            response.body,
+            content_type=_native_content_type(response, "application/json"),
+            extra_headers=_native_headers(response),
+        ))
+        await writer.drain()
+        await _close_writer(writer)
+        return True
+
+    try:
+        stream = await provider.request_stream(request.model, request.native)
+    except NotImplementedError:
+        return False
+    except NativeHTTPError as exc:
+        await _write_native_error(writer, exc)
+        return True
+    except Exception as exc:
+        if not _is_retryable_transport_error(exc):
+            raise
+        logger.error("Native Anthropic stream failed before response")
+        await _write_native_transport_error(writer)
+        return True
+
+    stream_headers = {
+        name: value
+        for name, value in stream.start.headers
+        if name.lower() != "content-type"
+    }
+    content_type = stream.start.header("content-type") or "text/event-stream"
+    writer.write(_sse_response_headers(stream_headers, content_type=content_type))
+    await writer.drain()
+    try:
+        async for event in stream:
+            writer.write(event.encode())
+            await writer.drain()
+            if _native_sse_is_error(event):
+                break
+    except (BrokenPipeError, ConnectionResetError):
+        logger.debug("Client disconnected during native Anthropic stream")
+    except Exception:
+        logger.exception("Native Anthropic stream failed")
+        try:
+            writer.write(_sse_line("error", {
+                "type": "error",
+                "error": {
+                    "type": "api_error",
+                    "message": _UPSTREAM_TRANSPORT_ERROR,
+                },
+            }))
+            await writer.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+    finally:
+        await stream.aclose()
+        await _close_writer(writer)
+    return True
+
+
+def _native_openai_sse_is_terminal(event: Any, format: ProxyFormat) -> bool:
+    if event.data == b"[DONE]":
+        return True
+    try:
+        payload = event.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    if format == "openai-responses":
+        return event.event == "error" or payload.get("type") in {
+            "error",
+            "response.completed",
+            "response.failed",
+            "response.incomplete",
+        }
+    return "error" in payload or payload.get("type") == "error"
+
+
+def _native_openai_stream_error(format: ProxyFormat) -> bytes:
+    payload = proxy_openai.error_body(
+        _UPSTREAM_TRANSPORT_ERROR,
+        kind="server_error",
+    )
+    if format == "openai-responses":
+        return _sse_line("error", {
             "type": "error",
-            "error": {"type": "invalid_request", "message": str(exc)},
+            "code": "server_error",
+            "message": _UPSTREAM_TRANSPORT_ERROR,
+            "param": None,
+        })
+    return NativeSSEEvent(None, json.dumps(payload, separators=(",", ":")).encode()).encode()
+
+
+async def _handle_native_openai(
+    writer: asyncio.StreamWriter,
+    provider: Any,
+    request: proxy_openai.ParsedRequest,
+    format: proxy_openai.OpenAIProtocol,
+) -> None:
+    if not request.stream:
+        try:
+            response = await provider.request_complete(request.model, request.native)
+        except NativeHTTPError as exc:
+            await _write_native_error(writer, exc)
+            return
+        except Exception as exc:
+            if not _is_retryable_transport_error(exc):
+                raise
+            logger.error("Native OpenAI request failed before response")
+            await _write_native_transport_error(writer, format=format)
+            return
+        writer.write(_http_response(
+            response.status,
+            "OK",
+            response.body,
+            content_type=_native_content_type(response, "application/json"),
+            extra_headers=_native_headers(response),
+        ))
+        await writer.drain()
+        await _close_writer(writer)
+        return
+
+    try:
+        stream = await provider.request_stream(request.model, request.native)
+    except NativeHTTPError as exc:
+        await _write_native_error(writer, exc)
+        return
+    except Exception as exc:
+        if not _is_retryable_transport_error(exc):
+            raise
+        logger.error("Native OpenAI stream failed before response")
+        await _write_native_transport_error(writer, format=format)
+        return
+
+    stream_headers = {
+        name: value
+        for name, value in stream.start.headers
+        if name.lower() != "content-type"
+    }
+    content_type = stream.start.header("content-type") or "text/event-stream"
+    writer.write(_sse_response_headers(
+        stream_headers,
+        content_type=content_type,
+        status=stream.start.status,
+    ))
+    await writer.drain()
+    terminal = False
+    disconnected = False
+    try:
+        iterator = stream.__aiter__()
+        while True:
+            try:
+                event = await anext(iterator)
+            except StopAsyncIteration:
+                break
+            except Exception:
+                logger.exception("Native OpenAI stream failed")
+                try:
+                    writer.write(_native_openai_stream_error(format))
+                    await writer.drain()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                terminal = True
+                break
+            try:
+                writer.write(event.encode())
+                await writer.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                logger.debug("Client disconnected during native OpenAI stream")
+                disconnected = True
+                break
+            if _native_openai_sse_is_terminal(event, format):
+                terminal = True
+                break
+        if not terminal and not disconnected:
+            try:
+                writer.write(_native_openai_stream_error(format))
+                await writer.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+    finally:
+        await stream.aclose()
+        await _close_writer(writer)
+
+
+async def _handle_openai(
+    writer: asyncio.StreamWriter,
+    provider: Any,
+    body: bytes,
+    *,
+    format: ProxyFormat,
+    request_headers: dict[str, str],
+) -> None:
+    assert format in ("openai-responses", "openai-completions")
+    try:
+        request_body = json.loads(body)
+        parsed = proxy_openai.parse_request(request_body, format, request_headers)
+    except (
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+        proxy_openai.InvalidRequest,
+        ValueError,
+    ) as exc:
+        response = json.dumps(proxy_openai.error_body(
+            str(exc),
+            param=getattr(exc, "param", None),
+        )).encode()
+        writer.write(_http_response(400, "Bad Request", response))
+        await writer.drain()
+        await _close_writer(writer)
+        return
+
+    if _native_openai_capable(provider, parsed.model, format):
+        await _handle_native_openai(writer, provider, parsed, format)
+        return
+
+    if format == "openai-completions":
+        response = json.dumps(proxy_openai.error_body(
+            f"Model {parsed.model!r} does not support native Chat Completions",
+            param="model",
+        )).encode()
+        writer.write(_http_response(400, "Bad Request", response))
+        await writer.drain()
+        await _close_writer(writer)
+        return
+
+    await _handle_messages(
+        writer,
+        provider,
+        body,
+        format="openai-responses",
+    )
+
+
+async def _handle_messages(
+    writer: asyncio.StreamWriter,
+    provider: Any,
+    body: bytes,
+    *,
+    format: Literal["anthropic-messages", "openai-responses"] = "anthropic-messages",
+    request_headers: dict[str, str] | None = None,
+) -> None:
+    """Handle normalized generation for Anthropic or Responses fallback."""
+    responses = format == "openai-responses"
+    parsed_anthropic: proxy_anthropic.ParsedRequest | None = None
+    try:
+        request_body = json.loads(body)
+        if responses:
+            model_id, context, options, is_stream = proxy_responses.parse_request(request_body)
+        else:
+            parsed_anthropic = proxy_anthropic.parse_request(request_body, request_headers)
+            model_id = parsed_anthropic.model
+            context = parsed_anthropic.context
+            options = parsed_anthropic.options
+            is_stream = parsed_anthropic.stream
+    except (
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+        proxy_anthropic.InvalidRequest,
+        proxy_responses.InvalidRequest,
+    ) as exc:
+        resp = json.dumps(proxy_responses.error_body(
+            str(exc), param=getattr(exc, "param", None),
+        ) if responses else {
+            "type": "error",
+            "error": {"type": "invalid_request_error", "message": str(exc)},
         }).encode()
         writer.write(_http_response(400, "Bad Request", resp))
         await writer.drain()
         writer.close()
         return
 
-    model_id, context, options, is_stream = parse_request(request_body)
-
     logger.info("Proxy request: model=%s stream=%s", model_id, is_stream)
+
+    if parsed_anthropic is not None:
+        handled = await _handle_native_anthropic(
+            writer,
+            provider,
+            parsed_anthropic,
+        )
+        if handled:
+            return
+
+    fallback_headers: dict[str, str] = {}
+    if responses or parsed_anthropic is not None:
+        fallback_headers["x-xdog-upstream-protocol"] = "best-effort"
+    if parsed_anthropic is not None:
+        ignored_parameters = tuple(sorted({
+            *parsed_anthropic.ignored_parameters,
+            *target_projection_issues(
+                _model_protocol(provider, model_id),
+                request_body,
+            ),
+        }))
+        if ignored_parameters:
+            fallback_headers["x-xdog-ignored-parameters"] = ",".join(
+                ignored_parameters,
+            )
+            logger.info(
+                "Best-effort Anthropic translation ignored parameters: %s",
+                ", ".join(ignored_parameters),
+            )
 
     if is_stream:
         primed_events: tuple[Any, ...] = ()
@@ -885,6 +1482,7 @@ async def _handle_messages(
                     502,
                     "Bad Gateway",
                     "Upstream stream ended before producing a response",
+                    format=format,
                 ))
                 await writer.drain()
                 await _close_writer(writer)
@@ -900,6 +1498,7 @@ async def _handle_messages(
                         502,
                         "Bad Gateway",
                         _UPSTREAM_TRANSPORT_ERROR,
+                        format=format,
                     ))
                     await writer.drain()
                     await _close_writer(writer)
@@ -918,18 +1517,25 @@ async def _handle_messages(
         admitted_event = primed_events[-1]
         if isinstance(admitted_event, ErrorEvent):
             status, error = _parse_upstream_error(admitted_event.error)
+            if responses:
+                error = proxy_responses.error_body(
+                    error["error"]["message"], kind=error["error"].get("type", "server_error"),
+                )
             response = json.dumps(error).encode()
             writer.write(_http_response(status, "Upstream Error", response))
             await writer.drain()
             await _close_writer(writer)
             return
 
-        writer.write(_sse_response_headers())
+        writer.write(_sse_response_headers(fallback_headers))
         await writer.drain()
 
         try:
             replay = _prepend_events(primed_events, iterator)
-            async for chunk in stream_to_sse(replay, model_id):
+            sse = proxy_responses.stream_to_sse(
+                replay, model_id, request_body,
+            ) if responses else stream_to_sse(replay, model_id)
+            async for chunk in sse:
                 writer.write(chunk)
                 await writer.drain()
         except (BrokenPipeError, ConnectionResetError):
@@ -938,6 +1544,9 @@ async def _handle_messages(
             logger.error("Stream error: %s", exc)
             try:
                 writer.write(_sse_line("error", {
+                    "type": "error", "code": "server_error", "message": _UPSTREAM_TRANSPORT_ERROR,
+                    "param": None,
+                } if responses else {
                     "type": "error",
                     "error": {
                         "type": "api_error",
@@ -954,11 +1563,24 @@ async def _handle_messages(
         msg = await provider.complete(model_id, context, options)
         if msg.stop_reason == "error" and msg.error_message:
             status, error = _parse_upstream_error(msg.error_message)
+            if responses:
+                error = proxy_responses.error_body(
+                    error["error"]["message"], kind=error["error"].get("type", "server_error"),
+                )
             resp = json.dumps(error).encode()
-            writer.write(_http_response(status, "Bad Request" if status == 400 else "Upstream Error", resp))
+            writer.write(_http_response(
+                status,
+                "Bad Request" if status == 400 else "Upstream Error",
+                resp,
+                extra_headers=fallback_headers,
+            ))
         else:
-            resp = json.dumps(format_non_streaming_response(msg, model_id)).encode()
-            writer.write(_http_response(200, "OK", resp))
+            result = (
+                proxy_responses.format_response(msg, model_id, request_body)
+                if responses else format_non_streaming_response(msg, model_id)
+            )
+            resp = json.dumps(result).encode()
+            writer.write(_http_response(200, "OK", resp, extra_headers=fallback_headers))
         await writer.drain()
         writer.close()
 
@@ -972,7 +1594,7 @@ async def start_proxy(
     port: int = 8082,
     api_key: str = "",
 ) -> None:
-    """Start the Anthropic API proxy server.
+    """Start the Anthropic Messages, token count, and OpenAI API proxy server.
 
     Uses the ai Runtime, which routes model names to the correct provider
     automatically. Model names can be ``"provider/model"`` (explicit) or
@@ -1002,12 +1624,15 @@ async def start_proxy(
 
     server = await asyncio.start_server(on_connect, host, port)
     addr = server.sockets[0].getsockname() if server.sockets else (host, port)
-    logger.info("Anthropic API proxy listening on http://%s:%d", addr[0], addr[1])
-    print(f"Anthropic API proxy listening on http://{addr[0]}:{addr[1]}")
+    logger.info("AI API proxy listening on http://%s:%d", addr[0], addr[1])
+    print(f"AI API proxy listening on http://{addr[0]}:{addr[1]}")
     print(f"Providers: {', '.join(active)}")
     print(f"Auth: {'API key required' if api_key else 'none (open)'}")
     print("Endpoints:")
     print(f"  POST http://{addr[0]}:{addr[1]}/v1/messages")
+    print(f"  POST http://{addr[0]}:{addr[1]}/v1/messages/count_tokens")
+    print(f"  POST http://{addr[0]}:{addr[1]}/v1/responses")
+    print(f"  POST http://{addr[0]}:{addr[1]}/v1/chat/completions")
     print(f"  GET  http://{addr[0]}:{addr[1]}/v1/models")
 
     async with server:
@@ -1036,7 +1661,7 @@ def run_proxy(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Anthropic API proxy backed by the ai package",
+        description="Anthropic Messages, token count, and OpenAI proxy backed by the ai package",
     )
     parser.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8082, help="Port (default: 8082)")

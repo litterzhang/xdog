@@ -38,34 +38,64 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _CACHE_FILE = models_cache_file()
+_CACHE_SCHEMA_VERSION = 2
 _DEFAULT_TTL_SECONDS = 24 * 60 * 60  # 24 hours
 
-# Mapping from Copilot API endpoint paths to internal protocol names.
+# Mapping from Copilot API endpoint paths to internal adapter protocols.
 _ENDPOINT_TO_PROTOCOL: dict[str, str] = {
     "/chat/completions": "openai-completions",
+    "/v1/chat/completions": "openai-completions",
     "/v1/messages": "anthropic-messages",
     "/responses": "openai-responses",
+    "/v1/responses": "openai-responses",
+    "/embeddings": "openai-completions",
     "/v1/embeddings": "openai-completions",
 }
+
+_GENERATION_ENDPOINT_TO_PROTOCOL: dict[str, str] = {
+    endpoint: protocol
+    for endpoint, protocol in _ENDPOINT_TO_PROTOCOL.items()
+    if endpoint not in ("/embeddings", "/v1/embeddings")
+}
+
+
+def _protocols_for_endpoints(
+    endpoints: list[str],
+    mapping: dict[str, str],
+) -> tuple[str, ...]:
+    """Return mapped protocol IDs once, in deterministic mapping order."""
+    endpoint_set = frozenset(endpoints)
+    return tuple(dict.fromkeys(
+        protocol for endpoint, protocol in mapping.items() if endpoint in endpoint_set
+    ))
 
 # Fallback models when sync cache is empty and API unreachable.
 _FALLBACK_MODELS: tuple[Model, ...] = (
     Model(id="copilot/gpt-4o", name="GPT-4o (Copilot)", api="openai-completions", provider="copilot",
           base_url="https://api.githubcopilot.com", input=("text", "image"), context_window=128_000, max_tokens=16_384,
-          cost=ModelCost(input=0), compat=OpenAICompletionsCompat(supports_store=True, supports_developer_role=True, supports_usage_in_streaming=True, max_tokens_field="max_completion_tokens")),
+          cost=ModelCost(input=0), compat=OpenAICompletionsCompat(supports_store=True, supports_developer_role=True, supports_usage_in_streaming=True, max_tokens_field="max_completion_tokens"),
+          supported_generation_protocols=("openai-completions",)),
     Model(id="copilot/claude-sonnet-4.5", name="Claude Sonnet 4.5 (Copilot)", api="openai-completions", provider="copilot",
           base_url="https://api.githubcopilot.com", reasoning=True, input=("text", "image"), context_window=200_000, max_tokens=16_384,
-          cost=ModelCost(input=1), compat=OpenAICompletionsCompat(supports_store=True, supports_developer_role=True, supports_usage_in_streaming=True)),
+          cost=ModelCost(input=1), compat=OpenAICompletionsCompat(supports_store=True, supports_developer_role=True, supports_usage_in_streaming=True),
+          supported_protocols=("openai-completions", "anthropic-messages"),
+          supported_generation_protocols=("openai-completions", "anthropic-messages"),
+          preferred_protocol="anthropic-messages"),
     Model(id="copilot/claude-opus-4.6-1m", name="Claude Opus 4.6 1M (Copilot)", api="openai-completions", provider="copilot",
           base_url="https://api.githubcopilot.com", reasoning=True, input=("text", "image"), context_window=1_000_000, max_tokens=32_000,
-          cost=ModelCost(input=3), compat=OpenAICompletionsCompat(supports_store=True, supports_developer_role=True, supports_usage_in_streaming=True)),
+          cost=ModelCost(input=3), compat=OpenAICompletionsCompat(supports_store=True, supports_developer_role=True, supports_usage_in_streaming=True),
+          supported_protocols=("openai-completions", "anthropic-messages"),
+          supported_generation_protocols=("openai-completions", "anthropic-messages"),
+          preferred_protocol="anthropic-messages"),
     Model(id="copilot/o3-mini", name="o3-mini (Copilot)", api="openai-completions", provider="copilot",
           base_url="https://api.githubcopilot.com", reasoning=True, context_window=200_000, max_tokens=100_000,
           cost=ModelCost(input=1), compat=OpenAICompletionsCompat(supports_store=True, supports_developer_role=True, supports_reasoning_effort=True,
-          reasoning_effort_map={"minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "high"}, supports_usage_in_streaming=True, max_tokens_field="max_completion_tokens")),
+          reasoning_effort_map={"minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "high"}, supports_usage_in_streaming=True, max_tokens_field="max_completion_tokens"),
+          supported_generation_protocols=("openai-completions",)),
     Model(id="copilot/gemini-2.5-pro", name="Gemini 2.5 Pro (Copilot)", api="openai-completions", provider="copilot",
           base_url="https://api.githubcopilot.com", reasoning=True, input=("text", "image"), context_window=1_000_000, max_tokens=65_536,
-          cost=ModelCost(input=1), compat=OpenAICompletionsCompat(supports_store=True, supports_developer_role=True, supports_usage_in_streaming=True)),
+          cost=ModelCost(input=1), compat=OpenAICompletionsCompat(supports_store=True, supports_developer_role=True, supports_usage_in_streaming=True),
+          supported_generation_protocols=("openai-completions",)),
 )
 
 # ---------------------------------------------------------------------------
@@ -150,10 +180,15 @@ def _parse_api_model(raw: dict[str, Any]) -> Model | None:
     if not model_id:
         return None
 
-    # Derive supported protocols from endpoints.
-    endpoints: list[str] = raw.get("supported_endpoints", [])
-    supported_protocols = tuple(
-        proto for ep, proto in _ENDPOINT_TO_PROTOCOL.items() if ep in endpoints
+    # Derive broad adapter support and exact generation support separately.
+    endpoints_raw = raw.get("supported_endpoints", [])
+    if not isinstance(endpoints_raw, list) or any(not isinstance(endpoint, str) for endpoint in endpoints_raw):
+        return None
+    endpoints: list[str] = endpoints_raw
+    supported_protocols = _protocols_for_endpoints(endpoints, _ENDPOINT_TO_PROTOCOL)
+    supported_generation_protocols = _protocols_for_endpoints(
+        endpoints,
+        _GENERATION_ENDPOINT_TO_PROTOCOL,
     )
 
     caps: dict[str, Any] = raw.get("capabilities", {})
@@ -291,6 +326,7 @@ def _parse_api_model(raw: dict[str, Any]) -> Model | None:
         max_tokens=limits.get("max_output_tokens", 0) or 0,
         compat=compat,
         supported_protocols=supported_protocols if supported_protocols else None,
+        supported_generation_protocols=supported_generation_protocols,
         preferred_protocol=preferred_protocol,
         supports_tool_calls=supports_tool_calls,
         supports_parallel_tool_calls=supports_parallel_tool_calls,
@@ -352,8 +388,13 @@ def _model_to_dict(m: Model) -> dict[str, Any]:
         "context_window": m.context_window,
         "max_prompt_tokens": m.max_prompt_tokens,
         "max_tokens": m.max_tokens,
+        "headers": dict(m.headers),
         "compat": compat_dict,
         "supported_protocols": list(m.supported_protocols) if m.supported_protocols else None,
+        "supported_generation_protocols": (
+            list(m.supported_generation_protocols)
+            if m.supported_generation_protocols is not None else None
+        ),
         "preferred_protocol": m.preferred_protocol,
         "supports_tool_calls": m.supports_tool_calls,
         "supports_parallel_tool_calls": m.supports_parallel_tool_calls,
@@ -402,6 +443,7 @@ def _model_from_dict(d: dict[str, Any]) -> Model:
 
     cost_raw = d.get("cost", {})
     sp_raw = d.get("supported_protocols")
+    sgp_raw = d.get("supported_generation_protocols")
 
     # Thinking budget range
     tbr_raw = d.get("thinking_budget_range")
@@ -439,8 +481,12 @@ def _model_from_dict(d: dict[str, Any]) -> Model:
         context_window=d.get("context_window", 0),
         max_prompt_tokens=d.get("max_prompt_tokens", 0),
         max_tokens=d.get("max_tokens", 0),
+        headers=d.get("headers", {}) if isinstance(d.get("headers"), dict) else {},
         compat=compat,
         supported_protocols=tuple(sp_raw) if sp_raw else None,
+        supported_generation_protocols=(
+            tuple(sgp_raw) if isinstance(sgp_raw, list) else None
+        ),
         preferred_protocol=d.get("preferred_protocol"),
         supports_tool_calls=d.get("supports_tool_calls", True),
         supports_parallel_tool_calls=d.get("supports_parallel_tool_calls", False),
@@ -465,6 +511,8 @@ def _read_cache() -> tuple[tuple[Model, ...], float] | None:
         return None
     try:
         raw = json.loads(_CACHE_FILE.read_text(encoding="utf-8"))
+        if type(raw.get("schema_version")) is not int or raw["schema_version"] != _CACHE_SCHEMA_VERSION:
+            return None
         ts: float = raw.get("timestamp", 0.0)
         models = tuple(_model_from_dict(d) for d in raw.get("models", []))
         return (models, ts)
@@ -477,6 +525,7 @@ def _write_cache(models: tuple[Model, ...]) -> None:
     """Persist models to the local cache file."""
     data_dir().mkdir(parents=True, exist_ok=True)
     payload = {
+        "schema_version": _CACHE_SCHEMA_VERSION,
         "timestamp": time.time(),
         "models": [_model_to_dict(m) for m in models],
     }

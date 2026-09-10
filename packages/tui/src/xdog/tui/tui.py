@@ -31,8 +31,10 @@ from dataclasses import dataclass
 from typing import Callable, Literal
 
 from xdog.tui.keys import KeyEvent, is_key_release, parse_key_events
-from xdog.tui.stdin_buffer import KeyBytes, Paste, StdinBuffer
+from xdog.tui.main_buffer_renderer import MainBufferRenderer
+from xdog.tui.stdin_buffer import EndOfInput, InputFrame, KeyBytes, Paste, RejectedPaste, StdinBuffer
 from xdog.tui.terminal_protocol import TerminalProtocol
+from xdog.tui.utils import string_width
 
 # ---------------------------------------------------------------------------
 # Focusable protocol and cursor marker
@@ -142,6 +144,12 @@ class Component(ABC):
     def invalidate(self) -> None:
         """Clear cached rendering state."""
         pass
+
+    def set_height(self, height: int) -> None:
+        """Provide an available-height hint to adaptive inline components."""
+
+    def handle_input_error(self, message: str) -> None:
+        """Notify an editor when input was rejected without inserting it."""
 
 
 # ---------------------------------------------------------------------------
@@ -280,10 +288,12 @@ class TUI(Container):
         self._input_listeners: list[InputListener] = []
         self._full_redraw_counter: int = 0
         self._suspend_requested = False
+        self._painter = MainBufferRenderer()
+        self._force_render = False
 
     def _terminal_enter_sequence(self) -> str:
         prefix = "\x1b[?1049h" if self.fullscreen else ""
-        return prefix + "\x1b[?7l\x1b[?25l\x1b[2J\x1b[H"
+        return prefix + "\x1b[?7l\x1b[?25l"
 
     def _terminal_leave_sequence(self) -> str:
         suffix = "\x1b[?1049l" if self.fullscreen else ""
@@ -367,13 +377,7 @@ class TUI(Container):
     def request_render(self, force: bool = False) -> None:
         """Mark the screen as dirty so it will be redrawn."""
         if force:
-            self._previous_lines = []
-            self._previous_width = -1
-            self._previous_height = -1
-            self._cursor_row = 0
-            self._hardware_cursor_row = 0
-            self._max_lines_rendered = 0
-            self._previous_viewport_top = 0
+            self._force_render = True
             self._full_redraw_counter += 1
         self._render_requested = True
 
@@ -394,103 +398,130 @@ class TUI(Container):
         return True
 
     def start(self) -> None:
-        """Start the TUI main loop (blocking)."""
-        self._running = True
+        """Run a single owned terminal session, re-entering after suspend."""
         self._stopped = False
-        stdin_buf = StdinBuffer()
-        protocol = TerminalProtocol()
-        stdin_buf.enter_raw()
-
-        sys.stdout.write(protocol.startup())
-        sys.stdout.write(self._terminal_enter_sequence())
-        sys.stdout.flush()
-
-        frame_interval = 1.0 / self._frame_rate
-
-        try:
-            self.request_render()
-
-            while self._running:
-                frame_start = time.monotonic()
-
-                # Input
-                data = stdin_buf.read(timeout=frame_interval)
-                if data:
-                    data = protocol.filter_input(data)
-                    protocol_output = protocol.pending_output()
-                    if protocol_output:
-                        sys.stdout.write(protocol_output)
-                        sys.stdout.flush()
-                    consumed = False
-                    for frame in stdin_buf.feed(data):
-                        if isinstance(frame, Paste):
-                            consumed = self._dispatch_paste(frame.text) or consumed
-                            continue
-                        assert isinstance(frame, KeyBytes)
-                        for event in parse_key_events(frame.data):
-                            # Filter key releases unless component wants them.
-                            if is_key_release(event):
-                                if self._focused and getattr(self._focused, "wants_key_release", False):
-                                    consumed = self._dispatch_input(event) or consumed
-                                continue
-                            consumed = self._dispatch_input(event) or consumed
-                    if consumed:
-                        self._render_requested = True
-                else:
-                    for frame in stdin_buf.flush_expired():
-                        if isinstance(frame, KeyBytes):
-                            for event in parse_key_events(frame.data):
-                                if self._dispatch_input(event):
-                                    self._render_requested = True
-
-                # Detect terminal resize
-                cur_w = _terminal_width()
-                cur_h = _terminal_height()
-                if (
-                    self._previous_width != 0
-                    and (cur_w != self._previous_width or cur_h != self._previous_height)
-                ):
-                    self._render_requested = True
-
-                # Tick callbacks
-                for cb in self._tick_callbacks:
-                    cb()
-
-                # Render
-                if self._render_requested:
-                    self._do_render()
-                    self._render_requested = False
-
-                # Frame pacing
-                elapsed = time.monotonic() - frame_start
-                remaining = frame_interval - elapsed
-                if remaining > 0:
-                    time.sleep(remaining)
-        finally:
-            suspended = self._suspend_requested
+        resumed = False
+        while not self._stopped:
+            self._running = True
             self._suspend_requested = False
-            sys.stdout.write(protocol.cleanup())
-            sys.stdout.write(self._terminal_leave_sequence())
-            sys.stdout.flush()
+            stdin = StdinBuffer()
+            protocol = TerminalProtocol()
+            enabled = False
+            try:
+                stdin.enter_raw()
+                enabled = True
+                sys.stdout.write(self._terminal_enter_sequence())
+                if not resumed:
+                    sys.stdout.write("\r\n")
+                sys.stdout.write(protocol.startup())
+                sys.stdout.flush()
+                self._anchor_terminal(stdin, protocol, resumed=resumed)
+                self.request_render(force=resumed)
+                self._input_loop(stdin, protocol)
+            finally:
+                self._running = False
+                try:
+                    if enabled:
+                        if not self._suspend_requested:
+                            sys.stdout.write(self._painter.finish())
+                        sys.stdout.write(protocol.cleanup())
+                        sys.stdout.write(self._terminal_leave_sequence())
+                        sys.stdout.flush()
+                finally:
+                    stdin.restore()
+            if not self._suspend_requested:
+                break
+            self._suspend_process()
+            resumed = True
 
-            if self._previous_lines:
-                target_row = len(self._previous_lines)
-                diff = target_row - self._hardware_cursor_row
-                if diff > 0:
-                    sys.stdout.write(f"\x1b[{diff}B")
-                elif diff < 0:
-                    sys.stdout.write(f"\x1b[{-diff}A")
-                sys.stdout.write("\r\n")
-            sys.stdout.flush()
-            stdin_buf.restore()
-            self._running = False
-
-        if suspended and os.name != "nt" and hasattr(signal, "SIGTSTP"):
+    def _suspend_process(self) -> None:
+        """Temporarily restore normal job control without nesting run loops."""
+        previous = signal.getsignal(signal.SIGTSTP)
+        try:
+            signal.signal(signal.SIGTSTP, signal.SIG_DFL)
             os.killpg(os.getpgrp(), signal.SIGTSTP)
-            self._previous_width = 0
-            self._previous_height = 0
-            self.request_render(force=True)
-            self.start()
+        finally:
+            signal.signal(signal.SIGTSTP, previous)
+
+    def _anchor_terminal(
+        self, stdin: StdinBuffer, protocol: TerminalProtocol, *, resumed: bool,
+    ) -> None:
+        # CPR is optional: a non-reporting terminal uses a conservative bottom
+        # row origin, and only the rows written by this process become owned.
+        pending: list[InputFrame] = []
+        deadline = time.monotonic() + 0.15
+        while protocol.cursor_position is None and time.monotonic() < deadline:
+            data = stdin.read(timeout=0.01)
+            if stdin.eof:
+                self.stop()
+                break
+            for frame in stdin.feed(data):
+                pending.extend(protocol.filter_frame(frame))
+        position = protocol.cursor_position
+        row = min(_terminal_height() - 1, max(0, position[0] - 1)) if position else _terminal_height() - 1
+        if resumed:
+            self._painter.reanchor(row, max(0, position[1] - 1) if position else 0)
+        else:
+            self._painter = MainBufferRenderer(origin_row=row)
+        for frame in pending:
+            self._handle_frame(frame)
+        output = protocol.pending_output()
+        if output:
+            sys.stdout.write(output)
+            sys.stdout.flush()
+
+    def _handle_frame(self, frame: InputFrame) -> bool:
+        if isinstance(frame, EndOfInput):
+            self.stop()
+            return False
+        if isinstance(frame, RejectedPaste):
+            target = self._focused
+            if target is not None:
+                target.handle_input_error(frame.reason)
+            return True
+        if isinstance(frame, Paste):
+            return self._dispatch_paste(frame.text)
+        consumed = False
+        for event in parse_key_events(frame.data):
+            if is_key_release(event) and not (
+                self._focused and self._focused.wants_key_release
+            ):
+                continue
+            consumed = self._dispatch_input(event) or consumed
+        return consumed
+
+    def _input_loop(self, stdin: StdinBuffer, protocol: TerminalProtocol) -> None:
+        interval = 1.0 / self._frame_rate
+        while self._running:
+            data = stdin.read(timeout=interval)
+            if stdin.eof:
+                self.stop()
+                break
+            frames = stdin.feed(data) if data else stdin.flush_expired()
+            for frame in frames:
+                for filtered in protocol.filter_frame(frame):
+                    if self._handle_frame(filtered):
+                        self.request_render()
+            expired = protocol.expire_input()
+            if expired and self._handle_frame(KeyBytes(expired)):
+                self.request_render()
+            output = protocol.expire_negotiation() + protocol.pending_output()
+            if output:
+                sys.stdout.write(output)
+                sys.stdout.flush()
+            if not self._running:
+                break
+            if (self._previous_width, self._previous_height) != (_terminal_width(), _terminal_height()):
+                if self._previous_width:
+                    sys.stdout.write(protocol.request_cursor_position())
+                    sys.stdout.flush()
+                    self._anchor_terminal(stdin, protocol, resumed=True)
+                self.request_render()
+            for callback in self._tick_callbacks:
+                callback()
+            if self._render_requested:
+                self._render_requested = False
+                self._do_render()
 
     def stop(self) -> None:
         """Signal the main loop to exit."""
@@ -652,275 +683,48 @@ class TUI(Container):
     # -- differential renderer (matches TypeScript TUI.doRender) -------------
 
     def _do_render(self) -> None:
-        """Render with differential updates in the main terminal buffer.
-
-        Faithful port of the TypeScript ``doRender()`` method:
-        1. Render all components to string lines
-        2. Compare with previous frame to find changes
-        3. Use relative cursor movements to update only changed lines
-        4. Scroll viewport naturally via ``\\r\\n`` when content grows
-        """
+        """Paint only owned main-buffer rows, keeping logical history separate."""
         if self._stopped:
             return
-
-        width = _terminal_width()
-        height = _terminal_height()
-        viewport_top = max(0, self._max_lines_rendered - height)
-        prev_viewport_top = self._previous_viewport_top
-        hardware_cursor_row = self._hardware_cursor_row
-
-        def compute_line_diff(target_row: int) -> int:
-            """Compute relative cursor movement from current to target row."""
-            current_screen_row = hardware_cursor_row - prev_viewport_top
-            target_screen_row = target_row - viewport_top
-            return target_screen_row - current_screen_row
-
-        # Detect resize before rendering so width-dependent components are
-        # invalidated once and rendered once at the new dimensions.
-        width_changed = self._previous_width != 0 and self._previous_width != width
-        height_changed = self._previous_height != 0 and self._previous_height != height
-        if width_changed or height_changed:
+        width, height = _terminal_width(), _terminal_height()
+        resized = bool(self._previous_width and (
+            self._previous_width != width or self._previous_height != height
+        ))
+        if resized:
             self.invalidate()
             for entry in self._overlay_stack:
                 entry.component.invalidate()
-
-        # Render all components to get new lines.
-        new_lines = self.render(width)
-
-        # Composite overlays on top
+        for child in self.children:
+            child.set_height(height)
+        lines = self.render(width)
+        transient_start = len(lines)
+        offset = 0
+        for child in self.children:
+            if hasattr(child, "transient_start"):
+                transient_start = offset + int(child.transient_start)
+                break
+            offset += len(child.render(width)) if len(self.children) > 1 else 0
         if self._overlay_stack:
-            new_lines = self._composite_overlays(new_lines, width, height)
-
-        cursor_target: tuple[int, int] | None = None
+            lines = self._composite_overlays(lines, width, height)
+        cursor: tuple[int, int] | None = None
         clean_lines: list[str] = []
-        visible_top = max(0, len(new_lines) - height)
-        for row, line in enumerate(new_lines):
-            marker_index = line.find(CURSOR_MARKER)
-            if marker_index >= 0:
-                if row >= visible_top:
-                    from xdog.tui.utils import string_width
-                    cursor_target = (row, string_width(line[:marker_index]))
-                line = line.replace(CURSOR_MARKER, "")
-            clean_lines.append(line)
-        new_lines = clean_lines
-
-        def position_cursor(buf: str, current_row: int) -> tuple[str, int]:
-            if cursor_target is None:
-                return buf, current_row
-            target_row, target_col = cursor_target
-            current_screen_row = current_row - viewport_top
-            target_screen_row = target_row - viewport_top
-            delta = target_screen_row - current_screen_row
-            if delta < 0:
-                buf += f"\x1b[{-delta}A"
-            elif delta > 0:
-                buf += f"\x1b[{delta}B"
-            return buf + f"\x1b[{target_col + 1}G", target_row
-
-        # -- fullRender helper (matches TypeScript) --------------------------
-        def full_render(clear: bool) -> None:
-            nonlocal hardware_cursor_row, viewport_top
-            buf = "\x1b[?2026h"  # Begin synchronized output
-            if clear:
-                # Repaint the active viewport in place. ED2 (CSI 2 J) is not
-                # safe for a main-buffer TUI: some terminals preserve its old
-                # screen as scrollback, producing snapshots that contain the
-                # editor and duplicate the current chat. Moving to the top and
-                # erasing each row neither scrolls nor touches history.
-                current_screen_row = max(
-                    0,
-                    min(height - 1, hardware_cursor_row - prev_viewport_top),
-                )
-                if current_screen_row > 0:
-                    buf += f"\x1b[{current_screen_row}A"
-                buf += "\r"
-                visible_lines = new_lines[max(0, len(new_lines) - height):]
-                for screen_row in range(height):
-                    buf += "\x1b[2K"
-                    if screen_row < len(visible_lines):
-                        buf += visible_lines[screen_row]
-                    if screen_row < height - 1:
-                        buf += "\r\n"
-                # The repaint ends on the last terminal row. Return the cursor
-                # to the final logical line when content is shorter than the
-                # viewport, leaving cleared rows below it.
-                target_screen_row = max(0, len(visible_lines) - 1)
-                move_up = height - 1 - target_screen_row
-                if move_up > 0:
-                    buf += f"\x1b[{move_up}A"
-                buf += "\r"
-            else:
-                # Initial render writes history once so genuine terminal
-                # scrollback is created.
-                for i, line in enumerate(new_lines):
-                    if i > 0:
-                        buf += "\r\n"
-                    buf += line
-            buf += "\x1b[?2026l"  # End synchronized output
-            render_row = max(0, len(new_lines) - 1)
-            buf, positioned_row = position_cursor(buf, render_row)
-            sys.stdout.write(buf)
+        for index, line in enumerate(lines):
+            marker = line.find(CURSOR_MARKER)
+            if marker >= 0:
+                cursor = (index, string_width(line[:marker]))
+            clean_lines.append(line.replace(CURSOR_MARKER, ""))
+        output = self._painter.render(
+            clean_lines, width, height, cursor, transient_start,
+            force=self._force_render,
+        )
+        self._force_render = False
+        if output:
+            sys.stdout.write(output)
             sys.stdout.flush()
-            self._cursor_row = render_row
-            self._hardware_cursor_row = positioned_row
-            # Reset max lines when clearing, otherwise track growth
-            if clear:
-                self._max_lines_rendered = len(new_lines)
-            else:
-                self._max_lines_rendered = max(
-                    self._max_lines_rendered, len(new_lines)
-                )
-            self._previous_viewport_top = max(
-                0, self._max_lines_rendered - height
-            )
-            self._previous_lines = new_lines
-            self._previous_width = width
-            self._previous_height = height
+        self._previous_lines = clean_lines
+        self._previous_width, self._previous_height = width, height
+        self._hardware_cursor_row = self._painter.state.cursor_row
 
-        # -- First render (no previous state) --------------------------------
-        if not self._previous_lines and not width_changed and not height_changed:
-            full_render(False)
-            return
-
-        # -- Width or height changed -----------------------------------------
-        if width_changed or height_changed:
-            full_render(True)
-            return
-
-        # -- Content shrunk below working area — clear and re-render ---------
-        if len(new_lines) < self._max_lines_rendered:
-            full_render(True)
-            return
-
-        # -- Find first and last changed lines -------------------------------
-        first_changed = -1
-        last_changed = -1
-        max_len = max(len(new_lines), len(self._previous_lines))
-        for i in range(max_len):
-            old_line = self._previous_lines[i] if i < len(self._previous_lines) else ""
-            new_line = new_lines[i] if i < len(new_lines) else ""
-            if old_line != new_line:
-                if first_changed == -1:
-                    first_changed = i
-                last_changed = i
-
-        appended_lines = len(new_lines) > len(self._previous_lines)
-        if appended_lines:
-            if first_changed == -1:
-                first_changed = len(self._previous_lines)
-            last_changed = len(new_lines) - 1
-
-        append_start = (
-            appended_lines
-            and first_changed == len(self._previous_lines)
-            and first_changed > 0
-        )
-
-        # -- No changes ------------------------------------------------------
-        if first_changed == -1:
-            self._previous_viewport_top = max(
-                0, self._max_lines_rendered - height
-            )
-            self._previous_height = height
-            return
-
-        # -- All changes in deleted lines ------------------------------------
-        if first_changed >= len(new_lines):
-            if len(self._previous_lines) > len(new_lines):
-                buf = "\x1b[?2026h"
-                target_row = max(0, len(new_lines) - 1)
-                line_diff = compute_line_diff(target_row)
-                if line_diff > 0:
-                    buf += f"\x1b[{line_diff}B"
-                elif line_diff < 0:
-                    buf += f"\x1b[{-line_diff}A"
-                buf += "\r"
-                extra_lines = len(self._previous_lines) - len(new_lines)
-                if extra_lines > height:
-                    full_render(True)
-                    return
-                if extra_lines > 0:
-                    buf += "\x1b[1B"
-                for i in range(extra_lines):
-                    buf += "\r\x1b[2K"
-                    if i < extra_lines - 1:
-                        buf += "\x1b[1B"
-                if extra_lines > 0:
-                    buf += f"\x1b[{extra_lines}A"
-                buf += "\x1b[?2026l"
-                buf, positioned_row = position_cursor(buf, target_row)
-                sys.stdout.write(buf)
-                sys.stdout.flush()
-                self._cursor_row = target_row
-                self._hardware_cursor_row = positioned_row
-            self._previous_lines = new_lines
-            self._previous_width = width
-            self._previous_height = height
-            self._previous_viewport_top = max(
-                0, self._max_lines_rendered - height
-            )
-            return
-
-        # -- First change above previous viewport — full re-render -----------
-        previous_content_viewport_top = max(
-            0, len(self._previous_lines) - height
-        )
-        if first_changed < previous_content_viewport_top:
-            full_render(True)
-            return
-
-        # -- Differential render (only changed lines) ------------------------
-        buf = "\x1b[?2026h"  # Begin synchronized output
-        prev_viewport_bottom = prev_viewport_top + height - 1
-        move_target_row = (first_changed - 1) if append_start else first_changed
-
-        # Scroll down if target is below current viewport
-        if move_target_row > prev_viewport_bottom:
-            current_screen_row = max(
-                0, min(height - 1, hardware_cursor_row - prev_viewport_top)
-            )
-            move_to_bottom = height - 1 - current_screen_row
-            if move_to_bottom > 0:
-                buf += f"\x1b[{move_to_bottom}B"
-            scroll = move_target_row - prev_viewport_bottom
-            buf += "\r\n" * scroll
-            prev_viewport_top += scroll
-            viewport_top += scroll
-            hardware_cursor_row = move_target_row
-
-        # Move cursor to first changed line
-        line_diff = compute_line_diff(move_target_row)
-        if line_diff > 0:
-            buf += f"\x1b[{line_diff}B"  # Move down
-        elif line_diff < 0:
-            buf += f"\x1b[{-line_diff}A"  # Move up
-
-        buf += "\r\n" if append_start else "\r"  # Move to column 0
-
-        # Render only changed lines (firstChanged to lastChanged)
-        render_end = min(last_changed, len(new_lines) - 1)
-        for i in range(first_changed, render_end + 1):
-            if i > first_changed:
-                buf += "\r\n"
-            buf += "\x1b[2K"  # Clear current line
-            buf += new_lines[i]
-
-        buf += "\x1b[?2026l"  # End synchronized output
-
-        # Update state
-        final_cursor_row = render_end
-        buf, positioned_row = position_cursor(buf, final_cursor_row)
-        sys.stdout.write(buf)
-        sys.stdout.flush()
-        self._cursor_row = max(0, len(new_lines) - 1)
-        self._hardware_cursor_row = positioned_row
-        self._max_lines_rendered = max(self._max_lines_rendered, len(new_lines))
-        self._previous_viewport_top = max(
-            0, self._max_lines_rendered - height
-        )
-        self._previous_lines = new_lines
-        self._previous_width = width
-        self._previous_height = height
 
 
 # ---------------------------------------------------------------------------

@@ -8,7 +8,7 @@ Usage::
     xdog-ai chat <provider> <model> [msg] Chat with a model
     xdog-ai embed <provider> <model> <text>  Generate embeddings
     xdog-ai search <provider> <model> <query>  Web search
-    xdog-ai proxy [--port PORT]           Start Anthropic API proxy
+    xdog-ai proxy [--port PORT]           Start Messages / token count / OpenAI proxy
 """
 
 from __future__ import annotations
@@ -85,7 +85,7 @@ def main() -> None:
     search_p.add_argument("query", help="Search query")
 
     # --- proxy ---
-    proxy_p = sub.add_parser("proxy", help="Start Anthropic API proxy server")
+    proxy_p = sub.add_parser("proxy", help="Start Messages / token count / OpenAI proxy server")
     proxy_p.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1)")
     proxy_p.add_argument("--port", type=int, default=8082, help="Port (default: 8082)")
     proxy_p.add_argument("--api-key", default="", help="API key for authentication (default: none)")

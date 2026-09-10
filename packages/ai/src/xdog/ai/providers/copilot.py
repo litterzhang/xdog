@@ -5,13 +5,15 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from xdog.ai.vendors.copilot import CopilotVendor
 
-from xdog.ai.core import AuthResult, BaseProvider
+from xdog.ai.core import AuthResult, BaseProtocol, BaseProvider
+from xdog.ai.native import NativeEventStream, NativeOperation, NativeResponse, ProtocolRequest
 from xdog.ai.types import (
+    AssistantMessage,
     Context,
     EmbeddingRequest,
     StreamOptions,
@@ -20,7 +22,6 @@ from xdog.ai.types import (
 
 if TYPE_CHECKING:
     from xdog.ai.types import (
-        AssistantMessage,
         AssistantMessageEvent,
         EmbeddingResponse,
         Model,
@@ -34,7 +35,7 @@ class CopilotProvider(BaseProvider):
     def __init__(self) -> None:
         self._vendor: CopilotVendor | None = None
         self._model_cache: dict[str, Model] = {}
-        self._protocols: dict[str, object] = {}
+        self._protocols: dict[str, BaseProtocol] = {}
 
     @property
     def id(self) -> str:
@@ -52,7 +53,7 @@ class CopilotProvider(BaseProvider):
             self._vendor = CopilotVendor()
         return self._vendor
 
-    def _get_protocol(self, protocol_id: str) -> Any:
+    def _get_protocol(self, protocol_id: str) -> BaseProtocol:
         if protocol_id not in self._protocols:
             if protocol_id == "openai-completions":
                 from xdog.ai.protocols.openai_completions import OpenAICompletionsProtocol
@@ -125,6 +126,67 @@ class CopilotProvider(BaseProvider):
     async def complete(self, model_name: str, context: Context, options: StreamOptions | None = None, cancel: asyncio.Event | None = None) -> AssistantMessage:
         return await self.stream(model_name, context, options, cancel).result()
 
+    @staticmethod
+    def _native_protocol_ids(model: Model) -> tuple[str, ...]:
+        supported = model.supported_generation_protocols
+        if supported is not None:
+            return supported
+        return () if model.model_type == "embeddings" else (model.supported_protocols or (model.api,))
+
+    def _native_protocol(self, model: Model, request: ProtocolRequest) -> BaseProtocol:
+        if request.protocol not in self._native_protocol_ids(model):
+            raise NotImplementedError(
+                f"Model {model.id!r} does not support protocol {request.protocol!r}",
+            )
+        protocol = self._get_protocol(request.protocol)
+        if not protocol.supports_native_operation(request.operation):
+            raise NotImplementedError(
+                f"Protocol {request.protocol!r} does not support operation {request.operation.value!r}",
+            )
+        return protocol
+
+    def supports_native_request(self, model_name: str, request: ProtocolRequest) -> bool:
+        try:
+            model = self._resolve(model_name)
+            return (
+                request.protocol in self._native_protocol_ids(model)
+                and self._get_protocol(request.protocol).supports_native_operation(request.operation)
+            )
+        except (NotImplementedError, ValueError):
+            return False
+
+    async def request_complete(
+        self,
+        model_name: str,
+        request: ProtocolRequest,
+    ) -> NativeResponse:
+        resolved = self._resolve(model_name)
+        protocol = self._native_protocol(resolved, request)
+        auth = await self._get_vendor().resolve_auth(
+            resolved,
+            protocol.native_auth_context(request),
+        )
+        response: NativeResponse = await protocol.request_complete(self._wire_model(resolved, auth), request, auth)
+        return response
+
+    async def request_stream(
+        self,
+        model_name: str,
+        request: ProtocolRequest,
+    ) -> NativeEventStream:
+        resolved = self._resolve(model_name)
+        protocol = self._native_protocol(resolved, request)
+        if request.operation is not NativeOperation.GENERATE:
+            raise NotImplementedError(
+                f"Native operation {request.operation.value!r} cannot be streamed",
+            )
+        auth = await self._get_vendor().resolve_auth(
+            resolved,
+            protocol.native_auth_context(request),
+        )
+        stream: NativeEventStream = await protocol.request_stream(self._wire_model(resolved, auth), request, auth)
+        return stream
+
     # -- Embed ----------------------------------------------------------------
 
     async def embed(
@@ -155,8 +217,7 @@ class CopilotProvider(BaseProvider):
 
     async def sync_models(self, *, ttl: float = 86400, force: bool = False) -> tuple[Model, ...]:
         models = await self._get_vendor().sync_models(ttl, force)
-        for m in models:
-            self._model_cache[m.id] = m
+        self._model_cache = {model.id: model for model in models}
         return models
 
     def __repr__(self) -> str:

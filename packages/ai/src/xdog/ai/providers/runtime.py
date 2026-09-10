@@ -15,6 +15,7 @@ from xdog.ai.core import BaseProvider
 from xdog.ai.providers import provider as _make_provider
 
 if TYPE_CHECKING:
+    from xdog.ai.native import NativeEventStream, NativeResponse, ProtocolRequest
     from xdog.ai.types import (
         AssistantMessage,
         Context,
@@ -136,6 +137,29 @@ class Runtime(BaseProvider):
         """Complete a response. Same routing as stream."""
         p, short = self._route(model)
         return await p.complete(short, context or Context(), options)
+
+    def supports_native_request(self, model: str, request: ProtocolRequest) -> bool:
+        """Route a side-effect-free protocol-native capability check."""
+        provider, short = self._route(model)
+        return provider.supports_native_request(short, request)
+
+    async def request_complete(
+        self,
+        model: str,
+        request: ProtocolRequest,
+    ) -> NativeResponse:
+        """Route a protocol-native non-streaming request."""
+        provider, short = self._route(model)
+        return await provider.request_complete(short, request)
+
+    async def request_stream(
+        self,
+        model: str,
+        request: ProtocolRequest,
+    ) -> NativeEventStream:
+        """Route a protocol-native streaming request."""
+        provider, short = self._route(model)
+        return await provider.request_stream(short, request)
 
     # -- Embedding / Web search -----------------------------------------------
 

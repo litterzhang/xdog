@@ -121,4 +121,6 @@ def test_chat_app_consumes_structured_tool_events_and_ctrl_o() -> None:
 
     assert "STRUCTURED-TAIL" not in _rendered(app._chat_log)
     assert app._handle_global_input(KeyEvent(key="o", ctrl=True)) == {"consume": True}
-    assert "STRUCTURED-TAIL" in _rendered(app._chat_log)
+    assert "STRUCTURED-TAIL" not in _rendered(app._chat_log)
+    assert app._layout.details is app._details_panel
+    assert "STRUCTURED-TAIL" in "\n".join(app._details_panel.render(100))

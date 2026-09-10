@@ -36,22 +36,23 @@ import threading
 import time
 import uuid
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
 from xdog.ai.types import ImageContent
+from xdog.tui.components.bounded_details import BoundedDetails, DetailRecord, streaming_preview
 from xdog.tui.components.details import set_details_expanded
 from xdog.tui.components.image import Image
-from xdog.tui.components.loader import Loader
+from xdog.tui.components.inline_layout import CompactText, InlineLayout
 from xdog.tui.components.markdown import DefaultTextStyle, Markdown, MarkdownTheme
-from xdog.tui.components.prompt_editor import PromptEditor
+from xdog.tui.components.prompt_editor import PromptEditor, SlashSelectList
 from xdog.tui.components.spacer import Spacer
 from xdog.tui.components.text import Text
-from xdog.tui.editor_layout import layout_editor
+from xdog.tui.event_queue import EventQueue, thaw_event
 from xdog.tui.keys import KeyEvent
 from xdog.tui.tui import TUI, Component, Container
-from xdog.tui.utils import sanitize_terminal_text
+from xdog.tui.utils import sanitize_terminal_text, truncate_to_width
 
 logger = logging.getLogger(__name__)
 
@@ -340,6 +341,14 @@ class AssistantMessage(Container):
             self._render_thinking()
         self._body.set_text(sanitize_terminal_text(text))
 
+    @property
+    def detail_body(self) -> str:
+        return self._thinking_content
+
+    @property
+    def detail_title(self) -> str:
+        return "assistant reasoning"
+
     def set_expanded(self, expanded: bool) -> None:
         if self._expanded == expanded:
             return
@@ -353,16 +362,17 @@ class AssistantMessage(Container):
         elif self._expanded:
             rendered = f"Thinking\n{self._thinking_content}"
         else:
-            rendered = "Thinking (Ctrl+O to expand)"
+            rendered = "Thinking (Ctrl+O: details below input · ←/→ select entry)"
         self._thinking.set_text(theme_dim(rendered))
 
 
 class ToolMessage(Container):
     """ID-keyed tool lifecycle retaining full output for expansion."""
 
-    def __init__(self, name: str, arguments: dict[str, Any] | None) -> None:
+    def __init__(self, name: str, arguments: dict[str, Any] | None, *, tool_call_id: str = "") -> None:
         super().__init__()
         self._name = sanitize_terminal_text(name)
+        self._tool_call_id = sanitize_terminal_text(tool_call_id)
         self._arguments = {
             sanitize_terminal_text(str(key)): sanitize_terminal_text(str(value))
             for key, value in (arguments or {}).items()
@@ -408,6 +418,14 @@ class ToolMessage(Container):
         self._completed = True
         self._render()
 
+    @property
+    def detail_body(self) -> str:
+        return self._result
+
+    @property
+    def detail_title(self) -> str:
+        return f"{self._name} [{self._tool_call_id}]" if self._tool_call_id else self._name
+
     def set_expanded(self, expanded: bool) -> None:
         if self._expanded == expanded:
             return
@@ -431,13 +449,17 @@ class ToolMessage(Container):
                 arguments = ", ".join(f"{key}={value}" for key, value in self._arguments.items())
                 self._body.set_text(theme_dim(f"    {arguments}" if arguments else ""))
             return
-        if self._expanded or len(self._result) <= 500:
+        result_lines = self._result.splitlines()
+        if self._state == "running" and not self._expanded:
+            display = streaming_preview(self._result)
+        elif self._expanded or (len(self._result) <= 500 and len(result_lines) <= 3):
             display = self._result
         else:
-            preview = self._result[:200].replace("\n", " ").replace("\r", "")
-            remaining = len(self._result) - 200
-            line_count = len(self._result.splitlines())
-            display = f"{preview} [...{remaining} more chars, {line_count} lines; Ctrl+O to expand]"
+            excerpt = "\n".join(result_lines[:3])[:200]
+            preview = excerpt.replace("\n", " ").replace("\r", "")
+            remaining = len(self._result) - len(excerpt)
+            line_count = len(result_lines)
+            display = f"{preview} [...{remaining} more chars, {line_count} lines; Ctrl+O for details]"
         self._body.set_text(theme_error(f"    → {display}") if self._is_error else theme_dim(f"    → {display}"))
 
 
@@ -510,7 +532,7 @@ class ChatLog(Container):
         existing = self._tools.get(tool_call_id)
         if existing is not None:
             return existing
-        component = ToolMessage(name, arguments)
+        component = ToolMessage(name, arguments, tool_call_id=tool_call_id)
         self._tools[tool_call_id] = component
         self._append(component)
         return component
@@ -543,338 +565,59 @@ class ChatLog(Container):
         self._streaming_runs.clear()
         self._tools.clear()
 
+    def detail_records(self) -> tuple[DetailRecord, ...]:
+        """Return immutable full-detail snapshots in transcript order."""
+        records: list[DetailRecord] = []
+        for child in self.children:
+            if isinstance(child, AssistantMessage) and child.detail_body.strip():
+                records.append(DetailRecord(child.detail_title, child.detail_body, "reasoning"))
+            elif isinstance(child, ToolMessage) and child.detail_body:
+                records.append(DetailRecord(child.detail_title, child.detail_body, "tool"))
+        return tuple(records)
+
     def _append(self, comp: Component) -> None:
         set_details_expanded(comp, self._details_expanded)
         self.add_child(comp)
 
 
-# ── CustomEditor (matching OpenClaw's CustomEditor) ───────────────────
+# ── CustomEditor ──────────────────────────────────────────────────────
 
 
-class _SelectList:
-    """Minimal select list matching OpenClaw's SelectList.
+class _EditorTheme:
+    """Adapt Claw's color callables to the shared prompt-editor theme."""
 
-    Renders a scrollable list of items with arrow selection,
-    description column, and scroll indicator.
-    """
+    accent = staticmethod(theme_accent)
+    bold = staticmethod(_bold)
+    dim = staticmethod(theme_dim)
+    border = staticmethod(theme_border)
 
-    def __init__(self, items: list[tuple[str, str]], max_visible: int = 5) -> None:
-        # items: list of (value, description)
-        self._items = items
-        self._selected = 0
-        self._max_visible = max_visible
 
-    @property
-    def selected_index(self) -> int:
-        return self._selected
+_EDITOR_THEME = _EditorTheme()
 
-    @property
-    def selected_value(self) -> str | None:
-        if 0 <= self._selected < len(self._items):
-            return self._items[self._selected][0]
-        return None
-
-    def set_items(self, items: list[tuple[str, str]]) -> None:
-        self._items = items
-        self._selected = min(self._selected, max(0, len(items) - 1))
-
-    def move(self, delta: int) -> None:
-        if not self._items:
-            return
-        self._selected = (self._selected + delta) % len(self._items)
-
-    def render(self, width: int) -> list[str]:
-        if not self._items:
-            return [theme_dim("  No matching commands")]
-
-        lines: list[str] = []
-        n = len(self._items)
-
-        # Calculate visible window centered on selection
-        start = max(
-            0,
-            min(
-                self._selected - self._max_visible // 2,
-                n - self._max_visible,
-            ),
-        )
-        end = min(start + self._max_visible, n)
-
-        for i in range(start, end):
-            value, desc = self._items[i]
-            is_sel = i == self._selected
-
-            if is_sel:
-                display = value
-                if desc and width > 40:
-                    max_val_w = min(30, width - 6)
-                    trunc_val = display[:max_val_w]
-                    spacing = " " * max(1, 32 - len(trunc_val))
-                    remaining = width - 4 - len(trunc_val) - len(spacing)
-                    if remaining > 10:
-                        trunc_desc = desc[:remaining]
-                        line = theme_accent(f"→ {trunc_val}{spacing}{trunc_desc}")
-                    else:
-                        line = theme_accent(f"→ {display[:width - 6]}")
-                else:
-                    line = theme_accent(f"→ {display[:width - 6]}")
-            else:
-                display = value
-                if desc and width > 40:
-                    max_val_w = min(30, width - 6)
-                    trunc_val = display[:max_val_w]
-                    spacing = " " * max(1, 32 - len(trunc_val))
-                    remaining = width - 4 - len(trunc_val) - len(spacing)
-                    if remaining > 10:
-                        trunc_desc = desc[:remaining]
-                        line = f"  {trunc_val}{spacing}{theme_dim(trunc_desc)}"
-                    else:
-                        line = f"  {display[:width - 6]}"
-                else:
-                    line = f"  {display[:width - 6]}"
-
-            lines.append(line)
-
-        # Scroll indicator
-        if start > 0 or end < n:
-            lines.append(theme_dim(f"  ({self._selected + 1}/{n})"))
-
-        return lines
+# Compatibility alias retained for callers that imported the former private type.
+_SelectList = SlashSelectList
 
 
 class CustomEditor(PromptEditor):
-    """Input editor with borders, slash command select list[Any], and Ctrl+C/D/Escape.
-
-    Matches OpenClaw's CustomEditor which extends pi-tui's Editor:
-    - onSubmit, onEscape, onCtrlC, onCtrlD callbacks
-    - Border rendering with accent prompt
-    - SelectList for slash commands (rendered below bottom border)
-    - Up/Down navigate select list when it's showing
-    """
+    """Claw configuration for the shared grapheme-safe prompt editor."""
 
     def __init__(self) -> None:
         super().__init__(
-            command_provider=lambda: dict(SLASH_COMMANDS),
+            _EDITOR_THEME,
+            command_provider=lambda: SLASH_COMMANDS,
             max_rows=8,
         )
-        # Select list state
-        self._select_list: _SelectList | None = None
-        # Callbacks (matching OpenClaw's CustomEditor fields)
-        self.on_submit: Any = None
-        self.on_escape: Any = None
-        self.on_ctrl_c: Any = None
-        self.on_ctrl_d: Any = None
 
-    def get_text(self) -> str:
-        return self._value
 
-    def set_text(self, value: str) -> None:
-        self._value = value
-        self._cursor = len(value)
+class _StatusLine(Text):
+    """A single cell-truncated status row."""
 
-    def add_to_history(self, text: str) -> None:
-        self._history.append(text)
-        self._hist_idx = -1
-
-    def invalidate(self) -> None:
-        pass
-
-    def _update_select_list(self) -> None:
-        """Update the select list based on current input value."""
-        if self._value.startswith("/"):
-            matching = [
-                (cmd, desc)
-                for cmd, desc in SLASH_COMMANDS.items()
-                if cmd.startswith(self._value) and cmd != self._value
-            ]
-            if matching:
-                if self._select_list is None:
-                    self._select_list = _SelectList(matching)
-                else:
-                    self._select_list.set_items(matching)
-            else:
-                self._select_list = None
-        else:
-            self._select_list = None
+    def __init__(self) -> None:
+        super().__init__("", 0, 0)
 
     def render(self, width: int) -> list[str]:
-        lines: list[str] = []
-        border = theme_border("─" * width)
-
-        # Top border
-        lines.append(border)
-
-        # Wrap by display cells using the shared coding/TUI layout.
-        prompt = _bold(theme_accent("> "))
-        content_width = max(1, width - 2)
-        layout = layout_editor(self._value, content_width)
-        cursor_row, cursor_col = layout.position(self._cursor)
-        first_row = max(0, cursor_row - 7)
-        for row_index in range(first_row, min(len(layout.rows), first_row + 8)):
-            prefix = prompt if row_index == 0 else "  "
-            row_text = layout.rows[row_index].text
-            if row_index == cursor_row:
-                before = row_text[: max(0, self._cursor - layout.rows[row_index].start)]
-                after = row_text[len(before):]
-                cursor_ch = after[0] if after else " "
-                rest = after[1:] if after else ""
-                row_text = before + f"\x1b[7m{cursor_ch}\x1b[27m" + rest
-            lines.append(prefix + row_text)
-
-        # Bottom border
-        lines.append(border)
-
-        # Select list BELOW the bottom border (matching OpenClaw's Editor
-        # which renders autocomplete SelectList after the bottom border)
-        if self._select_list is not None:
-            lines.extend(self._select_list.render(width))
-
-        return lines
-
-    def handle_paste(self, text: str) -> bool:
-        normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-        self._value = self._value[:self._cursor] + normalized + self._value[self._cursor:]
-        self._cursor += len(normalized)
-        self._select_list = None
-        return True
-
-    def handle_input(self, event: KeyEvent) -> bool:
-        # Escape — cancel select list if showing, otherwise abort request
-        if event.key == "escape":
-            if self._select_list is not None:
-                self._select_list = None
-                return True
-            if self.on_escape:
-                self.on_escape()
-            return True
-
-        # Ctrl+C (matching OpenClaw: double-press to exit)
-        if event.ctrl and event.key == "c" and self.on_ctrl_c:
-            self.on_ctrl_c()
-            return True
-
-        # Ctrl+D (matching OpenClaw: exit only when editor empty)
-        if event.ctrl and event.key == "d":
-            if len(self._value) == 0 and self.on_ctrl_d:
-                self.on_ctrl_d()
-            return True
-
-        # When select list is showing, Up/Down navigate it
-        if self._select_list is not None:
-            if event.key == "up":
-                self._select_list.move(-1)
-                return True
-            if event.key == "down":
-                self._select_list.move(1)
-                return True
-            # Tab or Enter on select list — apply selected item
-            if event.key in ("tab", "enter"):
-                selected = self._select_list.selected_value
-                if selected is not None:
-                    self._value = selected
-                    self._cursor = len(self._value)
-                    self._select_list = None
-                    # If Enter, submit immediately
-                    if event.key == "enter":
-                        value = self._value.strip()
-                        self._value = ""
-                        self._cursor = 0
-                        self._hist_idx = -1
-                        if self.on_submit and value:
-                            self.on_submit(value)
-                    else:
-                        # Tab — just complete, update list for potential further typing
-                        self._update_select_list()
-                return True
-
-        if event.key == "enter" and (event.alt or event.shift):
-            self._value = self._value[:self._cursor] + "\n" + self._value[self._cursor:]
-            self._cursor += 1
-            self._select_list = None
-            return True
-
-        if event.key == "enter":
-            raw = self._value
-            value = raw.strip()
-            self._value = ""
-            self._cursor = 0
-            self._hist_idx = -1
-            self._select_list = None
-            if self.on_submit and value:
-                self.on_submit(value)
-            return True
-
-        if event.key == "backspace" and self._cursor > 0:
-            self._value = (
-                self._value[: self._cursor - 1] + self._value[self._cursor :]
-            )
-            self._cursor -= 1
-            self._update_select_list()
-            return True
-
-        if event.key == "delete" and self._cursor < len(self._value):
-            self._value = (
-                self._value[: self._cursor] + self._value[self._cursor + 1 :]
-            )
-            self._update_select_list()
-            return True
-
-        if event.key == "left":
-            self._cursor = max(0, self._cursor - 1)
-            return True
-        if event.key == "right":
-            self._cursor = min(len(self._value), self._cursor + 1)
-            return True
-        if event.key == "home" or (event.ctrl and event.key == "a"):
-            self._cursor = 0
-            return True
-        if event.key == "end" or (event.ctrl and event.key == "e"):
-            self._cursor = len(self._value)
-            return True
-        if event.ctrl and event.key == "k":
-            self._value = self._value[: self._cursor]
-            self._update_select_list()
-            return True
-        if event.ctrl and event.key == "u":
-            self._value = self._value[self._cursor :]
-            self._cursor = 0
-            self._update_select_list()
-            return True
-
-        # History (up/down) — only when select list is NOT showing
-        if event.key == "up" and self._history:
-            if self._hist_idx == -1:
-                self._hist_stash = self._value
-                self._hist_idx = len(self._history) - 1
-            elif self._hist_idx > 0:
-                self._hist_idx -= 1
-            else:
-                return True
-            self._value = self._history[self._hist_idx]
-            self._cursor = len(self._value)
-            self._update_select_list()
-            return True
-        if event.key == "down" and self._hist_idx >= 0:
-            if self._hist_idx < len(self._history) - 1:
-                self._hist_idx += 1
-                self._value = self._history[self._hist_idx]
-            else:
-                self._hist_idx = -1
-                self._value = self._hist_stash
-            self._cursor = len(self._value)
-            self._update_select_list()
-            return True
-
-        # Printable
-        if len(event.key) == 1 and not event.ctrl and not event.alt:
-            self._value = (
-                self._value[: self._cursor] + event.key + self._value[self._cursor :]
-            )
-            self._cursor += 1
-            self._update_select_list()
-            return True
-
-        return False
+        plain = sanitize_terminal_text(self.text).replace("\n", " ")
+        return [theme_dim(truncate_to_width(plain, max(1, width), "…"))]
 
 
 # ── ChatApp — main application (matching OpenClaw's runTui) ──────────
@@ -909,7 +652,7 @@ class ChatApp:
         }
 
         self._send_queue: queue.Queue[dict[str, Any]] = queue.Queue()
-        self._recv_queue: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._recv_queue = EventQueue()
 
         # Active run tracking (matching OpenClaw)
         self._active_run_id: str | None = None
@@ -918,6 +661,7 @@ class ChatApp:
         self._exit_requested = False
         self._has_connected = False
         self._details_expanded = False
+        self._details_open = False
         self._history_format = 1
         self._history_tools: dict[str, ToolMessage] = {}
         self._replaying_history = False
@@ -928,6 +672,9 @@ class ChatApp:
         self._context_window = 0
         self._streaming_output_chars = 0  # tracks chars during streaming for live status
         self._turn_input_chars = 0  # chars of input context sent this turn
+        self._active_text: str | None = None
+        self._aborting_run_id: str | None = None
+        self._restored_run_ids: set[str] = set()
 
         # Todo checklist state (ephemeral, within-turn only)
         self._todo_text: Text | None = None
@@ -947,29 +694,36 @@ class ChatApp:
         # Build component tree (matching OpenClaw tui.ts exactly)
         self._tui = TUI()
 
+        # Public/private compatibility handles remain available, but header and
+        # the former status container are no longer duplicate rendered surfaces.
         self._header = Text("", 1, 0)
         self._chat_log = ChatLog()
         self._todo_container = Container()
         self._goal_container = Container()
+        self._work_container = Container()
+        self._work_summary = CompactText("", 0, 0)
+        self._work_container.add_child(self._work_summary)
         self._status_container = Container()
-        self._footer = Text("", 1, 0)
+        self._footer = _StatusLine()
         self._editor = CustomEditor()
+        self._queue_container = Container()
+        self._queue_summary = CompactText("", 0, 0)
+        self._queue_container.add_child(self._queue_summary)
+        self._details_panel = BoundedDetails(self._detail_records, max_rows=8)
+        self._banner_added = False
 
-        # Status components (swapped dynamically like OpenClaw)
-        self._status_text: Text | None = Text(theme_dim("connecting..."), 1, 0)
-        self._status_loader: Loader | None = None
-        self._status_container.add_child(self._status_text)
+        self._status_text: Text | None = self._footer
+        self._status_loader = None
+        self._layout = InlineLayout(
+            transcript=self._chat_log,
+            work=self._work_container,
+            status=self._footer,
+            editor=self._editor,
+            details=None,
+            queue=None,
+        )
 
-        root = Container()
-        root.add_child(self._header)
-        root.add_child(self._chat_log)
-        root.add_child(self._todo_container)
-        root.add_child(self._goal_container)
-        root.add_child(self._status_container)
-        root.add_child(self._footer)
-        root.add_child(self._editor)
-
-        self._tui.add_child(root)
+        self._tui.add_child(self._layout)
         self._tui.set_focus(self._editor)
         self._tui.add_input_listener(self._handle_global_input)
 
@@ -982,13 +736,44 @@ class ChatApp:
         self._editor.on_escape = self._handle_escape
 
     def _handle_global_input(self, event: KeyEvent) -> dict[str, object] | None:
-        """Toggle retained reasoning and tool output detail."""
+        """Route bounded detail navigation before cancellation."""
+        if event.matches("ctrl+z"):
+            if not self._tui.suspend():
+                self._set_activity_status("suspend is not supported on this platform")
+            return {"consume": True}
+        if self._editor.autocomplete_active:
+            return None
+        if self._details_open:
+            if event.matches("escape"):
+                self._close_details()
+                return {"consume": True}
+            if any(event.matches(key) for key in ("left", "right", "pageup", "pagedown")):
+                self._details_panel.handle_input(event)
+                self._tui.request_render()
+                return {"consume": True}
+        if event.matches("escape") and self._active_run_id is not None:
+            self._handle_escape()
+            return {"consume": True}
         if not event.matches("ctrl+o"):
             return None
-        self._details_expanded = not self._details_expanded
-        self._chat_log.set_details_expanded(self._details_expanded)
+        self._details_open = not self._details_open
+        if self._details_open:
+            self._details_panel.show_latest()
+        self._details_expanded = self._details_open
+        self._layout.details = self._details_panel if self._details_open else None
         self._tui.request_render()
         return {"consume": True}
+
+    def _close_details(self) -> None:
+        self._details_open = False
+        self._details_expanded = False
+        self._layout.details = None
+        self._tui.set_focus(self._editor)
+        self._editor.set_focus(True)
+        self._tui.request_render()
+
+    def _detail_records(self) -> tuple[DetailRecord, ...]:
+        return self._chat_log.detail_records()
 
     def run(self) -> None:
         self._io_thread.start()
@@ -1023,27 +808,42 @@ class ChatApp:
             self._tui.request_render()
 
     def _handle_escape(self) -> None:
-        """Handle Escape — abort active request (matching OpenClaw)."""
-        if self._active_run_id:
-            self._send_queue.put({
-                "type": "abort",
-                "group_id": self._state.get("group_id", "main"),
-                "run_id": self._active_run_id,
-            })
-            queued = list(self._pending_messages)
-            self._pending_messages.clear()
-            if queued:
-                queued_text = "\n\n".join(queued)
-                draft = self._editor.get_text()
-                self._editor.set_text("\n\n".join(
-                    text for text in (queued_text, draft) if text.strip()
-                ))
-            self._chat_log.add_system("cancelling run")
-            self._chat_log.drop_assistant(self._active_run_id)
-            for tool in self._chat_log._tools.values():
-                tool.set_canceled()
-            self._set_activity_status("cancelling")
-            self._tui.request_render()
+        """Abort once, restore pending text, and quarantine late run events."""
+        if self._details_open:
+            self._close_details()
+            return
+        run_id = self._active_run_id
+        if run_id is None or self._aborting_run_id == run_id:
+            return
+        self._aborting_run_id = run_id
+        self._send_queue.put({
+            "type": "abort",
+            "group_id": self._state.get("group_id", "main"),
+            "run_id": run_id,
+        })
+        self._restore_pending_draft(run_id)
+        self._chat_log.add_system("cancelling run")
+        self._chat_log.drop_assistant(run_id)
+        for tool in self._chat_log._tools.values():
+            tool.set_canceled()
+        self._update_queue_summary()
+        self._set_activity_status("cancelling")
+        self._tui.request_render()
+
+    def _restore_pending_draft(self, run_id: str) -> None:
+        """Restore active, queued, and currently typed text exactly once."""
+        if run_id in self._restored_run_ids:
+            return
+        queued = tuple(self._pending_messages)
+        self._pending_messages.clear()
+        draft = self._editor.get_text()
+        restored = "\n\n".join(
+            text for text in (self._active_text or "", *queued, draft) if text.strip()
+        )
+        if restored:
+            self._editor.set_text(restored)
+        self._restored_run_ids.add(run_id)
+        self._update_queue_summary()
 
     def _request_exit(self) -> None:
         """Request clean exit (matching OpenClaw's requestExit)."""
@@ -1052,58 +852,48 @@ class ChatApp:
         self._exit_requested = True
         self._tui.stop()
 
-    # ── Status management (matching OpenClaw's renderStatus) ──────────
+    # ── Status management ─────────────────────────────────────────────
 
-    def _ensure_status_text(self) -> None:
-        if self._status_text is not None:
-            return
-        self._status_container.clear()
-        if self._status_loader:
-            self._status_loader.stop()
-            self._status_loader = None
-        self._status_text = Text("", 1, 0)
-        self._status_container.add_child(self._status_text)
-
-    def _ensure_status_loader(self) -> None:
-        if self._status_loader is not None:
-            return
-        self._status_container.clear()
-        self._status_text = None
-        self._status_loader = Loader(
-            self._tui,
-            lambda s: theme_accent(s),
-            lambda t: _bold(theme_accent_soft(t)),
-            "",
-        )
-        self._status_container.add_child(self._status_loader)
-
-    _BUSY_STATES = {"sending", "waiting", "streaming", "running"}
+    _BUSY_STATES = frozenset({"sending", "waiting", "streaming", "running"})
 
     def _render_status(self) -> None:
-        """Render status bar (matching OpenClaw's renderStatus exactly)."""
-        activity = self._state.get("activity_status", "idle")
-        conn = self._state.get("connection_status", "connecting")
-        is_busy = activity in self._BUSY_STATES
-
-        if is_busy:
+        """Render activity and metadata into one stable bounded row."""
+        activity = str(self._state.get("activity_status", "idle"))
+        conn = str(self._state.get("connection_status", "connecting"))
+        if activity in self._BUSY_STATES:
             if self._status_started is None or self._last_activity_status != activity:
                 self._status_started = time.time()
-            self._ensure_status_loader()
-            if activity == "waiting":
-                self._update_busy_status()
-            else:
-                self._update_busy_status()
+            self._update_busy_status()
         else:
             self._status_started = None
-            if self._status_loader:
-                self._status_loader.stop()
-                self._status_loader = None
-            self._ensure_status_text()
-            text = f"{conn} | {activity}" if activity else conn
-            if self._status_text:
-                self._status_text.set_text(theme_dim(text))
-
+            self._set_status_line(activity, conn)
         self._last_activity_status = activity
+
+    def _set_status_line(self, activity: str, connection: str) -> None:
+        metadata = self._status_metadata()
+        parts = [f"{connection} | {activity}" if activity else connection]
+        if self._pending_messages:
+            parts.append(f"queued {len(self._pending_messages)}")
+        if metadata:
+            parts.append(metadata)
+        self._footer.set_text(" | ".join(parts))
+
+    def _status_metadata(self) -> str:
+        st = self._state
+        session_short = str(st.get("session_id", "?"))[:12]
+        model = str(st.get("model", "unknown"))
+        group = str(st.get("group_id", "main"))
+        usage = self._usage
+        stats = [f"↑{_format_tokens(usage['input'])}", f"↓{_format_tokens(usage['output'])}"]
+        if usage["cache_read"]:
+            stats.append(f"R{_format_tokens(usage['cache_read'])}")
+        if usage["cache_write"]:
+            stats.append(f"W{_format_tokens(usage['cache_write'])}")
+        if self._context_window > 0:
+            context_tokens = _context_usage_tokens(self._last_turn_usage, usage)
+            pct = min(100.0, context_tokens / self._context_window * 100) if context_tokens else 0
+            stats.append(f"{pct:.0f}%/{_format_tokens(self._context_window)}")
+        return " | ".join((f"agent {group}", f"session {session_short}", model, " ".join(stats)))
 
     def _set_activity_status(self, status: str) -> None:
         """Set activity status and re-render status bar (matching OpenClaw)."""
@@ -1149,26 +939,21 @@ class ChatApp:
         return " ".join(parts)
 
     def _update_busy_status(self) -> None:
-        """Update busy status message (matching OpenClaw's updateBusyStatusMessage)."""
-        if not self._status_loader or self._status_started is None:
+        """Update the busy activity in the single status row."""
+        if self._status_started is None:
             return
-        activity = self._state.get("activity_status", "")
-        conn = self._state.get("connection_status", "connecting")
+        activity = str(self._state.get("activity_status", ""))
+        conn = str(self._state.get("connection_status", "connecting"))
         elapsed = self._format_elapsed()
         tokens = self._format_live_tokens()
         token_part = f" {tokens}" if tokens else ""
-
         if activity == "waiting":
             self._waiting_tick += 1
-            phrase = self._waiting_phrase or _pick_waiting_phrase(
-                self._waiting_tick
-            )
-            msg = _build_waiting_status(
-                self._waiting_tick, elapsed, conn, phrase
-            )
-            self._status_loader.set_message(f"{msg}{token_part}")
+            phrase = self._waiting_phrase or _pick_waiting_phrase(self._waiting_tick)
+            label = f"{phrase}… • {elapsed}{token_part}"
         else:
-            self._status_loader.set_message(f"{activity} • {elapsed} | {conn}{token_part}")
+            label = f"{activity} • {elapsed}{token_part}"
+        self._set_status_line(label, conn)
 
     # ── Todo checklist rendering ──────────────────────────────────────
 
@@ -1204,6 +989,7 @@ class ChatApp:
             self._todo_container.add_child(self._todo_text)
         else:
             self._todo_text.set_text(display)
+        self._refresh_work_summary()
 
     def _clear_todos(self) -> None:
         """Clear the todo checklist display."""
@@ -1211,6 +997,7 @@ class ChatApp:
             self._todo_container.clear()
             self._todo_text = None
         self._last_todos = []
+        self._refresh_work_summary()
 
     def _finalize_todos(self) -> None:
         """Mark all todo items as completed on turn end (keep visible)."""
@@ -1275,6 +1062,7 @@ class ChatApp:
             self._goal_container.clear()
             self._goal_text = None
         self._last_goal = None
+        self._refresh_work_summary()
 
     def _finalize_goal(self) -> None:
         """On turn end, clear goal widget if completed/abandoned, otherwise keep."""
@@ -1284,56 +1072,54 @@ class ChatApp:
         if status in ("completed", "abandoned"):
             self._clear_goal()
 
+    def _refresh_work_summary(self) -> None:
+        """Show bounded goal/todo progress without rendering full checklists."""
+        lines: list[str] = []
+        if self._last_goal is not None:
+            tasks = self._last_goal.get("tasks", [])
+            done = sum(1 for task in tasks if task.get("status") in {"completed", "skipped"})
+            title = sanitize_terminal_text(str(self._last_goal.get("title", "goal"))).replace("\n", " ")
+            lines.append(f"goal: {title} ({done}/{len(tasks)})")
+        if self._last_todos:
+            done = sum(1 for item in self._last_todos if item.get("status") == "completed")
+            active = next(
+                (sanitize_terminal_text(str(item.get("content", ""))).replace("\n", " ")
+                 for item in self._last_todos if item.get("status") == "in_progress"),
+                "",
+            )
+            suffix = f" • {active}" if active else ""
+            lines.append(f"todos: {done}/{len(self._last_todos)}{suffix}")
+        self._work_summary.set_text(theme_dim("\n".join(lines)) if lines else "")
+
+    def _update_queue_summary(self) -> None:
+        """Render queue count and next-message preview in the auxiliary slot."""
+        self._render_status()
+        if not self._pending_messages:
+            self._layout.queue = None
+            return
+        preview = sanitize_terminal_text(self._pending_messages[0]).replace("\n", " ↵ ")
+        self._queue_summary.set_text(theme_system(f"queued {len(self._pending_messages)} • next: {preview}"))
+        self._layout.queue = self._queue_container
+
     # ── Header/footer (matching OpenClaw's updateHeader/updateFooter) ─
 
     def _update_header(self) -> None:
+        """Append the startup identity to durable transcript once."""
         st = self._state
-        session_short = st.get("session_id", "?")[:12]
+        session_short = str(st.get("session_id", "?"))[:12]
         text = (
             f"claw tui - {st.get('socket_url', '')} "
             f"- agent {st.get('group_id', 'main')} "
             f"- session {session_short}"
         )
         self._header.set_text(theme_header(text))
+        if not self._banner_added:
+            self._chat_log.add_child(self._header)
+            self._banner_added = True
 
     def _update_footer(self) -> None:
-        """Update footer with SESSION-LEVEL cumulative token stats."""
-        st = self._state
-        session_short = st.get("session_id", "?")[:12]
-        model = st.get("model", "unknown")
-        group = st.get("group_id", "main")
-
-        # Build token stats (matching OpenClaw: ↑input ↓output Rcache_read)
-        stats: list[str] = []
-        u = self._usage
-        # Always show input/output — even when zero — so the display is stable
-        stats.append(f"↑{_format_tokens(u['input'])}")
-        stats.append(f"↓{_format_tokens(u['output'])}")
-        if u["cache_read"]:
-            stats.append(f"R{_format_tokens(u['cache_read'])}")
-        if u["cache_write"]:
-            stats.append(f"W{_format_tokens(u['cache_write'])}")
-
-        # Context usage (matching OpenClaw: percent%/context_window)
-        if self._context_window > 0:
-            context_tokens = _context_usage_tokens(self._last_turn_usage, u)
-            pct = (
-                min(100.0, context_tokens / self._context_window * 100)
-                if context_tokens > 0
-                else 0
-            )
-            ctx_str = f"{pct:.0f}%/{_format_tokens(self._context_window)}"
-            stats.append(ctx_str)
-
-        token_str = " ".join(stats) if stats else "tokens 0/0"
-
-        parts = [
-            f"agent {group}",
-            f"session {session_short}",
-            model,
-            token_str,
-        ]
-        self._footer.set_text(theme_dim(" | ".join(parts)))
+        """Refresh metadata in the single status row."""
+        self._render_status()
 
     # ── Input submission (matching OpenClaw's createEditorSubmitHandler) ─
 
@@ -1376,8 +1162,12 @@ class ChatApp:
             return
 
         if self._active_run_id is not None:
+            if self._aborting_run_id == self._active_run_id:
+                self._editor.set_text(value)
+                self._tui.request_render()
+                return
             self._pending_messages.append(value)
-            self._set_activity_status(f"queued messages: {len(self._pending_messages)}")
+            self._update_queue_summary()
             self._tui.request_render()
             return
 
@@ -1386,6 +1176,8 @@ class ChatApp:
         self._clear_goal()   # clear goal widget from previous turn
         self._chat_log.add_user(value)
         self._active_run_id = f"run-{uuid.uuid4().hex}"
+        self._active_text = value
+        self._aborting_run_id = None
         self._set_waiting(True)
         self._streaming_output_chars = 0
         # Estimate input for this turn: all prior session context + this message
@@ -1401,6 +1193,7 @@ class ChatApp:
         if self._active_run_id is not None or not self._pending_messages:
             return
         next_message = self._pending_messages.popleft()
+        self._update_queue_summary()
         self._handle_submit(next_message)
 
     # ── Per-frame polling (matching OpenClaw's event loop) ──
@@ -1416,9 +1209,10 @@ class ChatApp:
             except queue.Empty:
                 break
 
-        if self._waiting:
+        if self._waiting and self._status_started is not None:
+            previous_status = self._footer.text
             self._update_busy_status()
-            changed = True
+            changed = changed or self._footer.text != previous_status
 
         if changed:
             self._tui.request_render()
@@ -1477,8 +1271,13 @@ class ChatApp:
                     )
                 tool.set_result(result, is_error=bool(entry.get("is_error", False)))
 
-    def _handle_response(self, msg: dict[str, Any]) -> None:
+    def _handle_response(self, msg: Mapping[str, Any]) -> None:
+        msg = thaw_event(msg)
         msg_type = msg.get("type")
+        if msg_type in {"todo", "goal"} and msg.get("run_id"):
+            run_id = str(msg["run_id"])
+            if run_id != self._active_run_id or run_id == self._aborting_run_id:
+                return
 
         if msg_type == "pong":
             # Use session ID from gateway if available (resume existing session),
@@ -1591,17 +1390,26 @@ class ChatApp:
             run_id = str(msg.get("run_id", ""))
             if self._active_run_id is None or run_id != self._active_run_id:
                 return
+            if run_id == self._aborting_run_id:
+                if msg_type in {"response", "final", "aborted", "error"}:
+                    self._chat_log.drop_assistant(run_id)
+                    self._active_run_id = None
+                    self._active_text = None
+                    self._aborting_run_id = None
+                    self._set_waiting(False)
+                    if msg_type == "aborted":
+                        self._chat_log.add_system("run aborted")
+                return
 
         if msg_type in ("busy", "queued"):
             run_id = str(msg.get("run_id", ""))
             if run_id == self._active_run_id:
+                self._restore_pending_draft(run_id)
                 self._active_run_id = None
+                self._active_text = None
+                self._aborting_run_id = None
                 self._set_waiting(False)
                 self._chat_log.add_system("group is busy; message restored to editor")
-                # The submitted text is already in editor history; restore the
-                # newest entry as an editable draft rather than losing it.
-                if self._editor._history:
-                    self._editor.set_text(self._editor._history[-1])
             return
 
         if msg_type == "run_ack":
@@ -1666,6 +1474,8 @@ class ChatApp:
             content = msg.get("content", "")
             self._set_waiting(False)
             self._active_run_id = None
+            self._active_text = None
+            self._aborting_run_id = None
             self._streaming_output_chars = 0
             self._finalize_todos()
             # Clear goal widget only if goal is completed/abandoned;
@@ -1708,6 +1518,8 @@ class ChatApp:
             run_id = msg.get("run_id", "default")
             self._set_waiting(False)
             self._active_run_id = None
+            self._active_text = None
+            self._aborting_run_id = None
             self._clear_todos()
             self._chat_log.add_system("run aborted")
             self._chat_log.drop_assistant(run_id)
@@ -1715,14 +1527,24 @@ class ChatApp:
 
         # Error (matching OpenClaw's chat event: state=error)
         if msg_type in ("error", "internal_error"):
-            run_id = msg.get("run_id", "default")
+            run_id = str(msg.get("run_id", "default"))
+            if msg_type == "internal_error" and self._active_run_id is not None:
+                run_id = self._active_run_id
+                self._restore_pending_draft(run_id)
+                self._active_text = None
+                for tool in self._chat_log._tools.values():
+                    tool.set_canceled()
+                self._update_queue_summary()
+            if msg_type == "error" and self._active_run_id == run_id:
+                self._restore_pending_draft(run_id)
+                self._active_text = None
             self._set_waiting(False)
             self._active_run_id = None
+            self._aborting_run_id = None
             self._clear_todos()
             err = msg.get("message", msg.get("content", "Unknown error"))
             self._chat_log.add_system(theme_error(f"Error: {err}"))
             self._chat_log.drop_assistant(run_id)
-            self._dispatch_next_pending()
             return
 
         if msg_type == "reset_ack":
@@ -1762,6 +1584,12 @@ class ChatApp:
     def _io_loop(self) -> None:
         try:
             asyncio.run(self._io_loop_async())
+        except asyncio.CancelledError:
+            if not self._exit_requested:
+                self._recv_queue.put({
+                    "type": "internal_error",
+                    "message": "Gateway connection task was cancelled",
+                })
         except Exception as e:
             # Never let IO thread exceptions spill into the TUI terminal
             self._recv_queue.put({

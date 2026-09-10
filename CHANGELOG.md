@@ -12,6 +12,48 @@ Nothing yet.
 
 ---
 
+## [2.2.0] — 2026-09-10
+
+### Added
+
+- **Lossless protocol-native proxying** (`xdog-ai`). `/v1/messages`,
+  `/v1/messages/count_tokens`, `/v1/responses`, and
+  `/v1/chat/completions` now route through immutable native requests when the
+  selected model advertises the exact wire protocol. Current, beta,
+  vendor-specific, and unknown future fields survive without being projected
+  through provider-neutral message types, and native JSON/SSE status, errors,
+  framing, and safe response headers are retained.
+- **Anthropic token counting** (`xdog-ai`). Native Anthropic-capable models use
+  the upstream count endpoint without generating a message. Known models that
+  lack that capability receive a deterministic estimate marked with
+  `x-xdog-upstream-protocol: best-effort`; authentication, transport, and
+  upstream failures never fall back to estimation.
+- **Inline terminal rendering primitives** (`xdog-tui`). Main-buffer rendering,
+  bounded details, inline layouts, event queuing, and expanded terminal
+  lifecycle handling are now reusable library components, with acceptance and
+  regression coverage across coding and claw.
+
+### Changed
+
+- **Coding and claw TUIs now share the compact inline behavior** (`xdog-coding`,
+  `xdog-claw`, `xdog-tui`). Prompt editing, assistant output, tool execution,
+  permission prompts, footer rendering, scrollback preservation, and terminal
+  restoration now use the common TUI implementation.
+- **Copilot model metadata records exact generation protocols** (`xdog-ai`).
+  Native Responses, Chat Completions, and Anthropic requests are admitted only
+  when the synchronized catalog advertises the requested protocol; Responses
+  keeps a strict stateless best-effort fallback while Chat remains
+  native-only.
+
+### Security
+
+- **Proxy credentials stay listener-local** (`xdog-ai`). Client
+  `Authorization` and `x-api-key` headers are excluded from native upstream
+  requests, vendor-resolved credentials remain authoritative, and transport
+  failures are returned without exposing sensitive upstream details.
+
+---
+
 ## [2.1.2] — 2026-08-13
 
 ### Fixed

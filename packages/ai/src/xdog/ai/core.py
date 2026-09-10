@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from xdog.ai.native import NativeEventStream, NativeOperation, NativeResponse, ProtocolRequest
     from xdog.ai.types import (
         AssistantMessage,
         Context,
@@ -58,6 +59,18 @@ class BaseProvider(ABC):
     @abstractmethod
     async def web_search(self, model: str, query: str) -> AssistantMessage: ...
 
+    def supports_native_request(self, model: str, request: ProtocolRequest) -> bool:
+        """Report native request support without authentication or I/O."""
+        return False
+
+    async def request_complete(self, model: str, request: ProtocolRequest) -> NativeResponse:
+        """Execute a lossless protocol-native request when supported."""
+        raise NotImplementedError(f"Provider {self.id!r} does not support protocol-native requests")
+
+    async def request_stream(self, model: str, request: ProtocolRequest) -> NativeEventStream:
+        """Open a lossless protocol-native event stream when supported."""
+        raise NotImplementedError(f"Provider {self.id!r} does not support protocol-native requests")
+
     @abstractmethod
     async def login(self) -> str: ...
 
@@ -78,6 +91,30 @@ class BaseProtocol(ABC):
 
     @abstractmethod
     def stream(self, model: Model, context: Context, options: StreamOptions, auth: AuthResult) -> EventStream[AssistantMessage]: ...
+
+    def supports_native_operation(self, operation: NativeOperation) -> bool:
+        """Report which constrained native operations this protocol supports."""
+        from xdog.ai.native import NativeOperation
+
+        return operation is NativeOperation.GENERATE
+
+    def native_auth_context(self, request: ProtocolRequest) -> Context:
+        """Project a native request into the context needed for vendor auth."""
+        from xdog.ai.types import Context
+
+        return Context()
+
+    async def request_complete(
+        self, model: Model, request: ProtocolRequest, auth: AuthResult,
+    ) -> NativeResponse:
+        """Execute a protocol-native request when supported."""
+        raise NotImplementedError(f"Protocol {self.id!r} does not support protocol-native requests")
+
+    async def request_stream(
+        self, model: Model, request: ProtocolRequest, auth: AuthResult,
+    ) -> NativeEventStream:
+        """Open a protocol-native event stream when supported."""
+        raise NotImplementedError(f"Protocol {self.id!r} does not support protocol-native requests")
 
     async def embed(self, model: Model, request: EmbeddingRequest, auth: AuthResult) -> EmbeddingResponse:
         raise NotImplementedError(f"Protocol {self.id!r} does not support embeddings")

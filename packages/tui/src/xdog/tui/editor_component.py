@@ -34,8 +34,8 @@ class EditorComponent(Protocol):
         """Replace the current text content."""
         ...
 
-    def handle_input(self, event: KeyEvent) -> None:
-        """Handle a parsed key event."""
+    def handle_input(self, event: KeyEvent) -> bool:
+        """Handle a parsed key event and report whether it was consumed."""
         ...
 
     def render(self, width: int) -> list[str]:
@@ -59,6 +59,10 @@ class EditorComponent(Protocol):
 
     def add_to_history(self, text: str) -> None:
         """Add *text* to history for up/down navigation."""
+        ...
+
+    def reset_history(self) -> None:
+        """Clear history and any in-progress navigation state."""
         ...
 
     # =========================================================================
@@ -96,4 +100,8 @@ class EditorComponent(Protocol):
 
     def set_autocomplete_max_visible(self, max_visible: int) -> None:
         """Set max visible items in autocomplete dropdown."""
+        ...
+
+    def set_render_budget(self, max_rows: int, show_borders: bool = True) -> None:
+        """Set the total rows available for editor and autocomplete output."""
         ...

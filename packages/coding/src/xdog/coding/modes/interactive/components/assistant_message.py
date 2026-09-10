@@ -25,6 +25,16 @@ class AssistantMessageComponent(Container):
         self.add_child(self._body)
         self.set_content(text, thinking=thinking)
 
+    @property
+    def detail_title(self) -> str:
+        """Stable title used by bounded detail providers."""
+        return "reasoning"
+
+    @property
+    def detail_body(self) -> str:
+        """Return the complete retained reasoning content."""
+        return self._thinking_content
+
     def set_text(self, text: str) -> None:
         """Update response text while preserving current reasoning text."""
         self._body.set_text(sanitize_terminal_text(text))
@@ -49,5 +59,5 @@ class AssistantMessageComponent(Container):
         elif self._expanded:
             rendered = f"Thinking\n{self._thinking_content}"
         else:
-            rendered = "Thinking (Ctrl+O to expand)"
+            rendered = "Thinking (Ctrl+O: details below input · ←/→ select entry)"
         self._thinking.set_text(self._theme.dim(rendered))
