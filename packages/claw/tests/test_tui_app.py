@@ -31,7 +31,8 @@ def test_chat_log_renders_structured_tool_result_with_detail_toggle() -> None:
     log.set_details_expanded(False)
     collapsed = _rendered(log)
     assert "bash" in collapsed
-    assert "more chars" in collapsed
+    assert "2 hidden lines" in collapsed
+    assert "└ first line" in collapsed
     assert "CLAW-TOOL-RESULT-TAIL" not in collapsed
 
     log.set_details_expanded(True)
@@ -123,4 +124,6 @@ def test_chat_app_consumes_structured_tool_events_and_ctrl_o() -> None:
     assert app._handle_global_input(KeyEvent(key="o", ctrl=True)) == {"consume": True}
     assert "STRUCTURED-TAIL" not in _rendered(app._chat_log)
     assert app._layout.details is app._details_panel
+    assert app._details_panel.render(100)[1] == "first"
+    app._details_panel.handle_input(KeyEvent(key="end"))
     assert "STRUCTURED-TAIL" in "\n".join(app._details_panel.render(100))

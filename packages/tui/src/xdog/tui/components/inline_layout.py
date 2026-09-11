@@ -17,8 +17,9 @@ class CompactText(Text):
 class InlineLayout(Component):
     """Compose durable transcript rows with a terminal-height-bounded tail.
 
-    The transient tail contains, in order, an optional work summary, exactly one
-    status row, the editor, and at most one auxiliary surface. Auxiliary priority
+    The transient tail contains, in order, an optional work summary, at most one
+    auxiliary surface, one status row, the editor and optional hints. Details and permission panels appear
+    after the editor. Auxiliary priority
     is permission, details/autocomplete, then queue.
     """
 
@@ -33,7 +34,9 @@ class InlineLayout(Component):
         details: Component | None = None,
         queue: Component | None = None,
         render_height: int = 24,
+        hints: Component | None = None,
     ) -> None:
+        self.hints = hints
         self.transcript = transcript
         self.work = work
         self.status = status
@@ -50,10 +53,14 @@ class InlineLayout(Component):
         children = [self.transcript]
         if self.work is not None:
             children.append(self.work)
-        children.extend((self.status, self.editor))
         auxiliary = self._auxiliary()
-        if auxiliary is not None:
+        if auxiliary is not None and auxiliary is not self.details and auxiliary is not self.permission:
             children.append(auxiliary)
+        children.extend((self.status, self.editor))
+        if auxiliary is not None and (auxiliary is self.details or auxiliary is self.permission):
+            children.append(auxiliary)
+        if self.hints is not None:
+            children.append(self.hints)
         return children
 
     def set_height(self, height: int) -> None:
@@ -72,10 +79,11 @@ class InlineLayout(Component):
 
         # Status and editor stay visible. The auxiliary surface is bounded first,
         # then any remaining rows are offered to the work summary.
+        hint_lines = self.hints.render(width)[:1] if self.hints is not None and self.render_height >= 10 else []
         minimum_editor_rows = 1
         auxiliary_budget = max(
             0,
-            self.render_height - len(status_lines) - minimum_editor_rows,
+            min(12, self.render_height - len(status_lines) - len(hint_lines) - minimum_editor_rows),
         )
         set_auxiliary_budget = getattr(auxiliary, "set_render_budget", None)
         if callable(set_auxiliary_budget):
@@ -84,7 +92,7 @@ class InlineLayout(Component):
         auxiliary_lines = raw_auxiliary[-auxiliary_budget:] if auxiliary_budget else []
         editor_budget = max(
             minimum_editor_rows,
-            self.render_height - len(status_lines) - len(auxiliary_lines),
+            self.render_height - len(status_lines) - len(auxiliary_lines) - len(hint_lines),
         )
         set_budget = getattr(self.editor, "set_render_budget", None)
         if callable(set_budget):
@@ -94,7 +102,7 @@ class InlineLayout(Component):
             show_autocomplete(self.permission is None)
         editor_lines = self.editor.render(width)[-editor_budget:]
 
-        fixed_rows = len(status_lines) + len(editor_lines) + len(auxiliary_lines)
+        fixed_rows = len(status_lines) + len(editor_lines) + len(auxiliary_lines) + len(hint_lines)
         work_budget = max(0, self.render_height - fixed_rows)
         bounded_work = work_lines[-work_budget:] if work_budget else []
         omitted = len(work_lines) - len(bounded_work)
@@ -102,7 +110,17 @@ class InlineLayout(Component):
             status_lines = [truncate_to_width(
                 f"{omitted} work summaries hidden | " + status_lines[0], width, "…",
             )]
-        return transcript_lines + bounded_work + status_lines + editor_lines + auxiliary_lines
+        # Decorative spacing uses spare rows only; never displace input or panels.
+        status_gap = [""] if (
+            transcript_lines and status_lines
+            and fixed_rows + len(bounded_work) < self.render_height
+        ) else []
+        if auxiliary is self.details or auxiliary is self.permission:
+            return (
+                transcript_lines + bounded_work + status_gap + status_lines
+                + editor_lines + auxiliary_lines + hint_lines
+            )
+        return transcript_lines + bounded_work + auxiliary_lines + status_gap + status_lines + editor_lines + hint_lines
 
     def invalidate(self) -> None:
         for child in self.children:

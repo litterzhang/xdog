@@ -44,17 +44,69 @@ class ResponseFormatError(ValueError):
 
 
 _REASONING_ID_PREFIX = "rs_xdog_v1_"
+_REASONING_ID_COMPACT_PREFIX = "rs_xdog_v2_"
+_REASONING_ENVELOPE_PREFIX = "xdog:v2:"
+_RESPONSE_ITEM_ID_MAX_LENGTH = 64
+
+
+def _compact_reasoning_id(original: str) -> str:
+    digest = base64.urlsafe_b64encode(hashlib.sha256(original.encode()).digest()).decode().rstrip("=")
+    return _REASONING_ID_COMPACT_PREFIX + digest
 
 
 def _client_reasoning_id(original: str) -> str:
     # Codex strips unprefixed item IDs before replay. Copilot may use opaque IDs
-    # containing +, /, and =. Encode those losslessly, not as new random IDs.
-    if re.fullmatch(r"rs_[A-Za-z0-9_-]+", original) and not original.startswith(_REASONING_ID_PREFIX):
+    # containing +, /, and =. Encode those losslessly when the resulting item ID
+    # fits; longer replayable IDs use a compact alias plus an encrypted envelope.
+    if (
+        len(original) <= _RESPONSE_ITEM_ID_MAX_LENGTH
+        and re.fullmatch(r"rs_[A-Za-z0-9_-]+", original)
+        and not original.startswith((_REASONING_ID_PREFIX, _REASONING_ID_COMPACT_PREFIX))
+    ):
         return original
-    return _REASONING_ID_PREFIX + base64.urlsafe_b64encode(original.encode()).decode().rstrip("=")
+    encoded = _REASONING_ID_PREFIX + base64.urlsafe_b64encode(original.encode()).decode().rstrip("=")
+    return encoded if len(encoded) <= _RESPONSE_ITEM_ID_MAX_LENGTH else _compact_reasoning_id(original)
+
+
+def _reasoning_envelope(original_id: str, encrypted_content: str) -> str:
+    payload = json.dumps(
+        {"id": original_id, "encrypted_content": encrypted_content},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode()
+    return _REASONING_ENVELOPE_PREFIX + base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+
+def _unpack_reasoning_envelope(value: str, item_id: str, param: str) -> tuple[str, str]:
+    if not re.fullmatch(r"rs_xdog_v2_[A-Za-z0-9_-]{43}", item_id):
+        raise InvalidRequest("Invalid proxy reasoning item id", param)
+    encoded = value[len(_REASONING_ENVELOPE_PREFIX):]
+    try:
+        payload = json.loads(base64.b64decode(
+            encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True,
+        ))
+        if not isinstance(payload, dict):
+            raise ValueError("Invalid reasoning envelope")
+        original_id = payload.get("id")
+        encrypted_content = payload.get("encrypted_content")
+        if (
+            not isinstance(original_id, str)
+            or not original_id
+            or not isinstance(encrypted_content, str)
+            or _compact_reasoning_id(original_id) != item_id
+            or _reasoning_envelope(original_id, encrypted_content) != value
+        ):
+            raise ValueError("Invalid reasoning envelope")
+        return original_id, encrypted_content
+    except (json.JSONDecodeError, UnicodeError, ValueError) as exc:
+        raise InvalidRequest("Invalid proxy reasoning item id", param) from exc
 
 
 def _upstream_reasoning_id(value: str, param: str) -> str:
+    if value.startswith(_REASONING_ID_COMPACT_PREFIX):
+        if not re.fullmatch(r"rs_xdog_v2_[A-Za-z0-9_-]{43}", value):
+            raise InvalidRequest("Invalid proxy reasoning item id", param)
+        return value
     if not value.startswith(_REASONING_ID_PREFIX):
         return value
     encoded = value[len(_REASONING_ID_PREFIX):]
@@ -411,9 +463,17 @@ def parse_request(body: Any) -> tuple[str, Context, StreamOptions, bool]:
                     texts.append(_string(part.get("text"), param))
                 encrypted = item.get("encrypted_content")
                 if encrypted is not None:
-                    _string(encrypted, f"{param}.encrypted_content")
+                    encrypted = _string(encrypted, f"{param}.encrypted_content")
                     item_id = _string(item.get("id"), f"{param}.id", nonempty=True)
-                    item = {**item, "id": _upstream_reasoning_id(item_id, f"{param}.id")}
+                    if item_id.startswith(_REASONING_ID_COMPACT_PREFIX):
+                        if not encrypted.startswith(_REASONING_ENVELOPE_PREFIX):
+                            raise InvalidRequest("Invalid proxy reasoning item id", f"{param}.id")
+                        original_id, encrypted = _unpack_reasoning_envelope(
+                            encrypted, item_id, f"{param}.id",
+                        )
+                        item = {**item, "id": original_id, "encrypted_content": encrypted}
+                    else:
+                        item = {**item, "id": _upstream_reasoning_id(item_id, f"{param}.id")}
                 assistant((ThinkingContent(
                     thinking="\n".join(texts),
                     thinking_signature=json.dumps(item) if encrypted else None,
@@ -500,9 +560,18 @@ def _output_item(
             not isinstance(original_id, str) or not original_id
         ):
             raise ResponseFormatError("Upstream encrypted reasoning is missing its original item id")
-        for key in ("id", "encrypted_content"):
-            if isinstance(signature.get(key), str):
-                item[key] = _client_reasoning_id(signature[key]) if key == "id" else signature[key]
+        encrypted_content = signature.get("encrypted_content")
+        if isinstance(original_id, str):
+            item["id"] = _client_reasoning_id(original_id)
+        if isinstance(encrypted_content, str):
+            if (
+                isinstance(original_id, str)
+                and item["id"].startswith(_REASONING_ID_COMPACT_PREFIX)
+                and len(original_id) <= _RESPONSE_ITEM_ID_MAX_LENGTH
+            ):
+                item["encrypted_content"] = _reasoning_envelope(original_id, encrypted_content)
+            elif not isinstance(original_id, str) or len(original_id) <= _RESPONSE_ITEM_ID_MAX_LENGTH:
+                item["encrypted_content"] = encrypted_content
     return item
 
 

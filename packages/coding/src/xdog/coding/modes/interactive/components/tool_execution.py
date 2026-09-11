@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import base64
+import os
 import re
+import time
 from typing import Any
 
 from xdog.ai.types import ImageContent, ToolResultContentPart
@@ -12,6 +14,7 @@ from xdog.tui.components.bounded_details import streaming_preview
 from xdog.tui.components.diff import Diff
 from xdog.tui.components.image import Image
 from xdog.tui.components.text import Text
+from xdog.tui.components.tool_message import ToolMessage as ToolMessageView
 from xdog.tui.tui import Container
 from xdog.tui.utils import redact_sensitive_text, sanitize_terminal_text
 
@@ -36,7 +39,10 @@ class ToolExecutionComponent(Container):
     ) -> None:
         super().__init__()
         self._theme = theme
-        self._tool_name = sanitize_terminal_text(tool_name)
+        self._view = ToolMessageView()
+        self._started = time.monotonic()
+        self._elapsed: int | None = None
+        self._tool_name = " ".join(sanitize_terminal_text(tool_name).split())
         self._state = "running"  # running → success | error
         self._result_text: Text | None = None
         self._diff_component: Diff | None = None
@@ -44,6 +50,9 @@ class ToolExecutionComponent(Container):
         self._result = ""
         self._is_error = False
         self._expanded = False
+        self._argument_summary = " ".join(_summarize_args(arguments or {}, tool_name).split())
+        command = redact_sensitive_text(str((arguments or {}).get("command", "")))
+        self._command_details = command if tool_name == "bash" and "\n" in command else ""
 
         # Tool call header with state icon
         header_str = self._make_header()
@@ -56,6 +65,24 @@ class ToolExecutionComponent(Container):
             if summary:
                 self.add_child(Text(theme.dim(f"    {summary}"), 0, 0))
 
+    def render(self, width: int) -> list[str]:
+        """Two stable text rows in compact mode; rich output stays expandable."""
+        if self._expanded:
+            return [*super().render(width), ""]
+        header = self._make_header()
+        if self._argument_summary:
+            header += self._theme.dim(f" · {self._argument_summary}")
+        self._view.update(
+            header=header, summary=self._argument_summary, output=self._result,
+            running=self._state == "running",
+            style=self._theme.error if self._is_error else self._theme.dim,
+        )
+        rows = self._view.render(width)[:-1]
+        for child in self.children:
+            if isinstance(child, Image):
+                rows.extend(child.render(width))
+        return [*rows, ""]
+
     @property
     def detail_title(self) -> str:
         """Stable title used by bounded detail providers."""
@@ -64,6 +91,8 @@ class ToolExecutionComponent(Container):
     @property
     def detail_body(self) -> str:
         """Return the complete raw result retained independently of previews."""
+        if self._command_details:
+            return f"Command:\n{self._command_details}\n\nOutput:\n{self._result}"
         return self._result
 
     def _make_header(self) -> str:
@@ -74,7 +103,9 @@ class ToolExecutionComponent(Container):
             "error": "✗",
             "canceled": "■",
         }
-        icon = icons.get(self._state, "⚡")
+        if os.environ.get("XDOG_TUI_ASCII") == "1" or os.environ.get("TERM") == "dumb":
+            icons = {"running": "[run]", "success": "[ok]", "error": "[err]", "canceled": "[stop]"}
+        icon = icons.get(self._state, "[run]")
         color_fns = {
             "running": self._theme.tool,
             "success": self._theme.success,
@@ -82,7 +113,8 @@ class ToolExecutionComponent(Container):
             "canceled": self._theme.dim,
         }
         color_fn = color_fns.get(self._state, self._theme.tool)
-        return color_fn(f"  {icon} {self._tool_name}")
+        elapsed = f" · {self._elapsed}s" if self._elapsed is not None else ""
+        return color_fn(f"  {icon} {self._tool_name} · {self._state}{elapsed}")
 
     def _update_header(self) -> None:
         """Refresh the header text after a state change."""
@@ -106,6 +138,7 @@ class ToolExecutionComponent(Container):
 
     def set_canceled(self) -> None:
         """Mark an active tool terminal without discarding its last preview."""
+        self._elapsed = max(0, int(time.monotonic() - self._started))
         self._state = "canceled"
         self._update_header()
         if self._result_text is None:
@@ -127,6 +160,7 @@ class ToolExecutionComponent(Container):
 
     def set_result(self, result: str, *, is_error: bool = False) -> None:
         """Retain a complete tool result and render its selected detail level."""
+        self._elapsed = max(0, int(time.monotonic() - self._started))
         self._state = "error" if is_error else "success"
         self._result = sanitize_terminal_text(result)
         self._is_error = is_error
@@ -232,6 +266,11 @@ def _summarize_args(args: dict[str, Any], tool_name: str = "") -> str:
     """
     if tool_name == "bash":
         cmd = redact_sensitive_text(str(args.get("command", "")))
+        if "\n" in cmd:
+            first_line = cmd.splitlines()[0]
+            if re.search(r"(?:^|[ /])python(?:\d+(?:\.\d+)*)?(?:\s|$)", first_line):
+                return "Run Python script"
+            return "Run shell script"
         return cmd if len(cmd) <= 80 else cmd[:77] + "..."
     if tool_name == "filesystem":
         action = sanitize_terminal_text(str(args.get("action", "")))

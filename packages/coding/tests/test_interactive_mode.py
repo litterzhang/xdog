@@ -1,6 +1,7 @@
 """Tests for interactive mode components."""
 
 
+from xdog.coding.modes.interactive.run_status import RunStatus
 from xdog.coding.modes.interactive.theme import (
     create_default_theme,
 )
@@ -122,7 +123,7 @@ class TestPermissionPromptComponent:
         session.agent.subscribe.return_value = lambda: None
         session.permissions.mode = "ask"
         mode = InteractiveMode(session)
-        mode._is_busy = True
+        mode._run_status = RunStatus().start(0.0)
         request = PermissionRequest(
             id="req-escape",
             tool_name="bash",
@@ -214,7 +215,7 @@ class TestChatLog:
         from xdog.tui.utils import strip_ansi
 
         log = ChatLog(create_default_theme())
-        log.add_assistant("answer", thinking="THINKING-TAIL")
+        log.add_assistant("answer", thinking="Visible preview\nTHINKING-TAIL")
         tool = log.add_tool("bash", {"command": "pytest"})
         tool.set_result(f"first\n{'x' * 600}\nTOOL-TAIL")
 
@@ -241,7 +242,7 @@ class TestInteractiveMessageHandling:
         session.permissions.mode = "ask"
         mode = InteractiveMode(session)
         mode._worker_active = True
-        mode._is_busy = True
+        mode._run_status = RunStatus().start(0.0)
 
         mode._start_turn("run this after the current turn")
         mode._start_turn("and include this too")
@@ -293,7 +294,7 @@ class TestInteractiveMessageHandling:
         session.agent.subscribe.return_value = lambda: None
         session.permissions.mode = "ask"
         mode = InteractiveMode(session)
-        mode._is_busy = True
+        mode._run_status = RunStatus().start(0.0)
         mode._worker_active = True
         mode._pending_messages.append(("queued", True))
         mode._update_message_queue()
@@ -328,7 +329,7 @@ class TestInteractiveMessageHandling:
         session.agent.subscribe.return_value = lambda: None
         session.permissions.mode = "ask"
         mode = InteractiveMode(session)
-        mode._chat_log.add_assistant("answer", thinking="THINKING-DETAIL")
+        mode._chat_log.add_assistant("answer", thinking="Visible preview\nTHINKING-DETAIL")
 
         transcript = "\n".join(strip_ansi(line) for line in mode._chat_log.render(80))
         assert "THINKING-DETAIL" not in transcript
@@ -423,7 +424,7 @@ class TestInteractiveMessageHandling:
         mode = InteractiveMode(session)
         mode._worker_generation = 2
         mode._worker_active = True
-        mode._is_busy = True
+        mode._run_status = RunStatus().start(0.0)
 
         mode._handle_ui_event({"type": "turn_end", "generation": 1})
 
@@ -441,7 +442,7 @@ class TestInteractiveMessageHandling:
         mode = InteractiveMode(session)
         mode._worker_generation = 2
         mode._worker_active = True
-        mode._is_busy = True
+        mode._run_status = RunStatus().start(0.0)
         mode._streaming_text = "new response"
 
         mode._handle_ui_event({
@@ -475,12 +476,12 @@ class TestInteractiveMessageHandling:
 
         mode = object.__new__(InteractiveMode)
         mode._event_queue = queue.Queue()
-        mode._is_busy = True
-        mode._awaiting_permission = False
+        mode._run_status = RunStatus().start(0.0)
         mode._cancel_requested = False
         mode._format_elapsed = Mock(return_value="0s")
         mode._status_loader = Mock()
-        mode._last_busy_label = "thinking... • 0s"
+        mode._last_busy_label = "waiting • 0s"
+        mode._tool_components = {}
         mode._tui = Mock()
 
         mode._poll()
@@ -820,7 +821,7 @@ class TestToolExecutionState:
 
         comp.set_expanded(False)
         collapsed = "\n".join(strip_ansi(line) for line in comp.render(80))
-        assert "more chars" in collapsed
+        assert "hidden lines" in collapsed
         assert "END-OF-TOOL-OUTPUT" not in collapsed
 
         comp.set_expanded(True)
@@ -830,7 +831,7 @@ class TestToolExecutionState:
 
         comp.set_expanded(False)
         recollapsed = "\n".join(strip_ansi(line) for line in comp.render(80))
-        assert "more chars" in recollapsed
+        assert "hidden lines" in recollapsed
         assert "END-OF-TOOL-OUTPUT" not in recollapsed
 
     def test_empty_final_result_clears_streaming_preview(self):

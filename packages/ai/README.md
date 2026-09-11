@@ -140,8 +140,13 @@ only to this fallback:
   reasoning retains its signed upstream identity across SSE and history replay.
   Reasoning events are buffered until block completion because Copilot may replace
   provisional IDs and ciphertext. Other output continues streaming afterward.
-  Opaque, unprefixed upstream IDs are wrapped as reversible `rs_xdog_v1_...` IDs
-  for Codex and decoded before upstream replay; no original ID is discarded.
+  Opaque, unprefixed upstream IDs are wrapped as `rs_xdog_v1_...` IDs for Codex.
+  Short wrappers are reversible. If that wrapper would exceed the Responses API's
+  64-character limit, replayable upstream IDs use a deterministic `rs_xdog_v2_...`
+  alias and a canonical digest-bound envelope in `encrypted_content`; upstream IDs
+  that themselves exceed the limit remain summary-only and are not replayed. Native
+  Responses input also migrates canonical legacy v1 reasoning history: replayable
+  IDs are restored, while over-limit reasoning items are omitted before forwarding.
 - Codex Responses Lite `additional_tools` input items are normalized into the
   tool set, alongside top-level `tools`. Tool definitions use the same
   validation in either form; identical duplicates are deduplicated and

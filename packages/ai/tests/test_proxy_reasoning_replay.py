@@ -239,12 +239,12 @@ def test_encrypted_reasoning_cannot_be_attached_to_generated_id(item_id: Any) ->
 
 @pytest.mark.parametrize("original_id", [
     "rs_native", "opaque+/Copilot-id=", "rs_xdog_v1_reserved", "rs_invalid/chars", "unicode-雪-id",
-    "opaque+" * 100,
 ])
 def test_reasoning_id_codec_preserves_signed_identity(original_id: str) -> None:
     part = _reasoning(original_id)
     output = format_response(AssistantMessage(content=(part,)), "test")["output"][0]
     assert output["id"].startswith("rs_")
+    assert len(output["id"]) <= 64
     assert output["encrypted_content"] == _signature(original_id)
     if original_id != "rs_native":
         assert output["id"].startswith("rs_xdog_v1_")
@@ -252,6 +252,62 @@ def test_reasoning_id_codec_preserves_signed_identity(original_id: str) -> None:
     replay = openai_responses.context_to_responses_input(context, Model())
     assert replay[0]["id"] == original_id
     assert replay[0]["encrypted_content"] == _signature(original_id)
+
+
+def test_compact_reasoning_id_replays_exact_upstream_pair() -> None:
+    original_id = "+" * 40
+    encrypted_content = _signature(original_id)
+    output = format_response(AssistantMessage(content=(_reasoning(original_id),)), "test")["output"][0]
+
+    assert output["id"].startswith("rs_xdog_v2_")
+    assert len(output["id"]) <= 64
+    assert output["encrypted_content"] != encrypted_content
+
+    _, context, _, _ = parse_request({"model": "test", "input": [output]})
+    replay = openai_responses.context_to_responses_input(context, Model())
+    assert replay[0]["id"] == original_id
+    assert replay[0]["encrypted_content"] == encrypted_content
+
+
+def test_overlong_upstream_reasoning_identity_is_not_replayed() -> None:
+    original_id = "+" * 416
+    output = format_response(AssistantMessage(content=(_reasoning(original_id),)), "test")["output"][0]
+
+    assert output["type"] == "reasoning"
+    assert output["summary"] == [{"type": "summary_text", "text": "Plan"}]
+    assert len(output["id"]) <= 64
+    assert "encrypted_content" not in output
+
+    _, context, _, _ = parse_request({"model": "test", "input": [output]})
+    replay = openai_responses.context_to_responses_input(context, Model())
+    assert all(item.get("type") != "reasoning" for item in replay)
+
+
+@pytest.mark.parametrize("encrypted_content", [None, "opaque", "xdog:v2:!", "xdog:v2:e30"])
+def test_compact_reasoning_id_requires_valid_envelope(encrypted_content: str | None) -> None:
+    item = {"type": "reasoning", "id": _client_reasoning_id("+" * 40), "summary": []}
+    if encrypted_content is not None:
+        item["encrypted_content"] = encrypted_content
+
+    if encrypted_content is None:
+        _, context, _, _ = parse_request({"model": "test", "input": [item]})
+        replay = openai_responses.context_to_responses_input(context, Model())
+        assert all(value.get("type") != "reasoning" for value in replay)
+        return
+
+    with pytest.raises(InvalidRequest) as exc:
+        parse_request({"model": "test", "input": [item]})
+    assert exc.value.param == "input[0].id"
+
+
+@pytest.mark.parametrize("length", [64, 65])
+def test_native_reasoning_id_boundary(length: int) -> None:
+    original_id = "rs_" + "x" * (length - 3)
+    output = format_response(AssistantMessage(content=(_reasoning(original_id),)), "test")["output"][0]
+
+    assert len(output["id"]) <= 64
+    assert (output["id"] == original_id) is (length == 64)
+    assert ("encrypted_content" in output) is (length == 64)
 
 
 @pytest.mark.parametrize("item_id", ["rs_xdog_v1_", "rs_xdog_v1_!", "rs_xdog_v1_abc===", "rs_xdog_v1__w"])

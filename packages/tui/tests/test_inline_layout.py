@@ -158,3 +158,17 @@ def test_hidden_work_summary_has_visible_omission_count() -> None:
                           work=Text("goal\ntodos", 0, 0), render_height=4)
     rows = layout.render(60)
     assert any("2 work summaries hidden" in row for row in rows)
+
+
+def test_open_details_from_start_pins_top_until_explicit_end() -> None:
+    records = [DetailRecord("tool", "\n".join(f"row-{i}" for i in range(30)), "tool")]
+    details = BoundedDetails(lambda: records, max_rows=4)
+    details.show_latest(from_start=True)
+    assert "row-0" in details.render(80)
+    assert "row-29" not in details.render(80)
+    records[0] = DetailRecord("tool", records[0].body + "\nrow-30", "tool")
+    assert "row-0" in details.render(80)
+    details.handle_input(KeyEvent(key="end"))
+    assert "row-30" in details.render(80)
+    details.show_latest(from_start=True)
+    assert "row-0" in details.render(80)

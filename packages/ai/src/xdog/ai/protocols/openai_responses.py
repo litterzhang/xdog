@@ -64,6 +64,8 @@ from xdog.ai.utils.sanitize_unicode import sanitize_unicode
 
 logger = logging.getLogger(__name__)
 
+_RESPONSE_ITEM_ID_MAX_LENGTH = 64
+
 
 # ---------------------------------------------------------------------------
 # Stop reason mapping
@@ -222,6 +224,16 @@ def _convert_assistant_message(
             except (json.JSONDecodeError, TypeError):
                 continue
             if isinstance(reasoning_item, dict) and reasoning_item.get("type") == "reasoning":
+                item_id = reasoning_item.get("id")
+                if (
+                    not isinstance(item_id, str)
+                    or not item_id
+                    or len(item_id) > _RESPONSE_ITEM_ID_MAX_LENGTH
+                ):
+                    # Expected compatibility filtering, repeated for every history replay.
+                    # A warning falls through to stderr and corrupts interactive terminal frames.
+                    logger.debug("Skipping non-replayable reasoning item with invalid identity")
+                    continue
                 items.append(reasoning_item)
         elif isinstance(block, TextContent):
             items.append({

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import errno
 import json
 from collections.abc import AsyncIterator
@@ -185,6 +186,119 @@ async def test_native_complete_preserves_future_fields_headers_and_response(
         "openai-project": "project_client",
         "idempotency-key": "idem_1",
     }
+
+
+async def test_native_responses_preserves_unrecognized_oversized_item_id() -> None:
+    provider = NativeProvider(("openai-responses",))
+    oversized_id = "x" * 416
+    body = {
+        "model": "client-model",
+        "input": [{
+            "type": "reasoning",
+            "id": oversized_id,
+            "summary": [],
+            "encrypted_content": "opaque",
+        }],
+    }
+
+    status, _, _ = await _request(provider, "/v1/responses", body)
+
+    assert status == 200
+    assert provider.requests[0][1].json() == body
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_native_responses_drops_nonreplayable_legacy_reasoning_items(stream: bool) -> None:
+    provider = NativeProvider(("openai-responses",))
+    original_id = "+" * 416
+    legacy_id = "rs_xdog_v1_" + base64.urlsafe_b64encode(original_id.encode()).decode().rstrip("=")
+    assert len(legacy_id) == 566
+    body = {
+        "model": "client-model",
+        "input": [
+            {"role": "user", "content": "before", "future": {"keep": True}},
+            {
+                "type": "reasoning",
+                "id": legacy_id,
+                "summary": [{"type": "summary_text", "text": "old"}],
+                "encrypted_content": "opaque",
+                "future": [1, None],
+            },
+            {"role": "user", "content": "after"},
+        ],
+        "future_top_level": {"opaque": True},
+        "stream": stream,
+    }
+
+    status, _, _ = await _request(provider, "/v1/responses", body)
+
+    assert status == 200
+    assert provider.requests[0][1].json() == {
+        **body,
+        "input": [body["input"][0], body["input"][2]],
+    }
+    assert len(body["input"]) == 3
+
+
+@pytest.mark.parametrize("original_id", ["opaque+/signed=", "+" * 40])
+async def test_native_responses_restores_replayable_legacy_reasoning_id(original_id: str) -> None:
+    provider = NativeProvider(("openai-responses",))
+    legacy_id = "rs_xdog_v1_" + base64.urlsafe_b64encode(original_id.encode()).decode().rstrip("=")
+    body = {
+        "model": "client-model",
+        "input": [{
+            "type": "reasoning",
+            "id": legacy_id,
+            "summary": [],
+            "encrypted_content": "opaque",
+            "future": {"keep": True},
+        }],
+    }
+
+    status, _, _ = await _request(provider, "/v1/responses", body)
+
+    assert status == 200
+    assert provider.requests[0][1].json() == {
+        **body,
+        "input": [{**body["input"][0], "id": original_id}],
+    }
+    assert body["input"][0]["id"] == legacy_id
+
+
+@pytest.mark.parametrize("item_type", ["message", "function_call", "reasoning"])
+async def test_native_responses_preserves_noncanonical_legacy_item_id(item_type: str) -> None:
+    provider = NativeProvider(("openai-responses",))
+    body = {
+        "model": "client-model",
+        "input": [{
+            "type": item_type,
+            "id": "rs_xdog_v1_!not-canonical!",
+            "future": {"keep": True},
+        }],
+    }
+
+    status, _, _ = await _request(provider, "/v1/responses", body)
+
+    assert status == 200
+    assert provider.requests[0][1].json() == body
+
+
+async def test_native_responses_migrates_only_top_level_reasoning_items() -> None:
+    provider = NativeProvider(("openai-responses",))
+    original_id = "+" * 416
+    legacy_id = "rs_xdog_v1_" + base64.urlsafe_b64encode(original_id.encode()).decode().rstrip("=")
+    body = {
+        "model": "client-model",
+        "input": [
+            {"type": "function_call", "id": legacy_id, "call_id": "call_1"},
+            {"type": "message", "content": [{"type": "input_text", "id": legacy_id, "text": "keep"}]},
+        ],
+    }
+
+    status, _, _ = await _request(provider, "/v1/responses", body)
+
+    assert status == 200
+    assert provider.requests[0][1].json() == body
 
 
 @pytest.mark.parametrize(

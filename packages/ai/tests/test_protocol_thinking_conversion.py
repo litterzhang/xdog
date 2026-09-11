@@ -1,5 +1,6 @@
 import json
 
+import pytest
 from xdog.ai.protocols.anthropic_messages import context_to_anthropic
 from xdog.ai.protocols.openai_responses import context_to_responses_input
 from xdog.ai.types import (
@@ -76,6 +77,33 @@ def test_openai_responses_restores_reasoning_item_from_thinking_signature():
     )
 
     assert items == [reasoning_item]
+
+
+@pytest.mark.parametrize("opaque_id", ["x" * 65, "雪" * 65, "", None, 123])
+def test_openai_responses_skips_non_replayable_reasoning_item_id(
+    opaque_id: object, caplog: pytest.LogCaptureFixture,
+) -> None:
+    reasoning_item = {
+        "id": opaque_id,
+        "type": "reasoning",
+        "summary": [],
+        "encrypted_content": "encrypted-payload",
+    }
+    context = Context(messages=(AssistantMessage(content=(
+        ThinkingContent(thinking_signature=json.dumps(reasoning_item)),
+        TextContent(text="Visible answer"),
+    )),))
+
+    items = context_to_responses_input(context, Model(api="openai-responses", reasoning=True))
+
+    assert not caplog.records  # Routine history filtering must not write warnings into the TUI.
+
+    assert items == [{
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "Visible answer", "annotations": []}],
+        "status": "completed",
+    }]
 
 
 def test_openai_responses_inserts_output_for_unmatched_tool_calls():

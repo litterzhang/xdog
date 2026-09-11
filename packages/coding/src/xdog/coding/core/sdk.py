@@ -137,7 +137,10 @@ def create_agent_session(options: CreateSessionOptions | None = None) -> CreateS
         session_data = loaded
     else:
         model_name = ov.get("model") or config.model or DEFAULT_MODEL or _first_model_id()
-        session_data = session_mgr.create_session(model=model_name)
+        session_data = session_mgr.create_session(model=model_name, working_dir=wd)
+
+    if not session_data.working_dir:
+        session_data.working_dir = str(wd)
 
     # Resolve active model from catalog
     model_id = ov.get("model") or session_data.model or config.model or DEFAULT_MODEL or _first_model_id()

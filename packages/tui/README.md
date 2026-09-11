@@ -5,9 +5,23 @@
 A small terminal UI toolkit that redraws owned rows in the main terminal buffer
 while preserving native scrollback. No curses dependency.
 
-`PromptEditor` supplies shared Unicode editing, undo/redo, history and atomic
+`InputPanel` supplies shared Unicode editing, undo/redo, history and atomic
 paste. `InlineLayout` budgets the editor and prioritized auxiliary panels from
 terminal height. The renderer uses cursor reports at startup, resize and resume.
+
+Standalone panels are available from `xdog.tui.components`:
+
+| Component | Responsibility |
+| --- | --- |
+| `PermissionPanel` | Summary scrolling, choices, selection and cancellation callbacks |
+| `DetailsPanel` | Full detail records, entry navigation, scrolling and explicit output following |
+| `InputPanel` | Multiline editing, history, completion and submit/cancel callbacks |
+| `StatusLine` | One bounded row of plain status or prioritized activity/context/model fields |
+
+Panels accept data, theme functions and callbacks; they do not import Coding or
+Claw policy. Applications own permission decisions and lifecycle state, while
+`InlineLayout` only positions panels and allocates height. `PromptEditor` and
+`BoundedDetails` remain compatible aliases at their original import paths.
 
 See [terminal stability and verification](../../docs/tui-pi-parity.md) for scope,
 test commands, and platform limitations. Fullscreen applications and remote

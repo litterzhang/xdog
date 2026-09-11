@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 from xdog.coding.modes.interactive.components.footer import FooterComponent
 from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
+from xdog.coding.modes.interactive.run_status import RunStatus
 from xdog.coding.modes.interactive.theme import create_default_theme
 from xdog.tui.components.bounded_details import BoundedDetails, DetailRecord
 from xdog.tui.components.inline_layout import InlineLayout
@@ -204,7 +205,7 @@ def test_escape_closes_details_before_canceling_busy_turn() -> None:
     session = _session()
     mode = InteractiveMode(session)
     mode._chat_log.add_assistant("answer", thinking="reasoning")
-    mode._is_busy = True
+    mode._run_status = RunStatus().start(0.0)
     mode._handle_global_input(KeyEvent(key="o", ctrl=True))
 
     result = mode._tui._dispatch_input(KeyEvent(key="escape"))
@@ -229,7 +230,8 @@ def test_permission_preempts_open_details_in_single_aux_slot() -> None:
 
     rendered = "\n".join(_plain(mode._layout))
     assert "Tool permission required" in rendered
-    assert "reasoning" not in rendered
+    assert mode._layout.permission is mode._permission_prompt
+    assert mode._layout._auxiliary() is mode._permission_prompt
 
 
 def test_all_worker_events_carry_the_captured_turn_stamp() -> None:
@@ -304,8 +306,8 @@ def test_permission_shows_all_options_and_moves_highlight() -> None:
         rows = _plain(mode._layout, 100)
         for option in ("Allow once", "Allow for this session", "Deny"):
             assert any(option in row for row in rows)
-        assert sum(row.startswith("→ ") for row in rows) == 1
-        assert any(row.startswith(f"→ {selected}") for row in rows)
+        assert sum(row.removeprefix("│ ").startswith("→ ") for row in rows) == 1
+        assert any(row.removeprefix("│ ").startswith(f"→ {selected}") for row in rows)
         assert any("echo hello" in row for row in rows)
         assert len(rows[mode._layout.transient_start:]) <= 24
         mode._tui._dispatch_input(KeyEvent(key="down"))
@@ -338,7 +340,7 @@ def test_escape_in_permission_does_not_cancel_busy_turn() -> None:
     from xdog.coding.core.permissions import PermissionRequest
 
     mode = InteractiveMode(_session())
-    mode._is_busy = True
+    mode._run_status = RunStatus().start(0.0)
     mode._show_permission_request(PermissionRequest(
         id="request", tool_name="bash", arguments={}, summary="command",
     ))

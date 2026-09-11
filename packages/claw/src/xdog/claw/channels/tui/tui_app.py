@@ -41,18 +41,22 @@ from pathlib import Path
 from typing import Any
 
 from xdog.ai.types import ImageContent
-from xdog.tui.components.bounded_details import BoundedDetails, DetailRecord, streaming_preview
 from xdog.tui.components.details import set_details_expanded
+from xdog.tui.components.details_panel import DetailRecord, DetailsPanel, streaming_preview
 from xdog.tui.components.image import Image
 from xdog.tui.components.inline_layout import CompactText, InlineLayout
-from xdog.tui.components.markdown import DefaultTextStyle, Markdown, MarkdownTheme
-from xdog.tui.components.prompt_editor import PromptEditor, SlashSelectList
+from xdog.tui.components.input_panel import InputPanel, SlashSelectList
+from xdog.tui.components.markdown import DefaultTextStyle, MarkdownTheme
+from xdog.tui.components.messages import AssistantMessages, ThinkingMessage, Transcript
+from xdog.tui.components.messages import UserMessage as SharedUserMessage
 from xdog.tui.components.spacer import Spacer
+from xdog.tui.components.status_line import StatusLine
 from xdog.tui.components.text import Text
+from xdog.tui.components.tool_message import ToolMessage as ToolMessageView
 from xdog.tui.event_queue import EventQueue, thaw_event
 from xdog.tui.keys import KeyEvent
 from xdog.tui.tui import TUI, Component, Container
-from xdog.tui.utils import sanitize_terminal_text, truncate_to_width
+from xdog.tui.utils import sanitize_terminal_text
 
 logger = logging.getLogger(__name__)
 
@@ -298,72 +302,18 @@ def _is_internal_prompt(content: str) -> bool:
 # ── Message Components (matching OpenClaw components exactly) ─────────
 
 
-class UserMessage(Container):
-    """User message: Spacer(1) + Markdown with bgColor/color.
-
-    Matches OpenClaw's UserMessageComponent.
-    """
+class UserMessage(SharedUserMessage):
+    """Claw style adapter for shared user messages."""
 
     def __init__(self, text: str) -> None:
-        super().__init__()
-        self.add_child(Spacer(1))
-        self.add_child(
-            Markdown(
-                sanitize_terminal_text(text),
-                1,
-                1,
-                MD_THEME,
-                default_text_style=DefaultTextStyle(
-                    color=theme_user_text,
-                    bg_color=theme_user_bg,
-                ),
-            )
-        )
+        super().__init__(text, MD_THEME, DefaultTextStyle(color=theme_user_text, bg_color=theme_user_bg))
 
 
-class AssistantMessage(Container):
-    """Assistant message with retained optional reasoning."""
+class AssistantMessage(AssistantMessages):
+    """Claw style adapter; transcript retains thinking and prose separately."""
 
     def __init__(self, text: str, *, thinking: str = "") -> None:
-        super().__init__()
-        self._thinking_content = sanitize_terminal_text(thinking)
-        self._expanded = False
-        self._thinking = Text("", 1, 0)
-        self._body = Markdown(sanitize_terminal_text(text), 1, 0, MD_THEME)
-        self.add_child(Spacer(1))
-        self.add_child(self._thinking)
-        self.add_child(self._body)
-        self._render_thinking()
-
-    def set_text(self, text: str, *, thinking: str | None = None) -> None:
-        if thinking is not None:
-            self._thinking_content = sanitize_terminal_text(thinking)
-            self._render_thinking()
-        self._body.set_text(sanitize_terminal_text(text))
-
-    @property
-    def detail_body(self) -> str:
-        return self._thinking_content
-
-    @property
-    def detail_title(self) -> str:
-        return "assistant reasoning"
-
-    def set_expanded(self, expanded: bool) -> None:
-        if self._expanded == expanded:
-            return
-        self._expanded = expanded
-        self._render_thinking()
-
-    def _render_thinking(self) -> None:
-        thinking = self._thinking_content.strip()
-        if not thinking:
-            rendered = ""
-        elif self._expanded:
-            rendered = f"Thinking\n{self._thinking_content}"
-        else:
-            rendered = "Thinking (Ctrl+O: details below input · ←/→ select entry)"
-        self._thinking.set_text(theme_dim(rendered))
+        super().__init__(text, thinking, MD_THEME, theme_dim)
 
 
 class ToolMessage(Container):
@@ -371,6 +321,7 @@ class ToolMessage(Container):
 
     def __init__(self, name: str, arguments: dict[str, Any] | None, *, tool_call_id: str = "") -> None:
         super().__init__()
+        self._view = ToolMessageView()
         self._name = sanitize_terminal_text(name)
         self._tool_call_id = sanitize_terminal_text(tool_call_id)
         self._arguments = {
@@ -387,6 +338,7 @@ class ToolMessage(Container):
         self.add_child(Spacer(1))
         self.add_child(self._header)
         self.add_child(self._body)
+        self.add_child(Spacer(1))
         self._render()
 
     def set_image(self, image: ImageContent) -> None:
@@ -395,6 +347,24 @@ class ToolMessage(Container):
         except (ValueError, TypeError):
             return
         self.add_child(Image(data=data, alt=image.mime_type))
+
+    def render(self, width: int) -> list[str]:
+        if self._expanded:
+            return super().render(width)
+        summary = " ".join(", ".join(f"{key}={value}" for key, value in self._arguments.items()).split())
+        header = self._header.text
+        if summary:
+            header += theme_dim(f" · {summary}")
+        self._view.update(
+            header=header, summary=summary, output=self._result,
+            running=self._state == "running",
+            style=theme_error if self._is_error else theme_dim,
+        )
+        rows = self._view.render(width)[:-1]
+        for child in self.children:
+            if isinstance(child, Image):
+                rows.extend(child.render(width))
+        return [*rows, ""]
 
     def set_streaming(self, result: str) -> None:
         if self._state != "running":
@@ -466,7 +436,7 @@ class ToolMessage(Container):
 # ── ChatLog (matching OpenClaw's ChatLog exactly) ─────────────────────
 
 
-class ChatLog(Container):
+class ChatLog(Transcript):
     """Retained chat history with ID-keyed streaming and tool state."""
 
     def __init__(self) -> None:
@@ -569,7 +539,7 @@ class ChatLog(Container):
         """Return immutable full-detail snapshots in transcript order."""
         records: list[DetailRecord] = []
         for child in self.children:
-            if isinstance(child, AssistantMessage) and child.detail_body.strip():
+            if isinstance(child, ThinkingMessage) and child.detail_body.strip():
                 records.append(DetailRecord(child.detail_title, child.detail_body, "reasoning"))
             elif isinstance(child, ToolMessage) and child.detail_body:
                 records.append(DetailRecord(child.detail_title, child.detail_body, "tool"))
@@ -598,7 +568,7 @@ _EDITOR_THEME = _EditorTheme()
 _SelectList = SlashSelectList
 
 
-class CustomEditor(PromptEditor):
+class CustomEditor(InputPanel):
     """Claw configuration for the shared grapheme-safe prompt editor."""
 
     def __init__(self) -> None:
@@ -607,17 +577,6 @@ class CustomEditor(PromptEditor):
             command_provider=lambda: SLASH_COMMANDS,
             max_rows=8,
         )
-
-
-class _StatusLine(Text):
-    """A single cell-truncated status row."""
-
-    def __init__(self) -> None:
-        super().__init__("", 0, 0)
-
-    def render(self, width: int) -> list[str]:
-        plain = sanitize_terminal_text(self.text).replace("\n", " ")
-        return [theme_dim(truncate_to_width(plain, max(1, width), "…"))]
 
 
 # ── ChatApp — main application (matching OpenClaw's runTui) ──────────
@@ -704,12 +663,13 @@ class ChatApp:
         self._work_summary = CompactText("", 0, 0)
         self._work_container.add_child(self._work_summary)
         self._status_container = Container()
-        self._footer = _StatusLine()
+        self._footer = StatusLine(theme_dim)
         self._editor = CustomEditor()
         self._queue_container = Container()
         self._queue_summary = CompactText("", 0, 0)
         self._queue_container.add_child(self._queue_summary)
-        self._details_panel = BoundedDetails(self._detail_records, max_rows=8)
+        self._details_panel = DetailsPanel(self._detail_records, max_rows=8)
+        self._hints = CompactText("Enter send · Ctrl+Enter newline · Ctrl+O details · /status", 0, 0)
         self._banner_added = False
 
         self._status_text: Text | None = self._footer
@@ -721,6 +681,7 @@ class ChatApp:
             editor=self._editor,
             details=None,
             queue=None,
+            hints=self._hints,
         )
 
         self._tui.add_child(self._layout)
@@ -744,10 +705,10 @@ class ChatApp:
         if self._editor.autocomplete_active:
             return None
         if self._details_open:
-            if event.matches("escape"):
+            if event.matches("escape") or event.matches("ctrl+c"):
                 self._close_details()
                 return {"consume": True}
-            if any(event.matches(key) for key in ("left", "right", "pageup", "pagedown")):
+            if any(event.matches(key) for key in ("left", "right", "pageup", "pagedown", "home", "end")):
                 self._details_panel.handle_input(event)
                 self._tui.request_render()
                 return {"consume": True}
@@ -758,9 +719,12 @@ class ChatApp:
             return None
         self._details_open = not self._details_open
         if self._details_open:
-            self._details_panel.show_latest()
+            self._details_panel.show_latest(from_start=True)
+        self._editor.set_focus(not self._details_open)
+        self._tui.set_focus(self._details_panel if self._details_open else self._editor)
         self._details_expanded = self._details_open
         self._layout.details = self._details_panel if self._details_open else None
+        self._update_hints()
         self._tui.request_render()
         return {"consume": True}
 
@@ -770,7 +734,14 @@ class ChatApp:
         self._layout.details = None
         self._tui.set_focus(self._editor)
         self._editor.set_focus(True)
+        self._update_hints()
         self._tui.request_render()
+
+    def _update_hints(self) -> None:
+        self._hints.set_text(
+            "Details focused · ←/→ entry · PgUp/PgDn scroll · End latest · Esc input"
+            if self._details_open else "Enter send · Ctrl+Enter newline · Ctrl+O details · /status"
+        )
 
     def _detail_records(self) -> tuple[DetailRecord, ...]:
         return self._chat_log.detail_records()
@@ -789,7 +760,7 @@ class ChatApp:
 
     def _handle_ctrl_c(self) -> None:
         """Handle Ctrl+C with double-press logic (matching OpenClaw exactly)."""
-        now = time.time()
+        now = time.monotonic()
         action, next_at = _resolve_ctrl_c_action(
             has_input=len(self._editor.get_text().strip()) > 0,
             now=now,
@@ -861,8 +832,8 @@ class ChatApp:
         activity = str(self._state.get("activity_status", "idle"))
         conn = str(self._state.get("connection_status", "connecting"))
         if activity in self._BUSY_STATES:
-            if self._status_started is None or self._last_activity_status != activity:
-                self._status_started = time.time()
+            if self._status_started is None:
+                self._status_started = time.monotonic()
             self._update_busy_status()
         else:
             self._status_started = None
@@ -918,7 +889,7 @@ class ChatApp:
     def _format_elapsed(self) -> str:
         if self._status_started is None:
             return "0s"
-        total = int(time.time() - self._status_started)
+        total = max(0, int(time.monotonic() - self._status_started))
         if total < 60:
             return f"{total}s"
         m, s = divmod(total, 60)

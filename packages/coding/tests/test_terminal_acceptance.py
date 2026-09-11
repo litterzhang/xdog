@@ -127,11 +127,19 @@ def test_actual_coding_ctrl_o_shows_and_hides_reasoning(terminal):
     terminal.keys("Enter")
     terminal.wait("FIXTURE-ANSWER")
     terminal.wait("Thinking")
-    assert "FIXTURE-REASONING-DETAIL" not in terminal.visible()
-    terminal.keys("C-o")
+    assert "FIXTURE-REASONING-DETAIL" in terminal.visible()
+    terminal.text("/details")
+    terminal.keys("Enter")
     terminal.wait("FIXTURE-REASONING-DETAIL")
     terminal.keys("C-o")
-    terminal.wait_hidden("FIXTURE-REASONING-DETAIL")
+    terminal.wait_hidden("Details focused")
+    terminal.text("preserved-draft")
+    terminal.wait_editor("preserved-draft")
+    terminal.keys("C-o")
+    terminal.wait("FIXTURE-REASONING-DETAIL")
+    terminal.keys("Escape")
+    terminal.wait_hidden("Details focused")
+    terminal.wait_editor("preserved-draft")
     terminal.finish()
 
 
@@ -225,15 +233,17 @@ def test_actual_claw_tui_with_isolated_socket(terminal, tmp_path):
     try:
         terminal.start("claw", path)
         terminal.wait("Thinking")
-        assert "CLAW-REASONING-DETAIL" not in terminal.visible()
+        assert "CLAW-REASONING-DETAIL" in terminal.visible()
         terminal.keys("C-o")
         terminal.wait("CLAW-REASONING-DETAIL")
         terminal.keys("C-o")
-        terminal.wait_hidden("CLAW-REASONING-DETAIL")
+        terminal.wait_hidden("Details focused")
         terminal.text("request")
         terminal.keys("Enter")
         terminal.wait("bash")
         terminal.keys("C-o")
+        terminal.wait("Details focused")
+        terminal.keys("End")
         terminal.wait("DETAIL-TAIL")
         terminal.resize(36, 10)
         terminal.wait("DETAIL-TAIL")
@@ -259,3 +269,87 @@ def test_actual_claw_tui_with_isolated_socket(terminal, tmp_path):
         server.close()
     thread.join(timeout=2)
     assert not errors
+
+
+def test_coding_streaming_resize_latency_and_draft(terminal):
+    terminal.start("coding")
+    terminal.text("stress")
+    terminal.keys("Enter")
+    terminal.wait("Tool permission required")
+    terminal.keys("Enter")
+    terminal.wait("running bash")
+    terminal.text("retained-draft")
+    started = time.monotonic()
+    terminal.wait_editor("retained-draft")
+    input_latency = time.monotonic() - started
+    terminal.keys("C-o")
+    terminal.wait("Details focused")
+    terminal.keys("End")
+    terminal.wait("STRESS-")
+    measurements = []
+    for width, height in ((44, 10), (100, 30), (60, 14), (80, 24)):
+        started = time.monotonic()
+        terminal.resize(width, height)
+        terminal.wait("STRESS-")
+        measurements.append(time.monotonic() - started)
+    terminal.keys("Escape")
+    terminal.wait_editor("retained-draft")
+    terminal.wait("FIXTURE-ANSWER")
+    terminal.wait("ready")
+    terminal.keys("C-o")
+    terminal.wait("Details focused")
+    terminal.keys("End")
+    terminal.wait("STRESS-119")
+    terminal.keys("Escape")
+    terminal.wait_editor("retained-draft")
+    (terminal.directory / "latency.json").write_text(json.dumps({
+        "draft_visible_seconds": input_latency,
+        "resize_visible_seconds": measurements,
+        "output_bytes": terminal.raw.stat().st_size,
+    }, indent=2))
+    terminal.finish()
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_coding_resume_restores_prompt_model_and_context(terminal, legacy):
+    terminal.start("coding")
+    terminal.text("PERSISTED-PROMPT")
+    terminal.keys("Enter")
+    terminal.wait("FIXTURE-ANSWER")
+    terminal.wait("ctx:2.2k/200k")
+    terminal.finish()
+    # Clear terminal history so assertions cannot match the previous process.
+    terminal.call("clear-history", "-t", "test")
+    terminal.text("printf '\\n%.0s' {1..30}")
+    terminal.keys("Enter")
+    terminal.wait_hidden("ctx:2.2k/200k")
+    from xdog.coding.core.session_manager import SessionManager
+    manager = SessionManager(Path(terminal.env["XDG_DATA_HOME"]) / "xdog/coding/sessions")
+    original = manager.get_most_recent()
+    assert original is not None
+    if legacy:
+        original.working_dir = ""
+        manager.save_session(original)
+    newer = manager.create_session(model="terminal-fixture", summary="NEWER-SESSION", working_dir=terminal.directory)
+    other = manager.create_session(model="terminal-fixture", summary="OTHER-DIRECTORY",
+                                   working_dir=terminal.directory / "other")
+    terminal.start("coding", "-r")
+    menu = terminal.wait("Resume session")
+    assert newer.session_id[:8] in menu
+    assert other.session_id[:8] not in menu
+    if legacy:
+        assert "Unknown dir" in menu
+    terminal.keys("Down")
+    terminal.keys("Enter")
+    pane = terminal.wait("ctx:2.2k/200k")
+    assert "PERSISTED-PROMPT" in pane
+    assert "FIXTURE-ANSWER" in pane
+    assert "terminal-fixture" in pane
+    terminal.text("draft")
+    terminal.wait_editor("draft")
+    terminal.keys("C-u")
+    terminal.keys("Up")
+    terminal.wait_editor("PERSISTED-PROMPT")
+    terminal.finish()
+    restored = manager.load_session(original.session_id)
+    assert restored is not None and restored.working_dir == str(terminal.directory.resolve())

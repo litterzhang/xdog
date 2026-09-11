@@ -6,7 +6,8 @@ configuration matching the coding's dark terminal aesthetic.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, replace
 from typing import Callable
 
 from xdog.tui.components.markdown import DefaultTextStyle, MarkdownTheme
@@ -14,28 +15,42 @@ from xdog.tui.components.markdown import DefaultTextStyle, MarkdownTheme
 _RST = "\x1b[0m"
 
 
+def _color_prefix(hex_color: str, *, background: bool = False) -> str:
+    rgb = tuple(int(hex_color.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+    depth = os.environ.get("XDOG_TUI_COLOR", "auto")
+    if depth == "auto":
+        depth = ("truecolor" if os.environ.get("COLORTERM", "").lower() in {"truecolor", "24bit"}
+                 else "256" if "256color" in os.environ.get("TERM", "") else "16")
+    channel = 48 if background else 38
+    if depth == "truecolor":
+        return f"\x1b[{channel};2;{rgb[0]};{rgb[1]};{rgb[2]}m"
+    basic = [
+        (0, 0, 0), (128, 0, 0), (0, 128, 0), (128, 128, 0),
+        (0, 0, 128), (128, 0, 128), (0, 128, 128), (192, 192, 192),
+        (128, 128, 128), (255, 0, 0), (0, 255, 0), (255, 255, 0),
+        (0, 0, 255), (255, 0, 255), (0, 255, 255), (255, 255, 255),
+    ]
+    if depth == "256":
+        levels = (0, 95, 135, 175, 215, 255)
+        palette = basic + [(r, g, b) for r in levels for g in levels for b in levels]
+        palette += [(n, n, n) for n in range(8, 239, 10)]
+    else:
+        palette = basic
+    index = min(range(len(palette)), key=lambda i: sum((a - b) ** 2 for a, b in zip(rgb, palette[i], strict=True)))
+    if depth == "256":
+        return f"\x1b[{channel};5;{index}m"
+    code = (40 if background else 30) + index if index < 8 else (100 if background else 90) + index - 8
+    return f"\x1b[{code}m"
+
+
 def _fg(hex_color: str) -> Callable[[str], str]:
-    """Return a function that applies foreground color (fg-only reset)."""
-    h = hex_color.lstrip("#")
-    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-    prefix = f"\x1b[38;2;{r};{g};{b}m"
-
-    def apply(text: str) -> str:
-        return f"{prefix}{text}\x1b[39m"
-
-    return apply
+    prefix = _color_prefix(hex_color)
+    return lambda text: f"{prefix}{text}\x1b[39m"
 
 
 def _bg(hex_color: str) -> Callable[[str], str]:
-    """Return a function that applies background color (bg-only reset)."""
-    h = hex_color.lstrip("#")
-    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-    prefix = f"\x1b[48;2;{r};{g};{b}m"
-
-    def apply(text: str) -> str:
-        return f"{prefix}{text}\x1b[49m"
-
-    return apply
+    prefix = _color_prefix(hex_color, background=True)
+    return lambda text: f"{prefix}{text}\x1b[49m"
 
 
 def _bold(text: str) -> str:
@@ -106,31 +121,31 @@ class Theme:
     user_default_text: DefaultTextStyle
 
 
-def create_default_theme() -> Theme:
+def _palette_theme(palette: dict[str, str]) -> Theme:
     """Create the default dark theme."""
-    fg = _fg(PALETTE["text"])
-    dim_fn = _fg(PALETTE["dim"])
-    accent = _fg(PALETTE["accent"])
-    accent_soft = _fg(PALETTE["accent_soft"])
-    border = _fg(PALETTE["border"])
-    user_bg = _bg(PALETTE["user_bg"])
-    user_text = _fg(PALETTE["user_text"])
-    system = _fg(PALETTE["system_text"])
-    error = _fg(PALETTE["error"])
-    success = _fg(PALETTE["success"])
-    tool = _fg(PALETTE["tool"])
+    fg = _fg(palette["text"])
+    dim_fn = _fg(palette["dim"])
+    accent = _fg(palette["accent"])
+    accent_soft = _fg(palette["accent_soft"])
+    border = _fg(palette["border"])
+    user_bg = _bg(palette["user_bg"])
+    user_text = _fg(palette["user_text"])
+    system = _fg(palette["system_text"])
+    error = _fg(palette["error"])
+    success = _fg(palette["success"])
+    tool = _fg(palette["tool"])
 
     md_theme = MarkdownTheme(
-        heading=lambda t: _bold(_fg(PALETTE["accent"])(t)),
-        link=_fg(PALETTE["link"]),
+        heading=lambda t: _bold(_fg(palette["accent"])(t)),
+        link=_fg(palette["link"]),
         link_url=lambda t: _dim(t),
-        code=_fg(PALETTE["code"]),
-        code_block=_fg(PALETTE["code"]),
-        code_block_border=_fg(PALETTE["code_border"]),
-        quote=_fg(PALETTE["quote"]),
-        quote_border=_fg(PALETTE["quote_border"]),
+        code=_fg(palette["code"]),
+        code_block=_fg(palette["code"]),
+        code_block_border=_fg(palette["code_border"]),
+        quote=_fg(palette["quote"]),
+        quote_border=_fg(palette["quote_border"]),
         hr=border,
-        list_bullet=_fg(PALETTE["accent_soft"]),
+        list_bullet=_fg(palette["accent_soft"]),
         bold=_bold,
         italic=_italic,
     )
@@ -155,12 +170,52 @@ def create_default_theme() -> Theme:
         bold=_bold,
         italic=_italic,
         header=lambda t: _bold(accent(t)),
-        diff_added=_fg(PALETTE["diff_added"]),
-        diff_removed=_fg(PALETTE["diff_removed"]),
-        diff_context=_fg(PALETTE["diff_context"]),
+        diff_added=_fg(palette["diff_added"]),
+        diff_removed=_fg(palette["diff_removed"]),
+        diff_context=_fg(palette["diff_context"]),
         inverse=_inverse,
         markdown=md_theme,
         user_default_text=user_default,
+    )
+
+
+
+def create_default_theme() -> Theme:
+    """Resolve terminal-native (default), dark, light, or plain styling."""
+    mode = os.environ.get("XDOG_TUI_THEME", "native").lower()
+    plain = "NO_COLOR" in os.environ or os.environ.get("TERM") == "dumb" or mode == "plain"
+    palette = dict(PALETTE)
+    if mode == "light":
+        palette.update(
+            user_bg="#EEF1F5", user_text="#252A34",
+            accent="#805500", accent_soft="#805500", dim="#555B66", border="#667085",
+            system_text="#555B66", error="#B42318", success="#146C43", tool="#175CD3",
+            quote="#175CD3", quote_border="#667085", code="#704800", code_border="#667085",
+            link="#146C43", diff_added="#146C43", diff_removed="#B42318", diff_context="#555B66",
+        )
+    theme = _palette_theme(palette)
+    def identity(text: str) -> str:
+        return text
+    if plain:
+        md = MarkdownTheme(
+            heading=identity, link=identity, link_url=identity, code=identity,
+            code_block=identity, code_block_border=identity, quote=identity,
+            quote_border=identity, hr=identity, list_bullet=identity,
+            bold=identity, italic=identity,
+        )
+        return Theme(
+            **{name: identity for name in Theme.__dataclass_fields__ if name not in {"markdown", "user_default_text"}},
+            markdown=md, user_default_text=DefaultTextStyle(color=identity, bg_color=identity),
+        )
+    if mode == "dark":
+        return theme
+    # Default terminal colors honor the user's background and contrast choices.
+    accent = theme.accent
+    dim = theme.dim
+    return replace(
+        theme, fg=identity, accent=accent,
+        dim=dim, header=lambda text: _bold(accent(text)),
+        user_default_text=theme.user_default_text,
     )
 
 

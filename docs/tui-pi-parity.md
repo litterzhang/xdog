@@ -7,14 +7,23 @@ library scaffolding does not imply application support.
 
 ## Implemented behavior
 
-- Shared Unicode editor and inline layout, with one status row and prioritized
-  auxiliary surface: permission, autocomplete, recent details, then queue.
+- Shared Unicode editor and inline layout. Details and permission panels appear below the editor. Permission, autocomplete,
+  recent details and queue share a bounded area. Both clients show contextual
+  shortcut hints when height permits. Spare height adds a blank row before status.
 - Permission summaries scroll with Page Up/Page Down. Up/Down selects an action;
   the selected action stays visible at small heights. Escape denies that call.
   At one terminal row only the editor fits; enlarge the terminal to approve.
-- Ctrl+O opens the latest retained tool/reasoning details. Left/Right changes
-  entries, Page Up/Page Down scrolls wrapped content, and Escape closes the panel
-  before cancellation. Long lines remain accessible by scrolling.
+- Ctrl+O opens focused tool/reasoning details; Escape, Ctrl+C or Ctrl+O restores
+  the input draft. Coding also provides `/details [close]` and `/status`.
+  Empty panels show feedback. Left/Right changes entries; Page Up/Page Down
+  scrolls. Details open at the top for both reasoning and tools. Home goes to the top;
+  End jumps to the latest output and enables following.
+- Coding distinguishes waiting, reasoning, responding, tool execution, approval
+  and cancellation. Elapsed time is monotonic; terminal events release approval
+  focus and clear the timer. Tool summaries retain final duration. Narrow status
+  rows prioritize activity, queue and context; `/status` exposes full metadata.
+- Claw uses monotonic elapsed time across busy phase changes, clearing it on
+  return to idle. Its details hints follow focus and disappear on short terminals.
 - Queue previews are bounded; the status keeps the queue count while another
   surface is visible. Cancellation restores queued text ahead of a newer draft.
   Claw keeps submissions made during abort settlement editable.
@@ -70,7 +79,8 @@ that those environments were tested.
 ## Deferred and excluded work
 
 Remote host/client protocols, controller leases, serve/connect commands, and a
-fullscreen application viewport are outside this plan. Extensions/themes,
-images/diagrams, selector ecosystems, full-history search/selection/replay, and
-renderer benchmarking remain separate projects. Existing helpers are left intact
+fullscreen application viewport are outside this plan. Full extension/theme
+ecosystems, images/diagrams and full-history search/selection remain separate
+projects. Basic theme presets, saved transcript replay and renderer benchmarking
+are implemented as documented in `tui-usability-plan.md`. Existing helpers are left intact
 and must not be described as finished application features.

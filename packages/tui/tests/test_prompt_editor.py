@@ -134,3 +134,17 @@ def test_exact_width_cursor_marker_is_rendered_on_empty_row() -> None:
 
     assert len(lines) == 4
     assert any("\x1b_pi:c\x07" in line for line in lines)
+
+
+def test_ctrl_enter_encodings_insert_newline_without_submitting() -> None:
+    from xdog.tui.keys import parse_key_events
+
+    for frame in (b"\x1b[13;5u", b"\x1b[27;5;13~"):
+        editor = make_editor()
+        submitted: list[str] = []
+        editor.on_submit = submitted.append
+        editor.set_text("draft")
+        for event in parse_key_events(frame):
+            editor.handle_input(event)
+        assert editor.get_text() == "draft\n"
+        assert submitted == []

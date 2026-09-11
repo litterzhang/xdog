@@ -25,6 +25,7 @@ class SessionMeta:
     summary: str
     model: str
     message_count: int
+    working_dir: str = ""
 
 
 @dataclass
@@ -39,6 +40,7 @@ class SessionData:
     messages: list[AgentMessage] = field(default_factory=list)
     settings: dict[str, Any] = field(default_factory=dict)
     branches: list[dict[str, Any]] = field(default_factory=list)
+    working_dir: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -47,6 +49,7 @@ class SessionData:
             "updated_at": self.updated_at,
             "summary": self.summary,
             "model": self.model,
+            "working_dir": self.working_dir,
             "messages": messages_to_dicts(self.messages),
             "settings": self.settings,
             "branches": self.branches,
@@ -63,6 +66,7 @@ class SessionData:
             messages=dicts_to_messages(data.get("messages", [])),
             settings=data.get("settings", {}),
             branches=data.get("branches", []),
+            working_dir=data.get("working_dir", ""),
         )
 
 
@@ -80,7 +84,7 @@ class SessionManager:
 
     # --- CRUD ---
 
-    def create_session(self, *, model: str = "", summary: str = "") -> SessionData:
+    def create_session(self, *, model: str = "", summary: str = "", working_dir: Path | None = None) -> SessionData:
         """Create a new empty session and persist it."""
         self._ensure_dir()
         now = time.time()
@@ -90,6 +94,7 @@ class SessionManager:
             updated_at=now,
             summary=summary,
             model=model,
+            working_dir=str(working_dir.resolve()) if working_dir is not None else "",
         )
         self._write(session)
         return session
@@ -119,13 +124,22 @@ class SessionManager:
             return True
         return False
 
-    def list_sessions(self, *, limit: int = 50) -> list[SessionMeta]:
+    def list_sessions(
+        self, *, limit: int | None = 50, working_dir: Path | None = None, include_unknown: bool = False,
+    ) -> list[SessionMeta]:
         """List sessions ordered by most-recently-updated first."""
         self._ensure_dir()
         metas: list[SessionMeta] = []
         for path in self._dir.glob(f"{SESSION_FILE_PREFIX}*{SESSION_FILE_SUFFIX}"):
             try:
                 raw = json.loads(path.read_text(encoding="utf-8"))
+                directory = raw.get("working_dir", "")
+                if working_dir is not None:
+                    if directory:
+                        if Path(directory).resolve() != working_dir.resolve():
+                            continue
+                    elif not include_unknown:
+                        continue
                 metas.append(SessionMeta(
                     session_id=raw["session_id"],
                     created_at=raw.get("created_at", 0.0),
@@ -133,6 +147,7 @@ class SessionManager:
                     summary=raw.get("summary", ""),
                     model=raw.get("model", ""),
                     message_count=len(raw.get("messages", [])),
+                    working_dir=directory,
                 ))
             except (json.JSONDecodeError, KeyError):
                 continue

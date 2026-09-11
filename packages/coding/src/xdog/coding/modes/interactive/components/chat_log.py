@@ -10,12 +10,13 @@ from xdog.coding.modes.interactive.components.user_message import UserMessageCom
 from xdog.coding.modes.interactive.theme import Theme
 from xdog.tui.components.bounded_details import DetailRecord
 from xdog.tui.components.details import set_details_expanded
+from xdog.tui.components.messages import ThinkingMessage, Transcript
 from xdog.tui.components.text import Text
-from xdog.tui.tui import Component, Container
+from xdog.tui.tui import Component
 from xdog.tui.utils import sanitize_terminal_text
 
 
-class ChatLog(Container):
+class ChatLog(Transcript):
     """Retained chat components plus a mutable streaming tail."""
 
     def __init__(self, theme: Theme) -> None:
@@ -113,7 +114,7 @@ class ChatLog(Container):
         """Snapshot tool and reasoning details without changing transcript state."""
         records: list[DetailRecord] = []
         for child in self.children:
-            if isinstance(child, AssistantMessageComponent) and child.detail_body.strip():
+            if isinstance(child, ThinkingMessage) and child.detail_body.strip():
                 records.append(DetailRecord(
                     title=child.detail_title,
                     body=child.detail_body,

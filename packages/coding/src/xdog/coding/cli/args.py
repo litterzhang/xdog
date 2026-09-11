@@ -20,7 +20,7 @@ from xdog.coding.cli.session_picker import pick_session_command
     "-r", "--resume",
     is_flag=True,
     default=False,
-    help="Resume the most recent session.",
+    help="Select a session from the current working directory.",
 )
 @click.option(
     "--resume-id",
@@ -121,9 +121,15 @@ def cli(
         list_models_command()
         return
 
-    if pick_session:
-        pick_session_command()
-        return
+    if (resume or pick_session) and resume_id:
+        raise click.UsageError("--resume/--pick-session cannot be combined with --resume-id.")
+    if resume or pick_session:
+        if rpc or print_mode:
+            raise click.UsageError("Use --resume-id with --rpc or --print.")
+        resume_id = pick_session_command(working_dir=working_dir)
+        if resume_id is None:
+            return
+        resume = False
 
     # Build overrides dict from CLI flags
     overrides: dict[str, Any] = {}

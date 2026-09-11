@@ -160,3 +160,18 @@ def test_exact_queue_permission_details_resize_and_history_sequence() -> None:
     assert screen.rows == transcript[5:] + ["status", "> draft", ""]
     assert (screen.row, screen.col) == (4, 2)
     assert screen.history == ["shell before 1", "shell before 2", *transcript[:5]]
+
+
+def test_streaming_and_final_answer_leave_no_status_in_history():
+    renderer = MainBufferRenderer(origin_row=2)
+    screen = Screen(height=10, width=60)
+    for output in ("a very long old output line", "short", "latest"):
+        transcript = ["bash · Run Python script", output, ""]
+        screen.feed(renderer.render(transcript + ["running bash", "> draft"], 60, 10,
+                                    (len(transcript) + 1, 7), len(transcript)))
+    transcript = ["bash · success · Run Python script", "Verified", ""] + [f"answer-{i}" for i in range(20)]
+    screen.feed(renderer.render(transcript + ["ready", "> draft"], 60, 10,
+                                (len(transcript) + 1, 7), len(transcript)))
+    assert screen.rows[-2:] == ["ready", "> draft"]
+    assert all("running bash" not in line for line in screen.history + screen.rows)
+    assert all("old output" not in line for line in screen.history + screen.rows)

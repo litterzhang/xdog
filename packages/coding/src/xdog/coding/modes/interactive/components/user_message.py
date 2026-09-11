@@ -1,24 +1,11 @@
-"""User message component for the interactive TUI."""
+"""Coding style adapter for shared user messages."""
 
 from __future__ import annotations
 
 from xdog.coding.modes.interactive.theme import Theme
-from xdog.tui.components.markdown import Markdown
-from xdog.tui.components.spacer import Spacer
-from xdog.tui.tui import Container
-from xdog.tui.utils import sanitize_terminal_text
+from xdog.tui.components.messages import UserMessage
 
 
-class UserMessageComponent(Container):
-    """Renders a user message with background color styling."""
-
+class UserMessageComponent(UserMessage):
     def __init__(self, text: str, theme: Theme) -> None:
-        super().__init__()
-        self.add_child(Spacer(1))
-        self.add_child(
-            Markdown(
-                sanitize_terminal_text(text), 1, 1,
-                theme.markdown,
-                default_text_style=theme.user_default_text,
-            )
-        )
+        super().__init__(text, theme.markdown, theme.user_default_text)

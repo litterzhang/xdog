@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
 import sys
 import termios
 from pathlib import Path
@@ -20,6 +21,7 @@ from xdog.ai.types import (
     ToolCall,
     ToolCallDoneEvent,
     ToolCallStartEvent,
+    Usage,
 )
 from xdog.ai.utils.event_stream import EventStream
 
@@ -42,8 +44,15 @@ class FixtureProvider:
                     content=(TextContent(text="FIXTURE-HOLD"),),
                 ))
                 await asyncio.sleep(60)
-            if "permission" in text and last.role == "user":
-                call = ToolCall(id="fixture-call", name="bash", arguments={"command": "printf fixture"})
+            if ("permission" in text or "stress" in text) and last.role == "user":
+                command = "printf fixture"
+                if "stress" in text:
+                    script = (
+                        "import time\nfor i in range(120):\n"
+                        "    print(f'STRESS-{i}', flush=True)\n    time.sleep(0.03)"
+                    )
+                    command = shlex.join([sys.executable, "-c", script])
+                call = ToolCall(id="fixture-call", name="bash", arguments={"command": command})
                 yield ToolCallStartEvent(id=call.id, name=call.name)
                 yield ToolCallDoneEvent(id=call.id, name=call.name, arguments=call.arguments)
                 yield DoneEvent(stop_reason="toolUse", message=AssistantMessage(content=(call,), stop_reason="toolUse"))
@@ -55,7 +64,7 @@ class FixtureProvider:
                 content = (TextContent(text=answer),)
                 if "reasoning" in text and last.role == "user":
                     content = (ThinkingContent(thinking="FIXTURE-REASONING-DETAIL"), *content)
-                yield DoneEvent(message=AssistantMessage(content=content))
+                yield DoneEvent(message=AssistantMessage(content=content, usage=Usage(input=1234, cache_read=1000)))
         async def events():
             async for event in generate():
                 if isinstance(event, DoneEvent):
@@ -72,7 +81,7 @@ if __name__ == "__main__":
         if kind == "coding":
             ai.provider = lambda _name: FixtureProvider()
             from xdog.coding.main import main
-            sys.argv = ["xdog-coding", "--model", "terminal-fixture", "--permission-mode", "ask-all"]
+            sys.argv = ["xdog-coding", *(args or ["--model", "terminal-fixture", "--permission-mode", "ask-all"])]
             main()
         else:
             from xdog.claw.channels.tui.tui_client import run_tui

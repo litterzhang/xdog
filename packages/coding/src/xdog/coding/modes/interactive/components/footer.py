@@ -3,29 +3,15 @@
 from __future__ import annotations
 
 from xdog.coding.modes.interactive.theme import Theme, format_tokens
-from xdog.tui.components.text import Text
-from xdog.tui.utils import truncate_to_width
+from xdog.tui.components.status_line import StatusLine
 
 
-class FooterComponent(Text):
+class FooterComponent(StatusLine):
     """Bottom status bar showing model, session, tokens, and working directory."""
 
     def __init__(self, theme: Theme) -> None:
-        super().__init__("", 0, 0)
-        self._theme = theme
-        self._activity = "ready"
+        super().__init__(theme.dim, structured=True)
         self._metadata: tuple[str, ...] = ()
-        self._queued = 0
-
-    def set_queue_count(self, count: int) -> None:
-        self._queued = count
-
-    def set_activity(self, activity: str) -> None:
-        """Set the single activity label without rebuilding metadata."""
-        if activity == self._activity:
-            return
-        self._activity = activity
-        self.invalidate()
 
     def update(
         self,
@@ -40,6 +26,8 @@ class FooterComponent(Text):
         max_context: int = 200_000,
     ) -> None:
         """Update footer content with current session state."""
+        self._model = model.rsplit("/", 1)[-1]
+        self._context = ""
         parts: list[str] = []
 
         if model:
@@ -52,9 +40,10 @@ class FooterComponent(Text):
             parts.append(f"session:{session_id[:8]}")
         if message_count > 0:
             parts.append(f"msgs:{message_count}")
-        if context_tokens > 0 and max_context > 0:
+        if max_context > 0:
             pct = min(100.0, context_tokens / max_context * 100)
-            parts.append(f"ctx:{pct:.0f}%/{format_tokens(max_context)}")
+            self._context = f"ctx:{format_tokens(context_tokens)}/{format_tokens(max_context)}"
+            parts.append(f"{self._context} ({pct:.1f}%)")
         if working_dir:
             # Show last two path components
             segments = working_dir.rstrip("/").split("/")
@@ -67,8 +56,6 @@ class FooterComponent(Text):
         self._metadata = metadata
         self.invalidate()
 
-    def render(self, width: int) -> list[str]:
-        """Render exactly one activity/metadata row, elided to terminal width."""
-        queue = (f"queued {self._queued}",) if self._queued else ()
-        content = " | ".join((self._activity, *queue, *self._metadata))
-        return [self._theme.dim(truncate_to_width(content, max(1, width), "…"))]
+    def describe(self) -> str:
+        """Full metadata for /status, independent of screen width."""
+        return " | ".join((self._activity, *self._metadata))

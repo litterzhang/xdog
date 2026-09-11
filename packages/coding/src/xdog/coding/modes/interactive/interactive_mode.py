@@ -5,15 +5,11 @@ events for streaming responses, tool execution display, and session
 management.
 
 Component tree:
-    TUI
-    └── root (Container)
-        ├── header (Text)
-        ├── chat_log (ChatLog)
-        ├── status_container (Container)
-        ├── footer (FooterComponent)
-        ├── editor (CustomEditorComponent)
-        ├── message_queue (Container)
-        └── permission_prompt (Container)
+    TUI -> InlineLayout
+        transcript -> work summary -> auxiliary panel -> status -> editor -> hints
+
+RunStatus owns UI lifecycle and elapsed time. Queue locks, turn stamps and
+worker cancellation signals protect asynchronous execution separately.
 """
 
 from __future__ import annotations
@@ -21,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import queue
-import random
 import threading
 import time
 from collections import deque
@@ -56,8 +51,9 @@ from xdog.coding.modes.interactive.components.custom_editor import CustomEditorC
 from xdog.coding.modes.interactive.components.footer import FooterComponent
 from xdog.coding.modes.interactive.components.permission_prompt import PermissionPromptComponent
 from xdog.coding.modes.interactive.components.tool_execution import ToolExecutionComponent
+from xdog.coding.modes.interactive.run_status import RunPhase, RunStatus
 from xdog.coding.modes.interactive.theme import create_default_theme
-from xdog.tui.components.bounded_details import BoundedDetails
+from xdog.tui.components.details_panel import DetailsPanel
 from xdog.tui.components.inline_layout import CompactText, InlineLayout
 from xdog.tui.components.text import Text
 from xdog.tui.event_queue import EventQueue, thaw_event
@@ -139,8 +135,7 @@ class InteractiveMode:
         # State
         self._exit_requested = False
         self._last_ctrl_c_at = 0.0
-        self._is_busy = False
-        self._busy_started: float | None = None
+        self._run_status = RunStatus()
         self._last_busy_label = ""
         self._streaming_text = ""
         self._streaming_thinking = ""
@@ -148,7 +143,6 @@ class InteractiveMode:
         self._stream_id = "assistant-0"
         self._tool_components: dict[str, ToolExecutionComponent] = {}
         self._permission_prompt: PermissionPromptComponent | None = None
-        self._awaiting_permission = False
         self._details_expanded = verbose
         self._details_open = verbose
         self._pending_messages: deque[tuple[str, bool]] = deque()
@@ -177,13 +171,14 @@ class InteractiveMode:
         self._message_queue_container.add_child(self._queue_text)
         self._permission_container = Container()
         self._work_container = Container()
-        self._details_panel = BoundedDetails(self._chat_log.detail_records, max_rows=8)
+        self._details_panel = DetailsPanel(self._chat_log.detail_records, max_rows=8)
         self._banner_added = False
 
         # Compatibility handles retained for callers/tests; activity and metadata
         # now occupy one stable footer row.
         self._status_text: Text | None = None
         self._status_loader = None
+        self._hints = CompactText("Enter send · Ctrl+Enter newline · Ctrl+O details · /help", 0, 0)
         self._layout = InlineLayout(
             transcript=self._chat_log,
             work=self._work_container,
@@ -192,6 +187,7 @@ class InteractiveMode:
             permission=None,
             details=self._details_panel if self._details_open else None,
             queue=None,
+            hints=self._hints,
         )
         self._tui.add_child(self._layout)
         self._tui.set_focus(self._editor)
@@ -207,16 +203,30 @@ class InteractiveMode:
         # Subscribe to agent events. Permission handlers are bound per turn so
         # a canceled turn cannot surface an approval panel during its successor.
         self._unsubscribe = self._session.agent.subscribe(self._on_agent_event)
+        if verbose:
+            self._open_details()
+
+    @property
+    def _is_busy(self) -> bool:
+        return self._run_status.busy
+
+    @property
+    def _busy_started(self) -> float | None:
+        return self._run_status.started
+
+    @property
+    def _awaiting_permission(self) -> bool:
+        return self._run_status.awaiting_permission
 
     def _handle_global_input(self, event: Any) -> dict[str, object] | None:
         """Handle bounded details, suspension, and active-turn cancellation."""
         if self._permission_prompt is not None or self._editor.autocomplete_active:
             return None
         if self._details_open and self._permission_prompt is None:
-            if event.matches("escape"):
+            if event.matches("escape") or event.matches("ctrl+c"):
                 self._close_details()
                 return {"consume": True}
-            if event.matches("left") or event.matches("right") or event.matches("pageup") or event.matches("pagedown"):
+            if any(event.matches(key) for key in ("left", "right", "pageup", "pagedown", "home", "end")):
                 self._details_panel.handle_input(event)
                 self._tui.request_render()
                 return {"consume": True}
@@ -229,17 +239,26 @@ class InteractiveMode:
                 self._tui.request_render()
             return {"consume": True}
         if event.matches("ctrl+o"):
-            self._details_open = not self._details_open
             if self._details_open:
-                self._details_panel.show_latest()
-            self._layout.details = self._details_panel if self._details_open else None
-            self._tui.request_render()
+                self._close_details()
+            else:
+                self._open_details()
             return {"consume": True}
         return None
+
+    def _open_details(self) -> None:
+        self._details_open = True
+        self._details_panel.show_latest(from_start=True)
+        self._layout.details = self._details_panel
+        self._editor.set_focus(False)
+        self._tui.set_focus(self._details_panel)
+        self._hints.set_text("Details focused · ←/→ entry · PgUp/PgDn scroll · End latest · Esc input")
+        self._tui.request_render()
 
     def _close_details(self) -> None:
         self._details_open = False
         self._layout.details = None
+        self._update_hints()
         self._tui.set_focus(self._editor)
         self._editor.set_focus(True)
         self._tui.request_render()
@@ -274,7 +293,9 @@ class InteractiveMode:
         tool_components: dict[str, Any] = {}
         for msg in self._session.messages:
             if isinstance(msg, UserMessage):
-                text = msg.content if isinstance(msg.content, str) else ""
+                text = msg.content if isinstance(msg.content, str) else "\n".join(
+                    part.text for part in msg.content if isinstance(part, TextContent)
+                )
                 if text:
                     self._chat_log.add_user(text)
                     self._editor.add_to_history(text)
@@ -336,21 +357,45 @@ class InteractiveMode:
         self._last_busy_label = message
         self._footer.set_activity(message)
 
-    def _set_busy(self, busy: bool) -> None:
-        self._is_busy = busy
-        if busy:
-            self._busy_started = time.time()
-            phrase = random.choice(WAITING_PHRASES)
-            self._set_status_busy(f"{phrase}...")
+    def _update_hints(self) -> None:
+        if self._awaiting_permission:
+            hint = "Permission focused · ↑/↓ choose · Enter confirm · Esc deny"
+        elif self._details_open:
+            hint = "Details focused · ←/→ entry · PgUp/PgDn scroll · End latest · Esc input"
+        elif self._is_busy:
+            hint = "Enter queue message · Esc cancel · Ctrl+O details"
         else:
-            self._busy_started = None
-            self._last_busy_label = ""
+            hint = "Enter send · Ctrl+Enter newline · Ctrl+O details · /help"
+        self._hints.set_text(hint)
+
+    def _activity_label(self) -> str:
+        if self._tool_components:
+            names = [tool.detail_title for tool in self._tool_components.values()]
+            return "running " + names[0] + (f" +{len(names) - 1}" if len(names) > 1 else "")
+        return self._run_status.phase.value
+
+    def _set_busy(self, busy: bool) -> None:
+        if busy:
+            self._run_status = self._run_status.start(time.monotonic())
+            self._set_status_busy("waiting for response")
+        else:
+            self._run_status = self._run_status.finish()
+            for tool in self._tool_components.values():
+                tool.set_canceled()
+            self._tool_components.clear()
+            self._permission_container.clear()
+            self._layout.permission = None
+            self._permission_prompt = None
+            if not self._details_open:
+                self._tui.set_focus(self._editor)
+                self._editor.set_focus(True)
             self._set_status_text("ready")
+        self._update_hints()
 
     def _format_elapsed(self) -> str:
         if self._busy_started is None:
             return "0s"
-        total = int(time.time() - self._busy_started)
+        total = max(0, int(time.monotonic() - self._busy_started))
         if total < 60:
             return f"{total}s"
         m, s = divmod(total, 60)
@@ -435,6 +480,20 @@ class InteractiveMode:
             self._request_exit()
             return
 
+        if cmd == "help":
+            self._chat_log.add_system("/details [close] — inspect tool/reasoning output; /status — full metadata")
+        if cmd == "details":
+            if args.strip() == "close":
+                self._close_details()
+            else:
+                self._open_details()
+            return
+        if cmd == "status":
+            self._update_footer()
+            self._chat_log.add_system(self._footer.describe())
+            self._tui.request_render()
+            return
+
         # Run async commands in a new event loop
         stamp = self._active_stamp
 
@@ -503,11 +562,12 @@ class InteractiveMode:
         self._permission_container.clear()
         self._layout.permission = None
         self._permission_prompt = None
-        self._awaiting_permission = False
+        self._run_status = self._run_status.advance(RunPhase.CANCELLING)
         self._tui.set_focus(self._editor)
         self._update_message_queue()
         self._chat_log.drop_assistant(self._stream_id)
         self._set_status_text("cancelling active turn...")
+        self._hints.set_text("Cancelling · draft preserved · waiting for worker to stop")
         notice = "cancelling active turn"
         if queued:
             notice += f"; restored {len(queued)} queued message(s) to editor"
@@ -759,9 +819,9 @@ class InteractiveMode:
             except queue.Empty:
                 break
 
-        if self._is_busy and not self._awaiting_permission and not self._cancel_requested:
+        if self._is_busy and not self._awaiting_permission and self._run_status.phase != RunPhase.CANCELLING:
             elapsed = self._format_elapsed()
-            label = f"thinking... • {elapsed}"
+            label = f"{self._activity_label()} • {elapsed}"
             # Only repaint when the elapsed label changes.
             if label != self._last_busy_label:
                 self._set_status_busy(label)
@@ -771,7 +831,7 @@ class InteractiveMode:
             self._tui.request_render()
 
     def _show_permission_request(self, request: PermissionRequest) -> None:
-        """Display a focused approval panel immediately after the input."""
+        """Display a focused approval panel above the input."""
         self._permission_container.clear()
         stamp = self._active_stamp
 
@@ -782,9 +842,10 @@ class InteractiveMode:
             self._permission_container.clear()
             self._layout.permission = None
             self._permission_prompt = None
-            self._awaiting_permission = False
-            self._tui.set_focus(self._editor)
-            self._editor.set_focus(True)
+            self._run_status = self._run_status.resume()
+            self._update_hints()
+            self._tui.set_focus(self._details_panel if self._details_open else self._editor)
+            self._editor.set_focus(not self._details_open)
             if self._is_busy:
                 self._set_status_busy("resuming...")
             self._tui.request_render()
@@ -795,8 +856,9 @@ class InteractiveMode:
         self._layout.permission = prompt
         self._editor.set_focus(False)
         self._tui.set_focus(prompt)
-        self._awaiting_permission = True
+        self._run_status = self._run_status.advance(RunPhase.PERMISSION)
         self._set_status_text("awaiting tool permission")
+        self._update_hints()
 
     def _restore_editor_messages(self, messages: Any) -> None:
         """Restore queued text on the UI thread while preserving the live draft."""
@@ -829,6 +891,7 @@ class InteractiveMode:
                 return
 
         if event_type == "assistant_start":
+            self._run_status = self._run_status.advance(RunPhase.WAITING)
             # Every model response gets its own chat component. Reusing one
             # component for the whole agent loop caused a post-tool answer to
             # replace the pre-tool reasoning in place, making the latest text
@@ -840,6 +903,7 @@ class InteractiveMode:
         elif event_type == "text_update":
             text = event.get("text", "")
             thinking = event.get("thinking", "")
+            self._run_status = self._run_status.advance(RunPhase.RESPONDING if text else RunPhase.REASONING)
             self._streaming_text = text
             self._streaming_thinking = thinking
             self._chat_log.update_assistant(
@@ -849,6 +913,7 @@ class InteractiveMode:
             )
 
         elif event_type == "tool_call":
+            self._run_status = self._run_status.advance(RunPhase.RUNNING)
             tool_call_id = event.get("id", "")
             name = event.get("name", "")
             arguments = event.get("arguments", {})
@@ -877,6 +942,9 @@ class InteractiveMode:
         elif event_type == "tool_result":
             tool_call_id = event.get("id", "")
             finished_component = self._tool_components.pop(tool_call_id, None)
+            self._run_status = self._run_status.advance(
+                RunPhase.RUNNING if self._tool_components else RunPhase.WAITING,
+            )
             if finished_component is not None:
                 content = event.get("content", ())
                 if isinstance(content, tuple):
@@ -890,6 +958,7 @@ class InteractiveMode:
             self._finalize_streaming_assistant()
 
         elif event_type == "queued_message_started":
+            self._set_busy(True)
             if event.get("echo", True):
                 self._chat_log.add_user(event.get("message", ""))
             self._update_message_queue()

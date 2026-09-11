@@ -44,14 +44,14 @@ def test_cancel_status_stops_timer_and_idle_repaints() -> None:
 
 
 def test_busy_poll_only_repaints_when_status_changes(monkeypatch) -> None:
-    monkeypatch.setattr("xdog.claw.channels.tui.tui_app.time.time", lambda: 100.0)
+    monkeypatch.setattr("xdog.claw.channels.tui.tui_app.time.monotonic", lambda: 100.0)
     app = ChatApp("/tmp/unused-claw-test.sock")
     _submit(app._editor, "request")
     app._poll()  # Render the submitted request's token estimate.
     app._tui._render_requested = False
     app._poll()
     assert not app._tui._render_requested
-    monkeypatch.setattr("xdog.claw.channels.tui.tui_app.time.time", lambda: 101.0)
+    monkeypatch.setattr("xdog.claw.channels.tui.tui_app.time.monotonic", lambda: 101.0)
     app._poll()
     assert app._tui._render_requested
 
@@ -193,7 +193,10 @@ def test_ctrl_o_opens_bounded_latest_details_and_escape_closes_before_cancel() -
     details = app._details_panel.render(60)
     assert len(details) <= 8
     assert "call-1" in _plain(details)
-    assert "DETAIL-TAIL" in _plain(details)
+    assert "first" in _plain(details)
+    assert "DETAIL-TAIL" not in _plain(details)
+    app._details_panel.handle_input(KeyEvent(key="end"))
+    assert "DETAIL-TAIL" in _plain(app._details_panel.render(60))
     assert "DETAIL-TAIL" not in _plain(app._chat_log.render(100))
 
     assert app._tui._dispatch_input(KeyEvent(key="escape"))
@@ -271,3 +274,29 @@ def test_claw_idle_poll_and_queue_update_have_bounded_frames(monkeypatch) -> Non
     app._tui._do_render()
     assert output.getvalue().count("\x1b[?2026h") == 1
     assert output.getvalue().count("\x1b[?2026l") == 1
+
+
+def test_elapsed_survives_busy_phase_changes_and_wall_clock_jump(monkeypatch):
+    app = ChatApp("/tmp/unused-claw-test.sock")
+    monkeypatch.setattr("xdog.claw.channels.tui.tui_app.time.monotonic", lambda: 100.0)
+    monkeypatch.setattr("xdog.claw.channels.tui.tui_app.time.time", lambda: 1000.0)
+    app._set_activity_status("waiting")
+    monkeypatch.setattr("xdog.claw.channels.tui.tui_app.time.monotonic", lambda: 107.0)
+    monkeypatch.setattr("xdog.claw.channels.tui.tui_app.time.time", lambda: 1.0)
+    app._set_activity_status("streaming")
+    assert app._format_elapsed() == "7s"
+    app._set_activity_status("idle")
+    assert app._status_started is None
+    app._set_activity_status("waiting")
+    assert app._format_elapsed() == "0s"
+
+
+def test_claw_contextual_hints_follow_details_focus_and_height():
+    app = ChatApp("/tmp/unused-claw-test.sock")
+    assert "Ctrl+Enter newline" in _plain(app._layout.render(100))
+    app._handle_global_input(KeyEvent(key="o", ctrl=True))
+    assert "Details focused" in _plain(app._layout.render(100))
+    app._close_details()
+    assert "Ctrl+Enter newline" in _plain(app._layout.render(100))
+    app._layout.set_height(4)
+    assert "Ctrl+Enter newline" not in _plain(app._layout.render(100))
