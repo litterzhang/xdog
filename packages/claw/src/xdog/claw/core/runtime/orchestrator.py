@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -71,14 +73,15 @@ class Orchestrator:
         self._channels.append(channel)
 
         async def _on_channel_message(message: GroupInput) -> None:
-            result = await self.route_message(message)
+            result = await self.route_message(
+                message,
+                on_assistant_message=partial(self._send_response, message.group_id),
+            )
             if result is None:
                 return
             group_id = message.group_id
             if result.error:
                 await self._send_to_channels(group_id, f"Error: {result.error}")
-            elif result.response_text:
-                await self._send_response(group_id, result.response_text)
 
         channel.set_on_message(_on_channel_message)
 
@@ -98,6 +101,7 @@ class Orchestrator:
         *,
         on_display_event: Any = None,
         on_text_delta: Any = None,
+        on_assistant_message: Callable[[str], Awaitable[None]] | None = None,
         reserved: bool = False,
     ) -> TurnResult | None:
         """Single entry point for all messages."""
@@ -132,14 +136,16 @@ class Orchestrator:
             message,
             on_display_event=on_display_event,
             on_text_delta=on_text_delta,
+            on_assistant_message=on_assistant_message,
         )
 
         queued = await self._queue.collect_with_debounce(group_id, debounce_ms)
         for qmsg in queued:
-            qresult = await self._execute_with_queue(qmsg)
-            if qresult and qresult.response_text:
-                await self._send_response(group_id, qresult.response_text)
-            elif qresult and qresult.error:
+            qresult = await self._execute_with_queue(
+                qmsg,
+                on_assistant_message=partial(self._send_response, group_id),
+            )
+            if qresult and qresult.error:
                 await self._send_to_channels(group_id, f"Error: {qresult.error}")
 
         return result
@@ -150,6 +156,7 @@ class Orchestrator:
         *,
         on_display_event: Any = None,
         on_text_delta: Any = None,
+        on_assistant_message: Callable[[str], Awaitable[None]] | None = None,
     ) -> TurnResult | None:
         """Execute a message with concurrency control."""
         group_id = message.group_id
@@ -164,6 +171,7 @@ class Orchestrator:
                 message,
                 on_display_event=on_display_event,
                 on_text_delta=on_text_delta,
+                on_assistant_message=on_assistant_message,
             )
             return result
 

@@ -259,17 +259,18 @@ class WeixinChannel(Channel):
     async def disconnect(self) -> None:
         """Signal the monitor to stop and await completion."""
         self._cancel_event.set()
-        # Cancel all active typing indicators
-        for indicator in self._active_typing.values():
-            await indicator.stop()
-        self._active_typing.clear()
-
         if self._monitor_task is not None:
             try:
                 self._monitor_task.cancel()
                 await self._monitor_task
             except (asyncio.CancelledError, Exception):
                 pass
+            self._monitor_task = None
+        # Stop the worker first: its handler also cleans up typing in finally.
+        # Otherwise it can mutate this dictionary while disconnect iterates it.
+        for indicator in self._active_typing.values():
+            await indicator.stop()
+        self._active_typing.clear()
         # Persist state on shutdown
         persist_context_tokens(self._state_dir, self._account_id)
         _save_user_id_map(self._state_dir, self._account_id, self._user_id_map)
@@ -281,9 +282,8 @@ class WeixinChannel(Channel):
         if not text:
             return
 
-        # Cancel typing indicator for this group (response is ready)
-        await self._stop_typing(group_id)
-
+        # A message may be progress before more tool calls, not the end of the
+        # turn. _on_inbound owns typing cleanup when processing actually ends.
         # Resolve the real WeChat user ID
         real_user_id = self._user_id_map.get(group_id)
         if real_user_id is None:

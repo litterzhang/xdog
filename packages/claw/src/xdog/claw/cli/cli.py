@@ -144,32 +144,30 @@ def onboard(config_path: str | None) -> None:
             # models, not just whatever was cached; fall back to the cache on error.
             click.echo("  Syncing available models...")
             try:
-                models = list(asyncio.run(runtime.sync_models()))
+                models = list(asyncio.run(runtime.sync_models(force=True)))
             except Exception:
                 models = list(runtime.models())
     except Exception:
         pass
 
-    if models:
-        # Show top models grouped by capability
-        coding_models = [m for m in models if "sonnet" in m.id.lower() or "gpt-4" in m.id.lower() or "opus" in m.id.lower()]
-        if not coding_models:
-            coding_models = models[:10]
+    # Model names and catalogue order are not capability rankings. Keep every
+    # chat model selectable, including newly discovered families.
+    models = [m for m in models if m.model_type == "chat"]
 
-        click.echo("  Available models (top picks):")
-        for i, m in enumerate(coding_models[:8], 1):
+    if models:
+        click.echo("  Available models:")
+        for i, m in enumerate(models, 1):
             ctx = f"{m.context_window // 1000}k" if m.context_window else "?"
             click.echo(f"    {i}. {m.id} ({ctx} context)")
 
         default_idx = 1
-        for i, m in enumerate(coding_models[:8], 1):
+        for i, m in enumerate(models, 1):
             if "sonnet" in m.id.lower() and "4" in m.id:
                 default_idx = i
                 break
 
-        choice = click.prompt("  Select primary model", type=int, default=default_idx)
-        idx = max(0, min(choice - 1, len(coding_models) - 1))
-        primary_model = coding_models[idx].id
+        choice = click.prompt("  Select primary model", type=click.IntRange(1, len(models)), default=default_idx)
+        primary_model = models[choice - 1].id
         click.echo(f"  Selected: {primary_model}")
     else:
         primary_model = click.prompt("  Enter model name", default="copilot/claude-sonnet-4.5")

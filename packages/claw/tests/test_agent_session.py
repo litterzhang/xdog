@@ -1,14 +1,20 @@
 """Tests for AgentSession — agent turn execution, persistence, tools."""
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
+from xdog.agent import MessageEndEvent
 from xdog.agent.tools import create_filesystem_tool
 from xdog.ai.types import (
     AssistantMessage,
     DoneEvent,
     StartEvent,
     TextContent,
+    ThinkingContent,
     ToolCall,
+    ToolResultMessage,
+    Usage,
+    UserMessage,
 )
 from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.core.persistence.transcript_store import TranscriptStore
@@ -150,6 +156,77 @@ async def test_run_turn_returns_response(setup):
     result = await session.run_turn(UserInput(group_id="g1", content="hi", sender="user"))
     assert result.response_text == "Hello! I'm TestBot."
     assert result.error is None
+
+
+@pytest.mark.asyncio
+async def test_cancelled_turn_aborts_agent_producer_and_persists(setup):
+    ws, tmp_path = setup
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+
+    def stream_fn(model_id, context, options=None):
+        msg = AssistantMessage(stop_reason="aborted")
+
+        async def events():
+            started.set()
+            await options.cancel.wait()
+            stopped.set()
+            yield DoneEvent(message=msg)
+
+        future = asyncio.get_running_loop().create_future()
+        future.set_result(msg)
+        return EventStream.from_async_generator(events(), result_future=future)
+
+    session = _make_session(ws, tmp_path, stream_fn=stream_fn)
+    task = asyncio.create_task(session.run_turn(UserInput(group_id="g1", content="hello", sender="user")))
+    await asyncio.wait_for(started.wait(), timeout=2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2)
+
+    assert stopped.is_set()
+    assert not session.agent.state.is_streaming
+    transcript = session._store.load_transcript(session.meta.session_id)
+    assert transcript[0]["role"] == "user"
+
+
+@pytest.mark.asyncio
+async def test_message_delivery_only_includes_completed_assistant_text(setup):
+    ws, tmp_path = setup
+    session = _make_session(ws, tmp_path, stream_fn=make_stream_fn())
+    messages = [
+        UserMessage(content="user input"),
+        AssistantMessage(content=(ThinkingContent(thinking="private reasoning"),)),
+        AssistantMessage(content=(ToolCall(id="c1", name="filesystem", arguments={}),)),
+        ToolResultMessage(tool_call_id="c1", tool_name="filesystem", content=(TextContent(text="tool output"),)),
+        AssistantMessage(content=(TextContent(text=" \n"),)),
+        AssistantMessage(content=(TextContent(text="failed partial"),), stop_reason="error"),
+        AssistantMessage(content=(TextContent(text="aborted partial"),), stop_reason="aborted"),
+        AssistantMessage(
+            content=(
+                ThinkingContent(thinking="more private reasoning"),
+                TextContent(text="Checking."),
+                TextContent(text="Please wait."),
+                ToolCall(id="c2", name="filesystem", arguments={}),
+            ),
+            usage=Usage(input=10, output=5, total_tokens=15),
+        ),
+        AssistantMessage(
+            content=(TextContent(text="Done."),),
+            usage=Usage(input=20, output=5, total_tokens=25),
+        ),
+    ]
+
+    async def events():
+        for message in messages:
+            yield MessageEndEvent(message=message)
+
+    deliver = AsyncMock()
+    result = await session._drain_events(events(), on_assistant_message=deliver)
+
+    assert [call.args[0] for call in deliver.await_args_list] == ["Checking.\n\nPlease wait.", "Done."]
+    assert result.usage == {"input": 30, "output": 10, "cache_read": 0, "cache_write": 0}
+
 
 @pytest.mark.asyncio
 async def test_run_turn_persists_transcript(setup):

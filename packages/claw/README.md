@@ -19,6 +19,26 @@ of a newer draft; input submitted during cancellation stays editable. Ctrl+Z
 suspends on POSIX. Remote coding and fullscreen application modes are excluded.
 See [terminal verification](../../docs/tui-pi-parity.md) for tests and limitations.
 
+## Messaging replies
+
+Messaging channels such as WeChat send each completed assistant text message as
+it becomes available, including progress messages between tool calls. They do
+not wait for the whole agent turn or resend an aggregated response at the end.
+Reasoning, tool arguments/results, and empty messages are not sent as replies.
+Long messages still use the normal channel chunking. WeChat's typing indicator
+stays active until the turn finishes.
+
+This is message-level delivery, not token streaming. WeChat polls for new
+messages independently while the agent works. A FIFO inbox holds up to 50
+pending messages, and a single worker dispatches them in arrival order through
+the orchestrator. A later arrival does not change the active message's reply
+recipient or typing indicator. When the inbox fills, polling pauses until space
+is available rather than dropping messages.
+
+The inbox is in-memory, not a durable job queue: stopping/restarting the gateway
+cancels the active handler and discards pending messages. Wait for replies
+before restarting; messages left pending may need to be resent.
+
 ## Part of xdog
 
 This package is one piece of [xdog](https://github.com/litterzhang/xdog), a

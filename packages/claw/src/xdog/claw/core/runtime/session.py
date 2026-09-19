@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -240,8 +241,14 @@ class AgentSession:
         on_text_delta: Any = None,
         *,
         on_display_event: Any = None,
+        on_assistant_message: Callable[[str], Awaitable[None]] | None = None,
     ) -> TurnResult:
-        """Execute a turn and emit structured display events when requested."""
+        """Execute a turn, optionally delivering each completed assistant message.
+
+        Message delivery contains only public text, not reasoning or tool
+        results. ``response_text`` still aggregates the turn for non-streaming
+        callers; callers using message delivery must not send it again.
+        """
         if on_display_event is None and on_text_delta is not None:
             def _compat_display_event(event: DisplayEvent) -> None:
                 if isinstance(event, AssistantTextDelta):
@@ -254,7 +261,7 @@ class AgentSession:
 
             previous_count = len(self._agent.state.messages)
             event_stream = await self._agent.prompt(input.content)
-            turn = await self._drain_events(event_stream, on_display_event)
+            turn = await self._drain_events(event_stream, on_display_event, on_assistant_message)
 
             if self._agent.cancellation_requested:
                 self._persist_turn(input, turn.usage)
@@ -289,6 +296,15 @@ class AgentSession:
                 usage=usage,
             )
 
+        except asyncio.CancelledError:
+            # The channel worker can be cancelled during gateway shutdown.
+            # Cancelling the event consumer alone leaves the Agent's producer
+            # running (and potentially executing tools) in the background.
+            if self._agent.state.is_streaming:
+                self._agent.abort()
+                await self._agent.wait_for_idle()
+            self._persist()
+            raise
         except Exception as e:
             logger.error("Agent turn failed for group %s: %s", self._group_id, e)
             self._persist()
@@ -315,6 +331,7 @@ class AgentSession:
 
     async def _drain_events(
         self, event_stream: Any, on_display_event: Any = None,
+        on_assistant_message: Callable[[str], Awaitable[None]] | None = None,
     ) -> _DrainResult:
         tool_calls: list[dict[str, Any]] = []
         usage: dict[str, int] = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
@@ -367,11 +384,20 @@ class AgentSession:
 
             elif isinstance(event, MessageEndEvent):
                 msg = event.message
-                if isinstance(msg, AssistantMessage) and msg.usage and msg.usage.total_tokens > 0:
+                if not isinstance(msg, AssistantMessage):
+                    continue
+                if msg.usage and msg.usage.total_tokens > 0:
                     usage["input"] += msg.usage.input
                     usage["output"] += msg.usage.output
                     usage["cache_read"] += msg.usage.cache_read
                     usage["cache_write"] += msg.usage.cache_write
+                if on_assistant_message and msg.stop_reason not in ("error", "aborted"):
+                    text = "\n\n".join(
+                        part.text for part in msg.content
+                        if isinstance(part, TextContent) and part.text
+                    )
+                    if text.strip():
+                        await on_assistant_message(text)
 
         return _DrainResult(tool_calls=tuple(tool_calls), usage=usage)
 

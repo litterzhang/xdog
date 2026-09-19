@@ -1,6 +1,8 @@
 """Tests for WeChat channel."""
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -13,6 +15,7 @@ from xdog.claw.channels.weixin.context_tokens import (
     get_context_token,
 )
 from xdog.claw.channels.weixin.types import (
+    GetUpdatesResp,
     MessageItem,
     MessageItemType,
     MessageType,
@@ -61,6 +64,36 @@ async def test_send_message_calls_api(tmp_path):
     assert req.msg.to_user_id == "user1@im.wechat"
     assert len(req.msg.item_list) == 1
     assert req.msg.item_list[0].text_item.text == "Hello!"
+
+
+@pytest.mark.asyncio
+async def test_progress_replies_keep_typing_until_inbound_handler_finishes(tmp_path):
+    ch = WeixinChannel(
+        state_dir=tmp_path,
+        account_id="test-acct",
+        base_url="https://test.example.com",
+        token="test-token",
+    )
+    ch._start_typing = AsyncMock()
+    ch._stop_typing = AsyncMock()
+    ch._api_client.send_message = AsyncMock()
+
+    async def on_message(msg):
+        await ch.send_message(msg.group_id, "Checking.")
+        ch._stop_typing.assert_not_awaited()
+        await ch.send_message(msg.group_id, "Done.")
+        ch._stop_typing.assert_not_awaited()
+
+    ch.set_on_message(on_message)
+    try:
+        await ch._on_inbound(_text_msg("user@im.wechat", "hello"))
+
+        ch._start_typing.assert_awaited_once()
+        ch._stop_typing.assert_awaited_once_with("main")
+        assert ch._api_client.send_message.await_count == 2
+    finally:
+        await ch._api_client.close()
+
 
 @pytest.mark.asyncio
 async def test_inbound_message_conversion(tmp_path):
@@ -160,6 +193,67 @@ async def test_connect_disconnect(tmp_path):
 
         await ch.disconnect()
         assert ch._cancel_event.is_set()
+
+
+@pytest.mark.asyncio
+async def test_queued_arrivals_do_not_change_active_reply_recipient(tmp_path):
+    """Polling can receive Bob's message without redirecting Alice's reply."""
+    ch = WeixinChannel(
+        state_dir=tmp_path, account_id="queued-peers",
+        base_url="https://example.invalid", token="test-token",
+    )
+    updates = asyncio.Queue()
+    polls = asyncio.Queue()
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    finished = asyncio.Event()
+    received = []
+
+    async def get_updates(**kwargs):
+        polls.put_nowait(kwargs)
+        return await updates.get()
+
+    async def on_message(msg):
+        received.append(msg.sender)
+        if msg.sender == "alice@im.wechat":
+            first_started.set()
+            await release_first.wait()
+        await ch.send_message(msg.group_id, f"Reply to {msg.content}")
+        if msg.sender == "bob@im.wechat":
+            finished.set()
+
+    ch._api_client.get_updates = AsyncMock(side_effect=get_updates)
+    ch._api_client.send_message = AsyncMock()
+    ch._api_client.close = AsyncMock()
+    ch._start_typing = AsyncMock()
+    ch._stop_typing = AsyncMock()
+    ch.set_on_message(on_message)
+    updates.put_nowait(GetUpdatesResp(msgs=(
+        replace(_text_msg("alice@im.wechat", "Alice"), context_token="alice-context"),
+    )))
+    await ch.connect()
+    try:
+        await asyncio.wait_for(polls.get(), timeout=2)
+        await asyncio.wait_for(first_started.wait(), timeout=2)
+        await asyncio.wait_for(polls.get(), timeout=2)
+        updates.put_nowait(GetUpdatesResp(msgs=(
+            replace(_text_msg("bob@im.wechat", "Bob"), context_token="bob-context"),
+        )))
+        await asyncio.wait_for(polls.get(), timeout=2)
+        assert received == ["alice@im.wechat"]
+        assert ch._user_id_map["main"] == "alice@im.wechat"
+        release_first.set()
+        await asyncio.wait_for(finished.wait(), timeout=2)
+        sent = [call.args[0].msg for call in ch._api_client.send_message.await_args_list]
+        assert [(msg.to_user_id, msg.context_token, msg.item_list[0].text_item.text) for msg in sent] == [
+            ("alice@im.wechat", "alice-context", "Reply to Alice"),
+            ("bob@im.wechat", "bob-context", "Reply to Bob"),
+        ]
+    finally:
+        await ch.disconnect()
+    assert ch._monitor_task is None
+    ch._api_client.close.assert_awaited_once()
+
 
 @pytest.mark.asyncio
 async def test_user_id_map_persistence(tmp_path):

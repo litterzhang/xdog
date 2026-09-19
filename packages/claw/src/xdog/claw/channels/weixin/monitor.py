@@ -1,7 +1,7 @@
 """Long-poll monitor loop for WeChat getUpdates.
 
 Ported from openclaw-weixin src/monitor/monitor.ts.
-Runs as an asyncio background task, calling on_message for each inbound message.
+Polls independently of a serial inbound-message worker, using a bounded FIFO.
 """
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ BACKOFF_DELAY_S = 30.0
 RETRY_DELAY_S = 2.0
 SESSION_EXPIRED_ERRCODE = -14
 SESSION_PAUSE_S = 300.0  # 5 minutes
+DEFAULT_MAX_PENDING_MESSAGES = 50
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ class MonitorOpts:
     on_message: Callable[[WeixinMessage], Awaitable[None]]
     api_client: WeixinApiClient | None = None
     long_poll_timeout_ms: int = DEFAULT_LONG_POLL_TIMEOUT_MS
+    max_pending_messages: int = DEFAULT_MAX_PENDING_MESSAGES
 
 
 def _sync_buf_file(state_dir: Path, account_id: str) -> Path:
@@ -70,11 +72,64 @@ def _is_user_message(msg: WeixinMessage) -> bool:
 
 
 async def run_monitor(opts: MonitorOpts) -> None:
-    """Run the long-poll getUpdates loop until cancel_event is set.
+    """Poll and dispatch independently until cancelled.
 
-    On new user messages: extracts content, invokes ``on_message`` callback.
-    Handles errors with retry/backoff.
+    One worker processes messages in order so the channel's active reply
+    recipient and typing indicator are not overwritten by later arrivals.
+    A full inbox applies backpressure rather than dropping older messages.
+    The inbox is in-memory; shutdown cancels processing without draining it.
     """
+    if opts.max_pending_messages <= 0:
+        raise ValueError("max_pending_messages must be positive")
+    if opts.cancel_event.is_set():
+        return
+
+    owns_client = opts.api_client is None
+    api_client = opts.api_client or WeixinApiClient(opts.base_url, opts.token)
+    inbox: asyncio.Queue[WeixinMessage] = asyncio.Queue(maxsize=opts.max_pending_messages)
+    tasks = [
+        asyncio.create_task(_poll_updates(opts, api_client, inbox), name="weixin-poll"),
+        asyncio.create_task(_dispatch_messages(opts, inbox), name="weixin-dispatch"),
+        asyncio.create_task(opts.cancel_event.wait(), name="weixin-stop"),
+    ]
+    try:
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        # Surface unexpected worker failures instead of leaving a live poller
+        # with nobody consuming its inbox.
+        for task in done:
+            task.result()
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if not inbox.empty():
+            logger.warning("Monitor stopped with %d pending in-memory messages", inbox.qsize())
+        if owns_client:
+            await api_client.close()
+        logger.info("Monitor stopped")
+
+
+async def _dispatch_messages(
+    opts: MonitorOpts,
+    inbox: asyncio.Queue[WeixinMessage],
+) -> None:
+    """Keep handlers serial while the poller continues receiving messages."""
+    while True:
+        msg = await inbox.get()
+        try:
+            await opts.on_message(msg)
+        except Exception:
+            logger.exception("Error processing message from %s", msg.from_user_id)
+        finally:
+            inbox.task_done()
+
+
+async def _poll_updates(
+    opts: MonitorOpts,
+    api_client: WeixinApiClient,
+    inbox: asyncio.Queue[WeixinMessage],
+) -> None:
+    """Fetch updates and enqueue them, preserving API order and retry behavior."""
     get_updates_buf = _load_get_updates_buf(opts.state_dir, opts.account_id)
     if get_updates_buf:
         logger.info(
@@ -83,13 +138,6 @@ async def run_monitor(opts: MonitorOpts) -> None:
         )
     else:
         logger.info("Monitor starting fresh (no previous sync buf)")
-
-    # Use shared client if provided, else create a local one
-    owns_client = opts.api_client is None
-    if opts.api_client is not None:
-        api_client = opts.api_client
-    else:
-        api_client = WeixinApiClient(opts.base_url, opts.token)
 
     next_timeout_ms = opts.long_poll_timeout_ms
     consecutive_failures = 0
@@ -143,14 +191,8 @@ async def run_monitor(opts: MonitorOpts) -> None:
                 # Success — reset failure counter
                 consecutive_failures = 0
 
-                # Update sync buf for resumption
-                if resp.get_updates_buf:
-                    _save_get_updates_buf(
-                        opts.state_dir, opts.account_id, resp.get_updates_buf
-                    )
-                    get_updates_buf = resp.get_updates_buf
-
-                # Process messages
+                # Enqueue without waiting for agent execution. Only a full
+                # inbox pauses polling, bounding memory during message bursts.
                 for msg in resp.msgs:
                     if _is_user_message(msg):
                         logger.info(
@@ -158,13 +200,17 @@ async def run_monitor(opts: MonitorOpts) -> None:
                             msg.from_user_id,
                             ",".join(str(i.type) for i in msg.item_list) or "none",
                         )
-                        try:
-                            await opts.on_message(msg)
-                        except Exception:
-                            logger.exception(
-                                "Error processing message from %s",
-                                msg.from_user_id,
-                            )
+                        if inbox.full():
+                            logger.warning("WeChat inbox full; pausing polling until space is available")
+                        await inbox.put(msg)
+                        logger.info("Queued WeChat message (pending=%d)", inbox.qsize())
+
+                # Do not advance the cursor past a partially enqueued batch.
+                if resp.get_updates_buf:
+                    _save_get_updates_buf(
+                        opts.state_dir, opts.account_id, resp.get_updates_buf
+                    )
+                    get_updates_buf = resp.get_updates_buf
 
             except asyncio.CancelledError:
                 logger.info("Monitor cancelled")
@@ -188,8 +234,7 @@ async def run_monitor(opts: MonitorOpts) -> None:
 
         logger.info("Monitor ended")
     finally:
-        if owns_client:
-            await api_client.close()
+        logger.debug("WeChat poller stopped")
 
 
 async def _cancellable_sleep(seconds: float, cancel_event: asyncio.Event) -> None:
