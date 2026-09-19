@@ -21,6 +21,8 @@ if TYPE_CHECKING:
         Context,
         EmbeddingRequest,
         EmbeddingResponse,
+        ImageGenerationRequest,
+        ImageGenerationResponse,
         Model,
         StreamOptions,
     )
@@ -174,6 +176,13 @@ class Runtime(BaseProvider):
         """Web search. Same routing as stream."""
         p, short = self._route(model)
         return await p.web_search(short, query)
+
+    async def image_generation(
+        self, model: str, prompt: str | ImageGenerationRequest,
+    ) -> ImageGenerationResponse:
+        """Generate images through the selected provider, like web_search."""
+        p, short = self._route(model)
+        return await p.image_generation(short, prompt)
 
     # -- Auth & sync ----------------------------------------------------------
 

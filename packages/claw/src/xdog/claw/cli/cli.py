@@ -13,11 +13,12 @@ from __future__ import annotations
 import os
 import signal
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import click
-from xdog.claw.config import ClawConfig, get_config_path, get_state_dir, load_config
+from xdog.claw.config import ClawConfig, ToolConfigError, get_config_path, get_state_dir, load_config
 
 
 def _resolve_config(config_path: str | None) -> ClawConfig:
@@ -75,9 +76,108 @@ def cli() -> None:
     """claw — AI agent orchestration runtime."""
 
 
+@cli.command("generate-image")
+@click.argument("prompt")
+@click.option("--workspace", type=click.Path(exists=True, file_okay=False, path_type=Path), default=".",
+              help="Workspace containing references and generated files (default: current directory).")
+@click.option("--output-dir", default="generated-images", show_default=True,
+              help="Output directory inside the workspace.")
+@click.option("--reference", "references", multiple=True,
+              help="Reference image path inside the workspace; repeat up to four times.")
+@click.option("--aspect-ratio", default="9:16", show_default=True, help="Image aspect ratio, e.g. 1:1 or 9:16.")
+@click.option("--image-size", type=click.Choice(["1K", "2K", "4K"]), default="1K", show_default=True)
+@click.option("--config", "config_path", type=click.Path(), default=None,
+              help="Claw config containing the enabled tool and selected image model.")
+def generate_image(
+    prompt: str, workspace: Path, output_dir: str, references: tuple[str, ...],
+    aspect_ratio: str, image_size: str, config_path: str | None,
+) -> None:
+    """Generate image assets via xdog.ai; print JSON containing saved paths.
+
+    Enable generate_image and choose its model with xdog-claw onboard first.
+    No gateway or proxy is required.
+    """
+    import asyncio
+
+    from xdog.claw.core.tools.tool_generate_image import ImageGenerationError, generate_images
+
+    try:
+        config = load_config(Path(config_path).expanduser() if config_path else get_config_path())
+        if config.enabled_tools is None or "generate_image" not in config.enabled_tools:
+            raise ImageGenerationError("generate_image is disabled. Enable it with `xdog-claw onboard` first.")
+        if not config.image_model:
+            raise ImageGenerationError("No image model configured. Select one with `xdog-claw onboard` first.")
+        result = asyncio.run(generate_images(
+            prompt,
+            workspace=workspace,
+            output_dir=output_dir,
+            references=references,
+            aspect_ratio=aspect_ratio,
+            image_size=image_size,
+            model=config.image_model,
+        ))
+    except (ImageGenerationError, ToolConfigError) as exc:
+        raise click.ClickException(str(exc)) from None
+    click.echo(result.to_json())
+
+
 # ---------------------------------------------------------------------------
 # xdog-claw onboard
 # ---------------------------------------------------------------------------
+
+def _configure_tools(models: list[Any], existing: ClawConfig) -> tuple[tuple[str, ...], str]:
+    """Choose an explicit tool set and, if needed, a confirmed image model."""
+    from xdog.claw.core.tools import default_enabled_tools, registered_names
+
+    names = sorted(registered_names())
+    image_models = [model for model in models if model.supports_image_output is True]
+    selected = default_enabled_tools() if existing.enabled_tools is None else existing.enabled_tools
+    default = ",".join(str(i) for i, name in enumerate(names, 1) if name in selected) or "none"
+    click.echo("  Available tools:")
+    for i, name in enumerate(names, 1):
+        marker = "x" if name in selected else " "
+        note = " (requires an image_generation model)" if name == "generate_image" else ""
+        click.echo(f"    {i}. [{marker}] {name}{note}")
+    click.echo("  Enter comma-separated numbers or names, 'all', or 'none'.")
+    while True:
+        value = click.prompt("  Enabled tools", default=default).strip()
+        if value.lower() == "none":
+            enabled: tuple[str, ...] = ()
+        elif value.lower() == "all":
+            enabled = tuple(names)
+        else:
+            resolved: set[str] = set()
+            invalid = []
+            for item in value.split(","):
+                item = item.strip()
+                if item.isdecimal() and 1 <= int(item) <= len(names):
+                    resolved.add(names[int(item) - 1])
+                elif item in names:
+                    resolved.add(item)
+                else:
+                    invalid.append(item or "(empty)")
+            if invalid:
+                click.echo(f"  Error: Unknown tool selection: {', '.join(invalid)}")
+                continue
+            enabled = tuple(name for name in names if name in resolved)
+        if "generate_image" not in enabled:
+            return enabled, ""
+        if not image_models:
+            click.echo(
+                "  Error: No model has confirmed image_generation support. "
+                "Deselect generate_image, or log in to an image provider and rerun onboarding."
+            )
+            continue
+        click.echo("  Image-generation models:")
+        for i, model in enumerate(image_models, 1):
+            click.echo(f"    {i}. {model.id} — {model.name}")
+        saved_index = next(
+            (i for i, model in enumerate(image_models, 1) if model.id == existing.image_model), None,
+        )
+        choice = click.prompt("  Select image model", type=click.IntRange(1, len(image_models)), default=saved_index)
+        click.echo(f"  Image model: {image_models[choice - 1].id}")
+        return enabled, image_models[choice - 1].id
+
 
 @cli.command()
 @click.option("--config", "config_path", type=click.Path(), default=None,
@@ -87,6 +187,10 @@ def onboard(config_path: str | None) -> None:
     import asyncio
 
     config_file = Path(config_path).expanduser() if config_path else get_config_path()
+    try:
+        existing = load_config(config_file) if config_file.exists() else ClawConfig()
+    except ToolConfigError as exc:
+        raise click.ClickException(str(exc)) from None
 
     click.echo("=" * 50)
     click.echo("  claw — Setup Wizard")
@@ -115,13 +219,15 @@ def onboard(config_path: str | None) -> None:
         click.echo()
         click.echo("  Available providers:")
         click.echo("    1. copilot (GitHub Copilot — recommended)")
-        choice = click.prompt("  Select provider", type=int, default=1)
+        click.echo("    2. antigravity (Google Antigravity)")
+        choice = click.prompt("  Select provider", type=click.IntRange(1, 2), default=1)
 
-        if choice == 1:
+        if choice in (1, 2):
+            provider_id = "copilot" if choice == 1 else "antigravity"
             click.echo()
-            click.echo("  Logging in to GitHub Copilot...")
+            click.echo(f"  Logging in to {provider_id}...")
             try:
-                asyncio.run(ai.login("copilot"))
+                asyncio.run(ai.login(provider_id))
                 click.echo("  Logged in successfully.")
                 # Reload runtime with new provider
                 runtime = ai.load()
@@ -152,55 +258,68 @@ def onboard(config_path: str | None) -> None:
 
     # Model names and catalogue order are not capability rankings. Keep every
     # chat model selectable, including newly discovered families.
-    models = [m for m in models if m.model_type == "chat"]
+    chat_models = [
+        m for m in models
+        if m.model_type == "chat" and (m.output is None or "text" in m.output)
+    ]
 
-    if models:
+    if chat_models:
         click.echo("  Available models:")
-        for i, m in enumerate(models, 1):
+        for i, m in enumerate(chat_models, 1):
             ctx = f"{m.context_window // 1000}k" if m.context_window else "?"
             click.echo(f"    {i}. {m.id} ({ctx} context)")
 
-        default_idx = 1
-        for i, m in enumerate(models, 1):
-            if "sonnet" in m.id.lower() and "4" in m.id:
-                default_idx = i
-                break
-
-        choice = click.prompt("  Select primary model", type=click.IntRange(1, len(models)), default=default_idx)
-        primary_model = models[choice - 1].id
+        default_idx = next((i for i, m in enumerate(chat_models, 1) if m.id == existing.model), None)
+        choice = click.prompt("  Select primary model", type=click.IntRange(1, len(chat_models)), default=default_idx)
+        primary_model = chat_models[choice - 1].id
         click.echo(f"  Selected: {primary_model}")
     else:
-        primary_model = click.prompt("  Enter model name", default="copilot/claude-sonnet-4.5")
+        primary_model = click.prompt("  Enter model name", default=existing.model or None)
 
-    # Step 3: Agent name
+    # Step 3: Tool set and tool-specific model
     click.echo()
-    click.echo("Step 3: Agent Identity")
+    click.echo("Step 3: Tool Setup")
     click.echo("-" * 30)
-    agent_name = click.prompt("  Agent name", default="Claw")
+    enabled_tools, image_model = _configure_tools(models, existing)
 
-    # Step 4: Write config
+    # Step 4: Agent name
     click.echo()
-    click.echo("Step 4: Save Configuration")
+    click.echo("Step 4: Agent Identity")
+    click.echo("-" * 30)
+    from xdog.claw.config import GroupDef, save_config
+    main_group = next(
+        (group for group in existing.groups if group.is_main),
+        next((group for group in existing.groups if group.id == "main"), GroupDef(id="main", is_main=True)),
+    )
+    agent_name = click.prompt("  Agent name", default=main_group.name or "Claw")
+
+    # Step 5: Write config, preserving channels, paths, and unrelated groups.
+    click.echo()
+    click.echo("Step 5: Save Configuration")
     click.echo("-" * 30)
 
-    from xdog.claw.config import ClawConfig, GroupDef, save_config
-    config = ClawConfig(
+    main_group = replace(main_group, name=agent_name, is_main=True, model_id="")
+    groups = tuple(main_group if group.id == main_group.id else group for group in existing.groups)
+    if not any(group.id == main_group.id for group in groups):
+        groups = (*groups, main_group)
+    config = replace(
+        existing,
         model=primary_model,
-        groups=(GroupDef(id="main", name=agent_name, is_main=True),),
+        enabled_tools=enabled_tools, image_model=image_model, groups=groups,
     )
 
     config_file.parent.mkdir(parents=True, exist_ok=True)
     save_config(config, config_file)
     click.echo(f"  Config saved: {config_file}")
 
-    # Step 5: Initialize workspace
+    # Step 6: Initialize workspace
     click.echo()
-    click.echo("Step 5: Initialize Workspace")
+    click.echo("Step 6: Initialize Workspace")
     click.echo("-" * 30)
 
     from xdog.claw.core.prompt import init_workspace, set_identity_name, workspace_path
     data_dir = Path(config.data_dir)
-    ws = workspace_path(data_dir / "groups" / "main")
+    ws = Path(main_group.workspace) if main_group.workspace else workspace_path(data_dir / "groups" / main_group.id)
     init_workspace(ws, agent_name=agent_name)
     # init_workspace only writes IDENTITY.md when absent; force the chosen name so
     # re-running onboard to rename the agent actually updates an existing workspace.
@@ -237,6 +356,8 @@ def gateway() -> None:
 def start(config_path: str | None, foreground: bool) -> None:
     """Start the gateway daemon."""
     config = _resolve_config(config_path)
+    if not config.model and (not config.groups or any(not group.model_id for group in config.groups)):
+        raise click.ClickException("No primary model configured. Run `xdog-claw onboard` first.")
     pid_path = Path(config.pid_file)
 
     from xdog.claw.core.runtime.gateway import read_pid

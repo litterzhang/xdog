@@ -91,9 +91,13 @@ class ClawConfig:
     """Top-level claw configuration."""
 
     # Model settings
-    model: str = "copilot/claude-sonnet-4.5"
+    model: str = ""
     base_url: str = ""
     api_key: str = ""
+    # None preserves the legacy tool set (without opt-in image generation).
+    # An explicitly empty tuple disables all tools.
+    enabled_tools: tuple[str, ...] | None = None
+    image_model: str = ""
 
     # Paths (XDG defaults)
     data_dir: str = ""
@@ -117,6 +121,16 @@ class ClawConfig:
 
     def __post_init__(self) -> None:
         """Fill in XDG defaults for empty path fields."""
+        if self.enabled_tools is not None:
+            if not isinstance(self.enabled_tools, (tuple, list)) or any(
+                not isinstance(name, str) or not name.strip() for name in self.enabled_tools
+            ):
+                raise ToolConfigError("enabled_tools must be a list of tool names (or null for defaults).")
+            object.__setattr__(self, "enabled_tools", tuple(dict.fromkeys(self.enabled_tools)))
+        if not isinstance(self.image_model, str):
+            raise ToolConfigError("image_model must be a provider/model string.")
+        if self.image_model and ("/" not in self.image_model or not all(self.image_model.split("/", 1))):
+            raise ToolConfigError("image_model must use provider/model format.")
         if not self.data_dir:
             object.__setattr__(self, "data_dir", str(get_data_dir()))
         if not self.tasks_file:
@@ -125,6 +139,10 @@ class ClawConfig:
             object.__setattr__(self, "socket_path", str(get_state_dir() / "gateway.sock"))
         if not self.pid_file:
             object.__setattr__(self, "pid_file", str(get_state_dir() / "gateway.pid"))
+
+
+class ToolConfigError(ValueError):
+    """Invalid tool configuration must not silently enable the default tools."""
 
 
 def _parse_groups(raw_groups: dict[str, Any] | None) -> tuple[GroupDef, ...]:
@@ -224,6 +242,8 @@ def load_config(path: Path | None = None) -> ClawConfig:
         _cached_config = result
         return result
 
+    except ToolConfigError:
+        raise
     except Exception as exc:
         logger.warning("Failed to parse config at %s: %s", path, exc)
         return ClawConfig()
@@ -269,4 +289,4 @@ def save_config(config: ClawConfig, path: Path) -> None:
     if groups_section:
         output["groups"] = groups_section
 
-    path.write_text(yaml.dump(output, default_flow_style=False, sort_keys=False), encoding="utf-8")
+    path.write_text(yaml.safe_dump(output, default_flow_style=False, sort_keys=False), encoding="utf-8")

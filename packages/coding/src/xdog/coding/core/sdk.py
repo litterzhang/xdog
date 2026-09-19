@@ -114,7 +114,7 @@ def create_agent_session(options: CreateSessionOptions | None = None) -> CreateS
 
     # Build model catalog for default model resolution
     import xdog.ai as ai
-    provider = ai.provider("copilot")
+    provider = ai.load()
 
     def _first_model_id() -> str:
         """Return the first model id from the provider, or 'sonnet' as last resort."""

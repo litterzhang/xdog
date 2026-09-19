@@ -42,8 +42,9 @@ class Group:
     workspace: str = ""
     agent_config: AgentConfig = field(default_factory=AgentConfig)
     config: GroupConfig = field(default_factory=GroupConfig)
-    # Tool names enabled for this group (empty = all built-in tools)
-    enabled_tools: tuple[str, ...] = ()
+    # None inherits defaults; an empty tuple explicitly disables all tools.
+    enabled_tools: tuple[str, ...] | None = None
+    image_model: str = ""
 
 
 # ---------------------------------------------------------------------------

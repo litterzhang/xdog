@@ -11,6 +11,120 @@ uv run xdog-ai login copilot
 uv run xdog-ai chat copilot gpt-5.6-sol "Explain the CAP theorem in three sentences."
 ```
 
+## Antigravity login
+
+```bash
+uv run xdog-ai login antigravity
+uv run xdog-ai models antigravity --sync --json
+```
+
+Login prints a Google authorization URL. Open it in your browser and grant
+consent; the command receives the callback on `localhost:51121`. When running
+XDOG over SSH, forward that port from the browser's machine to the remote host.
+The command does not import credentials from other applications.
+
+OAuth client registration and backend endpoints are fixed internal provider
+settings, not environment or CLI options. No client configuration is required.
+XDOG uses the public installed-app registration used by CLIProxyAPI's
+Antigravity integration.
+
+Access and refresh tokens obtained through login are stored in XDOG's own
+`~/.local/xdog/auth.json`, with restrictive file permissions. Google account
+eligibility and backend availability still apply; the bundled registration is
+not a user token, API quota, or a guarantee of access.
+
+### Reading model capabilities
+
+`xdog-ai models <provider>` uses the same compact one-line format for every
+provider: model ID, input/output token limits, selected wire protocol, and
+capability tags (`reasoning`, `embedding`, `image_generation`, `web_search`). Copilot rows
+also show the premium-request multiplier, with zero displayed as `free`.
+Limits of at least 1,000 tokens are abbreviated to whole thousands (`k`).
+The input value uses the reported prompt limit, falling back to context
+capacity when no separate input cap is available. A `?` means unreported.
+An absent capability tag is not proof of non-support; use `--details` or `--json`
+to distinguish unknown values from explicit negatives.
+Antigravity's `maxTokens` supplies context capacity; a separate
+`maxInputTokens` value, when present, is retained as the input limit.
+Membership in Antigravity's `imageGenerationModelIds` catalogue also establishes
+image output support, without assuming the same model can read images. Absence
+from that list alone does not establish a negative capability.
+
+`web_search` is also a capability tag. `Model.supports_web_search` is tri-state:
+`True`/`False`/`None` in Python and `true`/`false`/`null` in JSON. Antigravity uses
+explicit `supportsWebSearch` flags or positive membership in `webSearchModelIds`;
+unlisted models remain unknown. Copilot uses explicit
+`capabilities.supports.web_search` booleans when supplied. Missing metadata,
+ordinary tool calling, or availability of a Responses endpoint does not prove
+native web-search support. Old caches without this field retain `unknown`.
+The compact listing adds the tag only for known positive support; `--details`
+shows yes/no/unknown.
+
+When a Copilot request produces a confirmed search-tool completion event,
+XDOG also remembers that positive observation for 24 hours. This evidence is
+scoped to the current login, survives model-catalogue refresh, and only fills
+otherwise unknown capability values. It does not override an explicit negative
+from the provider. Answer prose, source links, tool-start events, and failed
+searches do not establish support. Observations are saved separately from
+credentials; the cache contains a login fingerprint, never an access token.
+
+Copilot's current search implementation requires an advertised Responses
+endpoint and selects that adapter even if ordinary chat prefers Chat
+Completions. It never silently treats a normal chat answer as a searched answer
+by ignoring the search option. Explicitly unsupported search requests fail;
+unknown capability can still be attempted through the supported adapter.
+
+The selected protocol is shown for embeddings too: no generation endpoint does
+not mean no wire protocol. For exact token counts, all accepted protocols,
+separate image input/output support, friendly names, and transport details, use:
+
+```bash
+uv run xdog-ai models antigravity --details
+```
+
+`generateContent` is non-streaming generation; `streamGenerateContent` is
+streaming generation. These are two transport operations using the same Gemini
+wire format, not separate image capabilities. `--json` retains all metadata,
+including distinct input/output modalities, limits, and endpoint descriptions.
+
+### Generate images
+
+Image generation follows the same provider/model command pattern as web search:
+
+```bash
+uv run xdog-ai search antigravity gemini-3.1-flash-lite "Find the official WeChat mini-program documentation."
+uv run xdog-ai image antigravity gemini-3.1-flash-image \
+  "A Chinese WeChat coffee shop home screen with warm neutral colors" \
+  --aspect-ratio 9:16 --image-size 1K --output-dir design
+```
+
+`image_generation` is an alias for `image`. These commands and claw's
+`generate_image` tool share the native XDOG provider API and its stored OAuth
+credentials; no CLIProxyAPI server is needed. Authenticate with
+`xdog-ai login antigravity` and use a model from
+`xdog-ai models antigravity` (normally tagged `image_generation`).
+
+The command writes uniquely named PNG/JPEG/WebP files without overwriting
+existing assets and prints their paths. `--output-dir` defaults to
+`generated-images`. For edits, repeat `--reference PATH` up to four times
+(10 MiB per image). Size/aspect-ratio defaults are left to the provider when
+omitted; supported values remain model-dependent. Add `--json` to print paths,
+accompanying text, model/provider, and usage metadata instead of human-readable
+output. Image data itself is not printed as base64.
+
+The corresponding SDK method is `provider.image_generation(model, prompt)`,
+or `runtime.image_generation("provider/model", prompt)`. Pass an
+`ImageGenerationRequest` instead of a string to supply reference images,
+aspect ratio, or image size. `ImageGenerationResponse` contains decoded
+`GeneratedImage` bytes/MIME types, optional text, and usage. SDK calls do not
+write files; storage is the caller's responsibility.
+
+Antigravity is the initial image-generation implementation. Providers without
+an implementation raise `NotImplementedError`, rather than falling back to
+text chat. Known non-image models and unsupported reference-image input are
+rejected before authentication. Unknown capability may be tried explicitly.
+Generation is not automatically retried, since retries may consume quota.
+
 ## Local API proxy
 
 ```bash

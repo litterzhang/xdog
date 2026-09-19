@@ -25,9 +25,9 @@ def register(name: str, factory: ToolFactory) -> None:
 
 
 def create_tools(
-    enabled: tuple[str, ...] = (), *, workspace_dir: "Path | None" = None
+    enabled: tuple[str, ...] | None = None, *, workspace_dir: "Path | None" = None, image_model: str = "",
 ) -> list[AgentTool]:
-    """Create all registered tools, filtered by enabled set.
+    """Create the selected tools. None uses defaults; an empty tuple means none.
 
     *workspace_dir* is where the group's agent works. It reaches a factory only
     if the factory asks for `initial_cwd` — the bash tool does, because it holds
@@ -41,15 +41,26 @@ def create_tools(
     """
     import inspect
 
+    selected = set(default_enabled_tools() if enabled is None else enabled)
+    unknown = selected - _registry.keys()
+    if unknown:
+        raise ValueError(f"Unknown tools in enabled_tools: {', '.join(sorted(unknown))}")
     tools: list[AgentTool] = []
     for name, factory in _registry.items():
-        if enabled and name not in enabled:
+        if name not in selected:
             continue
-        if workspace_dir is not None and "initial_cwd" in inspect.signature(factory).parameters:
+        if name == "generate_image":
+            tools.append(factory(model=image_model))
+        elif workspace_dir is not None and "initial_cwd" in inspect.signature(factory).parameters:
             tools.append(factory(initial_cwd=workspace_dir))
         else:
             tools.append(factory())
     return tools
+
+
+def default_enabled_tools() -> tuple[str, ...]:
+    """Image generation requires explicit opt-in and a configured model."""
+    return tuple(sorted(name for name in _registry if name != "generate_image"))
 
 
 def registered_names() -> frozenset[str]:

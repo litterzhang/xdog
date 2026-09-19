@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import TYPE_CHECKING
@@ -16,9 +17,13 @@ from xdog.ai.types import (
     AssistantMessage,
     Context,
     EmbeddingRequest,
+    StatusEvent,
     StreamOptions,
     UserMessage,
 )
+from xdog.ai.vendors.copilot._capabilities import account_key, apply_observed_search, record_search
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from xdog.ai.types import (
@@ -72,12 +77,12 @@ class CopilotProvider(BaseProvider):
         full = name if "/" in name else f"copilot/{name}"
         m = self._model_cache.get(full)
         if m is not None:
-            return m
+            return apply_observed_search((m,))[0]
         from xdog.ai.vendors.copilot._model_sync import get_synced_model
         m = get_synced_model(full)
         if m is not None:
             self._model_cache[full] = m
-            return m
+            return apply_observed_search((m,))[0]
         raise ValueError(f"Unknown model: {name!r}")
 
     def _wire_model(self, model: Model, auth: AuthResult) -> Model:
@@ -92,7 +97,7 @@ class CopilotProvider(BaseProvider):
 
     def models(self) -> tuple[Model, ...]:
         from xdog.ai.vendors.copilot._model_sync import list_models
-        return list_models()
+        return apply_observed_search(list_models())
 
     def model(self, name: str) -> Model | None:
         try:
@@ -110,16 +115,38 @@ class CopilotProvider(BaseProvider):
         result_future: asyncio.Future[AssistantMessage] = asyncio.get_event_loop().create_future()
 
         async def _generate() -> AsyncIterator[AssistantMessageEvent]:
+            protocol_id = resolved.preferred_protocol or resolved.api
+            if opts.web_search:
+                if resolved.supports_web_search is False:
+                    raise NotImplementedError(f"Model {resolved.id!r} does not support web search")
+                # Only our Responses adapter implements the provider-hosted
+                # search tool. Do not silently ignore the option on Chat.
+                if "openai-responses" not in self._native_protocol_ids(resolved):
+                    raise NotImplementedError(
+                        "Copilot web search requires an advertised openai-responses endpoint; "
+                        f"model {resolved.id!r} does not provide one",
+                    )
+                protocol_id = "openai-responses"
             auth = await self._get_vendor().resolve_auth(resolved, context)
-            protocol = self._get_protocol(resolved.preferred_protocol or resolved.api)
+            observation_key = await asyncio.to_thread(account_key) if opts.web_search else None
+            protocol = self._get_protocol(protocol_id)
             wire = self._wire_model(resolved, auth)
             inner = protocol.stream(wire, context, opts, auth)
 
+            search_completed = False
             async for event in inner:
+                if opts.web_search and isinstance(event, StatusEvent) and event.status == "web_search_completed":
+                    search_completed = True
                 yield event
 
             if hasattr(inner, "result"):
-                result_future.set_result(await inner.result())
+                message = await inner.result()
+                if search_completed:
+                    try:
+                        await asyncio.to_thread(record_search, resolved.id, observation_key)
+                    except OSError:
+                        logger.warning("Could not persist confirmed Copilot search capability.")
+                result_future.set_result(message)
 
         return EventStream.from_async_generator(_generate(), result_future)
 
@@ -218,7 +245,7 @@ class CopilotProvider(BaseProvider):
     async def sync_models(self, *, ttl: float = 86400, force: bool = False) -> tuple[Model, ...]:
         models = await self._get_vendor().sync_models(ttl, force)
         self._model_cache = {model.id: model for model in models}
-        return models
+        return apply_observed_search(models)
 
     def __repr__(self) -> str:
         return "CopilotProvider()"

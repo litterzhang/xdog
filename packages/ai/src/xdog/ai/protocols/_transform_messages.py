@@ -340,7 +340,7 @@ def context_to_openai(
 
                 messages.append(tool_msg)
 
-                if has_images and "image" in model.input:
+                if has_images and "image" in (model.input or ()):
                     for part in tr.content:
                         if isinstance(part, ImageContent):
                             image_blocks.append({
@@ -413,7 +413,7 @@ def _user_message_to_openai(
             })
 
     # Filter images if model doesn't support them
-    if "image" not in model.input:
+    if "image" not in (model.input or ()):
         parts = [p for p in parts if p.get("type") != "image_url"]
 
     if not parts:

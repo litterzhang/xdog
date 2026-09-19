@@ -197,7 +197,7 @@ class GroupRuntime:
     def tools(self) -> list[AgentTool]:
         if self._tools is None:
             self._tools = create_tools(
-                enabled=self._enabled_tools, workspace_dir=self.workspace_dir
+                enabled=self._enabled_tools, workspace_dir=self.workspace_dir, image_model=self.group.image_model,
             )
         return self._tools
 

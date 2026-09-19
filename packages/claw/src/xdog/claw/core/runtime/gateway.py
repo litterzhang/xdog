@@ -77,6 +77,8 @@ def _build_model_and_options(config: ClawConfig) -> tuple[str, Any]:
     from xdog.agent.helpers import stream_fn_from_provider
     from xdog.claw.core.runtime.group import resolve_model_name
 
+    if not config.model and (not config.groups or any(not group.model_id for group in config.groups)):
+        raise ValueError("No primary model configured. Run `xdog-claw onboard` first.")
     model_name = resolve_model_name(config.model)
 
     # Build stream_fn from ai runtime
@@ -95,6 +97,8 @@ def _groups_from_config(config: ClawConfig) -> list[Group]:
             name=gdef.name,
             is_main=gdef.is_main,
             workspace=gdef.workspace,
+            enabled_tools=config.enabled_tools,
+            image_model=config.image_model,
             agent_config=AgentConfig(
                 model=gdef.model_id,
                 options=StreamOptions(
@@ -106,7 +110,10 @@ def _groups_from_config(config: ClawConfig) -> list[Group]:
         )
         for gdef in config.groups
     ]
-    return groups or [Group(id="main", name="Claw", is_main=True)]
+    return groups or [Group(
+        id="main", name="Claw", is_main=True,
+        enabled_tools=config.enabled_tools, image_model=config.image_model,
+    )]
 
 
 class GatewayServer:

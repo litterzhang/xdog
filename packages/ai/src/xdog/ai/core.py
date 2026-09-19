@@ -13,6 +13,8 @@ if TYPE_CHECKING:
         Context,
         EmbeddingRequest,
         EmbeddingResponse,
+        ImageGenerationRequest,
+        ImageGenerationResponse,
         Model,
         StreamOptions,
     )
@@ -58,6 +60,12 @@ class BaseProvider(ABC):
 
     @abstractmethod
     async def web_search(self, model: str, query: str) -> AssistantMessage: ...
+
+    async def image_generation(
+        self, model: str, prompt: str | ImageGenerationRequest,
+    ) -> ImageGenerationResponse:
+        """Generate images when supported; never silently fall back to chat."""
+        raise NotImplementedError(f"Provider {self.id!r} does not support image generation")
 
     def supports_native_request(self, model: str, request: ProtocolRequest) -> bool:
         """Report native request support without authentication or I/O."""

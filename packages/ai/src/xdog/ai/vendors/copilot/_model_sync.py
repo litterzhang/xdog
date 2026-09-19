@@ -26,6 +26,7 @@ from xdog.ai.paths import data_dir, models_cache_file
 from xdog.ai.types import (
     Model,
     ModelCost,
+    ModelEndpoint,
     OpenAICompletionsCompat,
     ThinkingBudgetRange,
     VisionLimits,
@@ -320,6 +321,18 @@ def _parse_api_model(raw: dict[str, Any]) -> Model | None:
             cast(Literal["text", "image"], m)
             for m in input_modalities if m in ("text", "image")
         ),
+        output=(
+            ("text", "image") if supports.get("image_generation") is True
+            else ("text",) if supports.get("image_generation") is False else None
+        ),
+        endpoints=tuple(
+            ModelEndpoint(
+                protocol=_ENDPOINT_TO_PROTOCOL[path],
+                operation="embed" if path.endswith("/embeddings") else "generate",
+                path=path,
+            )
+            for path in dict.fromkeys(endpoints) if path in _ENDPOINT_TO_PROTOCOL
+        ),
         cost=ModelCost(input=multiplier),
         context_window=limits.get("max_context_window_tokens", 0) or 0,
         max_prompt_tokens=limits.get("max_prompt_tokens", 0) or 0,
@@ -332,6 +345,7 @@ def _parse_api_model(raw: dict[str, Any]) -> Model | None:
         supports_parallel_tool_calls=supports_parallel_tool_calls,
         supports_streaming=supports_streaming,
         supports_structured_outputs=supports_structured_outputs,
+        supports_web_search=supports["web_search"] if type(supports.get("web_search")) is bool else None,
         thinking_budget_range=thinking_budget_range,
         adaptive_thinking=adaptive_thinking,
         supported_efforts=supported_efforts,
@@ -383,7 +397,12 @@ def _model_to_dict(m: Model) -> dict[str, Any]:
         "provider": m.provider,
         "base_url": m.base_url,
         "reasoning": m.reasoning,
-        "input": list(m.input),
+        "input": list(m.input) if m.input is not None else None,
+        "output": list(m.output) if m.output is not None else None,
+        "endpoints": [
+            {"protocol": e.protocol, "operation": e.operation, "path": e.path, "method": e.method}
+            for e in m.endpoints
+        ] if m.endpoints is not None else None,
         "cost": {"input": m.cost.input, "output": m.cost.output, "cache_read": m.cost.cache_read, "cache_write": m.cost.cache_write},
         "context_window": m.context_window,
         "max_prompt_tokens": m.max_prompt_tokens,
@@ -400,6 +419,7 @@ def _model_to_dict(m: Model) -> dict[str, Any]:
         "supports_parallel_tool_calls": m.supports_parallel_tool_calls,
         "supports_streaming": m.supports_streaming,
         "supports_structured_outputs": m.supports_structured_outputs,
+        "supports_web_search": m.supports_web_search,
         "thinking_budget_range": (
             {"min_budget": m.thinking_budget_range.min_budget, "max_budget": m.thinking_budget_range.max_budget}
             if m.thinking_budget_range else None
@@ -471,7 +491,9 @@ def _model_from_dict(d: dict[str, Any]) -> Model:
         provider=d.get("provider", ""),
         base_url=d.get("base_url", ""),
         reasoning=d.get("reasoning", False),
-        input=tuple(d.get("input", ("text",))),
+        input=tuple(d["input"]) if isinstance(d.get("input"), list) else None,
+        output=tuple(d["output"]) if isinstance(d.get("output"), list) else None,
+        endpoints=tuple(ModelEndpoint(**e) for e in d["endpoints"]) if isinstance(d.get("endpoints"), list) else None,
         cost=ModelCost(
             input=cost_raw.get("input", 0.0),
             output=cost_raw.get("output", 0.0),
@@ -492,6 +514,7 @@ def _model_from_dict(d: dict[str, Any]) -> Model:
         supports_parallel_tool_calls=d.get("supports_parallel_tool_calls", False),
         supports_streaming=d.get("supports_streaming", True),
         supports_structured_outputs=d.get("supports_structured_outputs", False),
+        supports_web_search=d["supports_web_search"] if type(d.get("supports_web_search")) is bool else None,
         thinking_budget_range=thinking_budget_range,
         adaptive_thinking=d.get("adaptive_thinking"),
         supported_efforts=tuple(d["supported_efforts"]) if d.get("supported_efforts") else None,

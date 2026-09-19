@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from xdog.ai.types import Model
 from xdog.coding.core.sdk import CreateSessionOptions, create_agent_session
 
@@ -25,12 +26,13 @@ class _Provider:
         raise AssertionError("session construction must not call the model")
 
 
-def test_resume_restores_thinking_and_provider_context_window(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("provider_id", ["copilot", "antigravity"])
+def test_resume_restores_thinking_and_provider_context_window(tmp_path, monkeypatch, provider_id) -> None:
     import xdog.ai as ai
 
     model = Model(
-        id="copilot/test-reasoning-model",
-        provider="copilot",
+        id=f"{provider_id}/test-reasoning-model",
+        provider=provider_id,
         reasoning=True,
         context_window=128_000,
         max_prompt_tokens=120_000,
@@ -38,6 +40,7 @@ def test_resume_restores_thinking_and_provider_context_window(tmp_path, monkeypa
     provider = _Provider(model)
     monkeypatch.setenv("CODING_DIR", str(tmp_path / "coding-data"))
     monkeypatch.setattr(ai, "provider", lambda _name: provider)
+    monkeypatch.setattr(ai, "load", lambda: provider)
 
     created = create_agent_session(CreateSessionOptions(
         working_dir=tmp_path,

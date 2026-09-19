@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,11 @@ class Orchestrator:
 
     def register_group(self, group: Group) -> None:
         """Register a group and initialize its runtime."""
+        group = replace(
+            group,
+            enabled_tools=self._config.enabled_tools if group.enabled_tools is None else group.enabled_tools,
+            image_model=group.image_model or self._config.image_model,
+        )
         runtime = GroupRuntime.create(
             group,
             self._data_dir,

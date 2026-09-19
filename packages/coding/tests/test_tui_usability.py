@@ -302,6 +302,7 @@ def test_disk_resume_replays_user_blocks_and_preserves_usage_and_model(tmp_path,
     provider.model.return_value = model
     provider.models.return_value = (model,)
     monkeypatch.setattr(ai, "provider", lambda _: provider)
+    monkeypatch.setattr(ai, "load", lambda: provider)
     monkeypatch.setenv("CODING_DIR", str(tmp_path / "data"))
     created = create_agent_session(CreateSessionOptions(
         working_dir=tmp_path, overrides={"model": model.id},

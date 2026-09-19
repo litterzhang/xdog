@@ -194,7 +194,7 @@ def _convert_user_message(
     for item in content:
         if isinstance(item, TextContent):
             parts.append({"type": "input_text", "text": sanitize_unicode(item.text)})
-        elif isinstance(item, ImageContent) and "image" in model.input:
+        elif isinstance(item, ImageContent) and "image" in (model.input or ()):
             parts.append({
                 "type": "input_image",
                 "detail": "auto",
@@ -687,6 +687,11 @@ async def _stream_impl(
 
                         elif item_type == "web_search_call":
                             current_block_type = None
+                            if item.get("status") == "completed":
+                                yield StatusEvent(
+                                    status="web_search_completed",
+                                    detail="Web search complete.",
+                                )
 
                     elif api_type == "response.completed":
                         resp = data.get("response", {})

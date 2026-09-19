@@ -3,13 +3,15 @@
 from pathlib import Path
 
 import pytest
-from xdog.claw.config import ClawConfig, GroupDef, load_config, save_config
+from xdog.claw.config import ClawConfig, GroupDef, ToolConfigError, load_config, save_config
 
 
 def test_default_config():
     config = ClawConfig()
     assert config.max_concurrent_agents == 3
-    assert config.model == "copilot/claude-sonnet-4.5"
+    assert config.model == ""
+    assert config.image_model == ""
+    assert config.enabled_tools is None
     assert config.groups == ()
     # Frozen
     with pytest.raises(AttributeError):
@@ -44,6 +46,8 @@ def test_save_and_load_roundtrip(tmp_path):
         model="test-model",
         data_dir="/custom/data",
         max_concurrent_agents=5,
+        enabled_tools=("filesystem", "generate_image"),
+        image_model="antigravity/image",
         groups=(GroupDef(id="main", name="Main", is_main=True),),
     )
     save_config(original, path)
@@ -54,6 +58,23 @@ def test_save_and_load_roundtrip(tmp_path):
     assert loaded.data_dir == original.data_dir
     assert loaded.max_concurrent_agents == original.max_concurrent_agents
     assert len(loaded.groups) == 1
+    assert loaded.enabled_tools == original.enabled_tools
+    assert loaded.image_model == original.image_model
+    assert "!!python" not in path.read_text()
+
+
+def test_explicit_empty_tool_set_survives_roundtrip(tmp_path):
+    path = tmp_path / "config.yaml"
+    save_config(ClawConfig(enabled_tools=()), path)
+    assert load_config(path).enabled_tools == ()
+
+
+@pytest.mark.parametrize("value", ["bash", "12", "[bash, 12]", "[null]"])
+def test_malformed_tool_list_does_not_fall_back_to_enabled_defaults(tmp_path, value):
+    path = tmp_path / "config.yaml"
+    path.write_text(f"enabled_tools: {value}\n")
+    with pytest.raises(ToolConfigError, match="enabled_tools"):
+        load_config(path)
 
 
 # -- status has to say what is actually carrying messages --------------------

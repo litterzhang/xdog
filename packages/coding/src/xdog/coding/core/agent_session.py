@@ -202,7 +202,7 @@ class AgentSession:
         try:
             import xdog.ai as ai
 
-            model_info = ai.provider("copilot").model(model)
+            model_info = ai.load().model(model)
             if model_info is not None:
                 self.context_window = model_info.context_window or MAX_CONTEXT_TOKENS
                 self.max_prompt_tokens = model_info.max_prompt_tokens

@@ -8,6 +8,7 @@ Usage::
     xdog-ai chat <provider> <model> [msg] Chat with a model
     xdog-ai embed <provider> <model> <text>  Generate embeddings
     xdog-ai search <provider> <model> <query>  Web search
+    xdog-ai image <provider> <model> <prompt>  Generate image files
     xdog-ai proxy [--port PORT]           Start Messages / token count / OpenAI proxy
 """
 
@@ -22,6 +23,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import httpx
 import xdog.ai as ai
 from xdog.ai.types import (
     AssistantMessage,
@@ -30,6 +32,8 @@ from xdog.ai.types import (
     EmbeddingRequest,
     ErrorEvent,
     ImageContent,
+    ImageGenerationRequest,
+    Model,
     ProviderType,
     StatusEvent,
     StreamOptions,
@@ -54,6 +58,10 @@ def main() -> None:
     models_p = sub.add_parser("models", help="List models for a provider")
     models_p.add_argument("provider", help="Provider ID (e.g. copilot)")
     models_p.add_argument("--sync", action="store_true", help="Fetch latest from API")
+    models_p.add_argument("--json", action="store_true", dest="output_json",
+                          help="Include input/output modalities, protocols, and transport endpoints as JSON")
+    models_p.add_argument("--details", action="store_true",
+                          help="Show model names, input limits, protocols, and transport endpoints")
 
     # --- chat ---
     chat_p = sub.add_parser("chat", help="Chat with a model")
@@ -84,6 +92,20 @@ def main() -> None:
     search_p.add_argument("model", help="Model name")
     search_p.add_argument("query", help="Search query")
 
+    # --- image generation ---
+    image_p = sub.add_parser("image", aliases=["image_generation"], help="Generate image files via a provider")
+    image_p.add_argument("provider", help="Provider ID (e.g. antigravity)")
+    image_p.add_argument("model", help="Image-generation model ID")
+    image_p.add_argument("prompt", help="Image prompt or editing instructions")
+    image_p.add_argument("--output-dir", type=Path, default=Path("generated-images"),
+                         help="Output directory (default: generated-images; existing files are never overwritten)")
+    image_p.add_argument("--reference", type=Path, action="append", default=[],
+                         help="Local reference image; repeat up to four times")
+    image_p.add_argument("--aspect-ratio", help="Aspect ratio, e.g. 9:16 (default: provider setting)")
+    image_p.add_argument("--image-size", choices=["1K", "2K", "4K"], help="Resolution (default: provider setting)")
+    image_p.add_argument("--json", action="store_true", dest="output_json",
+                         help="Print saved paths and metadata as JSON")
+
     # --- proxy ---
     proxy_p = sub.add_parser("proxy", help="Start Messages / token count / OpenAI proxy server")
     proxy_p.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1)")
@@ -95,9 +117,16 @@ def main() -> None:
     if args.command == "providers":
         _cmd_providers()
     elif args.command == "login":
-        asyncio.run(_cmd_login(args.provider))
+        try:
+            asyncio.run(_cmd_login(args.provider))
+        except httpx.HTTPError:
+            parser.exit(1, "Login failed: network request failed; check your connection and retry.\n")
+        except (RuntimeError, ValueError, OSError, KeyError) as exc:
+            parser.exit(1, f"Login failed: {exc}\n")
     elif args.command == "models":
-        asyncio.run(_cmd_models(args.provider, sync=args.sync))
+        asyncio.run(_cmd_models(
+            args.provider, sync=args.sync, output_json=args.output_json, details=args.details,
+        ))
     elif args.command == "chat":
         asyncio.run(_cmd_chat(
             provider=args.provider, model=args.model, message=args.message,
@@ -115,6 +144,12 @@ def main() -> None:
     elif args.command == "search":
         asyncio.run(_cmd_search(
             provider=args.provider, model=args.model, query=args.query,
+        ))
+    elif args.command in ("image", "image_generation"):
+        asyncio.run(_cmd_image(
+            provider=args.provider, model=args.model, prompt=args.prompt,
+            output_dir=args.output_dir, references=args.reference,
+            aspect_ratio=args.aspect_ratio, image_size=args.image_size, output_json=args.output_json,
         ))
     elif args.command == "proxy":
         from xdog.ai.proxy import run_proxy
@@ -147,7 +182,25 @@ async def _cmd_login(provider_id: str | None) -> None:
     print(f"Logged in to {p.name}.", file=sys.stderr)
 
 
-async def _cmd_models(provider_id: str, *, sync: bool) -> None:
+def _token_limit(value: int) -> str:
+    return f"{value:,}" if value else "?"
+
+
+def _compact_token_limit(value: int) -> str:
+    if not value:
+        return "?"
+    return f"{value // 1000}k" if value >= 1000 else str(value)
+
+
+def _generation_protocols(model: Model) -> str:
+    if model.supported_generation_protocols is not None:
+        return ", ".join(model.supported_generation_protocols) or "none"
+    return model.api or "?"
+
+
+async def _cmd_models(
+    provider_id: str, *, sync: bool, output_json: bool = False, details: bool = False,
+) -> None:
     """List models for a provider."""
     p = ai.provider(provider_id)
 
@@ -160,17 +213,72 @@ async def _cmd_models(provider_id: str, *, sync: bool) -> None:
         print(f"No models for {provider_id}. Try 'xdog-ai models {provider_id} --sync'.", file=sys.stderr)
         sys.exit(1)
 
+    if output_json:
+        from dataclasses import asdict
+        print(json.dumps([
+            {
+                **asdict(model),
+                "supports_image_input": model.supports_image_input,
+                "supports_image_output": model.supports_image_output,
+            }
+            for model in sorted(provider_models, key=lambda model: model.id)
+        ], indent=2))
+        return
+
     print(f"\n  {provider_id} ({len(provider_models)} models)")
     print(f"  {'─' * 70}")
-    for m in sorted(provider_models, key=lambda x: x.id):
-        prompt = f"{m.max_prompt_tokens // 1000}k" if m.max_prompt_tokens else "?"
-        out = f"{m.max_tokens // 1000}k" if m.max_tokens else "?"
-        reasoning = " reasoning" if m.reasoning else ""
-        embedding = " embedding" if m.model_type == "embeddings" else ""
-        proto = m.preferred_protocol or m.api
-        short = m.id.split("/", 1)[-1] if "/" in m.id else m.id
-        mult = f"  {m.cost.input}x" if m.cost.input > 0 else "  free" if m.cost.input == 0 else ""
-        print(f"  {short:<40} {prompt:>6} in  {out:>5} out  {proto}{reasoning}{embedding}{mult}")
+    models = sorted(provider_models, key=lambda model: model.id)
+    for model in models:
+        short = model.id.removeprefix(f"{provider_id}/")
+        prompt = _compact_token_limit(model.max_prompt_tokens or model.context_window)
+        out = _compact_token_limit(model.max_tokens)
+        # Embeddings still use a wire protocol even though they advertise no
+        # generation operations. Show the selected adapter, not that operation filter.
+        protocol = model.preferred_protocol or model.api or "?"
+        tags = []
+        if model.reasoning:
+            tags.append("reasoning")
+        if model.model_type == "embeddings":
+            tags.append("embedding")
+        if model.supports_image_output is True:
+            tags.append("image_generation")
+        if model.supports_web_search is True:
+            tags.append("web_search")
+        suffix = " " + " ".join(tags) if tags else ""
+        if model.provider == "copilot":
+            suffix += "  " + (f"{model.cost.input:g}x" if model.cost.input else "free")
+        print(f"  {short:<40} {prompt:>6} in  {out:>5} out  {protocol}{suffix}")
+    if details:
+        labels = {None: "unknown", False: "no", True: "yes"}
+        print("\n  Model details:")
+        for model in models:
+            print(f"\n  {model.id} — {model.name}")
+            print(
+                f"    Type: {model.model_type}; context: {_token_limit(model.context_window)}; "
+                f"max input: {_token_limit(model.max_prompt_tokens)}; "
+                f"max output: {_token_limit(model.max_tokens)} tokens"
+            )
+            print(
+                f"    Read image: {labels[model.supports_image_input]}; "
+                f"generate image: {labels[model.supports_image_output]}; "
+                f"web search: {labels[model.supports_web_search]}"
+            )
+            print(f"    Wire protocol: {model.preferred_protocol or model.api or '?'}")
+            supported = ", ".join(model.supported_protocols) if model.supported_protocols is not None else "unknown"
+            print(f"    Supported protocols: {supported or 'none'}")
+            print(f"    Generation protocols: {_generation_protocols(model)}")
+            if model.endpoints is None:
+                print("    Transport endpoints: not reported")
+            elif not model.endpoints:
+                print("    Transport endpoints: none")
+            for endpoint in model.endpoints or ():
+                label = {
+                    "generate": "Non-streaming generation",
+                    "stream_generate": "Streaming generation",
+                    "embed": "Embeddings",
+                    "count_tokens": "Token counting",
+                }.get(endpoint.operation, endpoint.operation)
+                print(f"    {label}: {endpoint.method} {endpoint.path} [{endpoint.protocol}]")
     print()
 
 
@@ -213,6 +321,8 @@ async def _cmd_chat(
     if web_search and message:
         try:
             result = await p.web_search(model, message)
+            if result.stop_reason in ("error", "aborted"):
+                raise RuntimeError(result.error_message or "Web search failed.")
             _print_result(result, verbose=verbose)
         except Exception as exc:
             print(f"Error: {exc}", file=sys.stderr)
@@ -350,10 +460,54 @@ async def _cmd_search(*, provider: str, model: str, query: str) -> None:
     p = ai.provider(provider)
     try:
         result = await p.web_search(model, query)
+        if result.stop_reason in ("error", "aborted"):
+            raise RuntimeError(result.error_message or "Web search failed.")
         _print_result(result, verbose=False)
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
+
+
+async def _cmd_image(
+    *, provider: str, model: str, prompt: str, output_dir: Path, references: list[Path],
+    aspect_ratio: str | None, image_size: str | None, output_json: bool,
+) -> None:
+    """Generate through the provider API and save image bytes, not base64 text."""
+    from dataclasses import asdict
+
+    from xdog.ai.utils.image_files import read_reference, save_images
+
+    try:
+        p = ai.provider(provider)
+        if len(references) > 4:
+            raise ValueError("At most four reference images are supported.")
+        output_dir = output_dir.expanduser().resolve()
+        if output_dir.exists() and not output_dir.is_dir():
+            raise ValueError("Output directory is an existing file.")
+        reference_images = tuple([await asyncio.to_thread(read_reference, path) for path in references])
+        result = await p.image_generation(model, ImageGenerationRequest(
+            prompt=prompt, reference_images=reference_images, aspect_ratio=aspect_ratio, image_size=image_size,
+        ))
+        paths = await asyncio.to_thread(save_images, result.images, output_dir)
+    except (TimeoutError, httpx.TimeoutException):
+        print("Error: image generation timed out; check provider status before retrying.", file=sys.stderr)
+        sys.exit(1)
+    except httpx.HTTPError:
+        print("Error: image-generation network request failed.", file=sys.stderr)
+        sys.exit(1)
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if output_json:
+        print(json.dumps({
+            "paths": [str(path) for path in paths], "text": result.text,
+            "model": result.model, "provider": result.provider, "usage": asdict(result.usage),
+        }, ensure_ascii=False, indent=2))
+    else:
+        if result.text:
+            print(result.text)
+        for path in paths:
+            print(f"Saved: {path}")
 
 
 # ---------------------------------------------------------------------------

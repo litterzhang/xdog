@@ -7,6 +7,7 @@ import sys
 import termios
 from pathlib import Path
 
+import httpx
 import xdog.ai as ai
 from xdog.ai.types import (
     AssistantMessage,
@@ -74,12 +75,19 @@ class FixtureProvider:
         return stream
 
 
+def _no_http(*args, **kwargs):
+    raise AssertionError("Terminal acceptance fixtures must never make HTTP requests")
+
+
 if __name__ == "__main__":
+    # Fail closed if a future routing change bypasses one of the fake factories.
+    httpx.AsyncClient = _no_http
     before = termios.tcgetattr(0)
     kind, *args = sys.argv[1:]
     try:
         if kind == "coding":
             ai.provider = lambda _name: FixtureProvider()
+            ai.load = lambda: FixtureProvider()
             from xdog.coding.main import main
             sys.argv = ["xdog-coding", *(args or ["--model", "terminal-fixture", "--permission-mode", "ask-all"])]
             main()

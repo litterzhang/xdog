@@ -26,6 +26,7 @@ Provider = str
 class ProviderType(StrEnum):
     """Supported provider types."""
     COPILOT = "copilot"
+    ANTIGRAVITY = "antigravity"
 
 
 ThinkingLevel = Literal["minimal", "low", "medium", "high", "xhigh"]
@@ -290,6 +291,20 @@ class ThinkingBudgetRange:
 
 
 @dataclass(frozen=True)
+class ModelEndpoint:
+    """Provider transport route, distinct from the JSON wire protocol.
+
+    Paths are relative to ``Model.base_url``. An endpoint is a transport
+    capability, not evidence that the model accepts or produces images.
+    """
+
+    protocol: str
+    operation: str  # generate | stream_generate | count_tokens | embed
+    path: str
+    method: str = "POST"
+
+
+@dataclass(frozen=True)
 class Model:
     """Full specification of an LLM model.
 
@@ -302,7 +317,7 @@ class Model:
     provider: Provider = ""
     base_url: str = ""
     reasoning: bool = False
-    input: tuple[InputModality, ...] = ("text",)
+    input: tuple[InputModality, ...] | None = ("text",)
     cost: ModelCost = field(default_factory=ModelCost)
     context_window: int = 0
     max_prompt_tokens: int = 0
@@ -336,6 +351,20 @@ class Model:
     # Embedding-specific
     dimensions: int | None = None
     supports_dimensions: bool = False
+    # None means unreported/unknown, not text-only. Image input and output are
+    # independent: a vision model need not be an image generator.
+    output: tuple[InputModality, ...] | None = None
+    endpoints: tuple[ModelEndpoint, ...] | None = None
+    # Native/provider-hosted search, not merely the ability to call a user tool.
+    supports_web_search: bool | None = None
+
+    @property
+    def supports_image_input(self) -> bool | None:
+        return None if self.input is None else "image" in self.input
+
+    @property
+    def supports_image_output(self) -> bool | None:
+        return None if self.output is None else "image" in self.output
 
 
 # ---------------------------------------------------------------------------
@@ -655,4 +684,36 @@ class EmbeddingResponse:
 
     data: tuple[EmbeddingObject, ...] = ()
     model: str = ""
+    usage: Usage = field(default_factory=Usage)
+
+
+# ---------------------------------------------------------------------------
+# Image generation types
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ImageGenerationRequest:
+    """Provider-neutral image prompt and optional reference images."""
+
+    prompt: str
+    reference_images: tuple[ImageContent, ...] = ()
+    aspect_ratio: str | None = None
+    image_size: str | None = None
+
+
+@dataclass(frozen=True)
+class GeneratedImage:
+    """Decoded image bytes; file storage is the caller's responsibility."""
+
+    data: bytes = field(repr=False)
+    mime_type: str = "image/png"
+
+
+@dataclass(frozen=True)
+class ImageGenerationResponse:
+    images: tuple[GeneratedImage, ...] = ()
+    text: str = ""
+    model: str = ""
+    provider: str = ""
     usage: Usage = field(default_factory=Usage)
