@@ -71,7 +71,9 @@ async def test_switched_codex_authenticates_to_proxy(tmp_path, monkeypatch):
     monkeypatch.delenv("CODEX_API_KEY", raising=False)
     monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
     monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
-    model = Model(id="copilot/fixture", context_window=200_000, max_tokens=16_000)
+    model = Model(
+        id="copilot/fixture", context_window=200_000, max_tokens=16_000, supports_web_search=False,
+    )
     received = []
     tool_types = []
     read_request = proxy._read_http_request

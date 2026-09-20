@@ -108,9 +108,8 @@ def configure_codex(model: Model, models: list[Model], proxy_url: str, api_key: 
     settings["model_provider"] = "xdogproxy"
     settings["model_context_window"] = model.context_window
     settings["model_auto_compact_token_limit"] = compaction_limit(model)
-    if model.supports_web_search is not True:
-        # Codex enables a hosted web_search tool by default. The proxy cannot
-        # translate it for models without advertised native search support.
+    if model.supports_web_search is False:
+        # Unknown support must preserve the user's setting and Codex defaults.
         settings["web_search"] = "disabled"
     settings["model_catalog_json"] = str(generate_catalog(models, config))
     write_text(config, tomlkit.dumps(settings), backup=True)

@@ -29,7 +29,7 @@ def test_codex_switch_replaces_stale_limits_preserves_toml_and_auth(home):
     root.mkdir()
     config = root / "config.toml"
     config.write_text(
-        '# keep my comment\nmodel_context_window = 353346\n'
+        '# keep my comment\nweb_search = "live"\nmodel_context_window = 353346\n'
         'model_auto_compact_token_limit = 9999999\n'
         '[features]\nmulti_agent = true\n'
         '[projects."/some/project"]\ntrust_level = "trusted"\n'
@@ -41,6 +41,7 @@ def test_codex_switch_replaces_stale_limits_preserves_toml_and_auth(home):
 
     result = tomllib.loads(config.read_text())
     assert result["model"] == MODEL.id
+    assert result["web_search"] == "live"
     assert result["model_context_window"] == 1_178_000
     assert result["model_auto_compact_token_limit"] == 945_000
     assert result["features"]["multi_agent"] is True
