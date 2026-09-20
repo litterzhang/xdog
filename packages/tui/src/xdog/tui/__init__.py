@@ -91,7 +91,7 @@ from xdog.tui.utils import (
     wrap_text_with_ansi,
 )
 
-__version__ = "0.57.1"
+__version__ = "2.3.0"
 
 __all__ = [
     # terminal

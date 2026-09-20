@@ -12,6 +12,38 @@ Nothing yet.
 
 ---
 
+## [2.3.0] — 2026-09-11
+
+### Added
+
+- Reusable permission, details, input, status, and transcript message components
+  in `xdog-tui`, shared by Coding and Claw without changing execution policies.
+- Current-directory session selection for `xdog-coding -r`, including explicitly
+  labeled legacy sessions without directory metadata.
+
+### Changed
+
+- Compact thinking previews and tool summaries retain full content in details.
+  Details and permission panels appear below the editor; details open at the
+  beginning and support explicit follow navigation.
+- Improved activity timing, contextual keyboard hints, terminal themes, bounded
+  layouts, and user-message styling while preserving native scrollback.
+- Synchronized runtime version constants with the workspace release version.
+
+### Fixed
+
+- Restored session model, context usage, and user-message history presentation.
+- Prevented multiline tool summaries from corrupting terminal row accounting.
+- Preserved valid reasoning replay identities in proxy conversions and skipped
+  invalid Responses reasoning identities without writing warnings into the TUI.
+
+### Validation
+
+- Added component, session-picker, and actual tmux streaming/resize regression
+  coverage. Windows Terminal/SSH key interception and IME still need manual checks.
+
+---
+
 ## [2.2.0] — 2026-09-10
 
 ### Added

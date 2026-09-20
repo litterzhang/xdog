@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "xdog-ai"
-version = "2.2.0"
+version = "2.3.0"
 description = "Unified multi-provider LLM API"
 requires-python = ">=3.12"
 classifiers = [

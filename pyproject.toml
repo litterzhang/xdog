@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "xdog"
-version = "2.2.0"
+version = "2.3.0"
 description = "Tools for building AI agents and managing LLM deployments"
 readme = "README.md"
 license = "AGPL-3.0-or-later"
@@ -24,15 +24,15 @@ authors = [
 ]
 
 dependencies = [
-    "xdog-ai>=2.2.0",
-    "xdog-agent>=2.2.0",
-    "xdog-flow>=2.2.0",
-    "xdog-site>=2.2.0",
+    "xdog-ai>=2.3.0",
+    "xdog-agent>=2.3.0",
+    "xdog-flow>=2.3.0",
+    "xdog-site>=2.3.0",
     # Not runtime dependencies of anything above — listed so `uv sync` installs
     # them into the dev venv. Without this CI never imports them, and a broken
     # import ships to PyPI unnoticed (it did: xdog-claw 0.57.x).
-    "xdog-claw>=2.2.0",
-    "xdog-coding>=2.2.0",
+    "xdog-claw>=2.3.0",
+    "xdog-coding>=2.3.0",
 ]
 
 [project.urls]
