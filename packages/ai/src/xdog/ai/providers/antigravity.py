@@ -61,7 +61,11 @@ class AntigravityProvider(BaseProvider):
         return token
 
     async def sync_models(self, *, ttl: float = 86400, force: bool = False) -> tuple[Model, ...]:
-        return await self._vendor.sync_models(ttl, force)
+        from xdog.ai.codex_catalog import refresh_after_sync
+
+        models = await self._vendor.sync_models(ttl, force)
+        await refresh_after_sync("antigravity", models)
+        return models
 
     def supports_native_request(self, model: str, request: ProtocolRequest) -> bool:
         info = self.model(model)

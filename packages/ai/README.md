@@ -142,7 +142,10 @@ The proxy exposes these routes through the same provider runtime:
 - `POST /v1/chat/completions` — native OpenAI Chat Completions only. A model
   without that exact generation capability receives an OpenAI HTTP 400 error
   with `param: "model"`; the proxy does not translate the request.
-- `GET /v1/models` — the runtime's model catalog.
+- `GET /v1/models` — the runtime's model catalog, including `context_window`,
+  `max_prompt_tokens`, and `max_output_tokens` (zero means unknown), plus
+  reasoning, input, and tool capabilities. `GET /v1/models/{model_id}` exposes
+  the same metadata for one model.
 
 Use a `provider/model` ID for deterministic routing. A bare model ID is accepted
 only when exactly one provider is active. For example, after logging into
@@ -160,6 +163,95 @@ An OpenAI SDK client can use `base_url="http://127.0.0.1:8082/v1"` and call
 `Authorization: Bearer <key>` or `x-api-key`; these values are never forwarded upstream.
 Provider-resolved credentials and base URLs are authoritative. Without local
 proxy authentication, an SDK may use any dummy API key.
+
+### Configure an agent CLI
+
+`xdog-ai switch-cli` replaces the standalone `switch-cli` script and also sets
+user-level defaults for XDOG's native clients:
+
+```bash
+uv run xdog-ai switch-cli coding copilot --model copilot/gpt-6-astra
+uv run xdog-ai switch-cli claw copilot --model copilot/gpt-6-astra
+```
+
+These targets use the local XDOG model catalog and do not require a running
+proxy. Omit `--model` for interactive selection, or use `coding list` / `claw list`
+to list available providers. Refresh local metadata with
+`xdog-ai models <provider> --sync` if a model is missing.
+
+- `coding` updates `default_model` in `~/.config/xdog/coding/settings.json`.
+  Project settings, explicit model options, and resumed sessions can override
+  this default.
+- `claw` updates `model` in `~/.config/xdog/claw/config.yaml`. Group-specific
+  `model_id` values are preserved. Restart the gateway to load the new default.
+
+Both targets honor `XDG_CONFIG_HOME`, plus `CODING_DIR` or `CLAW_DIR` respectively,
+create missing config files, and preserve unrelated settings. YAML is serialized
+again, so comments/formatting may change; the original is retained in the `.bak`
+backup. They use the apps' existing metadata handling for context limits.
+
+For external clients, start (or restart) the updated proxy first so its model
+endpoint includes token limits:
+
+```bash
+uv run xdog-ai switch-cli set-url http://127.0.0.1:8082
+uv run xdog-ai switch-cli set-key your-proxy-key  # only needed for an authenticated proxy
+uv run xdog-ai switch-cli codex list
+uv run xdog-ai switch-cli codex copilot --model copilot/gpt-6-astra
+
+# Interactive model selection, including Claude's Opus/Sonnet/Haiku roles:
+uv run xdog-ai switch-cli codex copilot
+uv run xdog-ai switch-cli claude copilot
+```
+
+The command saves its proxy settings in `~/.config/xdog/switch-cli.json`, falling
+back to the old `~/.config/switch-cli/config.json` until settings are first saved.
+`switch-cli config` shows the URL and whether a key is configured, without printing
+the credential. Existing client files receive a one-time `.bak` backup; updates
+are atomic and preserve unrelated TOML/JSON settings. Generated files containing
+credentials are readable only by the current user.
+
+For Codex, the command respects `CODEX_HOME` (default `~/.codex`) and sets:
+
+- `model` and the `xdogproxy` Responses provider, with a provider-specific bearer
+  token; existing OpenAI login credentials in `auth.json` are left intact.
+- `model_context_window` from the selected model's provider metadata, replacing
+  stale overrides. Unknown context limits produce an error instead of a guess.
+- `model_auto_compact_token_limit` to 90% of the smaller of the context window
+  and prompt limit. If the prompt limit is unknown, it reserves the advertised
+  maximum output tokens first.
+- `model_catalog_json` pointing to `~/.local/xdog/codex_models.json`. The catalog
+  includes chat models with tool support and known context limits, supported
+  reasoning options, and generic coding-assistant instructions. It does not
+  copy model-specific OpenAI prompts. Its format is tested with Codex 0.154.0.
+- `web_search = "disabled"` when native hosted search is not advertised, so
+  Codex does not send an unsupported hosted tool by default.
+
+After the first Codex switch, Copilot and Antigravity provider syncs refresh the
+generated catalog automatically, including syncs at proxy startup and
+`xdog-ai models <provider> --sync`. Refresh replaces only that provider's rows
+and updates the selected model's limits in registered Codex configs that still
+use the XDOG catalog/provider. No catalog or client config is created by sync
+before opting in through `switch-cli`. Export failures log a warning without
+failing provider sync. Restart Codex after switching or refreshing; explicit
+Codex profiles and command-line overrides can still take precedence.
+
+For Claude Code, selecting a primary/Opus model also updates the saved `model`
+and sets `CLAUDE_CODE_MAX_CONTEXT_TOKENS` from provider metadata. It sets
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW` using the same conservative prompt budget,
+capped at Claude Code's supported 1M auto-compaction window. No separate Claude
+catalog is required for this fixed-model setup. These environment overrides
+are global to the Claude process, including custom subagent models; rerun the
+switch command when changing the primary model, and use a smaller compaction
+window if mixing roles with smaller prompt limits. Unknown model limits clear
+stale overrides instead of retaining another model's window. Restart Claude
+Code after switching; custom model IDs may still produce an unknown-model
+notice even when the context limit is correctly configured.
+
+`xdog-ai switch-cli gemini <provider>` also preserves the old script's Gemini
+`.env` configuration flow. **Gemini CLI requires a Gemini-native endpoint**;
+XDOG's proxy currently exposes Anthropic/OpenAI routes, so writing these settings
+alone does not make Gemini CLI work against it.
 
 Generation requests must carry `Content-Length`. The raw local server rejects
 chunked request bodies with an HTTP 400 error before provider activity.

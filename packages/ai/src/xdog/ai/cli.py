@@ -10,6 +10,7 @@ Usage::
     xdog-ai search <provider> <model> <query>  Web search
     xdog-ai image <provider> <model> <prompt>  Generate image files
     xdog-ai proxy [--port PORT]           Start Messages / token count / OpenAI proxy
+    xdog-ai switch-cli <agent> <provider> Set a client model / proxy settings
 """
 
 from __future__ import annotations
@@ -46,6 +47,9 @@ def main() -> None:
     """Entry point for the ``xdog-ai`` console script."""
     parser = argparse.ArgumentParser(prog="xdog-ai", description="xdog-ai CLI")
     sub = parser.add_subparsers(dest="command")
+
+    from xdog.ai.cli_switch import add_parser as add_switch_parser
+    add_switch_parser(sub)
 
     # --- login ---
     login_p = sub.add_parser("login", help="Login to a provider")
@@ -114,7 +118,17 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.command == "providers":
+    if args.command == "switch-cli":
+        from xdog.ai.cli_switch import run as run_switch
+        try:
+            run_switch(args)
+        except httpx.HTTPError:
+            parser.exit(1, "Switch failed: proxy request failed; check the proxy URL, API key, and server.\n")
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            parser.exit(1, f"Switch failed: {exc}\n")
+        except (KeyboardInterrupt, EOFError):
+            parser.exit(1, "Switch cancelled.\n")
+    elif args.command == "providers":
         _cmd_providers()
     elif args.command == "login":
         try:

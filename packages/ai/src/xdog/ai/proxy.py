@@ -45,6 +45,7 @@ from xdog.ai.types import (
     DoneEvent,
     ErrorEvent,
     ImageContent,
+    Model,
     StreamOptions,
     TextContent,
     TextDoneEvent,
@@ -907,17 +908,31 @@ async def _handle_connection(
             writer.close()
 
 
+def _model_metadata(m: Model) -> dict[str, Any]:
+    return {
+        "id": m.id,
+        "type": "model",
+        "display_name": m.name or m.id,
+        "created_at": "2025-01-01T00:00:00Z",
+        "context_window": m.context_window,
+        "max_prompt_tokens": m.max_prompt_tokens,
+        "max_output_tokens": m.max_tokens,
+        "reasoning": m.reasoning,
+        "supported_efforts": m.supported_efforts,
+        "input": m.input,
+        "model_type": m.model_type,
+        "supports_tool_calls": m.supports_tool_calls,
+        "supports_parallel_tool_calls": m.supports_parallel_tool_calls,
+        "supports_web_search": m.supports_web_search,
+    }
+
+
 def _list_models(provider: Any) -> dict[str, Any]:
     """Build a model list response matching the Anthropic /v1/models format."""
     models = provider.models()
     data = []
     for m in models:
-        data.append({
-            "id": m.id,
-            "type": "model",
-            "display_name": m.name or m.id,
-            "created_at": "2025-01-01T00:00:00Z",
-        })
+        data.append(_model_metadata(m))
     return {
         "data": data,
         "has_more": False,
@@ -931,12 +946,7 @@ def _get_model(provider: Any, model_id: str) -> dict[str, Any] | None:
     m = provider.model(model_id)
     if m is None:
         return None
-    return {
-        "id": m.id,
-        "type": "model",
-        "display_name": m.name or m.id,
-        "created_at": "2025-01-01T00:00:00Z",
-    }
+    return _model_metadata(m)
 
 
 def _model_protocol(provider: Any, model_id: str) -> str | None:

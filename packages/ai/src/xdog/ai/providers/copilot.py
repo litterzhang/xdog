@@ -243,8 +243,11 @@ class CopilotProvider(BaseProvider):
         return await self._get_vendor().login()
 
     async def sync_models(self, *, ttl: float = 86400, force: bool = False) -> tuple[Model, ...]:
+        from xdog.ai.codex_catalog import refresh_after_sync
+
         models = await self._get_vendor().sync_models(ttl, force)
         self._model_cache = {model.id: model for model in models}
+        await refresh_after_sync("copilot", models)
         return apply_observed_search(models)
 
     def __repr__(self) -> str:
