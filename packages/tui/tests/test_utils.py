@@ -39,3 +39,13 @@ def test_extract_segments_ansi():
     assert len(text_segs) == 1
     assert text_segs[0].value == "A"
     assert all(s.width == 0 for s in ansi_segs)
+
+
+def test_slice_by_column_preserves_whole_graphemes_and_active_style():
+    from xdog.tui.utils import strip_ansi
+    text = "\x1b[31m界👩‍💻éabcd\x1b[0m"
+    assert strip_ansi(slice_by_column(text, 2, 5)) == "👩‍💻é"
+    assert strip_ansi(slice_by_column(text, 3, 6)) == " éa"
+    assert strip_ansi(slice_by_column(text, 0, 3)) == "界 "
+    assert "\x1b[31m" in slice_by_column("\x1b[31mab\x1b[1mcd", 3, 4)
+    assert "\x1b[1m" in slice_by_column("\x1b[31mab\x1b[1mcd", 3, 4)

@@ -18,26 +18,38 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from xdog.agent.core import EmbedFn
+from xdog.agent.core import CatalogStreamFn, EmbedFn
 from xdog.ai.core import BaseProvider
+from xdog.ai.types import Model
 
 if TYPE_CHECKING:
-    from xdog.agent.core import StreamFn, WebSearchFn
+    from xdog.agent.core import WebSearchFn
     from xdog.ai.types import AssistantMessage, Context, StreamOptions
     from xdog.ai.utils.event_stream import EventStream
 
 
-def stream_fn_from_provider(provider: BaseProvider) -> StreamFn:
-    """Build a :class:`~agent.core.StreamFn` from an ai Provider."""
+class _ProviderStream:
+    def __init__(self, provider: BaseProvider) -> None:
+        self.provider = provider
 
-    def _stream(
-        model: str,
-        context: Context,
-        options: StreamOptions,
-    ) -> EventStream[AssistantMessage]:
-        return provider.stream(model, context, options)
+    def __call__(self, model: str, context: Context, options: StreamOptions) -> EventStream[AssistantMessage]:
+        return self.provider.stream(model, context, options)
 
-    return _stream
+    def models(self) -> tuple[Model, ...]:
+        return self.provider.models()  # Actual active provider catalog, never sync/login/activation.
+
+    def resolve_model(self, name: str) -> Model | None:
+        # Provider.model() uses the local catalog. Never sync/login, activate a
+        # new provider, or choose a fallback on behalf of a child override.
+        model = self.provider.model(name)
+        if model is not None and "/" in name and not model.id.startswith(name.split("/", 1)[0] + "/"):
+            return None
+        return model
+
+
+def stream_fn_from_provider(provider: BaseProvider) -> CatalogStreamFn:
+    """Build an adapter carrying cached metadata from its actual request owner."""
+    return _ProviderStream(provider)
 
 
 def web_search_fn_from_provider(provider: BaseProvider, model: str) -> WebSearchFn:

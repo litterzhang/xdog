@@ -38,7 +38,7 @@ _VENDORED_PACKAGES = ("xdog.ai", "xdog.agent")
 # pydantic, and tomlkit; agent needs fastjsonschema for submit_result schema validation and
 # pyyaml for skill frontmatter; the
 # generated module imports jsonpath-ng for interpolation/conditions).
-_THIRD_PARTY = ("httpx", "pydantic", "tomlkit", "fastjsonschema", "jsonpath-ng", "pyyaml")
+_THIRD_PARTY = ("httpx", "pydantic", "tomlkit", "fastjsonschema", "jsonschema", "referencing", "jsonpath-ng", "pyyaml")
 
 # Directory names to skip when copying a package's source tree.
 _SKIP_DIRS = {"__pycache__", "tests", ".mypy_cache", ".ruff_cache"}

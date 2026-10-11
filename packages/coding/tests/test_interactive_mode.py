@@ -302,7 +302,7 @@ class TestInteractiveMessageHandling:
         result = mode._handle_global_input(KeyEvent(key="escape"))
 
         assert result == {"consume": True}
-        session.cancel.assert_called_once_with()
+        session.cancel.assert_called_once_with(preserve_identified=True)
         assert mode._cancel_requested
         assert list(mode._pending_messages) == []
         assert mode._message_queue_container.render(80) == []
@@ -310,7 +310,7 @@ class TestInteractiveMessageHandling:
         assert mode._editor.get_text() == "queued"
 
         mode._handle_global_input(KeyEvent(key="escape"))
-        session.cancel.assert_called_once_with()
+        session.cancel.assert_called_once_with(preserve_identified=True)
         cancellation_notices = [
             child
             for child in mode._chat_log.children
@@ -461,6 +461,7 @@ class TestInteractiveMessageHandling:
         from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
 
         mode = object.__new__(InteractiveMode)
+        mode._exit_requested = False
         mode._update_footer = Mock()
         mode._update_header = Mock()
         mode._handle_ui_event({"type": "turn_footer_update"})
@@ -468,26 +469,55 @@ class TestInteractiveMessageHandling:
         mode._update_footer.assert_called_once_with()
         mode._update_header.assert_called_once_with()
 
-    def test_busy_poll_does_not_request_redundant_render(self):
-        import queue
+    def test_busy_poll_does_not_request_redundant_render(self, tmp_path):
+        import asyncio
         from unittest.mock import Mock
 
+        import pytest
+        from xdog.agent import Agent, AgentConfig
+        from xdog.coding.core.agent_session import AgentSession
+        from xdog.coding.core.permissions import PermissionManager
+        from xdog.coding.core.session_manager import SessionManager
+        from xdog.coding.core.settings_manager import SettingsManager
         from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
 
-        mode = object.__new__(InteractiveMode)
-        mode._event_queue = queue.Queue()
-        mode._run_status = RunStatus().start(0.0)
-        mode._cancel_requested = False
-        mode._format_elapsed = Mock(return_value="0s")
-        mode._status_loader = Mock()
-        mode._last_busy_label = "waiting • 0s"
-        mode._tool_components = {}
-        mode._tui = Mock()
+        def unexpected(*args):
+            pytest.fail('A quiet UI poll cannot submit model work')
+        manager = SessionManager(tmp_path / 'sessions')
+        session = AgentSession(agent=Agent(unexpected, config=AgentConfig(model='offline/model')),
+            session_data=manager.create_session(working_dir=tmp_path), session_manager=manager,
+            settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
+            tool_registry=None, bash=None, permissions=PermissionManager('deny'))
+        mode = InteractiveMode(session)
+        try:
+            mode._format_elapsed = Mock(return_value='0s')
+            mode._set_busy(True)
+            mode._poll()  # Settle the real constructor's initial render state.
+            mode._set_status_busy = Mock(wraps=mode._set_status_busy)
+            mode._footer.set_activity = Mock(wraps=mode._footer.set_activity)
+            mode._tui.request_render = Mock()
+            before = session.agent.state
+            draft = mode._editor.get_text()
 
-        mode._poll()
+            mode._poll()
+            mode._poll()
 
-        mode._status_loader.set_message.assert_not_called()
-        mode._tui.request_render.assert_not_called()
+            mode._set_status_busy.assert_not_called()
+            mode._footer.set_activity.assert_not_called()
+            mode._tui.request_render.assert_not_called()
+            assert session.agent.state is before and mode._editor.get_text() == draft
+            assert session.permissions.mode == 'deny'
+            mode._format_elapsed.return_value = '1s'
+            mode._poll()
+            label = f'{mode._activity_label()} • 1s'
+            mode._set_status_busy.assert_called_once_with(label)
+            mode._footer.set_activity.assert_called_once_with(label)
+            mode._tui.request_render.assert_called_once_with()
+        finally:
+            mode._request_exit()
+            asyncio.run(session.children.supervisor.aclose())
+            asyncio.run(session.extensions.aclose())
+            session.dispose()
 
     def test_post_tool_text_is_rendered_after_tool_result(self):
         from unittest.mock import MagicMock
@@ -673,6 +703,8 @@ class TestInteractiveMessageHandling:
         ])
         mode._chat_log = ChatLog(theme)
         mode._editor = CustomEditorComponent(theme)
+        mode._transcript_panel = None
+        mode._output_epoch = 0
 
         mode._replay_history()
         rendered = "\n".join(strip_ansi(line) for line in mode._chat_log.render(80))

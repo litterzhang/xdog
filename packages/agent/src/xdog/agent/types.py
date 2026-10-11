@@ -14,11 +14,12 @@ from typing import Any, Awaitable, Callable, Union
 from xdog.agent.core import (
     AgentContext,
     AgentMessage,
+    AgentTool,
     AgentToolResult,
     ToolExecutionMode,
 )
 from xdog.agent.events import AgentEvent
-from xdog.ai.types import AssistantMessage, Message, ToolCall, ToolResultContentPart
+from xdog.ai.types import AssistantMessage, Message, ToolCall, ToolResultContentPart, UserMessage
 
 # ---------------------------------------------------------------------------
 # Before/after tool call hooks
@@ -96,6 +97,15 @@ TransformContextFn = Callable[
 ]
 """Optional async hook to transform the context before each LLM call."""
 
+@dataclass(frozen=True, slots=True)
+class HandledInput:
+    """Explicit handler feedback; not a model response or canonical user-message admission."""
+    feedback: str
+
+
+InputTransformFn = Callable[[UserMessage, str, asyncio.Event | None], Awaitable[UserMessage | HandledInput]]
+"""Optional canonical pre-admission input transform; failures must not fall back to unfiltered input."""
+
 GetMessagesFn = Callable[
     [],
     Awaitable[list[AgentMessage]],
@@ -129,6 +139,7 @@ class AgentLoopConfig:
 
     convert_to_llm: ConvertToLlmFn | None = None
     transform_context: TransformContextFn | None = None
+    get_tools: Callable[[], tuple[AgentTool, ...]] | None = None
     get_steering_messages: GetMessagesFn | None = None
     get_follow_up_messages: GetMessagesFn | None = None
     tool_execution: ToolExecutionMode = "parallel"

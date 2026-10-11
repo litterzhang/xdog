@@ -4,7 +4,7 @@ from xdog.tui.components.bounded_details import BoundedDetails
 from xdog.tui.components.details_panel import DetailRecord
 from xdog.tui.components.prompt_editor import PromptEditor
 from xdog.tui.components.select_list import SelectItem
-from xdog.tui.keys import KeyEvent
+from xdog.tui.keys import KeyEvent, KeyEventType
 from xdog.tui.utils import visible_width
 
 
@@ -32,6 +32,7 @@ def test_permission_panel_reports_supplied_decisions_without_policy():
         choices=[SelectItem("Approve", "yes"), SelectItem("Reject", "no")],
         theme=Theme(), on_decision=selected.append, on_cancel=lambda: selected.append("cancel"),
     )
+    panel.render(80)
     panel.handle_input(KeyEvent(key="down"))
     panel.handle_input(KeyEvent(key="enter"))
     panel.handle_input(KeyEvent(key="escape"))
@@ -56,3 +57,31 @@ def test_details_panel_and_status_line_are_standalone():
     assert "ctx:1k/10k" in status.render(50)[0]
     assert len(status.render(12)) == 1
     assert visible_width(status.render(12)[0]) <= 12
+
+
+def test_hidden_or_clipped_permission_actions_cannot_be_confirmed():
+    selected = []
+    panel = PermissionPanel(
+        summary="Run example", tool_name="example", choices=[SelectItem("Approve", "yes")],
+        theme=Theme(), on_decision=selected.append, on_cancel=lambda: selected.append("cancel"),
+    )
+    panel.handle_input(KeyEvent(key="enter"))
+    assert selected == []  # A newly created panel has not been displayed.
+    for budget, width in ((0, 80), (1, 80), (12, 2)):
+        panel.set_render_budget(budget)
+        panel.render(width)
+        panel.handle_input(KeyEvent(key="enter"))
+        assert selected == []
+    panel.set_render_budget(12)
+    panel.render(80)
+    panel.handle_input(KeyEvent(key="enter", ctrl=True))
+    panel.handle_input(KeyEvent(key="enter", event_type=KeyEventType.REPEAT))
+    panel.handle_input(KeyEvent(key="enter", event_type=KeyEventType.RELEASE))
+    panel.handle_input(KeyEvent(key=" "))
+    assert selected == []
+    panel.handle_input(KeyEvent(key="enter"))
+    assert selected == ["yes"]
+    panel.set_render_budget(0)
+    panel.render(80)
+    panel.handle_input(KeyEvent(key="escape"))
+    assert selected == ["yes", "cancel"]

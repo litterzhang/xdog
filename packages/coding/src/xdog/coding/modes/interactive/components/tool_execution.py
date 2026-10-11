@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import re
 import time
@@ -50,6 +51,7 @@ class ToolExecutionComponent(Container):
         self._result = ""
         self._is_error = False
         self._expanded = False
+        self._transcript_args = redact_sensitive_text(json.dumps(arguments or {}, ensure_ascii=False, default=str))
         self._argument_summary = " ".join(_summarize_args(arguments or {}, tool_name).split())
         command = redact_sensitive_text(str((arguments or {}).get("command", "")))
         self._command_details = command if tool_name == "bash" and "\n" in command else ""
@@ -82,6 +84,10 @@ class ToolExecutionComponent(Container):
             if isinstance(child, Image):
                 rows.extend(child.render(width))
         return [*rows, ""]
+
+    @property
+    def transcript_body(self) -> str:
+        return f"Arguments:\n{self._transcript_args}\n\nOutput:\n{self._result}"
 
     @property
     def detail_title(self) -> str:

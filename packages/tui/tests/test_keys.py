@@ -97,3 +97,12 @@ def test_ctrl_c_and_escape_parse_without_sticking() -> None:
 
 def test_invalid_utf8_is_not_replaced_with_a_key_event() -> None:
     assert parse_key_events(b"\xe7\x95") == []
+
+
+def test_printable_space_matches_named_descriptor_without_changing_editor_data_or_modifiers():
+    event = parse_key_events(b' ')[0]
+    assert event.key == ' ' and event.matches('space') and event.matches('Space')
+    assert not event.matches('ctrl+space') and not event.matches('alt+space')
+    assert KeyEvent('space').matches('space')
+    assert KeyEvent(' ', ctrl=True).matches('ctrl+space')
+    assert not KeyEvent(' ', ctrl=True).matches('space')

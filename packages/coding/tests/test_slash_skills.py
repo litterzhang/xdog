@@ -452,21 +452,37 @@ def test_the_default_keeps_tools_visible() -> None:
     assert "Read a file" in build_system_prompt(_cfg(), _TOOLS)
 
 
-def test_an_unresolvable_model_still_gets_its_tools_described(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The lookup fails on an unknown provider, a network problem, or an offline
-    box. Every one of those must land on 'describe them'."""
+@pytest.mark.parametrize('capability', [None, False, True])
+def test_an_unresolvable_model_still_gets_its_tools_described(tmp_path: Path, capability) -> None:
+    """Use the actual owning Agent capability; unknown/false never hide tool instructions."""
+    import asyncio
+
+    from xdog.agent import Agent, AgentConfig
     from xdog.agent.helpers import model_supports_tool_calls
     from xdog.coding.core.agent_session import AgentSession
+    from xdog.coding.core.permissions import PermissionManager
+    from xdog.coding.core.session_manager import SessionManager
+    from xdog.coding.core.settings_manager import SettingsManager
+    from xdog.coding.core.system_prompt import build_system_prompt
 
-    class _Unresolvable:
-        class agent:  # noqa: N801
-            class state:  # noqa: N801
-                model = "no-such-provider/no-such-model"
-
-    assert model_supports_tool_calls("no-such-provider/no-such-model") is None
-    assert AgentSession._native_tool_calls(_Unresolvable()) is False
+    def unexpected(*args):
+        pytest.fail('Capability inspection must not submit model work')
+    name = 'no-such-provider/no-such-model'
+    manager = SessionManager(tmp_path / 'sessions')
+    session = AgentSession(agent=Agent(unexpected, config=AgentConfig(model=name, supports_tool_calls=capability)),
+        session_data=manager.create_session(model=name, working_dir=tmp_path), session_manager=manager,
+        settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
+        tool_registry=None, bash=None, permissions=PermissionManager('deny'))
+    try:
+        assert model_supports_tool_calls(name) is None
+        native = session._native_tool_calls()
+        assert native is (capability is True)
+        prompt = build_system_prompt(_cfg(), _TOOLS, native_tool_calls=native)
+        assert ('Read a file' in prompt) is (capability is not True)
+    finally:
+        asyncio.run(session.children.supervisor.aclose())
+        asyncio.run(session.extensions.aclose())
+        session.dispose()
 
 
 def test_completion_offers_skills_not_only_builtins(

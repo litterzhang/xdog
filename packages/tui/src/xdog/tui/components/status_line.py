@@ -18,6 +18,16 @@ class StatusLine(Text):
         self._queued = 0
         self._model = ""
         self._context = ""
+        self._durability = ""
+
+    def set_durability(self, text: str) -> bool:
+        """Host-supplied storage state; never infer durability from activity."""
+        safe = ' '.join(sanitize_terminal_text(text).split())
+        if safe == self._durability:
+            return False
+        self._durability = safe
+        self.invalidate()
+        return True
 
     def set_queue_count(self, count: int) -> None:
         self._queued = count
@@ -40,12 +50,15 @@ class StatusLine(Text):
         width = max(1, width)
         if not self._structured:
             text = " ".join(sanitize_terminal_text(self.text).split())
+            if self._durability:
+                text = self._durability + " | " + text
             return [self._dim(truncate_to_width(text, width, "…"))]
         # Reserve capacity and a recognizable model name before truncating long activity.
         context_width = string_width(self._context) + 3 if self._context else 0
         model_budget = min(string_width(self._model), max(0, width - context_width - 15))
         activity_budget = max(5, width - context_width - (model_budget + 3 if model_budget else 0))
-        left = truncate_to_width(self._activity, activity_budget, "…")
+        activity = (self._durability + " | " + self._activity) if self._durability else self._activity
+        left = truncate_to_width(activity, activity_budget, "…")
         fields = ([f"queued {self._queued}"] if self._queued else []) + ([self._context] if self._context else [])
         for field in fields:
             candidate = left + " | " + field

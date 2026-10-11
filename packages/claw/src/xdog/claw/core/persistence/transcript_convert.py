@@ -104,13 +104,44 @@ def messages_to_transcript(
     return entries
 
 
+def live_transcript_snapshot(messages: tuple[AgentMessage, ...], stored: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Capture ALL current messages, retaining disk-only metadata for unchanged rows.
+
+    A failed/delayed turn save cannot make a compaction checkpoint omit the live
+    tail. This pure materialization runs off-loop on an admitted immutable state.
+    """
+    current = messages_to_transcript(messages)
+    old_wire = messages_to_dicts(transcript_to_messages(stored))
+    new_wire = messages_to_dicts(list(messages))
+    for index in range(min(len(stored), len(current))):
+        before = {key: value for key, value in old_wire[index].items() if key not in {'usage', 'timestamp'}}
+        after = {key: value for key, value in new_wire[index].items() if key not in {'usage', 'timestamp'}}
+        if before == after:
+            current[index] = dict(stored[index])
+    return current
+
+
 def transcript_to_messages(transcript: list[dict[str, Any]]) -> list[AgentMessage]:
     """Rebuild messages from a transcript. claw's own keys are ignored."""
-    return dicts_to_messages(list(transcript))
+    normalized = []
+    for entry in transcript:
+        value = dict(entry)
+        # Owned summaries are conversation context, not a fabricated system
+        # message or Python repr of the transcript metadata envelope.
+        if (value.get("role") == "system" and value.get("is_compaction") is True
+                and isinstance(value.get("content"), str)):
+            value["role"] = "user"
+        if value.get("role") == "assistant" and isinstance(value.get("content"), str):
+            value["content"] = [{"type": "text", "text": value["content"]}]
+        normalized.append(value)
+    return dicts_to_messages(normalized)
 
 
 def entry_text(entry: dict[str, Any]) -> str:
     """The displayable text of an entry, joined across its text parts."""
+    if entry.get('role') == 'custom' and entry.get('type') == 'xdog.extension_context.v1':
+        from xdog.agent.extensions.context_message import display_text
+        return display_text(entry.get('data', {}))
     content = entry.get("content")
     if isinstance(content, str):
         return content

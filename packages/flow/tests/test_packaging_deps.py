@@ -96,6 +96,14 @@ def test_every_third_party_import_is_declared(package: str) -> None:
             continue
         if (package, module) in _ALLOWED:
             continue
+        # This optional transport runs under fixed /usr/bin/python3 -I, not
+        # the package interpreter. GI/libsecret are externally installed OS
+        # prerequisites, not pip dependencies; require defensive imports ONLY
+        # in that exact standalone worker, never exempt application imports.
+        if (package == 'agent' and module == 'gi' and all(
+                path == root / 'src/xdog/agent/mcp/native_store_worker.py' and guarded
+                for path, guarded in sites)):
+            continue
         undeclared.append(f"{module} (e.g. {sites[0][0].relative_to(root)})")
 
     assert not undeclared, (

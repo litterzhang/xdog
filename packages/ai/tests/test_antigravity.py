@@ -75,6 +75,30 @@ def test_provider_registration_and_discovery(isolated, monkeypatch):
     assert provider.model("antigravity/vision").name == "Vision"
 
 
+async def test_sync_uses_stale_cache_when_token_refresh_times_out(isolated, monkeypatch):
+    vendor = AntigravityVendor()
+    monkeypatch.setattr(vendor.tokens, "get", AsyncMock(side_effect=httpx.ConnectTimeout("offline")))
+    before = _model_sync.cache_path().read_bytes()
+    models = await vendor.sync_models(ttl=0)
+    assert {m.id for m in models} == {f"antigravity/{name}" for name in CATALOGUE["models"]}
+    assert _model_sync.cache_path().read_bytes() == before
+
+
+async def test_sync_token_failure_without_cache_still_raises(isolated, monkeypatch):
+    vendor = AntigravityVendor()
+    _model_sync.cache_path().unlink()
+    monkeypatch.setattr(vendor.tokens, "get", AsyncMock(side_effect=httpx.ConnectTimeout("offline")))
+    with pytest.raises(httpx.ConnectTimeout):
+        await vendor.sync_models()
+
+
+async def test_sync_cancellation_is_not_hidden_by_cache(isolated, monkeypatch):
+    vendor = AntigravityVendor()
+    monkeypatch.setattr(vendor.tokens, "get", AsyncMock(side_effect=asyncio.CancelledError))
+    with pytest.raises(asyncio.CancelledError):
+        await vendor.sync_models(ttl=0)
+
+
 def test_image_input_output_and_protocol_endpoints_are_independent(isolated):
     provider = AntigravityProvider()
     vision = provider.model("vision")

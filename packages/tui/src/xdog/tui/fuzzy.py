@@ -44,6 +44,10 @@ def fuzzy_match(query: str, text: str) -> FuzzyMatch | None:
     t_lower = text.lower()
     q_len = len(q_lower)
     t_len = len(t_lower)
+    # Unicode lowercase can expand one code point (İ -> i + combining dot).
+    # Keep highlights and case/boundary bonuses indexed into the original text.
+    q_positions = _original_positions(query, q_lower)
+    t_positions = _original_positions(text, t_lower)
 
     if q_len > t_len:
         return None
@@ -69,7 +73,9 @@ def fuzzy_match(query: str, text: str) -> FuzzyMatch | None:
         if qi >= q_len:
             break
         if t_lower[ti] == q_lower[qi]:
-            indices.append(ti)
+            original_ti = t_positions[ti]
+            if not indices or indices[-1] != original_ti:
+                indices.append(original_ti)
             # Consecutive bonus
             if ti == prev_match_idx + 1:
                 score += 8
@@ -77,11 +83,11 @@ def fuzzy_match(query: str, text: str) -> FuzzyMatch | None:
                 score += 1
 
             # Word-boundary bonus
-            if ti == 0 or text[ti - 1] in _separators:
+            if original_ti == 0 or text[original_ti - 1] in _separators:
                 score += 6
 
             # Case-exact bonus
-            if text[ti] == query[qi]:
+            if text[original_ti] == query[q_positions[qi]]:
                 score += 1
 
             prev_match_idx = ti
@@ -95,6 +101,12 @@ def fuzzy_match(query: str, text: str) -> FuzzyMatch | None:
         score -= indices[0]
 
     return FuzzyMatch(text=text, score=max(score, 1), indices=tuple(indices))
+
+
+def _original_positions(text: str, lowered: str) -> Sequence[int]:
+    if len(text) == len(lowered):
+        return range(len(text))
+    return tuple(index for index, char in enumerate(text) for _ in char.lower())
 
 
 def fuzzy_filter(

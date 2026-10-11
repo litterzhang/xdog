@@ -35,3 +35,55 @@ def test_snapshot_preserves_tuple_content_contract() -> None:
     local = thaw_event(queue.get_nowait())
     assert local["content"] == ("one", "two")
     assert local["history"] == ["a", "b"]
+
+
+def test_drain_yields_even_when_producer_keeps_queue_nonempty(monkeypatch) -> None:
+    monkeypatch.setattr("xdog.tui.event_queue.time.monotonic", lambda: 0.0)
+    events = EventQueue()
+    events.put({"sequence": 0})
+    seen = []
+
+    def handle(event):
+        seen.append(event["sequence"])
+        events.put({"sequence": event["sequence"] + 1})
+
+    assert events.drain(handle, max_events=4) == 4
+    assert seen == [0, 1, 2, 3]
+    assert events.qsize() == 1
+
+
+def test_drain_time_budget_keeps_remaining_events_in_order(monkeypatch) -> None:
+    now = [0.0]
+    monkeypatch.setattr("xdog.tui.event_queue.time.monotonic", lambda: now[0])
+    events = EventQueue()
+    for sequence in range(5):
+        events.put({"sequence": sequence})
+    seen = []
+
+    def handle(event):
+        seen.append(event["sequence"])
+        now[0] += 0.005
+
+    assert events.drain(handle, max_seconds=0.008) == 2
+    assert seen == [0, 1]
+    assert events.drain(handle, max_seconds=0.008) == 2
+    assert events.drain(handle, max_seconds=0.008) == 1
+    assert seen == list(range(5))
+
+
+def test_drain_does_not_swallow_handler_errors() -> None:
+    import queue
+    events = EventQueue()
+    events.put({"type": "final"})
+
+    def handle(event):
+        raise queue.Empty("handler failure")
+
+    with pytest.raises(queue.Empty, match="handler failure"):
+        events.drain(handle)
+
+
+@pytest.mark.parametrize("limits", [{"max_events": 0}, {"max_seconds": 0}])
+def test_drain_rejects_nonpositive_budgets(limits) -> None:
+    with pytest.raises(ValueError):
+        EventQueue().drain(lambda event: None, **limits)

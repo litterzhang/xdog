@@ -119,3 +119,16 @@ async def test_deny_and_cancel() -> None:
     )
     assert cancelled is not None and cancelled.block
     assert "cancelled" in cancelled.reason
+
+
+def test_late_decision_for_closed_loop_fails_closed_without_crashing_ui() -> None:
+    from xdog.coding.core.permissions import _PendingApproval
+    manager = PermissionManager("ask")
+    loop = asyncio.new_event_loop()
+    future = loop.create_future()
+    manager._pending["stale"] = _PendingApproval(loop=loop, future=future, rule_key="stale-rule")
+    loop.close()
+    assert manager.resolve("stale", "allow_session") is False
+    manager.close()
+    assert not manager._pending
+    assert "stale-rule" not in manager._session_rules

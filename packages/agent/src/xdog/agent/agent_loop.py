@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+from dataclasses import replace
 from typing import Any
 
 from xdog.agent.core import (
@@ -417,12 +418,24 @@ async def _stream_assistant_response(
     # Convert to LLM-compatible messages (AgentMessage[] -> Message[])
     llm_messages = await _convert_messages(config, messages)
 
+    # Snapshot the actual current inventory after owned context hooks; one request
+    # and its tool batch share it. Stale executor identities still fail at admission.
+    if config.get_tools is not None:
+        context.tools = list(config.get_tools())
+
     # Build LLM context
     llm_context = Context(
         system_prompt=context.system_prompt or None,
         messages=tuple(llm_messages),
         tools=_tools_to_ai_tools(context.tools) if context.tools else None,
     )
+
+    # Validate exactly what will reach this adapter, including retained/tool/hook
+    # images. Do not silently prune data or infer another provider's capabilities.
+    from xdog.agent.image_context import validate_image_context
+    await validate_image_context(stream_fn, model, llm_context)
+    if _is_cancelled(cancel):
+        raise asyncio.CancelledError
 
     # Call stream_fn
     response = stream_fn(model, llm_context, options)
@@ -621,25 +634,41 @@ async def _execute_tool_calls_parallel(
         for index, preparation in runnable_calls
     }
 
-    # Emit and return every result in assistant source order.
-    results: list[ToolResultMessage] = []
-    for index, tc in enumerate(tool_calls):
-        immediate = immediate_outcomes.get(index)
-        if immediate is not None:
-            immediate_tc, result, is_error = immediate
-            results.append(await _emit_tool_call_outcome(
-                immediate_tc, result, is_error, emit,
+    try:
+        # Emit and return every result in assistant source order.
+        results: list[ToolResultMessage] = []
+        for index, tc in enumerate(tool_calls):
+            immediate = immediate_outcomes.get(index)
+            if immediate is not None:
+                immediate_tc, result, is_error = immediate
+                results.append(await _emit_tool_call_outcome(
+                    immediate_tc, result, is_error, emit,
+                ))
+                continue
+
+            prepared, task = task_by_index[index]
+            executed = await asyncio.shield(task)
+            results.append(await _finalize_executed_tool_call(
+                current_context, assistant_message, prepared,
+                executed, config, cancel, emit,
             ))
-            continue
 
-        prepared, task = task_by_index[index]
-        executed = await task
-        results.append(await _finalize_executed_tool_call(
-            current_context, assistant_message, prepared,
-            executed, config, cancel, emit,
-        ))
-
-    return results
+        return results
+    finally:
+        # The batch owns every started tool, not just the source-order task being
+        # awaited. Producer cancellation/finalizer failure must settle siblings
+        # before publishing idle or releasing session/workspace ownership.
+        tasks = [task for _prepared, task in task_by_index.values()]
+        for task in tasks:
+            if not task.done() and not task.cancelling():
+                task.cancel()
+        settlement = asyncio.gather(*tasks, return_exceptions=True)
+        while not settlement.done():
+            try:
+                await asyncio.shield(settlement)
+            except asyncio.CancelledError:
+                continue
+        settlement.result()
 
 
 # ---------------------------------------------------------------------------
@@ -670,7 +699,29 @@ async def _prepare_tool_call(
     try:
         # Validate tool arguments
         args = dict(tc.arguments)
-        if tool.parameters:
+        if tool.validate_arguments is not None:
+            checked = tool.validate_arguments(args)
+            if inspect.isawaitable(checked):
+                validation_task = asyncio.ensure_future(checked)
+                watcher = asyncio.create_task(cancel.wait()) if cancel is not None else None
+                try:
+                    if watcher is not None:
+                        done, _pending = await asyncio.wait({validation_task, watcher},
+                                                           return_when=asyncio.FIRST_COMPLETED)
+                        if watcher in done:
+                            validation_task.cancel()
+                            await asyncio.gather(validation_task, return_exceptions=True)
+                            return {"kind": "immediate",
+                                    "result": _create_error_tool_result("Tool execution cancelled"), "is_error": True}
+                    await validation_task
+                finally:
+                    if not validation_task.done() and not validation_task.cancelling():
+                        validation_task.cancel()
+                    if watcher is not None:
+                        watcher.cancel()
+                    await asyncio.gather(validation_task, *([watcher] if watcher is not None else []),
+                                         return_exceptions=True)
+        elif tool.parameters:
             validation = validate_tool_arguments(args, tool.parameters)
             if not validation.valid:
                 error_msg = "; ".join(validation.errors)
@@ -740,7 +791,9 @@ async def _execute_prepared_tool_call(
     try:
         assert tool.execute is not None
         result = await tool.execute(tc.id, args, cancel, on_update, ctx=tool_ctx)
-        return {"result": result, "is_error": False}
+        if type(result.is_error) is not bool:
+            raise ValueError("Tool result error flag must be a boolean")
+        return {"result": result, "is_error": result.is_error}
     except asyncio.CancelledError:
         return {
             "result": _create_error_tool_result("Tool execution cancelled"),
@@ -808,6 +861,7 @@ async def _emit_tool_call_outcome(
     emit: AgentEventSink,
 ) -> ToolResultMessage:
     """Emit tool_execution_end and message lifecycle events, return ToolResultMessage."""
+    result = replace(result, is_error=is_error)  # Align rich result and lifecycle/message flags after hooks.
     await _emit_event(emit, ToolExecutionEndEvent(
         tool_call_id=tc.id,
         tool_name=tc.name,
@@ -859,12 +913,17 @@ async def _convert_messages(
 
 
 def _default_convert(messages: list[AgentMessage]) -> list[Message]:
-    """Identity converter -- keeps only instances of the Message union."""
+    """Project named canonical context content; keep unknown custom metadata out of the LLM."""
+    from xdog.agent.extensions.context_message import llm_message
     from xdog.ai.types import AssistantMessage, ToolResultMessage, UserMessage
-    return [
-        m for m in messages
-        if isinstance(m, (UserMessage, AssistantMessage, ToolResultMessage))
-    ]
+
+    result: list[Message] = []
+    for message in messages:
+        if isinstance(message, (UserMessage, AssistantMessage, ToolResultMessage)):
+            result.append(message)
+        elif (projected := llm_message(message)) is not None:
+            result.append(projected)
+    return result
 
 
 def _extract_tool_calls(message: AgentMessage) -> list[ToolCall]:
@@ -897,4 +956,5 @@ def _create_error_tool_result(message: str) -> AgentToolResult:
     return AgentToolResult(
         content=(TextContent(text=message),),
         details=None,
+        is_error=True,
     )

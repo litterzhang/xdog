@@ -69,3 +69,21 @@ def save_images(images: tuple[GeneratedImage, ...], directory: Path) -> tuple[Pa
             path.unlink(missing_ok=True)
         raise
     return tuple(paths)
+
+
+def validate_references(images: tuple[ImageContent, ...], model: object) -> None:
+    """Validate advertised model capability/limits without silently dropping images."""
+    if not images:
+        return
+    if getattr(model, "supports_image_input", None) is not True:
+        raise ValueError("Selected model does not advertise image input; choose a vision-capable model")
+    limits = getattr(model, "vision_limits", None)
+    maximum = min(getattr(limits, "max_prompt_images", 0) or 4, 4)
+    if len(images) > maximum:
+        raise ValueError(f"Selected model accepts at most {maximum} images per prompt")
+    size = min(getattr(limits, "max_prompt_image_size", 0) or MAX_REFERENCE_BYTES, MAX_REFERENCE_BYTES)
+    media = getattr(limits, "supported_media_types", ())
+    for image in images:
+        decode_image(image.data, image.mime_type, max_bytes=size)
+        if media and image.mime_type not in media:
+            raise ValueError(f"Selected model does not accept {image.mime_type}")

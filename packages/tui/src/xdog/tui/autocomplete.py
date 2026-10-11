@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Protocol, Sequence
+from typing import Callable, Protocol, Sequence, runtime_checkable
 
 from xdog.tui.fuzzy import fuzzy_filter
 
@@ -41,6 +41,13 @@ class CompletionProvider(Protocol):
     def get_completions(self, prefix: str) -> Sequence[CompletionItem]:
         """Return candidate completions for the current *prefix*."""
         ...
+
+
+@runtime_checkable
+class CompletionStatusProvider(Protocol):
+    """Optional non-blocking progress information for an asynchronous provider."""
+
+    def get_completion_status(self, prefix: str) -> str: ...
 
 
 @dataclass

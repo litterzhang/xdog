@@ -26,6 +26,9 @@ dependencies = [
     # Skill frontmatter is YAML; see xdog.agent.skills.manager for why it is
     # parsed rather than approximated.
     "pyyaml>=6.0",
+    "jsonschema>=4.18",
+    "referencing>=0.30",
+    "httpx>=0.27",
 ]
 
 [project.urls]

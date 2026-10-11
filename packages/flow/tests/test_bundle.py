@@ -396,3 +396,36 @@ def test_every_third_party_import_of_the_vendored_packages_is_declared() -> None
         "vendored packages import third-party modules the bundle does not install: "
         + ", ".join(f"{k} ({v})" for k, v in sorted(missing.items()))
     )
+
+
+def test_vendored_schema_helper_keeps_isolated_imports_and_resolves_the_vendored_library(tmp_path: Path) -> None:
+    out = build_bundle(_agent_wf(), tmp_path / 'bundle')
+    vendor = out / '_vendor'
+    marker = tmp_path / 'vendored-helper-ran'
+    worker = vendor / 'xdog/agent/mcp/schema_worker.py'
+    source = worker.read_text()
+    source = source.replace('def main() -> None:\n',
+        f'def main() -> None:\n    from pathlib import Path\n    Path({str(marker)!r}).write_text("vendored")\n', 1)
+    worker.write_text(source)
+    project = tmp_path / 'project'
+    project.mkdir()
+    (project / 'xdog.py').write_text('raise AssertionError("No project shadow imports")')
+    driver = textwrap.dedent('''
+        import asyncio,sys
+        from pathlib import Path
+        sys.path.insert(0,sys.argv[1])
+        from xdog.agent.mcp.schema_owner import SchemaOwner
+        async def run():
+            owner=SchemaOwner()
+            try:
+                schema=await owner.compile({'type':'array','items':{'type':'null'}})
+                await owner.validate(schema,[None],label='output')
+            finally:
+                await owner.close()
+        asyncio.run(run())
+    ''')
+    result = subprocess.run([sys.executable, '-I', '-c', driver, str(vendor)], cwd=project,
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert marker.read_text() == 'vendored'
+    assert 'referencing==' in (out / 'requirements.txt').read_text()

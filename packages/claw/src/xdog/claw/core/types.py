@@ -6,6 +6,7 @@ from enum import StrEnum
 from typing import Any
 
 from xdog.agent import AgentConfig
+from xdog.ai.types import ImageContent
 
 # ---------------------------------------------------------------------------
 # Queue mode
@@ -116,12 +117,14 @@ class UserInput:
     channel: str = ""
     timestamp: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
+    images: tuple[ImageContent, ...] = ()
 
 
 class SystemInputKind(StrEnum):
     """Discriminator for system-generated inputs."""
     GOAL_RUNNER = "goal_runner"
     SCHEDULER = "scheduler"
+    CONTEXT_CONTINUATION = "context_continuation"
     FLUSH = "flush"
     COMPACTION = "compaction"
 
@@ -136,6 +139,13 @@ class SystemInput:
 
 
 # Union for routing — callers use isinstance() to distinguish
+@dataclass(frozen=True)
+class ContextContinuation(SystemInput):
+    """Host-reviewed canonical continuation; never an external user/scheduler input."""
+    record_id: str = ''
+    kind: SystemInputKind = SystemInputKind.CONTEXT_CONTINUATION
+
+
 GroupInput = UserInput | SystemInput
 
 

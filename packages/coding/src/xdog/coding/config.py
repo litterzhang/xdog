@@ -174,6 +174,11 @@ class GlobalConfig(BaseModel):
     thinking_level: str = "normal"
     permission_mode: str = "ask"
     extensions: list[str] = Field(default_factory=list)
+    extension_dir: str = ""
+    extension_settings: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    child_presets: Any = Field(default_factory=dict)
+    mcp_servers: dict[str, Any] = Field(default_factory=dict)
+    mcp_credential_backend: Any = 'file'  # Validated at the host boundary; never defaults on an invalid native choice.
     allowed_tools: list[str] = Field(default_factory=list)
     custom_instructions: str = ""
 
@@ -212,6 +217,7 @@ class ProjectConfig(BaseModel):
     allowed_tools: list[str] = Field(default_factory=list)
     custom_instructions: str = ""
     extensions: list[str] = Field(default_factory=list)
+    mcp_servers: dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
     def load(cls, project_dir: Path) -> ProjectConfig:

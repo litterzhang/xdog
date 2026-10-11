@@ -1,0 +1,3 @@
+name: providerauth
+description: Offline worker-only auth contract fixture
+entry_point: main

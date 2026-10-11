@@ -5,12 +5,14 @@ file operations, compacting transcripts, and archiving to markdown.
 """
 from __future__ import annotations
 
+import os
 import re
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
-from xdog.claw.core.persistence.transcript_convert import TOOL_RESULT_ROLE, entry_tool_calls
+from xdog.claw.core.persistence.transcript_convert import TOOL_RESULT_ROLE, entry_text, entry_tool_calls
 
 _PREVIOUS_SUMMARY_TAG = "previous-summary"
 
@@ -25,9 +27,7 @@ def extract_previous_summary(transcript: list[dict[str, Any]]) -> str | None:
     for turn in reversed(transcript):
         if not turn.get("is_compaction"):
             continue
-        content = turn.get("content", "")
-        if not isinstance(content, str):
-            continue
+        content = entry_text(turn)
         m = _PREVIOUS_SUMMARY_RE.search(content)
         if m:
             return m.group(1).strip()
@@ -109,6 +109,7 @@ def compact_transcript(
     *,
     summary: str,
     target_tokens: int = 150_000,
+    first_kept_index: int | None = None,
 ) -> list[dict[str, Any]]:
     """Replace old turns with a summary, keeping recent turns intact.
 
@@ -116,7 +117,10 @@ def compact_transcript(
     - Never starts with a ``tool`` result (orphaned tool_result)
     - Never starts mid-way through an assistant+tool_results sequence
     """
-    cut = find_cut_point(turns, target_tokens)
+    cut = find_cut_point(turns, target_tokens) if first_kept_index is None else first_kept_index
+    if (first_kept_index is not None and (type(cut) is not int or not 1 <= cut < len(turns)
+                                         or turns[cut].get('role') != 'user')):
+        raise ValueError('Compaction must retain a complete user turn')
     if cut == 0:
         return list(turns)
 
@@ -171,7 +175,7 @@ def archive_transcript(
     safe_topic = (
         "".join(c if c.isalnum() or c in "-_ " else "" for c in topic)[:50].strip()
     )
-    filename = f"{date_str}-{time_str}-{safe_topic or 'session'}.md"
+    filename = f"{date_str}-{time_str}-{safe_topic or 'session'}-{uuid.uuid4().hex}.md"
     path = conversations_dir / filename
 
     lines = [f"# Conversation Archive \u2014 {date_str}\n"]
@@ -180,5 +184,22 @@ def archive_transcript(
         content = turn.get("content", "")
         lines.append(f"\n## {role.title()}\n\n{content}\n")
 
-    path.write_text("\n".join(lines), encoding="utf-8")
+    # Full conversation archives are private and create-only, even when two
+    # cheap extension-provided compactions finish in the same second.
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    opened = False
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as output:
+            opened = True
+            output.write("\n".join(lines))
+            output.flush()
+            os.fsync(output.fileno())
+    except BaseException:
+        if not opened:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        path.unlink(missing_ok=True)
+        raise
     return path

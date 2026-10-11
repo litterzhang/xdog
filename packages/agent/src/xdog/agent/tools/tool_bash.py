@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import tempfile
 import uuid
 from pathlib import Path
@@ -90,7 +89,10 @@ def create_bash_tool(*, initial_cwd: Path | None = None) -> AgentTool:
                 start_new_session=True,
             )
 
-            process_group = os.getpgid(proc.pid)
+            # start_new_session makes the shell the session/group leader. It
+            # may already be reaped by asyncio for a very short command, so a
+            # subsequent getpgid lookup can lose otherwise successful output.
+            process_group = proc.pid
             stdout_lines: list[str] = []
             stderr_lines: list[str] = []
             update_lock = asyncio.Lock()

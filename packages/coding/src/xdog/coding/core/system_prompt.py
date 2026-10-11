@@ -22,8 +22,14 @@ def _format_parameters(params: dict[str, Any]) -> str:
     required_keys = set(params.get("required", []))
     lines: list[str] = []
     for name, schema in props.items():
-        ptype = schema.get("type", "any")
-        desc = schema.get("description", "")
+        if isinstance(schema, bool):
+            ptype, desc = ("any", "") if schema else ("never", "property is forbidden")
+        elif isinstance(schema, dict):
+            kind = schema.get("type", "any")
+            ptype = " | ".join(str(item) for item in kind) if isinstance(kind, list) else str(kind)
+            desc = schema.get("description", "")
+        else:
+            ptype, desc = "unknown", "invalid property schema"
         req = " (required)" if name in required_keys else ""
         lines.append(f"  - {name}: {ptype}{req} - {desc}")
     return "\n".join(lines) if lines else "  (none)"

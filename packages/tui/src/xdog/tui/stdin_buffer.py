@@ -6,6 +6,8 @@ import os
 import select
 import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -100,6 +102,28 @@ def complete_prefix_length(data: bytes) -> int:
 def is_complete_sequence(data: bytes) -> bool:
     """Return whether *data* consists entirely of whole input tokens."""
     return complete_prefix_length(data) == len(data)
+
+
+def key_tokens(data: bytes) -> tuple[bytes, ...]:
+    """Split a filtered key frame without losing raw CSI/Kitty encodings.
+
+    Unlike feed(), this does not interpret paste/protocol replies. Hosts must
+    only use it after terminal filtering and validate transformed tokens.
+    """
+    tokens: list[bytes] = []
+    index = 0
+    while index < len(data):
+        size = (_escape_sequence_length(data, index) if data[index] == _ESCAPE
+                else _utf8_token_length(data, index))
+        if size == 0 and data[index:] == b"\x1b":
+            size = 1
+        if size == 0:
+            raise ValueError("Incomplete terminal key token")
+        token = data[index:index + size]
+        token.decode("utf-8")
+        tokens.append(token)
+        index += size
+    return tuple(tokens)
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,6 +317,16 @@ class StdinBuffer:
         if self._original_termios is not None and self._fd >= 0 and termios is not None:
             termios.tcsetattr(self._fd, termios.TCSAFLUSH, self._original_termios)
             self._original_termios = None
+
+    @contextmanager
+    def preserve_modes(self) -> Iterator[None]:
+        """Restore the cooked settings even when an external owner leaves raw mode."""
+        saved = termios.tcgetattr(self._fd) if termios is not None and self._fd >= 0 else None
+        try:
+            yield
+        finally:
+            if saved is not None and termios is not None:
+                termios.tcsetattr(self._fd, termios.TCSAFLUSH, saved)
 
     def read(self, timeout: float = 0.0) -> bytes:
         """Read available bytes, returning empty bytes for no data or EOF."""

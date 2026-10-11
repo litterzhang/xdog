@@ -1,0 +1,584 @@
+{
+  "schema_version": 1,
+  "updated": "2026-10-11",
+  "scope": "All original applicable audited UI/capability gaps remain in scope except OS-enforced sandboxing. Only non-current-Linux native validation is deferred and non-blocking. Missing current-Linux/external evidence remains required. User-authorized 2026-10-10 safe-checkpoint cleanup exception: verify owned test/peer identities and a real hang first; gracefully settle only those confirmed hung tests/peers, bounded SIGTERM if needed. Never interrupt normally progressing tests, Codex, user services or unrelated processes. The authoritative ledger and completion conditions control subsequent automatic goal continuation; historical counts are not current counts. User-authorized 2026-10-11 parallel completion target: 15:20:43–18:20:43 Asia/Shanghai (three hours), implementation handoff target17:10 followed by coordinated frozen final gates. Deadline does not waive missing external environments or any non-deferred acceptance condition. Work ownership/evidence: docs/agent-ui-extension-host-controls.md authorized parallel checkpoint. Final local acceptance checkpoint 2026-10-11 22:38:48+08: all current-Linux implementation and final local gates completed; exact ledger55 completed/0 implement/0 verify/5 missing external/4 deferred,5 non-deferred unfinished. Resume from docs/agent-ui-active-checkpoint.md; do not repeat passing frozen gates unless scoped source changes or concrete new evidence invalidates them. Five external prerequisites remain required and unwaived; never equate local8200-pass with overall goal completion. Separate release authorization 2026-10-11: user explicitly requested commit/push/version tag, confirmed automatic PyPI/GitHub Release, and instructed proxy_on. This overrides the earlier publishing restriction only for this release; it does not waive external requirements or authorize user-service restarts.",
+  "counting": "Each stable ID counts once; completed feature evidence is not a current-source final regression. Remaining = 待实现 + 待验证 + 缺外部环境; 延期 is reported separately.",
+  "requirements": [
+    {
+      "id": "UI-001",
+      "status": "已完成",
+      "title": "文件与路径补全",
+      "scope": "Coding/Claw 的 @/路径、模糊搜索、忽略规则、目录钻取、光标局部替换与大目录降级。",
+      "acceptance": "两客户端选择不提交；引号/Unicode/忽略/取消/晚结果/大工作区测试及 Linux 物理 Enter/Tab 证据存在。",
+      "evidence": "packages/tui/src/xdog/tui/file_completion.py; packages/tui/tests/test_file_completion.py; packages/tui/tests/test_workspace_index.py",
+      "history": "passes1–3"
+    },
+    {
+      "id": "UI-002",
+      "status": "已完成",
+      "title": "可配置快捷键",
+      "scope": "共享动作绑定、冲突/禁用/重映射、当前提示与审批保留键。",
+      "acceptance": "两个真实宿主 remap/disable 无旧键回退，帮助反映有效绑定，审批键不得被扩展夺取。",
+      "evidence": "packages/tui/tests/test_prompt_keymap.py; packages/coding/tests/test_saved_child_drafts.py",
+      "history": "passes2,45,190"
+    },
+    {
+      "id": "UI-003",
+      "status": "已完成",
+      "title": "外部编辑器 Linux 工作流",
+      "scope": "拥有者绑定的草稿编辑与成功/失败/取消后的终端恢复。",
+      "acceptance": "编辑往返保留草稿与权限；子进程取消/错误不遗留 terminal raw mode，不执行草稿。",
+      "evidence": "packages/tui/tests/test_external_editor.py; packages/coding/tests/test_terminal_acceptance.py",
+      "history": "passes2,131; 非Linux证据见UI-060/061"
+    },
+    {
+      "id": "UI-004",
+      "status": "已完成",
+      "title": "父会话 steer/follow-up 队列",
+      "scope": "识别输入、查看/编辑/删除/排序/返回与实际会话确认。",
+      "acceptance": "真实 Agent/两客户端/Claw socket 对 owner/revision/断线/消费确认验证，无不确定输入自动重播。",
+      "evidence": "packages/agent/src/xdog/agent/agent.py; packages/claw/tests/test_gateway.py",
+      "history": "pass4及后续receipt修复"
+    },
+    {
+      "id": "UI-005",
+      "status": "已完成",
+      "title": "会话搜索与安全激活",
+      "scope": "分页搜索、新建/恢复/切换与实际 group/session 所有权。",
+      "acceptance": "运行中拒绝激活；Claw 通过 gateway 所有者读取；失败保持旧会话和草稿。",
+      "evidence": "packages/coding/src/xdog/coding/core/session_manager.py; packages/claw/src/xdog/claw/core/runtime/gateway.py",
+      "history": "passes6,42–44,109–117,141–144"
+    },
+    {
+      "id": "UI-006",
+      "status": "已完成",
+      "title": "分支/检查点/压缩恢复树",
+      "scope": "保留返回头、合并来源时间线及跨目标 staged admission。",
+      "acceptance": "实际两宿主树导航与恢复保留完整工具边界；目标预检失败不产生中间恢复；来源不冒充模型历史。",
+      "evidence": "packages/coding/src/xdog/coding/core/transcript_source.py; packages/claw/tests/test_navigation_journal.py",
+      "history": "passes6,101–127,144; 非原子崩溃边界见UI-046/058"
+    },
+    {
+      "id": "UI-007",
+      "status": "已完成",
+      "title": "持久会话名称",
+      "scope": "会话/分支拥有者绑定的命名、搜索与原生/扩展/RPC读取。",
+      "acceptance": "真实磁盘失败/取消/重启及Claw权威读取证据；旧回答不能批准新导航或命名。",
+      "evidence": "packages/agent/src/xdog/agent/session_name.py; packages/agent/src/xdog/agent/extensions/session_context.py",
+      "history": "passes121–123,143"
+    },
+    {
+      "id": "UI-008",
+      "status": "已完成",
+      "title": "父编辑器真实图像",
+      "scope": "文件/剪贴板附件、删除/检查/预览和typed input持久化。",
+      "acceptance": "两客户端对typed二进制和预算拒绝验证，失败保留草稿，无文本占位冒充图像。",
+      "evidence": "packages/tui/tests/test_clipboard_macos.py; packages/coding/tests/test_terminal_acceptance.py",
+      "history": "passes7,33,66,75,136; 当前桌面实测见UI-059"
+    },
+    {
+      "id": "UI-009",
+      "status": "已完成",
+      "title": "完整图像上下文准入",
+      "scope": "父/子、工具/扩展图像与当前默认路由模型能力、大小/格式/数量。",
+      "acceptance": "pre-turn hooks后再次检查实际元数据；withdrawn/未知能力 fail closed；保留历史不套用composer数量上限。",
+      "evidence": "packages/ai/src/xdog/ai/types.py; packages/agent/tests/test_child_input_journal.py",
+      "history": "passes136–138,152"
+    },
+    {
+      "id": "UI-010",
+      "status": "已完成",
+      "title": "完整转录交互",
+      "scope": "全来源搜索、所有匹配导航、滚动/选择、可选fullscreen及native scrollback。",
+      "acceptance": "真实两客户端完整来源与分块完整性、长文本/Unicode/恢复焦点证据，不丢默认主缓冲区。",
+      "evidence": "packages/tui/tests/test_transcript_browser.py; packages/tui/tests/test_saved_source.py",
+      "history": "passes8–9及后续source修复"
+    },
+    {
+      "id": "UI-011",
+      "status": "已完成",
+      "title": "复制/导出/本地分享",
+      "scope": "响应/选择/条目复制，私有create-only文本/Markdown/JSON/HTML完整review。",
+      "acceptance": "无自动上传/覆盖/重播；实际宽窄屏完整路径/内容review与clipboard错误回退保持原数据。",
+      "evidence": "packages/tui/tests/test_transcript_transfer.py; packages/tui/tests/test_transcript_transfer.py",
+      "history": "passes10,67,82–85"
+    },
+    {
+      "id": "UI-012",
+      "status": "已完成",
+      "title": "仓库只读变化审查",
+      "scope": "staged/working/untracked，文件/全部hunk分页、横滚、过滤/刷新。",
+      "acceptance": "真实Git/两客户端审查不apply/revert，错误/切换/审批焦点恢复，完整patch可达。",
+      "evidence": "packages/tui/tests/test_repository_review.py; packages/coding/tests/test_repository_review.py",
+      "history": "pass5"
+    },
+    {
+      "id": "UI-013",
+      "status": "已完成",
+      "title": "计划与执行转换",
+      "scope": "结构化计划、只读工具gate、session-owned状态和显式执行确认。",
+      "acceptance": "真实两宿主revision/idle确认/持久化/恢复测试，不提权、不自动开启第二模型loop。",
+      "evidence": "packages/tui/tests/test_plan_panel.py; packages/coding/tests/test_terminal_acceptance.py",
+      "history": "pass15"
+    },
+    {
+      "id": "UI-014",
+      "status": "已完成",
+      "title": "深度一子Agent监督",
+      "scope": "真实子factory/status/source/cancel，独立审批、tool subset、预算/model/preset。",
+      "acceptance": "两客户端和gateway/RPC真实拥有者验证；只能向下限制权限，断线清理和无第二工具loop。",
+      "evidence": "packages/agent/src/xdog/agent/supervision.py; packages/coding/src/xdog/coding/modes/rpc/children.py",
+      "history": "passes19–26,146"
+    },
+    {
+      "id": "UI-015",
+      "status": "已完成",
+      "title": "子任务图像编辑与提交",
+      "scope": "start/steer/follow-up 的文件/剪贴板图像、独立文本/图像预算及exact receipt。",
+      "acceptance": "两宿主10MiB native/socket/RPC帧证据；完整review后才清空编辑器，审批/模型能力保持。",
+      "evidence": "packages/coding/tests/test_saved_child_drafts.py; packages/coding/src/xdog/coding/modes/rpc/children.py",
+      "history": "passes153–154"
+    },
+    {
+      "id": "UI-016",
+      "status": "已完成",
+      "title": "子任务可编辑队列",
+      "scope": "真实live queued inputs inspect/edit/remove/reorder/text return。",
+      "acceptance": "原始owner/revision绑定、物理review与RPC撤销/断线证据；有图像时不得走有损文本返回。",
+      "evidence": "packages/tui/src/xdog/tui/components/child_queue_panel.py; packages/coding/src/xdog/coding/modes/rpc/children.py",
+      "history": "pass147; UI-018补齐图像return"
+    },
+    {
+      "id": "UI-017",
+      "status": "已完成",
+      "title": "已确认子输入日志与保守恢复",
+      "scope": "accepted/edit/remove/move/return以及input_settled后的消费快照；停止任务/初始任务恢复。",
+      "acceptance": "真实owned SIGKILL在flush后恢复精确剩余项，flush前明确uncertain，无自动Agent/replay；不是exact-once。",
+      "evidence": "packages/agent/tests/test_child_input_journal.py; packages/agent/tests/test_supervision_store.py",
+      "history": "passes148,156,164–172; 更强边界见UI-046/058"
+    },
+    {
+      "id": "UI-018",
+      "status": "已完成",
+      "title": "图像队列两阶段返回",
+      "scope": "prepare/copy/再次删除review/commit、revocable leases与durable .returns备份。",
+      "acceptance": "两native客户端、Claw socket、Coding RPC验证10MiB、exact retry、撤销/重连；commit前持久备份及SIGKILL恢复。",
+      "evidence": "packages/coding/src/xdog/coding/modes/rpc/children.py; packages/agent/tests/test_child_input_journal.py",
+      "history": "passes157–168"
+    },
+    {
+      "id": "UI-019",
+      "status": "已完成",
+      "title": "持久子草稿本地浏览",
+      "scope": "私有有界codec/catalog，当前/旧上下文浏览、save/load/readonly copy/discard。",
+      "acceptance": "两宿主真实disk/thread/capacity/锁等待/单链接/0600/0700验证，review恢复不继承执行/权限。",
+      "evidence": "packages/tui/src/xdog/tui/child_draft_store.py; packages/tui/tests/test_child_draft_store.py",
+      "history": "passes155,173–177,182–184"
+    },
+    {
+      "id": "UI-020",
+      "status": "已完成",
+      "title": "Coding RPC持久子草稿",
+      "scope": "独立协商catalog/read/image read、两阶段save/discard与digest review。",
+      "acceptance": "真实CLI二进制/2MiB写入、generation撤销、一次性review验证；不调用模型、不修改历史。",
+      "evidence": "packages/coding/src/xdog/coding/modes/rpc/children.py",
+      "history": "passes178–180"
+    },
+    {
+      "id": "UI-021",
+      "status": "已完成",
+      "title": "子草稿opt-in自动快照",
+      "scope": "session-local默认off，0.5s debounce、exact digest update、失败关闭、不自动删磁盘。",
+      "acceptance": "两宿主和completed-autosave SIGKILL证据，删除tracking不删文件，独立恢复图像预算准确。",
+      "evidence": "packages/tui/tests/test_child_draft_autosave.py; packages/tui/src/xdog/tui/child_draft_io.py",
+      "history": "passes181–184; 未完成write窗口见UI-047"
+    },
+    {
+      "id": "UI-022",
+      "status": "已完成",
+      "title": "父草稿本地保存与恢复",
+      "scope": "独立saved-parent-drafts，64KiB text/images、opt-in autosave、catalog/load/readonly review/discard。",
+      "acceptance": "真实两宿主只恢复到未改变的空composer；session/view/lease变更拒绝晚结果，无自动提交或权限改变。",
+      "evidence": "packages/tui/src/xdog/tui/parent_drafts.py; packages/coding/tests/test_saved_child_drafts.py",
+      "history": "passes185–187,192; RPC见UI-040"
+    },
+    {
+      "id": "UI-023",
+      "status": "已完成",
+      "title": "父显式save与草稿图像预览",
+      "scope": "/draft save、可重映射Ctrl+Alt+S、完整一次性review、父/子saved/local只读预览。",
+      "acceptance": "两native hosts/modal guards/physical review证据；预览返回重置paint receipt；保存不消耗composer。",
+      "evidence": "packages/tui/src/xdog/tui/parent_drafts.py; packages/coding/tests/test_saved_child_drafts.py",
+      "history": "passes188–192"
+    },
+    {
+      "id": "UI-024",
+      "status": "已完成",
+      "title": "草稿settlement后退出",
+      "scope": "延迟quit保持宿主服务，完成最新写入后once-only teardown；新失败取消退出。",
+      "acceptance": "真实held-worker两客户端成功/失败和中途草稿编辑证据；未准入退出不提前清理。",
+      "evidence": "packages/tui/src/xdog/tui/child_draft_io.py; /tmp/pass193-final.log; /tmp/pass193-terminal.log",
+      "history": "passes183,193"
+    },
+    {
+      "id": "UI-025",
+      "status": "已完成",
+      "title": "MCP现有传输与生命周期",
+      "scope": "stdio/current+legacy HTTP JSON/SSE、discovery/calls、管理状态与permission/timeouts/reconnect。",
+      "acceptance": "真实两宿主和owned peers证据；认证/redirect/断线不重播工具，不绕过pre-tool gate。",
+      "evidence": "packages/agent/src/xdog/agent/mcp; packages/agent/tests/test_mcp_official_sdk.py",
+      "history": "passes11–14,68; 扩展conformance见UI-048/051"
+    },
+    {
+      "id": "UI-026",
+      "status": "已完成",
+      "title": "MCP schema与内容/补全",
+      "scope": "dialect/ref验证、typed text/image/audio/resource/link/structured errors、prompt/template/resource completions与preview。",
+      "acceptance": "两客户端及独立SDK corpus证据；惰性资源不自动read/模型准入；binary/export保留type和零字节。",
+      "evidence": "packages/agent/tests/test_mcp_official_sdk.py; packages/tui/tests/test_scalar_template.py",
+      "history": "passes34–36,69–70,79,82"
+    },
+    {
+      "id": "UI-027",
+      "status": "已完成",
+      "title": "MCP显式watch",
+      "scope": "resource/catalog notice-only订阅、combined current filters与legacy singleton边界。",
+      "acceptance": "真实stdio/HTTP/两宿主与独立SDK；unwatch/lease/withdrawal清理，无自动资源读取。",
+      "evidence": "packages/coding/tests/test_mcp_resource_watch_ui.py; packages/claw/tests/test_mcp_resource_watch_ui.py",
+      "history": "passes58,93,96"
+    },
+    {
+      "id": "UI-028",
+      "status": "已完成",
+      "title": "现有OAuth授权/注册/refresh",
+      "scope": "PKCE、issuer/resource origin pins、预注册/DCR/client metadata、basic/post/HS256/RS256与reviewed refresh。",
+      "acceptance": "真实owned auth peers/两native review和token signature证据；scope ceiling/rotation/cancel/no-uncertain-replay。",
+      "evidence": "packages/agent/tests/test_oauth_private_jwt.py; packages/coding/tests/test_oauth_ui.py; packages/claw/tests/test_oauth_ui.py",
+      "history": "passes27–32,76,104及后续issuer修复"
+    },
+    {
+      "id": "UI-029",
+      "status": "已完成",
+      "title": "reviewed文件与Linux Secret Service凭据",
+      "scope": "默认私有PLAINTEXT明确review；opt-in encrypted已运行已解锁Secret Service，无fallback/start/unlock。",
+      "acceptance": "owned GNOME service真实roundtrip/lock/restart及两个UI owners；有界worker cancel/reap；不把vault当sandbox。",
+      "evidence": "packages/agent/src/xdog/agent/mcp/oauth_native_store.py; packages/agent/tests/test_oauth_native_store.py",
+      "history": "passes59,151,170; 非Linux实现见UI-045"
+    },
+    {
+      "id": "UI-030",
+      "status": "已完成",
+      "title": "扩展worker/hooks/tools/commands生命周期",
+      "scope": "trusted owned worker、live replacement/disposers、typed结果、shortcut/UI贡献和hook准入。",
+      "acceptance": "两宿主/真实children验证stale审批/schema/revision/failure withdrawal，无越权工具loop或终端写入。",
+      "evidence": "packages/agent/src/xdog/agent/extensions/api.py; packages/agent/tests/test_extension_hook_lifecycle.py",
+      "history": "passes16–18,38–47,87–91"
+    },
+    {
+      "id": "UI-031",
+      "status": "已完成",
+      "title": "现有扩展native自定义UI",
+      "scope": "typed forms/multiselect、inline/fullscreen/nested、row/column/scroll/layers/overlays及live render/focus。",
+      "acceptance": "两parent/child native hosts物理resize/cursor/paste/隐藏/复原/撤销证据；protected controls仍host-owned。",
+      "evidence": "packages/agent/src/xdog/agent/extensions/custom.py; packages/coding/tests/test_terminal_acceptance.py",
+      "history": "passes37,48–57,77–78,86,95,97"
+    },
+    {
+      "id": "UI-032",
+      "status": "已完成",
+      "title": "现有扩展editor/session/inspection/arguments",
+      "scope": "CAS editor、reviewed navigate/name、paged menus/tool inventory、model/usage、prefix/context argument callbacks。",
+      "acceptance": "真实两宿主/worker/socket证据，invocation owner与stale/cancel校验，不借parent数据或只靠native help。",
+      "evidence": "packages/agent/src/xdog/agent/extensions/api.py; packages/agent/src/xdog/agent/extensions/argument_completion.py",
+      "history": "passes41–44,80–81,98–100,122–133,140–144; suffix见UI-035"
+    },
+    {
+      "id": "UI-033",
+      "status": "已完成",
+      "title": "扩展provider和模型选择",
+      "scope": "session-owned callback providers/live add replace remove、parent/child route/effort/capabilities/persisted alias。",
+      "acceptance": "真实两宿主/children取消/partial errors/withdrawal/default route证据；无全局registry污染或暗中fallback。",
+      "evidence": "packages/agent/src/xdog/agent/extensions/providers.py; packages/agent/src/xdog/agent/extensions/provider_worker.py",
+      "history": "passes60–65,71–73,80–81; auth见UI-044"
+    },
+    {
+      "id": "UI-034",
+      "status": "已完成",
+      "title": "现有Coding RPC真实会话控制",
+      "scope": "canonical AgentSession lifecycle、EOF/abort/quit、typed image uploads、display sources、questions/forms/editor/navigation/child approvals。",
+      "acceptance": "实际CLI subprocess/slow或closed peer验证响应与取消；一个工具loop；独立capability negotiation，无Claw代替RPC证据。",
+      "evidence": "packages/coding/src/xdog/coding/modes/rpc; packages/coding/tests/test_rpc_transcript_cli.py",
+      "history": "passes134–148; 更广RPC见UI-038–042"
+    },
+    {
+      "id": "UI-035",
+      "status": "已完成",
+      "title": "扩展参数suffix/引号语义",
+      "scope": "补齐prefix/context callbacks以外的suffix、转义/引号和替换范围契约；沿用注册身份。",
+      "acceptance": "命名协议与两native宿主真实callback测试覆盖光标中间、suffix、引号、依赖后续参数、undo/取消；不执行command。",
+      "evidence": "packages/tui/src/xdog/tui/argument_completion.py; packages/tui/tests/test_argument_completion.py; packages/coding/tests/test_argument_completion_ui.py; /tmp/ui035-tests-final.log; /tmp/ui035-terminal-final.log",
+      "history": "passes129–133剩余argument interoperability；2026-10-10完整literal token替换/escaped whitespace/single quotes/interior whitespace/真实两host与Linux terminal已验证"
+    },
+    {
+      "id": "UI-036",
+      "status": "已完成",
+      "title": "扩展更广raw输入surface",
+      "scope": "补齐已有parent/selected-child key/paste外明确命名的输入surface与可协商事件；不能截获审批/host恢复控制。",
+      "acceptance": "发布surface支持矩阵并真实两宿主/worker/child验证每个新增surface、event type、撤销/焦点/resize与cancel；不赋予terminal writer。",
+      "evidence": "packages/agent/src/xdog/agent/extensions/terminal_input.py; docs/agent-ui-gap-plan.md; packages/coding/src/xdog/coding/modes/rpc/terminal.py; packages/coding/tests/test_rpc_parent_terminal.py; /tmp/ui036-parent-final.log; /tmp/ui036-parent-current.log; /tmp/ui036-dialog-final.log; /tmp/ui036-dialog-static.log; /tmp/ui036-lifecycle-final.log; /tmp/ui036-lifecycle-static.log; docs/agent-ui-input-surface-audit.md; /tmp/ui036-release-final.log; /tmp/ui036-release-terminal.log; packages/coding/tests/test_rpc_terminal_keymap.py; /tmp/ui036-keymap-final.log; /tmp/ui036-keymap-static.log; packages/coding/tests/test_rpc_physical_editing.py; /tmp/ui036-physical-edit-final.log; /tmp/ui036-physical-edit-static.log; /tmp/ui036-shortcuts-final.log; /tmp/ui036-shortcuts-static.log; packages/coding/tests/test_rpc_terminal_approval_revision.py; /tmp/ui036-approval-current.log; /tmp/ui036-approval-revision-static.log; /tmp/ui036-current-integrated-input.log; /tmp/ui036-release-current-verified.log; /tmp/ui036-release-native-physical-current-verified.log; /tmp/ui036-release-observer-physical-current.log; /tmp/ui036-handoff.md",
+      "history": "passes50–56后broader raw-key OPEN；2026-10-10 parent terminal_input RPC独立能力/owner/session/worker guard/edit-only data/approval/cancel wired, actual worker+CLI70 related and11 current pass; broader raw surface audit/final contract remains open；2026-10-10 authoritative cross-parent/child pending-dialog gate before and after RPC hook, unpublished broker admission verified;84 related tests pass, broader surface finite audit still open；2026-10-10 actual parent/child CLI hook quit/EOF/closed-output/deadline worker reaping verified;58 current related checks pass; broader surface acceptance audit remains open；2026-10-10 prompt release excluded before native hook/RPC editable data and transformed output; repeat retains phase; current127 plus6 physical checks pass; finite3-action input audit retains original raw scope；2026-10-10 actual configured RPC keymap used for parent/child input/result; remapped send/editor/save/extension keys refused and invalid key config fails closed for key data;90 related tests pass; finite remaining audit still required；2026-10-10 finite action2 physical Linux parent/child RPC editing data applied using shipped editor/interceptor, Unicode/repeat/release/held-cancel/safe recovery/termios verified;88 related no-skips, raw contract audit and final matrix remain；2026-10-10 parent/child RPC validates actual owned runtime shortcut inventory on input/result using native effective conflict/disable rules;60 related tests pass; upstream fetch unavailable, finite reference reconciliation remains open；2026-10-10 approval admission revision and manager identity snapshot fence parent/child RPC hook across approval opened-and-closed window;70 related checks pass; earlier mixed gate red retained, isolated keymap passes13; raw contract audit not closed；2026-10-10安全清理UI-038后current Linux native两宿主/shared stdin/editor/runtime worker/RPC parent-child/keymap/approval/physical editing整合178通过无skip(117.29s)，有限action3当前named合同证据；action1原始raw合同对照仍缺可用primary内容，不猜测闭合，仍待实现；2026-10-11verified Pi0.73.1 author source逐项surface matrix收敛，新增opt-in release observation不可变press、独立parent/child RPC+Claw协商、callback live registration/focus/revoke/cancel/no replay；当前单次264通过无skip含两native父/子物理及RPC，三finite action完成；不宣称upstream latest，final全scope gates独立保留。"
+    },
+    {
+      "id": "UI-037",
+      "status": "已完成",
+      "title": "扩展更广renderer/container契约",
+      "scope": "收敛historical arbitrary/richer renderer OPEN到命名的可组合frame/container/render生命周期契约，保留当前bounded安全模型。",
+      "acceptance": "逐一对应现有/缺失公开能力，补齐实际缺失项；两parent/child宿主对grapheme/cursor/layout/invalidate/nested/overlay/resize有真实证据，不仅helper。",
+      "evidence": "packages/agent/src/xdog/agent/extensions/custom.py; packages/agent/src/xdog/agent/extensions/api.py; docs/agent-ui-renderer-contract-audit.md; packages/tui/tests/test_renderer_contracts.py; packages/coding/tests/test_renderer_contracts_ui.py; /tmp/ui037/renderer-host-edges.log; /tmp/ui037/linux-terminal.log; /tmp/ui037/final-regression.log; /tmp/ui037/nested-rerun.log; /tmp/ui037/nested-diagnostic.log",
+      "history": "passes57,77,86,95,97之后richer renderer OPEN；2026-10-11有限公开renderer/container合同逐项收敛，修复styled grapheme wrap/clip/slice、cursor normalization/right padding；两native父/子12实际worker及16Linux物理路径通过。聚合1174pass/1Claw nested超时不得标全绿；无源码变化精确/文件8及诊断12重跑通过，未复现超时归UI-064最终triage，当前整体final gates仍未通过。"
+    },
+    {
+      "id": "UI-038",
+      "status": "已完成",
+      "title": "RPC canonical/binary转录导出",
+      "scope": "display source之外的canonical typed history与原始image/binary只读来源，明确redaction/授权边界。",
+      "acceptance": "真实CLI分块digest/长来源/二进制、owner/revision/abort/断线/slow peer/秘密过滤验证；无history replay或隐式资源读取。",
+      "evidence": "packages/coding/src/xdog/coding/core/canonical_source.py; packages/coding/src/xdog/coding/modes/rpc/children.py; packages/coding/tests/test_rpc_child_canonical.py; /tmp/ui038-child-verified.log; /tmp/ui038-child-verified-static.log; docs/agent-ui-rpc-canonical-audit.md; /tmp/ui038-hung-cleanup.json; /tmp/ui038-cleanup-current.log; /tmp/ui038-cleanup-integrated-current.log; /tmp/ui038-cleanup-static.log",
+      "history": "pass145 raw canonical/binary OPEN；2026-10-10 parent live/saved/branch/timeline canonical图像来源与接收端format隔离已实现验证；child canonical与完整scope证据仍待实现，不提前关闭；child_canonical独立能力/owner/epoch/withdrawal/实际CLI2MiB与slow-peer完成，158项验证通过；较早无界读取测试PID340375/peer340485仍活跃，未按用户要求中断，收尾验证仍保留；2026-10-10用户授权安全检查点确认Linux旧测试误读disabled capability后无界source_begin等待；normal quit原peer，旧pytest继续下一参数同根因挂起，SIGTERM只结束已确认历史pytest，第二自有peer normal quit，原handle73617退出143非通过。当前测试startup单一bounded byte reader、协商共享deadline/no-prefetch、两故障回归；64针对性及118整合通过，Ruff/七namespace strict mypy487通过；原PID与peer全部退出，named canonical/binary验收闭合，最终Linux/root gate仍UI-055/064"
+    },
+    {
+      "id": "UI-039",
+      "status": "已完成",
+      "title": "RPC瞬态与工具进度来源",
+      "scope": "独立命名live tool progress/瞬态UI事件来源，区分retained display与非持久事件。",
+      "acceptance": "真实CLI/children/current-owner序列与结束/撤销/断线测试；不能声称retained transcript重播全部瞬态artifact。",
+      "evidence": "packages/coding/src/xdog/coding/modes/rpc/events.py; packages/coding/src/xdog/coding/modes/rpc/children.py; packages/coding/tests/test_rpc_child_events.py; /tmp/ui039-child-final.log; /tmp/ui039-child-final-static.log; packages/coding/tests/test_rpc_contributions.py; /tmp/ui039-contributions-withdraw.log; packages/coding/tests/test_rpc_child_contributions.py; /tmp/ui039-cc-final.log; packages/coding/tests/test_rpc_transient_backpressure.py; /tmp/ui039-flood-final.log; /tmp/ui039-flood-status.log; /tmp/ui039-acceptance.log; /tmp/ui039-lifecycle-static.log; packages/coding/tests/test_rpc_custom_contribution_integration.py; /tmp/ui039-custom-integration.log; /tmp/ui039-final-rpc.log; /tmp/ui039-final-static.log; /tmp/ui039-final-source-after.json",
+      "history": "passes145–146 richer transient/tool-progress OPEN；2026-10-10独立parent transient_events/lease/sequence/有界progress与真实工具loop/CLI验证完成；child transient/custom artifact scope及完整final安全证据仍待实现；2026-10-10 child_transient_events独立协商、真实child工具progress/partial、原hook链/撤销generation与有界队列已实现验证；custom artifact合同及完整transport收尾仍待实现；2026-10-10 parent extension_contributions通知/status/widget/clear独立协商与scope/generation有界传输实现；撤销禁止legacy降级；child贡献和更广artifact/full transport仍待实现；2026-10-10 child_contributions bootstrap/turn notices/status/widget独立协商、有界队列/generation/close/真实worker+CLI验证；richer artifact/custom与完整slow-peer验收仍未闭合；2026-10-10 actual parent/child undrained flood quit/EOF/closed-peer verified; 1MiB transient backlog reserve, same-family loss markers/status counters implemented; richer artifact/custom contracts still open；2026-10-10全部14种AgentEvent具名投影/message lifecycle/tool-call cumulative/input receipts完成，188项current owner/transport/CLI验收通过；custom artifact实现以UI-042为唯一owner，UI-039保留其事件集成验收、不重复计需求；2026-10-10 actual parent/child custom callback contributions order/redaction/independent withdrawal/no-history verified; full frozen RPC/custom581 zero-skips closes explicit UI-039 transient integration scope, broader protocol UI-042 already completed; old run lifecycle UI-038/064 retained"
+    },
+    {
+      "id": "UI-040",
+      "status": "已完成",
+      "title": "remote父草稿API",
+      "scope": "父saved catalog/read/binary/two-phase save/discard及client-owned composer recovery；与子快照分开。",
+      "acceptance": "Coding真实RPC和适用Claw socket能力独立协商，digest-bound完整review、single-use、changed/nonempty composer拒绝、owner断线撤销；无模型/history/policy变更。",
+      "evidence": "packages/tui/src/xdog/tui/parent_drafts.py; packages/coding/src/xdog/coding/modes/rpc/children.py; packages/coding/src/xdog/coding/modes/rpc/parent_drafts.py; packages/coding/tests/test_rpc_parent_drafts.py; docs/agent-ui-remote-parent-drafts.md; packages/tui/src/xdog/tui/parent_draft_receiver.py; packages/tui/tests/test_parent_draft_receiver.py; packages/claw/src/xdog/claw/core/runtime/parent_draft_protocol.py; packages/claw/tests/test_parent_draft_gateway.py; packages/tui/src/xdog/tui/components/remote_parent_drafts.py; packages/coding/tests/test_remote_parent_terminal.py; packages/coding/tests/test_remote_parent_hash_changes.py; packages/coding/tests/test_rpc_parent_draft_terminal.py; packages/coding/tests/test_rpc_parent_draft_interlocks.py; /tmp/ui040-broad-host-final.log; /tmp/ui040-broad-host-final-selection.json; /tmp/ui040-broad-host-current-static.log",
+      "history": "passes185–193 remote parent APIs OPEN；2026-10-11 Coding RPC independent parent saved catalog/images/save/discard negotiation default-off，connection session/revision/generation envelope，4 receipts/30s/56MiB，exact typed review+client composer digest/singleuse prepare-confirm/shared private store，metadata catalog/binary begin-chunk-end actual bytes/hash read，withdraw/disconnect actual worker settlement；actual CLI zero-model graceful quit 与changed-nonempty-foreign/revision/bool-vs-int/binary negatives102 integrated pass无skip58.02s/root Ruff strict505 mypy clean/two coding artifact exact。客户端full-painted receiver/adoption gate、Claw socket counterpart、physical/failure matrix仍待，UI-040不关闭且server client self-report不是验证恢复；2026-10-11 client receiver original scope/generation/composer/catalog bound begin-chunk-end 及successful completion receipt、4pending/256ID/40MiB/30s、private spool/error-expire cleanup，image decode offloop/exact hash，immutable recovery full-painted digest review+oneuse across panels/cancel revoke/empty unchanged composer callback CAS实现；actual Coding RPC images与CLI reviewed recovery zero-model测试，final8file gate exit0、26focused pass1.81s/static506 clean/TUI-Coding builds receiver bytes exact。Claw socket/actual remote UI save-discard-review wiring/physical failure matrix仍待，UI-040不关闭；2026-10-11 Claw independent parent catalog/images ping negotiation connection owner/generation group-session-view/source revision original catalog hash read，4jobs/8views/256IDs，binary64KiB与共享receiver fullpaint验证，withdraw held filesystem reader响应且group reservation只actual cleanup后释放；80 integrated pass无skip6.24s/root Ruff strict507 mypy clean/two Claw artifact exact。save/discard明确0未宣告，actual remote UI/physical/failure矩阵仍待，UI-040不关闭；2026-10-11 Claw independent save/discard flag default-off及两phase prepare-confirm/review cancel实现，original connection/group-session-view/revision binding，4reviews/56MiB/30s exact typed JSON+composer digest/singleuse/private store owner-deadline recheck，text/image real socket no premature disk/foreign-changed-replay/boolean-vs-int/withdraw negatives；83 integrated pass无skip6.32s/Ruff strict507 mypy clean/two Claw wheel-sdist bytes exact。ordinary ChatApp integration/physical recovery-save-discard/expanded failure matrix仍待，UI-040保留待实现；2026-10-11 actual ChatApp /draft remote metadata-select/binary receiver/background finish/exact full review/local empty unchanged composer CAS恢复text-images接入，editor attachment revision抗ABA、focus/owner/reconnect/close/timeout撤销，held decode spool不提前关闭；本地generation stamp先host校验后排除wire decoder修正，真实UI6路径及2Linux physical remote文本图片full-review/resize/cursor/main-buffer/termios pass，91 integrated pass无skip8.96s/static508 clean/Claw-TUI artifacts two UI modules exact。remote save-discard full review/physical与expanded failure matrix仍待，UI-040不关闭；2026-10-11 actual ChatApp independent remote save/discard prepare/fullpaint exact composer/catalog image-meta check/confirmation/review cancel接入，保存不先发catalog修正reservation race，remote_save_draft可配置host快捷键保留unsent composer，保护remote panel/global hooks，physical Linux recovery-text/image+save+discard4paths full review/resize/cursor/main-buffer/termios通过；134 integrated pass无skip20.85s/static508 clean/four production modules Claw-TUI-Coding artifact exact。当前remote save 明确400KiB single-frame拒绝，full-size image upload与expanded failure matrix仍待，不作为scope waiver，UI-040保留；2026-10-11 Claw parent_saved_uploads independent chunked64KiB/partial-ready ACK/original group-session-view-revision-generation绑定/full hash typed image validation，256upload IDs/4096chunk IDs/10MiB-image/40MiB aggregate，serialized offloop worker+120s timers/withdraw-disconnect actual cleanup，refs singleuse进入exact save审核，撤回历史400KiB limit不扩gateway line；actual ChatApp1MiB及10MiB 边界精确disk bytes/unchanged composer，socket foreign-index-hash-withdraw-held cleanup与5physical Linux paths含large image保存验证，142 integrated pass无skip33.59s/static508 clean/three Claw artifact exact。expanded disk/transport/receipt loss failure matrix与最终验收仍待，UI-040不关闭；2026-10-11 failure red2证实upload ACK失败仍留ready引用及Coding queued save过期仍publish，ACK whole-delivery retire original refs/timer/nonreuse与RPC publication/unlink前deadline recheck修复；两server committed receipt loss保留disk effect/consume review/no rollback-no retry duplicate验证，146 integrated pass无skip34.82s含5physical与large upload边界/static508 clean/two Claw-Coding artifacts exact。finite剩余disk hash/delivery/cancel/retained lifecycle验收仍待，UI-040不关闭；2026-10-11 两remote controller prepared save/discard original-loop30s timers自动释放 private bytes，无需下个请求；confirm/cancel/withdraw/close取消timer，review response failed-cancel-timeout whole-delivery finally退休unknown receipt，已commit不回滚不重播；first red filter仅Claw记录后两controller 2pass与auto-expiry/withdraw检查，134 integrated pass无skip32.89s含5physical/fullsize upload，static508 clean/two controller Claw-Coding artifacts exact。finite hash-cancel-delivery验收仍待，UI-040不关闭；2026-10-11 两actual controllers16-path disk replacement old catalog/read/discard hash fence、begin-chunk-end failure/no adoptable receipt、disk-save error/no replay、cancel-before-step及held-save close repeated caller cancel actual thread/reservation/private-temp settlement验证；166 integrated pass 无skip34.31s/static508 clean，production未变不声称新build。剩余收敛4named：Claw UI-close in-flight per-view cancel实现、held client decode close/reconnect验证、Coding RPC physical receiver/error路径、final receipt/capacity integration。UI-040待实现保留，不重复count历史matrix；2026-10-11 原剩余item1 in-flight Claw per-view cancel实现：socket reader同步revoked group/session/view/generation并cancel matching jobs，后台await actual workers后退休reviews/catalog/uploads/timers，foreign/sibling隔离、256revoked/idempotent/close await；实际ChatApp held read关闭不断线 保留reservation直到cleanup且无late adopt/new view可读，held upload cancel/repeat精确释放验证；153 integrated pass无skip33.01s含5physical/fullsize/hash matrix/static508 clean/two Claw artifact exact。剩余item2 held decode close-reconnect/item3 Coding RPC physical/error/item4 final receipt-capacity reconciliation仍待，UI-040保留待实现；2026-10-11 原剩余item2 held client decode生命周期：ChatApp per-worker cancel事件，close/reconnect仅撤回delivery不关active spool，actual finish后close原receiver且不enqueue private恢复；quit defer until decode cleanup，实际socket3close-generation-handler-quit路径open→close/no adopt/history 验证，fixture未poll红2保留并更正同步；156 integrated pass无skip32.87s/static508 clean/ChatApp Claw artifact exact。剩余item3 Coding RPC physical/error与item4 final receipt-capacity整合仍待，UI-040不关闭；2026-10-11 remaining item3 Coding RPC physical shared receiver/fullpaint/editor前端真实 CLI消息验证text/image×recover-cancel-incomplete6路径、resize/cursor/main-buffer/termios+owned process cleanup，no prompt/model/permission/history变更；162 integrated pass无skip42.36s含ChatApp5physical 与controllers/hash/upload/receiver矩阵，Ruff strict508 mypy clean，production未变不声称new build。item1-3闭合，UI-040只剩item4 receipt/image-retention/source-final acceptance reconciliation，仍待实现；2026-10-11 receiver aggregate manifest budget红测试证实多pending可超40MiB，合计预算+host remaining callback/finish capacity recheck与ChatApp catalog-read/pre-review/adopt检查修复；实际read/adopt overflow保持composer/source、spool释放，166 integrated pass无skip42.96s含RPC6+ChatApp5 physical/fullsize/hash-cancel矩阵，Ruff strict508 mypy clean/two Claw-TUI artifact exact。item4当前源码逐条acceptance reconciliation尚未完成，UI-040不提前关闭；goal final full-root gates保留；2026-10-11 current source original acceptance matrix逐条核对：named parent APIs实现齐备，final reconciliation发现finish出pending提前释放decoder容量修复，decoding owner lock/aggregate retention/close signal直到finally，ChatApp repeated terminal read receipt一次处理保护原worker；167 current integrated pass无skip42.83s/focused59pass14.07s/root Ruff strict508 mypy clean/eight parent modules three artifacts byte exact。UI-040转待验证非完成；仍需broader current-source all-host RPC prompt-navigation-extension-approval 及Claw gateway-modal regressions核对，goal final frozen root/statics/distribution/example/UI049-064门槛保留；2026-10-11 source-final broader60file host gate833pass无skip432.13s，涵盖全部Coding RPC 及Claw gateway-input-image-navigation/TUI transport-modal/planning共享receiver-store-keymap；first broad 829pass1fail child transient normal startup交付同步真实fixture修正，原32capacity/limited/empty payload 断言保留，首次message_update误同步红记录；actual RPC set_model-thinking-compact三个red证明parent disk interlock遗漏修复及child terminal互斥，related12pass5.52s/Ruff strict508 mypy clean/updated RPC source wheel-sdist exact。结合原逐条matrix、CLI/socket与11physical parent路径UI-040命名验收完成→已完成。goal final frozen full-root/terminal/safety/static-artifact-example独立IDs仍待，不宣称goal完成"
+    },
+    {
+      "id": "UI-041",
+      "status": "已完成",
+      "title": "更广RPC扩展editor/host调用scope",
+      "scope": "现有command-only editor和有限inspection/navigation外，命名适用invocation scope；保留host-owned review。",
+      "acceptance": "每个适用scope有真实worker/CLI权限/lease/cancel/CAS与旧客户端拒绝测试；不借他人composer或擅自设置会话。",
+      "evidence": "packages/coding/src/xdog/coding/modes/rpc/extensions.py; packages/agent/src/xdog/agent/extensions/api.py; packages/coding/tests/test_rpc_extension_name.py; docs/agent-ui-rpc-host-scope-audit.md; packages/coding/tests/test_rpc_extension_catalog.py; packages/coding/tests/test_rpc_command_catalog.py; packages/coding/tests/test_rpc_extension_browser.py; packages/coding/tests/test_rpc_deferred_delivery.py; packages/coding/tests/test_rpc_host_generation.py; docs/agent-ui-command-menu-name-scope-audit.md; /tmp/ui-sidecar-20261011/editor-integrated.log; /tmp/ui-sidecar-20261011/menu-integrated.log; /tmp/ui-sidecar-20261011/name-final.log",
+      "history": "passes135,140–142 fuller remote editor/host APIs OPEN；2026-10-11 Coding RPC extension_session_name independent default-off能力、original command scope+actual broker review+callback success后deferred native rename、session/revision/expected_name CAS 与canonical text验证接入；真实worker apply-deny-fail-withdraw-name conflict-old client/foreign/cancel 及CLI持久化receipt/no model验证，110 integrated pass无skip80.81s含native两host名称与RPC editor-navigation atomicity，root Ruff strict508 mypy clean/two RPC module Coding artifacts exact。UI-041其他command-custom 工具hook-child editor与host scope原合同reconciliation仍待，不因name slice关闭需求；2026-10-11 RPC extension_session_catalog独立default-off，original command/scope/session revision/generation绑定的session-tree读取接入native paged catalog offloop settled worker，withdraw 返回unavailable不交付旧页；actual worker/CLI no model与53sessions 50+3分页/old revision成员变化/缺失 目标拒绝验证，initial summary解析红4及startup1fail记录，final66pass无skip70.82s含name-navigation-editor atomicity/root Ruff strict508 mypy clean/RPC extension Coding wheel-sdist exact。UI-041剩余editor invocation及其他host合同scope reconciliation仍待，不因catalog slice关闭；2026-10-11 RPC extension_command_catalog独立协商，actual client menu broker读取而非server猜测，original command/session/generation与wrong-session answer/withdraw fences，32entry schema pages与copy隔离；actual worker40 client-only entries/no callback execute与private CLI验证，73 integrated pass无skip79.30s/root Ruff strict508 mypy clean/RPC Coding artifact bytes exact。UI-041 broader editor invocation/native browser/child-headless scope reconciliation保留待实现；2026-10-11 independent host menu/catalog/name hello隐式撤销existing editor-navigation-dialog grants红3证明，delta negotiation保留unrelated flags/editor receipts、independent families互相保留，legacy批量omission撤销不改变，invalid mixed batch原子拒绝；75 integrated pass无skip77.63s/focused21pass9.60s/root Ruff strict508 mypy clean/RPC extension Coding artifact exact。remaining editor/browse/host invocation scope仍待，UI-041不关闭；2026-10-11 RPC extension_session_browser independent default-off，open_sessions command原scope/session/revision/generation deferred request只callback成功且result emission成功后发出，不自动激活/不声称client已绘制；name/navigation与browse单命令互斥，fail/cancel/withdraw-reenable/revision/result delivery拒绝，actual worker/CLI请求后metadata read no model验证；124 integrated pass无skip95.52s/final browser11pass15.84s/root Ruff strict508 mypy clean/modified RPC Coding artifact exact。UI-041 broader editor invocation及complete applicable scope reconciliation仍待；2026-10-11 actual worker红2证明command-result emit失败后仍启动deferred navigation/name，成功标记改到context cleanup/final snapshot/结果发送完成后，native RPC传入awaitable output.send并10s有界等待whole-line write，取消失败清理stale成功payload且不启动host动作；navigate-rename-browse held async delivery成功/失败/取消11focused pass16.39s，149 integrated pass无skip113.80s含actual CLI/output/permission/interlocks，root Ruff strict508 mypy clean/两个RPC Coding artifacts byte exact。更广editor/host invocation scope仍待，UI-041不关闭；2026-10-11 local editor/name/navigation awaited accepted reply增加effective grant generation，off-on旧回复不可恢复editor CAS或queue native mutation，checkpoint等待前后验证、same-state/unrelated grants不误撤销；actual worker accepted broker return held3cases thread-safe测试pass，initial跨loop asyncio.Event测试超时不作为red证明；139 integrated pass无skip116.45s/root Ruff strict508 mypy clean/RPC Coding artifact exact。primary reference抓取失败不推断新scope权限，broader editor invocation/reference与complete applicable scope仍待，UI-041保留待实现；2026-10-11原owner write-only editor broader tool/hook/custom-input提案+真实child composer租约、只读actual command menu scope、parent callback after-run name CAS全部按source对照补齐。editor330相关、menu108及name55(含两native物理4)通过，原旧client/headless/provider/render/foreign借用拒绝保留；UI-041有限合同完成。非任意scope授权，最终完整root/Linux/lifecycle仍UI049/055/056/064独立待验。"
+    },
+    {
+      "id": "UI-042",
+      "status": "已完成",
+      "title": "RPC自定义/子终端UI契约",
+      "scope": "明确适用远端typed custom/child UI能力与native-only renderer边界，补齐已有目标中适用的协议能力。",
+      "acceptance": "named capability/client-owned view协议有真实CLI/worker/child/withdrawal/cancel证据；Pi不支持的RPC terminal custom不宣称Pi兼容，也不能用native/gateway测试代替。",
+      "evidence": "packages/coding/src/xdog/coding/modes/rpc/extensions.py; docs/agent-ui-reference-baseline.md; packages/coding/tests/test_rpc_custom_views.py; /tmp/ui042-custom-current.log; /tmp/ui042-custom-static-fixed.log; /tmp/ui042-nested-verified.log; /tmp/ui042-nested-verified-static.log; packages/coding/tests/test_rpc_child_custom.py; /tmp/ui042-child-final.log; /tmp/ui042-child-final-static.log; packages/coding/tests/test_rpc_overlay.py; /tmp/ui042-overlay-current.log; /tmp/ui042-overlay-final-static.log; packages/coding/tests/test_rpc_child_overlay.py; /tmp/ui042-co-final.log; /tmp/ui042-co-final-static.log; packages/coding/tests/test_rpc_capability_atomicity.py; /tmp/ui042-atomic-final.log; /tmp/ui042-atomic-final-static.log; packages/coding/tests/test_rpc_custom_backpressure.py; /tmp/ui042-backpressure-final.log; /tmp/ui042-backpressure-current-static.log; /tmp/ui042-inflight-final.log; /tmp/ui042-inflight-final-types.log; /tmp/ui042-superseded-final.log; /tmp/ui042-superseded-final-static.log; packages/coding/tests/test_rpc_custom_keyboard.py; /tmp/ui042-keyboard-final.log; /tmp/ui042-keyboard-static.log; packages/coding/tests/test_rpc_custom_delivery.py; /tmp/ui042-delivery-final.log; /tmp/ui042-delivery-static.log; /tmp/ui042-overflow-final.log; /tmp/ui042-overflow-static.log; /tmp/ui042-output-final.log; /tmp/ui042-output-static-fixed.log; packages/coding/tests/test_rpc_child_terminal.py; /tmp/ui042-terminal-final.log; /tmp/ui042-terminal-final-static.log; /tmp/ui042-terminal-races-final.log; /tmp/ui042-terminal-races-static.log; docs/agent-ui-rpc-custom-contract-audit.md; packages/coding/tests/test_rpc_custom_refresh.py; packages/coding/tests/test_rpc_child_terminal_lifecycle.py; /tmp/ui042-current-contract.log; packages/coding/tests/test_rpc_structured_layout.py; /tmp/ui042-layout-integration.log; /tmp/ui042-layout-static.log; packages/coding/tests/test_rpc_physical_terminal.py; /tmp/ui042-physical-current-fixture.log; /tmp/ui042-physical-verified.log; /tmp/ui042-final-rpc.log; /tmp/ui042-final-static.log; /tmp/ui042-final-source-after.json",
+      "history": "passes134–146 combined custom/child-terminal OPEN；2026-10-10 parent command/prompt custom handler/frame/input/painted receipt独立协议实现，真实CLI+worker171项通过；child/nested/overlay/full client生命周期仍待实现验证；2026-10-10 parent nested custom/question/confirm owner admission-before-publication/fresh-frame恢复及cascade取消实现，实际CLI176项通过；child/overlay/full protocol scope仍未闭合；2026-10-10 child_custom_views独立协商、actual child worker/CLI帧与审批隔离/嵌套焦点/cancel/withdrawal实现，199项通过；overlay控制与完整client/transport验收仍待完成；2026-10-10 parent live overlay independent capability/control publication/input ownership/fresh geometry implemented; actual worker+CLI177 checks passed; child overlay and full transport/client acceptance remain open；2026-10-10 child_overlay_controls独立能力/hide/show/focus/hidden-input refusal/generation实现，实际worker与CLI独立tool approval104项通过；完整custom transport/client/terminal contract验收仍未闭合；2026-10-10 extension and cross-controller hello preflight stops mixed-invalid partial grants/revocations, actual CLI live frame preservation112 tests verified; full custom transport and remaining terminal/API contract still open；2026-10-10 actual Linux parent/child 120KiB custom frame prefix-only read/undrained quit/EOF/closed-output worker reaping verified; 68 related checks pass; complete custom client/terminal contracts remain unproven；2026-10-10 accepted input/resize synchronously invalidates parent/child delivered frame until fresh render; held-worker and child no-yield stale-input tests61 pass; initial testhandle38150 exited red without interruption; original340375/340485 remain live；2026-10-10 broker marks render superseded by later geometry generation; parent/child RPC filters obsolete frames before receipt cache/transport, held actual worker tests158 pass; complete acceptance remains open；2026-10-10 actual parent/child workers press-only/enhanced repeat/release and Unicode multiline atomic paste contracts verified, actual parent CLI same phases verified; 69 related checks pass, remaining full contract audit not closed；2026-10-10 parent/child cross-thread frame delivery bounded16 frames/2MiB; overflow cancels owned view;59 related tests verified; broader API/final acceptance remains open；2026-10-10 frame overflow now emits scoped generation-bound deduplicated capacity error, max8 pending notices; parent/child worker cancellation and stale replacement tests76 pass; full audit remains open；2026-10-10 parent/child frame cache published only after output admission; OSError cancels actual view without cached grant;64 related checks pass; remaining full contract audit open；2026-10-10 independently negotiated child_terminal_input actual hook transform/paste/consume/cancel/refusal, registry/lease/worker generation and unpainted approval gate implemented; real CLI110 tests pass; full contract audit pending；2026-10-10 terminal pre-admission cancel emits one captured-owner receipt with zero callbacks; approval admitted after hook return rejects transformed data without retry;127 related checks pass；2026-10-10 finite contract audit: implementations present; actual repaint/terminal disconnect and authoritative approval isolation verified, current221/no-skips; remaining structured RPC integration, physical Linux RPC terminal and final matrix verification explicit, not waived；2026-10-10 finite action1 verified parent/child layout inline/full/overlay, viewport/layer/Unicode/narrow/cursor/nested focus; fixed real ZWJ sanitizer widening; physical Linux RPC terminal/action2 and final matrix/action3 pending；2026-10-10 finite action2 actual Linux owned RPC terminal parent/child layout Unicode/layers/resize/nested/tool approval/termios/main-buffer verified; action3 final integrated closure pending；2026-10-10 actions1–3全已验证：公开注册/路由及finite matrix audit, frozen full RPC+custom broker579/no-skips; prior generic complete-client/terminal OPEN superseded; arbitrary vendor clients/Pi wire/native nonLinux not claimed; old invocation lifecycle remains UI-038/064"
+    },
+    {
+      "id": "UI-043",
+      "status": "已完成",
+      "title": "剩余扩展host控制API",
+      "scope": "命名现有只读inventory/inspection之外适用的active-tool选择、会话生命周期/compaction/消息与队列控制；先对照公共exports。",
+      "acceptance": "记录每项原需求到公开契约的对应；已实现部分不重写；缺失部分通过真实两host/children/headless适用scope验证权限向下、idle/revision/confirmation与失败回滚。",
+      "evidence": "packages/agent/src/xdog/agent/extensions/api.py; packages/agent/src/xdog/agent/extensions/compaction.py; packages/agent/tests/test_active_tool_selection.py; docs/agent-ui-extension-host-controls.md; packages/agent/src/xdog/agent/extensions/active_tools.py; packages/coding/tests/test_rpc_active_tools.py; packages/coding/tests/test_active_tool_selection_ui.py; packages/coding/tests/test_active_tool_selection_terminal.py; packages/claw/tests/test_active_tool_selection_ui.py; packages/coding/tests/test_claw_active_tools_terminal.py; packages/coding/tests/test_child_active_tools.py; packages/coding/tests/test_active_tool_persistence.py; packages/coding/tests/test_active_tool_persistence_ownership.py; /tmp/ui043-durable-integrated.log; packages/claw/tests/test_active_tool_persistence.py; packages/claw/tests/test_active_tool_persistence_ownership.py; packages/claw/tests/test_compaction_tool_selection.py; /tmp/ui043-claw-durable-final-integrated.log; packages/agent/tests/test_extension_tool_inventory.py; packages/coding/tests/test_active_tool_retirement.py; packages/coding/tests/test_tools_browser.py; packages/tui/tests/test_tool_inventory_panel.py; /tmp/ui043-inventory-retirement-integrated.log; packages/coding/tests/test_rpc_compaction.py; /tmp/ui043-rpc-compaction-integrated.log; /tmp/ui043-host-exports.json; packages/agent/tests/test_extension_compaction_request.py; packages/coding/tests/test_rpc_extension_compaction.py; packages/coding/tests/test_extension_compaction_ui.py; packages/claw/tests/test_extension_compaction_ui.py; packages/claw/tests/test_extension_compaction_admission.py; packages/coding/tests/test_extension_compaction_terminal.py; /tmp/ui043-request-compaction-current-final.log; docs/agent-ui-queued-input-audit.md; docs/agent-ui-after-run-compaction-audit.md; docs/agent-ui-active-tools-after-run-audit.md; docs/agent-ui-context-message-audit.md; docs/agent-ui-idle-message-images-audit.md; /tmp/ui043-queued-current-integrated.log; /tmp/ui043-after-compact-acceptance-current.log; /tmp/ui043-active-tools-integrated.log; /tmp/ui043-idle-images-frozen.log; docs/agent-ui-custom-delivery-contract.md; /tmp/ui-custom-delivery-stage/root-integration-tests.log; /tmp/ui-custom-delivery-stage/root-continuation-isolation.log; /tmp/ui043-physical-custom-final.log; /tmp/claw-custom-grants-repaired.log",
+      "history": "original extension active-tool/host API OPEN；不能扩成无限未知API；2026-10-11 host-owned Agent active_tools/set_active_tools expected_revision idle CAS foundation，configured inventory独立、explicit subset across extension refresh不扩大/removal retire/default None/empty disable，同一agent loop model definitions与execution lookup使用active selection，parallel-sequential unselected拒绝且selected 仍经permission hook/no-tool model保留；real ExtensionRuntime unload-reload sync与host inventory regressions102pass无skip 43.38s/Ruff strict508 mypy clean/Agent wheel-sdist exact。尚未extension review/native hosts/child-headless/persistence 接入或宣告，原host lifecycle/compaction/message/queue范围保留，UI-043待实现；2026-10-11 ExtensionAPI command-owned get_active_tools/set_active_tools与bounded session vocabulary 及Coding RPC independent extension_active_tools explicit review后callback+result delivery成功才Agent idle revision-CAS 应用接入，native mutation/browser互斥/foreign-unsupported-withdraw-changed拒绝，无权限改变。apply红1证实unchanged extension tool wrappers重建导致revision误失效，cache only same spec+client且current registration校验修复，stale executor/reload否定测试保留；actual worker/CLI empty-selection独立receipt与tool/headless unavailable验证，158 integrated pass无skip105.50s/root Ruff strict509 mypy clean/five source modules Agent-Coding artifacts exact。native两UI/Claw socket/child-headless-persistence-description与其他host lifecycle-compaction-message-queue仍待，UI-043不关闭；2026-10-11 Coding native active_tools read/select_tools full-painted boolean review+actual broker accepted→callback success后Agent idle CAS接入，original command/extension/view/revision/permission-child guards，configured/history/composer不变，system prompt definitions使用active_tools；Claw暂未接入明确unavailable防unknown operation落入browser分支。actual UI apply-deny-fail-cancel-changed-expired及Coding2physical fullpaint/resize/cursor mainbuffer/termios/no-model验证，90 integrated pass无skip81.15s/Ruff strict509 mypy clean/five modules all-four package artifacts exact。Claw/child/persistence/reporting及其他host API仍待，UI-043不关闭；2026-10-11 Claw independent extension_active_tools socket/native完整boolean review，original reserved command host snapshot与group-session-source revision-Agent-capability guards，callback成功registration sync后 Agent CAS应用并separate applied结果（Claw在command reservation内先应用再返回，lost receipt不回滚/重播），撤销只匹配本connection dialog、held approved callback withdrawal不应用，prompt descriptions过滤active tools；actual UI及Claw2physical fullpaint/cancel/resize/cursor/mainbuffer/termios，completion status moved after long output 修复可见性，114 integrated pass无skip92.61s/root Ruff strict509 mypy clean/four Claw artifact exact。child/persistence/reporting及其他原host lifecycle/compaction/message/queue API仍待，UI-043不关闭；2026-10-11 Agent active_tool_selection区分explicit/default；Coding/Claw child admission capture parent active definitions+ceiling，expanded profile启动前拒绝，effective child spec/initial/start/context-input-pre-post sync保持captured上限，后续parent扩展和child dynamic registration不重开excluded工具；empty/current_time实际child 模型请求filesystem不执行，toolmock live registration保持subset、finish释放captured limits验证，173 integrated pass无skip91.92s/Ruff strict509 mypy clean/three production modules Agent-Coding-Claw artifacts exact。persistence/reporting/child-direct-selection scope及原lifecycle-compaction-message-queue host controls仍待，UI-043不关闭；2026-10-11 Coding active_tools null/default与empty/subset持久化、初始化前安全mask/真实extension库存后恢复、new/switch/branch/checkpoint/compaction recovery-return独立选择接入；Agent dry validation含producer cleanup、save-before-publish与fsync后replace前owner/CAS guard，native owned command worker及RPC offloop busy owner保留至disk settle，cancel/withdraw/close/save failure不误应用，已commit cancellation据实receipt不回滚重播；21file208pass无skip143.27s含Coding2physical/真实worker恢复及相关session-staging-navigation-child-RPC gates，root Ruff strict509 mypy clean/5module Agent-Coding wheel-sdist exact。文档current remaining明确归并退休旧Coding persistence缺失描述，Claw persistence/reporting/remaining applicable host APIs仍待，UI-043不关闭，final frozen root与Linux gates不替代；2026-10-11 Claw private tools sidecar null/default-empty/subset与restart/native new-resume-fork-goto-branch/compaction recovery-return scope接入，staged target读取正确选择，journal纳入session/branch选择并13 managed-write crash recovery验证，SDK branch restore先journal commit再publish；native selection offloop held group/child owner、replace前session-Agent-revision-capability-cancel guard与cancel/withdraw/disconnect/postcommit settlement验证。发现silent compaction FlushRunner绕过parent active selection、empty/current_time实际写测试文件红2，filtered guarded tools修复model/executor availability且默认工具/原permission hooks保留。final23file164pass无skip含四physical selectors/child/navigation/storage回归，root Ruff strict509 mypy clean/six Claw production artifacts exact。两host durability实现不再按历史缺失重复计数；active-configured reporting/库存变动后的持久化一致性及其他原host APIs仍待，UI-043不关闭，final frozen root与Linux gates不替代；2026-10-11 invocation/native inventory新增active names-explicit/default-selection revision并与model API gate分离，fingerprint/pages/cache含selection变更，legacy envelope仍valid且显示unknown不猜测enabled，Claw旧read保持exact旧schema、新read opt-in include_selection，native两/tools逐项selected/excluded及query/export/owner约束验证。真实unload红2证实两host已缩小live却留下broader disk，extension command/init/input-context-pre-post/turn及MCP连接/forget路径await strict-subset-only offloop retirement，storage failure保持live restriction+报错/下次turn前重试、cancel等待真实settle、prepared target只持久化available names。真实tool自我dispose在next model step前disk已缩小，real MCP断开重连不重新选择/不调用工具。final24file262pass无skip179.12s含四physical selectors/tools-browser、child-headless/callbackcache/storage/MCP/navigation/journal，root Ruff strict509 mypy clean/ten生产modules all-four wheel-sdist byte exact。inventory及已确认生命周期retirement从current remaining归并退休，其他原host public API与applicable invocation scope仍待，UI-043不关闭、final frozen root/Linux gates不替代；2026-10-11 current46 public ExtensionAPI exports核对并矩阵区分已存在navigation/metadata/tools/hooks与仍缺extension compaction request和message-queue控制；primary fetch无正文不推断latest/signature或缩范围。真实canonical summary挂起时RPC status不可读红1，legacy compact改经已有RpcNavigation owned async compact action，显式session_control compact支持原owner/revision/instructions，status/abort/quit/EOF reader响应与SDK真实cleanup/已admit disk commit settle-before-release，changed-state canceled receipt不伪称rollback；invalid/foreign/reused/未admit取消拒绝且无replay。final12file191pass无skip123.27s含4实际RPC CLI与4Linux physical compaction paths、storage/draft/navigation/extension receipt/lifecycle，root Ruff strict509 mypy clean/two RPC Coding artifact byte exact。原extension请求与消息队列surface仍缺且待实现，UI-043不关闭，此native prerequisite非最终root/Linux gate；2026-10-11 ExtensionAPI.request_compaction canonical bounded instructions与full-painted false-default parent command review接入Coding native/RPC、Claw native/socket，actual broker accepted+callback success后canonical compaction，RPC等完整command-result delivery，Claw server queued receipt+cap generation至native dispatch再校验；literal cancel为instructions不误执行cancel，callback/delivery failure与withdraw-reenable/late dispatch不自动执行，tool/headless无parent owner返回False，原permissions/child scopes/drafts不变。真实同batch compact+revoke red1发现coroutine未admit丢receipt，pending cancel marker让job发唯一cancel结果；保留原重复explicit cancel及before-summary文案，intermediate3fail未删弱测试而修正。final21file283pass无skip219.29s含4physical native及real RPC CLI/capability/late admission/canonical/name-nav回归，root Ruff strict509 mypy clean/9 production modules all-four package artifacts exact。当前matrix归并退休缺parent compaction request旧描述；message-queue及适用invocation scope仍待，UI-043不关闭，final complete-root/Linux gates不替代；2026-10-11parent/child原run reviewed steer/follow_up typedimages+live pendingbool/canonical child journal，idle typedimage-only message/review/transport，after-run compact与active-tools持久CAS，canonical custom nextTurn队列/opaque details/summary均有命名片段证据。UI-043仍待实现：pinned Pi明确canonical CUSTOM steer/follow_up和idle nontrigger/triggerTurn语义不等于user-message或nextTurn API，未删减；由隔离staging副本实现验证后才可合并，本轮计数仍单一UI-043。；2026-10-11最后已确认custom原合同在isolated staging实现后3way合并，canonical custom active steer/follow_up及idle nontrigger/trigger使用原Agent队列/continue，无fakeUSER/第二loop；旧nextTurn/watermark保持。修复active original-loop admission、RPC family/collision、Claw无user continuation response offset；main105及RPC54、两native物理12、真实Claw grant24通过。所有命名本地适用合同已有对应实现/范围证据；UI-043本地合同完成，最终current-source完整root/terminal/security gates仍UI049/055/056/064独立待验，未称goal complete。"
+    },
+    {
+      "id": "UI-044",
+      "status": "已完成",
+      "title": "provider认证与注册互操作契约",
+      "scope": "现有callback provider以外已识别的auth/registration、binary/error/capability合同，秘密与模型路由分离。",
+      "acceptance": "列出原audited methods/缺失能力并补齐；真实owned adapter/worker/两host验证secret-free catalog、cancel/withdrawal/persisted alias/no fallback；外部live服务见UI-052。",
+      "evidence": "packages/agent/src/xdog/agent/extensions/providers.py; packages/agent/src/xdog/agent/extensions/provider_worker.py; docs/agent-ui-provider-auth-audit.md; /tmp/ui044-provider-acceptance.log; /tmp/ui044-terminal-acceptance.log; /tmp/ui044-source-final.json; /tmp/ui044-oauth-provider-regression.log; /tmp/ui044-both-hosts-integrated.log; /tmp/ui044-claw-auth-final.log; /tmp/ui044-host-handoff-static.log; docs/agent-ui-claw-host-delivery-audit.md",
+      "history": "passes60–65后broader provider/auth OPEN；2026-10-11私有worker env/resolver auth binding、cancel、metadata/binary admission及registration cleanup150本地验收通过；不代表Pi OAuth login/refresh等原适用合同已收敛，待最终scope reconciliation；UI-052 live外部保留。；2026-10-11primary Pi OAuth原合同确认后补齐private login/on_auth/on_prompt/refresh/get_api_key/modify_models、expiry与encrypted native save/restore/forget；worker+旧provider211通过，本地两host/RPC/native auth100通过，Claw unstarted withdraw同buffer receipt真实red后修复最终18通过含cold物理。只读catalog/alias无secret无fallback，/login仅既有明确review菜单alias。UI-044命名本地合同完成，非liveprovider及额外外部vault/部署证据分别UI050/052/057保留；final全root/UI安全gate不替代。"
+    },
+    {
+      "id": "UI-045",
+      "status": "已完成",
+      "title": "非Linux原生凭据后端实现",
+      "scope": "历史macOS Keychain/Windows native credential storage的实现需求，不与原生验证延期混淆。",
+      "acceptance": "显式后端selection、review/cancel/receipt/secret redaction/no plaintext fallback的实现与可在Linux运行的合同测试；原生执行UI-062延期、不为验证扩展实现。",
+      "evidence": "packages/agent/src/xdog/agent/mcp/oauth_native_store.py; docs/agent-ui-completion-audit.md; packages/agent/src/xdog/agent/mcp/native_platform_worker.py; packages/agent/tests/test_oauth_platform_contract.py; packages/coding/tests/test_platform_credential_ui.py; docs/agent-ui-native-credential-audit.md; /tmp/ui045-final-integrated.log; /tmp/ui045-final-static.log; /tmp/ui045-source-receipt.json",
+      "history": "passes104,151 native storage implementation OPEN；仅验证延期；2026-10-11显式keychain/windows-credential配置与existing single-use审核接入；Security.framework noninteractive generic password与WinCred bounded chunks/manifest/mutex完整64KiB实现，namespace/resource哈希且helper stdin-only/no file fallback；Linux owned helper/ABI/manager/两actual host UI合同66通过无skip18.58s,七namespace static488 clean,三production模块wheel/sdist核对；非Linux native执行未验证且UI-062继续延期，非primary最新API conformance声明"
+    },
+    {
+      "id": "UI-046",
+      "status": "已完成",
+      "title": "消费/history准入崩溃边界",
+      "scope": "flush前history/handled admission与queue snapshot之间仍有不确定窗口，历史atomic consumption/history要求单列。",
+      "acceptance": "实现明确持久admission/settlement协议；owned Linux SIGKILL在各边界验证receipt/history/queue一致或明确uncertain、阻止自动replay；不宣称外部tool exact-once。",
+      "evidence": "packages/agent/tests/test_child_input_journal.py; packages/agent/src/xdog/agent/agent.py; packages/agent/tests/test_child_admission_checkpoint.py; packages/agent/src/xdog/agent/supervision_store.py; packages/coding/tests/test_child_image_admission.py; docs/agent-ui-input-admission-audit.md; /tmp/ui046-current-source-final.log; /tmp/ui046-complete-static.log; /tmp/ui046-current-artifacts.log; /tmp/ui046-current-source.json",
+      "history": "passes164–172 atomic consumption/history OPEN；2026-10-10prospective typed history/handled feedback checkpoint before visible receipt, independent awaited queue settlement; atomic admission sidecar/base SHA256 identity and terminal precedence; initial admission too, failed/canceled writes retain uncertain state. Actual Linux SIGKILL六边界×transform(image)/handled, real两host工厂持久化/取消, runtime/RPC安全229通过无skip(70.23s),静态487 clean及五模块wheel/sdist字节核对；Claw cancel/storage guard实际race修复且原测试不削弱；无external tool exactly-once/physical power-loss声明"
+    },
+    {
+      "id": "UI-047",
+      "status": "已完成",
+      "title": "草稿debounce/inflight崩溃窗口",
+      "scope": "父/子自动保存未到debounce/已启动未receipt/修改期间崩溃的恢复与可见durability边界。",
+      "acceptance": "补齐可识别pending/committed状态和必要防丢实现；owned SIGKILL矩阵验证最新committed快照/旧snapshot/uncertain标签；不把completed-write证据当逐键或物理掉电保证。",
+      "evidence": "packages/tui/tests/test_child_draft_autosave.py; packages/tui/src/xdog/tui/parent_drafts.py; packages/tui/tests/test_draft_crash_windows.py; packages/coding/tests/test_draft_durability_terminal.py; packages/coding/tests/test_saved_child_drafts.py; docs/agent-ui-draft-crash-audit.md; /tmp/ui047-complete-current.log; /tmp/ui047-complete-static.log; /tmp/ui047-source-receipt.json",
+      "history": "passes181–193 debounce/inflight crash OPEN；2026-10-10两native hosts父子pending/writing/committed/uncertain状态按latest observed+polled receipt呈现,旧write期间编辑不误报; owned Linux父子五窗口SIGKILL旧/new完整快照且explicit uncertain/no replay; initial link publication private alias仅安全只读恢复+reviewed discard,非任意hardlink fallback; physical Claw first-run offline目录缺失修复(owned0700/pinned nofollow/fsync,不chmod已有路径),physical两宿主resize/cursor/main-buffer/termios,170整合通过无skip14.46s,静态487 clean和六模块artifact字节验证；不逐键/physical loss保证"
+    },
+    {
+      "id": "UI-048",
+      "status": "已完成",
+      "title": "MCP剩余协商client能力",
+      "scope": "现有transport/catalog/watch/OAuth之外原审计中适用的current protocol client-capability协商与older-peer边界。",
+      "acceptance": "从baseline和实际注册列出named capability matrix并补齐缺失能力；owned stdio/HTTP/两host验证协商/withdrawal/cancel/no replay，未支持不可静默宣称支持。",
+      "evidence": "packages/agent/src/xdog/agent/mcp; packages/agent/tests/test_mcp_official_sdk.py; docs/agent-ui-mcp-client-capability-audit.md; packages/agent/src/xdog/agent/mcp/client_capabilities.py; packages/agent/tests/test_mcp_client_capability_contract.py; /tmp/ui048-current-integrated.log; /tmp/ui048-current-static.log; /tmp/ui048-source-receipt.json; packages/agent/tests/test_mcp_roots.py; packages/coding/tests/test_mcp_root_hosts.py; /tmp/ui048-roots-current-integrated.log; /tmp/ui048-roots-final-static.log; /tmp/ui048-roots-source.json; /tmp/ui048-dynamic-roots-integrated.log; /tmp/ui048-dynamic-roots-final-static.log; /tmp/ui048-dynamic-source.json; packages/tui/src/xdog/tui/components/mcp_roots_panel.py; packages/coding/tests/test_mcp_roots_review_ui.py; /tmp/ui048-roots-ui-integrated.log; /tmp/ui048-roots-ui-complete-static.log; /tmp/ui048-roots-ui-source.json; packages/claw/tests/test_mcp_roots_gateway.py; packages/coding/tests/test_mcp_roots_terminal.py; /tmp/ui048-claw-roots-integrated.log; /tmp/ui048-claw-roots-complete-static.log; /tmp/ui048-claw-roots-source.json; /tmp/ui048-roots-hardened-integrated.log; /tmp/ui048-roots-hardened-static.log; /tmp/ui048-roots-hardened-source.json; packages/agent/src/xdog/agent/mcp/reverse_requests.py; packages/agent/tests/test_mcp_reverse_requests.py; /tmp/ui048-reverse-current-integrated-final.log; /tmp/ui048-reverse-complete-static.log; /tmp/ui048-reverse-source.json; packages/agent/src/xdog/agent/mcp/sampling.py; packages/agent/tests/test_mcp_sampling.py; /tmp/ui048-sampling-current-integrated.log; /tmp/ui048-sampling-final-static.log; /tmp/ui048-sampling-source.json; packages/agent/src/xdog/agent/mcp/sampling_owner.py; packages/agent/tests/test_mcp_sampling_owner.py; /tmp/ui048-sampling-consent-current-final.log; /tmp/ui048-sampling-consent-final-static.log; /tmp/ui048-sampling-consent-source.json; packages/agent/src/xdog/agent/mcp/sampling_executor.py; packages/agent/tests/test_mcp_sampling_executor.py; /tmp/ui048-executor-integrated.log; /tmp/ui048-executor-final-static.log; /tmp/ui048-executor-source.json; packages/agent/tests/test_mcp_sampling_registration.py; /tmp/ui048-registration-integrated.log; /tmp/ui048-registration-final-static.log; /tmp/ui048-registration-source.json; packages/tui/src/xdog/tui/components/mcp_sampling_panel.py; packages/tui/tests/test_mcp_sampling_panel.py; /tmp/ui048-sampling-panel-integrated.log; /tmp/ui048-sampling-panel-final-static.log; /tmp/ui048-sampling-panel-source.json; packages/coding/tests/test_mcp_sampling_ui.py; packages/coding/tests/test_mcp_sampling_terminal.py; /tmp/ui048-coding-sampling-integrated.log; /tmp/ui048-coding-sampling-complete-static.log; /tmp/ui048-coding-sampling-source.json; packages/claw/src/xdog/claw/core/runtime/sampling_protocol.py; packages/claw/tests/test_mcp_sampling_gateway.py; packages/coding/tests/test_claw_sampling_terminal.py; /tmp/ui048-claw-sampling-integrated.log; /tmp/ui048-claw-sampling-final-current-static.log; /tmp/ui048-claw-sampling-source.json; packages/coding/tests/test_mcp_sampling_catalog.py; /tmp/ui048-catalog-current-final.log; /tmp/ui048-catalog-complete-static.log; /tmp/ui048-catalog-source.json; /tmp/ui048-content-integrated.log; /tmp/ui048-content-final-static.log; /tmp/ui048-content-source.json; /tmp/ui048-context-integrated.log; /tmp/ui048-context-final-static.log; /tmp/ui048-context-source.json; packages/agent/src/xdog/agent/mcp/sampling_context.py; packages/agent/tests/test_mcp_sampling_context.py; packages/coding/tests/test_mcp_sampling_context_hosts.py; packages/coding/tests/test_mcp_context_terminal.py; /tmp/ui048-host-context-integrated.log; /tmp/ui048-host-context-complete-static.log; /tmp/ui048-host-context-source.json; packages/agent/src/xdog/agent/mcp/elicitation.py; packages/agent/tests/test_mcp_elicitation.py; /tmp/ui048-elicitation-integrated.log; /tmp/ui048-elicitation-final-static.log; /tmp/ui048-elicitation-source.json; packages/agent/src/xdog/agent/mcp/elicitation_owner.py; packages/agent/tests/test_mcp_elicitation_owner.py; packages/agent/tests/test_mcp_elicitation_registration.py; /tmp/ui048-elicitation-registration-current-final.log; /tmp/ui048-elicitation-registration-final-static.log; /tmp/ui048-elicitation-registration-source.json; packages/tui/src/xdog/tui/components/mcp_elicitation_panel.py; packages/tui/tests/test_mcp_elicitation_panel.py; /tmp/ui048-elicitation-panel-integrated.log; /tmp/ui048-elicitation-panel-final-static.log; /tmp/ui048-elicitation-panel-source.json; packages/coding/tests/test_mcp_elicitation_ui.py; packages/coding/tests/test_mcp_elicitation_terminal.py; /tmp/ui048-coding-elicitation-integrated.log; /tmp/ui048-coding-elicitation-final-static.log; /tmp/ui048-coding-elicitation-source.json; packages/claw/src/xdog/claw/core/runtime/elicitation_protocol.py; packages/claw/tests/test_mcp_elicitation_gateway.py; packages/coding/tests/test_claw_elicitation_terminal.py; /tmp/ui048-claw-elicitation-integrated.log; /tmp/ui048-claw-elicitation-current-static.log; /tmp/ui048-claw-elicitation-source.json; packages/coding/tests/test_mcp_elicitation_recovery.py; /tmp/ui048-recovery-integrated.log; /tmp/ui048-recovery-final-static.log; /tmp/ui048-recovery-source.json; packages/agent/tests/test_mcp_elicitation_completion.py; /tmp/ui048-url-integrated-final.log; /tmp/ui048-url-current-final-static.log; /tmp/ui048-url-source.json; packages/tui/src/xdog/tui/url_open.py; packages/tui/tests/test_url_open.py; /tmp/ui048-open-physical-integrated.log; /tmp/ui048-open-physical-static.log; /tmp/ui048-open-source.json; packages/agent/tests/test_mcp_task_boundary.py; /tmp/ui048-task-integrated.log; /tmp/ui048-task-final-static.log; /tmp/ui048-task-source.json; packages/agent/src/xdog/agent/mcp/task_registry.py; packages/agent/tests/test_mcp_task_registry.py; /tmp/ui048-task-registry-integrated.log; /tmp/ui048-task-registry-final-static.log; /tmp/ui048-task-registry-source.json; packages/agent/tests/test_mcp_task_controls.py; packages/agent/tests/test_mcp_task_creation.py; packages/coding/tests/test_mcp_task_hosts.py; packages/coding/tests/test_mcp_task_terminal.py; packages/agent/tests/test_mcp_task_notifications.py; packages/agent/tests/test_mcp_task_official_contract.py; docs/agent-ui-mcp-task-contract.md; /tmp/ui048-negotiation-final-integrated.log; /tmp/ui048-negotiation-production-snapshot.json; /tmp/ui048-negotiation-final-static.log; packages/ai/tests/test_responses_tool_images.py; /tmp/ui048-responses-images-current.log; packages/coding/tests/test_mcp_modern_browser_ui.py; docs/agent-ui-modern-browser-audit.md; /tmp/ui048-browser/cold-regression.log; /tmp/ui048-browser/cold-final-extra.log; /tmp/ui048-browser/final-static.log; packages/claw/tests/test_mcp_browser_owner.py; packages/coding/tests/test_mcp_modern_browser_terminal.py",
+      "history": "passes68,93,96 remaining negotiated capabilities OPEN；2026-10-11local pinned SDK2.3.1 concrete六family矩阵核对；shared honest wire capability snapshot/public inventory及strict bounded legacy reverse responder，actual stdio/no borrowed capability/HTTP negative合同+SDK/两host整合78通过无skip34.78s,static489 clean/four artifacts exact；refusal不等价实现，roots/sampling/elicitation及task applicability保留有限矩阵，UI-048仍待实现；2026-10-11明确配置roots静态metadata legacy stdio/HTTP反向合同已实现,URI bounded/no cwd/file authority,现代不借legacy capability,连接失败/断开撤销与transport复用reset；actual两host/owned transports/SDK103通过无skip36.20s,static489 clean/five wheel-sdist exact；dynamic reviewed roots/listChanged/modern counterpart与sampling/elicitation/task仍有限矩阵保留，UI-048待实现不变；2026-10-11dynamic roots manager prepare/commit/cancel连接/view/revision/expiry/single-use及configured ceiling实现,empty withdrawal/listChanged通知/通知inflight仲裁,真实stdio/HTTP及cancel/no replay整合110通过无skip36.79s,static489 clean/两模块artifact核对；native dynamic reviewed UI/Claw wiring仍待实现，不用SDK协议代替native验收，UI-048不关闭；2026-10-11Coding actual root JSON form/full-page immutable painted focused press single-use review/idle session/close detach接入真实legacy peer；shared Claw UI failclosed未支持不fallthrough prompt。115整合通过无skip32.14s，static490 clean/six modules artifacts exact；Claw dynamic独立协商transport/UI与physical两host、modern/sampling/elicitation/task仍待，UI-048不提前关闭；2026-10-11Claw独立mcp_roots协商/socket connection/view/session/source revision/idle bounded jobs/IDs single-use/current manager接入shared painted review，foreign/withdraw/disconnect/inflight cancel reader验证，真实两native Linux tmux full review/resize/parent cursor/main-buffer/termios，current122通过无skip36.90s,static490 clean/two Claw artifact exact；legacy roots子合同闭合，modern/sampling/elicitation/task仍UI-048待实现不缩减；2026-10-11roots审核inspection copy不改变private painted snapshot，notice/server/root bounded controls与long Unicode尾部全页验证；Claw admission-ID容量满后仍可cancel/detach original connection/view但不放行prepare/commit；current134 pass无skip37.13s/static490 clean/two artifacts exact。剩余sampling/elicitation/task/modern矩阵仍保留，UI-048待实现；2026-10-11sampling legacy reverse transport async owned dispatcher实际stdio/HTTP接入,explicit handler/default no advertisement,4 jobs/256 IDs/no replay/exact cancel/handler replacement/close finally/secret-free errors；held real stdio reader remains responsive+HTTP correlated response合同，current114通过无skip33.61s/static491 clean/three artifacts exact。完整sampling schema/人审/actual model与两host注册尚未实现，不因transport foundation关闭UI-048；2026-10-11sampling bounded request/result/review digest校验保留explicit context/model/tool preference不授权，dispatcher canonical authority与handler copy隔离+owned validation thread cancel settlement，tool output name/argument schema校验；current143通过无skip33.82s/static492 clean/two artifacts exact。native完整sampling人审/input-output/model/permissions及optional schema/pairing corpus仍未完成，普通hosts未注册handler，UI-048待实现保留；2026-10-11sampling original-loop lease四job双阶段input执行/output release digest+single-use receipt owner实现，explicit model/token/context/tools ceiling、executor selected model/tool subset校验、运行时host revoke取消并await finally；真实owned stdio peer两phase未审核不执行/不返回且ping响应，current157通过无skip34.09s/static493 clean/new owner artifact exact；actual configured model executor/两native hosts UI/manager注册/Claw及其他剩余协议仍未完成，UI-048不关闭；2026-10-11configured same-adapter independent single sampling executor实现，explicit allowed model/token/context resolver/tool proposals无execution loop/no parent fallback；actual context/image/model budget校验、reasoning/signature不返回、stalled stream cancel/timeout iterator cleanup；offline adapter+双阶段owner整合171通过无skip34.15s/static494 clean/new executor artifact exact。普通hosts尚未注册sampling，native人审/manager/Claw/physical/content/其余协议仍待实现，UI-048保留；2026-10-11explicit disconnected manager sampling register/answer/detach接入原loop双phase owner与same adapter executor，status/legacy negotiation honest，foreign lease refusal、original detach await executor/reverse cleanup、disconnect/start failure撤销、reconnect no replay真实peer验证；current177 pass无skip34.94s/static494 clean/manager wheel-sdist exact。普通Coding/Claw尚未自动或UI注册sampling；native完整审核/Claw/physical及其他协议仍待，UI-048不关闭；2026-10-11dependency-light sampling input选择/full request+selection与output release双阶段组件实现，digest/private snapshot/current viewport/focus/selection编辑/全页press single-use，JSON exact ASCII escaped lossless rows保留space/control；current204 pass无skip34.86s/static495 clean/new panel artifact exact。尚未安装两native hosts/event routing/manager UI registration/Claw/physical，不因组件证据关闭UI-048；2026-10-11Coding actual b sampling explicit arm/manager register/original session-model-adapter-view queue/full input-output painted review/answer/close revoke接入real peer+offline adapter；protected approvals/dialogs/exclusive execution/no parent history与physical Linux resize/cursor/main-buffer/termios验证，current228 pass无skip48.55s/static495 clean/three artifacts exact；Claw只failclosed未接入sampling，catalog/context/content/其他协议仍待，UI-048不关闭；2026-10-11Claw独立mcp_sampling协商/connection-local original session-revision-manager-model-adapter/internal lease enable-answer-detach、host-loop exclusive group/child idle执行、shared actual TUI双审核与Linux physical证明；修复初始connect临时navigation sentinel误撤销与late answer ACK覆盖完成状态真实red，withdraw stalled provider finally期间ping继续响应且真实cleanup释放reservation；current238 pass无skip53.57s/static496 clean/three Claw modules artifact exact。更广catalog/context/content/elicitation/tasks/modern仍待，UI-048不提前关闭；2026-10-11两actual host same-adapter public catalog sampling选择alternate不改变parent model/history，private metadata pin/resolver mismatch/catalog withdrawal failclosed，opaque wrapped current-ID合同保留无global fallback；真实withdraw前confirm无model calls，发现修复Claw uuid shadow及wrapper误判actual catalog regression，current244 pass无skip53.87s/static496 clean/five production artifact exact；context/content/elicitation/tasks/modern仍待，UI-048保留；2026-10-11sampling original unique tool-use/result role/pending配对与output不可伪tool-result，parallel结果actual adapter exact order/name无tool执行；icons inert bounded metadata/task numeric ttl/progress token完整校验，current259 pass无skip53.43s/static496 clean/codec artifact exact；extra context/modality corpus/elicitation/tasks/modern仍待，UI-048保留；2026-10-11extra context manager/owner optional provider与独立context phase exact snapshot/digest/single-use审核实现，input后捕获/未批准不executor、批准后只用frozen combined request context:none避免二次读取；host revoke等待resolver finally，真实owned peer+offline adapter/source mutation隔离验证；current266 pass无skip53.81s/static496 clean/three artifacts exact。普通两native hosts尚未安装context provider/实际scoped projection/privacy/physical待验，elicitation/task/modern仍保留，UI-048不关闭；2026-10-11两actual native hosts安装scoped MCP completed-turn context provider，exact manager alias/server provenance、local/unrelated/incomplete排除、text/args credential redaction/signature不共享，duplicate/foreign tool结果refuse；独立full context审核/no model before、denial/原history identity与physical两host三phase resize/cursor/main-buffer/termios验证，current277 pass无skip59.56s/static497 clean/four artifacts exact；剩余scope互操作/modality/schema/elicitation/tasks/modern仍待，UI-048不关闭；2026-10-11elicitation bounded primitive/titled enum form及inert HTTPS URL请求-result codec实现，accepted exact typed required/constraint/unrequested校验、cancel/decline不带form私有data；reverse独立handler default off/shared bounded identity/cancel/secret-free errors/no replay，实际stdio peer reader响应及HTTP mock correlation验证；current233 pass无skip46.70s/static498 clean/two artifacts exact。manager/native form-URL审核/Claw注册传输/physical/task-modern仍未完成，UI-048不提前关闭；2026-10-11elicitation request/response双review original-loop lease/phase/digest/single-use owner与manager explicit register/answer/detach实现；admission/reply validation close等待real worker settlement，sampling/elicitation独立withdraw不取消对方且不reset no-replay IDs，actual peer两review/no premature private data及foreign/disconnect验证；current246 pass无skip47.72s/static499 clean/three artifacts exact。native form/URL/UI/Claw/physical和external interaction/task/modern剩余仍待，UI-048不关闭；2026-10-11policy-free elicitation request/schema/URL full-paint→typed form→local exact reply review与独立canonical response phase组件实现，focus/viewport/edit/digest/private snapshot/no repeat-release bypass/decline无private data/host withdrawal；URL仅ack不navigation。current295 pass无skip48.16s/static500 clean/new panel artifact exact；两native host elicitation integration/physical/URL interaction/task-modern仍待，UI-048保留；2026-10-11Coding actual f elicitation explicit arm/manager register/original view guards/request→form或URL inert ack→exact proposal→canonical response review/answer/close revoke接入真实peer；native physical form-URL resize/cursor/main-buffer/termios与zero model/history/deny permissions验证；current320 pass无skip61.58s/static500 clean/three artifacts exact；Claw仅failclosed尚未elicitation接入，constrained edit recovery/URL completion/task-modern仍待，UI-048不关闭；2026-10-11 local Claw独立mcp_elicitation协商/connection-local manager-view-session-revision内部lease enable-answer-detach接入actual TUI request/proposal/canonical response完整审核；old/foreign/withdraw/disconnect拒绝与physical form/URL inert ack resize/cursor/main-buffer/termios验证，socket fixture保留先于ACK的review event而非丢弃，current330 pass无skip66.31s/static501 clean/three Claw modules artifact exact；constrained edit恢复/URL interaction-completion/task-modern/其他互操作仍待，UI-048不关闭；2026-10-11 elicitation constrained reply recovery: schema refusal rotates original request phase receipt, retains explicit form draft, old receipt invalid; Coding/Claw recoverable control preserves registration, fresh full request/proposal/canonical reply review required; actual both-host and Linux physical invalid→corrected flow no premature data/model/history change;334 integrated pass/no skips70.21s,static501 clean/four modules wheel-sdist exact。URL interaction/completion/tasks/modern/remaining interop未完成，UI-048仍待实现；2026-10-11 local URL acknowledged/pending与legacy peer completion分离，original approved ID/deadline/foreign-early-expired-duplicate-closed拒绝/no ID reuse，stdio/HTTP转发current removed notice仍拒绝；actual两host UI与physical URL notice证明不model/credential/replay，129 current整合通过无skip40.55s/static501 clean/seven artifacts exact。explicit external URL opener/workflow及task-modern/remaining interop仍待，UI-048不关闭；2026-10-11 local 两native hosts显式full-painted URL后独立o press one-use opener，actual original registration/session/connection/view/focus/no parent-child approval-dialog-overlay guards，Linux system helper no shell/BROWSER override，only owned helper timeout/cancel，不kill用户browser/service；真实两host UI与physical tmux offline helper log exact one URL/no protocol accept before gesture验证，current352 pass无skip67.79s/static502 clean/five production modules artifact bytes unchanged；不宣称真实desktop/external browser验证，task-modern/modality/scope/schema互操作仍待，UI-048不关闭；2026-10-11 unadvertised task/related-task增强请求在reverse responder/direct sampling owner/executor/elicitation owner拒绝，不能静默当普通同步请求执行；真实stdio及HTTP合同/reader恢复219整合通过无skip41.14s/static502 clean/four artifact bytes exact。task lifecycle未实现，不因拒绝路径关闭UI-048，原目标scope保留；2026-10-11 local task original-loop/connection-scoped bounded registry create/state/list/result/input-required/cancel/expiry/close lifecycle实现,16tasks/256KiB-result/1MiB aggregate/no private catalog，cancel-before-first-step/late suppressed output/sibling close ordering/caller cancel actual finally验证；236 integrated pass无skip41.56s/static503 clean/new registry wheel-sdist exact。尚未transport/manager/native启用或宣告tasks，增强请求仍拒绝直到negotiated routing完成；UI-048待实现保留；2026-10-11 local explicit registry-installed legacy tasks/list/get/result/cancel wire controls实现，默认off/仅list-cancel宣告/增强creation仍拒绝；独立4-slot review/result/control lanes防long-poll饿死cancel，close先signal所有registry siblings并shield实际cleanup；真实stdio+Linux loopback HTTP SSE/response POST held-finally/read-cancel/no replay/private output验证，255 integrated pass无skip30.06s/static503 clean/agent wheel-sdist registry-reverse exact bytes。manager/两native hosts尚未安装tasks，negotiated creation/metadata-status-family withdrawal/physical/modern/remaining interop仍待，UI-048保留待实现；2026-10-11 local manager tasks=True显式default-off注册+legacy2025-11-25 task family宣告/older withdrawal、CreateTaskResult新ID、original registry worker授权handle_task、完整增强请求input/form审核及input_required状态、sampling原execution/output与elicitation exact reply审核、assigned related-task 结果、family cleanup shielding实现；真实manager stdio+Linux HTTP SSE/POST及原控制响应/无premature private data/no replay验证269 integrated pass无skip31.00s/static503 clean/10production module agent wheel-sdist exact。两native host尚未opt-in/terminal未验证，TTL-status/meta interoperability/modern/remaining modality-schema-scope继续待实现，UI-048不关闭；2026-10-11 local Coding/Claw separate j sampling-task/k form-task显式arm并沿原manager/Claw independent connection enable boolean flag，b/f普通注册不隐式升级，Alt+b/f family revoke；真实两host sampling/form release-close original view/parent draft/history/permissions与private result withhold验证，4 physical Linux tmux task paths full-painted review/resize/cursor/main-buffer/termios 通过8.00s，172 integrated pass无skip12.35s/static503 clean/five native source wheel-sdist exact；首轮physical fixture同步/actual text更正，repeat task arm真实fix保留negative。TTL active cleanup/status-meta 互操作/cancel matrix/modern/remaining modality-schema-scope仍待，UI-048不关闭；2026-10-11 local TaskRegistry original-loop automatic TTL timer+early monotonic recheck，无需peer polling/sweep即signal worker，held finally保留slot/抑制late结果/complete private bytes自动删除，16过期siblings independent signal/capacity仅实际cleanup后释放；close await deadline cleanup并取消timer，manual sweep先signal全部；两actual native hosts+真实HTTP过期无approval/model/private result及8 physical Linux release-expire task paths parent/cursor/main-buffer/termios通过，192 integrated pass无skip37.28s/static503 clean/registry agent artifacts byte exact。status-result metadata/cancel-timeout-withdraw matrix/modern/remaining interop仍待，UI-048保留待实现；2026-10-11 local 创建响应writer error/timeout/cancel实测红3项证实unknown task继续运行漏窗，bounded response write+whole-work finally abandon原registry worker/actual cleanup后retire记录timer/private完成结果实现，重复cancel不早释放reverse slot/no replay；tasks/result timeout只cancel读取保留原任务，fresh ID可取已review结果，tasks/cancel timeout仍等actual finally；真实HTTP creation POST500清理验证，199 integrated pass无skip38.01s含两native及8Linux physical路径/static503 clean/two production artifact byte exact。status-result metadata/cancel matrix reconciliation/modern/remaining interop仍待，UI-048不关闭；2026-10-11 local post-CreateTaskResult delivery才启动notifications/tasks/status，original registry public snapshots/16 monitors/one pending coalescing/write timeout/independent lanes，observer failure不改operation outcome，family-expiry-close actual writer cleanup撤回，无private contents or replay；actual兩native stdio/real HTTP status posts及6focused生命周期测试，205 integrated pass无skip 含8Linux physical paths/static504 clean/three agent artifact bytes exact。task result-meta/applicability/cancel matrix与modern-modal-schema-scope reconciliation仍待，UI-048不关闭；2026-10-11 task acceptance matrix收敛已验证mechanics及3finite剩余applicability/related conversation/modality-schema-context reconciliation，独立pinned core2.3.1 actual task wire request-result 及original result/related metadata/status schemas两family验证，不宣称SDK task runtime；12Linux physical release-expire-peer cancel paths，发现late catalog擦除early task ended UI notice实修并保留negative；213 integrated pass无skip44.88s含explicit official SDK checks/static504 clean/TUI artifact bytes exact。UI-048剩余按新matrix明确不重复count task mechanics，仍待实现；2026-10-11 local pinned采样ToolChoice optional-mode真实拒绝与explicit none仍接受provider proposal两个gap红2证明并修复，empty choice保留default auto/none拒绝tool_use结果，不执行第二tool loop；manager原review owner sampling.tools/context条件宣告，arbitrary handler仍off/withdraw clear flags；293 integrated pass无skip45.29s含official schemas/actual两host/12Linux physical路径，static504 clean/3agent artifact bytes exact。remaining related conversation/modern/modal-schema-context matrix继续待实现；2026-10-11 required工具三个red证明custom executor zero-selection可进入且text-only可进入output review漏洞；owner context/executor前required nonempty检查与canonical result required tool_use验证实现，native provider/custom不可绕过，真实Coding/Claw required task无选择zero-model/private 输出保持parent/permission/history；299 integrated pass无skip45.81s含12Linux physical与official schemas/static504 clean/two agent artifact bytes exact。remaining related-task/modern/modal-schema-context继续待；2026-10-11 context structured MCP结果遗漏红8证明并修复，matching original manager server+explicit presence，仅structured payload递归脱敏/present null-array-bool保留/host wrapper不共享，foreign-malformed/oversize拒绝，actual两host full context review及capture后mutation frozen executor验证；316 integrated pass无skip49.76s含physical context与12task paths，added official schemas21pass3.81s，final static504 clean/context agent artifact exact。remaining related-task/modern/modal-schema-scope仍待；2026-10-11 tool-batch red证明上一batch pending时第二assistant tool batch仍可通过漏洞，codec assistant消息前检查原pending并拒绝，保留同batch并行和settled连续batch；owner pre-review/executor 拒绝验证，319 integrated pass无skip49.72s含official/native/physical context+12task paths，static504 clean/sampling codec agent artifact exact。remaining related-task/modern/modal-schema-context仍待；2026-10-11 context跨独立completed turn复用call IDs红测试证实误拒绝，projection deterministic turn-scoped IDs+paired result与原history隔离，bind_context独立验证后仅rekey peer碰撞 并在完整context审核前freeze；duplicate/unsettled不repair，actual两native reused-ID两turn审核/execute 及context-peer collision/mutation验证，322 integrated pass无skip49.68s含official/physical context+12task 路径，static504 clean/two agent artifact exact。remaining related-task/modern/modal-schema-context仍待；2026-10-11finite modern input_required state/resume与legacy related-task/modal/schema/context合同补齐，independent pinned SDK stdio/HTTP实证；MCP/panel13源码冻结794通过无skip，AI typed Responses tool images182通过，native class/socket/browser32及late-close56相关通过。无剩余命名实现项；尚待modern native Linux physical gate与最终全scope集成，改待验证，不称整体完成。；2026-10-11modern兩host native/physical验证中发现cold Claw browser首次arm空owner无法相关reply导致loading挂起；保留empty owner拒绝，explicit idle owner acquire+strict current browser reply/correlated rejection修复red12.40s→green4.30s。sidecar127通过无skip+最终36包含b/f首次cold physical、stale/busy/older/failed cases；MCP finite matrix及native/browser物理验收完成，final完整scope/root独立UI049/055/056/064仍待。"
+    },
+    {
+      "id": "UI-049",
+      "status": "已完成",
+      "title": "当前Linux完整终端矩阵",
+      "scope": "所有in-scope native父/子/扩展/草稿路径的窄屏、Unicode、resize、按键/粘贴、scrollback/focus/termios与异常恢复。",
+      "acceptance": "当前source的owned Linux PTY/private tmux命名矩阵全部通过；不能只复用pass193六条或非当前checkpoint；真实桌面协议单列UI-059。",
+      "evidence": "packages/coding/tests/test_terminal_acceptance.py; packages/tui/tests/test_terminal_lifecycle.py; /tmp/pass193-terminal.log; docs/agent-ui-presentation-test-environment-audit.md; /tmp/ui-final-20261011/permission-theme-presentation-final.log; docs/agent-ui-child-image-test-readiness-audit.md; /tmp/claw-child-image-diagnostic/HANDOFF.md; /tmp/claw-child-image-diagnostic/repository-green.log; docs/agent-ui-argument-cancel-settlement-audit.md; /tmp/claw-argument-diagnostic/HANDOFF.md; /tmp/claw-argument-diagnostic/repair-gateway.log; /tmp/claw-argument-diagnostic/repair-physical.log; docs/agent-ui-argument-teardown-audit.md; docs/agent-ui-final-named-gates.md; docs/agent-ui-settled-final-skips-2026-10-11.json; docs/agent-ui-teardown-final-skips-2026-10-11.json; /tmp/ui-final-20261011/teardown-final/pytest.xml; /tmp/ui-final-20261011/teardown-final/source-check.json; /tmp/ui-sidecar-20261011/teardown-final-named-gate-results.json",
+      "history": "current Linux terminal final gate保留；2026-10-11后续完整run在TERM=dumb/NO_COLOR下暴露测试Unicode边框/颜色隐含假设，已用明确unicode/ascii/dumb及color/plain参数加强原断言，当前66相关通过；无生产代码/timeout/skip/审批guard放宽。正在运行root未中断，但两testfile变动使final快照失效，须完整新freeze/root与当前artifact/static证据，不能以局部通过替代。；2026-10-11 child-image[68-claw]精确重现：test在initial roster/presets busy期间先于实际receipt发送Enter，生产guard正确拒绝且无start/upload/model。只加positive流程原owner initial UI receipt barrier，全部后续bytes/review/parent isolation/persistence/recovery断言及timeout保留；private延迟真实handler与repo20用例均通过。当前root不中断但testsource改动使冻结失效；仍需完整新freeze验收。；2026-10-11完整8191case结果8188pass/3fail/0skip保留；第三argument-completion故障精确复现。真实同buffer cancel/withdraw+successor证明unstarted canceled receipt早于原reservation释放；只在unstarted分支await原task/done后receipt，started reader仍响应，唯一release owner不变。physical测试改为nonce关联原frontend结算状态，非out-of-band idle猜测；15gateway/6physical/3延迟复验通过，当前准备全新冻结root，无旧fail伪称pass。；2026-10-11 settled-final完整8200case：8199pass/1fail/0skip，1427源文件冻结一致；唯一select-coding失败位于fixture teardown，最终Undo触发completion后native deferred dispose与fixture直接aclose竞态，实际root栈与隔离30ms重现相同。完整run正常结束后仅修test原线程join并断言stopped，所有guard/断言/deadline保留；需新冻结root。14命名矩阵行全部模块/base存在，仅L1/S2共享此失败，不再额外重跑矩阵。；最终验收2026-10-11 22:38:48+08 teardown-final：8200pass/0fail/0error/0skip，pytest/sourcecheck均0；before/during/after1427scoped文件成员/hash一致。14既有Linux terminal/safety命名行、360modules及testbase全部存在且通过；33历史default-opt-in当前全部通过，准确XML/log node集合一致。main独立复核完成，本项闭合；五external仍未完成、四nonLinux native仍延期，未扩大scope或另跑矩阵。"
+    },
+    {
+      "id": "UI-050",
+      "status": "缺外部环境",
+      "title": "Linux其他Secret Service互操作",
+      "scope": "GNOME owned服务之外已审计的Linux Secret Service实现/桌面namespace/lock/cancel行为。",
+      "acceptance": "至少named额外服务与真实两native owners/terminal roundtrip/locked refusal/cancel/restart证据，无start/unlock/fallback；未取得服务则保持缺环境。",
+      "evidence": "packages/agent/tests/test_oauth_native_store.py",
+      "history": "pass151一GNOME fixture不能代表全部服务；无额外服务证据"
+    },
+    {
+      "id": "UI-051",
+      "status": "已完成",
+      "title": "MCP独立SDK当前矩阵",
+      "scope": "已有2.3.1独立peer在当前源下stdio/HTTP/schema/content/completion/watch/两UI与terminal完整验证。",
+      "acceptance": "复用已有/tmp/xdog-mcp-pass68.lw1gcs安装，不download；显式SDK_ROOT的当前命名矩阵全绿并记录版本；不宣称所有third-party conformance。",
+      "evidence": "packages/agent/tests/test_mcp_official_sdk.py; packages/coding/tests/test_mcp_resource_watch_ui.py; packages/claw/tests/test_mcp_resource_watch_ui.py; /tmp/ui051-sdk-final.log; /tmp/ui051-terminal-final.log; /tmp/ui051-source-final.json",
+      "history": "passes68–96证据需当前重验；不是缺SDK环境；2026-10-10 current SDK2.3.1 stdio/HTTP矩阵及两客户端HTTP watch/cleanup补齐、Linux terminal验证；非general MCP conformance"
+    },
+    {
+      "id": "UI-052",
+      "status": "缺外部环境",
+      "title": "真实provider/decoder互操作",
+      "scope": "已审计provider/model元数据、binary/error/图像decoder实际互操作，超出offline adapter合同测试。",
+      "acceptance": "named实际provider/decoder及允许的外部测试环境中验证能力/限制/错误/cancel；未授权付费/auth调用时不执行或宣称通过。",
+      "evidence": "docs/agent-ui-completion-audit.md; packages/ai/src/xdog/ai/types.py",
+      "history": "passes136–138,152及provider OPEN；无授权live provider环境"
+    },
+    {
+      "id": "UI-053",
+      "status": "已完成",
+      "title": "Codex/Pi适用契约最终对照",
+      "scope": "2026-10-09保存baseline与actual公开exports逐项对照，避免凭名称/未知upstream推断缺口。",
+      "acceptance": "baseline每个适用行为映射稳定ID/owner evidence；可用本地Codex离线mock测试，Pi未安装不伪称native执行；发现缺口加入稳定ID而非重复OPEN。",
+      "evidence": "docs/agent-ui-reference-baseline.md; packages/ai/tests/test_codex_catalog_cli.py; packages/ai/tests/test_proxy_codex_cli.py; docs/agent-ui-upstream-contract-signoff-2026-10-11.md; docs/agent-ui-custom-delivery-contract.md; /tmp/ui-sidecar-20261011/ui053-final-public-exports.json",
+      "history": "pass134 baseline；没有声称本轮新fetch或latest parity；2026-10-11最终pinned baseline/public exports/owner证据对照signoff，实际54个ExtensionAPI方法/属性逐项归并到稳定ID，canonical custom residual已实现并合并，不用user-message替代；6个export/API/auth文件与final1426manifest一致。没有Pi native运行或latest upstream parity声明；本机Codex/Claude/offline独立SDK证据明确区分external服务；全root最终执行与skip映射仍UI054/055等独立待验。"
+    },
+    {
+      "id": "UI-054",
+      "status": "已完成",
+      "title": "跳过用例到需求的核对",
+      "scope": "历史29 skips及最终current skips按实际reason/node映射已有需求，避免测试数冒充需求数。",
+      "acceptance": "最终pytest -rs逐node记录环境/opt-in/deferred/outside-goal和对应ID；当前Linux可运行的安全owned checks重验；无遗漏新能力缺口。",
+      "evidence": "packages/agent/tests/test_mcp_official_sdk.py; packages/ai/tests/test_codex_catalog_cli.py; packages/ai/tests/test_claude_context_cli.py; docs/agent-ui-subscription-test-receipt-audit.md; /tmp/ui-subscription-receipt/red.log; /tmp/ui-subscription-receipt/related-green.log; docs/agent-ui-child-image-test-readiness-audit.md; /tmp/claw-child-image-diagnostic/HANDOFF.md; /tmp/claw-child-image-diagnostic/repository-green.log; docs/agent-ui-argument-cancel-settlement-audit.md; /tmp/claw-argument-diagnostic/HANDOFF.md; /tmp/claw-argument-diagnostic/repair-gateway.log; /tmp/claw-argument-diagnostic/repair-physical.log; docs/agent-ui-argument-teardown-audit.md; docs/agent-ui-final-named-gates.md; docs/agent-ui-settled-final-skips-2026-10-11.json; docs/agent-ui-teardown-final-skips-2026-10-11.json; /tmp/ui-final-20261011/teardown-final/pytest.xml; /tmp/ui-final-20261011/teardown-final/source-check.json; /tmp/ui-sidecar-20261011/teardown-final-named-gate-results.json",
+      "history": "pass171 29 skips未逐项证明；SDK/CLI现有环境须显式启用；2026-10-11 presentation-final报告modern订阅测试失败，完整trace尚待；独立30ms对端处理延迟确定复现原test取消通知日志即时读取计数竞态。只修改tests/fixture：通过同pipe有响应status证明对端实际取消归零后保留精确计数，增加slow peer参数并加强related cleanup，88通过无skip；无生产/timeout/权限弱化。运行中root不中断但4测试/fixture文件改变使该冻结gate失效，须完成结果核对与新完整root。；2026-10-11 child-image[68-claw]精确重现：test在initial roster/presets busy期间先于实际receipt发送Enter，生产guard正确拒绝且无start/upload/model。只加positive流程原owner initial UI receipt barrier，全部后续bytes/review/parent isolation/persistence/recovery断言及timeout保留；private延迟真实handler与repo20用例均通过。当前root不中断但testsource改动使冻结失效；仍需完整新freeze验收。；2026-10-11完整8191case结果8188pass/3fail/0skip保留；第三argument-completion故障精确复现。真实同buffer cancel/withdraw+successor证明unstarted canceled receipt早于原reservation释放；只在unstarted分支await原task/done后receipt，started reader仍响应，唯一release owner不变。physical测试改为nonce关联原frontend结算状态，非out-of-band idle猜测；15gateway/6physical/3延迟复验通过，当前准备全新冻结root，无旧fail伪称pass。；2026-10-11 settled-final完整8200case：8199pass/1fail/0skip，1427源文件冻结一致；唯一select-coding失败位于fixture teardown，最终Undo触发completion后native deferred dispose与fixture直接aclose竞态，实际root栈与隔离30ms重现相同。完整run正常结束后仅修test原线程join并断言stopped，所有guard/断言/deadline保留；需新冻结root。14命名矩阵行全部模块/base存在，仅L1/S2共享此失败，不再额外重跑矩阵。；最终验收2026-10-11 22:38:48+08 teardown-final：8200pass/0fail/0error/0skip，pytest/sourcecheck均0；before/during/after1427scoped文件成员/hash一致。14既有Linux terminal/safety命名行、360modules及testbase全部存在且通过；33历史default-opt-in当前全部通过，准确XML/log node集合一致。main独立复核完成，本项闭合；五external仍未完成、四nonLinux native仍延期，未扩大scope或另跑矩阵。"
+    },
+    {
+      "id": "UI-055",
+      "status": "已完成",
+      "title": "最终冻结全workspace回归",
+      "scope": "全部in-scope实现完成后当前source的一次原子完整root pytest。",
+      "acceptance": "source/test/config快照before/during/after一致，完整root退出0，保存命令/日志/所有skip分类；轮数/测试数不代替需求完成。",
+      "evidence": "/tmp/pass171-workspace.log; docs/agent-ui-gap-plan.md; docs/agent-ui-presentation-test-environment-audit.md; /tmp/ui-final-20261011/permission-theme-presentation-final.log; docs/agent-ui-subscription-test-receipt-audit.md; /tmp/ui-subscription-receipt/red.log; /tmp/ui-subscription-receipt/related-green.log; docs/agent-ui-child-image-test-readiness-audit.md; /tmp/claw-child-image-diagnostic/HANDOFF.md; /tmp/claw-child-image-diagnostic/repository-green.log; docs/agent-ui-argument-cancel-settlement-audit.md; /tmp/claw-argument-diagnostic/HANDOFF.md; /tmp/claw-argument-diagnostic/repair-gateway.log; /tmp/claw-argument-diagnostic/repair-physical.log; docs/agent-ui-argument-teardown-audit.md; docs/agent-ui-final-named-gates.md; docs/agent-ui-settled-final-skips-2026-10-11.json; docs/agent-ui-teardown-final-skips-2026-10-11.json; /tmp/ui-final-20261011/teardown-final/pytest.xml; /tmp/ui-final-20261011/teardown-final/source-check.json; /tmp/ui-sidecar-20261011/teardown-final-named-gate-results.json",
+      "history": "pass171 5545/29是旧source；passes172–193后未完整回归；2026-10-11后续完整run在TERM=dumb/NO_COLOR下暴露测试Unicode边框/颜色隐含假设，已用明确unicode/ascii/dumb及color/plain参数加强原断言，当前66相关通过；无生产代码/timeout/skip/审批guard放宽。正在运行root未中断，但两testfile变动使final快照失效，须完整新freeze/root与当前artifact/static证据，不能以局部通过替代。；2026-10-11 presentation-final报告modern订阅测试失败，完整trace尚待；独立30ms对端处理延迟确定复现原test取消通知日志即时读取计数竞态。只修改tests/fixture：通过同pipe有响应status证明对端实际取消归零后保留精确计数，增加slow peer参数并加强related cleanup，88通过无skip；无生产/timeout/权限弱化。运行中root不中断但4测试/fixture文件改变使该冻结gate失效，须完成结果核对与新完整root。；2026-10-11 child-image[68-claw]精确重现：test在initial roster/presets busy期间先于实际receipt发送Enter，生产guard正确拒绝且无start/upload/model。只加positive流程原owner initial UI receipt barrier，全部后续bytes/review/parent isolation/persistence/recovery断言及timeout保留；private延迟真实handler与repo20用例均通过。当前root不中断但testsource改动使冻结失效；仍需完整新freeze验收。；2026-10-11完整8191case结果8188pass/3fail/0skip保留；第三argument-completion故障精确复现。真实同buffer cancel/withdraw+successor证明unstarted canceled receipt早于原reservation释放；只在unstarted分支await原task/done后receipt，started reader仍响应，唯一release owner不变。physical测试改为nonce关联原frontend结算状态，非out-of-band idle猜测；15gateway/6physical/3延迟复验通过，当前准备全新冻结root，无旧fail伪称pass。；2026-10-11 settled-final完整8200case：8199pass/1fail/0skip，1427源文件冻结一致；唯一select-coding失败位于fixture teardown，最终Undo触发completion后native deferred dispose与fixture直接aclose竞态，实际root栈与隔离30ms重现相同。完整run正常结束后仅修test原线程join并断言stopped，所有guard/断言/deadline保留；需新冻结root。14命名矩阵行全部模块/base存在，仅L1/S2共享此失败，不再额外重跑矩阵。；最终验收2026-10-11 22:38:48+08 teardown-final：8200pass/0fail/0error/0skip，pytest/sourcecheck均0；before/during/after1427scoped文件成员/hash一致。14既有Linux terminal/safety命名行、360modules及testbase全部存在且通过；33历史default-opt-in当前全部通过，准确XML/log node集合一致。main独立复核完成，本项闭合；五external仍未完成、四nonLinux native仍延期，未扩大scope或另跑矩阵。"
+    },
+    {
+      "id": "UI-056",
+      "status": "已完成",
+      "title": "最终静态/发行物/示例门槛",
+      "scope": "root Ruff、七namespace strict mypy、diff whitespace、affected distributions wheel+sdist、workflow examples。",
+      "acceptance": "最终source运行指定命令均退出0；affected module bytes/imports/package membership核对，workflow examples --allow-script-stub通过；不publish/install/restart。",
+      "evidence": "/tmp/ui-final-20261011/ruff-final.log; /tmp/ui-final-20261011/mypy-final.log; /tmp/ui-final-20261011/diff-check-final.log; /tmp/ui-final-20261011/artifacts-final/verification.json; /tmp/ui-final-20261011/artifacts-final/import-smoke.json; /tmp/ui-final-20261011/artifact-smoke.log; /tmp/ui-final-20261011/examples-final.log; /tmp/ui-final-20261011/source-final.json; docs/agent-ui-presentation-test-environment-audit.md; /tmp/ui-final-20261011/permission-theme-presentation-final.log; /tmp/ui-final-20261011/presentation-final/preflight-status.txt; /tmp/ui-final-20261011/presentation-final/ruff.log; /tmp/ui-final-20261011/presentation-final/mypy.log; /tmp/ui-final-20261011/presentation-final/artifacts/verification.json; /tmp/ui-final-20261011/presentation-final/artifacts/import-smoke.json; /tmp/ui-final-20261011/presentation-final/examples.log; /tmp/ui-final-20261011/presentation-final/source-before.json; docs/agent-ui-subscription-test-receipt-audit.md; /tmp/ui-subscription-receipt/red.log; /tmp/ui-subscription-receipt/related-green.log; docs/agent-ui-child-image-test-readiness-audit.md; /tmp/claw-child-image-diagnostic/HANDOFF.md; /tmp/claw-child-image-diagnostic/repository-green.log; docs/agent-ui-argument-cancel-settlement-audit.md; /tmp/claw-argument-diagnostic/HANDOFF.md; /tmp/claw-argument-diagnostic/repair-gateway.log; /tmp/claw-argument-diagnostic/repair-physical.log; /tmp/ui-final-20261011/settled-final/preflight-status.txt; /tmp/ui-final-20261011/settled-final/source-before.json; /tmp/ui-final-20261011/settled-final/ruff.log; /tmp/ui-final-20261011/settled-final/mypy.log; /tmp/ui-final-20261011/settled-final/artifacts/verification.json; /tmp/ui-final-20261011/settled-final/artifacts/import-smoke.json; /tmp/ui-final-20261011/settled-final/examples.log; /tmp/ui-final-20261011/teardown-final/preflight-status.txt; /tmp/ui-final-20261011/teardown-final/artifacts/verification.json; /tmp/ui-final-20261011/teardown-final/artifacts/import-smoke.json; /tmp/ui-final-20261011/teardown-final/source-preflight-check.json",
+      "history": "pass193局部artifacts/static不是最终功能完工gate；pass150 examples旧；2026-10-11最终1426code/test/fixture源码快照，rootRuff全clean、七namespace no-incremental strict mypy549clean、gitdiffcheck exit0；缓存hatchling无install构建全部7分包+umbrella共8dist wheel/sdist，installedpackaging.Metadata(validate=True)+wheel RECORD+全部shipping源文件bytes及提取后七namespace/console entrypoint import核验；17workflow examples exit0。twine不可用未宣称运行，使用上述明确validator；CLI/readme声明按实际metadata检查。完整root/UI安全matrix仍独立待验，任意后续生产源码变化必须重开此gate。；2026-10-11后续完整run在TERM=dumb/NO_COLOR下暴露测试Unicode边框/颜色隐含假设，已用明确unicode/ascii/dumb及color/plain参数加强原断言，当前66相关通过；无生产代码/timeout/skip/审批guard放宽。正在运行root未中断，但两testfile变动使final快照失效，须完整新freeze/root与当前artifact/static证据，不能以局部通过替代。；2026-10-11 19:17前对两testfile环境隔离修正后的1426文件快照重新完成全Ruff/七namespace no-incremental strict549/diffcheck/8dist wheel+sdist RECORD元数据源码bytes+提取import/17examples，pipeline exit0且source-preflight-check无变化，重新关闭UI056。其后的新完整pytest仍独立待验；没有把此前8183pass/3fail源变动run算通过。；2026-10-11 presentation-final报告modern订阅测试失败，完整trace尚待；独立30ms对端处理延迟确定复现原test取消通知日志即时读取计数竞态。只修改tests/fixture：通过同pipe有响应status证明对端实际取消归零后保留精确计数，增加slow peer参数并加强related cleanup，88通过无skip；无生产/timeout/权限弱化。运行中root不中断但4测试/fixture文件改变使该冻结gate失效，须完成结果核对与新完整root。；2026-10-11 child-image[68-claw]精确重现：test在initial roster/presets busy期间先于实际receipt发送Enter，生产guard正确拒绝且无start/upload/model。只加positive流程原owner initial UI receipt barrier，全部后续bytes/review/parent isolation/persistence/recovery断言及timeout保留；private延迟真实handler与repo20用例均通过。当前root不中断但testsource改动使冻结失效；仍需完整新freeze验收。；2026-10-11完整8191case结果8188pass/3fail/0skip保留；第三argument-completion故障精确复现。真实同buffer cancel/withdraw+successor证明unstarted canceled receipt早于原reservation释放；只在unstarted分支await原task/done后receipt，started reader仍响应，唯一release owner不变。physical测试改为nonce关联原frontend结算状态，非out-of-band idle猜测；15gateway/6physical/3延迟复验通过，当前准备全新冻结root，无旧fail伪称pass。；2026-10-11 20:35对订阅/child-image测试receipt修正及unstarted argument cancellation生产修复后新快照，rootRuff、七namespace strict no-incremental mypy、diffcheck、全部8dist wheel/sdist元数据/RECORD/shipping bytes及提取后7namespace+entrypoint import、17examples再次全部exit0；source-preflight-check key/hash无变，UI056重新完成。其后完整root仍独立待验，旧diagnostic失败不被覆盖。；2026-10-11最终argument fixture teardown六行修正后重开current-source preflight；旧settled-final静态/产物证据保留但不冒充修后snapshot。；2026-10-11 teardown-final修后1427源快照current preflight退出0：Ruff、全七namespace strict/no-incremental mypy549、diff检查、8组wheel/sdist metadata/RECORD/完整源bytes/imports与17example通过；无twine执行宣称。"
+    },
+    {
+      "id": "UI-057",
+      "status": "缺外部环境",
+      "title": "外部OAuth/MCP部署互操作",
+      "scope": "owned peers之外已审计的第三方MCP/schema/auth/registration/refresh部署。",
+      "acceptance": "named独立真实部署、协议版本和明确授权的credentials/endpoint；两clients实际discovery/call/consent/refresh/cancel证据；无环境不声称general conformance。",
+      "evidence": "docs/agent-ui-completion-audit.md; packages/agent/tests/test_mcp_official_sdk.py",
+      "history": "original broader third-party/auth deployment OPEN"
+    },
+    {
+      "id": "UI-058",
+      "status": "缺外部环境",
+      "title": "Linux物理掉电/存储持久性证据",
+      "scope": "区别process SIGKILL与physical power loss、fsync落盘及multi-file事务边界的原审计证据。",
+      "acceptance": "取得可控Linux掉电/等价storage fault环境验证acknowledged数据/uncertainty/无自动replay；普通kill/tmux/fixture不替代，未获环境保持缺环境。",
+      "evidence": "packages/agent/tests/test_supervision_store.py; packages/tui/tests/test_child_draft_store.py; /tmp/ui058/FEASIBILITY.md; /tmp/ui058/matrix.json",
+      "history": "original physical power-loss OPEN；当前没有受控掉电环境；2026-10-11只读探测已有QEMU10.2.2/readable Linux kernel/ext4+virtio，准备仅/tmp脚本/八store矩阵，未boot/构建大image/运行fault；/tmp实际tmpfs不能称持久硬盘证据。Guest power-domain/block EIO只能条件性补充，不能冒充physical host/drive powerloss；持久owned lab及等价范围须确认，状态仍缺环境。"
+    },
+    {
+      "id": "UI-059",
+      "status": "缺外部环境",
+      "title": "当前Linux真实桌面/图像协议",
+      "scope": "Wayland/X11真实clipboard copy/paste、可用Linux Kitty实际image preview/owner变化；非模拟helper/tmux。",
+      "acceptance": "named当前Linux compositor/terminal实测两native clients的图像/文字/owner change/错误/焦点/退出；无真实桌面会话不能宣称通过。",
+      "evidence": "packages/tui/tests/test_clipboard_macos.py; packages/coding/tests/test_terminal_acceptance.py",
+      "history": "Linux clipboard/image-protocol证据不能因跨平台延期删掉；无真实桌面证据"
+    },
+    {
+      "id": "UI-060",
+      "status": "延期",
+      "title": "Windows原生终端/桌面验证",
+      "scope": "Windows真实快捷键/editor/Unicode clipboard/DIB/images/transcript/output/git/生命周期/transport验证。",
+      "acceptance": "未来Windows原生环境记录named版本和行为矩阵；本轮不执行、不阻塞、不声称Linux fixtures等于通过。",
+      "evidence": "docs/agent-ui-completion-audit.md",
+      "history": "2026-10-10用户明确延期non-current-Linux native validation"
+    },
+    {
+      "id": "UI-061",
+      "status": "延期",
+      "title": "macOS原生终端/桌面验证",
+      "scope": "真实AppKit/JXA/TIFF clipboard/editor/文本copy/终端/Kitty或iTerm images/fullscreen/生命周期。",
+      "acceptance": "未来macOS桌面/原生terminal记录行为矩阵；本轮不执行、不阻塞，不把Linux模拟桥当native proof。",
+      "evidence": "docs/agent-ui-gap-plan.md",
+      "history": "2026-10-10用户明确延期；所有重复macOS/AppKit/iTerm native OPEN合并"
+    },
+    {
+      "id": "UI-062",
+      "status": "延期",
+      "title": "非Linux原生凭据验证",
+      "scope": "macOS Keychain/Windows credential service的原生review/store/restore/forget/lock/cancel验证。",
+      "acceptance": "未来在对应OS原生服务验证UI-045实现；本轮无native-pass声明、非阻塞，不为该验证继续扩展实现。",
+      "evidence": "packages/agent/src/xdog/agent/mcp/oauth_native_store.py; docs/agent-ui-native-credential-audit.md",
+      "history": "仅native validation延期；实现缺口仍UI-045；2026-10-11UI-045实现及Linux合同完成；本ID仅非当前Linux原生凭据验证仍延期/未通过，不作为本轮阻塞"
+    },
+    {
+      "id": "UI-063",
+      "status": "延期",
+      "title": "其他非Linux原生平台验证",
+      "scope": "Windows/macOS以外非当前Linux的terminal/input/output/transport/lifecycle/desktop native证据。",
+      "acceptance": "未来明确OS/backend再原生验证；本轮延期，不把POSIX fixture当未知平台通过，不新增验证驱动实现。",
+      "evidence": "docs/agent-ui-completion-audit.md",
+      "history": "用户2026-10-10范围更新"
+    },
+    {
+      "id": "UI-064",
+      "status": "已完成",
+      "title": "最终权限/生命周期/传输安全门槛",
+      "scope": "当前Linux两native hosts/SDK/Claw gateway/Coding RPC的fail-closed、审批/owner/lease/revision/cancel/no-replay与异常cleanup。",
+      "acceptance": "最终current-source命名安全矩阵覆盖parent/child/extensions/MCP/draft/closed-slow peer/EOF/quit；只读自动、mutation显式approval或allow-all，仍不是OS sandbox。",
+      "evidence": "packages/coding/tests; packages/claw/tests; packages/agent/tests; packages/tui/tests; docs/agent-ui-rpc-canonical-audit.md; /tmp/ui038-hung-cleanup.json; /tmp/ui038-cleanup-integrated-current.log; docs/agent-ui-input-admission-audit.md; /tmp/ui046-current-source-final.log; docs/agent-ui-draft-crash-audit.md; /tmp/ui047-complete-current.log; docs/agent-ui-native-credential-audit.md; /tmp/ui045-final-integrated.log; /tmp/ui048-claw-roots-integrated.log; /tmp/ui048-roots-hardened-integrated.log; /tmp/ui048-coding-sampling-integrated.log; /tmp/ui048-claw-sampling-integrated.log; /tmp/ui048-host-context-integrated.log; /tmp/ui048-claw-elicitation-integrated.log; /tmp/ui048-url-integrated-final.log; /tmp/ui048-open-physical-integrated.log; docs/agent-ui-renderer-contract-audit.md; /tmp/ui037/final-regression.log; /tmp/ui037/nested-rerun.log; /tmp/ui037/nested-diagnostic.log; /tmp/ui064/confirmed-red-trace.json; /tmp/ui064/targeted-green.log; docs/agent-ui-presentation-test-environment-audit.md; /tmp/ui-final-20261011/permission-theme-presentation-final.log; docs/agent-ui-subscription-test-receipt-audit.md; /tmp/ui-subscription-receipt/red.log; /tmp/ui-subscription-receipt/related-green.log; docs/agent-ui-child-image-test-readiness-audit.md; /tmp/claw-child-image-diagnostic/HANDOFF.md; /tmp/claw-child-image-diagnostic/repository-green.log; docs/agent-ui-argument-cancel-settlement-audit.md; /tmp/claw-argument-diagnostic/HANDOFF.md; /tmp/claw-argument-diagnostic/repair-gateway.log; /tmp/claw-argument-diagnostic/repair-physical.log; docs/agent-ui-argument-teardown-audit.md; docs/agent-ui-final-named-gates.md; docs/agent-ui-settled-final-skips-2026-10-11.json; docs/agent-ui-teardown-final-skips-2026-10-11.json; /tmp/ui-final-20261011/teardown-final/pytest.xml; /tmp/ui-final-20261011/teardown-final/source-check.json; /tmp/ui-sidecar-20261011/teardown-final-named-gate-results.json",
+      "history": "cross-cutting invariants不因跨平台延期删除；需final verification；2026-10-10UI-038挂起根因/仅自有进程cleanup及bounded protocol receipt验证闭合；该片段非最终全矩阵，仍待验证；2026-10-10UI-046 admission/storage cancellation race fixed, actual两host/owned crash/RPC current229 pass；仍不是最终全scope safety矩阵；2026-10-10UI-047 current Linux draft lifecycle/crash/terminal boundaries170验证；仍待最终all-host矩阵；2026-10-11native backend selection/consent/helper lifecycle两host Linux合同66 pass；仍待最终安全全矩阵；2026-10-11dynamic roots connection/withdrawal/cancel/no replay current safety片段及两host physical验证122通过；最终完整安全矩阵仍待验证；2026-10-11roots paint/private snapshot与满容量deallocation安全134检查通过；不替代最终all-host完整gate；2026-10-11Coding sampling full dual-review/no-model-before/no-peer-before/close ownership及physical terminal current228相关验证；仍非最终complete safety gate；2026-10-11Claw sampling原owner双phase/foreign/withdraw/disconnect/reader responsive stalled finally与two native physical相关238通过；仍非final complete safety matrix；2026-10-11两host scoped context privacy/provenance/full-review与physical三phase277相关检查；仍非最终全矩阵安全gate；2026-10-11 local Claw elicitation separate capability/foreign/withdraw/disconnect/full review/privacy及native physical相关330检查通过；不替代final all-host safety gate；2026-10-11 local legacy URL completion原ID/owner/expiry/no replay相关129检查；仍非最终完整safety gate；2026-10-11 local reviewed URL original owner/focus/one-use/owned helper cleanup及两host physical相关352验证；仍非最终complete safety gate；2026-10-11并行renderer聚合Claw nested[-False]line115单次completion超时：1174pass/1fail；原文件8+诊断12复验通过但未证明根因修复，保留最终完整矩阵triage，不删弱/加长测试。；2026-10-11复现nested parent completion根因：旧generation8 negative ACK无generation清掉新generation12 requested，duplicate resize推进frame使Enter旧paint拒绝。17:06明确授权generation ACK/receiver修复，不放宽broker freshness；target26通过，整root运行不中断但source freeze因已确认repair失效，须新freeze完整重跑。；2026-10-11后续完整run在TERM=dumb/NO_COLOR下暴露测试Unicode边框/颜色隐含假设，已用明确unicode/ascii/dumb及color/plain参数加强原断言，当前66相关通过；无生产代码/timeout/skip/审批guard放宽。正在运行root未中断，但两testfile变动使final快照失效，须完整新freeze/root与当前artifact/static证据，不能以局部通过替代。；2026-10-11 presentation-final报告modern订阅测试失败，完整trace尚待；独立30ms对端处理延迟确定复现原test取消通知日志即时读取计数竞态。只修改tests/fixture：通过同pipe有响应status证明对端实际取消归零后保留精确计数，增加slow peer参数并加强related cleanup，88通过无skip；无生产/timeout/权限弱化。运行中root不中断但4测试/fixture文件改变使该冻结gate失效，须完成结果核对与新完整root。；2026-10-11 child-image[68-claw]精确重现：test在initial roster/presets busy期间先于实际receipt发送Enter，生产guard正确拒绝且无start/upload/model。只加positive流程原owner initial UI receipt barrier，全部后续bytes/review/parent isolation/persistence/recovery断言及timeout保留；private延迟真实handler与repo20用例均通过。当前root不中断但testsource改动使冻结失效；仍需完整新freeze验收。；2026-10-11完整8191case结果8188pass/3fail/0skip保留；第三argument-completion故障精确复现。真实同buffer cancel/withdraw+successor证明unstarted canceled receipt早于原reservation释放；只在unstarted分支await原task/done后receipt，started reader仍响应，唯一release owner不变。physical测试改为nonce关联原frontend结算状态，非out-of-band idle猜测；15gateway/6physical/3延迟复验通过，当前准备全新冻结root，无旧fail伪称pass。；2026-10-11 settled-final完整8200case：8199pass/1fail/0skip，1427源文件冻结一致；唯一select-coding失败位于fixture teardown，最终Undo触发completion后native deferred dispose与fixture直接aclose竞态，实际root栈与隔离30ms重现相同。完整run正常结束后仅修test原线程join并断言stopped，所有guard/断言/deadline保留；需新冻结root。14命名矩阵行全部模块/base存在，仅L1/S2共享此失败，不再额外重跑矩阵。；最终验收2026-10-11 22:38:48+08 teardown-final：8200pass/0fail/0error/0skip，pytest/sourcecheck均0；before/during/after1427scoped文件成员/hash一致。14既有Linux terminal/safety命名行、360modules及testbase全部存在且通过；33历史default-opt-in当前全部通过，准确XML/log node集合一致。main独立复核完成，本项闭合；五external仍未完成、四nonLinux native仍延期，未扩大scope或另跑矩阵。"
+    }
+  ]
+}

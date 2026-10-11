@@ -122,6 +122,17 @@ def main() -> None:
         from xdog.ai.cli_switch import run as run_switch
         try:
             run_switch(args)
+        except httpx.ConnectError:
+            parser.exit(
+                1, "Switch failed: cannot connect to the XDOG proxy. Check 'xdog-ai switch-cli config' "
+                "and start the server with 'xdog-ai proxy'.\n",
+            )
+        except httpx.TimeoutException:
+            parser.exit(1, "Switch failed: the XDOG proxy request timed out; check server status and connectivity.\n")
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            hint = "check the configured proxy API key" if status in (401, 403) else "check the proxy server logs"
+            parser.exit(1, f"Switch failed: proxy returned HTTP {status}; {hint}.\n")
         except httpx.HTTPError:
             parser.exit(1, "Switch failed: proxy request failed; check the proxy URL, API key, and server.\n")
         except (ValueError, OSError, KeyError, TypeError) as exc:

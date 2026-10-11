@@ -1,0 +1,160 @@
+"""Actual Coding/Claw child factories validate default-route history/tool/worker images."""
+from __future__ import annotations
+
+import json
+import shutil
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from xdog.agent import Agent, AgentConfig
+from xdog.ai.types import AssistantMessage, ImageContent, Model, TextContent, ToolCall, ToolResultMessage, UserMessage
+from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.config import ClawConfig, GroupDef
+from xdog.claw.core.runtime.gateway import GatewayServer
+from xdog.coding.core.agent_session import AgentSession
+from xdog.coding.core.permissions import PermissionManager
+from xdog.coding.core.session_manager import SessionManager
+from xdog.coding.core.settings_manager import SettingsManager
+
+PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j5ioAAAAASUVORK5CYII='
+
+
+class Adapter:
+    def __init__(self, vision):
+        self.vision = vision
+        self.calls = []
+
+    def resolve_model(self, name):
+        if self.vision is None:
+            return None
+        return Model(id='offline/child', context_window=32000,
+                     input=('text', 'image') if self.vision else ('text',))
+
+    def __call__(self, model, context, options):
+        self.calls.append(context)
+        return EventStream.empty(AssistantMessage(content=(TextContent(text='CHILD-IMAGE-RESULT'),)))
+
+
+@pytest.mark.parametrize('kind', ['coding', 'claw'])
+@pytest.mark.parametrize('source', ['history', 'tool', 'worker'])
+@pytest.mark.parametrize('vision', [True, False, None])
+async def test_actual_default_child_image_context_is_guarded_without_parent_mutation(tmp_path, kind, source, vision):
+    root = tmp_path / 'extensions'
+    names = []
+    if source == 'worker':
+        names = ['childimage']
+        shutil.copytree(Path(__file__).parents[2] / 'agent/tests/fixtures/extensions/childimage', root / 'childimage')
+    adapter = Adapter(vision)
+    server = None
+    if kind == 'coding':
+        settings = tmp_path / 'settings.json'
+        settings.write_text(json.dumps({'extensions': names, 'extension_dir': str(root),
+                                        'extension_settings': {'childimage': {'image': PNG}}}))
+        store = SessionManager(tmp_path / 'sessions')
+        session = AgentSession(agent=Agent(adapter, config=AgentConfig(model='offline/child')),
+            session_data=store.create_session(model='offline/child', working_dir=tmp_path), session_manager=store,
+            settings=SettingsManager(global_path=settings), working_dir=tmp_path, tool_registry=None, bash=None,
+            permissions=PermissionManager('deny'))
+    else:
+        config = ClawConfig(model='offline/child', data_dir=str(tmp_path / 'data'),
+            socket_path=str(tmp_path / 'gateway.sock'), pid_file=str(tmp_path / 'gateway.pid'),
+            groups=(GroupDef(id='main', is_main=True, workspace=str(tmp_path / 'workspace')),),
+            extensions=tuple(names), extension_dir=str(root), extension_settings={'childimage': {'image': PNG}})
+        server = GatewayServer(config)
+        with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=('offline/child', adapter)):
+            await server.start()
+        session = server._orchestrator._runtimes['main'].get_or_create_session(allow_reset=False)
+    try:
+        await session.initialize_extensions()
+        image = ImageContent(data=PNG, mime_type='image/png')
+        if source == 'history':
+            session.agent.replace_messages([UserMessage(content=(TextContent(text='retained image'), image)),
+                AssistantMessage(content=(TextContent(text='retained answer'),))])
+        elif source == 'tool':
+            session.agent.replace_messages([UserMessage(content='retained tool image'),
+                AssistantMessage(content=(ToolCall(id='image', name='image', arguments={}),)),
+                ToolResultMessage(tool_call_id='image', tool_name='image', content=(image,)),
+                AssistantMessage(content=(TextContent(text='retained answer'),))])
+        parent = session.agent.state.messages
+        child = await session.children.supervisor.start('inspect', config={'inherit_context': source != 'worker'})
+        result = await session.children.supervisor.control('wait', child)
+        if vision is True:
+            assert result['status'] == 'completed', result['error']
+            assert len(adapter.calls) == 1
+            assert any(isinstance(part, ImageContent) and part.data == PNG
+                       for message in adapter.calls[0].messages
+                       for part in (() if isinstance(message.content, str) else message.content))
+        else:
+            assert result['status'] == 'failed' and 'image' in result['error'], result
+            assert not adapter.calls
+        assert session.agent.state.messages is parent
+        assert not session.children.supervisor.active
+        assert session.children.store.load()[0]['status'] == result['status']
+    finally:
+        if server is not None:
+            await server.stop()
+        else:
+            await session.children.supervisor.aclose()
+            await session.extensions.aclose()
+            session.dispose()
+
+
+@pytest.mark.parametrize('kind', ['coding', 'claw'])
+async def test_actual_host_child_checkpoint_is_durable_before_provider_and_cancel_waits_writer(tmp_path, kind):
+    import asyncio
+    import threading
+
+    from xdog.agent.supervision_store import ChildStore
+    entered, release = threading.Event(), threading.Event()
+    adapter = Adapter(True)
+    server = None
+    if kind == 'coding':
+        store = SessionManager(tmp_path / 'sessions')
+        session = AgentSession(agent=Agent(adapter, config=AgentConfig(model='offline/child')),
+            session_data=store.create_session(model='offline/child', working_dir=tmp_path), session_manager=store,
+            settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
+            tool_registry=None, bash=None, permissions=PermissionManager('deny'))
+    else:
+        config = ClawConfig(model='offline/child', data_dir=str(tmp_path / 'data'),
+            socket_path=str(tmp_path / 'gateway.sock'), pid_file=str(tmp_path / 'gateway.pid'),
+            groups=(GroupDef(id='main', is_main=True, workspace=str(tmp_path / 'workspace')),))
+        server = GatewayServer(config)
+        with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=('offline/child', adapter)):
+            await server.start()
+        session = server._orchestrator._runtimes['main'].get_or_create_session(allow_reset=False)
+    cancellation = None
+    try:
+        children = session.children
+        assert children.supervisor.persist_admission == children.store.save_admission
+        original = children.supervisor.persist_admission
+        def checkpoint(record):
+            original(record)
+            entered.set()
+            assert release.wait(5)
+        children.supervisor.persist_admission = checkpoint
+        identifier = await children.supervisor.start('NATIVE HOST CHECKPOINT',
+            images=(ImageContent(data=PNG, mime_type='image/png'),))
+        assert await asyncio.to_thread(entered.wait, 3)
+        saved = ChildStore(children.store.root).load()[0]
+        assert saved['initial_state'] == 'admitted' and 'NATIVE HOST CHECKPOINT' in str(saved['messages'])
+        assert PNG in str(saved['messages']) and saved['status'] == 'interrupted'
+        assert not adapter.calls and not session.agent.messages
+        cancellation = asyncio.create_task(children.supervisor.control('cancel', identifier))
+        await asyncio.sleep(0.05)
+        assert not cancellation.done()  # Actual factory cleanup cannot pass the owned disk writer.
+        release.set()
+        result = await asyncio.wait_for(cancellation, 3)
+        assert result['status'] == 'canceled' and not adapter.calls
+        assert not children.supervisor.active
+        assert not children.store._path(identifier, '.admission').exists()
+    finally:
+        release.set()
+        if cancellation is not None:
+            await asyncio.gather(cancellation, return_exceptions=True)
+        if server is not None:
+            await server.stop()
+        else:
+            await session.children.supervisor.aclose()
+            await session.extensions.aclose()
+            session.dispose()

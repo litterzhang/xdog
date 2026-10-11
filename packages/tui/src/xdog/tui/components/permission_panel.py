@@ -8,9 +8,9 @@ from typing import Generic, Protocol, TypeVar
 
 from xdog.tui.components.select_list import SelectItem, SelectList
 from xdog.tui.editor_layout import layout_editor
-from xdog.tui.keys import KeyEvent
+from xdog.tui.keys import KeyEvent, KeyEventType
 from xdog.tui.tui import Component
-from xdog.tui.utils import sanitize_terminal_text, string_width, truncate_to_width
+from xdog.tui.utils import sanitize_terminal_text, string_width, strip_ansi, truncate_to_width
 
 
 class PermissionTheme(Protocol):
@@ -26,6 +26,8 @@ Decision = TypeVar("Decision", bound=str)
 
 class PermissionPanel(Component, Generic[Decision]):
     """Focused inline panel that resolves one permission request."""
+
+    requires_visible_confirmation = True
 
     def __init__(
         self,
@@ -48,6 +50,7 @@ class PermissionPanel(Component, Generic[Decision]):
         self._scroll = 0
         self._summary_rows = 1
         self._summary_length = 1
+        self._visible_choices: set[tuple[str, str]] = set()
         self._choices: SelectList[Decision] = SelectList(
             choices, max_visible=len(choices),
             selected_fn=lambda text: theme.inverse(theme.accent(text)),
@@ -61,6 +64,7 @@ class PermissionPanel(Component, Generic[Decision]):
 
     def render(self, width: int) -> list[str]:
         if not self._budget:
+            self._visible_choices.clear()
             return []
         framed = self._budget >= 8 and width >= 32
         budget = self._budget - (2 if framed else 0)
@@ -92,6 +96,19 @@ class PermissionPanel(Component, Generic[Decision]):
             visible = [row.text for row in summary.rows[self._scroll:self._scroll + self._summary_rows]]
             rows.extend(visible)
         rows.extend(actions)
+        rows = [truncate_to_width(row, max(0, inner_width), "") for row in rows]
+        self._visible_choices = {
+            (item.value, item.label) for item in self._choices.items
+            if item.label and any(item.label in strip_ansi(row) for row in rows)
+        }
+        if not self._can_confirm():
+            for index, row in enumerate(rows):
+                if strip_ansi(row).startswith("→ "):
+                    notice = f"Resize to confirm · Esc {self._cancel_label}"
+                    if (selected.value, selected.label) in self._visible_choices:
+                        notice = f"→ {selected.label} · {notice}"
+                    rows[index] = truncate_to_width(self._theme.dim(notice), max(0, inner_width), "")
+                    break
         if framed:
             ascii_mode = os.environ.get("XDOG_TUI_ASCII") == "1" or os.environ.get("TERM") == "dumb"
             tl, tr, bl, br, horizontal, vertical = ("+", "+", "+", "+", "-", "|") if ascii_mode else (
@@ -108,7 +125,21 @@ class PermissionPanel(Component, Generic[Decision]):
             return [top, *body, bottom]
         return [truncate_to_width(row, max(0, width), "") for row in rows]
 
+    def _can_confirm(self) -> bool:
+        selected = self._choices.selected_item
+        return bool(
+            self._budget and selected is not None
+            and (selected.value, selected.label) in self._visible_choices
+            and (self._summary_rows or not self.summary.strip())
+        )
+
     def handle_input(self, event: KeyEvent) -> bool:
+        if event.key == " ":
+            return True  # Space belongs to typing, never implicit approval.
+        if event.key == "enter" and (
+            event.event_type is not KeyEventType.PRESS or not event.matches("enter") or not self._can_confirm()
+        ):
+            return True
         if event.key in ("pageup", "pagedown"):
             # One row of overlap keeps the line carrying the scroll hint reachable.
             step = max(1, self._summary_rows - 1)

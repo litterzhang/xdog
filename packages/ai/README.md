@@ -193,6 +193,14 @@ backup. They use the apps' existing metadata handling for context limits.
 For external clients, start (or restart) the updated proxy first so its model
 endpoint includes token limits:
 
+The proxy listens immediately using locally available model metadata and refreshes
+each active provider independently in the background (up to 60 seconds per provider).
+An unreachable provider does not prevent the server or other providers from working.
+With no cached metadata, that provider's model list may be empty until refresh
+succeeds. Refresh manually with `xdog-ai models <provider> --sync` after restoring
+connectivity. Cached model listings do not imply that upstream generation is online.
+`switch-cli` connects to an already-running server; it does not start one.
+
 ```bash
 uv run xdog-ai switch-cli set-url http://127.0.0.1:8082
 uv run xdog-ai switch-cli set-key your-proxy-key  # only needed for an authenticated proxy

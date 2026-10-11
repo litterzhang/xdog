@@ -16,3 +16,17 @@ def test_fuzzy_filter():
     matches_limited = fuzzy_filter("app", candidates, limit=1)
     assert len(matches_limited) == 1
 
+
+
+def test_unicode_lowercase_expansion_preserves_original_indices():
+    for query, text, expected in [
+        ("x", "İx", (1,)), ("py", "İfile.py", (6, 7)),
+        ("İ", "İfile.py", (0,)), ("İx", "İx", (0, 1)),
+        ("σ", "ΟΣ", ()),  # Contextual final sigma does not equal non-final sigma.
+    ]:
+        match = fuzzy_match(query, text)
+        if not expected:
+            assert match is None
+        else:
+            assert match is not None
+            assert match.indices == expected

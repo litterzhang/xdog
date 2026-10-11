@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -98,6 +98,13 @@ class ClawConfig:
     # An explicitly empty tuple disables all tools.
     enabled_tools: tuple[str, ...] | None = None
     image_model: str = ""
+    child_presets: dict[str, Any] = field(default_factory=dict)
+    mcp_servers: dict[str, Any] = field(default_factory=dict)
+    mcp_credential_backend: str = 'file'
+    extensions: tuple[str, ...] = ()
+    extension_allow_tools: tuple[str, ...] = ()
+    extension_dir: str = ""
+    extension_settings: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     # Paths (XDG defaults)
     data_dir: str = ""
@@ -121,6 +128,23 @@ class ClawConfig:
 
     def __post_init__(self) -> None:
         """Fill in XDG defaults for empty path fields."""
+        from xdog.agent.extensions.runtime import names
+        object.__setattr__(self, "extensions", names(self.extensions))
+        object.__setattr__(self, "extension_allow_tools", names(self.extension_allow_tools))
+        if not set(self.extension_allow_tools) <= set(self.extensions):
+            raise ToolConfigError("extension_allow_tools must be explicitly enabled extension IDs")
+        from xdog.agent.supervision_config import ChildPresets
+        try:
+            ChildPresets(self.child_presets)
+        except (ValueError, TypeError) as exc:
+            raise ToolConfigError("Invalid child_presets configuration: " + str(exc)) from exc
+        from xdog.agent.mcp import parse_servers
+        parse_servers(self.mcp_servers)  # Invalid configuration never starts a fallback command.
+        from xdog.agent.mcp.oauth_native_store import storage_backend
+        try:
+            storage_backend(self.mcp_credential_backend)
+        except ValueError as exc:
+            raise ToolConfigError('Invalid credential backend; no plaintext fallback') from exc
         if self.enabled_tools is not None:
             if not isinstance(self.enabled_tools, (tuple, list)) or any(
                 not isinstance(name, str) or not name.strip() for name in self.enabled_tools
@@ -131,6 +155,9 @@ class ClawConfig:
             raise ToolConfigError("image_model must be a provider/model string.")
         if self.image_model and ("/" not in self.image_model or not all(self.image_model.split("/", 1))):
             raise ToolConfigError("image_model must use provider/model format.")
+        if self.extension_dir:
+            root = Path(self.extension_dir).expanduser()
+            object.__setattr__(self, "extension_dir", str(root if root.is_absolute() else get_config_dir() / root))
         if not self.data_dir:
             object.__setattr__(self, "data_dir", str(get_data_dir()))
         if not self.tasks_file:
@@ -238,6 +265,9 @@ def load_config(path: Path | None = None) -> ClawConfig:
             if path_field in filtered and isinstance(filtered[path_field], str):
                 filtered[path_field] = _expand_path(filtered[path_field])
 
+        if isinstance(filtered.get("extension_dir"), str) and filtered["extension_dir"]:
+            root = Path(filtered["extension_dir"]).expanduser()
+            filtered["extension_dir"] = str(root if root.is_absolute() else path.parent / root)
         result = ClawConfig(**filtered, groups=groups)
         _cached_config = result
         return result

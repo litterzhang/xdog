@@ -144,7 +144,11 @@ async def test_codex_cli_accepts_proxy_response(
             assert groups
             assert {tool["type"] for group in groups for tool in group["tools"]} >= {"function", "custom"}
         else:
-            assert {tool["type"] for tool in request["tools"]} >= {"function", "custom", "tool_search"}
+            # Installed clients/models choose their own inventory (0.160.0 uses
+            # function namespaces here). Verify every offered definition and its
+            # reverse call/argument mapping, not an obsolete fixed flat kind set.
+            from packages.ai.tests.test_codex_wire_contract import assert_tools_normalized
+            assert_tools_normalized(request, contexts[0].tools)
     finally:
         if process is not None and process.returncode is None:
             os.killpg(process.pid, signal.SIGTERM)

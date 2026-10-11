@@ -141,6 +141,7 @@ class PermissionManager:
         self._session_rules: set[str] = set()
         self._lock = threading.RLock()
         self._closed = False
+        self._admission_revision = 0
 
     @property
     def mode(self) -> PermissionMode:
@@ -204,6 +205,7 @@ class PermissionManager:
         with self._lock:
             if self._closed:
                 return BeforeToolCallResult(block=True, reason="Permission manager is closed")
+            self._admission_revision += 1
             self._pending[request.id] = pending
 
         cancel_task: asyncio.Task[PermissionDecision] | None = None
@@ -257,8 +259,33 @@ class PermissionManager:
             if not pending.future.done():
                 pending.future.set_result(decision)
 
-        pending.loop.call_soon_threadsafe(_set_result)
+        try:
+            pending.loop.call_soon_threadsafe(_set_result)
+        except RuntimeError:
+            # The worker can close its loop between lookup and scheduling.
+            # A late decision must neither crash the UI nor grant a session rule.
+            with self._lock:
+                if self._pending.get(request_id) is pending:
+                    self._pending.pop(request_id, None)
+            return False
         return True
+
+    @property
+    def admission_revision(self) -> int:
+        """Monotonic approval admission marker; closing an approval never erases it."""
+        with self._lock:
+            return self._admission_revision
+
+    @property
+    def has_pending_requests(self) -> bool:
+        """Authoritative admission check, including approvals not yet painted by a UI."""
+        with self._lock:
+            return any(not item.future.done() for item in self._pending.values())
+
+    def has_pending(self, request_id: str) -> bool:
+        with self._lock:
+            item = self._pending.get(request_id)
+            return item is not None and not item.future.done()
 
     def deny_all(self) -> None:
         """Deny every pending request without closing the manager."""

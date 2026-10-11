@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
 from xdog.tui.components.bounded_details import BoundedDetails, DetailRecord
 from xdog.tui.keys import KeyEvent
@@ -10,6 +11,7 @@ from xdog.tui.utils import strip_ansi
 
 def mode():
     session = MagicMock()
+    session.children.supervisor.aclose = AsyncMock()
     session.agent.subscribe.return_value = lambda: None
     session.agent.options.thinking = "medium"
     session.permissions.mode = "ask"
@@ -95,6 +97,7 @@ def test_short_status_keeps_context_and_queue_before_long_model():
 def test_no_color_theme_and_ascii_tool_markers(monkeypatch):
     from xdog.coding.modes.interactive.components.tool_execution import ToolExecutionComponent
     from xdog.coding.modes.interactive.theme import create_default_theme
+    monkeypatch.setenv("TERM", "xterm-256color")
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.setenv("XDOG_TUI_ASCII", "1")
     theme = create_default_theme()
@@ -118,15 +121,21 @@ def test_tool_duration_is_frozen_after_completion(monkeypatch):
     assert "100s" not in plain(tool)
 
 
-def test_light_theme_uses_terminal_foreground(monkeypatch):
+@pytest.mark.parametrize('terminal', ['xterm-256color', 'dumb'])
+def test_light_theme_uses_terminal_foreground(monkeypatch, terminal):
     from xdog.coding.modes.interactive.theme import create_default_theme
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("XDOG_TUI_THEME", "light")
+    monkeypatch.setenv("TERM", terminal)
     theme = create_default_theme()
     assert theme.fg("text") == "text"
     assert strip_ansi(theme.user_bg("text")) == "text"
-    assert theme.user_bg("text") != "text"
-    assert "\x1b[" in theme.accent("selected")
+    if terminal == "dumb":
+        assert theme.user_bg("text") == "text"
+        assert theme.accent("selected") == "selected"
+    else:
+        assert theme.user_bg("text") != "text"
+        assert "\x1b[" in theme.accent("selected")
 
 
 def test_permission_summary_has_position_and_precise_session_scope():
@@ -200,14 +209,17 @@ def test_compact_tool_uses_two_rows_and_retains_full_details():
 
 
 
-def test_permission_has_box_and_keeps_all_choices_at_normal_height():
+@pytest.mark.parametrize('presentation', ['unicode', 'ascii', 'dumb'])
+def test_permission_has_box_and_keeps_all_choices_at_normal_height(monkeypatch, presentation):
     from xdog.coding.core.permissions import PermissionRequest
+    monkeypatch.setenv('TERM', 'dumb' if presentation == 'dumb' else 'xterm-256color')
+    monkeypatch.setenv('XDOG_TUI_ASCII', '1' if presentation == 'ascii' else '0')
     app = mode()
     app._show_permission_request(PermissionRequest(id="r", tool_name="bash", arguments={}, summary="echo hello"))
     prompt = app._permission_prompt
     rows = [strip_ansi(row) for row in prompt.render(80)]
-    assert rows[0].startswith("╭")
-    assert rows[-1].startswith("╰")
+    assert rows[0].startswith("╭" if presentation == "unicode" else "+")
+    assert rows[-1].startswith("╰" if presentation == "unicode" else "+")
     assert "echo hello" in "\n".join(rows)
     assert all(word in "\n".join(rows) for word in ("Allow once", "same call", "Deny"))
     assert len(rows) <= 12
@@ -263,6 +275,7 @@ def test_permission_resume_preserves_parallel_tool_phase():
     app._show_permission_request(PermissionRequest(id="r", tool_name="bash", arguments={}, summary="cmd"))
     app._handle_ui_event({"type": "tool_result", "id": "first", "result": "done"})
     assert app._run_status.phase == RunPhase.PERMISSION
+    app._tui._do_render()
     app._tui._dispatch_input(KeyEvent(key="enter"))
     assert app._run_status.phase == RunPhase.RUNNING
     app._poll()
@@ -400,3 +413,116 @@ def test_thinking_preview_shows_body_without_markdown_and_bounds_rows():
     assert "**" not in "\n".join(rows)
     assert "Check history" in "\n".join(rows)
     assert len([row for row in rows if row]) <= 3
+
+
+def test_streaming_event_flood_yields_to_input_and_preserves_fifo(monkeypatch):
+    app = mode()
+    monkeypatch.setattr("xdog.tui.event_queue.time.monotonic", lambda: 100.0)
+    seen = []
+    monkeypatch.setattr(app, "_handle_ui_event", lambda event: seen.append(event["sequence"]))
+    for sequence in range(130):
+        app._event_queue.put({"sequence": sequence})
+    app._poll()
+    assert seen == list(range(64))
+    assert app._tui._render_requested
+    app._tui._dispatch_input(KeyEvent(key="x"))
+    assert app._editor.get_text() == "x"
+    app._poll()
+    app._poll()
+    assert seen == list(range(130))
+
+
+def test_ctrl_c_exit_window_uses_monotonic_time(monkeypatch):
+    app = mode()
+    clock = [100.0]
+    monkeypatch.setattr("xdog.coding.modes.interactive.interactive_mode.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("xdog.coding.modes.interactive.interactive_mode.time.time", lambda: -1000.0)
+    app._handle_ctrl_c()
+    assert not app._exit_requested
+    clock[0] += 0.5
+    app._handle_ctrl_c()
+    assert app._exit_requested
+
+
+def test_ctrl_l_does_not_resolve_permission_or_lose_draft():
+    from xdog.coding.core.permissions import PermissionRequest
+    app = mode()
+    app._editor.set_text("preserved draft")
+    app._show_permission_request(PermissionRequest(
+        id="repaint-test", tool_name="bash", arguments={"command": "touch file"}, summary="Write a file",
+    ))
+    prompt = app._permission_prompt
+    assert app._tui._dispatch_input(KeyEvent(key="l", ctrl=True))
+    assert app._tui._focused is prompt
+    assert app._permission_prompt is prompt
+    assert app._editor.get_text() == "preserved draft"
+    app._session.permissions.resolve.assert_not_called()
+    app._session.cancel.assert_not_called()
+
+
+def test_terminal_eof_cancels_session_and_closes_resources_once(monkeypatch):
+    app = mode()
+    unsubscribe = MagicMock()
+    app._unsubscribe = unsubscribe
+    monkeypatch.setattr(app._tui, "start", lambda: None)
+    app.run()
+    assert app._exit_requested
+    app._session.cancel.assert_called_once_with()
+    app._session.dispose.assert_called_once_with()
+    unsubscribe.assert_called_once_with()
+    app._request_exit()
+    app._session.dispose.assert_called_once_with()
+
+
+def test_terminal_error_still_stops_session_and_denies_approvals(monkeypatch):
+    import pytest
+    app = mode()
+
+    def failed():
+        raise RuntimeError("terminal failed")
+
+    monkeypatch.setattr(app._tui, "start", failed)
+    with pytest.raises(RuntimeError, match="terminal failed"):
+        app.run()
+    assert app._exit_requested
+    app._session.cancel.assert_called_once_with()
+    app._session.dispose.assert_called_once_with()
+    app._session.permissions.deny_all.assert_called()
+
+
+def test_exit_stops_terminal_even_when_disposal_raises():
+    import pytest
+    app = mode()
+    app._tui._running = True
+    app._session.dispose.side_effect = RuntimeError("dispose failed")
+    with pytest.raises(RuntimeError, match="dispose failed"):
+        app._request_exit()
+    assert not app._tui.is_running
+
+
+def test_exit_cancels_owned_worker_before_agent_prompt_or_compaction_finishes(monkeypatch):
+    import asyncio
+    import threading
+    app = mode()
+    entered = threading.Event()
+    finished = threading.Event()
+
+    async def blocked_turn(message, generation, images=()):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(app, "_async_agent_queue", blocked_turn)
+
+    def terminal():
+        app._start_turn("blocked")
+        assert entered.wait(1)
+        # EOF: TUI returns without a keyboard callback.
+
+    monkeypatch.setattr(app._tui, "start", terminal)
+    app.run()
+    assert finished.wait(1)
+    assert app._worker_thread is not None and not app._worker_thread.is_alive()
+    assert app._worker_loop_ref is None and app._worker_task is None

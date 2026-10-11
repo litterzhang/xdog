@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from xdog.coding.modes.interactive.components.footer import FooterComponent
@@ -122,6 +122,9 @@ def _session() -> MagicMock:
     session.messages = []
     session.working_dir = "/workspace/project"
     session.context_limit = 1000
+    session.initialize_extensions = AsyncMock()
+    session.extensions.event = AsyncMock()
+    session.extensions.commands.return_value = {}
     return session
 
 
@@ -242,7 +245,7 @@ def test_all_worker_events_carry_the_captured_turn_stamp() -> None:
     mode._active_stamp = type(mode._active_stamp)(3, 4)
     mode._worker_active = True
 
-    async def finish(_message: str) -> None:
+    async def finish(_message: str, _images=()) -> None:
         return None
 
     mode._async_agent_turn = finish  # type: ignore[method-assign]
@@ -294,9 +297,14 @@ def test_worker_error_never_mutates_editor_and_carries_restore_payload() -> None
     assert error["stamp"].generation == 7
 
 
-def test_permission_shows_all_options_and_moves_highlight() -> None:
+@pytest.mark.parametrize('presentation', ['unicode', 'ascii', 'dumb'])
+def test_permission_shows_all_options_and_moves_highlight(monkeypatch, presentation) -> None:
     from xdog.coding.core.permissions import PermissionRequest
 
+    # Presentation is a test input, not an assumption about the invoking shell.
+    monkeypatch.setenv('TERM', 'dumb' if presentation == 'dumb' else 'xterm-256color')
+    monkeypatch.setenv('XDOG_TUI_ASCII', '1' if presentation == 'ascii' else '0')
+    border = '│ ' if presentation == 'unicode' else '| '
     mode = InteractiveMode(_session())
     mode._layout.set_height(24)
     mode._show_permission_request(PermissionRequest(
@@ -306,8 +314,8 @@ def test_permission_shows_all_options_and_moves_highlight() -> None:
         rows = _plain(mode._layout, 100)
         for option in ("Allow once", "Allow for this session", "Deny"):
             assert any(option in row for row in rows)
-        assert sum(row.removeprefix("│ ").startswith("→ ") for row in rows) == 1
-        assert any(row.removeprefix("│ ").startswith(f"→ {selected}") for row in rows)
+        assert sum(row.removeprefix(border).startswith("→ ") for row in rows) == 1
+        assert any(row.removeprefix(border).startswith(f"→ {selected}") for row in rows)
         assert any("echo hello" in row for row in rows)
         assert len(rows[mode._layout.transient_start:]) <= 24
         mode._tui._dispatch_input(KeyEvent(key="down"))
@@ -351,18 +359,23 @@ def test_escape_in_permission_does_not_cancel_busy_turn() -> None:
     mode._session.cancel.assert_not_called()
 
 
-def test_autocomplete_preempts_details_and_queue_without_losing_draft() -> None:
+def test_background_autocomplete_preserves_focused_details_and_draft() -> None:
     mode = InteractiveMode(_session())
     mode._chat_log.add_assistant("answer", thinking="DETAIL-MARKER")
     mode._handle_global_input(KeyEvent(key="o", ctrl=True))
     mode._editor.set_text("/")
     rows = mode._layout.render(80)
     tail = "\n".join(rows[mode._layout.transient_start:])
-    assert "DETAIL-MARKER" not in tail
+    assert "DETAIL-MARKER" in tail
+    assert mode._handle_global_input(KeyEvent(key="escape")) == {"consume": True}
+    assert not mode._details_open
+    assert mode._editor.focused
+    assert mode._editor.get_text() == "/"
+    # Once editor focus returns, Escape belongs to its suggestions again.
     assert mode._handle_global_input(KeyEvent(key="escape")) is None
     mode._editor.handle_input(KeyEvent(key="escape"))
     assert mode._editor.get_text() == "/"
-    assert "DETAIL-MARKER" in "\n".join(mode._layout.render(80))
+    assert not mode._editor.autocomplete_active
 
 
 def test_queue_preview_is_bounded_and_status_keeps_count() -> None:
@@ -380,6 +393,8 @@ def test_late_permission_callback_does_not_dismiss_successor_prompt() -> None:
     mode = InteractiveMode(_session())
     mode._show_permission_request(PermissionRequest(id="old", tool_name="bash", arguments={}, summary="old"))
     old = mode._permission_prompt
+    assert old is not None
+    old.render(80)  # The stale callback must reach its identity guard.
     mode._show_permission_request(PermissionRequest(id="new", tool_name="bash", arguments={}, summary="new"))
     current = mode._permission_prompt
     assert old is not None
@@ -436,6 +451,10 @@ def test_two_row_permission_uses_metadata_row_for_action() -> None:
     rows = mode._layout.render(60)
     assert len(rows[mode._layout.transient_start:]) == 2
     assert any("Allow once" in row for row in rows)
+
+    assert mode._permission_prompt is not None
+    mode._permission_prompt.handle_input(KeyEvent(key="enter"))
+    mode._session.permissions.resolve.assert_not_called()
 
 
 def test_small_multiline_editor_suppresses_borders_before_text() -> None:

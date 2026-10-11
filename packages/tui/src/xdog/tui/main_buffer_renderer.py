@@ -18,6 +18,7 @@ class FrameState:
     width: int = 0
     height: int = 0
     transient_start: int = 0
+    cursor_visible: bool = False
 
 
 class MainBufferRenderer:
@@ -35,7 +36,7 @@ class MainBufferRenderer:
     def render(
         self, lines: list[str], width: int, height: int,
         cursor: tuple[int, int] | None = None, transient_start: int | None = None,
-        *, force: bool = False,
+        *, force: bool = False, anchor_tail: bool = False,
     ) -> str:
         width, height = max(1, width), max(1, height)
         old = self.state
@@ -58,8 +59,21 @@ class MainBufferRenderer:
             # Terminal reflow is not reversible. Repaint the current owned tail
             # instead of attempting to re-create historical terminal rows.
             logical_anchor = cursor[0] if cursor is not None else max(0, len(lines) - 1)
-            origin = min(row - logical_anchor, height - len(lines))
+            # An explicitly composited screen-relative overlay must retain its
+            # visible tail coordinates after reflow, even while its async frame
+            # has no cursor. Preserve the real CPR row for moves; do not clear or
+            # reconstruct any native scrollback above the visible viewport.
+            origin = height - len(lines) if anchor_tail else min(row - logical_anchor, height - len(lines))
             force = True
+
+        if not resized and len(lines) < len(old.lines) and transient < old.transient_start:
+            # Clearing/restoring context shortens the durable prefix, not just
+            # a panel. Its old logical origin may be far into native scrollback.
+            # Re-anchor the owned visible tail; never replay historical rows or
+            # leave the new editor offscreen after /clear or branch restoration.
+            next_origin = min(max(0, old.origin), height - len(lines))
+            force = force or next_origin != origin
+            origin = next_origin
 
         cleared: set[int] = set()
         if len(lines) > len(old.lines) and not resized:
@@ -69,7 +83,7 @@ class MainBufferRenderer:
                 physical = old.origin + index
                 if 0 <= physical < height:
                     move(physical)
-                    output.append("\x1b[2K")
+                    output.append("\x1b[0m\x1b[2K")
                     cleared.add(index)
 
         for index, line in enumerate(lines):
@@ -87,7 +101,7 @@ class MainBufferRenderer:
                 physical = height - 1
                 row, column = physical, 0
             move(physical)
-            output.extend(("\x1b[2K", line, "\r"))
+            output.extend(("\x1b[0m\x1b[2K", line, "\x1b[0m\r"))
             column = 0
 
         # Erase vacated rows in the previously owned area; do not scroll.
@@ -97,21 +111,56 @@ class MainBufferRenderer:
             old_bottom = min(height, max(old_bottom, new_bottom))
         for physical in range(max(0, new_bottom), old_bottom):
             move(physical)
-            output.append("\x1b[2K")
+            output.append("\x1b[0m\x1b[2K")
 
         logical_cursor = max(0, len(lines) - 1)
-        if cursor is not None and 0 <= origin + cursor[0] < height:
+        cursor_visible = cursor is not None and 0 <= cursor[0] < len(lines) and 0 <= origin + cursor[0] < height
+        if cursor is not None and cursor_visible:
             logical_cursor = cursor[0]
             move(origin + cursor[0], min(width - 1, max(0, cursor[1])))
         elif lines:
             move(origin + logical_cursor)
         self.state = FrameState(
             tuple(lines), origin, row, column, logical_cursor,
-            width, height, max(0, min(len(lines), transient)),
+            width, height, max(0, min(len(lines), transient)), cursor_visible,
         )
-        if not output:
+        if not output and cursor_visible == old.cursor_visible:
             return ""
-        return "\x1b[?2026h" + "".join(output) + "\x1b[?2026l"
+        # Hide while moving/painting even on terminals without synchronized
+        # output; restore only an on-screen focused editor's hardware cursor.
+        visibility = "\x1b[?25h" if cursor_visible else ""
+        return "\x1b[?2026h\x1b[?25l" + "".join(output) + visibility + "\x1b[?2026l"
+
+    def handoff(self) -> str:
+        """Clear only transient owned rows before an external terminal owner."""
+        from dataclasses import replace
+        old = self.state
+        if not old.lines:
+            return ""
+        row = old.cursor_row
+        output: list[str] = []
+        for target in range(max(0, old.origin + old.transient_start), min(old.height, old.origin + len(old.lines))):
+            delta = target - row
+            if delta:
+                output.append(f"\x1b[{abs(delta)}{'B' if delta > 0 else 'A'}")
+            output.append("\r\x1b[0m\x1b[2K")
+            row = target
+        target = max(0, min(old.height - 1, old.origin + old.transient_start))
+        delta = target - row
+        if delta:
+            output.append(f"\x1b[{abs(delta)}{'B' if delta > 0 else 'A'}")
+        output.append("\r")
+        self.state = replace(old, cursor_row=target, cursor_column=0)
+        return "\x1b[?2026h\x1b[?25l" + "".join(output) + "\x1b[?2026l"
+
+    def adopt_external_cursor(self, row: int, column: int, width: int, height: int) -> None:
+        """Append a fresh transient tail, without repainting child output/history."""
+        old = self.state
+        self.state = FrameState(
+            lines=old.lines[:old.transient_start], origin=row - old.transient_start,
+            cursor_row=row, cursor_column=column, logical_cursor=old.transient_start,
+            width=width, height=height, transient_start=old.transient_start,
+        )
 
     def finish(self) -> str:
         """Leave the shell below the visible owned tail, at column zero."""

@@ -10,6 +10,8 @@ saved.
 
 from __future__ import annotations
 
+import json
+import math
 from typing import Any
 
 from xdog.agent.core import AgentMessage, CustomAgentMessage
@@ -68,6 +70,32 @@ def _serialize_tool_result_content_part(part: ToolResultContentPart) -> dict[str
     return {"type": "text", "text": str(part)}
 
 
+def _json_details(value: Any) -> Any:
+    """Keep bounded JSON metadata losslessly; live/non-JSON handles remain transient."""
+    stack = [(value, 0)]
+    count = 0
+    while stack:
+        item, depth = stack.pop()
+        count += 1
+        if depth > 64 or count > 50000:
+            return None
+        if isinstance(item, dict):
+            if any(not isinstance(key, str) for key in item):
+                return None
+            stack.extend((child, depth + 1) for child in item.values())
+        elif isinstance(item, list):
+            stack.extend((child, depth + 1) for child in item)
+        elif item is not None and type(item) not in (str, int, float, bool):
+            return None
+        elif type(item) is float and not math.isfinite(item):
+            return None
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        return json.loads(encoded) if len(encoded.encode()) <= 2 * 1024 * 1024 else None
+    except (ValueError, UnicodeError, RecursionError):
+        return None
+
+
 def message_to_dict(msg: AgentMessage) -> dict[str, Any]:
     """Serialize a single ai.types.Message to a plain dict."""
     if isinstance(msg, UserMessage):
@@ -115,13 +143,17 @@ def message_to_dict(msg: AgentMessage) -> dict[str, Any]:
 
     if isinstance(msg, ToolResultMessage):
         content = [_serialize_tool_result_content_part(p) for p in msg.content]
-        return {
+        result = {
             "role": "toolResult",
             "tool_call_id": msg.tool_call_id,
             "tool_name": msg.tool_name,
             "content": content,
             "is_error": msg.is_error,
         }
+        details = _json_details(msg.details)
+        if details is not None:
+            result["details"] = details
+        return result
 
     if isinstance(msg, CustomAgentMessage):
         return {"role": "custom", "type": msg.type, "data": msg.data}
@@ -237,6 +269,7 @@ def dict_to_message(d: dict[str, Any]) -> AgentMessage:
             tool_call_id=d.get("tool_call_id", ""),
             tool_name=d.get("tool_name", ""),
             content=_parse_tool_result_content(content_raw),
+            details=_json_details(d.get("details")),
             is_error=d.get("is_error", False),
         )
 

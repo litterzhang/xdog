@@ -18,6 +18,7 @@ _TEST_MODEL = Model(
 
 def _make_mock_stream_fn(response_text="I am the assistant."):
     def stream_fn(model_id, context, options=None):
+        assert isinstance(model_id, str)
         msg = AssistantMessage(content=(TextContent(text=response_text),))
 
         async def _gen():
@@ -29,6 +30,30 @@ def _make_mock_stream_fn(response_text="I am the assistant."):
         return EventStream.from_async_generator(_gen(), result_future=fut)
 
     return stream_fn
+
+@pytest.mark.parametrize("model, expected", [
+    (_TEST_MODEL, _TEST_MODEL.id),
+    ("test/dummy", "test/dummy"),
+    ("ext-providermock-local/echo", "ext-providermock-local/echo"),
+    (None, ""),
+])
+def test_orchestrator_normalizes_model_at_runtime_boundary(tmp_path, monkeypatch, model, expected):
+    from types import SimpleNamespace
+
+    from xdog.claw.core.runtime.group import GroupRuntime
+
+    received = []
+
+    def create(group, data_dir, **kwargs):
+        received.append(kwargs["model"])
+        return SimpleNamespace(goal_manager=SimpleNamespace(_route_fn=None))
+
+    monkeypatch.setattr(GroupRuntime, "create", create)
+    orchestrator = Orchestrator(ClawConfig(data_dir=str(tmp_path)), model=model)
+    orchestrator.register_group(Group(id="main"))
+    orchestrator.auto_register_group("weixin:someone")
+    assert received == [expected, expected]
+
 
 @pytest.fixture
 def orch(tmp_path):

@@ -33,7 +33,7 @@ def session_mgr(tmp_session_dir):
 def test_agent_session_branching(session_mgr, tmp_path):
     session_data = session_mgr.create_session(model="test")
 
-    agent = Agent(_noop_stream_fn, config=AgentConfig(system_prompt="test"))
+    agent = Agent(_noop_stream_fn, config=AgentConfig(model="test", system_prompt="test"))
     msgs = [
         UserMessage(content="Hello"),
         AssistantMessage(content=(TextContent(text="Hi there"),)),
@@ -57,6 +57,7 @@ def test_agent_session_branching(session_mgr, tmp_path):
     branch_id = session.create_branch(at_index=1)
     assert branch_id is not None
     assert len(session.session_data.branches) == 1
+    assert session.session_data.branches[0]["model"] == "test"
 
     # Restore the branch
     assert session.restore_branch(branch_id) is True

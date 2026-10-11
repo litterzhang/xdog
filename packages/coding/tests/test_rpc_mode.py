@@ -47,7 +47,7 @@ def test_rpc_accepts_permission_response_while_prompt_is_running(monkeypatch):
         def __init__(self) -> None:
             self.index = 0
 
-        def readline(self) -> str:
+        def readline(self, size=-1) -> str:
             self.index += 1
             if self.index == 1:
                 return json.dumps({"type": "prompt", "message": "run it"}) + "\n"

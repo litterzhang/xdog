@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from xdog.ai.types import ImageContent
+
 
 def main() -> None:
     """CLI entry point (referenced by pyproject.toml ``[project.scripts]``)."""
@@ -43,7 +45,7 @@ def run_agent(
             verbose=verbose,
             config_path=config_path,
         ))
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         sys.exit(1)
 
@@ -55,31 +57,40 @@ def run_agent(
     # Load extensions
     _load_extensions(session, verbose)
 
+    if rpc:
+        # stdin is the bidirectional JSON-lines control stream, not a one-shot
+        # piped user prompt. Its reader must be ready before a client sends input.
+        _run_rpc(session)
+        return
+
     # Build initial message from CLI args + piped stdin + files
-    initial_message = _build_initial_message(prompt, files)
+    initial_images: list[ImageContent] = []
+    try:
+        initial_message = _build_initial_message(prompt, files, images=initial_images)
+    except (OSError, ValueError) as exc:
+        print(f"Error loading initial input: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     # Route to the appropriate mode
-    if rpc:
-        _run_rpc(session)
-    elif print_mode and initial_message:
-        _run_print(session, initial_message, output_format, verbose)
-    elif initial_message:
+    if print_mode and (initial_message or initial_images):
+        _run_print(session, initial_message or "", output_format, verbose, images=initial_images)
+    elif initial_message or initial_images:
         # Non-interactive with prompt
-        _run_print(session, initial_message, "text", verbose)
+        _run_print(session, initial_message or "", "text", verbose, images=initial_images)
     else:
         _run_interactive(session, verbose)
 
 
 def _build_initial_message(
     prompt: str | None,
-    files: tuple[Path, ...],
+    files: tuple[Path, ...], *, images: list[ImageContent] | None = None,
 ) -> str | None:
     """Build initial message from CLI arguments."""
     from xdog.coding.cli.initial_message import build_initial_message
     return build_initial_message(
         prompt=prompt,
         files=files,
-        read_stdin=True,
+        read_stdin=True, images=images,
     )
 
 
@@ -103,18 +114,19 @@ def _run_print(
     message: str,
     output_format: str,
     verbose: bool,
+    *, images: list[ImageContent] | None = None,
 ) -> None:
     """Run in non-interactive print mode."""
     from xdog.coding.modes.print_mode import run_print_mode
 
-    exit_code = asyncio.run(
-        run_print_mode(
-            session,
-            message,
-            output_format=output_format,
-            verbose=verbose,
-        )
-    )
+    async def owned_print() -> int:
+        try:
+            return await run_print_mode(session, message, output_format=output_format,
+                                        verbose=verbose, images=tuple(images or ()))
+        finally:
+            await session.children.supervisor.aclose()
+            session.dispose()
+    exit_code = asyncio.run(owned_print())
     sys.exit(exit_code)
 
 
@@ -122,7 +134,18 @@ def _run_rpc(session: Any) -> None:
     """Run in headless RPC mode."""
     from xdog.coding.modes.rpc.rpc_mode import run_rpc_mode
 
-    exit_code = asyncio.run(run_rpc_mode(session))
+    async def owned_rpc() -> int:
+        try:
+            return await run_rpc_mode(session)
+        finally:
+            try:
+                await session.children.supervisor.aclose()
+            finally:
+                try:
+                    await session.extensions.aclose()
+                finally:
+                    session.dispose()
+    exit_code = asyncio.run(owned_rpc())
     sys.exit(exit_code)
 
 
@@ -149,57 +172,63 @@ def _run_simple_repl(session: Any, verbose: bool) -> None:
     print(f"Working directory: {session.working_dir}")
     print("Type 'exit' or Ctrl+D to quit.\n")
 
-    while True:
-        try:
-            user_input = input("> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nGoodbye.")
-            break
+    try:
+        while True:
+            try:
+                user_input = input("> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nGoodbye.")
+                break
 
-        if not user_input:
-            continue
-        if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
-            print("Goodbye.")
-            break
+            if not user_input:
+                continue
+            if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
+                print("Goodbye.")
+                break
 
-        # Handle slash commands
-        if user_input.startswith("/"):
-            from xdog.coding.core.slash_commands import execute_command, parse_slash_command
-            parsed = parse_slash_command(user_input)
-            if parsed:
-                cmd, args = parsed
-                result = asyncio.run(execute_command(cmd, args, session))
-                if result.output:
-                    print(f"\n{result.output}\n")
-                if result.exit_requested:
-                    break
-                if result.prompt:
-                    # A skill command: fall through to a normal turn carrying
-                    # the skill's instructions instead of returning to the
-                    # prompt, which would leave the model unaware of them.
-                    user_input = result.prompt
+            # Handle slash commands
+            if user_input.startswith("/"):
+                from xdog.coding.core.slash_commands import execute_command, parse_slash_command
+                parsed = parse_slash_command(user_input)
+                if parsed:
+                    cmd, args = parsed
+                    result = asyncio.run(execute_command(cmd, args, session))
+                    if result.output:
+                        print(f"\n{result.output}\n")
+                    if result.exit_requested:
+                        break
+                    if result.prompt:
+                        # A skill command: fall through to a normal turn carrying
+                        # the skill's instructions instead of returning to the
+                        # prompt, which would leave the model unaware of them.
+                        user_input = result.prompt
+                    else:
+                        continue
                 else:
                     continue
-            else:
-                continue
 
-        # Send message
-        try:
-            response = asyncio.run(session.send_message(user_input))
-            if response:
-                from xdog.ai.types import TextContent
-                text_parts = [
-                    p.text for p in response.content
-                    if isinstance(p, TextContent)
-                ]
-                print(f"\n{''.join(text_parts)}\n")
-            else:
-                print("\n(no response)\n")
-        except KeyboardInterrupt:
-            print("\nCancelled.")
-            session.abort()
-        except Exception as exc:
-            print(f"\nError: {exc}\n", file=sys.stderr)
+            # Send message
+            try:
+                response = asyncio.run(session.send_message(user_input))
+                if response:
+                    from xdog.ai.types import TextContent
+                    text_parts = [
+                        p.text for p in response.content
+                        if isinstance(p, TextContent)
+                    ]
+                    print(f"\n{''.join(text_parts)}\n")
+                else:
+                    print("\n(no response)\n")
+            except KeyboardInterrupt:
+                print("\nCancelled.")
+                session.abort()
+            except Exception as exc:
+                print(f"\nError: {exc}\n", file=sys.stderr)
 
-    session.permissions.set_request_handler(None)
-    session.permissions.deny_all()
+        session.permissions.set_request_handler(None)
+        session.permissions.deny_all()
+    finally:
+        session.permissions.set_request_handler(None)
+        session.cancel()
+        asyncio.run(session.children.supervisor.aclose())
+        session.dispose()

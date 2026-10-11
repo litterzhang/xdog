@@ -451,7 +451,7 @@ def parse_request(body: Any) -> tuple[str, Context, StreamOptions, bool]:
                     result_name = _history_tool_name(item, param) if item.get("name") is not None else ""
                 messages.append(ToolResultMessage(
                     tool_call_id=call_id, tool_name=result_name,
-                    content=(TextContent(text=_text(item.get("output"), f"{param}.output")),),
+                    content=_content(item.get("output"), f"{param}.output", images=True),
                 ))
             elif kind == "reasoning":
                 summary = _list(item.get("summary", []), f"{param}.summary")

@@ -129,6 +129,8 @@ class TestGatewayServer:
                 response_line = await asyncio.wait_for(reader.readline(), timeout=5.0)
                 response = json.loads(response_line)
                 assert response["type"] == "pong"
+                assert Path(response["workspace_dir"]).is_absolute()
+                assert Path(response["workspace_dir"]).is_dir()
 
                 writer.close()
                 await writer.wait_closed()
@@ -317,3 +319,24 @@ class TestGatewayServer:
                 await writer.wait_closed()
             finally:
                 await server.stop()
+
+
+async def test_validation_errors_keep_run_id_for_ui_command_interleaving(gateway_config):
+    from unittest.mock import AsyncMock, Mock
+    gateway = GatewayServer(gateway_config)
+    gateway._orchestrator = Mock()
+    gateway._orchestrator.get_group_ids.return_value = ["main"]
+    reader = asyncio.StreamReader()
+    request = {"type": "message", "group_id": "missing", "run_id": "rejected-run", "content": "request"}
+    reader.feed_data((json.dumps(request) + "\n").encode())
+    reader.feed_eof()
+    writer = Mock()
+    writer.wait_closed = AsyncMock()
+    responses = []
+
+    async def write(writer, response):
+        responses.append(response)
+
+    gateway._write_response = write
+    await gateway._handle_client(reader, writer)
+    assert responses == [{"type": "error", "message": "Unknown group: missing", "run_id": "rejected-run"}]

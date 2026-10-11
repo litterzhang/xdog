@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import queue
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import fields, is_dataclass, replace
 from types import MappingProxyType
 from typing import Any
@@ -52,3 +53,32 @@ class EventQueue(queue.Queue[Mapping[str, Any]]):
 
     def put(self, item: Mapping[str, Any], block: bool = True, timeout: float | None = None) -> None:
         super().put(_freeze(item), block, timeout)
+
+    def drain(
+        self,
+        handler: Callable[[Mapping[str, Any]], None],
+        *,
+        max_events: int = 64,
+        max_seconds: float = 0.008,
+    ) -> int:
+        """Handle a bounded FIFO batch, yielding to terminal input and painting.
+
+        A continuously streaming producer must not monopolize a frame. Neither
+        budget drops or reorders events; remaining snapshots wait for the next
+        tick. The time budget is checked between callbacks, so one expensive
+        callback can exceed it. Handler failures propagate to the owner.
+        """
+        if max_events <= 0 or max_seconds <= 0:
+            raise ValueError("Event drain budgets must be positive")
+        deadline = time.monotonic() + max_seconds
+        count = 0
+        while count < max_events:
+            if count and time.monotonic() >= deadline:
+                break
+            try:
+                event = self.get_nowait()
+            except queue.Empty:
+                break
+            handler(event)
+            count += 1
+        return count

@@ -7,6 +7,8 @@ from collections.abc import Callable
 from xdog.tui.components.details import ReasoningText, reasoning_preview
 from xdog.tui.components.markdown import DefaultTextStyle, Markdown, MarkdownTheme
 from xdog.tui.components.spacer import Spacer
+from xdog.tui.components.text import Text
+from xdog.tui.transcript_browser import TranscriptRecord
 from xdog.tui.tui import Component, Container
 from xdog.tui.utils import sanitize_terminal_text, strip_ansi
 
@@ -54,10 +56,12 @@ class NormalMessage(Markdown):
     """Assistant prose, independently updated from reasoning."""
 
     def __init__(self, text: str, theme: MarkdownTheme) -> None:
-        super().__init__(sanitize_terminal_text(text), 1, 0, theme)
+        self.source_text = sanitize_terminal_text(text)
+        super().__init__(self.source_text, 1, 0, theme)
 
     def set_text(self, text: str) -> None:
-        super().set_text(sanitize_terminal_text(text))
+        self.source_text = sanitize_terminal_text(text)
+        super().set_text(self.source_text)
 
 
 class UserMessage(Container):
@@ -65,25 +69,78 @@ class UserMessage(Container):
 
     def __init__(self, text: str, theme: MarkdownTheme, style: DefaultTextStyle) -> None:
         super().__init__()
+        self.source_text = sanitize_terminal_text(text)
         self.add_child(Spacer(1))
-        self.add_child(Markdown(sanitize_terminal_text(text), 1, 0, theme, default_text_style=style))
+        self.add_child(Markdown(self.source_text, 1, 0, theme, default_text_style=style))
+
+
+    def set_text(self, text: str) -> None:
+        self.source_text = sanitize_terminal_text(text)
+        for child in self.children:
+            if isinstance(child, Markdown):
+                child.set_text(self.source_text)
 
 
 class Transcript(Container):
     """Own message order and exactly one separator between visible messages."""
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._record_ids: dict[int, str] = {}
+        self._record_sequence = 0
+
     def add_child(self, component: Component) -> None:
         if isinstance(component, AssistantMessages):
-            self.children.extend(component.children)
+            for child in component.children:
+                self.add_child(child)
         else:
             super().add_child(component)
+            self._record_sequence += 1
+            self._record_ids[id(component)] = f"m{self._record_sequence}"
+
+    def clear(self) -> None:
+        super().clear()
+        self._record_ids.clear()
+
+    def transcript_records(self) -> tuple[TranscriptRecord, ...]:
+        """Immutable source strings: no rendering, truncation or tool preview."""
+        records = []
+        for child in self.children:
+            if isinstance(child, UserMessage):
+                role, title, body = "user", "input", child.source_text
+            elif isinstance(child, NormalMessage):
+                role, title, body = "assistant", "response", child.source_text
+            elif isinstance(child, ThinkingMessage):
+                role, title, body = "reasoning", child.detail_title, child.detail_body
+            elif isinstance(child, Text):
+                role, title, body = "system", "notice", child.text
+            elif hasattr(child, "detail_body"):
+                role = str(getattr(child, "transcript_role", "tool"))
+                title = str(getattr(child, "detail_title", "tool"))
+                body = str(getattr(child, "transcript_body", child.detail_body))
+            else:
+                continue
+            if body:
+                records.append(TranscriptRecord(self._record_ids[id(child)], role, title, body))
+        return tuple(records)
+
+    def transform_user_input(self, original: str, transformed: str, image_count: int = 0) -> bool:
+        suffix = f"\n[Images: {image_count}]" if image_count else ""
+        for child in reversed(self.children):
+            if isinstance(child, UserMessage):
+                if child.source_text == sanitize_terminal_text(original + suffix):
+                    child.set_text(transformed + suffix)
+                    return True
+                return False  # Never overwrite an unrelated/newer user echo.
+        return False
 
     def remove_child(self, component: Component) -> None:
         if isinstance(component, AssistantMessages):
             for child in component.children:
-                super().remove_child(child)
+                self.remove_child(child)
         else:
             super().remove_child(component)
+            self._record_ids.pop(id(component), None)
 
     def render(self, width: int) -> list[str]:
         rows: list[str] = []

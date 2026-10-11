@@ -21,37 +21,37 @@ _SECRET_TEXT_PATTERNS = (
 )
 
 
-def display_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+def display_arguments(arguments: dict[str, Any], *, bounded: bool = True) -> dict[str, Any]:
     """Return recursively redacted, bounded tool arguments for local display."""
     return {
-        str(key): _display_value(value, key=str(key))
+        str(key): _display_value(value, key=str(key), bounded=bounded)
         for key, value in arguments.items()
     }
 
 
-def display_result(result: str) -> str:
+def display_result(result: str, *, bounded: bool = True) -> str:
     """Redact common inline credentials and bound one display result."""
     redacted = result
     for pattern in _SECRET_TEXT_PATTERNS:
         redacted = pattern.sub(r"\1<redacted>", redacted)
-    if len(redacted) <= _DISPLAY_RESULT_LIMIT:
+    if not bounded or len(redacted) <= _DISPLAY_RESULT_LIMIT:
         return redacted
     return redacted[:_DISPLAY_RESULT_LIMIT] + "\n… (display result truncated)"
 
 
-def _display_value(value: Any, *, key: str = "") -> Any:
+def _display_value(value: Any, *, key: str = "", bounded: bool = True) -> Any:
     if _SECRET_KEY.search(key):
         return "<redacted>"
     if isinstance(value, dict):
         return {
-            str(child_key): _display_value(child, key=str(child_key))
+            str(child_key): _display_value(child, key=str(child_key), bounded=bounded)
             for child_key, child in value.items()
         }
     if isinstance(value, (list, tuple)):
-        return [_display_value(item) for item in value[:50]]
+        return [_display_value(item, bounded=bounded) for item in (value[:50] if bounded else value)]
     if isinstance(value, str):
-        redacted = display_result(value)
-        if len(redacted) <= _DISPLAY_STRING_LIMIT:
+        redacted = display_result(value, bounded=bounded)
+        if not bounded or len(redacted) <= _DISPLAY_STRING_LIMIT:
             return redacted
         return redacted[:_DISPLAY_STRING_LIMIT] + "…"
     if value is None or isinstance(value, (bool, int, float)):
@@ -118,4 +118,26 @@ class ToolFinished:
         }
 
 
-DisplayEvent: TypeAlias = AssistantTextDelta | ToolStarted | ToolUpdated | ToolFinished
+@dataclass(frozen=True, slots=True)
+class InputConsumed:
+    id: str
+    content: str
+    delivery: str
+    image_count: int = 0
+
+    def to_wire(self) -> dict[str, Any]:
+        return {"type": "input_consumed", "id": self.id, "content": self.content,
+                "delivery": self.delivery, "image_count": self.image_count}
+
+
+@dataclass(frozen=True, slots=True)
+class ExtensionNotice:
+    data: dict[str, Any]
+
+    def to_wire(self) -> dict[str, Any]:
+        return dict(self.data)
+
+
+DisplayEvent: TypeAlias = (
+    AssistantTextDelta | ToolStarted | ToolUpdated | ToolFinished | InputConsumed | ExtensionNotice
+)

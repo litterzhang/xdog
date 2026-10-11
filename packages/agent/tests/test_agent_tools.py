@@ -113,3 +113,20 @@ async def test_filesystem_errors(tmp_path):
 # -- grep (filesystem action) --
 
 # -- find (filesystem action) --
+
+
+async def test_fast_bash_commands_do_not_lookup_reaped_process_group(tmp_path, monkeypatch):
+    import os
+
+    def already_reaped(pid):
+        raise ProcessLookupError("shell already exited")
+
+    monkeypatch.setattr(os, "getpgid", already_reaped)
+    tool = create_bash_tool(initial_cwd=tmp_path)
+    (tmp_path / "sub").mkdir()
+    for index in range(10):
+        result = await tool.execute(str(index), {"command": "printf fast"})
+        assert _text(result) == "fast"
+    await tool.execute("cd", {"command": "cd sub"})
+    result = await tool.execute("pwd", {"command": "pwd"})
+    assert str(tmp_path / "sub") in _text(result)

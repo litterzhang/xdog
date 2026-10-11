@@ -4,6 +4,7 @@ import tomllib
 from dataclasses import replace
 from pathlib import Path
 
+import httpx
 import pytest
 from xdog.ai import cli, proxy
 from xdog.ai.types import Model
@@ -13,6 +14,41 @@ MODEL = Model(
     max_prompt_tokens=1_050_000, max_tokens=128_000, reasoning=True,
     supported_efforts=("low", "medium", "high", "xhigh"),
 )
+
+
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        (httpx.ConnectError("private URL"), "cannot connect"),
+        (httpx.ConnectTimeout("private URL"), "timed out"),
+        (
+            httpx.HTTPStatusError(
+                "private URL", request=httpx.Request("GET", "http://localhost/v1/models"),
+                response=httpx.Response(401),
+            ),
+            "HTTP 401; check the configured proxy API key",
+        ),
+        (
+            httpx.HTTPStatusError(
+                "private URL", request=httpx.Request("GET", "http://localhost/v1/models"),
+                response=httpx.Response(503),
+            ),
+            "HTTP 503; check the proxy server logs",
+        ),
+    ],
+)
+def test_switch_reports_actionable_proxy_errors(monkeypatch, capsys, error, message):
+    def fail(_args):
+        raise error
+
+    monkeypatch.setattr("xdog.ai.cli_switch.run", fail)
+    monkeypatch.setattr("sys.argv", ["xdog-ai", "switch-cli", "codex", "copilot"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 1
+    output = capsys.readouterr().err
+    assert message in output
+    assert "private URL" not in output
 
 
 @pytest.fixture

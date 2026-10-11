@@ -3,6 +3,7 @@
 Re-exports all built-in components for convenient imports.
 """
 
+from xdog.tui.components.attachment_panel import AttachmentPanel
 from xdog.tui.components.box import Box, BoxComponent
 from xdog.tui.components.cancellable_loader import CancellableLoader
 from xdog.tui.components.container import Container
@@ -14,18 +15,25 @@ from xdog.tui.components.input import Input, InputComponent
 from xdog.tui.components.input_panel import InputPanel
 from xdog.tui.components.loader import Loader, LoaderComponent
 from xdog.tui.components.markdown import Markdown, MarkdownComponent
+from xdog.tui.components.navigation_panel import NavigationPanel
 from xdog.tui.components.permission_panel import PermissionPanel
+from xdog.tui.components.review_panel import ReviewPanel
 from xdog.tui.components.select_list import SelectListComponent
 from xdog.tui.components.settings_list import SettingItem, SettingsList, SettingsListTheme
 from xdog.tui.components.spacer import Spacer, SpacerComponent
 from xdog.tui.components.status_line import StatusLine
 from xdog.tui.components.text import Text, TextComponent
+from xdog.tui.components.transcript_panel import TranscriptPanel
 from xdog.tui.components.truncated_text import TruncatedTextComponent
 
 __all__ = [
+    "AttachmentPanel",
+    "TranscriptPanel",
     "DetailsPanel",
     "InputPanel",
     "PermissionPanel",
+    "ReviewPanel",
+    "NavigationPanel",
     "StatusLine",
     "Box",
     "BoxComponent",

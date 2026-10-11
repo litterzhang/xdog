@@ -9,6 +9,7 @@ from enum import StrEnum
 class RunPhase(StrEnum):
     READY = "ready"
     WAITING = "waiting"
+    COMMAND = "running command"
     REASONING = "reasoning"
     RESPONDING = "responding"
     RUNNING = "running"

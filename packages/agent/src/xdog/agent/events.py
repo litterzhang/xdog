@@ -6,7 +6,8 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Union
 
 from xdog.agent.core import AgentMessage, AgentToolResult
-from xdog.ai.types import AssistantMessageEvent, ToolResultMessage
+from xdog.agent.input_queue import QueuedInput
+from xdog.ai.types import AssistantMessageEvent, ToolResultMessage, UserMessage
 
 
 @dataclass(frozen=True)
@@ -97,7 +98,45 @@ class ToolExecutionEndEvent:
     is_error: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class InputConsumedEvent:
+    """An identified input was admitted to agent history, not just queued."""
+
+    input: QueuedInput
+    type: Literal["input_consumed"] = field(default="input_consumed", init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class InputTransformedEvent:
+    original: UserMessage
+    message: UserMessage
+    source: str
+    input_id: str = ""
+    type: Literal["input_transformed"] = field(default="input_transformed", init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class InputRejectedEvent:
+    original: UserMessage
+    source: str
+    input_id: str = ""
+    type: Literal["input_rejected"] = field(default="input_rejected", init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class InputHandledEvent:
+    original: UserMessage
+    source: str
+    feedback: str
+    input_id: str = ""
+    type: Literal["input_handled"] = field(default="input_handled", init=False)
+
+
 AgentEvent = Union[
+    InputHandledEvent,
+    InputTransformedEvent,
+    InputRejectedEvent,
+    InputConsumedEvent,
     AgentStartEvent,
     AgentEndEvent,
     TurnStartEvent,

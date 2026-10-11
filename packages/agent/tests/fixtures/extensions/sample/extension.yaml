@@ -1,0 +1,7 @@
+name: sample
+entry_point: main
+settings_schema:
+  type: object
+  properties:
+    marker:
+      type: string

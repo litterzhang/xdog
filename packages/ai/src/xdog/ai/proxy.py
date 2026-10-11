@@ -37,6 +37,7 @@ from typing import Any, Literal
 import httpx
 from xdog.ai import proxy_anthropic, proxy_openai, proxy_responses
 from xdog.ai.native import NativeHTTPError, NativeResponse, NativeSSEEvent
+from xdog.ai.providers.runtime import Runtime
 from xdog.ai.proxy_anthropic_diagnostics import target_projection_issues
 from xdog.ai.types import (
     AssistantMessage,
@@ -1599,6 +1600,28 @@ async def _handle_messages(
 # Public API
 # ---------------------------------------------------------------------------
 
+_MODEL_SYNC_TIMEOUT = 60.0
+
+
+async def _refresh_proxy_models(runtime: Runtime) -> None:
+    """Refresh independently: an unavailable provider must not block the listener."""
+    async def refresh(provider_id: str) -> None:
+        try:
+            async with asyncio.timeout(_MODEL_SYNC_TIMEOUT):
+                models = await runtime.provider(provider_id).sync_models()
+            logger.info("Synced %d models from %s", len(models), provider_id)
+        except Exception as exc:
+            # Exception text may contain credential-bearing request URLs.
+            # CancelledError deliberately propagates during server shutdown.
+            logger.warning(
+                "Model refresh for %s failed (%s); retaining locally available models. "
+                "Check provider connectivity/login and retry 'xdog-ai models %s --sync'.",
+                provider_id, type(exc).__name__, provider_id,
+            )
+
+    await asyncio.gather(*(refresh(pid) for pid in runtime.active_providers()))
+
+
 async def start_proxy(
     host: str = "127.0.0.1",
     port: int = 8082,
@@ -1625,10 +1648,6 @@ async def start_proxy(
 
     logger.info("Active providers: %s", ", ".join(active))
 
-    # Sync models from upstream APIs (refreshes cache if stale)
-    synced = await runtime.sync_models()
-    logger.info("Synced %d models from %d provider(s)", len(synced), len(active))
-
     async def on_connect(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         await _handle_connection(reader, writer, runtime, api_key=api_key)
 
@@ -1646,7 +1665,14 @@ async def start_proxy(
     print(f"  GET  http://{addr[0]}:{addr[1]}/v1/models")
 
     async with server:
-        await server.serve_forever()
+        # Bind before any upstream I/O. Catalogue endpoints use local metadata
+        # while providers refresh concurrently, including with stale/empty caches.
+        refresh_task = asyncio.create_task(_refresh_proxy_models(runtime))
+        try:
+            await server.serve_forever()
+        finally:
+            refresh_task.cancel()
+            await asyncio.gather(refresh_task, return_exceptions=True)
 
 
 def run_proxy(

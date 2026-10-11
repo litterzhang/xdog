@@ -9,6 +9,7 @@ from typing import Any
 
 from xdog.ai.types import (
     AssistantMessage,
+    ImageContent,
     TextContent,
     ToolCall,
 )
@@ -45,6 +46,24 @@ class PrintModeRenderer:
             self._render_markdown(message)
         else:
             self._render_text(message)
+
+    def render_handled(self, feedback: list[str], response: AssistantMessage | None) -> None:
+        """Explicit system feedback, never an invented assistant response or malformed JSON stream."""
+        from xdog.tui.utils import sanitize_terminal_text
+        if self._format == "json":
+            import io
+            assistant = None
+            if response is not None:
+                stream = io.StringIO()
+                PrintModeRenderer(output_format="json", stream=stream).render_message(response)
+                assistant = json.loads(stream.getvalue())
+            self._write(json.dumps({"role": "system", "type": "input_handled", "feedback": feedback,
+                                    "assistant": assistant}, ensure_ascii=False, indent=2))
+        else:
+            for value in feedback:
+                self._write(sanitize_terminal_text(value))
+            if response is not None:
+                self.render_message(response)
 
     def _render_text(self, message: AssistantMessage) -> None:
         """Render in plain text format."""
@@ -91,6 +110,7 @@ async def run_print_mode(
     *,
     output_format: str = "text",
     verbose: bool = False,
+    images: tuple[ImageContent, ...] = (),
 ) -> int:
     """Run the agent in non-interactive print mode.
 
@@ -104,9 +124,16 @@ async def run_print_mode(
         )
 
     try:
-        response = await session.send_message(prompt)
-        if response is not None:
+        response = await session.send_message(prompt, images=images) if images else await session.send_message(prompt)
+        feedback = getattr(session, "handled_feedback", [])
+        if isinstance(feedback, list) and feedback:
+            renderer.render_handled(feedback, response)
+        elif response is not None:
             renderer.render_message(response)
+        if response is None:
+            error = getattr(session.agent.state, "error", None)
+            if isinstance(error, str) and error:
+                raise RuntimeError(error)  # Pre-admission refusals are not empty successful output.
         return 0
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)

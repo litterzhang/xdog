@@ -101,6 +101,7 @@ class Image(Component):
                 data,
                 options=ImageRenderOptions(
                     max_width_cells=max_width,
+                    max_height_cells=self._options.max_height_cells,
                     image_id=self._image_id,
                 ),
             )

@@ -36,6 +36,7 @@ from xdog.agent.core import (
     AgentTool,
     AgentToolResult,
     AgentToolUpdateCallback,
+    CatalogStreamFn,
     CustomAgentMessage,
     EmbedFn,
     QueueMode,
@@ -52,6 +53,10 @@ from xdog.agent.events import (
     AgentEndEvent,
     AgentEvent,
     AgentStartEvent,
+    InputConsumedEvent,
+    InputHandledEvent,
+    InputRejectedEvent,
+    InputTransformedEvent,
     MessageEndEvent,
     MessageStartEvent,
     MessageUpdateEvent,
@@ -68,6 +73,8 @@ from xdog.agent.helpers import (
     stream_fn_from_provider,
     web_search_fn_from_provider,
 )
+from xdog.agent.history import HistoryPoint, history_points, validate_checkpoint
+from xdog.agent.input_queue import Delivery, QueuedInput
 
 # -- ToolDef framework -----------------------------------------------------
 from xdog.agent.tool_def import Param, ToolDef, action
@@ -101,6 +108,8 @@ from xdog.agent.types import (
     BeforeToolCallResult,
     ConvertToLlmFn,
     GetMessagesFn,
+    HandledInput,
+    InputTransformFn,
     TransformContextFn,
 )
 
@@ -113,6 +122,7 @@ __all__ = [
     "AgentTool",
     "AgentToolResult",
     "AgentToolUpdateCallback",
+    "CatalogStreamFn",
     "CustomAgentMessage",
     "EmbedFn",
     "QueueMode",
@@ -124,6 +134,15 @@ __all__ = [
     "AgentEvent",
     "AgentStartEvent",
     "MessageEndEvent",
+    "InputConsumedEvent",
+    "InputTransformedEvent",
+    "InputRejectedEvent",
+    "InputHandledEvent",
+    "Delivery",
+    "QueuedInput",
+    "HistoryPoint",
+    "history_points",
+    "validate_checkpoint",
     "MessageStartEvent",
     "MessageUpdateEvent",
     "ToolExecutionEndEvent",
@@ -143,6 +162,8 @@ __all__ = [
     "ConvertToLlmFn",
     "GetMessagesFn",
     "TransformContextFn",
+    "InputTransformFn",
+    "HandledInput",
     # Agent class
     "Agent",
     "EventListener",

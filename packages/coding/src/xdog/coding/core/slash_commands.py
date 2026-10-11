@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import cast
 
+from xdog.agent.extensions.command_result import ExtensionCommandResult
 from xdog.agent.skills import Skill, SkillManager
 from xdog.ai.types import ThinkingLevel
 from xdog.coding.config import get_skills_dir
@@ -23,19 +24,33 @@ class CommandResult:
     #: the terminal would tell the human something they already asked for and
     #: leave the agent none the wiser.
     prompt: str = ""
+    rich_output: ExtensionCommandResult | None = None
 
 
 # Registry of built-in slash commands: name → description
 BUILTIN_COMMANDS: dict[str, str] = {
-    "help": "Show available commands",
+    "help": "Search terminal commands: /help [QUERY]",
+    "artifact": "Load a checksummed command artifact read-only: /artifact PATH",
+    "terminal-input": "Inspect/restore/discard original rejected terminal input",
+    "login": "Extension-provider authentication menu: /login [EXTENSION_PROVIDER_ID]; native auth uses xdog-ai",
+    "extensions": "Trusted extensions: /extensions [list|reload NAME|unload NAME|auth list|auth menu]",
+    "agents": "Child browser/controls; start supports --model/--thinking and reviewed specialization settings",
+    "plan": "Session plan: /plan start OBJECTIVE | show | execute REVISION | revise | stop",
+    "tools": "Read-only configured/active tool/schema browser: /tools [QUERY]",
+    "mcp": "Manage explicit MCP connections: /mcp [list|connect|disconnect|refresh] [server]",
     "skills": "List available skills: /skills",
     "unload": "Drop an active skill: /unload [name|all]",
     "model": "Show or switch model: /model [name]",
     "thinking": "Show or set thinking level: /thinking [off|low|medium|high]",
-    "compact": "Force conversation compaction",
+    "compact": "Summarize older context: /compact [focus instructions]; TUI /compact cancel",
     "clear": "Clear conversation history",
     "session": "Show session info",
-    "sessions": "List recent sessions",
+    "name": "Inspect/name the current session: /name [NAME|- to clear]",
+    "sessions": "Browse saved sessions",
+    "resume": "Activate a saved session: /resume ID",
+    "new": "Create a new session",
+    "tree": "Browse conversation branches/checkpoints",
+    "goto": "Fork/navigate at a stable checkpoint: /goto INDEX",
     "fork": "Create a conversation branch",
     "branch": "Restore a conversation branch",
     "quit": "Exit the agent",
@@ -84,24 +99,128 @@ async def execute_command(
 ) -> CommandResult:
     """Execute a slash command."""
     cmd = command.lower().strip()
+    if cmd == 'login':
+        from xdog.agent.extensions.provider_oauth_host import login_arguments
+        cmd, args = 'extensions', 'auth ' + login_arguments(args)
 
+    if cmd == "extensions" or cmd.startswith("ext-"):
+        result = await session.extension_command(cmd, args)
+        return (CommandResult(output=result.summary, rich_output=result) if isinstance(result, ExtensionCommandResult)
+                else CommandResult(output=result))
+    if cmd == 'tools':
+        import asyncio
+        import json
+
+        from xdog.agent.extensions.tool_inventory import page
+        snapshot = await asyncio.to_thread(session._extension_tools)
+        if snapshot is None:
+            return CommandResult(output='Tool inventory unavailable; no empty/approved fallback')
+        matched = []
+        offset = 0
+        inventory_revision = ''
+        while True:
+            chunk = page(snapshot, query=args, offset=offset, revision=inventory_revision)
+            assert chunk is not None
+            matched.extend(chunk['tools'])
+            inventory_revision = chunk['revision']
+            if chunk['next_offset'] is None:
+                break
+            offset = chunk['next_offset']
+        active = ({'active_tools': [row['name'] for row in matched if row['name'] in snapshot['active_tools']]}
+                  if 'active_tools' in snapshot else {})
+        return CommandResult(output=json.dumps({**snapshot, **active, 'tools': matched,
+            'notice': 'Configured definitions and selection; permission policy and model API gate still apply'},
+            ensure_ascii=False))
+    if cmd == "agents":
+        return CommandResult(output=await session.agents_command(args))
+    if cmd == "plan":
+        import json
+        action, _, text = args.strip().partition(" ")
+        if action in {"", "show"}:
+            return CommandResult(output=json.dumps(session.plan.state.to_dict(), indent=2))
+        if action == "execute" or action in {"revise", "stop"} and text:
+            if not text.isdigit():
+                return CommandResult(output="Usage: /plan execute REVISION (inspect /plan first)")
+            revision = int(text)
+        else:
+            revision = session.plan.state.revision
+        state = session.plan_control(action, revision, text if action == "start" else "")
+        return CommandResult(output=(
+            f"Plan {state.mode} · revision {state.revision}; existing permission policy retained"))
+    if cmd == "mcp":
+        parts = args.split()
+        if len(parts) > 2:
+            return CommandResult(output="Usage: /mcp [list|connect SERVER|disconnect SERVER|refresh SERVER]")
+        return CommandResult(output=await session.manage_mcp(parts[0] if parts else "list",
+                                                            parts[1] if len(parts) > 1 else ""))
     if cmd == "help":
-        return _cmd_help()
+        return _cmd_help(session, args)
     elif cmd == "model":
         return _cmd_model(args, session)
     elif cmd == "thinking":
         return _cmd_thinking(args, session)
     elif cmd == "compact":
-        return await _cmd_compact(session)
+        return await _cmd_compact(session, args)
     elif cmd == "clear":
         return _cmd_clear(session)
+    elif cmd == "name":
+        name = session.rename_session("" if args.strip() == "-" else args) if args else session.session_data.name
+        return CommandResult(output=f"Session name: {name or '(unnamed)'}")
     elif cmd == "session":
         return _cmd_session(session)
     elif cmd == "sessions":
         return _cmd_sessions(session)
+    elif cmd == "resume":
+        return CommandResult(output=(
+            "Session activated" if session.switch_session(args.strip()) else "Session unavailable"
+        ))
+    elif cmd == "new":
+        return CommandResult(output=f"New session: {session.new_session()}")
+    elif cmd == "goto":
+        from xdog.agent.history import validate_checkpoint
+        from xdog.coding.core.messages import dicts_to_messages
+        parts = args.split()
+        if len(parts) in {1, 2, 3}:
+            checkpoint = int(parts[-1]) - 1
+            target_id = parts[0] if len(parts) > 1 else session.session_id
+            target_branch = parts[1] if len(parts) == 3 and parts[1] != "-" else ""
+            target = session.session_manager.load_session(target_id)
+            if target is None:
+                return CommandResult(output="Session unavailable")
+            source = session.messages if target_id == session.session_id else target.messages
+            if target_branch:
+                branch = next((value for value in target.branches if value.get("branch_id") == target_branch), None)
+                if branch is None:
+                    return CommandResult(output="Branch unavailable")
+                source = dicts_to_messages(branch["messages"])
+            validate_checkpoint(source, checkpoint)
+        if len(parts) == 1:
+            key = session.goto_checkpoint(int(parts[0]) - 1)
+        elif len(parts) in {2, 3}:
+            key = session.navigate_checkpoint(parts[0],
+                branch_id=parts[1] if len(parts) == 3 and parts[1] != "-" else "", index=int(parts[-1]) - 1)
+        else:
+            return CommandResult(output="Usage: /goto [SESSION [BRANCH|-]] INDEX")
+        return CommandResult(output=f"Checkpoint branch: {key}")
     elif cmd == "fork":
         return _cmd_fork(args, session)
     elif cmd == "branch":
+        parts = args.split()
+        if len(parts) == 2:
+            from xdog.agent.history import validate_checkpoint
+            from xdog.coding.core.messages import dicts_to_messages
+            target = session.session_manager.load_session(parts[0])
+            branch = (next((value for value in target.branches if value.get("branch_id") == parts[1]), None)
+                      if target else None)
+            if branch is None:
+                return CommandResult(output="Branch unavailable")
+            branch_messages = dicts_to_messages(branch["messages"])
+            if branch_messages:
+                validate_checkpoint(branch_messages, len(branch_messages) - 1)
+            if parts[0] != session.session_id:
+                session.navigate_checkpoint(parts[0], branch_id=parts[1])
+                return CommandResult(output=f"Restored branch: {parts[1]}")
+            args = parts[1]
         return _cmd_branch(args, session)
     elif cmd in ("quit", "exit"):
         return CommandResult(output="Goodbye.", exit_requested=True)
@@ -206,19 +325,14 @@ def _cmd_skills(session: AgentSession) -> CommandResult:
     return CommandResult(output="\n".join(lines))
 
 
-def _cmd_help() -> CommandResult:
-    lines = ["Available commands:", ""]
-    for name, desc in sorted(BUILTIN_COMMANDS.items()):
-        if name == "exit":
-            continue
-        lines.append(f"  /{name:<12s} {desc}")
-
-    skills = available_skills()
+def _cmd_help(session: AgentSession | None, query: str = '') -> CommandResult:
+    from xdog.tui.command_help import command_help
+    commands = {**BUILTIN_COMMANDS, **(session.extensions.commands() if session is not None else {})}
+    output = command_help(commands, query)
+    skills = {skill.slug: skill.description for skill in available_skills()}
     if skills:
-        lines += ["", "Skills:", ""]
-        for s in skills:
-            lines.append(f"  /{s.slug:<12s} {s.description}")
-    return CommandResult(output="\n".join(lines))
+        output += '\n\nSkills:\n' + command_help(skills, query)
+    return CommandResult(output=output)
 
 
 def _cmd_model(args: str, session: AgentSession) -> CommandResult:
@@ -226,17 +340,10 @@ def _cmd_model(args: str, session: AgentSession) -> CommandResult:
     current = session.model or "unknown"
 
     if not args:
-        # List available models from the ai runtime
-        try:
-            import xdog.ai as ai
-            runtime = ai.load()
-            all_models = runtime.models()
-        except Exception:
-            all_models = ()
-
+        all_models = session.model_catalog()
         lines = [f"Current model: {current}", "", "Available models:"]
         for m in sorted(all_models, key=lambda x: x.id):
-            short = m.id.split("/", 1)[-1] if "/" in m.id else m.id
+            short = m.id  # Canonical adapter IDs avoid ambiguous cross-provider suffixes.
             marker = "  → " if short == current or m.id == current else "    "
             reasoning = " (reasoning)" if m.reasoning else ""
             lines.append(f"{marker}{short}{reasoning}")
@@ -247,7 +354,7 @@ def _cmd_model(args: str, session: AgentSession) -> CommandResult:
     # Switch model
     target = args.strip()
     session.set_model(target)
-    return CommandResult(output=f"Switched to model: {target}")
+    return CommandResult(output=f"Switched to model: {session.model}")
 
 
 def _cmd_thinking(args: str, session: AgentSession) -> CommandResult:
@@ -270,11 +377,16 @@ def _cmd_thinking(args: str, session: AgentSession) -> CommandResult:
     return CommandResult(output=f"Thinking level set to: {requested}")
 
 
-async def _cmd_compact(session: AgentSession) -> CommandResult:
-    msg_before = len(session.messages)
-    await session.compact()
+async def _cmd_compact(session: AgentSession, instructions: str = "") -> CommandResult:
+    original = session.messages
+    msg_before = len(original)
+    await session.compact(instructions)
     msg_after = len(session.messages)
-    return CommandResult(output=f"Compacted: {msg_before} → {msg_after} messages")
+    if original == session.messages:
+        return CommandResult(output="No older context to compact; no summary request needed")
+    recovery = (session.session_data.compaction or {}).get('recovery_branch_id', '')
+    return CommandResult(output=f"Compacted: {msg_before} → {msg_after} messages"
+                         + ("\nRecovery checkpoint saved; /tree → Before compaction" if recovery else ""))
 
 
 def _cmd_clear(session: AgentSession) -> CommandResult:
@@ -287,6 +399,7 @@ def _cmd_session(session: AgentSession) -> CommandResult:
     thinking = session.agent.options.thinking or "off"
     lines = [
         f"Session ID: {session.session_id}",
+        f"Name:       {session.session_data.name or '(unnamed)'}",
         f"Messages:   {len(session.messages)}",
         f"Model:      {model_name}",
         f"Thinking:   {thinking}",
@@ -304,7 +417,7 @@ def _cmd_sessions(session: AgentSession) -> CommandResult:
     lines = ["Recent sessions:", ""]
     for i, meta in enumerate(metas):
         current = " ← current" if meta.session_id == session.session_id else ""
-        summary = meta.summary[:60] if meta.summary else "(empty)"
+        summary = (meta.name or meta.summary)[:60] or "(empty)"
         lines.append(f"  {i + 1}. {meta.session_id[:12]} | {meta.model} | {summary}{current}")
     return CommandResult(output="\n".join(lines))
 

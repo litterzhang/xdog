@@ -76,9 +76,14 @@ async def test_cmd_fork(agent_session):
     assert "Branch created" in result.output
 
 @pytest.mark.asyncio
-async def test_cmd_compact(agent_session):
+async def test_cmd_compact_empty_history_reports_noop_without_model_request(agent_session):
+    def unexpected(*args):
+        pytest.fail('Empty context compaction must not request a summary')
+    agent_session.agent.set_stream_fn(unexpected)
+    original = agent_session.agent.state
     result = await execute_command("compact", "", agent_session)
-    assert "Compacted" in result.output
+    assert result.output == "No older context to compact; no summary request needed"
+    assert agent_session.agent.state is original and not agent_session.messages
 
 # -- Fixtures --
 

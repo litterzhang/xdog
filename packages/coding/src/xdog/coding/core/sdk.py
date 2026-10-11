@@ -12,8 +12,10 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from xdog.agent.skills import SkillManager
 
+import asyncio
+import concurrent.futures
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -109,17 +111,22 @@ def create_agent_session(options: CreateSessionOptions | None = None) -> CreateS
         overrides=ov,
     )
 
-    settings = SettingsManager(project_dir=wd)
+    settings = SettingsManager(global_path=opts.config_path, project_dir=wd)
     session_mgr = SessionManager(sessions_dir=get_sessions_dir())
 
     # Build model catalog for default model resolution
     import xdog.ai as ai
     provider = ai.load()
+    from xdog.agent.helpers import stream_fn_from_provider
+    from xdog.coding.core.model_catalog import validated
+    adapter = stream_fn_from_provider(provider)
 
     def _first_model_id() -> str:
-        """Return the first model id from the provider, or 'sonnet' as last resort."""
-        all_models = provider.models()
-        return all_models[0].id if all_models else "sonnet"
+        """Choose only a real streaming chat profile when no model was specified."""
+        all_models = [model for model in provider.models() if model.model_type == 'chat' and model.supports_streaming]
+        if not all_models:
+            raise ValueError('No streaming chat model available on the configured adapter; no fallback')
+        return validated(all_models[0]).id
 
     # Resolve or create session
     session_data: SessionData
@@ -136,23 +143,33 @@ def create_agent_session(options: CreateSessionOptions | None = None) -> CreateS
             raise RuntimeError(f"Session not found: {opts.resume_id}")
         session_data = loaded
     else:
-        model_name = ov.get("model") or config.model or DEFAULT_MODEL or _first_model_id()
+        model_name = opts.model_name or ov.get("model") or config.model or DEFAULT_MODEL or _first_model_id()
+        if not model_name.startswith('ext-'):
+            initial = adapter.resolve_model(model_name)
+            if initial is None:
+                raise ValueError('Requested model unavailable on the configured adapter; no fallback')
+            initial = validated(initial)
+            initial_thinking = _as_thinking_level(ov.get('thinking_level') or config.thinking_level
+                                                  or DEFAULT_THINKING_LEVEL)
+            if (initial.reasoning and initial_thinking is not None and initial.supported_efforts is not None
+                    and initial_thinking not in initial.supported_efforts):
+                raise ValueError('Configured thinking level is not advertised by selected model; no fallback')
+            model_name = initial.id
         session_data = session_mgr.create_session(model=model_name, working_dir=wd)
 
     if not session_data.working_dir:
         session_data.working_dir = str(wd)
 
     # Resolve active model from catalog
-    model_id = ov.get("model") or session_data.model or config.model or DEFAULT_MODEL or _first_model_id()
-    model = provider.model(model_id)
-    if model is None:
-        model_fallback_message = f"Could not resolve model: {model_id}"
-        fallback_id = _first_model_id()
-        model = provider.model(fallback_id)
-        if model is not None:
-            model_id = model.id
-            session_data.model = model_id
-            model_fallback_message += f". Using {model.id}"
+    model_id = (opts.model_name or ov.get("model") or session_data.model
+                or config.model or DEFAULT_MODEL or _first_model_id())
+    extension_model = model_id.startswith("ext-")
+    model = None if extension_model else adapter.resolve_model(model_id)
+    if not extension_model:
+        if model is None:
+            raise ValueError('Saved/requested model unavailable on the configured adapter; no fallback')
+        model = validated(model)
+        model_id = model.id
 
     # CLI override > saved session > project/global configuration. Session
     # settings must participate here, before AgentSession loads its manager,
@@ -167,6 +184,9 @@ def create_agent_session(options: CreateSessionOptions | None = None) -> CreateS
     effective_thinking = _as_thinking_level(thinking_level)
     if model and not model.reasoning:
         effective_thinking = None
+    if (model is not None and effective_thinking is not None and model.supported_efforts is not None
+            and effective_thinking not in model.supported_efforts):
+        raise ValueError('Configured thinking level is not advertised by selected model; no fallback')
 
     context_window = (model.context_window if model is not None else 0) or MAX_CONTEXT_TOKENS
     max_prompt_tokens = model.max_prompt_tokens if model is not None else 0
@@ -178,14 +198,14 @@ def create_agent_session(options: CreateSessionOptions | None = None) -> CreateS
     permissions = PermissionManager(config.permission_mode)
 
     from xdog.agent import AgentConfig
-    from xdog.agent.helpers import model_supports_tool_calls, stream_fn_from_provider
+    from xdog.agent.helpers import stream_fn_from_provider
     from xdog.ai.types import StreamOptions
 
     agent = Agent(
-        stream_fn_from_provider(provider),
+        adapter,
         config=AgentConfig(
             model=model_id,
-            supports_tool_calls=model_supports_tool_calls(model_id),
+            supports_tool_calls=model.supports_tool_calls if model is not None else None,
             system_prompt="",  # will be rebuilt on first prompt
             context_window=context_window,
             max_prompt_tokens=max_prompt_tokens,
@@ -194,6 +214,7 @@ def create_agent_session(options: CreateSessionOptions | None = None) -> CreateS
             ),
         ),
         tools=agent_tools,
+        tool_ctx={"fs_workspace": str(wd)},
         before_tool_call=permissions.before_tool_call,
         # The Agent owns where the index and the bodies go; this only says which
         # manager to read them from.
@@ -215,10 +236,35 @@ def create_agent_session(options: CreateSessionOptions | None = None) -> CreateS
         working_dir=wd,
         context_window=context_window,
         max_prompt_tokens=max_prompt_tokens,
+        model_info=model,
         permissions=permissions,
     )
+    if extension_model:
+        async def activate() -> None:
+            try:
+                await session.initialize_extensions()
+                declared = session.extensions.provider_model(model_id)
+                if declared is None:
+                    raise ValueError("Configured extension model is not declared by an explicitly trusted worker")
+                thinking = session.agent.options.thinking
+                if (thinking is not None and declared.reasoning and declared.supported_efforts is not None
+                        and thinking not in declared.supported_efforts):
+                    raise ValueError("Configured thinking level is not advertised by selected extension model")
+                session.set_model(model_id)
+                if not declared.reasoning:
+                    session.agent.set_options(replace(session.agent.options, thinking=None))
+            except BaseException:
+                await session.children.supervisor.aclose()
+                await session.extensions.aclose()
+                if session.mcp is not None:
+                    await session.mcp.aclose()
+                raise
+        # This synchronous factory is also called from running event loops. Use
+        # one owned bootstrap loop, never nest asyncio.run on the caller's loop.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="xdog-provider-bootstrap") as pool:
+            pool.submit(lambda: asyncio.run(activate())).result()
     # Persist the effective value rather than a legacy alias such as "normal".
-    session.settings.set_session_thinking(effective_thinking or "off")
+    session.settings.set_session_thinking(session.agent.options.thinking or "off")
     session._persist()
 
     return CreateSessionResult(

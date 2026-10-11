@@ -44,8 +44,10 @@ class AntigravityVendor(BaseVendor):
         overrides = await asyncio.to_thread(_model_sync.load_overrides)
         if not force and cached and time.time() - cached[1] < ttl:
             return _model_sync.parse_models(cached[0], _auth.base_url(), overrides)
-        creds = await self.tokens.get()
         try:
+            # Token refresh is network I/O too; preserve stale catalogue data
+            # when Google's auth endpoint is unreachable.
+            creds = await self.tokens.get()
             payload = await _transport.post_json(creds, "fetchAvailableModels", {"project": creds.project_id})
         except (httpx.HTTPError, _transport.AntigravityHTTPError):
             if not cached:

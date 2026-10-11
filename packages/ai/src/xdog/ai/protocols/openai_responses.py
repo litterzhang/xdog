@@ -144,7 +144,7 @@ def context_to_responses_input(
             if call_id in pending_tool_calls and call_id not in resolved_tool_calls:
                 pending_tool_calls.remove(call_id)
                 resolved_tool_calls.add(call_id)
-                items.append(_convert_tool_result(msg))
+                items.append(_convert_tool_result(msg, model))
             continue
 
         _flush_unmatched_tool_calls()
@@ -174,7 +174,7 @@ def _convert_message(
     if isinstance(msg, AssistantMessage):
         return _convert_assistant_message(msg)
     if isinstance(msg, ToolResultMessage):
-        return _convert_tool_result(msg)
+        return _convert_tool_result(msg, model)
     return None
 
 
@@ -254,8 +254,18 @@ def _convert_assistant_message(
     return items if items else None
 
 
-def _convert_tool_result(msg: ToolResultMessage) -> dict[str, Any]:
-    """Convert a ToolResultMessage to function_call_output."""
+def _convert_tool_result(msg: ToolResultMessage, model: Model | None = None) -> dict[str, Any]:
+    """Preserve supported typed tool images in their original call output, not a user turn."""
+    if model is not None and "image" in (model.input or ()) and any(
+            isinstance(part, ImageContent) for part in msg.content):
+        parts: list[dict[str, Any]] = []
+        for part in msg.content:
+            if isinstance(part, TextContent):
+                parts.append({"type": "input_text", "text": sanitize_unicode(part.text)})
+            elif isinstance(part, ImageContent):
+                parts.append({"type": "input_image", "detail": "auto",
+                              "image_url": f"data:{part.mime_type};base64,{part.data}"})
+        return {"type": "function_call_output", "call_id": _responses_call_id(msg.tool_call_id), "output": parts}
     text_parts = [
         sanitize_unicode(p.text)
         for p in msg.content

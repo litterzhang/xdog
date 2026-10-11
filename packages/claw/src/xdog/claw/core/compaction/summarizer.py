@@ -1,24 +1,20 @@
 """Summarizer — generates structured conversation summaries via direct LLM call.
 
-Uses the ai provider's ``complete()`` method directly instead of creating
-a full Agent, since summarization is a single stateless LLM call with no
-tool use.
+Uses the selected stream adapter directly instead of creating a full Agent.
+Summarization is a single stateless model request with no tool execution.
 """
 from __future__ import annotations
 
-import logging
-
 from xdog.agent import AgentMessage
-from xdog.agent.core import CustomAgentMessage
+from xdog.agent.core import CustomAgentMessage, StreamFn
+from xdog.agent.summarization import stream_summary, summary_instructions
 from xdog.ai.types import (
-    AssistantMessage,
     Context,
-    TextContent,
+    Message,
+    StreamOptions,
     UserMessage,
 )
 from xdog.claw.core.compaction.prompts import SUMMARIZER_SYSTEM_PROMPT, build_summary_prompt
-
-logger = logging.getLogger(__name__)
 
 
 class Summarizer:
@@ -27,42 +23,36 @@ class Summarizer:
     Reusable — create once per group, call ``summarize()`` each compaction.
     """
 
-    def __init__(self, model: str) -> None:
+    def __init__(self, model: str, stream_fn: StreamFn | None = None,
+                 options: StreamOptions = StreamOptions()) -> None:
         self._model = model
+        self._stream_fn = stream_fn
+        self._options = options
 
     async def summarize(
         self,
         messages: list[AgentMessage],
         previous_summary: str | None = None,
+        *, instructions: str = "",
     ) -> str:
-        """Produce a structured summary of the conversation.
-
-        Returns the summary text, or a fallback string if summarization fails.
-        """
-        import xdog.ai as ai
+        """Produce a valid summary; failure must not destroy unsummarized history."""
+        instructions = summary_instructions(instructions)
         prompt_text = build_summary_prompt(previous_summary)
-        try:
-            runtime = ai.load()
-            # `Context` carries only the three wire message kinds; a
-            # CustomAgentMessage is claw's own bookkeeping and has no
-            # representation to send, so it is dropped rather than passed
-            # through to be rejected deeper in.
-            sendable = [m for m in messages if not isinstance(m, CustomAgentMessage)]
-            context = Context(
-                system_prompt=SUMMARIZER_SYSTEM_PROMPT,
-                messages=(*sendable, UserMessage(content=prompt_text)),
-            )
-            result = await runtime.complete(self._model, context)
-            return _extract_text(result)
-        except Exception:
-            logger.exception("Failed to generate compaction summary")
-            return "Conversation summary unavailable."
+        if instructions:
+            prompt_text += "\n\nUser's compaction focus (not a tool request):\n" + instructions
+        from xdog.agent.extensions.context_message import summary_text
+        sendable: list[Message] = []
+        for message in messages:
+            if not isinstance(message, CustomAgentMessage):
+                sendable.append(message)
+            elif custom_text := summary_text(message):
+                sendable.append(UserMessage(content=custom_text))
 
-
-def _extract_text(message: AssistantMessage) -> str:
-    """Extract text content from an AssistantMessage."""
-    parts: list[str] = []
-    for part in message.content:
-        if isinstance(part, TextContent) and part.text:
-            parts.append(part.text)
-    return "\n\n".join(parts) if parts else "(no summary)"
+        context = Context(system_prompt=SUMMARIZER_SYSTEM_PROMPT,
+                          messages=(*sendable, UserMessage(content=prompt_text)), tools=())
+        stream_fn = self._stream_fn
+        if stream_fn is None:
+            import xdog.ai as ai
+            from xdog.agent.helpers import stream_fn_from_provider
+            stream_fn = stream_fn_from_provider(ai.load())
+        return await stream_summary(stream_fn, self._model, context, self._options)

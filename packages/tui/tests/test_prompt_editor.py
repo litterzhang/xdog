@@ -148,3 +148,18 @@ def test_ctrl_enter_encodings_insert_newline_without_submitting() -> None:
             editor.handle_input(event)
         assert editor.get_text() == "draft\n"
         assert submitted == []
+
+
+def test_unfocused_editor_has_no_cursor_marker_or_reverse_video_cursor() -> None:
+    from xdog.tui.tui import CURSOR_MARKER
+    editor = make_editor()
+    editor.set_text("a👩‍💻b")
+    editor.handle_input(KeyEvent(key="left"))
+    editor.handle_input(KeyEvent(key="left"))
+    unfocused = editor.render(40)
+    assert not any(CURSOR_MARKER in line or "\x1b[7m" in line for line in unfocused)
+    editor.focused = True
+    focused = editor.render(40)
+    assert any(CURSOR_MARKER + "👩‍💻" in line for line in focused)
+    assert not any("\x1b[7m" in line for line in focused)
+    assert [strip_ansi(line) for line in focused] == [strip_ansi(line) for line in unfocused]

@@ -10,6 +10,7 @@ from xdog.coding.modes.interactive.components.user_message import UserMessageCom
 from xdog.coding.modes.interactive.theme import Theme
 from xdog.tui.components.bounded_details import DetailRecord
 from xdog.tui.components.details import set_details_expanded
+from xdog.tui.components.extension_command import ExtensionCommand
 from xdog.tui.components.messages import ThinkingMessage, Transcript
 from xdog.tui.components.text import Text
 from xdog.tui.tui import Component
@@ -120,6 +121,8 @@ class ChatLog(Transcript):
                     body=child.detail_body,
                     kind="reasoning",
                 ))
+            elif isinstance(child, ExtensionCommand) and child.detail_body:
+                records.append(DetailRecord(child.detail_title, child.detail_body, "command"))
             elif isinstance(child, ToolExecutionComponent) and child.detail_body:
                 records.append(DetailRecord(
                     title=child.detail_title,

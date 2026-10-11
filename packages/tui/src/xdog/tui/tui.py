@@ -1,6 +1,6 @@
 """TUI engine — string-based component rendering with differential updates.
 
-Direct port of the original TypeScript pi-tui architecture:
+Inspired by the original TypeScript pi-tui component architecture:
 
 - ``Component.render(width) → list[str]`` — returns ANSI-styled lines
 - ``Container`` — concatenates children's ``render()`` output
@@ -34,7 +34,7 @@ from xdog.tui.keys import KeyEvent, is_key_release, parse_key_events
 from xdog.tui.main_buffer_renderer import MainBufferRenderer
 from xdog.tui.stdin_buffer import EndOfInput, InputFrame, KeyBytes, Paste, RejectedPaste, StdinBuffer
 from xdog.tui.terminal_protocol import TerminalProtocol
-from xdog.tui.utils import string_width
+from xdog.tui.utils import pad_right, slice_by_column, string_width, truncate_to_width
 
 # ---------------------------------------------------------------------------
 # Focusable protocol and cursor marker
@@ -125,6 +125,12 @@ class Component(ABC):
     Subclasses implement ``render(width) → list[str]``.
     """
 
+    requires_visible_confirmation: bool = False
+    """Reject confirmation keys while a resize still needs a painted frame."""
+
+    requires_current_viewport_input: bool = False
+    """Reject all non-cancellation inputs/pastes until the current viewport is painted."""
+
     wants_key_release: bool = False
     """Set to ``True`` if this component needs key release events (Kitty protocol)."""
 
@@ -203,24 +209,21 @@ class OverlayHandle:
         self._entry = entry
 
     def hide(self) -> None:
-        """Permanently remove the overlay and restore its prior focus."""
+        """Permanently remove the overlay and restore the visible focus target."""
         if self._entry in self._tui._overlay_stack:
-            was_focused = self._tui._focused is self._entry.component
+            self._tui._input_epoch += 1
             self._tui._overlay_stack.remove(self._entry)
-            if was_focused:
-                replacement = self._tui._get_topmost_visible_overlay()
-                self._tui.set_focus(
-                    replacement.component
-                    if replacement is not None
-                    else self._entry.previous_focus
-                )
-            if not self._tui._overlay_stack:
-                sys.stdout.write("\x1b[?25l")  # Hide cursor
+            self._tui._sync_overlay_focus()
             self._tui.request_render()
 
     def set_hidden(self, hidden: bool) -> None:
-        """Temporarily hide or show the overlay."""
-        self._entry.hidden = hidden
+        """Temporarily hide/show, releasing/reacquiring input capture."""
+        if self._entry in self._tui._overlay_stack:
+            if self._entry.hidden != hidden:
+                self._tui._input_epoch += 1
+            self._entry.hidden = hidden
+            self._tui._sync_overlay_focus()
+            self._tui.request_render()
 
     def is_hidden(self) -> bool:
         """Check if overlay is temporarily hidden."""
@@ -228,11 +231,27 @@ class OverlayHandle:
 
     def focus(self) -> None:
         """Focus this overlay and bring it to the front."""
-        self._tui._focused = self._entry.component
+        if self._entry in self._tui._overlay_stack:
+            self._tui._input_epoch += 1
+            self._tui._overlay_stack.remove(self._entry)
+            self._tui._overlay_stack.append(self._entry)
+            self._entry.hidden = False
+            self._entry.capturing = True
+            self._tui._sync_overlay_focus()
+            self._tui.request_render()
 
     def unfocus(self) -> None:
-        """Release focus to the previous target."""
-        self._tui._focused = None
+        """Release input capture without hiding the overlay."""
+        if self._entry in self._tui._overlay_stack:
+            if self._entry.capturing:
+                self._tui._input_epoch += 1
+            self._entry.capturing = False
+            self._tui._sync_overlay_focus()
+            self._tui.request_render()
+
+    def is_capturing(self) -> bool:
+        """Configured input capture, independent of temporary visibility/current focus."""
+        return self._entry.capturing
 
     def is_focused(self) -> bool:
         """Check if this overlay has focus."""
@@ -242,18 +261,13 @@ class OverlayHandle:
 class _OverlayEntry:
     """Internal overlay state."""
 
-    __slots__ = ("component", "options", "hidden", "previous_focus")
+    __slots__ = ("component", "options", "hidden", "capturing")
 
-    def __init__(
-        self,
-        component: Component,
-        options: OverlayOptions | None,
-        previous_focus: Component | None = None,
-    ) -> None:
+    def __init__(self, component: Component, options: OverlayOptions | None) -> None:
         self.component = component
         self.options = options or OverlayOptions()
         self.hidden = False
-        self.previous_focus = previous_focus
+        self.capturing = not self.options.non_capturing
 
 
 # ---------------------------------------------------------------------------
@@ -263,18 +277,23 @@ class _OverlayEntry:
 class TUI(Container):
     """Main TUI with differential string-line rendering and overlay support.
 
-    Faithful port of the TypeScript ``TUI`` class. Renders in the **main
-    terminal buffer** (no alternate screen) so terminal scrollback is
-    preserved.
+    Renders in the **main terminal buffer** by default so native scrollback
+    is preserved. Components own formatting; the painter owns cursor and rows.
     """
 
     def __init__(self, *, fullscreen: bool = False) -> None:
         super().__init__()
         self.fullscreen = fullscreen
+        self._screen_change: bool | None = None
+        self._saved_main_painter: MainBufferRenderer | None = None
         self._previous_lines: list[str] = []
         self._previous_width: int = 0
+        self._checked_geometry: tuple[int, int] | None = None
         self._previous_height: int = 0
         self._focused: Component | None = None
+        self._input_epoch = 0
+        self._input_geometry: tuple[int, int] | None = None
+        self._frame_interceptor: Callable[[KeyBytes | Paste], bool] | None = None
         self._render_requested: bool = False
         self._cursor_row: int = 0
         self._hardware_cursor_row: int = 0
@@ -285,11 +304,13 @@ class TUI(Container):
         self._tick_callbacks: list[Callable[[], None]] = []
         self._frame_rate: float = 30.0
         self._overlay_stack: list[_OverlayEntry] = []
+        self._overlay_base_focus: Component | None = None
         self._input_listeners: list[InputListener] = []
         self._full_redraw_counter: int = 0
         self._suspend_requested = False
         self._painter = MainBufferRenderer()
         self._force_render = False
+        self._external_callback: Callable[[], None] | None = None
 
     def _terminal_enter_sequence(self) -> str:
         prefix = "\x1b[?1049h" if self.fullscreen else ""
@@ -297,7 +318,9 @@ class TUI(Container):
 
     def _terminal_leave_sequence(self) -> str:
         suffix = "\x1b[?1049l" if self.fullscreen else ""
-        return "\x1b[?7h\x1b[?25h" + suffix
+        # Recover even if a paint failed after opening synchronized output or
+        # before a component's style reset. Leave shell input in normal modes.
+        return "\x1b[?2026l\x1b[0m\x1b[?7h\x1b[?25h" + suffix
 
     # -- overlay management --------------------------------------------------
 
@@ -307,25 +330,34 @@ class TUI(Container):
         options: OverlayOptions | None = None,
     ) -> OverlayHandle:
         """Show an overlay component on top of the main content."""
-        entry = _OverlayEntry(component, options, self._focused)
+        entry = _OverlayEntry(component, options)
+        self._input_epoch += 1
         self._overlay_stack.append(entry)
-        if not (options and options.non_capturing):
-            self._focused = component
-        self._render_requested = True
+        self._sync_overlay_focus()
+        self.request_render()
         return OverlayHandle(self, entry)
 
     def hide_overlay(self) -> None:
-        """Pop the topmost overlay."""
+        """Pop the topmost overlay and restore underlying focus."""
         if self._overlay_stack:
-            self._overlay_stack.pop()
-            if not self._overlay_stack:
-                sys.stdout.write("\x1b[?25l")
-                self._focused = None
-        self._render_requested = True
+            OverlayHandle(self, self._overlay_stack[-1]).hide()
 
-    def has_overlay(self) -> bool:
-        """Return ``True`` if any overlay is currently visible."""
-        return any(self._is_overlay_visible(e) for e in self._overlay_stack)
+    def _sync_overlay_focus(self) -> None:
+        """Use one focus owner for rendering, keyboard input, and atomic paste.
+
+        Keep the base target separately from the overlay stack so out-of-order
+        removals cannot restore focus to a removed or hidden dialog. Visibility
+        predicates are re-evaluated at input/render boundaries (including resize).
+        """
+        overlay = self._get_topmost_visible_overlay()
+        target = overlay.component if overlay is not None else self._overlay_base_focus
+        if self._focused is not target:
+            self.set_focus(target)
+            self.request_render()
+
+    def has_overlay(self, *, exclude: Component | None = None) -> bool:
+        """Return whether any overlay is visible, optionally excluding one owned component."""
+        return any(e.component is not exclude and self._is_overlay_visible(e) for e in self._overlay_stack)
 
     def _is_overlay_visible(self, entry: _OverlayEntry) -> bool:
         if entry.hidden:
@@ -339,7 +371,7 @@ class TUI(Container):
     def _get_topmost_visible_overlay(self) -> _OverlayEntry | None:
         for i in range(len(self._overlay_stack) - 1, -1, -1):
             entry = self._overlay_stack[i]
-            if entry.options.non_capturing:
+            if not entry.capturing:
                 continue
             if self._is_overlay_visible(entry):
                 return entry
@@ -359,12 +391,40 @@ class TUI(Container):
     # -- focus ---------------------------------------------------------------
 
     def set_focus(self, component: Component | None) -> None:
+        if not any(entry.component is component for entry in self._overlay_stack):
+            self._overlay_base_focus = component
+        # Reasserting the same owner is not a blur/focus transition. Custom
+        # frame epochs (and editor selections) must survive normal tick polling.
+        if self._focused is component:
+            return
         # Update Focusable state
         if is_focusable(self._focused):
             self._focused.focused = False  # type: ignore[union-attr]
+        self._input_epoch += 1
         self._focused = component
         if is_focusable(component):
             component.focused = True  # type: ignore[union-attr]
+
+    def set_frame_interceptor(self, callback: Callable[[KeyBytes | Paste], bool] | None) -> None:
+        """Host arbitration after protocol filtering; True means held/consumed.
+
+        This is not a terminal-protocol observer. Replies and rejected pastes are
+        handled before this callback; delivery bypasses interception exactly once.
+        """
+        self._frame_interceptor = callback
+
+    @property
+    def input_lease(self) -> str:
+        self._sync_overlay_focus()
+        geometry = (_terminal_width(), _terminal_height())
+        if self._input_geometry != geometry:
+            self._input_geometry = geometry
+            self._input_epoch += 1
+        return f"{self._input_epoch}:{geometry}:{self.fullscreen}"
+
+    def deliver_frame(self, frame: KeyBytes | Paste) -> bool:
+        """Deliver host-validated held input without invoking its hook again."""
+        return self._handle_frame(frame, intercepted=True)
 
     # -- tick callbacks ------------------------------------------------------
 
@@ -393,14 +453,74 @@ class TUI(Container):
         """Request a controlled POSIX job-control suspend."""
         if os.name == "nt" or not hasattr(signal, "SIGTSTP"):
             return False
+        self._input_epoch += 1
         self._suspend_requested = True
         self._running = False
         return True
+
+    def request_fullscreen(self, enabled: bool) -> bool:
+        """Switch at a terminal-loop boundary, preserving the main-buffer painter.
+
+        Hosts must supply a height-bounded alternate view and prioritize approvals.
+        Coalesced keys cannot submit through a requested screen transition.
+        """
+        if not self._running or self._stopped or self._external_callback is not None or self._suspend_requested:
+            return False
+        if enabled and self.has_overlay():
+            return False
+        if not enabled and self.fullscreen and self._saved_main_painter is None:
+            return False  # Startup fullscreen is not a temporary viewer.
+        if enabled != self.fullscreen:
+            self._input_epoch += 1
+        self._screen_change = enabled if enabled != self.fullscreen else None
+        self.request_render()
+        return True
+
+    def _apply_screen_change(self, stdin: StdinBuffer, protocol: TerminalProtocol) -> None:
+        enabled, self._screen_change = self._screen_change, None
+        if enabled is None:
+            return
+        if enabled:
+            self._saved_main_painter = self._painter
+            self._painter = MainBufferRenderer()
+            self.fullscreen = True
+            sys.stdout.write("\x1b[?1049h\x1b[2J\x1b[H")
+        else:
+            assert self._saved_main_painter is not None
+            self._painter, self._saved_main_painter = self._saved_main_painter, None
+            self.fullscreen = False
+            sys.stdout.write("\x1b[?1049l")
+            sys.stdout.write(protocol.request_cursor_position())
+            sys.stdout.flush()
+            # Resizes can reflow the hidden main buffer. Re-anchor at its actual
+            # restored cursor before painting; never replay scrollback history.
+            self._anchor_terminal(stdin, protocol, resumed=True)
+        self._previous_width, self._previous_height = self._painter.state.width, self._painter.state.height
+        self.request_render(force=True)
+        sys.stdout.flush()
+
+    def run_outside_terminal(self, callback: Callable[[], None]) -> bool:
+        """Schedule one foreground handoff after restoring terminal modes.
+
+        The callback runs on the UI thread, not inside raw input dispatch. No
+        polling/painting occurs until it returns; worker events remain queued.
+        """
+        if not self._running or self._stopped or self._external_callback is not None or self._suspend_requested:
+            return False
+        self._input_epoch += 1
+        self._external_callback = callback
+        self._running = False
+        return True
+
+    @property
+    def stopped(self) -> bool:
+        return self._stopped
 
     def start(self) -> None:
         """Run a single owned terminal session, re-entering after suspend."""
         self._stopped = False
         resumed = False
+        external_resume = False
         while not self._stopped:
             self._running = True
             self._suspend_requested = False
@@ -415,24 +535,41 @@ class TUI(Container):
                     sys.stdout.write("\r\n")
                 sys.stdout.write(protocol.startup())
                 sys.stdout.flush()
-                self._anchor_terminal(stdin, protocol, resumed=resumed)
-                self.request_render(force=resumed)
+                if external_resume and not self.fullscreen:
+                    self._anchor_terminal(stdin, protocol, resumed=True, external=True)
+                else:
+                    self._anchor_terminal(stdin, protocol, resumed=resumed)
+                self.request_render(force=resumed and (not external_resume or self.fullscreen))
                 self._input_loop(stdin, protocol)
             finally:
                 self._running = False
                 try:
                     if enabled:
-                        if not self._suspend_requested:
+                        if self._external_callback is not None:
+                            sys.stdout.write(self._painter.handoff())
+                        elif not self._suspend_requested:
                             sys.stdout.write(self._painter.finish())
                         sys.stdout.write(protocol.cleanup())
                         sys.stdout.write(self._terminal_leave_sequence())
                         sys.stdout.flush()
+                        if (self._saved_main_painter is not None and not self._suspend_requested
+                                and self._external_callback is None):
+                            self._painter, self._saved_main_painter = self._saved_main_painter, None
+                            self.fullscreen = False
+                            self._screen_change = None
                 finally:
                     stdin.restore()
+            callback, self._external_callback = self._external_callback, None
+            if callback is not None and not self._stopped:
+                with stdin.preserve_modes():
+                    callback()
+                resumed = external_resume = True
+                continue
             if not self._suspend_requested:
                 break
             self._suspend_process()
             resumed = True
+            external_resume = False
 
     def _suspend_process(self) -> None:
         """Temporarily restore normal job control without nesting run loops."""
@@ -444,7 +581,7 @@ class TUI(Container):
             signal.signal(signal.SIGTSTP, previous)
 
     def _anchor_terminal(
-        self, stdin: StdinBuffer, protocol: TerminalProtocol, *, resumed: bool,
+        self, stdin: StdinBuffer, protocol: TerminalProtocol, *, resumed: bool, external: bool = False,
     ) -> None:
         # CPR is optional: a non-reporting terminal uses a conservative bottom
         # row origin, and only the rows written by this process become owned.
@@ -459,7 +596,13 @@ class TUI(Container):
                 pending.extend(protocol.filter_frame(frame))
         position = protocol.cursor_position
         row = min(_terminal_height() - 1, max(0, position[0] - 1)) if position else _terminal_height() - 1
-        if resumed:
+        if external:
+            self._painter.adopt_external_cursor(
+                row, max(0, position[1] - 1) if position else 0, _terminal_width(), _terminal_height(),
+            )
+            self._previous_width, self._previous_height = _terminal_width(), _terminal_height()
+            self._force_render = False
+        elif resumed:
             self._painter.reanchor(row, max(0, position[1] - 1) if position else 0)
         else:
             self._painter = MainBufferRenderer(origin_row=row)
@@ -470,14 +613,20 @@ class TUI(Container):
             sys.stdout.write(output)
             sys.stdout.flush()
 
-    def _handle_frame(self, frame: InputFrame) -> bool:
+    def _handle_frame(self, frame: InputFrame, *, intercepted: bool = False) -> bool:
         if isinstance(frame, EndOfInput):
             self.stop()
             return False
+        if (self._external_callback is not None or self._suspend_requested or self._stopped
+                or self._screen_change is not None):
+            return False
+        self._sync_overlay_focus()
         if isinstance(frame, RejectedPaste):
             target = self._focused
             if target is not None:
                 target.handle_input_error(frame.reason)
+            return True
+        if not intercepted and self._frame_interceptor is not None and self._frame_interceptor(frame):
             return True
         if isinstance(frame, Paste):
             return self._dispatch_paste(frame.text)
@@ -488,6 +637,9 @@ class TUI(Container):
             ):
                 continue
             consumed = self._dispatch_input(event) or consumed
+            if (self._external_callback is not None or self._suspend_requested or self._stopped
+                    or self._screen_change is not None):
+                break  # Coalesced keystrokes must not submit after a handoff/exit.
         return consumed
 
     def _input_loop(self, stdin: StdinBuffer, protocol: TerminalProtocol) -> None:
@@ -502,6 +654,12 @@ class TUI(Container):
                 for filtered in protocol.filter_frame(frame):
                     if self._handle_frame(filtered):
                         self.request_render()
+                    if not self._running:
+                        break
+                if not self._running:
+                    break
+            if not self._running:
+                break
             expired = protocol.expire_input()
             if expired and self._handle_frame(KeyBytes(expired)):
                 self.request_render()
@@ -511,29 +669,40 @@ class TUI(Container):
                 sys.stdout.flush()
             if not self._running:
                 break
+            self._apply_screen_change(stdin, protocol)
             if (self._previous_width, self._previous_height) != (_terminal_width(), _terminal_height()):
                 if self._previous_width:
                     sys.stdout.write(protocol.request_cursor_position())
                     sys.stdout.flush()
                     self._anchor_terminal(stdin, protocol, resumed=True)
                 self.request_render()
+            self._checked_geometry = (_terminal_width(), _terminal_height())
             for callback in self._tick_callbacks:
                 callback()
+            self._apply_screen_change(stdin, protocol)
             if self._render_requested:
                 self._render_requested = False
                 self._do_render()
 
     def stop(self) -> None:
         """Signal the main loop to exit."""
+        self._input_epoch += 1
         self._stopped = True
         self._running = False
 
     # -- input dispatch ------------------------------------------------------
 
     def _dispatch_paste(self, text: str) -> bool:
+        self._sync_overlay_focus()
         overlay = self._get_topmost_visible_overlay()
-        if overlay is not None and overlay.component.handle_paste(text):
+        offered = overlay.component if overlay is not None else self._focused
+        if (offered is not None and offered.requires_current_viewport_input
+                and (self._previous_width, self._previous_height) != (_terminal_width(), _terminal_height())):
+            offered.invalidate()
+            self.request_render()
             return True
+        if overlay is not None:
+            return overlay.component.handle_paste(text)
         if self._focused is not None and self._focused is not (
             overlay.component if overlay is not None else None
         ):
@@ -543,6 +712,23 @@ class TUI(Container):
 
     def _dispatch_input(self, event: KeyEvent) -> bool:
         """Dispatch input and report whether a component consumed it."""
+        self._sync_overlay_focus()
+        if (
+            self._focused is not None
+            and (self._focused.requires_visible_confirmation and event.key in ("enter", " ")
+                 or self._focused.requires_current_viewport_input
+                 and event.key.lower() != "escape" and not (event.ctrl and event.key.lower() in ("c", "d", "l", "z")))
+            and (self._previous_width, self._previous_height) != (_terminal_width(), _terminal_height())
+        ):
+            self._focused.invalidate()
+            self.request_render()
+            return True
+        # A recovery repaint must work even with a modal permission panel or
+        # details focused, without clearing native scrollback or the draft.
+        if event.matches("ctrl+l"):
+            self.request_render(force=True)
+            return True
+
         # Escape belongs to the most specific active surface first. This lets a
         # permission panel deny one call instead of the global listener
         # canceling the entire turn.
@@ -580,67 +766,60 @@ class TUI(Container):
 
     def _composite_overlays(self, base_lines: list[str], width: int, height: int) -> list[str]:
         """Composite overlay content on top of base content."""
-        if not self._overlay_stack:
+        visible_entries = [entry for entry in self._overlay_stack if self._is_overlay_visible(entry)]
+        if not visible_entries:
             return base_lines
+        width, height = max(1, width), max(1, height)
 
-        # Overlay coordinates are viewport-relative, while base_lines contains
-        # the entire main-buffer history. Positioning at row 0 of base_lines
-        # puts a dialog near the beginning of a long conversation, outside the
-        # currently visible terminal viewport. Translate screen rows to the
-        # tail viewport before compositing.
+        # Screen coordinates address the tail, not the beginning of history.
         result = list(base_lines)
         viewport_top = max(0, len(result) - height)
         while len(result) < viewport_top + height:
             result.append("")
 
-        for entry in self._overlay_stack:
-            if not self._is_overlay_visible(entry):
-                continue
-
+        for entry in visible_entries:
             opts = entry.options
-            margin = opts.margin
-            if isinstance(margin, int):
-                margin = OverlayMargin(top=margin, right=margin, bottom=margin, left=margin)
-            elif margin is None:
-                margin = OverlayMargin()
-
-            # Determine overlay width
+            raw_margin = opts.margin
+            if isinstance(raw_margin, int):
+                raw_margin = OverlayMargin(raw_margin, raw_margin, raw_margin, raw_margin)
+            raw_margin = raw_margin or OverlayMargin()
+            # Reserve at least one cell/row even when a dialog's margins exceed
+            # a very small terminal. Components must never see negative widths.
+            left = max(0, min(width - 1, raw_margin.left))
+            top = max(0, min(height - 1, raw_margin.top))
+            margin = OverlayMargin(
+                top, max(0, min(width - left - 1, raw_margin.right)),
+                max(0, min(height - top - 1, raw_margin.bottom)), left,
+            )
+            available_width = width - margin.left - margin.right
+            available_height = height - margin.top - margin.bottom
             ov_width = _parse_size_value(opts.width, width)
             if ov_width is None:
-                ov_width = width - margin.left - margin.right
+                ov_width = available_width
             if opts.min_width is not None:
                 ov_width = max(ov_width, opts.min_width)
-            ov_width = min(ov_width, width - margin.left - margin.right)
+            ov_width = max(1, min(ov_width, available_width))
+            max_height = _parse_size_value(opts.max_height, height)
+            ov_height = available_height if max_height is None else max(0, min(max_height, available_height))
+            entry.component.set_height(ov_height)
+            ov_lines = entry.component.render(ov_width)[:ov_height]
+            row, col = self._calculate_overlay_position(opts, ov_width, len(ov_lines), width, height, margin)
+            row = max(margin.top, min(row, height - margin.bottom - len(ov_lines)))
+            col = max(margin.left, min(col, width - margin.right - ov_width))
 
-            # Render overlay
-            ov_lines = entry.component.render(ov_width)
+            for index, ov_line in enumerate(ov_lines):
+                target_row = viewport_top + row + index
+                base = pad_right(result[target_row], width)
+                prefix = slice_by_column(base, 0, col)
+                suffix = slice_by_column(base, col + ov_width, width)
+                if entry.component is not self._focused:
+                    ov_line = ov_line.replace(CURSOR_MARKER, "")
+                body = pad_right(truncate_to_width(ov_line, ov_width, ""), ov_width)
+                # Separate style runs and blank the entire dialog footprint;
+                # ANSI bytes, wide glyphs and combining marks are not columns.
+                result[target_row] = prefix + "\x1b[0m" + body + "\x1b[0m" + suffix + "\x1b[0m"
 
-            # Apply max_height
-            max_h = _parse_size_value(opts.max_height, height)
-            if max_h is not None:
-                ov_lines = ov_lines[:max_h]
-
-            ov_height = len(ov_lines)
-
-            # Calculate position based on anchor
-            row, col = self._calculate_overlay_position(
-                opts, ov_width, ov_height, width, height, margin
-            )
-
-            # Composite overlay onto result
-            for i, ov_line in enumerate(ov_lines):
-                target_row = viewport_top + row + i
-                if 0 <= target_row < len(result):
-                    base = result[target_row]
-                    # Pad base line to width if needed
-                    base_padded = base + " " * max(0, width - len(base))
-                    # Replace columns [col, col+ov_width) with overlay content
-                    prefix = base_padded[:col] if col < len(base_padded) else base_padded
-                    suffix_start = col + ov_width
-                    suffix = base_padded[suffix_start:] if suffix_start < len(base_padded) else ""
-                    result[target_row] = prefix + ov_line + suffix
-
-        return result[:max(len(base_lines), viewport_top + height)]
+        return result
 
     def _calculate_overlay_position(
         self,
@@ -687,6 +866,12 @@ class TUI(Container):
         if self._stopped:
             return
         width, height = _terminal_width(), _terminal_height()
+        if self._checked_geometry is not None and (width, height) != self._checked_geometry:
+            # A resize during tick callbacks must not paint/update previous size
+            # before the next input-loop pass can obtain a fresh cursor anchor.
+            self.request_render()
+            return
+        self._sync_overlay_focus()
         resized = bool(self._previous_width and (
             self._previous_width != width or self._previous_height != height
         ))
@@ -694,6 +879,14 @@ class TUI(Container):
             self.invalidate()
             for entry in self._overlay_stack:
                 entry.component.invalidate()
+            if self.fullscreen:
+                # Alternate views have no native scrollback to preserve. The
+                # main-buffer reflow anchor can become negative after a shrink,
+                # permanently clipping the view header on restoration. Re-home
+                # only this alternate painter; never clear/rewrite saved main rows.
+                sys.stdout.write("\x1b[2J\x1b[H")
+                self._painter = MainBufferRenderer()
+                self._force_render = True
         for child in self.children:
             child.set_height(height)
         lines = self.render(width)
@@ -704,8 +897,11 @@ class TUI(Container):
                 transient_start = offset + int(child.transient_start)
                 break
             offset += len(child.render(width)) if len(self.children) > 1 else 0
-        if self._overlay_stack:
+        if self.has_overlay():
             lines = self._composite_overlays(lines, width, height)
+            # Dialogs painted over transcript rows are transient too. Clear the
+            # owned viewport before growth so dialog text cannot enter history.
+            transient_start = min(transient_start, max(0, len(lines) - height))
         cursor: tuple[int, int] | None = None
         clean_lines: list[str] = []
         for index, line in enumerate(lines):
@@ -715,7 +911,7 @@ class TUI(Container):
             clean_lines.append(line.replace(CURSOR_MARKER, ""))
         output = self._painter.render(
             clean_lines, width, height, cursor, transient_start,
-            force=self._force_render,
+            force=self._force_render, anchor_tail=self.has_overlay(),
         )
         self._force_render = False
         if output:

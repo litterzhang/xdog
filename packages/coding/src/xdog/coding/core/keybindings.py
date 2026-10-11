@@ -1,4 +1,9 @@
-"""Keybinding configuration for the interactive TUI mode."""
+"""Legacy keybinding records retained for programmatic compatibility.
+
+Live Coding/Claw prompt bindings are validated and resolved by
+``xdog.tui.prompt_keymap.PromptKeymap``. This older default list is not the
+application's active shortcut configuration.
+"""
 
 from __future__ import annotations
 

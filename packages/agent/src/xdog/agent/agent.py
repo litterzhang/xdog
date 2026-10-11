@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Mapping, Sequence
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -37,6 +37,7 @@ from xdog.agent.core import (
     AgentMessage,
     AgentState,
     AgentTool,
+    CustomAgentMessage,
     EmbedFn,
     QueueMode,
     StreamFn,
@@ -47,6 +48,10 @@ from xdog.agent.event_stream import AgentEventStream
 from xdog.agent.events import (
     AgentEndEvent,
     AgentEvent,
+    InputConsumedEvent,
+    InputHandledEvent,
+    InputRejectedEvent,
+    InputTransformedEvent,
     MessageEndEvent,
     MessageStartEvent,
     MessageUpdateEvent,
@@ -54,12 +59,15 @@ from xdog.agent.events import (
     ToolExecutionStartEvent,
     TurnEndEvent,
 )
+from xdog.agent.input_queue import Delivery, QueuedInput
 from xdog.agent.messages import dicts_to_messages, messages_to_dicts
 from xdog.agent.types import (
     AfterToolCallFn,
     AgentLoopConfig,
     BeforeToolCallFn,
     ConvertToLlmFn,
+    HandledInput,
+    InputTransformFn,
     TransformContextFn,
 )
 from xdog.ai.types import (
@@ -210,8 +218,18 @@ class Agent:
         transform_context: TransformContextFn | None = None,
         before_tool_call: BeforeToolCallFn | None = None,
         after_tool_call: AfterToolCallFn | None = None,
+        input_transform: InputTransformFn | None = None,
+        input_settled: Callable[[tuple[QueuedInput, ...]], Awaitable[None]] | None = None,
     ) -> None:
         cfg = config or AgentConfig()
+        self._input_transform = input_transform
+        self._input_settled = input_settled
+        self._input_checkpoint: Callable[[AgentEvent], Awaitable[None]] | None = None
+        self._custom_queue: dict[int, tuple[Callable[[], bool], Callable[[], Awaitable[None]],
+                                           Callable[[], Awaitable[None]], Callable[[], None]]] = {}
+        self._input_rejected = False
+        self._rejected_messages: list[AgentMessage] = []
+        self._handled_inputs: list[InputHandledEvent] = []
 
         # Where a skill's instructions go is decided here, not by each caller.
         #
@@ -233,8 +251,10 @@ class Agent:
         _base_prompt = cfg.system_prompt
         _index, _fixed_preamble, _transient = _place_skills(skills, active_skills)
         _front = _index + _fixed_preamble
-        if _front and (isinstance(_base_prompt, str) or _base_prompt is None):
-            cfg = replace(cfg, system_prompt=_front + (_base_prompt or ""))
+        if _front:
+            prompt = ((SystemPromptBlock(text=_front, cache=True), *_base_prompt)
+                      if isinstance(_base_prompt, tuple) else _front + (_base_prompt or ""))
+            cfg = replace(cfg, system_prompt=prompt)
 
 
         # Build tools list — start with user-provided tools
@@ -257,6 +277,8 @@ class Agent:
         # None means "not determined" and behaves like True, which is what
         # every caller got before this existed.
         self._supports_tool_calls = cfg.supports_tool_calls
+        self._context_window = cfg.context_window
+        self._max_prompt_tokens = cfg.max_prompt_tokens
         self._base_system_prompt = _base_prompt
         self._skills = skills
         self._index = _index
@@ -268,6 +290,8 @@ class Agent:
             messages=_transient_messages(_transient),
         )
 
+        self._active_tool_names: frozenset[str] | None = None
+        self._tool_selection_revision = 0
         self._stream_fn = stream_fn
         self._config = cfg
         self._options = cfg.options
@@ -291,12 +315,16 @@ class Agent:
         # Message queues
         self._steering_queue: list[AgentMessage] = []
         self._follow_up_queue: list[AgentMessage] = []
+        self._identified_inputs: dict[str, tuple[QueuedInput, UserMessage]] = {}
+        self._input_message_ids: dict[int, str] = {}
 
         # Event listeners
         self._listeners: list[EventListener] = []
 
         # Current event stream reference
         self._current_stream: AgentEventStream[AgentEvent] | None = None
+        self._producer_task: asyncio.Task[None] | None = None
+        self._producer_started = asyncio.Event()
 
         # Idle tracking (for wait_for_idle)
         self._idle_event = asyncio.Event()
@@ -329,10 +357,31 @@ class Agent:
         """The stream function used by this agent."""
         return self._stream_fn
 
+    def set_stream_fn(self, stream_fn: StreamFn) -> None:
+        """Replace the provider adapter while idle (for host-owned request limits)."""
+        if self.state.is_streaming:
+            raise RuntimeError("Cannot replace stream function during an active turn")
+        self._stream_fn = stream_fn
+
     @property
     def tool_execution(self) -> ToolExecutionMode:
         """Get the current tool execution mode."""
         return self._tool_execution
+
+    @property
+    def context_window(self) -> int:
+        """Host-configured context window; not an automatic compaction policy."""
+        return self._context_window
+
+    @property
+    def max_prompt_tokens(self) -> int:
+        """Host-configured prompt limit, zero when unspecified."""
+        return self._max_prompt_tokens
+
+    @property
+    def supports_tool_calls(self) -> bool | None:
+        """The host-selected tool calling capability, including explicit overrides."""
+        return self._supports_tool_calls
 
     @property
     def options(self) -> StreamOptions:
@@ -370,8 +419,10 @@ class Agent:
     def _recompose_system_prompt(self) -> None:
         base = self._base_system_prompt
         front = self._index + self._fixed_preamble
-        if front and (isinstance(base, str) or base is None):
-            self._update_state(system_prompt=front + (base or ""))
+        if front:
+            prompt = ((SystemPromptBlock(text=front, cache=True), *base)
+                      if isinstance(base, tuple) else front + (base or ""))
+            self._update_state(system_prompt=prompt)
         else:
             self._update_state(system_prompt=base)
 
@@ -379,17 +430,158 @@ class Agent:
         """Update the model name."""
         self._update_state(model=model)
 
+    def set_model_capabilities(self, *, context_window: int, max_prompt_tokens: int = 0,
+                               supports_tool_calls: bool | None = None) -> None:
+        """Host-selected cached metadata; never changes tool permissions or starts a model."""
+        if self._state.is_streaming:
+            raise RuntimeError("Cannot change model capabilities during an active turn")
+        if (type(context_window) is not int or context_window < 0
+                or type(max_prompt_tokens) is not int or max_prompt_tokens < 0
+                or supports_tool_calls is not None and type(supports_tool_calls) is not bool):
+            raise ValueError("Invalid model capability metadata")
+        self._context_window = context_window
+        self._max_prompt_tokens = max_prompt_tokens
+        self._supports_tool_calls = supports_tool_calls
+
     def set_tools(self, tools: list[AgentTool] | tuple[AgentTool, ...]) -> None:
-        """Replace the tool set."""
-        self._update_state(tools=tuple(tools))
+        """Replace configured tools; preserve any explicitly narrowed active selection.
+
+        Removing a selected tool retires that name from the selection. A later
+        registration with that name does not automatically restore the selection.
+        """
+        configured = tuple(tools)
+        if self._active_tool_names is not None:
+            names = [tool.name for tool in configured]
+            if len(names) != len(set(names)):
+                raise ValueError('Active tool selection requires unique configured names')
+            self._active_tool_names = self._active_tool_names.intersection(names)
+        if configured != self._state.tools:
+            self._tool_selection_revision += 1
+        self._update_state(tools=configured)
+
+    @property
+    def active_tools(self) -> tuple[AgentTool, ...]:
+        """Configured-order selection used by both model definitions and execution.
+
+        This is not tool permission: host preparation hooks still authorize effects.
+        """
+        selected = self._active_tool_names
+        return (self._state.tools if selected is None else
+                tuple(tool for tool in self._state.tools if tool.name in selected))
+
+    @property
+    def active_tool_selection(self) -> tuple[str, ...] | None:
+        """Explicit selection in configured order; None means configured defaults.
+
+        Hosts can capture this distinction without treating a narrowed selection
+        as permission to adopt future registrations in a child or restored session.
+        """
+        return None if self._active_tool_names is None else tuple(tool.name for tool in self.active_tools)
+
+    @property
+    def tool_selection_revision(self) -> int:
+        return self._tool_selection_revision
+
+    def set_active_tools(self, names: list[str] | tuple[str, ...] | None, *, expected_revision: int) -> None:
+        """Host-owned idle CAS selection, never a model/extension permission grant.
+
+        None explicitly restores configured defaults, [] disables all tools. New
+        registrations join defaults only; an explicit subset never grows implicitly.
+        Hosts must add their own user review/session/child ownership and persistence.
+        """
+        selected = self.validate_active_tools(names, expected_revision=expected_revision)
+        if selected != self._active_tool_names:
+            self._active_tool_names = selected
+            self._tool_selection_revision += 1
+
+    def validate_active_tools(self, names: list[str] | tuple[str, ...] | None, *,
+                              expected_revision: int) -> frozenset[str] | None:
+        """Dry-run selection checks for hosts that must persist before publishing.
+
+        This does not reserve ownership: hosts must keep their idle mutation owner
+        through validation, durable commit and set_active_tools.
+        """
+        if self._state.is_streaming or self._producer_task is not None and not self._producer_task.done():
+            raise RuntimeError('Active tool selection requires an idle agent')
+        if type(expected_revision) is not int or expected_revision != self._tool_selection_revision:
+            raise ValueError('Configured tools/selection changed; refresh before selecting')
+        selected: frozenset[str] | None = None
+        if names is not None:
+            if (not isinstance(names, (tuple, list)) or len(names) > 2048
+                    or any(not isinstance(name, str) or not name or len(name.encode()) > 256 for name in names)
+                    or len(set(names)) != len(names)):
+                raise ValueError('Active tools require bounded unique configured names')
+            configured = [tool.name for tool in self._state.tools]
+            if len(configured) != len(set(configured)) or not set(names) <= set(configured):
+                raise ValueError('Active tool selection exceeds configured inventory')
+            selected = frozenset(names)
+        return selected
+
+    @property
+    def tool_context(self) -> dict[str, Any]:
+        """An owned shallow copy of runtime references for idle context rebinding."""
+        return dict(self._tool_ctx)
+
+    def set_tool_context(self, context: Mapping[str, Any]) -> None:
+        if self._state.is_streaming:
+            raise RuntimeError("Cannot rebind tool context during an active run")
+        self._tool_ctx = dict(context)
 
     def set_tool_execution(self, value: ToolExecutionMode) -> None:
         """Set tool execution mode."""
         self._tool_execution = value
 
+    @property
+    def context_transform(self) -> TransformContextFn | None:
+        return self._transform_context
+
+    def set_transform_context(self, value: TransformContextFn | None) -> None:
+        """Rebind an owned pre-model transform only while the agent is idle."""
+        if self._state.is_streaming:
+            raise RuntimeError("Cannot rebind context transformation during an active run")
+        self._transform_context = value
+
     def set_before_tool_call(self, value: BeforeToolCallFn | None) -> None:
         """Set the before_tool_call hook."""
         self._before_tool_call = value
+
+    def drain_handled_inputs(self) -> list[InputHandledEvent]:
+        events, self._handled_inputs = self._handled_inputs, []
+        return events
+
+    def drain_rejected_messages(self) -> list[AgentMessage]:
+        """Recover refused plain queued input explicitly; it is never left in a live replay queue."""
+        messages, self._rejected_messages = self._rejected_messages, []
+        return messages
+
+    @property
+    def input_transform(self) -> InputTransformFn | None:
+        return self._input_transform
+
+    def set_input_transform(self, transform: InputTransformFn | None) -> None:
+        if self._state.is_streaming:
+            raise RuntimeError("Cannot replace input validation during an active run")
+        self._input_transform = transform
+
+    def set_input_settled(self, hook: Callable[[tuple[QueuedInput, ...]], Awaitable[None]] | None) -> None:
+        """Await host persistence after identified input admission/handling, before model continuation.
+
+        This is a durability hook, not a tool permission boundary. Failure stops
+        continuation; already admitted history/handler effects are not rolled back.
+        """
+        if self._state.is_streaming:
+            raise RuntimeError('Cannot replace input settlement during an active run')
+        self._input_settled = hook
+
+    def set_input_checkpoint(self, hook: Callable[[AgentEvent], Awaitable[None]] | None) -> None:
+        """Persist prospective user history/handled feedback before publishing admission.
+
+        A handled callback may already have effects; this is not an exactly-once
+        tool/extension boundary. A failed checkpoint stops continuation.
+        """
+        if self._state.is_streaming:
+            raise RuntimeError('Cannot replace input checkpoint during an active run')
+        self._input_checkpoint = hook
 
     def set_after_tool_call(self, value: AfterToolCallFn | None) -> None:
         """Set the after_tool_call hook."""
@@ -483,23 +675,26 @@ class Agent:
             stream_message=None,
             pending_tool_calls=frozenset(),
         )
-        self._steering_queue.clear()
-        self._follow_up_queue.clear()
+        self.clear_all_queues()
 
     # -- Queue management ----------------------------------------------------
 
     def clear_steering_queue(self) -> None:
         """Discard all pending steering messages."""
         self._steering_queue.clear()
+        self._forget_inputs("steer")
 
     def clear_follow_up_queue(self) -> None:
         """Discard all pending follow-up messages."""
         self._follow_up_queue.clear()
+        self._forget_inputs("follow_up")
 
     def clear_all_queues(self) -> None:
         """Discard all pending steering and follow-up messages."""
         self._steering_queue.clear()
         self._follow_up_queue.clear()
+        self._identified_inputs.clear()
+        self._input_message_ids.clear()
 
     def has_queued_messages(self) -> bool:
         """Return ``True`` if any steering or follow-up messages are queued."""
@@ -531,6 +726,7 @@ class Agent:
         self,
         message: str | AgentMessage | list[AgentMessage],
         images: list[ImageContent] | None = None,
+        *, initial_prompt_context: Callable[[], Awaitable[None]] | None = None,
     ) -> AgentEventStream[AgentEvent]:
         """Start a new agent turn with a user message.
 
@@ -566,7 +762,7 @@ class Agent:
         else:
             msgs = [message]
 
-        return await self._run_loop(msgs)
+        return await self._run_loop(msgs, initial_prompt_context=initial_prompt_context)
 
     async def continue_(self) -> AgentEventStream[AgentEvent]:
         """Continue from current context (used for retries and resuming queued messages).
@@ -589,12 +785,12 @@ class Agent:
             # Drain steering queue first
             steering = self._dequeue_steering()
             if steering:
-                return await self._run_loop(steering, skip_initial_steering_poll=True)
+                return await self._run_loop(steering, skip_initial_steering_poll=True, input_source="steer")
 
             # Then try follow-up queue
             follow_ups = self._dequeue_follow_ups()
             if follow_ups:
-                return await self._run_loop(follow_ups)
+                return await self._run_loop(follow_ups, input_source="follow_up")
 
             raise RuntimeError("Cannot continue from message role: assistant")
 
@@ -627,6 +823,95 @@ class Agent:
             msg = message
         self._follow_up_queue.append(msg)
 
+    def queue_custom_message(self, message: CustomAgentMessage, delivery: str, *,
+                             current: Callable[[], bool], prepare: Callable[[], Awaitable[None]],
+                             persist: Callable[[], Awaitable[None]], rejected: Callable[[], None]) -> None:
+        """Queue canonical custom data at existing tool boundaries, never user input."""
+        if (not self.is_streaming or delivery not in {'steer', 'follow_up'} or not current()
+                or len(self._custom_queue) >= 32):
+            raise ValueError('Custom delivery requires its original active agent and queue capacity')
+        self._custom_queue[id(message)] = current, prepare, persist, rejected
+        (self._steering_queue if delivery == 'steer' else self._follow_up_queue).append(message)
+
+    def queue_input(self, input_id: str, content: str, delivery: Delivery,
+                    images: tuple[ImageContent, ...] = ()) -> QueuedInput:
+        """Identify an input on the owning loop; acceptance is not consumption."""
+        if not input_id or len(input_id) > 128 or input_id in self._identified_inputs:
+            raise ValueError("Input ID is missing, too long, or already queued")
+        if delivery not in {"steer", "follow_up"} or not (content.strip() or images):
+            raise ValueError("Invalid input delivery or empty content")
+        item = QueuedInput(input_id, content, delivery, images=images)
+        message = UserMessage(content=(TextContent(text=content), *images) if images else content)
+        self._identified_inputs[input_id] = (item, message)
+        self._input_message_ids[id(message)] = input_id
+        (self._steering_queue if delivery == "steer" else self._follow_up_queue).append(message)
+        return item
+
+    def pending_inputs(self) -> tuple[QueuedInput, ...]:
+        """Snapshot queued/selected identified inputs; call on the owning loop."""
+        ordered: list[QueuedInput] = []
+        for message in (*self._steering_queue, *self._follow_up_queue):
+            input_id = self._input_message_ids.get(id(message))
+            if input_id is not None:
+                ordered.append(self._identified_inputs[input_id][0])
+        ordered.extend(item for item, _message in self._identified_inputs.values() if item.selected)
+        return tuple(ordered)
+
+    def change_input(self, input_id: str, action: str, content: str = "", direction: int = 0) -> bool:
+        """Edit/remove/reorder only while queued; checkpoint-selected inputs refuse edits."""
+        record = self._identified_inputs.get(input_id)
+        if record is None or record[0].selected:
+            return False
+        item, message = record
+        queue = self._steering_queue if item.delivery == "steer" else self._follow_up_queue
+        position = next((i for i, value in enumerate(queue) if value is message), None)
+        if position is None:
+            return False
+        if action == "remove":
+            queue.pop(position)
+            self._identified_inputs.pop(input_id)
+            self._input_message_ids.pop(id(message), None)
+        elif action == "edit" and content.strip():
+            replacement = UserMessage(content=(TextContent(text=content), *item.images) if item.images else content)
+            queue[position] = replacement
+            self._input_message_ids.pop(id(message), None)
+            self._input_message_ids[id(replacement)] = input_id
+            self._identified_inputs[input_id] = (replace(item, content=content), replacement)
+        elif action == "move" and direction in {-1, 1}:
+            target = position + direction
+            if not 0 <= target < len(queue):
+                return False
+            queue[position], queue[target] = queue[target], queue[position]
+        else:
+            return False
+        return True
+
+    def drain_inputs(self, prefix: str = "") -> tuple[QueuedInput, ...]:
+        """After a run settles, remove/return inputs not admitted to history."""
+        items = tuple(item for item in self.pending_inputs() if item.id.startswith(prefix))
+        keys = {item.id for item in items}
+        identities = {identity for identity, key in self._input_message_ids.items() if key in keys}
+        self._steering_queue[:] = [message for message in self._steering_queue if id(message) not in identities]
+        self._follow_up_queue[:] = [message for message in self._follow_up_queue if id(message) not in identities]
+        for key in keys:
+            _item, message = self._identified_inputs.pop(key)
+            self._input_message_ids.pop(id(message), None)
+        return items
+
+    def _forget_inputs(self, delivery: Delivery) -> None:
+        for input_id, (item, message) in tuple(self._identified_inputs.items()):
+            if item.delivery == delivery:
+                self._identified_inputs.pop(input_id)
+                self._input_message_ids.pop(id(message), None)
+
+    def _select_inputs(self, messages: list[AgentMessage]) -> list[AgentMessage]:
+        for message in messages:
+            input_id = self._input_message_ids.get(id(message))
+            if input_id is not None:
+                item, queued_message = self._identified_inputs[input_id]
+                self._identified_inputs[input_id] = (replace(item, selected=True), queued_message)
+        return messages
+
     # -- Abort ---------------------------------------------------------------
 
     def abort(self) -> None:
@@ -646,7 +931,14 @@ class Agent:
                 self._cancel.set()
 
         try:
-            loop.call_soon_threadsafe(_cancel_current)
+            try:
+                local = asyncio.get_running_loop() is loop
+            except RuntimeError:
+                local = False
+            if local:
+                _cancel_current()  # Budget/listener veto must stop the NEXT tool checkpoint immediately.
+            else:
+                loop.call_soon_threadsafe(_cancel_current)
         except RuntimeError:
             # The owning run settled and closed its loop after we released the
             # lock. Treat this abort as stale, not as cancellation of a future run.
@@ -667,6 +959,27 @@ class Agent:
         """
         await self._idle_event.wait()
 
+    async def cancel_and_wait(self) -> None:
+        """Cancel and settle the owned producer, including cooperative hook cleanup.
+
+        Unlike abort(), this forcibly cancels its asyncio task. Call on the owning
+        loop; it cannot terminate blocking/native code or roll back tool effects.
+        """
+        task = self._producer_task
+        if task is None or task.done():
+            return
+        if task.get_loop() is not asyncio.get_running_loop():
+            raise RuntimeError("Producer settlement must run on the owning loop")
+        # A task canceled before its first step never executes its finally block.
+        # Admit the producer first so idle/stream ownership always settles.
+        await self._producer_started.wait()
+        if self._producer_task is not task or task.done():
+            return  # The captured run settled; never abort a successor.
+        self.abort()
+        if not task.cancelling():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
     # -- Internal: queue draining --------------------------------------------
 
     def _dequeue_steering(self) -> list[AgentMessage]:
@@ -677,10 +990,10 @@ class Agent:
         if self._steering_mode == QueueMode.ALL:
             msgs = list(self._steering_queue)
             self._steering_queue.clear()
-            return msgs
+            return self._select_inputs(msgs)
 
         # ONE_AT_A_TIME
-        return [self._steering_queue.pop(0)]
+        return self._select_inputs([self._steering_queue.pop(0)])
 
     def _dequeue_follow_ups(self) -> list[AgentMessage]:
         """Drain the follow-up queue based on the configured mode."""
@@ -690,19 +1003,104 @@ class Agent:
         if self._follow_up_mode == QueueMode.ALL:
             msgs = list(self._follow_up_queue)
             self._follow_up_queue.clear()
-            return msgs
+            return self._select_inputs(msgs)
 
-        return [self._follow_up_queue.pop(0)]
+        return self._select_inputs([self._follow_up_queue.pop(0)])
 
     # -- Internal: queue callbacks for agent_loop ----------------------------
 
     async def _get_steering_messages(self) -> list[AgentMessage]:
         """Drain the steering queue (async version for agent_loop config)."""
-        return self._dequeue_steering()
+        return await self._prepare_inputs(self._dequeue_steering(), "steer")
 
     async def _get_follow_up_messages(self) -> list[AgentMessage]:
         """Drain the follow-up queue (async version for agent_loop config)."""
-        return self._dequeue_follow_ups()
+        return await self._prepare_inputs(self._dequeue_follow_ups(), "follow_up")
+
+    async def _prepare_inputs(self, messages: list[AgentMessage], source: str) -> list[AgentMessage]:
+        if self._input_transform is None and not self._custom_queue:
+            return messages
+        prepared: list[AgentMessage] = []
+        receipts: list[tuple[UserMessage, UserMessage, str, str]] = []
+        handled: set[int] = set()
+        try:
+            for message in messages:
+                if not isinstance(message, UserMessage):
+                    custom = self._custom_queue.get(id(message))
+                    if custom is not None and (self._cancel.is_set() or not custom[0]()):
+                        self._custom_queue.pop(id(message), None)
+                        custom[3]()
+                        continue
+                    prepared.append(message)
+                    continue
+                if self._input_transform is None:
+                    prepared.append(message)
+                    continue
+                key = self._input_message_ids.get(id(message), "")
+                delivery = self._identified_inputs[key][0].delivery if key else source
+                if self._cancel.is_set():
+                    raise asyncio.CancelledError
+                task = asyncio.ensure_future(self._input_transform(message, delivery, self._cancel))
+                watcher = asyncio.create_task(self._cancel.wait())
+                try:
+                    done, _pending = await asyncio.wait({task, watcher}, return_when=asyncio.FIRST_COMPLETED)
+                    if watcher in done:
+                        raise asyncio.CancelledError
+                    transformed = task.result()
+                    if isinstance(transformed, HandledInput):
+                        if (not isinstance(transformed.feedback, str) or not transformed.feedback.strip()
+                                or len(transformed.feedback.encode()) > 65536):
+                            raise ValueError("Handled input requires bounded explicit feedback")
+                        completed = InputHandledEvent(message, delivery, transformed.feedback, key)
+                        if self._input_checkpoint is not None:
+                            await self._input_checkpoint(completed)
+                        handled.add(id(message))
+                        if key:
+                            self._input_message_ids.pop(id(message), None)
+                            self._identified_inputs.pop(key, None)
+                        self._handled_inputs.append(completed)
+                        self._emit(completed)
+                        if self._current_stream is not None:
+                            self._current_stream.send_sync(completed)
+                        if key and self._input_settled is not None:
+                            await self._input_settled(self.pending_inputs())
+                        continue  # Logical handler consumption, never canonical/model input admission.
+                    if not isinstance(transformed, UserMessage):
+                        raise ValueError("Input transform must return a UserMessage")
+                    prepared.append(transformed)
+                    receipts.append((message, transformed, key, delivery))
+                finally:
+                    if not task.done() and not (isinstance(task, asyncio.Task) and task.cancelling()):
+                        task.cancel()
+                    watcher.cancel()
+                    await asyncio.gather(task, watcher, return_exceptions=True)
+        except BaseException:
+            self._input_rejected = True
+            plain = [message for message in messages
+                     if id(message) not in self._input_message_ids and id(message) not in handled]
+            if source in {"steer", "follow_up"}:
+                self._rejected_messages.extend(plain)  # Quarantine, not next-run automatic re-admission.
+            for message in messages:
+                if isinstance(message, UserMessage) and id(message) not in handled:
+                    key = self._input_message_ids.get(id(message), "")
+                    delivery = self._identified_inputs[key][0].delivery if key else source
+                    event = InputRejectedEvent(message, delivery, key)
+                    self._emit(event)
+                    if self._current_stream is not None:
+                        self._current_stream.send_sync(event)
+            raise
+        for original, transformed, key, delivery in receipts:
+            if key and original is not transformed:
+                self._input_message_ids.pop(id(original), None)
+                self._input_message_ids[id(transformed)] = key
+                item, _message = self._identified_inputs[key]
+                self._identified_inputs[key] = item, transformed
+            if original != transformed:
+                changed = InputTransformedEvent(original, transformed, delivery, key)
+                self._emit(changed)
+                if self._current_stream is not None:
+                    self._current_stream.send_sync(changed)
+        return prepared
 
     # -- Internal run --------------------------------------------------------
 
@@ -711,6 +1109,8 @@ class Agent:
         messages: list[AgentMessage] | None,
         *,
         skip_initial_steering_poll: bool = False,
+        input_source: str = "prompt",
+        initial_prompt_context: Callable[[], Awaitable[None]] | None = None,
     ) -> AgentEventStream[AgentEvent]:
         """Build the loop config and start the agent loop."""
         loop = asyncio.get_running_loop()
@@ -724,6 +1124,7 @@ class Agent:
                 self._cancel.set()
             cancel_event = self._cancel
         self._idle_event.clear()
+        self._input_rejected = False
 
         self._update_state(
             is_streaming=True,
@@ -738,11 +1139,12 @@ class Agent:
         # cannot use and may reject. Its tools reach it as prompt text instead —
         # which is why `supports_tool_calls=False` removes them from here and
         # not from the description.
-        _send_tools = self._state.tools and self._supports_tool_calls is not False
+        active_tools = self.active_tools
+        _send_tools = active_tools and self._supports_tool_calls is not False
         context = AgentContext(
             system_prompt=self._state.system_prompt,
             messages=list(self._state.messages),
-            tools=list(self._state.tools) if _send_tools else None,
+            tools=list(active_tools) if _send_tools else None,
         )
 
         # Inject cancel event into StreamOptions for this run
@@ -757,7 +1159,7 @@ class Agent:
             if skip_steering:
                 skip_steering = False
                 return []
-            return self._dequeue_steering()
+            return await self._prepare_inputs(self._dequeue_steering(), "steer")
 
         config = AgentLoopConfig(
             tool_execution=self._tool_execution,
@@ -765,6 +1167,7 @@ class Agent:
             after_tool_call=self._after_tool_call,
             convert_to_llm=self._convert_to_llm or _default_convert_to_llm,
             transform_context=self._transform_context,
+            get_tools=lambda: self.active_tools if self._supports_tool_calls is not False else (),
             get_steering_messages=_steering_cb,
             get_follow_up_messages=self._get_follow_up_messages,
         )
@@ -772,14 +1175,75 @@ class Agent:
         stream: AgentEventStream[AgentEvent] = AgentEventStream()
         self._current_stream = stream
 
+        self._producer_started = asyncio.Event()
+
+        async def settled_event(event: AgentEvent) -> None:
+            custom = (self._custom_queue.pop(id(event.message), None)
+                      if isinstance(event, MessageEndEvent) and event.message is not None else None)
+            if custom is not None:
+                if cancel_event.is_set() or not custom[0]():
+                    custom[3]()
+                    raise ValueError('Custom queue owner revoked before canonical admission')
+                await custom[1]()
+                if cancel_event.is_set() or not custom[0]():
+                    custom[3]()
+                    raise ValueError('Custom queue owner revoked during validation')
+                self._process_loop_event(event, stream)
+                await custom[2]()  # Canonical durability before the next model call.
+                return
+            identified = (isinstance(event, MessageEndEvent) and event.message is not None
+                          and id(event.message) in self._input_message_ids)
+            if (isinstance(event, MessageEndEvent) and isinstance(event.message, UserMessage)
+                    and self._input_checkpoint is not None):
+                await self._input_checkpoint(event)
+            self._process_loop_event(event, stream)
+            if identified and self._input_settled is not None:
+                await self._input_settled(self.pending_inputs())
+
         async def _run_and_wrap() -> None:
+            nonlocal skip_steering
+            self._producer_started.set()
             try:
                 if messages is not None:
+                    messages_prepared = await self._prepare_inputs(messages, input_source)
+                    # Only this originally submitted user prompt may admit a
+                    # captured context watermark. Handled/rejected input, queued
+                    # replacement input, continue and tool iterations never do.
+                    if (initial_prompt_context is not None and input_source == 'prompt'
+                            and any(isinstance(item, UserMessage) for item in messages_prepared)):
+                        if cancel_event.is_set():
+                            raise asyncio.CancelledError
+                        context_task = asyncio.ensure_future(initial_prompt_context())
+                        context_cancel = asyncio.create_task(cancel_event.wait())
+                        try:
+                            done, _ = await asyncio.wait({context_task, context_cancel},
+                                                         return_when=asyncio.FIRST_COMPLETED)
+                            if context_cancel in done:
+                                raise asyncio.CancelledError
+                            context_task.result()
+                        finally:
+                            if not context_task.done():
+                                context_task.cancel()
+                            context_cancel.cancel()
+                            await asyncio.gather(context_task, context_cancel, return_exceptions=True)
+                        if cancel_event.is_set():
+                            raise asyncio.CancelledError
+                        context.messages = list(self._state.messages)
+                    if messages and not messages_prepared:
+                        while not messages_prepared and (self._steering_queue or self._follow_up_queue):
+                            if self._steering_queue:
+                                messages_prepared = await self._prepare_inputs(self._dequeue_steering(), "steer")
+                            else:
+                                messages_prepared = await self._prepare_inputs(self._dequeue_follow_ups(), "follow_up")
+                        if not messages_prepared:
+                            self._process_loop_event(AgentEndEvent(messages=()), stream)
+                            return  # All newly supplied input handled; no old-history model fallback.
+                        skip_steering = True  # Already selected this boundary; preserve ONE_AT_A_TIME semantics.
                     await run_agent_loop(
-                        messages,
+                        messages_prepared,
                         context,
                         config,
-                        lambda event: self._process_loop_event(event, stream),
+                        settled_event,
                         self._stream_fn,
                         self._state.model,
                         options,
@@ -790,7 +1254,7 @@ class Agent:
                     await run_agent_loop_continue(
                         context,
                         config,
-                        lambda event: self._process_loop_event(event, stream),
+                        settled_event,
                         self._stream_fn,
                         self._state.model,
                         options,
@@ -808,7 +1272,8 @@ class Agent:
                     stop_reason="error",
                     error_message=str(exc),
                 )
-                self.append_message(error_msg)
+                if not self._input_rejected:
+                    self.append_message(error_msg)  # Input refusals are not fabricated assistant/provider messages.
                 error_end = AgentEndEvent(
                     messages=(*self._state.messages,),
                 )
@@ -823,10 +1288,15 @@ class Agent:
                     stream_message=None,
                     pending_tool_calls=frozenset(),
                 )
+                for identity, pending_custom in tuple(self._custom_queue.items()):
+                    self._steering_queue[:] = [item for item in self._steering_queue if id(item) != identity]
+                    self._follow_up_queue[:] = [item for item in self._follow_up_queue if id(item) != identity]
+                    self._custom_queue.pop(identity, None)
+                    pending_custom[3]()
                 self._idle_event.set()
                 await stream.close()
 
-        asyncio.ensure_future(_run_and_wrap())
+        self._producer_task = asyncio.create_task(_run_and_wrap())
         return stream
 
     def _process_loop_event(
@@ -845,6 +1315,12 @@ class Agent:
             self._update_state(stream_message=None)
             if event.message is not None:
                 self.append_message(event.message)
+                input_id = self._input_message_ids.pop(id(event.message), None)
+                if input_id is not None:
+                    item, _message = self._identified_inputs.pop(input_id)
+                    consumed = InputConsumedEvent(replace(item, selected=False))
+                    self._emit(consumed)
+                    stream.send_sync(consumed)
 
         elif isinstance(event, ToolExecutionStartEvent):
             pending = self._state.pending_tool_calls | frozenset({event.tool_call_id})
@@ -875,10 +1351,14 @@ class Agent:
 # ---------------------------------------------------------------------------
 
 def _default_convert_to_llm(messages: list[AgentMessage]) -> list[Message]:
-    """Identity converter -- keeps only instances of the ``Message`` union."""
+    """Project named canonical context content; keep unknown custom metadata out of the LLM."""
+    from xdog.agent.extensions.context_message import llm_message
     from xdog.ai.types import AssistantMessage, ToolResultMessage, UserMessage
 
-    return [
-        m for m in messages
-        if isinstance(m, (UserMessage, AssistantMessage, ToolResultMessage))
-    ]
+    result: list[Message] = []
+    for message in messages:
+        if isinstance(message, (UserMessage, AssistantMessage, ToolResultMessage)):
+            result.append(message)
+        elif (projected := llm_message(message)) is not None:
+            result.append(projected)
+    return result

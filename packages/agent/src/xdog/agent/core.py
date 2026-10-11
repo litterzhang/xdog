@@ -23,6 +23,7 @@ from xdog.ai.types import (
     AssistantMessage,
     Context,
     Message,
+    Model,
     StreamOptions,
     SystemPrompt,
     ToolResultContentPart,
@@ -71,6 +72,20 @@ class StreamFn(Protocol):
 
 
 @runtime_checkable
+class ModelStreamFn(StreamFn, Protocol):
+    """Optional cached metadata on the SAME adapter/provider that executes requests."""
+
+    def resolve_model(self, name: str) -> Model | None: ...
+
+
+@runtime_checkable
+class CatalogStreamFn(ModelStreamFn, Protocol):
+    """Optional read-only cached catalog from the adapter that executes requests."""
+
+    def models(self) -> tuple[Model, ...]: ...
+
+
+@runtime_checkable
 class EmbedFn(Protocol):
     """Embed function: ``(text) -> list[float]``.
 
@@ -108,6 +123,7 @@ class AgentToolResult:
 
     content: tuple[ToolResultContentPart, ...] = ()
     details: Any = None
+    is_error: bool = False
 
 
 AgentToolUpdateCallback = Callable[[AgentToolResult], Awaitable[None]]
@@ -154,6 +170,8 @@ class AgentTool:
         default=None,
         repr=False,
     )
+    validate_arguments: Callable[[dict[str, Any]], None | Awaitable[None]] | None = field(default=None, repr=False)
+    """Optional pure pre-permission argument check; execute must recheck transformed arguments."""
 
 
 # ---------------------------------------------------------------------------

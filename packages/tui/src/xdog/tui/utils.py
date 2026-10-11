@@ -97,6 +97,34 @@ def parse_ansi_segments(text: str) -> list[AnsiSegment]:
     return segments
 
 
+def _grapheme_segments(text: str) -> list[AnsiSegment]:
+    """Group visible graphemes across ANSI styles, retaining standalone escapes.
+
+    Segmenting each styled run separately splits a combining/ZWJ/keycap glyph
+    when a style occurs inside it. Source offsets keep those embedded escapes
+    inside the same display unit; boundary escapes (including cursor markers)
+    remain separate zero-width units.
+    """
+    parts: list[str] = []
+    offsets: list[int] = []
+    previous = 0
+    for match in _ANSI_RE.finditer(text):
+        parts.append(text[previous:match.start()])
+        offsets.extend(range(previous, match.start()))
+        previous = match.end()
+    parts.append(text[previous:])
+    offsets.extend(range(previous, len(text)))
+    result: list[AnsiSegment] = []
+    previous = 0
+    for start, end, _cluster in grapheme_clusters("".join(parts)):
+        begin, finish = offsets[start], offsets[end - 1] + 1
+        result.extend(parse_ansi_segments(text[previous:begin]))
+        result.append(AnsiSegment(escape="", text=text[begin:finish]))
+        previous = finish
+    result.extend(parse_ansi_segments(text[previous:]))
+    return result
+
+
 def truncate_to_width(text: str, max_width: int, ellipsis: str = "...") -> str:
     """Truncate *text* so its display width does not exceed *max_width*."""
     if max_width <= 0:
@@ -109,19 +137,19 @@ def truncate_to_width(text: str, max_width: int, ellipsis: str = "...") -> str:
     ellipsis_width = string_width(ellipsis)
     target = max_width - ellipsis_width
     if target <= 0:
-        return ellipsis[:max_width] if ellipsis_width <= max_width else ""
+        return ellipsis if ellipsis_width <= max_width else ""
 
     result: list[str] = []
     current_width = 0
-    for segment in parse_ansi_segments(text):
+    for segment in _grapheme_segments(text):
         if segment.escape:
             result.append(segment.escape)
-        for _start, _end, cluster in grapheme_clusters(segment.text):
-            w = string_width(cluster)
-            if current_width + w > target:
-                return "".join(result) + ellipsis
-            result.append(cluster)
-            current_width += w
+            continue
+        w = string_width(segment.text)
+        if current_width + w > target:
+            return "".join(result) + ellipsis
+        result.append(segment.text)
+        current_width += w
 
     return "".join(result) + ellipsis
 
@@ -508,29 +536,14 @@ def _break_long_word(word: str, width: int, tracker: AnsiCodeTracker) -> list[st
     current_line = tracker.get_active_codes()
     current_width = 0
 
-    # Separate ANSI codes from visible content
-    segments: list[tuple[str, str]] = []  # (type, value)
-    i = 0
-    while i < len(word):
-        result = extract_ansi_code(word, i)
-        if result:
-            code, length = result
-            segments.append(("ansi", code))
-            i += length
-        else:
-            segments.append(("char", word[i]))
-            i += 1
-
-    for seg_type, seg_value in segments:
-        if seg_type == "ansi":
-            current_line += seg_value
-            tracker.process(seg_value)
+    for segment in _grapheme_segments(word):
+        if segment.escape:
+            current_line += segment.escape
+            tracker.process(segment.escape)
             continue
 
-        ch = seg_value
-        w = char_width(ch)
-
-        if current_width + w > width:
+        w = string_width(segment.text)
+        if current_width and current_width + w > width:
             line_end_reset = tracker.get_line_end_reset()
             if line_end_reset:
                 current_line += line_end_reset
@@ -538,8 +551,17 @@ def _break_long_word(word: str, width: int, tracker: AnsiCodeTracker) -> list[st
             current_line = tracker.get_active_codes()
             current_width = 0
 
-        current_line += ch
-        current_width += w
+        # A glyph wider than the entire viewport occupies a blank row, never a
+        # partial glyph or an extra empty row before it. Keep embedded styles for
+        # subsequent glyphs even when this one cannot be displayed.
+        if w > width:
+            current_line += "".join(part.escape for part in parse_ansi_segments(segment.text))
+            current_line += " " * width
+            current_width += width
+        else:
+            current_line += segment.text
+            current_width += w
+        _update_tracker_from_text(segment.text, tracker)
 
     if current_line:
         lines.append(current_line)
@@ -680,47 +702,47 @@ def extract_segments(text: str) -> list[Segment]:
 
 
 def slice_by_column(text: str, start: int, end: int) -> str:
-    """Extract a substring by display column range ``[start, end)``.
+    """Extract display cells ``[start, end)`` without splitting graphemes.
 
-    Handles ANSI escape sequences (preserved in output) and wide characters.
-    If a wide character straddles a boundary it is replaced with a space.
+    Carry active SGR styles into the slice. A cluster crossing either boundary
+    is replaced with spaces for its overlapping cells, never a partial emoji or
+    combining sequence. Zero-width terminal markers belong to their own column.
     """
+    start = max(0, start)
     if start >= end:
         return ""
-
-    segments = extract_segments(text)
+    styles: list[str] = []
     result: list[str] = []
-    col = 0
-
-    for seg in segments:
-        if seg.type == "ansi":
-            # Always include ANSI codes that appear within the visible range
-            if col >= start or not result:
-                result.append(seg.value)
+    column = 0
+    started = False
+    for segment in _grapheme_segments(text):
+        if segment.escape:
+            if segment.escape.endswith("m"):
+                if not started:
+                    styles.append(segment.escape)
+                elif column <= end:
+                    result.append(segment.escape)
+            elif start <= column < end:
+                result.append(segment.escape)
             continue
-
-        seg_end = col + seg.width
-        if seg_end <= start:
-            col = seg_end
-            continue
-        if col >= end:
-            break
-
-        # Check for wide char straddling boundaries
-        if seg.width >= 2:
-            if col < start:
-                # Wide char starts before range — replace with space for visible part
-                result.append(" ")
-            elif seg_end > end:
-                # Wide char extends past end — replace with space
-                result.append(" ")
+        cluster_width = string_width(segment.text)
+        following = column + cluster_width
+        if column >= end:
+            return "".join(result)
+        embedded_styles = [part.escape for part in parse_ansi_segments(segment.text)
+                           if part.escape.endswith("m")]
+        if following > start:
+            if not started:
+                result.extend(styles)
+                started = True
+            if column < start or following > end:
+                result.extend(embedded_styles)
+                result.append(" " * (min(end, following) - max(start, column)))
             else:
-                result.append(seg.value)
-        else:
-            result.append(seg.value)
-
-        col = seg_end
-
+                result.append(segment.text)
+        elif not started:
+            styles.extend(embedded_styles)
+        column = following
     return "".join(result)
 
 

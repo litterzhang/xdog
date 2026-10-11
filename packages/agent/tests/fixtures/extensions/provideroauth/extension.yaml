@@ -1,0 +1,3 @@
+name: provideroauth
+entry_point: main
+description: Offline provider OAuth lifecycle fixture

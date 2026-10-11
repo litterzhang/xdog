@@ -15,6 +15,7 @@ This package provides a complete terminal UI framework including:
 - **Terminal Image**: Kitty/iTerm2 inline image rendering.
 """
 
+from xdog.tui.attachments import Attachment, AttachmentComposer, AttachmentReader, attachment, read_attachment
 from xdog.tui.autocomplete import (
     AutocompleteEngine,
     AutocompleteResult,
@@ -22,12 +23,15 @@ from xdog.tui.autocomplete import (
     CombinedCompletionProvider,
     CompletionItem,
     CompletionProvider,
+    CompletionStatusProvider,
     FileSystemCompletionProvider,
     SlashCommand,
     SlashCommandProvider,
     StaticCompletionProvider,
 )
 from xdog.tui.editor_component import EditorComponent
+from xdog.tui.external_editor import ExternalEditorResult, edit_draft
+from xdog.tui.file_completion import WorkspaceFileCompletionProvider
 from xdog.tui.fuzzy import FuzzyMatch, fuzzy_filter, fuzzy_match
 from xdog.tui.keybindings import (
     Keybinding,
@@ -45,6 +49,9 @@ from xdog.tui.keys import (
     set_kitty_protocol_active,
 )
 from xdog.tui.kill_ring import KillRing
+from xdog.tui.navigation import NavigationEntry, NavigationFeed, NavigationSnapshot, NavigationWorker
+from xdog.tui.prompt_keymap import PromptKeymap
+from xdog.tui.repository_review import RepositoryReview, ReviewFile, ReviewSnapshot
 from xdog.tui.terminal import Cell, Color, ScreenBuffer, Style, Terminal
 from xdog.tui.terminal_image import (
     CellDimensions,
@@ -57,6 +64,7 @@ from xdog.tui.terminal_image import (
     render_image,
     reset_capabilities_cache,
 )
+from xdog.tui.transcript_browser import BrowserRequest, TranscriptBrowser, TranscriptRecord, TranscriptView
 from xdog.tui.tui import (
     CURSOR_MARKER,
     TUI,
@@ -94,6 +102,15 @@ from xdog.tui.utils import (
 __version__ = "2.3.0"
 
 __all__ = [
+    "BrowserRequest",
+    "TranscriptBrowser",
+    "TranscriptRecord",
+    "TranscriptView",
+    "Attachment",
+    "AttachmentComposer",
+    "AttachmentReader",
+    "attachment",
+    "read_attachment",
     # terminal
     "Cell",
     "Color",
@@ -125,6 +142,16 @@ __all__ = [
     "Keybinding",
     "KeybindingManager",
     "KeybindingScope",
+    "PromptKeymap",
+    "NavigationEntry",
+    "NavigationFeed",
+    "NavigationSnapshot",
+    "NavigationWorker",
+    "RepositoryReview",
+    "ReviewFile",
+    "ReviewSnapshot",
+    "ExternalEditorResult",
+    "edit_draft",
     # fuzzy
     "FuzzyMatch",
     "fuzzy_filter",
@@ -136,7 +163,9 @@ __all__ = [
     "CombinedCompletionProvider",
     "CompletionItem",
     "CompletionProvider",
+    "CompletionStatusProvider",
     "FileSystemCompletionProvider",
+    "WorkspaceFileCompletionProvider",
     "SlashCommand",
     "SlashCommandProvider",
     "StaticCompletionProvider",

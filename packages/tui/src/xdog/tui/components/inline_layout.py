@@ -36,6 +36,7 @@ class InlineLayout(Component):
         render_height: int = 24,
         hints: Component | None = None,
     ) -> None:
+        self.fullscreen_view: Component | None = None
         self.hints = hints
         self.transcript = transcript
         self.work = work
@@ -68,6 +69,10 @@ class InlineLayout(Component):
         self.render_height = max(1, height)
 
     def render(self, width: int) -> list[str]:
+        if self.fullscreen_view is not None:
+            self.transient_start = 0
+            self.fullscreen_view.set_height(self.render_height)
+            return self.fullscreen_view.render(width)[:self.render_height]
         transcript_lines = self.transcript.render(width)
         self.transient_start = len(transcript_lines)
 
@@ -99,7 +104,9 @@ class InlineLayout(Component):
             set_budget(editor_budget, show_borders=editor_budget >= 3)
         show_autocomplete = getattr(self.editor, "set_autocomplete_visible", None)
         if callable(show_autocomplete):
-            show_autocomplete(self.permission is None)
+            show_autocomplete(
+                self.permission is None and not (self.details is not None and auxiliary is self.details)
+            )
         editor_lines = self.editor.render(width)[-editor_budget:]
 
         fixed_rows = len(status_lines) + len(editor_lines) + len(auxiliary_lines) + len(hint_lines)
@@ -129,6 +136,8 @@ class InlineLayout(Component):
     def _auxiliary(self) -> Component | None:
         if self.permission is not None:
             return self.permission
+        if self.details is not None and not getattr(self.editor, "focused", True):
+            return self.details  # Background completions cannot hide the focused dialog.
         if getattr(self.editor, "autocomplete_active", False):
             return None  # Suggestions occupy the editor's auxiliary rows.
         return self.details or self.queue

@@ -520,3 +520,23 @@ def test_our_parser_agrees_with_pyyaml_on_a_checked_in_corpus() -> None:
                 for sub_key, sub_value in value.items():
                     assert ours.get(sub_key) == str(sub_value).strip(), f"{path.name}: {sub_key}"
         assert body.startswith(("Step one.", "Body.")), f"{path.name}: body mis-split"
+
+
+def test_agent_keeps_skill_prefix_when_structured_prompt_is_rebuilt(tmp_path):
+    from xdog.agent import Agent, AgentConfig
+    from xdog.ai.types import AssistantMessage, SystemPromptBlock
+    from xdog.ai.utils.event_stream import EventStream
+
+    _mk(tmp_path, 'guard', '---\nname: guard\ndescription: guard\n---\nFIXED-SKILL-BODY')
+    manager = SkillManager(tmp_path, packaged={})
+    blocks = (SystemPromptBlock(text='STATIC', cache=True), SystemPromptBlock(text='MUTABLE', cache=False))
+    agent = Agent(lambda *args: EventStream.empty(AssistantMessage()),
+                  config=AgentConfig(system_prompt=blocks), skills=manager, active_skills=('guard',))
+    assert agent.state.system_prompt[-2:] == blocks
+    assert agent.state.system_prompt[0].cache is True
+    assert 'FIXED-SKILL-BODY' in agent.state.system_prompt[0].text
+    agent.set_system_prompt(blocks)
+    assert len(agent.state.system_prompt) == 3
+    agent.set_active_skills(())
+    assert agent.state.system_prompt[-2:] == blocks
+    assert 'FIXED-SKILL-BODY' not in str(agent.state.system_prompt)

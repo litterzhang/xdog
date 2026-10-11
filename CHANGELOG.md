@@ -12,9 +12,17 @@ Nothing yet.
 
 ---
 
-## [2.3.0] — 2026-09-11
+## [2.3.0] — 2026-10-11
 
 ### Added
+
+- Coding/Claw path completion, configurable shortcuts, external-editor handoff,
+  editable input queues, session search/branch navigation, transcript navigation,
+  image attachments, local copy/export, repository review and planning controls.
+- Original-owner child-agent supervision, image/draft recovery, reviewed extension
+  commands and message delivery, and negotiated Coding RPC/Claw socket interfaces.
+- MCP discovery, tools/resources/prompts, subscriptions, tasks, reviewed reverse
+  requests and OAuth/native credential integration with fail-closed host controls.
 
 - Reusable permission, details, input, status, and transcript message components
   in `xdog-tui`, shared by Coding and Claw without changing execution policies.
@@ -32,15 +40,30 @@ Nothing yet.
 
 ### Fixed
 
+- Terminal resize/ACK generation, Unicode/grapheme layout, cancellation receipts,
+  child startup readiness, RPC EOF/quit cleanup and completion-thread teardown.
+- Proxy startup no longer waits for unavailable model providers; cached catalogs
+  survive transient refresh failures and CLI errors give actionable guidance.
+
 - Restored session model, context usage, and user-message history presentation.
 - Prevented multiline tool summaries from corrupting terminal row accounting.
 - Preserved valid reasoning replay identities in proxy conversions and skipped
   invalid Responses reasoning identities without writing warnings into the TUI.
 
-### Validation
+### Validation and remaining limits
 
-- Added component, session-picker, and actual tmux streaming/resize regression
-  coverage. Windows Terminal/SSH key interception and IME still need manual checks.
+- Frozen current-Linux workspace regression: **8,200 passed, zero failures/skips**;
+  all 1,427 scoped source/test/fixture/config files stayed unchanged.
+- Ruff, strict type checking across all seven namespaces, distribution metadata/
+  RECORD/source/import checks, and 17 workflow examples passed. Twine was not run
+  locally; the publishing workflow performs its own metadata check.
+- The audited requirement ledger records **55 complete, five missing external
+  environments, and four deferred native non-Linux checks**. Remaining external
+  checks cover an additional Linux credential service, live provider/decoder,
+  independent OAuth/MCP deployment, controlled storage faults and a real Linux
+  desktop/Kitty session. They are not claimed passed by the local suite.
+- Permission gates are not an OS sandbox. Windows/macOS native verification is
+  deferred, not passed; no blanket Codex/Pi or vendor conformance is claimed.
 
 ---
 

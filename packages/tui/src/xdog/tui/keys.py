@@ -78,8 +78,9 @@ class KeyEvent:
         want_shift = "shift" in parts
         key_parts = [p for p in parts if p not in ("ctrl", "alt", "shift")]
         want_key = key_parts[0] if key_parts else ""
+        actual_key = "space" if self.key == " " else self.key.lower()
         return (
-            self.key.lower() == want_key
+            actual_key == want_key
             and self.ctrl == want_ctrl
             and self.alt == want_alt
             and self.shift == want_shift
