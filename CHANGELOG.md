@@ -12,6 +12,37 @@ Nothing yet.
 
 ---
 
+## [2.4.1] — 2026-10-12
+
+### Fixed
+
+- Stabilized MCP task acceptance tests against actual lifecycle events: input
+  form removal is not request settlement, and cancelled task errors may arrive
+  before an unsynchronized physical-terminal observer checks its pre-cancel phase.
+  A bounded test-owned gate retains the withholding assertion and explicitly
+  verifies secret-free error-only delivery after cancellation.
+- Child terminal cleanup tests now establish model-generator admission before
+  expecting its finalization marker. Terminal hook registration alone does not
+  prove a model request started.
+- Claw literal completion acceptance waits for the original frontend receipt
+  before clearing an undo/End draft, avoiding unintended cancellation of a newly
+  admitted callback. Existing fail-closed worker revocation is unchanged.
+- Added controlled delayed-close and completion scheduling regressions. No
+  runtime permission, cancellation, MCP protocol or SDK behavior changed.
+
+### Validation
+
+- All four GitHub v2.3.2 failure scenarios have controlled reproductions on the
+  original source. v2.4.0 CI/publish failed again in the same peer-cancel scenario;
+  neither failed tag was moved or republished.
+- The complete fix against an original HEAD archive passed 173 targeted checks
+  without pruning, skips or weakened security/lifecycle assertions. Release-version
+  metadata, build and transport checks are recorded separately.
+- This patch excludes the concurrently developed test-pruning/concurrency changes.
+  See `docs/ci/2.3.2-investigation.md` for evidence and environment limitations.
+
+---
+
 ## [2.4.0] — 2026-10-12
 
 ### Added

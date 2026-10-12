@@ -159,6 +159,15 @@ def test_actual_cli_child_terminal_transform_receipts_never_submit_or_authorize_
         else:
             raise AssertionError('Child terminal registry never became active')
         peer.caps = caps
+        # Registry activity admits terminal hooks, not the model generator. Quit
+        # can still cancel input/context/checkpoint work before its first step;
+        # only an entered model owns the fixture's producer cleanup marker.
+        deadline = time.monotonic() + 6
+        while not peer.marker.exists() and time.monotonic() < deadline:
+            assert peer.process.poll() is None, 'CLI exited before child model admission'
+            time.sleep(0.01)
+        assert peer.marker.exists(), 'Child model generator never entered'
+        assert not peer.marker.with_suffix('.settled').exists()
         for key, kind, data, expected in (('keys', 'key', 'ab', '[a][b]'),
                                          ('paste', 'paste', '开发🙂\nline', '[开发🙂\nline]'),
                                          ('consume', 'paste', 'drop', None)):

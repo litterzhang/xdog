@@ -7532,6 +7532,25 @@ def test_actual_registered_argument_tab_enter_inserts_only_and_native_parent_res
         thread = threading.Thread(target=serve, daemon=True)
         thread.start()
         assert ready.wait(6) and not errors
+    def wait_argument_receipts(editor):
+        if kind != 'claw':
+            return
+        # Painting an undo/End draft does not settle its newly issued callbacks.
+        # Ctrl-C cancels admitted workers (and intentionally disables them), so
+        # finish this insertion-only phase before clearing for the next one.
+        nonce = uuid.uuid4().hex
+        argument_state.with_suffix('.request').write_text(nonce)
+        deadline, state = time.monotonic() + 6, {}
+        while time.monotonic() < deadline:
+            if argument_state.exists():
+                state = json.loads(argument_state.read_text())
+                if (state['nonce'] == nonce and state['connected'] and state['editor'] == editor
+                        and not state['requests'] and state['inflight'] is None
+                        and state['canceling'] is None and (editor != '' or state['queued'] is None)):
+                    return
+            time.sleep(.003)
+        raise AssertionError('Original frontend argument receipt did not settle: ' + str(state))
+
     try:
         terminal.start(kind, *([config.socket_path] if kind == 'claw' else []))
         terminal.resize(120, 30)
@@ -7577,24 +7596,9 @@ def test_actual_registered_argument_tab_enter_inserts_only_and_native_parent_res
             terminal.wait_editor('/ext-argcomplete-deploy literal ' + replacement + ' later')
             terminal.keys('M-z', 'End')
             terminal.wait_editor(original)
+            wait_argument_receipts(original)
             terminal.keys('C-c')
-        if kind == 'claw':
-            # A host idle snapshot can precede buffered completion/cancel frames.
-            # Wait for this frontend to process the original request's settlement
-            # receipt, not merely enqueue Ctrl+C/cancel or observe an old empty draft.
-            nonce = uuid.uuid4().hex
-            argument_state.with_suffix('.request').write_text(nonce)
-            deadline, state = time.monotonic() + 6, {}
-            while time.monotonic() < deadline:
-                if argument_state.exists():
-                    state = json.loads(argument_state.read_text())
-                    if (state['nonce'] == nonce and state['connected'] and state['editor'] == ''
-                            and not state['requests'] and state['inflight'] is None
-                            and state['queued'] is None and state['canceling'] is None):
-                        break
-                time.sleep(.003)
-            else:
-                raise AssertionError('Original frontend argument receipt did not settle: ' + str(state))
+        wait_argument_receipts('')
         terminal.text('/ext-argcomplete-counts')
         terminal.keys('Enter')
         terminal.wait('"executed": 0')

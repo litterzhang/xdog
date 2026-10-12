@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 log, family = Path(sys.argv[1]), sys.argv[2]
@@ -39,6 +40,16 @@ for raw in sys.stdin:
         send({'jsonrpc': '2.0', 'id': 'retrieve', 'method': 'tasks/result', 'params': {'taskId': task['taskId']}})
     elif (action == 'notifications/tasks/status' and row['params']['status'] == 'input_required'
           and len(sys.argv) > 4 and sys.argv[4] == 'cancel'):
+        # Physical tests must first observe the creation/withholding boundary.
+        # Cancellation may otherwise finish before their next tmux screenshot.
+        # This optional test-owned gate controls ordering, not elapsed runtime.
+        if len(sys.argv) > 5:
+            gate = Path(sys.argv[5])
+            deadline = time.monotonic() + 5
+            while not gate.exists():
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('Test owner never released the peer cancellation gate')
+                time.sleep(.003)
         send({'jsonrpc': '2.0', 'id': 'peer-cancel', 'method': 'tasks/cancel',
               'params': {'taskId': row['params']['taskId']}})
     elif action == 'ping':

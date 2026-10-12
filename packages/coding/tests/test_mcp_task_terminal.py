@@ -26,12 +26,13 @@ def test_physical_native_task_full_review_result_transport_resize_and_termios(tm
     owned, errors = {}, []
     thread = None
     terminal = Terminal(tmp_path)
+    cancel_gate = tmp_path / "allow-peer-cancel"
     if kind == 'coding':
         configs, log = task_config(tmp_path, family)
         if end == 'expire':
             configs['owned']['args'].append('2000')
         elif end == 'peer_cancel':
-            configs['owned']['args'].extend(['60000', 'cancel'])
+            configs['owned']['args'].extend(['60000', 'cancel', str(cancel_gate)])
         home = tmp_path / 'home'
         home.mkdir(mode=0o700)
         (home / 'settings.json').write_text(json.dumps({'mcp_servers': configs}))
@@ -50,7 +51,7 @@ def test_physical_native_task_full_review_result_transport_resize_and_termios(tm
                         from dataclasses import replace
                         original = runtime.mcp.configs['owned']
                         runtime.mcp.configs['owned'] = replace(original,
-                            command=(*original.command, '60000', 'cancel'))
+                            command=(*original.command, '60000', 'cancel', str(cancel_gate)))
                     owned.update(config=config, runtime=runtime, session=session, adapter=adapter, log=log)
                     ready.set()
                     while not stop.is_set():
@@ -92,7 +93,13 @@ def test_physical_native_task_full_review_result_transport_resize_and_termios(tm
         while not any(row.get('id') == 'create' for row in frames()) and time.monotonic() < deadline:
             time.sleep(.03)
         created = next(row for row in frames() if row.get('id') == 'create')['result']['task']
-        assert 'PRIVATE' not in str(created) and not any(row.get('id') == 'retrieve' for row in frames())
+        assert 'PRIVATE' not in str(created)
+        assert not any(row.get('id') == 'retrieve' for row in frames())
+        if end == 'peer_cancel':
+            # Keep the pre-cancel withholding assertion above, then explicitly
+            # admit cancellation. A terminal error response is now legitimate;
+            # successful/private result delivery is never legitimate.
+            cancel_gate.touch()
         initial = next(row for row in frames() if row.get('method') == 'initialize')
         assert initial['params']['capabilities']['tasks']['requests'] == {
             family: {'createMessage' if family == 'sampling' else 'create': {}}}
@@ -112,6 +119,12 @@ def test_physical_native_task_full_review_result_transport_resize_and_termios(tm
                 cancelled = next(row for row in frames() if row.get('id') == 'peer-cancel')
                 assert cancelled['result']['status'] == 'cancelled'
                 assert cancelled['result']['taskId'] == created['taskId']
+                deadline = time.monotonic() + 5
+                while not any(row.get('id') == 'retrieve' for row in frames()) and time.monotonic() < deadline:
+                    time.sleep(.03)
+                denied = next(row for row in frames() if row.get('id') == 'retrieve')
+                assert denied['error']['code'] == -32000 and 'result' not in denied
+                assert 'PRIVATE' not in json.dumps(frames())
             terminal.keys('Escape')
             terminal.wait_hidden('MCP servers')
             terminal.wait_cursor(True)
@@ -173,6 +186,7 @@ def test_physical_native_task_full_review_result_transport_resize_and_termios(tm
         else:
             no_model()
     finally:
+        cancel_gate.touch()  # Release our own peer if an earlier assertion failed.
         terminal.call('kill-server')
         stop.set()
         if thread is not None:

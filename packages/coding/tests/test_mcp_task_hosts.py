@@ -310,7 +310,10 @@ async def test_native_required_tools_not_selected_refuses_before_model_or_output
         first.handle_input(KeyEvent('enter'))
         await wait(lambda: any(row.get('id') == 'retrieve' for row in frames()))
         assert next(row for row in frames() if row.get('id') == 'retrieve')['error']['code'] == -32000
-        await wait(lambda: panel.sampling_review is None)
+        # Answer admission removes the input form immediately, before the task
+        # worker and socket delivery have settled. Only the terminal close event
+        # clears busy; a transport error reply is not a UI settlement receipt.
+        await wait(lambda: panel.sampling_review is None and not panel._busy)
         assert not adapter.calls and not session.agent.messages and not panel._busy
         assert ui._editor.get_text() == 'PARENT REQUIRED TOOL DRAFT'
         if kind == 'coding':

@@ -1,0 +1,847 @@
+{
+  "task": "v2.3.2 GitHub CI investigation",
+  "date": "2026-10-12",
+  "github_baseline": {
+    "commit": "5a8ec52eb8c09f504a4fc82af67ff9dee1bff35b",
+    "ci_run": 38201095080,
+    "publish_run": 38201095103,
+    "main_failures": 2,
+    "publish_failures": 3,
+    "distinct_scenarios": 4,
+    "six_builds": "passed",
+    "publishing_and_release": "skipped"
+  },
+  "causes": [
+    {
+      "id": "CI232-01",
+      "scope": "MCP required tools/Claw busy",
+      "repro": "withhold sampling_closed while actual peer result delivers; exact baseline busy assertion",
+      "fix": "wait no review AND not busy",
+      "production_change": false
+    },
+    {
+      "id": "CI232-02",
+      "scope": "MCP peer_cancel elicitation/Coding and Claw",
+      "repro": "allow peer to finish cancellation before physical observer next checkpoint",
+      "fix": "explicit pre-cancel fixture gate; keep withholding assertion, then require secret-free -32000 error and no successful result",
+      "production_change": false
+    },
+    {
+      "id": "CI232-03",
+      "scope": "RPC child terminal cleanup",
+      "repro": "hold context before generator admission; no entered model exists to generate settled marker on v2.3.2 and v2.4.0",
+      "fix": "require model entry before testing model-finally settlement",
+      "production_change": false
+    },
+    {
+      "id": "CI232-04",
+      "scope": "Claw literal completion",
+      "repro": "hold undo/End completion callback then Ctrl-C; established fail-closed worker revocation removes future completions",
+      "fix": "frontend original receipt barrier before clearing insertion-only phase; regression covers both cancellation and settlement",
+      "production_change": false
+    }
+  ],
+  "fix_files_sha256": {
+    "packages/agent/tests/fixtures/mcp_task_peer.py": "f1f7b68776c4a11fd145d2a04bd6535623b5299a138555704b6e6f2db7855763",
+    "packages/coding/tests/test_mcp_task_hosts.py": "abd1efec8dd56bcd896d4f40c1148287e552dc543be6abf38b2d91affded03a0",
+    "packages/coding/tests/test_mcp_task_terminal.py": "98e4fb88aa760fd50042e286a9a01080b8c9946def1ebe1c913714ac16492bb2",
+    "packages/coding/tests/test_rpc_child_terminal.py": "d2bd71664d11385e33537dfbc490dc520471d6f80cc6b013becda2e1d65a9d21",
+    "packages/coding/tests/test_terminal_acceptance.py": "e16a8ac8fd12431a34858fcf42a57fddb9144c33553f533921b8086641fc5734",
+    "packages/coding/tests/test_mcp_task_ci_ordering.py": "981ea5ba67c58a6e62721ce1f4a06f05a03f397f0dd468fd0c62b3182fc59fd3",
+    "packages/claw/tests/test_argument_literal_scheduling.py": "8c7f604ff7876ba43cd2c702ae35b2bd1887e6e527870eb2a6e2b021f0f5ea22"
+  },
+  "patch": "/tmp/xdog-ci-investigation-2.3.2/fix.patch",
+  "verification": {
+    "isolated_current_head_suite": "173 passed,0 failed,in101.96s; original tests retained",
+    "baseline_mcp": "33 passed using actual v2.3.2 code plus synchronized tests",
+    "baseline_child": "48 passed plus original/fixed admission matrix on both versions",
+    "baseline_literal": "original fails and synchronized passes on both versions; six scheduling regressions each",
+    "ruff": "passed",
+    "seven_package_strict_mypy": "passed,552 sources"
+  },
+  "environment": {
+    "github": "Ubuntu CPython3.12.3",
+    "local": "3.13.12",
+    "python3_12_tested_locally": false,
+    "installation": false
+  },
+  "concurrency": "User-authorized separate pruning task removed/refactored many tests; preserved and not overwritten. Complete patch validated separately in original HEAD archive.",
+  "latest_2_4_runs": [
+    {
+      "conclusion": "",
+      "jobs": [
+        {
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "databaseId": 114739736432,
+          "name": "test",
+          "startedAt": "2026-10-12T09:07:41Z",
+          "status": "in_progress",
+          "steps": [
+            {
+              "completedAt": "2026-10-12T09:07:43Z",
+              "conclusion": "success",
+              "name": "Set up job",
+              "number": 1,
+              "startedAt": "2026-10-12T09:07:42Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:44Z",
+              "conclusion": "success",
+              "name": "Run actions/checkout@v7",
+              "number": 2,
+              "startedAt": "2026-10-12T09:07:43Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:45Z",
+              "conclusion": "success",
+              "name": "Run astral-sh/setup-uv@v9.0.0",
+              "number": 3,
+              "startedAt": "2026-10-12T09:07:44Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:47Z",
+              "conclusion": "success",
+              "name": "Run uv sync",
+              "number": 4,
+              "startedAt": "2026-10-12T09:07:45Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Run uv run pytest -q",
+              "number": 5,
+              "startedAt": "2026-10-12T09:07:47Z",
+              "status": "in_progress"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Run uv run ruff check packages",
+              "number": 6,
+              "startedAt": "0001-01-01T00:00:00Z",
+              "status": "pending"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Run uv run mypy --strict -p xdog.flow",
+              "number": 7,
+              "startedAt": "0001-01-01T00:00:00Z",
+              "status": "pending"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Post Run astral-sh/setup-uv@v9.0.0",
+              "number": 13,
+              "startedAt": "0001-01-01T00:00:00Z",
+              "status": "pending"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Post Run actions/checkout@v7",
+              "number": 14,
+              "startedAt": "0001-01-01T00:00:00Z",
+              "status": "pending"
+            }
+          ],
+          "url": "https://github.com/litterzhang/xdog/actions/runs/38227871782/job/114739736432"
+        },
+        {
+          "completedAt": "2026-10-12T09:07:56Z",
+          "conclusion": "success",
+          "databaseId": 114739736616,
+          "name": "build (xdog-coding)",
+          "startedAt": "2026-10-12T09:07:41Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completedAt": "2026-10-12T09:07:44Z",
+              "conclusion": "success",
+              "name": "Set up job",
+              "number": 1,
+              "startedAt": "2026-10-12T09:07:42Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:47Z",
+              "conclusion": "success",
+              "name": "Run actions/checkout@v7",
+              "number": 2,
+              "startedAt": "2026-10-12T09:07:44Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:50Z",
+              "conclusion": "success",
+              "name": "Run astral-sh/setup-uv@v9.0.0",
+              "number": 3,
+              "startedAt": "2026-10-12T09:07:47Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:51Z",
+              "conclusion": "success",
+              "name": "Build sdist + wheel",
+              "number": 4,
+              "startedAt": "2026-10-12T09:07:50Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:51Z",
+              "conclusion": "success",
+              "name": "Check metadata renders on PyPI",
+              "number": 5,
+              "startedAt": "2026-10-12T09:07:51Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:53Z",
+              "conclusion": "success",
+              "name": "Run actions/upload-artifact@v7",
+              "number": 6,
+              "startedAt": "2026-10-12T09:07:51Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:53Z",
+              "conclusion": "success",
+              "name": "Post Run astral-sh/setup-uv@v9.0.0",
+              "number": 11,
+              "startedAt": "2026-10-12T09:07:53Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:54Z",
+              "conclusion": "success",
+              "name": "Post Run actions/checkout@v7",
+              "number": 12,
+              "startedAt": "2026-10-12T09:07:53Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:54Z",
+              "conclusion": "success",
+              "name": "Complete job",
+              "number": 13,
+              "startedAt": "2026-10-12T09:07:54Z",
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/litterzhang/xdog/actions/runs/38227871782/job/114739736616"
+        },
+        {
+          "completedAt": "2026-10-12T09:07:51Z",
+          "conclusion": "success",
+          "databaseId": 114739736631,
+          "name": "build (xdog-agent)",
+          "startedAt": "2026-10-12T09:07:41Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completedAt": "2026-10-12T09:07:43Z",
+              "conclusion": "success",
+              "name": "Set up job",
+              "number": 1,
+              "startedAt": "2026-10-12T09:07:42Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:44Z",
+              "conclusion": "success",
+              "name": "Run actions/checkout@v7",
+              "number": 2,
+              "startedAt": "2026-10-12T09:07:43Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:45Z",
+              "conclusion": "success",
+              "name": "Run astral-sh/setup-uv@v9.0.0",
+              "number": 3,
+              "startedAt": "2026-10-12T09:07:44Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:47Z",
+              "conclusion": "success",
+              "name": "Build sdist + wheel",
+              "number": 4,
+              "startedAt": "2026-10-12T09:07:45Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:48Z",
+              "conclusion": "success",
+              "name": "Check metadata renders on PyPI",
+              "number": 5,
+              "startedAt": "2026-10-12T09:07:47Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:48Z",
+              "conclusion": "success",
+              "name": "Run actions/upload-artifact@v7",
+              "number": 6,
+              "startedAt": "2026-10-12T09:07:48Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:49Z",
+              "conclusion": "success",
+              "name": "Post Run astral-sh/setup-uv@v9.0.0",
+              "number": 11,
+              "startedAt": "2026-10-12T09:07:48Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:49Z",
+              "conclusion": "success",
+              "name": "Post Run actions/checkout@v7",
+              "number": 12,
+              "startedAt": "2026-10-12T09:07:49Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:49Z",
+              "conclusion": "success",
+              "name": "Complete job",
+              "number": 13,
+              "startedAt": "2026-10-12T09:07:49Z",
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/litterzhang/xdog/actions/runs/38227871782/job/114739736631"
+        },
+        {
+          "completedAt": "2026-10-12T09:07:53Z",
+          "conclusion": "success",
+          "databaseId": 114739736687,
+          "name": "build (xdog-tui)",
+          "startedAt": "2026-10-12T09:07:41Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completedAt": "2026-10-12T09:07:44Z",
+              "conclusion": "success",
+              "name": "Set up job",
+              "number": 1,
+              "startedAt": "2026-10-12T09:07:42Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:46Z",
+              "conclusion": "success",
+              "name": "Run actions/checkout@v7",
+              "number": 2,
+              "startedAt": "2026-10-12T09:07:44Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:47Z",
+              "conclusion": "success",
+              "name": "Run astral-sh/setup-uv@v9.0.0",
+              "number": 3,
+              "startedAt": "2026-10-12T09:07:46Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:48Z",
+              "conclusion": "success",
+              "name": "Build sdist + wheel",
+              "number": 4,
+              "startedAt": "2026-10-12T09:07:47Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:49Z",
+              "conclusion": "success",
+              "name": "Check metadata renders on PyPI",
+              "number": 5,
+              "startedAt": "2026-10-12T09:07:48Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:50Z",
+              "conclusion": "success",
+              "name": "Run actions/upload-artifact@v7",
+              "number": 6,
+              "startedAt": "2026-10-12T09:07:49Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:50Z",
+              "conclusion": "success",
+              "name": "Post Run astral-sh/setup-uv@v9.0.0",
+              "number": 11,
+              "startedAt": "2026-10-12T09:07:50Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:51Z",
+              "conclusion": "success",
+              "name": "Post Run actions/checkout@v7",
+              "number": 12,
+              "startedAt": "2026-10-12T09:07:50Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:51Z",
+              "conclusion": "success",
+              "name": "Complete job",
+              "number": 13,
+              "startedAt": "2026-10-12T09:07:51Z",
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/litterzhang/xdog/actions/runs/38227871782/job/114739736687"
+        },
+        {
+          "completedAt": "2026-10-12T09:07:50Z",
+          "conclusion": "success",
+          "databaseId": 114739736709,
+          "name": "build (xdog-ai)",
+          "startedAt": "2026-10-12T09:07:41Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completedAt": "2026-10-12T09:07:42Z",
+              "conclusion": "success",
+              "name": "Set up job",
+              "number": 1,
+              "startedAt": "2026-10-12T09:07:42Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:44Z",
+              "conclusion": "success",
+              "name": "Run actions/checkout@v7",
+              "number": 2,
+              "startedAt": "2026-10-12T09:07:42Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:45Z",
+              "conclusion": "success",
+              "name": "Run astral-sh/setup-uv@v9.0.0",
+              "number": 3,
+              "startedAt": "2026-10-12T09:07:44Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:46Z",
+              "conclusion": "success",
+              "name": "Build sdist + wheel",
+              "number": 4,
+              "startedAt": "2026-10-12T09:07:45Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:47Z",
+              "conclusion": "success",
+              "name": "Check metadata renders on PyPI",
+              "number": 5,
+              "startedAt": "2026-10-12T09:07:46Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:48Z",
+              "conclusion": "success",
+              "name": "Run actions/upload-artifact@v7",
+              "number": 6,
+              "startedAt": "2026-10-12T09:07:47Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:49Z",
+              "conclusion": "success",
+              "name": "Post Run astral-sh/setup-uv@v9.0.0",
+              "number": 11,
+              "startedAt": "2026-10-12T09:07:48Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:49Z",
+              "conclusion": "success",
+              "name": "Post Run actions/checkout@v7",
+              "number": 12,
+              "startedAt": "2026-10-12T09:07:49Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:49Z",
+              "conclusion": "success",
+              "name": "Complete job",
+              "number": 13,
+              "startedAt": "2026-10-12T09:07:49Z",
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/litterzhang/xdog/actions/runs/38227871782/job/114739736709"
+        },
+        {
+          "completedAt": "2026-10-12T09:07:55Z",
+          "conclusion": "success",
+          "databaseId": 114739736737,
+          "name": "build (xdog-flow)",
+          "startedAt": "2026-10-12T09:07:41Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completedAt": "2026-10-12T09:07:44Z",
+              "conclusion": "success",
+              "name": "Set up job",
+              "number": 1,
+              "startedAt": "2026-10-12T09:07:42Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:47Z",
+              "conclusion": "success",
+              "name": "Run actions/checkout@v7",
+              "number": 2,
+              "startedAt": "2026-10-12T09:07:44Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:48Z",
+              "conclusion": "success",
+              "name": "Run astral-sh/setup-uv@v9.0.0",
+              "number": 3,
+              "startedAt": "2026-10-12T09:07:47Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:49Z",
+              "conclusion": "success",
+              "name": "Build sdist + wheel",
+              "number": 4,
+              "startedAt": "2026-10-12T09:07:48Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:51Z",
+              "conclusion": "success",
+              "name": "Check metadata renders on PyPI",
+              "number": 5,
+              "startedAt": "2026-10-12T09:07:49Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:52Z",
+              "conclusion": "success",
+              "name": "Run actions/upload-artifact@v7",
+              "number": 6,
+              "startedAt": "2026-10-12T09:07:51Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:53Z",
+              "conclusion": "success",
+              "name": "Post Run astral-sh/setup-uv@v9.0.0",
+              "number": 11,
+              "startedAt": "2026-10-12T09:07:52Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:53Z",
+              "conclusion": "success",
+              "name": "Post Run actions/checkout@v7",
+              "number": 12,
+              "startedAt": "2026-10-12T09:07:53Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:53Z",
+              "conclusion": "success",
+              "name": "Complete job",
+              "number": 13,
+              "startedAt": "2026-10-12T09:07:53Z",
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/litterzhang/xdog/actions/runs/38227871782/job/114739736737"
+        },
+        {
+          "completedAt": "2026-10-12T09:07:54Z",
+          "conclusion": "success",
+          "databaseId": 114739736743,
+          "name": "build (xdog-claw)",
+          "startedAt": "2026-10-12T09:07:41Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completedAt": "2026-10-12T09:07:44Z",
+              "conclusion": "success",
+              "name": "Set up job",
+              "number": 1,
+              "startedAt": "2026-10-12T09:07:41Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:46Z",
+              "conclusion": "success",
+              "name": "Run actions/checkout@v7",
+              "number": 2,
+              "startedAt": "2026-10-12T09:07:44Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:47Z",
+              "conclusion": "success",
+              "name": "Run astral-sh/setup-uv@v9.0.0",
+              "number": 3,
+              "startedAt": "2026-10-12T09:07:46Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:48Z",
+              "conclusion": "success",
+              "name": "Build sdist + wheel",
+              "number": 4,
+              "startedAt": "2026-10-12T09:07:47Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:49Z",
+              "conclusion": "success",
+              "name": "Check metadata renders on PyPI",
+              "number": 5,
+              "startedAt": "2026-10-12T09:07:48Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:50Z",
+              "conclusion": "success",
+              "name": "Run actions/upload-artifact@v7",
+              "number": 6,
+              "startedAt": "2026-10-12T09:07:49Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:51Z",
+              "conclusion": "success",
+              "name": "Post Run astral-sh/setup-uv@v9.0.0",
+              "number": 11,
+              "startedAt": "2026-10-12T09:07:50Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:51Z",
+              "conclusion": "success",
+              "name": "Post Run actions/checkout@v7",
+              "number": 12,
+              "startedAt": "2026-10-12T09:07:51Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:51Z",
+              "conclusion": "success",
+              "name": "Complete job",
+              "number": 13,
+              "startedAt": "2026-10-12T09:07:51Z",
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/litterzhang/xdog/actions/runs/38227871782/job/114739736743"
+        }
+      ],
+      "status": "in_progress"
+    },
+    {
+      "conclusion": "",
+      "jobs": [
+        {
+          "completedAt": "2026-10-12T09:07:51Z",
+          "conclusion": "success",
+          "databaseId": 114739736910,
+          "name": "secrets",
+          "startedAt": "2026-10-12T09:07:41Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completedAt": "2026-10-12T09:07:44Z",
+              "conclusion": "success",
+              "name": "Set up job",
+              "number": 1,
+              "startedAt": "2026-10-12T09:07:42Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:46Z",
+              "conclusion": "success",
+              "name": "Run actions/checkout@v7",
+              "number": 2,
+              "startedAt": "2026-10-12T09:07:44Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:49Z",
+              "conclusion": "success",
+              "name": "Run gitleaks/gitleaks-action@v2",
+              "number": 3,
+              "startedAt": "2026-10-12T09:07:46Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:49Z",
+              "conclusion": "success",
+              "name": "Post Run actions/checkout@v7",
+              "number": 6,
+              "startedAt": "2026-10-12T09:07:49Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:49Z",
+              "conclusion": "success",
+              "name": "Complete job",
+              "number": 7,
+              "startedAt": "2026-10-12T09:07:49Z",
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/litterzhang/xdog/actions/runs/38227871874/job/114739736910"
+        },
+        {
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "databaseId": 114739737166,
+          "name": "test",
+          "startedAt": "2026-10-12T09:07:41Z",
+          "status": "in_progress",
+          "steps": [
+            {
+              "completedAt": "2026-10-12T09:07:43Z",
+              "conclusion": "success",
+              "name": "Set up job",
+              "number": 1,
+              "startedAt": "2026-10-12T09:07:42Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:45Z",
+              "conclusion": "success",
+              "name": "Run actions/checkout@v7",
+              "number": 2,
+              "startedAt": "2026-10-12T09:07:43Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:47Z",
+              "conclusion": "success",
+              "name": "Run astral-sh/setup-uv@v9.0.0",
+              "number": 3,
+              "startedAt": "2026-10-12T09:07:45Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:48Z",
+              "conclusion": "success",
+              "name": "Run uv sync",
+              "number": 4,
+              "startedAt": "2026-10-12T09:07:47Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-12T09:07:50Z",
+              "conclusion": "success",
+              "name": "Every published package imports",
+              "number": 5,
+              "startedAt": "2026-10-12T09:07:48Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Tests",
+              "number": 6,
+              "startedAt": "2026-10-12T09:07:50Z",
+              "status": "in_progress"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Lint",
+              "number": 7,
+              "startedAt": "0001-01-01T00:00:00Z",
+              "status": "pending"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Types",
+              "number": 8,
+              "startedAt": "0001-01-01T00:00:00Z",
+              "status": "pending"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Example suites",
+              "number": 9,
+              "startedAt": "0001-01-01T00:00:00Z",
+              "status": "pending"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Wheel ships the examples and the skill",
+              "number": 10,
+              "startedAt": "0001-01-01T00:00:00Z",
+              "status": "pending"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "No bare inter-package requirements",
+              "number": 11,
+              "startedAt": "0001-01-01T00:00:00Z",
+              "status": "pending"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Post Run astral-sh/setup-uv@v9.0.0",
+              "number": 21,
+              "startedAt": "0001-01-01T00:00:00Z",
+              "status": "pending"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Post Run actions/checkout@v7",
+              "number": 22,
+              "startedAt": "0001-01-01T00:00:00Z",
+              "status": "pending"
+            }
+          ],
+          "url": "https://github.com/litterzhang/xdog/actions/runs/38227871874/job/114739737166"
+        }
+      ],
+      "status": "in_progress"
+    }
+  ],
+  "limits": [
+    "Causal schedules matching failures reproduced; exact historic interleavings not recorded",
+    "No new remote CI verification for these uncommitted fixes",
+    "No full workspace rerun requested; targeted regressions retained",
+    "Historical tags unchanged; no service restarts/commits/push/releases"
+  ],
+  "release_followup": {
+    "version": "2.4.1",
+    "authorized": "user requested publish fix first, tag2.4.1",
+    "failed_2_4_0_runs": {
+      "publish": 38227871782,
+      "main": 38227871874
+    },
+    "new_failures": "same peer_cancel elicitation observer race",
+    "release_scope": "exact7-file fix plus version/changelog/evidence; pruning excluded",
+    "publication": "pending workflow completion"
+  }
+}
