@@ -1899,7 +1899,7 @@ wheels = [
 
 [[package]]
 name = "xdog"
-version = "2.3.1"
+version = "2.3.2"
 source = { editable = "." }
 dependencies = [
     { name = "xdog-agent" },
@@ -1944,7 +1944,7 @@ dev = [
 
 [[package]]
 name = "xdog-agent"
-version = "2.3.1"
+version = "2.3.2"
 source = { editable = "packages/agent" }
 dependencies = [
     { name = "fastjsonschema" },
@@ -1967,7 +1967,7 @@ requires-dist = [
 
 [[package]]
 name = "xdog-ai"
-version = "2.3.1"
+version = "2.3.2"
 source = { editable = "packages/ai" }
 dependencies = [
     { name = "httpx", extra = ["socks"] },
@@ -1997,7 +1997,7 @@ provides-extras = ["openai", "all"]
 
 [[package]]
 name = "xdog-claw"
-version = "2.3.1"
+version = "2.3.2"
 source = { editable = "packages/claw" }
 dependencies = [
     { name = "aiosqlite" },
@@ -2047,7 +2047,7 @@ provides-extras = ["search", "all"]
 
 [[package]]
 name = "xdog-coding"
-version = "2.3.1"
+version = "2.3.2"
 source = { editable = "packages/coding" }
 dependencies = [
     { name = "click" },
@@ -2070,7 +2070,7 @@ requires-dist = [
 
 [[package]]
 name = "xdog-flow"
-version = "2.3.1"
+version = "2.3.2"
 source = { editable = "packages/flow" }
 dependencies = [
     { name = "fastjsonschema" },
@@ -2093,7 +2093,7 @@ requires-dist = [
 
 [[package]]
 name = "xdog-site"
-version = "2.3.1"
+version = "2.3.2"
 source = { editable = "packages/site" }
 dependencies = [
     { name = "flask" },
@@ -2114,7 +2114,7 @@ requires-dist = [
 
 [[package]]
 name = "xdog-tui"
-version = "2.3.1"
+version = "2.3.2"
 source = { editable = "packages/tui" }
 dependencies = [
     { name = "wcwidth" },

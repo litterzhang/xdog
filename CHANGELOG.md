@@ -12,6 +12,29 @@ Nothing yet.
 
 ---
 
+## [2.3.2] — 2026-10-12
+
+### Fixed
+
+- Gateway signal shutdown now awaits a single shared cleanup task before the main
+  event loop exits. Repeated stop requests join the same cleanup, and cancellation
+  cannot prematurely abandon resource settlement.
+- Memory shutdown now closes the optional search backend and its non-daemon SQLite
+  worker, preventing a stopped WeChat monitor from leaving the gateway process hung
+  during Python interpreter exit.
+- Channel workers settle before their resources close; channel/MCP cleanup failures
+  no longer skip memory cleanup. Successful shutdown supports a fresh gateway start.
+
+### Validation
+
+- Added regressions for real SIGTERM process exit, SQLite and child-supervisor
+  threads, repeated signals, cancellation, restart, and cleanup errors.
+- The shutdown patch's related regression passed167 tests before this release bump;
+  release validation is recorded separately. A release does not restart an already
+  running gateway or recover an old process automatically.
+
+---
+
 ## [2.3.1] — 2026-10-12
 
 ### Fixed

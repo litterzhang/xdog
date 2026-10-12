@@ -84,3 +84,9 @@ class MemoryManager:
             logger.warning("Memory backend failed; using live keyword fallback", exc_info=True)
             # Let read failures propagate: unavailable memory is not an empty result.
             return await SimpleMemorySearch(self.workspace_dir).search(query, top_k=top_k)
+
+    async def close(self) -> None:
+        """Close the optional search backend, including its non-daemon SQLite worker."""
+        close = getattr(self._searcher, "close", None)
+        if close is not None:
+            await close()

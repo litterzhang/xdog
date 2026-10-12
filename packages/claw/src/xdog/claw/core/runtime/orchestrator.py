@@ -1318,6 +1318,10 @@ class Orchestrator:
         for run in scheduled:
             run.cancel()
         await asyncio.gather(*scheduled, return_exceptions=True)
+        # Stop ingress and settle channel-owned turns before closing their resources.
+        disconnected = await asyncio.gather(
+            *(channel.disconnect() for channel in self._channels), return_exceptions=True,
+        )
         children = [runtime._active_session.children.supervisor for runtime in self._runtimes.values()
                     if runtime._active_session is not None]
         await asyncio.gather(*(owner.aclose() for owner in children), return_exceptions=True)
@@ -1325,6 +1329,13 @@ class Orchestrator:
         owners.extend(runtime._active_session.extensions for runtime in self._runtimes.values()
                       if runtime._active_session is not None)
         await asyncio.gather(*(owner.aclose() for owner in owners), return_exceptions=True)
-        await asyncio.gather(*(runtime.mcp.aclose() for runtime in self._runtimes.values()))
-        for channel in self._channels:
-            await channel.disconnect()
+        mcp_closed = await asyncio.gather(
+            *(runtime.mcp.aclose() for runtime in self._runtimes.values()), return_exceptions=True,
+        )
+        memory_closed = await asyncio.gather(
+            *(runtime.memory.close() for runtime in self._runtimes.values() if runtime.memory is not None),
+            return_exceptions=True,
+        )
+        for result in (*disconnected, *mcp_closed, *memory_closed):
+            if isinstance(result, BaseException):
+                raise result

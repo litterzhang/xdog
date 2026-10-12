@@ -154,10 +154,17 @@ class GatewayServer:
         self._group_runs: dict[str, str] = {}
         self._group_runs_lock = asyncio.Lock()
         self._shutdown_event = asyncio.Event()
+        self._stop_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         """Start the gateway: orchestrator + socket server."""
         logger.info("Starting claw gateway...")
+        if self._stop_task is not None:
+            if not self._stop_task.done():
+                raise RuntimeError("Gateway shutdown is still in progress")
+            self._stop_task.result()
+            self._stop_task = None
+            self._shutdown_event.clear()
 
         # Initialize orchestrator
         data_dir = Path(self._config.data_dir)
@@ -3494,11 +3501,23 @@ class GatewayServer:
         )
 
     async def stop(self) -> None:
-        """Gracefully shut down the gateway."""
-        logger.info("Shutting down gateway...")
-
-        # Signal shutdown first so loops can exit
+        """Join one cleanup owner; caller cancellation is not resource settlement."""
         self._shutdown_event.set()
+        if self._stop_task is None:
+            self._stop_task = asyncio.create_task(self._stop(), name="claw-gateway-stop")
+        task = self._stop_task
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+        task.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _stop(self) -> None:
+        logger.info("Shutting down gateway...")
 
         # Cancel scheduler loop
         if self._scheduler_task and not self._scheduler_task.done():
@@ -3542,12 +3561,20 @@ class GatewayServer:
 
         def _signal_handler() -> None:
             logger.info("Received shutdown signal")
-            asyncio.ensure_future(self.stop())
+            self._shutdown_event.set()
 
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, _signal_handler)
 
-        await self._shutdown_event.wait()
+        try:
+            await self._shutdown_event.wait()
+        finally:
+            try:
+                # asyncio.run must not cancel the cleanup task while it owns resources.
+                await self.stop()
+            finally:
+                for sig in (signal.SIGTERM, signal.SIGINT):
+                    loop.remove_signal_handler(sig)
 
 
 def read_pid(pid_path: Path) -> int | None:

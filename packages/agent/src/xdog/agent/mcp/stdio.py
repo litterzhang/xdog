@@ -81,7 +81,7 @@ class StdioClient:
                 response = await self.request("initialize", {
                     "protocolVersion": LEGACY_VERSIONS[0],
                     "capabilities": {**self.root_capability.advertised(), **self.reverse.advertised()},
-                    "clientInfo": {"name": "xdog", "version": "2.3.1"},
+                    "clientInfo": {"name": "xdog", "version": "2.3.2"},
                 })
                 chosen = response.get("protocolVersion")
                 if chosen not in LEGACY_VERSIONS:
@@ -143,7 +143,7 @@ class StdioClient:
         if self.modern or version:
             payload["_meta"] = {**payload.get("_meta", {}),
                                 "io.modelcontextprotocol/protocolVersion": version or self.version,
-                                "io.modelcontextprotocol/clientInfo": {"name": "xdog", "version": "2.3.1"},
+                                "io.modelcontextprotocol/clientInfo": {"name": "xdog", "version": "2.3.2"},
                                 "io.modelcontextprotocol/clientCapabilities": self.inputs.advertised()}
         future = asyncio.get_running_loop().create_future()
         self._pending[identifier] = future
@@ -179,7 +179,7 @@ class StdioClient:
                 if self.modern:
                     await self._write({'jsonrpc': '2.0', 'id': watch.id, 'method': 'subscriptions/listen', 'params': {
                         '_meta': {'io.modelcontextprotocol/protocolVersion': self.version,
-                                  'io.modelcontextprotocol/clientInfo': {'name': 'xdog', 'version': '2.3.1'},
+                                  'io.modelcontextprotocol/clientInfo': {'name': 'xdog', 'version': '2.3.2'},
                                   'io.modelcontextprotocol/clientCapabilities': advertised()},
                         'notifications': {'resourceSubscriptions': [uri]}}})
                     await asyncio.wait_for(asyncio.shield(watch.ready), self.config.timeout)
@@ -208,7 +208,7 @@ class StdioClient:
                 if self.modern:
                     await self._write({'jsonrpc': '2.0', 'id': watch.id, 'method': 'subscriptions/listen', 'params': {
                         '_meta': {'io.modelcontextprotocol/protocolVersion': self.version,
-                                  'io.modelcontextprotocol/clientInfo': {'name': 'xdog', 'version': '2.3.1'},
+                                  'io.modelcontextprotocol/clientInfo': {'name': 'xdog', 'version': '2.3.2'},
                                   'io.modelcontextprotocol/clientCapabilities': advertised()},
                         'notifications': watch.filters()}})
                     await asyncio.wait_for(asyncio.shield(watch.ready), self.config.timeout)
@@ -242,7 +242,7 @@ class StdioClient:
             try:
                 await self._write({'jsonrpc': '2.0', 'id': watch.id, 'method': 'subscriptions/listen', 'params': {
                     '_meta': {'io.modelcontextprotocol/protocolVersion': self.version,
-                              'io.modelcontextprotocol/clientInfo': {'name': 'xdog', 'version': '2.3.1'},
+                              'io.modelcontextprotocol/clientInfo': {'name': 'xdog', 'version': '2.3.2'},
                               'io.modelcontextprotocol/clientCapabilities': advertised()},
                         'notifications': watch.filters()}})
                 await asyncio.wait_for(asyncio.shield(watch.ready), self.config.timeout)
