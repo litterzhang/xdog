@@ -2,7 +2,7 @@
 
 Skills come from three tiers, each overriding the one before it:
 
-- **Packaged** — ``<installed package>/skill/`` — discovered, read-only
+- **Packaged** — ``<installed package>/skills/<slug>/`` — discovered, read-only
 - **Shared** — ``{data_dir}/skills/`` — available to all groups
 - **Group** — ``{workspace}/skills/`` — specific to one group
 
@@ -42,7 +42,7 @@ _NAME_RE = re.compile(r"^(?!-)(?!.*--)[a-z0-9-]{1,64}(?<!-)$")
 
 def is_valid_skill_name(name: str) -> bool:
     """Whether a name satisfies the standard, and so is portable to other clients."""
-    return bool(_NAME_RE.match(name))
+    return bool(_NAME_RE.fullmatch(name))
 
 
 def _slugify(name: str) -> str:
@@ -168,6 +168,12 @@ def _load_skill_from_dir(skill_dir: Path, *, slug: str = "", packaged: bool = Fa
         return None
 
     text = skill_file.read_text(encoding="utf-8")
+    return _skill_from_text(skill_dir, text, slug=slug, packaged=packaged)
+
+
+def _skill_from_text(skill_dir: Path, text: str, *, slug: str = "", packaged: bool = False) -> Skill:
+    """Shared decoding after a caller has read/validated its chosen file."""
+    skill_file = skill_dir / "SKILL.md"
     meta, body = _parse_frontmatter(text)
 
     desc = meta.get("description", "")
@@ -349,8 +355,8 @@ class SkillManager:
             lines.append(f"- `{s.slug}`{desc}")
         lines.append("")
         lines.append(
-            "Use the skill tool (action: load, slug: \"...\") to load "
-            "the full content of a skill when you need it."
+            "Full skill bodies are not included in this index. Use only the host's "
+            "available controls or explicitly provided tools to load them."
         )
         return "\n".join(lines)
 

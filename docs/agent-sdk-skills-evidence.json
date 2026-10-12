@@ -1,0 +1,536 @@
+{
+  "date": "2026-10-12",
+  "purpose": "Approved F1 scoped WIP follow-up: skill tooling, offline examples/docs/tests; not full F1 acceptance",
+  "historical_investigation": {
+    "date": "2026-10-12",
+    "purpose": "SDK skill investigation, not a live provider or dependency-resolver test",
+    "runtime_modified": false,
+    "artifact_build": "uv build --offline behavior via UV_OFFLINE=1; wheel built from sdist",
+    "skill_slug": "flow-workflows",
+    "artifact_skill_files": {
+      "SKILL.md": "6571a65a5334e7066749e0b60ac334d3c7cd9123e391b24a67eba8583a8a6c2a",
+      "examples/agent_calculator.json": "7f681a4439498c932d678bab5bf48178ee14e3f9284efb5cf9c1ff45a7ccd603",
+      "examples/cli_triage.json": "020038210c8c286e11b5392b30ba1f4621119fe7bd2414338754396f787ea27e",
+      "examples/digest_timer.json": "264ab4dc709173135924f8d5c98a1683a5331aa610a0cc28a707a91aeb67e302",
+      "examples/essay_compose.json": "12da069393115477f90439818e1f33c5bb138d086816c9dab75aad5e9e517d4a",
+      "examples/essay_writer.json": "4bab68315946faed40ccfa87673dd71ddb13ef654a866d9809380a80e53605be",
+      "examples/refine_loop.json": "c69c66ade4778914e97095f82d8bdcdf821276970493e0783b75dfd613774381",
+      "examples/release_readiness.json": "f165ebc090c7c9f2e819134108ec9502787c51e81309656f072bde7e5c228cb5",
+      "examples/release_readiness.test.json": "b4b7edfced705aeeccd2fc64b15cfb2d9b1ba334ebb59c536753d4985d00aa9b",
+      "examples/release_report.json": "18eefd3a17c204efe5cc6579664a90ebfd7cfcff642575622bfb777f85ac0bf9",
+      "examples/release_report.test.json": "6dbde84c32d06c4374ce027258cdf5ffc81c556e33e2e79dd3af5aec486addc7",
+      "examples/triage_hook.json": "68e7bdff1f42f4764670c48bb6093c72732d56e6f997551d267bb8dbe6168793",
+      "examples/trip_planner.json": "8b8f4cdde150b46afde4078693d37c54d7fc0d780c24025e4e84b440edf5f555"
+    },
+    "artifacts": {
+      "xdog_agent-2.3.0-py3-none-any.whl": "6ed53775fcf8edc13c7284c92666c06b1e9faa6569b60f279ff0d5dba1a28a3c",
+      "xdog_agent-2.3.0.tar.gz": "c8b2d699c28b77c69693756f0704c2ba44f0bc6d9caf5c9d03bc492c15bd5671",
+      "xdog_ai-2.3.0-py3-none-any.whl": "4b63df9ca1b8d1ac08650a29a2505a8c27d944bcdb035ee375526f2ef33d50bd",
+      "xdog_ai-2.3.0.tar.gz": "da0325d291ce4e17832c961fddf17e45c170b496e5cca55ddb79544dfc211bb0",
+      "xdog_flow-2.3.0-py3-none-any.whl": "53ed0e95c3884a3c9a634be84af2700c0b0639543e2d91ab197c25ddee3976df",
+      "xdog_flow-2.3.0.tar.gz": "8106a961e07f9e34842bc26ba0968d637e5737a14f630c0a2584a008a0045a87",
+      "xdog_tui-2.3.0-py3-none-any.whl": "dc4c21133c9d8613d5981ada81d1380d8b4b9ea4a7ddfbbe33b53226d9f7a897",
+      "xdog_tui-2.3.0.tar.gz": "db0b92013663cd5e89f8f0b081a1b01bf116b38e83111131668f1099e8bdef3e"
+    },
+    "agent_only": {
+      "target": "/tmp/xdog-sdk-skills/agent-only",
+      "flow_expected": false,
+      "discovered": [],
+      "imports_from_wheel_target": true,
+      "editable_fallback_disabled": true,
+      "agent_requires_flow": false,
+      "example": {
+        "slug": "procedure",
+        "packaged": false,
+        "skill_directory": "/tmp/skill-artifact-f67l__xl/skills/procedure",
+        "available_skills": [
+          "procedure"
+        ],
+        "model_requests": 2,
+        "tool_names": [],
+        "loaded_at_model_entry": true,
+        "unloaded_at_model_entry": true,
+        "base_prompt_preserved": true
+      }
+    },
+    "with_flow": {
+      "target": "/tmp/xdog-sdk-skills/with-flow",
+      "flow_expected": true,
+      "discovered": [
+        "flow-workflows"
+      ],
+      "imports_from_wheel_target": true,
+      "editable_fallback_disabled": true,
+      "agent_requires_flow": false,
+      "example": {
+        "slug": "flow-workflows",
+        "packaged": true,
+        "skill_directory": "/tmp/xdog-sdk-skills/with-flow/xdog/flow/skills/flow-workflows",
+        "available_skills": [
+          "flow-workflows"
+        ],
+        "model_requests": 2,
+        "tool_names": [],
+        "loaded_at_model_entry": true,
+        "unloaded_at_model_entry": true,
+        "base_prompt_preserved": true
+      }
+    },
+    "checkout_probe": {
+      "packaged_skills": [
+        "flow-workflows"
+      ],
+      "flow_slug": "flow-workflows",
+      "skill_path": "/home/zhang/workspace/xdog/packages/flow/src/xdog/flow/skills/flow-workflows/SKILL.md",
+      "bundled_examples": 12,
+      "manager_discovery_without_directory_creation": true,
+      "bare_agent_automatically_loads_skills": false,
+      "explicit_session_activation_reaches_real_stream_context": true,
+      "deactivation_keeps_index_and_reactivation_survives_prompt_rebuild": true,
+      "skill_tool_automatically_installed": false,
+      "dynamic_turn_activation_missing": true,
+      "constructor_turn_body_is_a_message": true,
+      "constructor_turn_body_still_present_on_second_prompt": true
+    },
+    "focused_tests": {
+      "passed": 52,
+      "failed": 0,
+      "skipped": 0,
+      "log": "....................................................                     [100%]\n52 passed in 0.94s"
+    },
+    "limitations": [
+      "Third-party dependencies reused from the current environment, not newly resolved.",
+      "No XDOG code/metadata or .pth hooks exposed in the third-party dependency path.",
+      "Installed-wheel runtime verified under python -I -S outside the repository.",
+      "Offline stream confirms input assembly, not model quality or execution of workflow tools.",
+      "Turn-scope and SDK loader gaps remain unimplemented."
+    ],
+    "local_example": {
+      "slug": "review-procedure",
+      "packaged": false,
+      "skill_directory": "/tmp/xdog-sdk-skills/local/review-procedure",
+      "available_skills": [
+        "review-procedure"
+      ],
+      "model_requests": 2,
+      "tool_names": [],
+      "loaded_at_model_entry": true,
+      "unloaded_at_model_entry": true,
+      "base_prompt_preserved": true
+    },
+    "static_checks": {
+      "ruff": "All checks passed!",
+      "mypy": "pyproject.toml: note: unused section(s): module = ['croniter', 'flask', 'flask.*', 'frontmatter', 'frontmatter.*', 'jsonpath_ng.*', 'markdown', 'markdown.*', 'markupsafe', 'markupsafe.*', 'qrcode', 'rank_bm25', 'sentence_transformers', 'sqlite_vec']\nSuccess: no issues found in 3 source files",
+      "mypy_explicit_package_bases": true
+    },
+    "source_hashes": {
+      "packages/agent/examples/load_skills.py": "13f18b9c0c49be898364fda25c083d0e0796578c5ee698ff2501140999045f3f",
+      "packages/agent/src/xdog/agent/__init__.py": "d20588c8a5750a6cc0a257394a6c80dc0d339c9e720b36ffa9cc73d57e978541",
+      "packages/agent/src/xdog/agent/agent.py": "29aa8bd9dcd0e5ab86fc993284a0c74cc34162a5ca3dc7db12d9f67213ca1e6a",
+      "packages/agent/src/xdog/agent/skills/__init__.py": "c03f20effd98633a0b40d0a84bbe99ae92731895f4c62695abd115586a6295cc",
+      "packages/agent/src/xdog/agent/skills/discovery.py": "bf93b55d2e0c21c3debc05e19db8eba29a8dc80fc2479759e6aef667d1624c82",
+      "packages/agent/src/xdog/agent/skills/manager.py": "83c826b62c3303630dfba7b67d1b4d96962ac53bf52415b3eb2ed15c6f5635ae",
+      "packages/agent/src/xdog/agent/skills/render.py": "3f1f900e3c0ef5b494b968b0a1e7c48636c478adf951d583aca646c2049a79dd",
+      "packages/agent/src/xdog/agent/skills/types.py": "3194cb178af9f52922c87ba974fe20c31def3b2131be27814f9b2c219eb0245b",
+      "packages/agent/tests/fixtures/skill_artifact_probe.py": "dd6b466f7a9efd2748863b5865673c3e2b6228eb815b84df666da426dcbcd17b",
+      "packages/agent/tests/test_skill_sdk_usage.py": "46fac551df56f2ea5a93ed4957e590db648a89afdfc3983cff10e7a458078bd5"
+    },
+    "investigation_criteria": {
+      "SK-001": "complete",
+      "SK-002": "complete",
+      "SK-003": "complete",
+      "SK-004": "complete",
+      "SK-005": "complete",
+      "SK-006": "complete"
+    }
+  },
+  "follow_up": {
+    "status": "scoped checks passed",
+    "broader_snapshot_lifecycle_gate_complete": false,
+    "full_f1_cross_process_gate_complete": false,
+    "network_provider_install_build_services_git_used": false,
+    "changes": [
+      "skills/tool.py: typed candidate tuples and explicit cancellation/trust documentation",
+      "skills/manager.py: full-string slug validation rejects trailing newlines",
+      "skills/discovery.py: correct resource layout in docstring",
+      "skills/render.py: remove duplicate Skill import",
+      "offline session/turn and model list/load examples; real packaged flow-workflows",
+      "tool safety/cancellation, provider-error/pre-model/image/captured-body lifecycle tests",
+      "artifact baseline scope/hash reporting and current documentation"
+    ],
+    "checks": {
+      "focused_tests": {
+        "argv": [
+          ".venv/bin/python",
+          "-m",
+          "pytest",
+          "-q",
+          "packages/agent/tests/test_skill_tool.py",
+          "packages/agent/tests/test_skill_lifecycle.py",
+          "packages/agent/tests/test_skill_sdk_usage.py",
+          "packages/agent/tests/test_skills.py",
+          "packages/flow/tests/test_skill.py"
+        ],
+        "cwd": "/home/zhang/workspace/xdog",
+        "environment_overrides": {
+          "UV_OFFLINE": "1"
+        },
+        "started_at_utc": "2026-10-12T07:01:30.118480+00:00",
+        "finished_at_utc": "2026-10-12T07:01:32.275944+00:00",
+        "exit_code": 0,
+        "stdout": "........................................................................ [ 64%]\n........................................                                 [100%]\n112 passed in 1.45s\n",
+        "stderr": ""
+      },
+      "ruff": {
+        "argv": [
+          ".venv/bin/ruff",
+          "check",
+          "packages/agent/src/xdog/agent/skills",
+          "packages/agent/examples",
+          "packages/agent/tests/test_skill_tool.py",
+          "packages/agent/tests/test_skill_sdk_usage.py",
+          "packages/agent/tests/test_skill_lifecycle.py",
+          "packages/agent/tests/fixtures/skill_artifact_probe.py"
+        ],
+        "cwd": "/home/zhang/workspace/xdog",
+        "environment_overrides": {
+          "UV_OFFLINE": "1"
+        },
+        "started_at_utc": "2026-10-12T07:01:32.276162+00:00",
+        "finished_at_utc": "2026-10-12T07:01:32.295646+00:00",
+        "exit_code": 0,
+        "stdout": "All checks passed!\n",
+        "stderr": ""
+      },
+      "mypy_skills": {
+        "argv": [
+          ".venv/bin/mypy",
+          "--strict",
+          "--follow-imports=silent",
+          "-p",
+          "xdog.agent.skills"
+        ],
+        "cwd": "/home/zhang/workspace/xdog",
+        "environment_overrides": {
+          "UV_OFFLINE": "1"
+        },
+        "started_at_utc": "2026-10-12T07:01:32.295846+00:00",
+        "finished_at_utc": "2026-10-12T07:01:32.735878+00:00",
+        "exit_code": 0,
+        "stdout": "pyproject.toml: note: unused section(s): module = ['croniter', 'fastjsonschema', 'flask', 'flask.*', 'frontmatter', 'frontmatter.*', 'jsonpath_ng', 'jsonpath_ng.*', 'markdown', 'markdown.*', 'markupsafe', 'markupsafe.*', 'openai', 'qrcode', 'rank_bm25', 'sentence_transformers', 'sqlite_vec', 'xdog.flow', 'xdog.flow.*']\nSuccess: no issues found in 6 source files\n",
+        "stderr": ""
+      },
+      "mypy_examples": {
+        "argv": [
+          ".venv/bin/mypy",
+          "--strict",
+          "--follow-imports=silent",
+          "--explicit-package-bases",
+          "packages/agent/examples/load_skills.py",
+          "packages/agent/tests/test_skill_sdk_usage.py",
+          "packages/agent/tests/fixtures/skill_artifact_probe.py"
+        ],
+        "cwd": "/home/zhang/workspace/xdog",
+        "environment_overrides": {
+          "UV_OFFLINE": "1"
+        },
+        "started_at_utc": "2026-10-12T07:01:32.736471+00:00",
+        "finished_at_utc": "2026-10-12T07:01:33.341210+00:00",
+        "exit_code": 0,
+        "stdout": "pyproject.toml: note: unused section(s): module = ['croniter', 'fastjsonschema', 'flask', 'flask.*', 'frontmatter', 'frontmatter.*', 'jsonpath_ng.*', 'markdown', 'markdown.*', 'markupsafe', 'markupsafe.*', 'openai', 'qrcode', 'rank_bm25', 'sentence_transformers', 'sqlite_vec']\nSuccess: no issues found in 3 source files\n",
+        "stderr": ""
+      },
+      "example_session": {
+        "argv": [
+          ".venv/bin/python",
+          "packages/agent/examples/load_skills.py"
+        ],
+        "cwd": "/home/zhang/workspace/xdog",
+        "environment_overrides": {
+          "UV_OFFLINE": "1"
+        },
+        "started_at_utc": "2026-10-12T07:01:33.341895+00:00",
+        "finished_at_utc": "2026-10-12T07:01:34.220486+00:00",
+        "exit_code": 0,
+        "stdout": "{\n  \"slug\": \"flow-workflows\",\n  \"scope\": \"session\",\n  \"packaged\": true,\n  \"skill_directory\": \"/home/zhang/workspace/xdog/packages/flow/src/xdog/flow/skills/flow-workflows\",\n  \"available_skills\": [\n    \"flow-workflows\"\n  ],\n  \"model_requests\": 2,\n  \"tool_names\": [],\n  \"loaded_at_model_entry\": true,\n  \"unloaded_at_model_entry\": true,\n  \"base_prompt_preserved\": true\n}\n",
+        "stderr": ""
+      },
+      "example_turn": {
+        "argv": [
+          ".venv/bin/python",
+          "packages/agent/examples/load_skills.py",
+          "--demo-turn"
+        ],
+        "cwd": "/home/zhang/workspace/xdog",
+        "environment_overrides": {
+          "UV_OFFLINE": "1"
+        },
+        "started_at_utc": "2026-10-12T07:01:34.220718+00:00",
+        "finished_at_utc": "2026-10-12T07:01:34.718653+00:00",
+        "exit_code": 0,
+        "stdout": "{\n  \"slug\": \"one-request\",\n  \"scope\": \"turn\",\n  \"packaged\": false,\n  \"skill_directory\": \"/tmp/xdog-skill-example-hse5vjbb/demo-skills/one-request\",\n  \"available_skills\": [\n    \"one-request\"\n  ],\n  \"model_requests\": 2,\n  \"tool_names\": [],\n  \"loaded_at_model_entry\": true,\n  \"unloaded_at_model_entry\": true,\n  \"base_prompt_preserved\": true\n}\n",
+        "stderr": ""
+      },
+      "example_model_flow": {
+        "argv": [
+          ".venv/bin/python",
+          "packages/agent/examples/load_skills.py",
+          "--mode",
+          "model-load"
+        ],
+        "cwd": "/home/zhang/workspace/xdog",
+        "environment_overrides": {
+          "UV_OFFLINE": "1"
+        },
+        "started_at_utc": "2026-10-12T07:01:34.718876+00:00",
+        "finished_at_utc": "2026-10-12T07:01:35.550619+00:00",
+        "exit_code": 0,
+        "stdout": "{\n  \"slug\": \"flow-workflows\",\n  \"packaged\": true,\n  \"model_requests\": 3,\n  \"tool_names\": [\n    \"skill\"\n  ],\n  \"permission_checks\": [\n    \"skill\",\n    \"skill\"\n  ],\n  \"listed_without_body\": true,\n  \"loaded_at_model_entry\": true,\n  \"active_skills\": [],\n  \"base_prompt_preserved\": true\n}\n",
+        "stderr": ""
+      },
+      "example_model_turn": {
+        "argv": [
+          ".venv/bin/python",
+          "packages/agent/examples/load_skills.py",
+          "--demo-turn",
+          "--mode",
+          "model-load"
+        ],
+        "cwd": "/home/zhang/workspace/xdog",
+        "environment_overrides": {
+          "UV_OFFLINE": "1"
+        },
+        "started_at_utc": "2026-10-12T07:01:35.550845+00:00",
+        "finished_at_utc": "2026-10-12T07:01:36.024857+00:00",
+        "exit_code": 0,
+        "stdout": "{\n  \"slug\": \"one-request\",\n  \"packaged\": false,\n  \"model_requests\": 3,\n  \"tool_names\": [\n    \"skill\"\n  ],\n  \"permission_checks\": [\n    \"skill\",\n    \"skill\"\n  ],\n  \"listed_without_body\": true,\n  \"loaded_at_model_entry\": true,\n  \"active_skills\": [],\n  \"base_prompt_preserved\": true\n}\n",
+        "stderr": ""
+      },
+      "artifact_agent_only": {
+        "argv": [
+          "/home/zhang/workspace/xdog/.venv/bin/python",
+          "-I",
+          "-S",
+          "/home/zhang/workspace/xdog/packages/agent/tests/fixtures/skill_artifact_probe.py",
+          "/tmp/xdog-sdk-skills/agent-only",
+          "/tmp/xdog-sdk-skills/third-party",
+          "/home/zhang/workspace/xdog/packages/agent/examples/load_skills.py"
+        ],
+        "cwd": "/tmp/xdog-sdk-skills/outside",
+        "environment_overrides": {
+          "UV_OFFLINE": "1"
+        },
+        "started_at_utc": "2026-10-12T07:01:36.025161+00:00",
+        "finished_at_utc": "2026-10-12T07:01:36.502799+00:00",
+        "exit_code": 0,
+        "stdout": "{\n  \"target\": \"/tmp/xdog-sdk-skills/agent-only\",\n  \"flow_expected\": false,\n  \"discovered\": [],\n  \"imports_from_wheel_target\": true,\n  \"editable_fallback_disabled\": true,\n  \"agent_requires_flow\": false,\n  \"example\": {\n    \"slug\": \"procedure\",\n    \"scope\": \"session\",\n    \"packaged\": false,\n    \"skill_directory\": \"/tmp/skill-artifact-fwd4_r30/skills/procedure\",\n    \"available_skills\": [\n      \"procedure\"\n    ],\n    \"model_requests\": 2,\n    \"tool_names\": [],\n    \"loaded_at_model_entry\": true,\n    \"unloaded_at_model_entry\": true,\n    \"base_prompt_preserved\": true\n  },\n  \"verification_scope\": \"installed baseline session activation and packaged assets only\",\n  \"readonly_loader_present\": false,\n  \"f1_lifecycle_or_snapshot_gate_complete\": false,\n  \"skill_hashes\": {}\n}\n",
+        "stderr": ""
+      },
+      "artifact_with_flow": {
+        "argv": [
+          "/home/zhang/workspace/xdog/.venv/bin/python",
+          "-I",
+          "-S",
+          "/home/zhang/workspace/xdog/packages/agent/tests/fixtures/skill_artifact_probe.py",
+          "/tmp/xdog-sdk-skills/with-flow",
+          "/tmp/xdog-sdk-skills/third-party",
+          "/home/zhang/workspace/xdog/packages/agent/examples/load_skills.py",
+          "--expect-flow"
+        ],
+        "cwd": "/tmp/xdog-sdk-skills/outside",
+        "environment_overrides": {
+          "UV_OFFLINE": "1"
+        },
+        "started_at_utc": "2026-10-12T07:01:36.503116+00:00",
+        "finished_at_utc": "2026-10-12T07:01:37.099944+00:00",
+        "exit_code": 0,
+        "stdout": "{\n  \"target\": \"/tmp/xdog-sdk-skills/with-flow\",\n  \"flow_expected\": true,\n  \"discovered\": [\n    \"flow-workflows\"\n  ],\n  \"imports_from_wheel_target\": true,\n  \"editable_fallback_disabled\": true,\n  \"agent_requires_flow\": false,\n  \"example\": {\n    \"slug\": \"flow-workflows\",\n    \"scope\": \"session\",\n    \"packaged\": true,\n    \"skill_directory\": \"/tmp/xdog-sdk-skills/with-flow/xdog/flow/skills/flow-workflows\",\n    \"available_skills\": [\n      \"flow-workflows\"\n    ],\n    \"model_requests\": 2,\n    \"tool_names\": [],\n    \"loaded_at_model_entry\": true,\n    \"unloaded_at_model_entry\": true,\n    \"base_prompt_preserved\": true\n  },\n  \"verification_scope\": \"installed baseline session activation and packaged assets only\",\n  \"readonly_loader_present\": false,\n  \"f1_lifecycle_or_snapshot_gate_complete\": false,\n  \"skill_hashes\": {\n    \"flow-workflows\": {\n      \"SKILL.md\": \"6571a65a5334e7066749e0b60ac334d3c7cd9123e391b24a67eba8583a8a6c2a\",\n      \"examples/agent_calculator.json\": \"7f681a4439498c932d678bab5bf48178ee14e3f9284efb5cf9c1ff45a7ccd603\",\n      \"examples/cli_triage.json\": \"020038210c8c286e11b5392b30ba1f4621119fe7bd2414338754396f787ea27e\",\n      \"examples/digest_timer.json\": \"264ab4dc709173135924f8d5c98a1683a5331aa610a0cc28a707a91aeb67e302\",\n      \"examples/essay_compose.json\": \"12da069393115477f90439818e1f33c5bb138d086816c9dab75aad5e9e517d4a\",\n      \"examples/essay_writer.json\": \"4bab68315946faed40ccfa87673dd71ddb13ef654a866d9809380a80e53605be\",\n      \"examples/refine_loop.json\": \"c69c66ade4778914e97095f82d8bdcdf821276970493e0783b75dfd613774381\",\n      \"examples/release_readiness.json\": \"f165ebc090c7c9f2e819134108ec9502787c51e81309656f072bde7e5c228cb5\",\n      \"examples/release_readiness.test.json\": \"b4b7edfced705aeeccd2fc64b15cfb2d9b1ba334ebb59c536753d4985d00aa9b\",\n      \"examples/release_report.json\": \"18eefd3a17c204efe5cc6579664a90ebfd7cfcff642575622bfb777f85ac0bf9\",\n      \"examples/release_report.test.json\": \"6dbde84c32d06c4374ce027258cdf5ffc81c556e33e2e79dd3af5aec486addc7\",\n      \"examples/triage_hook.json\": \"68e7bdff1f42f4764670c48bb6093c72732d56e6f997551d267bb8dbe6168793\",\n      \"examples/trip_planner.json\": \"8b8f4cdde150b46afde4078693d37c54d7fc0d780c24025e4e84b440edf5f555\"\n    }\n  }\n}\n",
+        "stderr": ""
+      }
+    },
+    "examples": {
+      "session": {
+        "slug": "flow-workflows",
+        "scope": "session",
+        "packaged": true,
+        "skill_directory": "/home/zhang/workspace/xdog/packages/flow/src/xdog/flow/skills/flow-workflows",
+        "available_skills": [
+          "flow-workflows"
+        ],
+        "model_requests": 2,
+        "tool_names": [],
+        "loaded_at_model_entry": true,
+        "unloaded_at_model_entry": true,
+        "base_prompt_preserved": true
+      },
+      "turn": {
+        "slug": "one-request",
+        "scope": "turn",
+        "packaged": false,
+        "skill_directory": "/tmp/xdog-skill-example-hse5vjbb/demo-skills/one-request",
+        "available_skills": [
+          "one-request"
+        ],
+        "model_requests": 2,
+        "tool_names": [],
+        "loaded_at_model_entry": true,
+        "unloaded_at_model_entry": true,
+        "base_prompt_preserved": true
+      },
+      "model_flow": {
+        "slug": "flow-workflows",
+        "packaged": true,
+        "model_requests": 3,
+        "tool_names": [
+          "skill"
+        ],
+        "permission_checks": [
+          "skill",
+          "skill"
+        ],
+        "listed_without_body": true,
+        "loaded_at_model_entry": true,
+        "active_skills": [],
+        "base_prompt_preserved": true
+      },
+      "model_turn": {
+        "slug": "one-request",
+        "packaged": false,
+        "model_requests": 3,
+        "tool_names": [
+          "skill"
+        ],
+        "permission_checks": [
+          "skill",
+          "skill"
+        ],
+        "listed_without_body": true,
+        "loaded_at_model_entry": true,
+        "active_skills": [],
+        "base_prompt_preserved": true
+      }
+    },
+    "existing_installed_artifacts": {
+      "agent_only": {
+        "target": "/tmp/xdog-sdk-skills/agent-only",
+        "flow_expected": false,
+        "discovered": [],
+        "imports_from_wheel_target": true,
+        "editable_fallback_disabled": true,
+        "agent_requires_flow": false,
+        "example": {
+          "slug": "procedure",
+          "scope": "session",
+          "packaged": false,
+          "skill_directory": "/tmp/skill-artifact-fwd4_r30/skills/procedure",
+          "available_skills": [
+            "procedure"
+          ],
+          "model_requests": 2,
+          "tool_names": [],
+          "loaded_at_model_entry": true,
+          "unloaded_at_model_entry": true,
+          "base_prompt_preserved": true
+        },
+        "verification_scope": "installed baseline session activation and packaged assets only",
+        "readonly_loader_present": false,
+        "f1_lifecycle_or_snapshot_gate_complete": false,
+        "skill_hashes": {}
+      },
+      "with_flow": {
+        "target": "/tmp/xdog-sdk-skills/with-flow",
+        "flow_expected": true,
+        "discovered": [
+          "flow-workflows"
+        ],
+        "imports_from_wheel_target": true,
+        "editable_fallback_disabled": true,
+        "agent_requires_flow": false,
+        "example": {
+          "slug": "flow-workflows",
+          "scope": "session",
+          "packaged": true,
+          "skill_directory": "/tmp/xdog-sdk-skills/with-flow/xdog/flow/skills/flow-workflows",
+          "available_skills": [
+            "flow-workflows"
+          ],
+          "model_requests": 2,
+          "tool_names": [],
+          "loaded_at_model_entry": true,
+          "unloaded_at_model_entry": true,
+          "base_prompt_preserved": true
+        },
+        "verification_scope": "installed baseline session activation and packaged assets only",
+        "readonly_loader_present": false,
+        "f1_lifecycle_or_snapshot_gate_complete": false,
+        "skill_hashes": {
+          "flow-workflows": {
+            "SKILL.md": "6571a65a5334e7066749e0b60ac334d3c7cd9123e391b24a67eba8583a8a6c2a",
+            "examples/agent_calculator.json": "7f681a4439498c932d678bab5bf48178ee14e3f9284efb5cf9c1ff45a7ccd603",
+            "examples/cli_triage.json": "020038210c8c286e11b5392b30ba1f4621119fe7bd2414338754396f787ea27e",
+            "examples/digest_timer.json": "264ab4dc709173135924f8d5c98a1683a5331aa610a0cc28a707a91aeb67e302",
+            "examples/essay_compose.json": "12da069393115477f90439818e1f33c5bb138d086816c9dab75aad5e9e517d4a",
+            "examples/essay_writer.json": "4bab68315946faed40ccfa87673dd71ddb13ef654a866d9809380a80e53605be",
+            "examples/refine_loop.json": "c69c66ade4778914e97095f82d8bdcdf821276970493e0783b75dfd613774381",
+            "examples/release_readiness.json": "f165ebc090c7c9f2e819134108ec9502787c51e81309656f072bde7e5c228cb5",
+            "examples/release_readiness.test.json": "b4b7edfced705aeeccd2fc64b15cfb2d9b1ba334ebb59c536753d4985d00aa9b",
+            "examples/release_report.json": "18eefd3a17c204efe5cc6579664a90ebfd7cfcff642575622bfb777f85ac0bf9",
+            "examples/release_report.test.json": "6dbde84c32d06c4374ce027258cdf5ffc81c556e33e2e79dd3af5aec486addc7",
+            "examples/triage_hook.json": "68e7bdff1f42f4764670c48bb6093c72732d56e6f997551d267bb8dbe6168793",
+            "examples/trip_planner.json": "8b8f4cdde150b46afde4078693d37c54d7fc0d780c24025e4e84b440edf5f555"
+          }
+        }
+      }
+    },
+    "flow_checkout_installed_and_historical_artifact_hashes_match": true,
+    "source_hashes_at_recording": {
+      "docs/agent-sdk-skills-investigation.md": "a2e721eb0e6916825d45ded8b1fbf9e4cac6054f5abbc9891b4e71630e0b0fd1",
+      "packages/agent/examples/load_skills.py": "0731d22d46904b09e30387409b9e90b12476457a628d2220d3097023565342aa",
+      "packages/agent/src/xdog/agent/skills/__init__.py": "01a73b1c6281ddb83290cbf9d4c79acc0329d783a8d0d6b11da9eb5a8c6573cd",
+      "packages/agent/src/xdog/agent/skills/discovery.py": "4b078f2086e38171bafb92050d81d2abac195108b48e387d2a035894c605f9de",
+      "packages/agent/src/xdog/agent/skills/manager.py": "bd1ed877b00beb546529472252fb3ad77c3a5d27d62d2a7553271ae761851dbb",
+      "packages/agent/src/xdog/agent/skills/render.py": "185a16d05124599339588de7bd041c919b9278889a8659010372051744d9dfa3",
+      "packages/agent/src/xdog/agent/skills/tool.py": "ba1fbacd66e80a4bfa560a914698d14706870b7f4dabd23250b79c1be88fbaa9",
+      "packages/agent/src/xdog/agent/skills/types.py": "3194cb178af9f52922c87ba974fe20c31def3b2131be27814f9b2c219eb0245b",
+      "packages/agent/tests/fixtures/skill_artifact_probe.py": "9c9963a4e9810ca0e969873e956aa5e41ec2d1623f7f1d46c4790a4243a9f99a",
+      "packages/agent/tests/test_skill_lifecycle.py": "13df97d17038a68d687fabe75416d3ec0688f413e158b4845988968a15fca4e6",
+      "packages/agent/tests/test_skill_sdk_usage.py": "286e38ba449f985b06ba1b52b41625b9e628e611dcb1b6c6911aec6078bc5828",
+      "packages/agent/tests/test_skill_tool.py": "bcff87d0cba95adc364611c250309048e7b32c9fb4199e33c84eadacb759abee"
+    },
+    "parent_owned_source_hashes_observed_not_modified": {
+      "packages/agent/src/xdog/agent/agent.py": "b8c1186907a63c5beb15f0b011e70e13908cefeb1582cec940e261f41b4271a0",
+      "packages/agent/src/xdog/agent/agent_loop.py": "88b0cfd54029cd8d4abe11fb51654dd2ad5fd7b4038deb5cfb2cb650cad1aae8",
+      "packages/agent/src/xdog/agent/core.py": "2dc53bd622fcbff82a6d273de439b54772f733ac7ef66ec62e6dfcf8ab415a5c",
+      "packages/agent/src/xdog/agent/types.py": "e67ad809db6d12266a60bc4d503b2582134cb02f164f8c78cd328df6e84c9a84"
+    },
+    "initial_test_assumption_corrected": {
+      "argv": [
+        ".venv/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "packages/agent/tests/test_skill_lifecycle.py",
+        "packages/agent/tests/test_skill_sdk_usage.py"
+      ],
+      "result": "2 failed, 21 passed in 1.13s",
+      "reason": "Both provider-error variants tried continue_ after an assistant message without queued input",
+      "correction": "Assert the existing API refusal, queue an explicit follow-up, verify retired skill stays absent",
+      "agent_implementation_changed_for_test": false
+    },
+    "initial_mypy_invocation_corrected": {
+      "reason": "Combining source file paths under packages/agent/src with example paths duplicated namespace names",
+      "reported_error": "Source file found twice under different module names: \"packages.agent.src.xdog.agent.skills\" and \"xdog.agent.skills\"",
+      "correction": "Check skills with -p xdog.agent.skills; check typed example/test/probe paths separately"
+    },
+    "limitations": [
+      "Existing installed targets predate create_skill_tool; probes validate baseline session/package behavior only.",
+      "New loader/turn behavior verified in current checkout; coordinated fresh artifact gate belongs to parent.",
+      "No full workspace regression/type gate, product integration acceptance or cross-process snapshot gate claimed.",
+      "Cancellation settles cooperative read workers but cannot forcibly interrupt stuck native/filesystem operations.",
+      "Trusted host manager discovery/activation is not the bounded model-facing tool API.",
+      "Loader allowlist does not filter a separately configured Agent SkillManager index.",
+      "Native Windows/macOS, ZIP resources and adversarial ancestor replacement/parser sandboxing not verified.",
+      "Temporary target/log paths are lab evidence and may be removed; durable JSON retains exact final outputs."
+    ]
+  }
+}

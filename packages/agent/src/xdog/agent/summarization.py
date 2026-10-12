@@ -30,8 +30,9 @@ async def stream_summary(stream_fn: StreamFn, model: str, context: Context,
             if inspect.isawaitable(response):
                 response = await response
             iterator = response.__aiter__()
-            async for _ in iterator:
-                pass
+            async for event in iterator:
+                if event.type in {"done", "error"}:
+                    break  # Final result is ready; close instead of draining a held stream.
             result = await response.result()
             if (result.stop_reason in {'error', 'aborted', 'length'} or result.error_message
                     or any(isinstance(part, ToolCall) for part in result.content)):

@@ -311,7 +311,9 @@ class FakeExpiringSession:
     """Enough of AgentSession to exercise the expiry step in isolation."""
 
     def __init__(self, active: set[str]) -> None:
+        from types import SimpleNamespace
         self._active_skills = frozenset(active)
+        self.agent = SimpleNamespace(active_skills=tuple(sorted(active)))
         self.rebuilds = 0
         self.pushed: list[list[str]] = []
 
@@ -341,6 +343,7 @@ def _write_scoped(shared: Path, slug: str, scope: str) -> None:
 def test_a_turn_scoped_skill_retires_itself(skills: Path) -> None:
     _write_scoped(skills, "once", "turn")
     session = FakeExpiringSession({"once"})
+    session.agent.active_skills = ()  # SDK completed the owning model run.
 
     _expire(session)
 
@@ -363,6 +366,7 @@ def test_expiry_only_touches_the_skills_that_declared_it(skills: Path) -> None:
     _write_scoped(skills, "once", "turn")
     _write_scoped(skills, "guard", "session")
     session = FakeExpiringSession({"once", "guard"})
+    session.agent.active_skills = ("guard",)
 
     _expire(session)
 

@@ -49,7 +49,7 @@ _PLACEHOLDER = re.compile(r"\{\{\s*(.+?)\s*\}\}")
 _SDK_IMPORTS = (
     "from xdog import ai\n"
     "from xdog.agent import Agent\n"
-    "from xdog.agent.core import AgentConfig, AgentTool, AgentToolResult, StreamFn\n"
+    "from xdog.agent.core import AgentConfig, AgentTool, AgentToolResult, StreamFn, WebSearchFn\n"
     "from xdog.agent.events import TurnEndEvent\n"
     # One line: the generated import block is assembled line by line, so a
     # parenthesised import would be split into fragments and re-ordered.
@@ -155,6 +155,9 @@ _SDK_RUN_AGENT = '''async def _run_agent(
     inherit_from: str | None = None,
     skills: tuple[str, ...] = (),
     node_id: str = "",
+    override_model: bool = False,
+    override_system_prompt: bool = False,
+    timeout: float = 120.0,
 ) -> tuple[object, int]:
     stream_fn: StreamFn = stream_fn_from_provider(provider)  # type: ignore[arg-type]
     # Structured output: register submit_result + a result sink, and instruct the
@@ -166,7 +169,7 @@ _SDK_RUN_AGENT = '''async def _run_agent(
     # confined by it. Kept identical to the interpreter.
     _roots = _confinement_roots()
     _ws = _workspace_dir()
-    _tool_ctx: dict[str, object] | None = {"fs_workspace": str(_ws)} if _ws is not None else {}
+    _tool_ctx: dict[str, object] = {"fs_workspace": str(_ws)} if _ws is not None else {}
     if _roots is not None:
         _tool_ctx["fs_confine_to"] = _roots
     # Every agent node is briefed, whatever tools it declares -- keying this off
@@ -189,7 +192,7 @@ _SDK_RUN_AGENT = '''async def _run_agent(
         # schema is the port's own and carries no field name.
         _sys = _sys + submit_hint
     # Built-in web_search tool (search model may differ from the node model).
-    _web_search_fn: Callable[[str], Awaitable[str]] | None = None
+    _web_search_fn: WebSearchFn | None = None
     if web_search_model is not None:
         _web_search_fn = web_search_fn_from_provider(provider, web_search_model)  # type: ignore[arg-type]
     agent = Agent(
@@ -205,39 +208,65 @@ _SDK_RUN_AGENT = '''async def _run_agent(
         active_skills=skills,
         web_search_fn=_web_search_fn,
     )
-    # `inherit`: adopt an earlier node's session, then let this node's own
-    # fields win. A missing session means start cold — the first pass of a
-    # self-inheriting loop has none, and that is not an error.
-    _inherited = _SESSIONS.get(inherit_from) if inherit_from else None
-    if _inherited:
-        agent.restore(_inherited)
-        if system_prompt:
-            agent.set_system_prompt(_sys)
-        if model:
-            agent.set_model(model)
-    accumulated: list[str] = []
-    _node_tokens = 0
-    event_stream = await agent.prompt(prompt)
-    async for event in event_stream:
-        if isinstance(event, TurnEndEvent) and event.message is not None:
-            msg = event.message
-            if isinstance(msg, AssistantMessage):
-                for part in msg.content:
-                    if isinstance(part, TextContent):
-                        accumulated.append(part.text)
-                _u = msg.usage
-                # Mirrors flow.executor's token accounting: some providers leave
-                # total_tokens at 0 but fill input/output, so fall back to their sum.
-                _node_tokens += _u.total_tokens or (_u.input + _u.output)
-    if node_id:
-        _SESSIONS[node_id] = agent.dump()
-    if output_schema is not None:
-        _result_obj = _sink.get("result")
-        if _result_obj is None:
-            raise WorkflowExecutionError("agent did not submit a result via submit_result")
-        # Keep the submitted object structured — do NOT flatten to a JSON string.
-        return _result_obj, _node_tokens
-    return "".join(accumulated), _node_tokens'''
+    try:
+        # Node fields are authoritative, not the workflow defaults used to
+        # construct this Agent. Copy before overriding: siblings may share the
+        # ancestor snapshot. Model availability is checked during restore.
+        _inherited = _SESSIONS.get(inherit_from) if inherit_from else None
+        if _inherited:
+            inherited = dict(_inherited)
+            if override_model:
+                inherited["model"] = model
+            if "format" in inherited or "version" in inherited:
+                inherited["skills"] = agent.dump()["skills"]
+            agent.restore(inherited)
+            if override_system_prompt:
+                agent.set_system_prompt(_sys)
+            if override_model:
+                agent.set_model(model)
+        accumulated: list[str] = []
+        _node_tokens = 0
+
+        async def _drain() -> None:
+            nonlocal _node_tokens
+            event_stream = await agent.prompt(prompt)
+            async for event in event_stream:
+                if isinstance(event, TurnEndEvent) and event.message is not None:
+                    msg = event.message
+                    if isinstance(msg, AssistantMessage):
+                        for part in msg.content:
+                            if isinstance(part, TextContent):
+                                accumulated.append(part.text)
+                        _u = msg.usage
+                        # Same per-turn total/fallback accounting as SdkRunner.
+                        _node_tokens += _u.total_tokens or (_u.input + _u.output)
+            await agent.wait_for_idle()
+
+        # Match the interpreter default; callers of this private helper can
+        # supply a different node deadline without changing the shared adapter.
+        await asyncio.wait_for(_drain(), timeout=timeout)
+        if node_id:
+            _SESSIONS[node_id] = agent.dump()
+        if output_schema is not None:
+            _result_obj = _sink.get("result")
+            if _result_obj is None:
+                raise WorkflowExecutionError(f"Node {node_id!r}: agent did not submit a result via submit_result")
+            # Preserve the submitted value, never parse prose or flatten JSON.
+            return _result_obj, _node_tokens
+        return "".join(accumulated), _node_tokens
+    finally:
+        # This node owns the Agent, not its shared provider. Settle even repeated
+        # cancellation; cleanup may outlast the timeout for cooperative tools.
+        close_task = asyncio.create_task(agent.aclose())
+        cancelled = False
+        while not close_task.done():
+            try:
+                await asyncio.shield(close_task)
+            except asyncio.CancelledError:
+                cancelled = True
+        close_task.result()
+        if cancelled:
+            raise asyncio.CancelledError'''
 
 
 def _safe_id(node_id: str) -> str:
@@ -721,6 +750,10 @@ def _render_agent_node(node: NodeDef, fn_name: str, wf: WorkflowDef) -> str:
     if node.skills:
         _call_args.append(f"skills={tuple(node.skills)!r}")
     _call_args.append(f'node_id="{_ESC(node.id)}"')
+    if node.model:
+        _call_args.append("override_model=True")
+    if node.system_prompt:
+        _call_args.append("override_system_prompt=True")
     _core = f"    result, _node_tokens = await _run_agent({', '.join(_call_args)})"
     lines.append(_core if len(_core) <= 120 else _core + "  # noqa: E501")
     lines.append("    _out: dict[str, object] = {}")

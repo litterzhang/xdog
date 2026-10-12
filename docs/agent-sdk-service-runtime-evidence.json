@@ -1,0 +1,234 @@
+{
+  "requirements": [
+    {
+      "id": "SR-01",
+      "behavior": "新进程恢复结构化消息、图像、thinking/tool关联；版本/未知codec/损坏数据明确检查。",
+      "status": "已完成",
+      "tests": [
+        "packages/agent/tests/test_snapshots.py",
+        "packages/agent/tests/test_agent_snapshot_runtime.py",
+        "packages/agent/tests/test_session_dump.py"
+      ]
+    },
+    {
+      "id": "SR-02",
+      "behavior": "快照不导入代码、换凭据、提权、扩大工具范围或自动调用模型。",
+      "status": "已完成",
+      "tests": [
+        "packages/agent/tests/test_snapshots.py",
+        "packages/agent/tests/test_agent_snapshot_runtime.py"
+      ]
+    },
+    {
+      "id": "SR-03",
+      "behavior": "session/turn skill及compaction状态跨进程恢复；prefix不重复，已消费skill不复活。",
+      "status": "已完成",
+      "tests": [
+        "packages/agent/tests/test_agent_snapshot_runtime.py",
+        "packages/agent/tests/test_sdk_runtime_adversarial.py",
+        "packages/agent/tests/test_skill_lifecycle.py"
+      ]
+    },
+    {
+      "id": "SR-04",
+      "behavior": "快照中的未结工具可识别和关联；unknown阻止隐式继续或自动重放。",
+      "status": "已完成",
+      "tests": [
+        "packages/agent/tests/test_agent_snapshot_runtime.py",
+        "packages/agent/tests/test_snapshots.py",
+        "packages/agent/tests/test_sdk_runtime_adversarial.py"
+      ]
+    },
+    {
+      "id": "SR-05",
+      "behavior": "使用实际模型容量、输出预留和完整输入估算；未知容量不假定200k。",
+      "status": "已完成",
+      "tests": [
+        "packages/agent/tests/test_sdk_compaction.py"
+      ]
+    },
+    {
+      "id": "SR-06",
+      "behavior": "默认不自动压缩；手动不启用auto；显式开启后单prompt内多次压缩；两入口复用Coding策略，含长工具循环安全切点及兼容回归，保留关联/必要指令并接受额外摘要要求。",
+      "status": "已完成",
+      "tests": [
+        "packages/agent/tests/test_sdk_compaction.py",
+        "packages/agent/tests/test_agent_compaction.py",
+        "packages/agent/tests/test_sdk_runtime_adversarial.py"
+      ]
+    },
+    {
+      "id": "SR-07",
+      "behavior": "摘要/候选验证失败原历史不变；原文可导出但无持久化ACK；新进程恢复有效压缩快照。",
+      "status": "已完成",
+      "tests": [
+        "packages/agent/tests/test_sdk_compaction.py",
+        "packages/agent/tests/test_agent_compaction.py",
+        "packages/agent/tests/test_sdk_runtime_adversarial.py"
+      ]
+    },
+    {
+      "id": "SR-08",
+      "behavior": "超过常见固定轮数阈值仍可运行；不新增默认round/总token上限。",
+      "status": "已完成",
+      "tests": [
+        "packages/agent/tests/test_sdk_runtime_adversarial.py"
+      ]
+    },
+    {
+      "id": "SR-09",
+      "behavior": "原“校验拒绝后继续修复，接受后立即结束且无额外模型调用”要求；不再实现。",
+      "status": "已撤销：用户排除工具驱动的Agent行为",
+      "tests": []
+    },
+    {
+      "id": "SR-10",
+      "behavior": "原终止工具独占/混合批次拒绝及接受后的执行屏障；不再实现。普通工具清理仍由SR-16覆盖。",
+      "status": "已撤销：用户排除工具终止协议",
+      "tests": []
+    },
+    {
+      "id": "SR-11",
+      "behavior": "原六类结束原因、结构化RunResult及submission状态隔离；不再实现。",
+      "status": "已撤销：用户排除运行结果与错误分类",
+      "tests": []
+    },
+    {
+      "id": "SR-12",
+      "behavior": "原新增fatal/recoverable宿主错误分类及穿透协议；不再实现，保留现有安全检查。",
+      "status": "已撤销：用户排除运行结果与错误分类",
+      "tests": []
+    },
+    {
+      "id": "SR-13",
+      "behavior": "事件含run关联/用量/压缩；保留现有接口，不吞结束通知、不无限积压或卡住关闭；不新增RunResult。",
+      "status": "已完成",
+      "tests": [
+        "packages/agent/tests/test_agent_event_buffer.py",
+        "packages/agent/tests/test_agent_compaction.py"
+      ]
+    },
+    {
+      "id": "SR-14",
+      "behavior": "原“await持久化hook阻止下一步，写失败自动停止”要求；不再实现。",
+      "status": "已撤销：用户明确排除持久化事件",
+      "tests": []
+    },
+    {
+      "id": "SR-15",
+      "behavior": "安全边界快照与loop一致、工具关联完整；不安全dump被拒绝或明确不可继续，无落盘保证。",
+      "status": "已完成",
+      "tests": [
+        "packages/agent/tests/test_agent_snapshot_runtime.py",
+        "packages/agent/tests/test_snapshots.py"
+      ]
+    },
+    {
+      "id": "SR-16",
+      "behavior": "模型流中、工具中、压缩中和重复aclose；资源结算及关闭后无新调用。",
+      "status": "已完成",
+      "tests": [
+        "packages/agent/tests/test_agent_close.py",
+        "packages/agent/tests/test_sdk_runtime_adversarial.py"
+      ]
+    },
+    {
+      "id": "SR-17",
+      "behavior": "中断测试明确已保存与未保存状态边界；已记录unknown不重放，不承诺任意崩溃点恢复或exactly-once。",
+      "status": "已完成",
+      "tests": [
+        "packages/agent/tests/test_sdk_runtime_adversarial.py"
+      ]
+    },
+    {
+      "id": "SR-18",
+      "behavior": "独立进程A→B→C走init→build→feedback/repair宿主任务，包含压缩、重新注册工具及显式保存；不依赖SDK提交协议。",
+      "status": "已完成",
+      "tests": [
+        "packages/agent/tests/test_agent_snapshot_runtime.py"
+      ]
+    },
+    {
+      "id": "SR-19",
+      "behavior": "宿主注册名称/描述/schema/callable后，自定义工具经现有循环调用并返回关联结果；恢复由宿主重绑，不按工具名新增业务控制行为。",
+      "status": "已完成",
+      "tests": [
+        "packages/agent/tests/test_agent_snapshot_runtime.py",
+        "packages/agent/tests/test_agent_tools.py"
+      ]
+    },
+    {
+      "id": "SR-20",
+      "behavior": "显式SDK skill加载、可运行示例；新构建agent-only产物独立工作，含Flow安装目标发现flow-workflows及12个例子。",
+      "status": "已完成",
+      "tests": [
+        "packages/agent/tests/test_skill_sdk_usage.py"
+      ]
+    },
+    {
+      "id": "SR-21",
+      "behavior": "只读skill工具list/load、可见范围/大小约束、安全文件读取及取消；不激活、不执行、不增加权限。",
+      "status": "已完成",
+      "tests": [
+        "packages/agent/tests/test_skill_tool.py"
+      ]
+    },
+    {
+      "id": "SR-22",
+      "behavior": "session稳定前缀、turn请求投影及跨工具轮次有效；实际模型入口前失败不消费，使用后退休，忙碌激活拒绝。",
+      "status": "已完成",
+      "tests": [
+        "packages/agent/tests/test_skill_lifecycle.py",
+        "packages/agent/tests/test_path_confinement.py"
+      ]
+    }
+  ],
+  "counts": {
+    "pending_implementation": 0,
+    "pending_verification": 0,
+    "missing_external_environment": 0,
+    "complete": 17,
+    "withdrawn": 5,
+    "remaining_in_scope": 0
+  },
+  "artifact_evidence": "/tmp/xdog-sdk-runtime-implementation/artifacts/checkpoint-20261012T073602.693836Z/verification-summary.json",
+  "mandatory_gates": {
+    "status": "all required gates passed",
+    "final_shards": {
+      "a": {
+        "passed": 5103,
+        "skipped": 55,
+        "duration": "392.66s (0:06:32)"
+      },
+      "b": {
+        "passed": 1115,
+        "skipped": 2,
+        "duration": "696.28s (0:11:36)"
+      },
+      "c": {
+        "passed": 2242,
+        "skipped": 90,
+        "duration": "2199.53s (0:36:39)"
+      }
+    },
+    "passed": 8460,
+    "skipped": 147,
+    "collected": 8607,
+    "source_changes_since_final_gate": [],
+    "artifact_directory": "/tmp/xdog-sdk-runtime-implementation/artifacts/checkpoint-20261012T073602.693836Z",
+    "artifacts_verified": 16,
+    "isolated_probes_passed": 10,
+    "unrelated_files_preserved": 9,
+    "publication": "not committed, tagged, pushed, or published",
+    "validation_environment": "current Linux; native Windows/macOS deferred",
+    "skip_scope": "7 opt-in live Claude/Codex CLI cases and 140 pinned independent MCP SDK cases; not claimed passed",
+    "generated_typing": "11 pre-existing emitted-module diagnostics independently compared to HEAD; zero introduced; seven source-package strict mypy passed"
+  },
+  "generated_typing_baseline": "/tmp/xdog-flow-generated-lifecycle/head-baseline/evidence.json (11 unchanged baseline diagnostics, 0 new)",
+  "no_scope_reduction": true,
+  "platform_validation": {
+    "Linux": "verified in current environment",
+    "Windows/macOS": "deferred by explicit user scope; not passed"
+  },
+  "status": "completed locally, not committed or published"
+}

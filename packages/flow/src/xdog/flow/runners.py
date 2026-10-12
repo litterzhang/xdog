@@ -192,8 +192,9 @@ class SdkRunner:
     """The default backend: the in-process ``agent`` + ``ai`` SDK.
 
     Holds the SDK wiring (stream-fn factory, tool registry, web-search factory) and
-    runs each agent turn by building an ``Agent`` and draining it — the exact logic
-    that previously lived inline in ``executor._node_agent``.
+    runs each agent turn by building an ``Agent``, draining/exporting it, and
+    closing that node-owned runtime on every exit. Cleanup may outlast the node
+    timeout while cooperative tools settle; factory-supplied providers stay shared.
     """
 
     def __init__(
@@ -299,43 +300,72 @@ class SdkRunner:
             web_search_fn=web_search_fn,
         )
 
-        if session:
-            agent.restore(session)
-            # The node's own fields override what it inherited.
-            if node.system_prompt:
-                agent.set_system_prompt(final_sys_prompt)
-            if node.model:
-                agent.set_model(model)
+        try:
+            if session:
+                # The node owns configuration; inherited messages are data, not a
+                # grant to adopt another node's model or skill selection. In
+                # particular, restore validates adapter model availability BEFORE
+                # adopting data, so a post-restore set_model() alone is too late.
+                inherited = dict(session)
+                if node.model:
+                    inherited["model"] = model
+                if "format" in inherited or "version" in inherited:
+                    # Reuse the SDK's captured, versioned identities for this
+                    # node's explicit selection (including []). Do not resolve
+                    # obsolete inherited skills just to discard them afterwards.
+                    inherited["skills"] = agent.dump()["skills"]
+                agent.restore(inherited)
+                # An absent node system prompt retains the inherited base prompt.
+                if node.system_prompt:
+                    agent.set_system_prompt(final_sys_prompt)
+                if node.model:
+                    agent.set_model(model)
 
-        accumulated: list[str] = []
-        total_tokens = 0
+            accumulated: list[str] = []
+            total_tokens = 0
 
-        async def _drain() -> None:
-            nonlocal total_tokens
-            event_stream = await agent.prompt(user_prompt)
-            async for event in event_stream:
-                if isinstance(event, TurnEndEvent) and event.message is not None:
-                    msg = event.message
-                    if isinstance(msg, AssistantMessage):
-                        for part in msg.content:
-                            if isinstance(part, TextContent):
-                                accumulated.append(part.text)
-                        # Some providers report per-category counts but leave
-                        # total_tokens at 0; fall back to input + output.
-                        _u = msg.usage
-                        total_tokens += _u.total_tokens or (_u.input + _u.output)
+            async def _drain() -> None:
+                nonlocal total_tokens
+                event_stream = await agent.prompt(user_prompt)
+                async for event in event_stream:
+                    if isinstance(event, TurnEndEvent) and event.message is not None:
+                        msg = event.message
+                        if isinstance(msg, AssistantMessage):
+                            for part in msg.content:
+                                if isinstance(part, TextContent):
+                                    accumulated.append(part.text)
+                            # Some providers report per-category counts but leave
+                            # total_tokens at 0; fall back to input + output.
+                            _u = msg.usage
+                            total_tokens += _u.total_tokens or (_u.input + _u.output)
+                await agent.wait_for_idle()
 
-        await asyncio.wait_for(_drain(), timeout=timeout)
+            await asyncio.wait_for(_drain(), timeout=timeout)
 
-        if session_sink is not None:
-            session_sink["session"] = agent.dump()
+            if session_sink is not None:
+                session_sink["session"] = agent.dump()
 
-        if structured:
-            result_obj = sink.get("result")
-            if result_obj is None:
-                raise WorkflowExecutionError(f"Node {node.id!r}: agent did not submit a result via submit_result")
-            return result_obj, total_tokens
-        return "".join(accumulated), total_tokens
+            if structured:
+                result_obj = sink.get("result")
+                if result_obj is None:
+                    raise WorkflowExecutionError(f"Node {node.id!r}: agent did not submit a result via submit_result")
+                return result_obj, total_tokens
+            return "".join(accumulated), total_tokens
+        finally:
+            # A node owns its Agent, not the factory's potentially shared provider.
+            # Dump above while settled; never publish a timeout/interrupted session
+            # as resumable. Cleanup must finish even if the caller cancels again.
+            close_task = asyncio.create_task(agent.aclose())
+            cancelled = False
+            while not close_task.done():
+                try:
+                    await asyncio.shield(close_task)
+                except asyncio.CancelledError:
+                    cancelled = True
+            close_task.result()  # Surface cleanup failures; do not claim settlement.
+            if cancelled:
+                raise asyncio.CancelledError
+
 
 
 # ---------------------------------------------------------------------------

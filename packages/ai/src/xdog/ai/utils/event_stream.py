@@ -63,6 +63,7 @@ class EventStream(Generic[T]):
             self._result_future = loop.create_future()
 
         self._consumed = False
+        self._released = False
         self._listeners: list[object] = []
 
     # -- push-based producer API --------------------------------------------
@@ -105,6 +106,22 @@ class EventStream(Generic[T]):
             return
         self._queue.put_nowait(None)
 
+    async def aclose(self) -> None:
+        """Release the owned iterator; never close a shared provider client.
+
+        Consumers must stop active iteration before calling this. Push-mode
+        producers remain owned by their creator, who must settle those tasks.
+        """
+        if self._released:
+            return
+        close = getattr(self._iterator, "aclose", None)
+        if callable(close):
+            await close()
+        if self._queue is not None:
+            self._queue.put_nowait(None)
+        self._consumed = True
+        self._released = True
+
     # -- listener API -------------------------------------------------------
 
     def on(self, listener: object) -> object:
@@ -141,10 +158,11 @@ class EventStream(Generic[T]):
     async def result(self) -> T:
         """Await the final result produced after the stream ends.
 
-        If the stream has not been consumed yet this will first drain all
-        remaining events.
+        If the result is not ready and the stream has not been consumed,
+        drive the iterator to obtain it. A ready result never advances the
+        iterator (which may still own resources awaiting explicit closure).
         """
-        if not self._consumed:
+        if not self._result_future.done() and not self._consumed:
             async for _ in self:
                 pass
         return await self._result_future

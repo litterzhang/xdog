@@ -274,15 +274,8 @@ class AgentSession:
         try:
             if self._base_context_transform is not None:
                 messages = await self._base_context_transform(messages)
-            from xdog.agent.skills import render_skill_body
-            from xdog.coding.core.slash_commands import skill_manager
-            def transient_messages() -> list[UserMessage]:
-                manager = skill_manager()
-                return [UserMessage(content='## Active skill: ' + skill.name + '\n\n' + render_skill_body(skill))
-                    for slug in sorted(self._active_skills)
-                    if (skill := manager.load_skill(slug)) is not None and skill.expires_after_turn]
-            transient = await asyncio.to_thread(transient_messages) if self._active_skills else []
-            result = await self.extensions.transform([*transient, *messages])
+            # The SDK supplies run-owned turn skills before this transform.
+            result = await self.extensions.transform(messages)
             return result
         finally:
             await self._sync_extension_tools()
@@ -626,33 +619,11 @@ class AgentSession:
             self._expire_turn_scoped_skills()
 
     def _expire_turn_scoped_skills(self) -> None:
-        """Retire skills their author declared as lasting one turn.
-
-        Declared, not inferred. A timer cannot tell a one-shot procedure from a
-        guardrail, and "unused for N turns" is unmeasurable anyway — there is no
-        way to observe whether the model followed an instruction. Only the
-        author knows which kind they wrote, so only the author gets to say.
-        """
-        if not self._active_skills:
-            return
-        try:
-            from xdog.coding.core.slash_commands import skill_manager
-
-            manager = skill_manager()
-            expired = {
-                slug
-                for slug in self._active_skills
-                if (skill := manager.load_skill(slug)) is not None and skill.expires_after_turn
-            }
-        except Exception:
-            logger.debug("could not expire turn-scoped skills", exc_info=True)
-            return
-
-        if expired:
-            self._active_skills = self._active_skills - expired
-            self._push_skills()
+        """Mirror SDK retirement; preparation failures do not consume pending skills."""
+        retained = self._active_skills & frozenset(self.agent.active_skills)
+        if retained != self._active_skills:
+            self._active_skills = retained
             self._rebuild_system_prompt()
-            logger.debug("expired turn-scoped skills: %s", sorted(expired))
 
     def steer(self, message: str) -> None:
         """Queue a steering interrupt for the current turn."""

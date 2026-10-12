@@ -15,6 +15,7 @@ the TS ``EventStream<AgentEvent, AgentMessage[]>`` pattern).
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from collections.abc import AsyncIterator
 from typing import Any, Callable, Generic, TypeVar
 
@@ -39,8 +40,16 @@ class AgentEventStream(Generic[E]):
         result = await stream.result()
     """
 
-    def __init__(self) -> None:
-        self._queue: asyncio.Queue[E | None] = asyncio.Queue()
+    def __init__(self, max_buffered_events: int = 0) -> None:
+        if type(max_buffered_events) is not int or max_buffered_events < 0:
+            raise ValueError("max_buffered_events must be a non-negative integer")
+        self._capacity = max_buffered_events
+        self._queue: deque[E] = deque()
+        self._ready = asyncio.Event()
+        self._space = asyncio.Event()
+        self._space.set()
+        self._final_event: E | None = None
+        self._cleanup_events: deque[E] = deque()
         self._closed = False
         self._listeners: list[Callable[[E], Any]] = []
         # Result support (matches ai.utils.event_stream.EventStream)
@@ -53,57 +62,69 @@ class AgentEventStream(Generic[E]):
     # -- producer API -------------------------------------------------------
 
     async def send(self, event: E) -> None:
-        """Push an event into the stream."""
-        if self._closed:
-            return
-        await self._queue.put(event)
-        for listener in self._listeners:
-            try:
-                listener(event)
-            except Exception:
-                pass  # listeners must not break the stream
+        """Send with bounded backpressure; cancellation interrupts the wait."""
+        while not self._closed and self._capacity and len(self._queue) >= self._capacity:
+            self._space.clear()
+            await self._space.wait()
+        if not self._closed:
+            self.send_sync(event)
 
     def send_sync(self, event: E) -> None:
-        """Push an event without awaiting (fire-and-forget into the queue)."""
+        """Send without waiting; bounded streams raise QueueFull rather than drop events."""
         if self._closed:
             return
-        self._queue.put_nowait(event)
+        if self._capacity and len(self._queue) >= self._capacity:
+            raise asyncio.QueueFull
+        self._queue.append(event)
+        self._ready.set()
+        self._notify(event)
+
+    def _notify(self, event: E) -> None:
         for listener in self._listeners:
             try:
                 listener(event)
             except Exception:
-                pass
+                pass  # Observation callbacks are not persistence barriers.
+
+    def send_cleanup(self, event: E) -> None:
+        """Reserve at most three shutdown observations without blocking cleanup.
+
+        The owner uses these only for an interrupted compaction's known usage
+        and completed/failed event. Ordinary traffic must use send().
+        """
+        if self._closed:
+            return
+        if len(self._cleanup_events) >= 3:
+            raise asyncio.QueueFull
+        self._cleanup_events.append(event)
+        self._notify(event)
+
+    def send_final(self, event: E) -> None:
+        """Reserve one terminal event outside capacity, released after close.
+
+        This allows cancellation/cleanup to finish even if nobody is consuming.
+        It does not discard any already-buffered event.
+        """
+        if self._closed or self._final_event is not None:
+            return
+        self._final_event = event
+        self._notify(event)
 
     def end(self, result: Any = None) -> None:
-        """Signal end of stream with a result value.
-
-        This is the primary way to close the stream.  The *result* is
-        available to consumers via :meth:`result`.
-        """
+        """Close and resolve the existing result future without requiring a consumer."""
         if self._closed:
             return
         self._closed = True
         if not self._result_future.done():
             self._result_future.set_result(result)
-        self._queue.put_nowait(None)  # sentinel
+        self._ready.set()
+        self._space.set()
 
     async def close(self) -> None:
-        """Signal the end of the stream without a result value."""
-        if self._closed:
-            return
-        self._closed = True
-        if not self._result_future.done():
-            self._result_future.set_result(None)
-        await self._queue.put(None)  # sentinel
+        self.end()
 
     def close_sync(self) -> None:
-        """Signal end of stream synchronously."""
-        if self._closed:
-            return
-        self._closed = True
-        if not self._result_future.done():
-            self._result_future.set_result(None)
-        self._queue.put_nowait(None)
+        self.end()
 
     # -- consumer API -------------------------------------------------------
 
@@ -125,15 +146,12 @@ class AgentEventStream(Generic[E]):
         return items
 
     async def result(self) -> Any:
-        """Await the final result after the stream ends.
+        """Wait for completion without consuming events or cancelling the shared future.
 
-        If the stream has not been consumed yet, this will first drain
-        all remaining events.
+        Bounded streams require a concurrent event consumer while the producer
+        is active. Waiting for a result never silently discards those events.
         """
-        if not self._result_future.done():
-            async for _ in self:
-                pass
-        return await self._result_future
+        return await asyncio.shield(self._result_future)
 
     # -- async iterator protocol --------------------------------------------
 
@@ -142,10 +160,25 @@ class AgentEventStream(Generic[E]):
 
     async def _iterate(self) -> AsyncIterator[E]:
         while True:
-            item = await self._queue.get()
-            if item is None:
-                break
-            yield item
+            if self._queue:
+                item = self._queue.popleft()
+                self._space.set()
+                yield item
+            elif self._closed:
+                while self._cleanup_events:
+                    yield self._cleanup_events.popleft()
+                if self._final_event is not None:
+                    final, self._final_event = self._final_event, None
+                    yield final
+                return
+            else:
+                self._ready.clear()
+                await self._ready.wait()
+
+    @property
+    def buffered_events(self) -> int:
+        """Queued ordinary events (the single reserved terminal event is separate)."""
+        return len(self._queue)
 
     @property
     def closed(self) -> bool:

@@ -337,6 +337,10 @@ async def _run_loop(
                 message = await _stream_assistant_response(
                     current_context, config, emit, stream_fn, model, options, cancel,
                 )
+                if config.prepare_request is not None:
+                    # A compacted prefix must not remain pinned by the run-output list.
+                    retained = {id(item) for item in current_context.messages}
+                    new_messages[:] = [item for item in new_messages if id(item) in retained]
                 new_messages.append(message)
 
                 if message.stop_reason in ("error", "aborted"):
@@ -434,9 +438,17 @@ async def _stream_assistant_response(
     # images. Do not silently prune data or infer another provider's capabilities.
     from xdog.agent.image_context import validate_image_context
     await validate_image_context(stream_fn, model, llm_context)
+    if config.prepare_request is not None:
+        original_request = llm_context
+        llm_context = await config.prepare_request(context, llm_context)
+        if llm_context is not original_request:
+            await validate_image_context(stream_fn, model, llm_context)
     if _is_cancelled(cancel):
         raise asyncio.CancelledError
 
+    # Observe actual adapter entry, not merely context preparation or rejected input.
+    if config.on_model_request is not None:
+        config.on_model_request()
     # Call stream_fn
     response = stream_fn(model, llm_context, options)
 
@@ -444,56 +456,72 @@ async def _stream_assistant_response(
     if inspect.isawaitable(response):
         response = await response
 
-    partial_message: AssistantMessage | None = None
-    added_partial = False
+    iterator = response.__aiter__()
+    try:
+        partial_message: AssistantMessage | None = None
+        added_partial = False
 
-    async for event in response:
-        if _is_cancelled(cancel):
-            break
+        async for event in iterator:
+            if _is_cancelled(cancel):
+                raise asyncio.CancelledError
 
-        event_type = event.type
+            event_type = event.type
 
-        if event_type == "start":
-            partial_message = event.partial  # type: ignore[union-attr]
-            if partial_message is not None:
-                context.messages.append(partial_message)
-                added_partial = True
-            await _emit_event(emit, MessageStartEvent(message=partial_message))
+            if event_type == "start":
+                partial_message = event.partial  # type: ignore[union-attr]
+                if partial_message is not None:
+                    context.messages.append(partial_message)
+                    added_partial = True
+                await _emit_event(emit, MessageStartEvent(message=partial_message))
 
-        elif event_type in (
-            "text_start", "text_delta", "text_end",
-            "thinking_start", "thinking_delta", "thinking_end",
-            "tool_call_start", "tool_call_delta", "tool_call_done",
-        ):
-            event_partial = getattr(event, "partial", None)
-            if partial_message is not None and event_partial is not None:
-                partial_message = event_partial
-                context.messages[-1] = partial_message
-                await _emit_event(emit, MessageUpdateEvent(
-                    message=partial_message,
-                    assistant_message_event=event,
-                ))
+            elif event_type in (
+                "text_start", "text_delta", "text_end",
+                "thinking_start", "thinking_delta", "thinking_end",
+                "tool_call_start", "tool_call_delta", "tool_call_done",
+            ):
+                event_partial = getattr(event, "partial", None)
+                if partial_message is not None and event_partial is not None:
+                    partial_message = event_partial
+                    context.messages[-1] = partial_message
+                    await _emit_event(emit, MessageUpdateEvent(
+                        message=partial_message,
+                        assistant_message_event=event,
+                    ))
 
-        elif event_type in ("done", "error"):
-            final_message = await response.result()
-            if added_partial:
-                context.messages[-1] = final_message
-            else:
-                context.messages.append(final_message)
-            if not added_partial:
-                await _emit_event(emit, MessageStartEvent(message=final_message))
-            await _emit_event(emit, MessageEndEvent(message=final_message))
-            return final_message
+            elif event_type in ("done", "error"):
+                final_message = await response.result()
+                if added_partial:
+                    context.messages[-1] = final_message
+                else:
+                    context.messages.append(final_message)
+                if not added_partial:
+                    await _emit_event(emit, MessageStartEvent(message=final_message))
+                await _emit_event(emit, MessageEndEvent(message=final_message))
+                return final_message
 
-    # Fallback: stream ended without done/error event
-    final_message = await response.result()
-    if added_partial:
-        context.messages[-1] = final_message
-    else:
-        context.messages.append(final_message)
-        await _emit_event(emit, MessageStartEvent(message=final_message))
-    await _emit_event(emit, MessageEndEvent(message=final_message))
-    return final_message
+        # Fallback: stream ended without done/error event
+        final_message = await response.result()
+        if added_partial:
+            context.messages[-1] = final_message
+        else:
+            context.messages.append(final_message)
+            await _emit_event(emit, MessageStartEvent(message=final_message))
+        await _emit_event(emit, MessageEndEvent(message=final_message))
+        return final_message
+    finally:
+        try:
+            try:
+                close_iterator = getattr(iterator, "aclose", None)
+                if callable(close_iterator):
+                    await close_iterator()
+            finally:
+                close_response = getattr(response, "aclose", None)
+                if id(response) != id(iterator) and callable(close_response):
+                    await close_response()
+        except Exception as exc:
+            if config.on_stream_close_error is not None:
+                config.on_stream_close_error(exc)
+            raise
 
 
 # ---------------------------------------------------------------------------
@@ -798,6 +826,7 @@ async def _execute_prepared_tool_call(
         return {
             "result": _create_error_tool_result("Tool execution cancelled"),
             "is_error": True,
+            "interrupted": True,
         }
     except Exception as exc:
         logger.exception("Tool %s execution failed", tool.name)
@@ -835,6 +864,7 @@ async def _finalize_executed_tool_call(
         except asyncio.CancelledError:
             result = _create_error_tool_result("Tool execution cancelled")
             is_error = True
+            executed["interrupted"] = True
             after_result = None
 
         if after_result is not None:
@@ -851,7 +881,7 @@ async def _finalize_executed_tool_call(
             if after_result.is_error is not None:
                 is_error = after_result.is_error
 
-    return await _emit_tool_call_outcome(tc, result, is_error, emit)
+    return await _emit_tool_call_outcome(tc, result, is_error, emit, interrupted=executed.get("interrupted", False))
 
 
 async def _emit_tool_call_outcome(
@@ -859,6 +889,7 @@ async def _emit_tool_call_outcome(
     result: AgentToolResult,
     is_error: bool,
     emit: AgentEventSink,
+    *, interrupted: bool = False,
 ) -> ToolResultMessage:
     """Emit tool_execution_end and message lifecycle events, return ToolResultMessage."""
     result = replace(result, is_error=is_error)  # Align rich result and lifecycle/message flags after hooks.
@@ -867,6 +898,7 @@ async def _emit_tool_call_outcome(
         tool_name=tc.name,
         result=result,
         is_error=is_error,
+        interrupted=interrupted,
     ))
 
     tool_result_msg = ToolResultMessage(

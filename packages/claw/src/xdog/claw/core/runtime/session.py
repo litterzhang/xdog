@@ -187,8 +187,7 @@ class AgentSession:
             # it; the Agent decides both, so the group's prompt builder no
             # longer carries a skills summary of its own.
             skills=getattr(runtime, "skill_manager", None),
-            active_skills=tuple(slug for slug in self._active_skills
-                if (skill := runtime.skill_manager.load_skill(slug)) is not None and not skill.expires_after_turn),
+            active_skills=tuple(sorted(self._active_skills)),
             tool_ctx={
                 "group_id": self._group_id,
                 "workspace_dir": str(runtime.workspace_dir) if runtime.workspace_dir else "",
@@ -346,13 +345,8 @@ class AgentSession:
 
     async def _extension_context(self, messages: list[Any]) -> list[Any]:
         try:
-            from xdog.agent.skills import render_skill_body
-            def transient_messages() -> list[UserMessage]:
-                return [UserMessage(content='## Active skill: ' + skill.name + '\n\n' + render_skill_body(skill))
-                    for slug in sorted(self._active_skills)
-                    if (skill := self._runtime.skill_manager.load_skill(slug)) is not None and skill.expires_after_turn]
-            transient = await asyncio.to_thread(transient_messages) if self._active_skills else []
-            result = await self.extensions.transform([*transient, *messages])
+            # SDK-owned transient projection is shared with direct SDK callers.
+            result = await self.extensions.transform(messages)
             return result
         finally:
             await self._sync_extension_tools()
@@ -618,13 +612,14 @@ class AgentSession:
              'scope': skill.scope, 'packaged': skill.packaged, 'active': skill.slug in self._active_skills}
             for skill in skills], 'notice': 'Selection changes instructions only; no model/tool/permission grant'}
 
-    async def _save_selected_skills(self, chosen: tuple[str, ...]) -> None:
+    async def _save_selected_skills(self, chosen: tuple[str, ...], *, update_agent: bool = True) -> None:
         # Once a write is admitted, settle BOTH disk and owning-loop state before
         # releasing the group reservation, even if its receipt is disconnected.
         async def commit() -> None:
             await asyncio.to_thread(self._store.save_active_skills, self._meta.session_id, chosen)
             self._active_skills = frozenset(chosen)
-            self._agent.set_active_skills(chosen)
+            if update_agent:
+                self._agent.set_active_skills(chosen)
         task = asyncio.create_task(commit())
         try:
             await asyncio.shield(task)
@@ -641,12 +636,9 @@ class AgentSession:
             raise
 
     async def _expire_selected_skills(self) -> None:
-        def expired_slugs() -> set[str]:
-            return {slug for slug in self._active_skills
-                if (skill := self._runtime.skill_manager.load_skill(slug)) is not None and skill.expires_after_turn}
-        expired = await asyncio.to_thread(expired_slugs) if self._active_skills else set()
-        if expired:
-            await self._save_selected_skills(tuple(sorted(self._active_skills - expired)))
+        retained = self._active_skills & frozenset(self._agent.active_skills)
+        if retained != self._active_skills:
+            await self._save_selected_skills(tuple(sorted(retained)), update_agent=False)
 
     def steer(self, content: str) -> None:
         self._agent.steer(content)

@@ -12,6 +12,60 @@ Nothing yet.
 
 ---
 
+## [2.4.0] — 2026-10-12
+
+### Added
+
+- Explicit SDK skill activation with session/turn lifetimes and an optional,
+  bounded read-only `skill` tool (`list`/`load). The installed `xdog-flow`
+  distribution provides `flow-workflows`; loading instructions grants no tools.
+- Versioned, data-only cross-process Agent snapshots preserving structured
+  messages, tool associations, generation settings, skills, and compaction state.
+  Restore rebinds trusted host resources without model calls, code loading, or
+  permission expansion; diagnostic snapshots never replay unconfirmed operations.
+- Native Agent `compact()` and explicitly enabled in-loop auto compaction, using
+  the single policy extracted from Coding. Auto mode is off by default; capacity
+  budgeting, complete tool-batch boundaries, original-history export, and failure
+  retention apply to long runs without adding a fixed round limit.
+- Bounded structured observation events with run correlation, separate summary
+  usage, and optional immutable safe-boundary snapshots. These are not persistence
+  events or storage acknowledgements.
+- Async Agent lifecycle via `aclose()` and context management: close admission,
+  cancel and settle owned model/tool tasks, release request streams, and leave
+  shared provider clients under host ownership.
+- Offline SDK examples and isolated multi-process/package validation. See
+  `docs/agent-sdk-service-runtime.md` and its linked acceptance evidence.
+
+### Changed
+
+- Coding and Claw use the SDK's turn-skill projection without duplicate injection;
+  their existing persistence, memory, permission, and compaction policies remain
+  owned by the applications. Coding RPC safely projects the new observation events.
+- Interpreted and generated Flow SDK nodes settle their owned Agent on every exit,
+  preserve host/node configuration when restoring, and retain existing tool,
+  `submit_result`, output-schema, and usage behavior. No business terminal-tool or
+  new run-result/error-classification protocol is introduced.
+- Synchronized the workspace, internal requirements, and runtime/MCP client
+  identifiers to 2.4.0. Snapshot format and MCP protocol versions are unchanged.
+
+### Fixed
+
+- Model and summary terminal events release their streams without draining an
+  indefinitely held iterator. Cancelled observers cannot abandon owned cleanup.
+- Interrupted finalizer diagnostics preserve existing error history while retaining
+  unknown tool outcomes; they cannot be mistaken for safe resumable snapshots.
+
+### Validation
+
+- Implementation acceptance: 8460 passed, 147 skipped, zero failures across all
+  8607 collected workspace tests; Ruff, seven-package strict mypy, workflow examples,
+  and isolated wheel probes passed. Release metadata/build checks are separate.
+- Skipped cases require optional live CLI or independent pinned MCP SDK environments;
+  native Windows/macOS checks remain deferred. No live gateway restart is required
+  or performed by the release process.
+
+---
+
 ## [2.3.2] — 2026-10-12
 
 ### Fixed

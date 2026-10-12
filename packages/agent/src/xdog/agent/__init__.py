@@ -28,6 +28,7 @@ from xdog.agent.agent_loop import (
     run_agent_loop,
     run_agent_loop_continue,
 )
+from xdog.agent.compaction import CompactionConfig, CompactionError, CompactionResult
 from xdog.agent.core import (
     AgentConfig,
     AgentContext,
@@ -53,6 +54,9 @@ from xdog.agent.events import (
     AgentEndEvent,
     AgentEvent,
     AgentStartEvent,
+    CompactionEndEvent,
+    CompactionFailedEvent,
+    CompactionStartEvent,
     InputConsumedEvent,
     InputHandledEvent,
     InputRejectedEvent,
@@ -60,11 +64,13 @@ from xdog.agent.events import (
     MessageEndEvent,
     MessageStartEvent,
     MessageUpdateEvent,
+    SnapshotEvent,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
     ToolExecutionUpdateEvent,
     TurnEndEvent,
     TurnStartEvent,
+    UsageEvent,
 )
 
 # -- Helpers ------------------------------------------------
@@ -85,6 +91,7 @@ from xdog.agent.tools import (
     create_current_time_tool,
     create_embed_tool_from_fn,
     create_filesystem_tool,
+    create_skill_tool,
     create_web_search_tool_from_fn,
 )
 
@@ -114,6 +121,9 @@ from xdog.agent.types import (
 )
 
 __all__ = [
+    "CompactionConfig",
+    "CompactionError",
+    "CompactionResult",
     # Core
     "AgentConfig",
     "AgentContext",
@@ -130,6 +140,11 @@ __all__ = [
     "ToolExecutionMode",
     "WebSearchFn",
     # Events
+    "CompactionStartEvent",
+    "CompactionEndEvent",
+    "CompactionFailedEvent",
+    "UsageEvent",
+    "SnapshotEvent",
     "AgentEndEvent",
     "AgentEvent",
     "AgentStartEvent",
@@ -187,6 +202,7 @@ __all__ = [
     "create_current_time_tool",
     "create_embed_tool_from_fn",
     "create_filesystem_tool",
+    "create_skill_tool",
     "create_web_search_tool_from_fn",
     # Tool SPI
     "register_tool",

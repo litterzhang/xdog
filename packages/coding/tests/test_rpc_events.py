@@ -8,10 +8,15 @@ import pytest
 from xdog.agent.core import AgentToolResult
 from xdog.agent.events import (
     AgentEndEvent,
+    CompactionEndEvent,
+    CompactionFailedEvent,
+    CompactionStartEvent,
     MessageUpdateEvent,
+    SnapshotEvent,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
     ToolExecutionUpdateEvent,
+    UsageEvent,
 )
 from xdog.ai.types import AssistantMessage, ImageContent, TextContent, ThinkingContent
 from xdog.coding.modes.rpc.events import MAX_EVENT_BYTES, RpcEvents
@@ -212,7 +217,7 @@ def test_every_declared_agent_event_has_a_named_transient_projection_with_safe_m
         payload = _payload(event)
         assert payload is not None and payload['event'] == event.type
         projected.append(payload)
-    assert len(projected) == 14
+    assert len(projected) == len(get_args(AgentEvent))
     encoded = json.dumps(projected)
     assert 'PRIVATE' not in encoded and 'PUBLIC' in encoded and '123' in encoded
     update = next(row for row in projected if row['event'] == 'message_update')
@@ -224,3 +229,99 @@ def test_every_declared_agent_event_has_a_named_transient_projection_with_safe_m
     assert 'PRIVATE' not in json.dumps(final)
     tool_message = ToolResultMessage(tool_call_id='call', tool_name='tool', content=(picture,))
     assert 'PRIVATE-BINARY' not in json.dumps(_payload(MessageEndEvent(message=tool_message)))
+
+
+def test_sdk_observation_projections_have_exact_safe_fields_and_separate_identity():
+    from xdog.ai.types import CostBreakdown, Usage, UserMessage
+    from xdog.coding.modes.rpc.events import _payload
+
+    metadata = {'session_id': 'sdk-session', 'run_id': 'sdk-run', 'sequence': 41}
+    usage = Usage(input=10, output=3, cache_read=2, cache_write=1, total_tokens=16,
+                  cost=CostBreakdown(input=.1, output=.2, cache_read=.03, cache_write=.04, total=.37))
+    for source in ('model', 'compaction'):
+        assert _payload(UsageEvent(usage=usage, model='offline/model', source=source, **metadata)) == {
+            'event': 'usage', 'sdk': metadata,
+            'data': {'source': source, 'model': 'offline/model', 'usage': {
+                'input': 10, 'output': 3, 'cache_read': 2, 'cache_write': 1, 'total_tokens': 16,
+                'cost': {'input': .1, 'output': .2, 'cache_read': .03, 'cache_write': .04, 'total': .37},
+            }},
+        }
+    secret = 'ARBITRARY-PRIVATE-CONTENT without a recognizable credential prefix'
+    cases = (
+        (CompactionStartEvent(automatic=True, **metadata), {'automatic': True}),
+        (CompactionEndEvent(automatic=True, generation=2, summary=secret,
+                            removed_messages=(UserMessage(content=secret),), **metadata),
+         {'automatic': True, 'generation': 2, 'removed_message_count': 1, 'summary_omitted': True}),
+        (CompactionFailedEvent(error=secret, **metadata), {'automatic': False, 'error_omitted': True}),
+        (SnapshotEvent(snapshot_json=json.dumps({'messages': secret, 'api_key': secret}), **metadata),
+         {'snapshot_omitted': True}),
+        (SnapshotEvent(snapshot_json='NOT JSON ' + secret, **metadata), {'snapshot_omitted': True}),
+    )
+    for event, expected in cases:
+        payload = _payload(event)
+        assert payload == {'event': event.type, 'sdk': metadata, 'data': expected}
+        assert 'PRIVATE' not in json.dumps(payload)
+        assert all(key not in payload['data'] for key in ('removed_messages', 'snapshot_json', 'summary', 'error'))
+    redacted = _payload(UsageEvent(model='token=PRIVATE-MODEL', session_id='api_key=PRIVATE-SESSION',
+                                  run_id='password=PRIVATE-RUN', sequence=1))
+    assert 'PRIVATE' not in json.dumps(redacted)
+
+
+async def test_sdk_metadata_preserves_rpc_lease_sequence_and_snapshot_privacy(tmp_path):
+    from xdog.ai.types import Usage, UserMessage
+
+    session, _, calls, nav, sources, events = setup(tmp_path)
+    stream = RpcEvents(session, nav, events.append)
+    try:
+        # An observation before negotiation advances only the SDK counter.
+        session.agent._emit(AgentEndEvent())
+        stream.negotiate({'transient_events': 1})
+        session.agent._emit(AgentEndEvent())
+        await asyncio.sleep(0)
+        sdk_events = [
+            session.agent._emit(UsageEvent(usage=Usage(input=17), model='offline/model')),
+            session.agent._emit(CompactionEndEvent(summary='PRIVATE-SUMMARY',
+                removed_messages=(UserMessage(content='PRIVATE-HISTORY'),), generation=3)),
+            session.agent._emit(SnapshotEvent(snapshot_json='PRIVATE-INVALID-JSON')),
+        ]
+        await asyncio.sleep(0)
+        rows = [row for row in events if row['type'] == 'transient_event'][1:]
+        assert len(rows) == len(sdk_events) == 3
+        for row, sdk_event in zip(rows, sdk_events, strict=True):
+            assert row['session_id'] == session.session_id
+            assert row['event_owner'] == stream.lease and row['retained'] is False
+            assert row['sdk'] == {'session_id': sdk_event.session_id, 'run_id': sdk_event.run_id,
+                                  'sequence': sdk_event.sequence}
+        assert [row['sequence'] for row in rows] == [2, 3, 4]
+        assert [row['sdk']['sequence'] for row in rows] == [3, 4, 5]
+        assert 'PRIVATE' not in json.dumps(rows)
+        assert not calls and session.permissions.mode == 'deny'
+    finally:
+        stream.close()
+        await close(session, nav, sources)
+
+
+async def test_oversized_usage_keeps_sdk_correlation_when_data_is_limited(tmp_path):
+    session, _, _, nav, sources, events = setup(tmp_path)
+    stream = RpcEvents(session, nav, events.append)
+    try:
+        stream.negotiate({'transient_events': 1})
+        sdk_event = session.agent._emit(UsageEvent(model='x' * MAX_EVENT_BYTES))
+        await asyncio.sleep(0)
+        row = events[-1]
+        assert row['event'] == 'usage' and row['limited'] is True and row['data'] == {}
+        assert row['sdk'] == {'session_id': sdk_event.session_id, 'run_id': sdk_event.run_id,
+                              'sequence': sdk_event.sequence}
+        assert len(json.dumps(row).encode()) <= MAX_EVENT_BYTES
+    finally:
+        stream.close()
+        await close(session, nav, sources)
+
+
+@pytest.mark.parametrize('value', ['PRIVATE-INVALID-COUNTER', True, -1])
+def test_usage_projection_rejects_non_numeric_or_negative_counters(value):
+    from xdog.ai.types import Usage
+    from xdog.coding.modes.rpc.events import _payload
+
+    with pytest.raises(ValueError, match='Invalid SDK usage event'):
+        _payload(UsageEvent(usage=Usage(input=value)))

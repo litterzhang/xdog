@@ -19,7 +19,7 @@ from xdog.agent.core import (
     ToolExecutionMode,
 )
 from xdog.agent.events import AgentEvent
-from xdog.ai.types import AssistantMessage, Message, ToolCall, ToolResultContentPart, UserMessage
+from xdog.ai.types import AssistantMessage, Context, Message, ToolCall, ToolResultContentPart, UserMessage
 
 # ---------------------------------------------------------------------------
 # Before/after tool call hooks
@@ -140,6 +140,12 @@ class AgentLoopConfig:
     convert_to_llm: ConvertToLlmFn | None = None
     transform_context: TransformContextFn | None = None
     get_tools: Callable[[], tuple[AgentTool, ...]] | None = None
+    prepare_request: Callable[[AgentContext, Context], Awaitable[Context]] | None = None
+    """Internal safe model boundary; must keep canonical and loop histories consistent."""
+    on_stream_close_error: Callable[[Exception], None] | None = None
+    """Internal owner notification when a response cannot release its resources."""
+    on_model_request: Callable[[], None] | None = None
+    """Internal observation after context validation, immediately before adapter entry."""
     get_steering_messages: GetMessagesFn | None = None
     get_follow_up_messages: GetMessagesFn | None = None
     tool_execution: ToolExecutionMode = "parallel"

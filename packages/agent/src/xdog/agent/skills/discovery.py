@@ -1,6 +1,6 @@
 """Discovering skills that ship inside installed packages.
 
-A distribution can carry a skill by putting a ``skill/SKILL.md`` inside its
+A distribution can carry a skill by putting a ``skills/<slug>/SKILL.md`` inside its
 package directory — ``xdog-flow`` does, teaching an agent to write flow
 workflows. Nothing has to be registered: this walks the ``xdog`` namespace and
 picks up whatever is installed, so ``pip install xdog-flow`` makes the skill

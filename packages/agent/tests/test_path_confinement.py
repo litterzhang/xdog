@@ -190,26 +190,80 @@ def test_a_fixed_skill_goes_in_the_cacheable_prefix(tmp_path: Path) -> None:
     assert agent.state.messages == ()  # type: ignore[attr-defined]
 
 
-def test_a_turn_scoped_skill_goes_after_the_prefix(tmp_path: Path) -> None:
-    """It is going to be removed again. Putting it in the system prompt costs a
-    full uncached re-send when it arrives and another when it leaves, because
-    caching keys on the prefix and the system prompt is the front of it."""
-    agent = _agent(skills=_manager(tmp_path, ("temp", "JUST THIS TURN", True)),
-                   active_skills=["temp"])
+async def _assert_turn_skill_at_model_boundary(
+    tmp_path: Path, *, turn_body: str, fixed_body: str | None = None,
+) -> None:
+    """Observe both requests, including canonical state *during* adapter entry."""
+    from typing import cast
 
-    assert "JUST THIS TURN" not in (agent.state.system_prompt or "")  # type: ignore[attr-defined]
-    assert any("JUST THIS TURN" in str(m.content) for m in agent.state.messages)  # type: ignore[attr-defined]
+    from xdog.agent import Agent, AgentConfig
+    from xdog.agent.skills import SkillManager
+    from xdog.ai.types import AssistantMessage, Context, StreamOptions, SystemPromptBlock, TextContent, UserMessage
+    from xdog.ai.utils.event_stream import EventStream
 
+    skills = [("temp", turn_body, True)]
+    if fixed_body is not None:
+        skills.insert(0, ("fixed", fixed_body, False))
+    manager = cast(SkillManager, _manager(tmp_path, *skills))
+    seen: list[Context] = []
 
-def test_both_kinds_can_be_given_at_once(tmp_path: Path) -> None:
-    agent = _agent(
-        skills=_manager(tmp_path, ("fixed", "ALWAYS", False), ("temp", "FOR NOW", True)),
-        active_skills=["fixed", "temp"],
+    def user_text(message: UserMessage) -> str:
+        if isinstance(message.content, str):
+            return message.content
+        return "".join(part.text for part in message.content if isinstance(part, TextContent))
+
+    def stream(model: str, context: Context, options: StreamOptions) -> EventStream[AssistantMessage]:
+        # A request-local projection must never first pass through canonical history.
+        assert all(turn_body not in str(message.content) for message in agent.messages)
+        assert agent.state.system_prompt == prefix
+        seen.append(context)
+        return EventStream.empty(AssistantMessage())
+
+    base = (SystemPromptBlock(text="THE TASK", cache=True),)
+    agent = Agent(
+        stream, config=AgentConfig(model="offline/skill-placement", system_prompt=base),
+        skills=manager, active_skills=[name for name, _, _ in skills], tools=[],
     )
+    prefix = agent.state.system_prompt
+    assert isinstance(prefix, tuple) and prefix[-1:] == base
+    assert turn_body not in str(prefix)
+    assert agent.messages == (), "construction must not seed transient canonical history"
+    if fixed_body is not None:
+        assert fixed_body in prefix[0].text
 
-    assert "ALWAYS" in agent.state.system_prompt  # type: ignore[attr-defined]
-    assert "FOR NOW" not in agent.state.system_prompt  # type: ignore[attr-defined]
-    assert any("FOR NOW" in str(m.content) for m in agent.state.messages)  # type: ignore[attr-defined]
+    for index in range(2):
+        task = f"Independent request {index + 1}"
+        async for _ in await agent.prompt(task):
+            pass
+        await agent.wait_for_idle()
+        assert len(seen) == index + 1, "assert against an actual adapter request, not only local state"
+        context = seen[index]
+        assert context.system_prompt == prefix, "turn activation/retirement must not churn prefix bytes or cache flags"
+        projected = [message for message in context.messages if turn_body in str(message.content)]
+        if index == 0:
+            assert len(projected) == 1, "the owning request must see exactly one transient body"
+            assert isinstance(projected[0], UserMessage)
+            assert context.messages[0] is projected[0], "the turn instructions precede the current task"
+        else:
+            assert not projected, "the next independent request must not inherit a retired turn skill"
+        assert any(isinstance(message, UserMessage) and user_text(message) == task for message in context.messages)
+        assert any(isinstance(message, UserMessage) and user_text(message) == task for message in agent.messages)
+        assert all(turn_body not in str(message.content) for message in agent.messages)
+        assert agent.state.system_prompt == prefix
+        assert agent.active_skills == (("fixed",) if fixed_body is not None else ())
+        if fixed_body is not None:
+            assert fixed_body in str(context.system_prompt), "session instructions survive turn-skill retirement"
+            assert all(fixed_body not in str(message.content) for message in context.messages)
+
+
+async def test_a_turn_scoped_skill_goes_after_the_prefix(tmp_path: Path) -> None:
+    """A transient body reaches the model once, without canonical history or cache churn."""
+    await _assert_turn_skill_at_model_boundary(tmp_path, turn_body="JUST THIS TURN")
+
+
+async def test_both_kinds_can_be_given_at_once(tmp_path: Path) -> None:
+    """Session instructions stay in the prefix as request-local turn instructions retire."""
+    await _assert_turn_skill_at_model_boundary(tmp_path, turn_body="FOR NOW", fixed_body="ALWAYS")
 
 
 def test_no_skills_changes_nothing(tmp_path: Path) -> None:

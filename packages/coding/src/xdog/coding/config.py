@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 
 MONOREPO_NAME = "xdog"
 APP_NAME = "coding"
-VERSION = "2.3.2"
+VERSION = "2.4.0"
 PROJECT_DIR_NAME = ".coding"
 ENV_OVERRIDE = "CODING_DIR"
 

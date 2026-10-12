@@ -30,13 +30,21 @@ class _CapturingAgent:
         config = kwargs.get("config")
         _CapturingAgent.prompt_seen = str(getattr(config, "system_prompt", "") or "")
         self._kwargs = kwargs
+        self.closed = False
 
     @property
     def state(self) -> Any:
         raise AssertionError("not reached")
 
     def dump(self) -> dict[str, Any]:
+        assert not self.closed, "runner must dump before closing its Agent"
         return {}
+
+    async def wait_for_idle(self) -> None:
+        pass
+
+    async def aclose(self) -> None:
+        self.closed = True
 
     async def prompt(self, text: str) -> Any:
         class _Empty:

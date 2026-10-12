@@ -19,10 +19,6 @@ standard actually recommends — resolve too, with no change to the skill.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from xdog.agent.skills.types import Skill
 from pathlib import Path
 
 from xdog.agent.skills.types import Skill

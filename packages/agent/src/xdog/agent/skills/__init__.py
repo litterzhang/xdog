@@ -40,11 +40,13 @@ from xdog.agent.skills.render import (
     resolve_skills,
     skills_preamble,
 )
+from xdog.agent.skills.tool import create_skill_tool
 from xdog.agent.skills.types import Skill
 
 __all__ = [
     "Skill",
     "SkillManager",
+    "create_skill_tool",
     "load_packaged_skill",
     "packaged_skills",
     "render_skill_body",

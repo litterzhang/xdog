@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import (
+    TYPE_CHECKING,
     Any,
     Awaitable,
     Callable,
@@ -18,6 +19,9 @@ from typing import (
     Union,
     runtime_checkable,
 )
+
+if TYPE_CHECKING:
+    from xdog.agent.compaction import CompactionConfig
 
 from xdog.ai.types import (
     AssistantMessage,
@@ -232,6 +236,14 @@ class AgentConfig:
 
     # Streaming options (temperature, thinking, max_tokens, etc.)
     options: StreamOptions = field(default_factory=StreamOptions)
+
+    # Compaction remains disabled unless explicitly opted in by this host.
+    compaction: CompactionConfig | None = None
+
+    # High-level event delivery. Backpressure, not a run/token limit.
+    event_buffer_size: int = 256
+    emit_snapshots: bool = False
+    """Opt-in immutable safe-boundary observations, not persistence barriers."""
 
     # Behavioral settings
     tool_execution: ToolExecutionMode = "parallel"

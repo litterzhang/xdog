@@ -12,6 +12,9 @@ from xdog.agent import AgentEvent, AgentMessage
 from xdog.agent.events import (
     AgentEndEvent,
     AgentStartEvent,
+    CompactionEndEvent,
+    CompactionFailedEvent,
+    CompactionStartEvent,
     InputConsumedEvent,
     InputHandledEvent,
     InputRejectedEvent,
@@ -19,11 +22,13 @@ from xdog.agent.events import (
     MessageEndEvent,
     MessageStartEvent,
     MessageUpdateEvent,
+    SnapshotEvent,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
     ToolExecutionUpdateEvent,
     TurnEndEvent,
     TurnStartEvent,
+    UsageEvent,
 )
 from xdog.ai.types import ImageContent, TextContent
 from xdog.coding.core.agent_session import AgentSession
@@ -80,7 +85,7 @@ class RpcEvents:
                 payload = {'event': event.type, 'data': {}, 'limited': True}
             if payload is not None:
                 if len(json.dumps(payload, ensure_ascii=True, allow_nan=False).encode()) > MAX_EVENT_BYTES // 2:
-                    payload = {'event': event.type, 'data': {}, 'limited': True}
+                    payload = {**payload, 'data': {}, 'limited': True}
                 with self._lock:
                     if self._pending >= 32:
                         self._limited = True
@@ -134,9 +139,52 @@ def _message(message: AgentMessage | None) -> dict[str, Any] | None:
     return value
 
 
+def _sdk_metadata(event: AgentEvent) -> dict[str, Any]:
+    """SDK identity is separate from the RPC session lease/delivery sequence.
+
+    Bound identity strings independently so payload-size fallback can retain
+    correlation without retaining oversized data or unbounded identifiers.
+    """
+    if (any(not isinstance(value, str) or len(value) > 256 for value in (event.session_id, event.run_id))
+            or type(event.sequence) is not int or event.sequence < 0):
+        raise ValueError('Invalid SDK event identity')
+    return {'session_id': safe_json(event.session_id), 'run_id': safe_json(event.run_id), 'sequence': event.sequence}
+
+
 def _payload(event: AgentEvent) -> dict[str, Any] | None:
     data: dict[str, Any]
-    if isinstance(event, ToolExecutionStartEvent):
+    if isinstance(event, (CompactionStartEvent, CompactionEndEvent, CompactionFailedEvent)):
+        if type(event.automatic) is not bool:
+            raise ValueError('Invalid SDK compaction metadata')
+    if isinstance(event, CompactionEndEvent) and (type(event.generation) is not int or event.generation < 0):
+        raise ValueError('Invalid SDK compaction generation')
+    if isinstance(event, UsageEvent):
+        # Do not recursively serialize SDK dataclasses or apply key-based token
+        # redaction to numeric token counters. Explicit numeric fields only.
+        counters = {key: getattr(event.usage, key) for key in
+                    ('input', 'output', 'cache_read', 'cache_write', 'total_tokens')}
+        cost = {key: getattr(event.usage.cost, key)
+                for key in ('input', 'output', 'cache_read', 'cache_write', 'total')}
+        if (any(type(value) is not int or value < 0 for value in counters.values())
+                or any(type(value) not in (int, float) or value < 0 for value in cost.values())
+                or event.source not in ('model', 'compaction') or not isinstance(event.model, str)):
+            raise ValueError('Invalid SDK usage event')
+        json.dumps(cost, allow_nan=False)
+        data = {'source': event.source, 'model': safe_json(event.model), 'usage': {**counters, 'cost': cost}}
+    elif isinstance(event, CompactionStartEvent):
+        data = {'automatic': event.automatic}
+    elif isinstance(event, CompactionEndEvent):
+        data = {'automatic': event.automatic, 'generation': event.generation,
+                'removed_message_count': len(event.removed_messages), 'summary_omitted': True}
+    elif isinstance(event, CompactionFailedEvent):
+        # Summary/error prose can contain arbitrary sensitive history, not merely
+        # recognizable credential patterns. Keep observations metadata-only.
+        data = {'automatic': event.automatic, 'error_omitted': True}
+    elif isinstance(event, SnapshotEvent):
+        # Do not even parse snapshot_json/access snapshot: opt-in transient
+        # events grant neither canonical history nor persistence/credential data.
+        data = {'snapshot_omitted': True}
+    elif isinstance(event, ToolExecutionStartEvent):
         data = {'call_id': event.tool_call_id, 'tool': event.tool_name, 'arguments': safe_json(event.args)}
     elif isinstance(event, ToolExecutionUpdateEvent):
         result = event.partial_result
@@ -178,4 +226,4 @@ def _payload(event: AgentEvent) -> dict[str, Any] | None:
         data = {}  # Never copy the whole canonical history into an agent-end event.
     else:
         return None
-    return {'event': event.type, 'data': data}
+    return {'event': event.type, 'data': data, 'sdk': _sdk_metadata(event)}

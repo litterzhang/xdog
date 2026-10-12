@@ -103,7 +103,7 @@ async def test_actual_skill_controls_owned_prefix_turn_context_expiration_no_aut
                    and (not ui._worker_active if kind == 'coding' else ui._active_run_id is None))
         assert 'SESSION-GUARD-BODY' in str(calls[0].system_prompt)
         assert 'TURN-ONLY-BODY' not in str(calls[0].system_prompt)
-        assert 'TURN-ONLY-BODY' in str(calls[0].messages)
+        assert str(calls[0].messages).count('TURN-ONLY-BODY') == 1
         assert 'TURN-ONLY-BODY' not in str(session.agent.state.messages)
         assert 'SESSION-GUARD-BODY' in str(session.agent.state.system_prompt)
         ui._handle_submit('next turn')
@@ -121,13 +121,18 @@ async def test_actual_skill_controls_owned_prefix_turn_context_expiration_no_aut
             if kind == 'coding':
                 with pytest.raises(RuntimeError, match='offline preparation'):
                     await session.send_message('failed attempted turn')
-                assert session.active_skills == frozenset()
+                assert session.active_skills == frozenset({'once'})
             else:
                 from xdog.claw.core.types import UserInput
                 result = await session.run_turn(UserInput(group_id='main', content='failed attempted turn'))
                 assert result.error == 'offline preparation failure'
-                assert session._active_skills == frozenset()
+                assert session._active_skills == frozenset({'once'})
         assert len(calls) == 2
+        ui._handle_submit('retry selected skill after preparation failure')
+        await wait(lambda: len(calls) == 3
+                   and (not ui._worker_active if kind == 'coding' else ui._active_run_id is None))
+        assert str(calls[2].messages).count('TURN-ONLY-BODY') == 1
+        assert session.agent.active_skills == ()
         if kind == 'coding':
             assert session.permissions.mode == 'deny'
         else:

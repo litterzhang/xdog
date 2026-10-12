@@ -19,18 +19,31 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import inspect
+import json
 import logging
 import threading
+import uuid
 from collections.abc import Awaitable, Mapping, Sequence
+from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from xdog.agent.skills.manager import SkillManager
     from xdog.agent.skills.types import Skill
 from dataclasses import replace
-from typing import Any, Callable
+from typing import Any, Callable, TypeVar
 
 from xdog.agent.agent_loop import run_agent_loop, run_agent_loop_continue
+from xdog.agent.compaction import (
+    SUMMARY_TEMPLATE,
+    CompactionConfig,
+    CompactionError,
+    CompactionResult,
+    plan_compaction,
+    resolve_compaction_budget,
+    summarize_compaction,
+)
 from xdog.agent.core import (
     AgentConfig,
     AgentContext,
@@ -39,6 +52,7 @@ from xdog.agent.core import (
     AgentTool,
     CustomAgentMessage,
     EmbedFn,
+    ModelStreamFn,
     QueueMode,
     StreamFn,
     ToolExecutionMode,
@@ -48,6 +62,9 @@ from xdog.agent.event_stream import AgentEventStream
 from xdog.agent.events import (
     AgentEndEvent,
     AgentEvent,
+    CompactionEndEvent,
+    CompactionFailedEvent,
+    CompactionStartEvent,
     InputConsumedEvent,
     InputHandledEvent,
     InputRejectedEvent,
@@ -55,12 +72,23 @@ from xdog.agent.events import (
     MessageEndEvent,
     MessageStartEvent,
     MessageUpdateEvent,
+    SnapshotEvent,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
     TurnEndEvent,
+    UsageEvent,
 )
 from xdog.agent.input_queue import Delivery, QueuedInput
-from xdog.agent.messages import dicts_to_messages, messages_to_dicts
+from xdog.agent.messages import dicts_to_messages
+from xdog.agent.snapshots import (
+    CompactionSnapshot,
+    InterruptedTool,
+    capture_skill_snapshots,
+    decode_legacy_snapshot,
+    decode_snapshot,
+    encode_snapshot,
+    validate_skill_bindings,
+)
 from xdog.agent.types import (
     AfterToolCallFn,
     AgentLoopConfig,
@@ -72,20 +100,29 @@ from xdog.agent.types import (
 )
 from xdog.ai.types import (
     AssistantMessage,
+    Context,
     ImageContent,
     Message,
     StreamOptions,
     SystemPromptBlock,
     TextContent,
+    Tool,
+    ToolCall,
+    ToolResultMessage,
     UserMessage,
 )
 
 logger = logging.getLogger(__name__)
 
+# Tool/hook child tasks inherit the run owner, preventing self-await shutdown.
+_running_agent: ContextVar[Agent | None] = ContextVar("xdog_running_agent", default=None)
+
 
 # ---------------------------------------------------------------------------
 # Type aliases
 # ---------------------------------------------------------------------------
+
+_EventT = TypeVar("_EventT", bound=AgentEvent)
 
 EventListener = Callable[[AgentEvent], None]
 """Synchronous callback invoked for every agent lifecycle event."""
@@ -97,10 +134,10 @@ EventListener = Callable[[AgentEvent], None]
 
 def _place_skills(
     manager: "SkillManager | None", active: "Sequence[str]"
-) -> "tuple[str, str, list[Skill]]":
+) -> "tuple[str, str, list[Skill], dict[str, Skill]]":
     """Decide where each part of the skill story goes. The one place that does.
 
-    Returns ``(index, fixed_bodies, transient)``:
+    Returns ``(index, fixed_bodies, transient, resolved)``:
 
     * **index** — one line per skill on disk. Small, and the same for every
       request, so it belongs at the very front of the system prompt where the
@@ -117,7 +154,7 @@ def _place_skills(
     workflow, coding and claw in their group and shared directories.
     """
     if manager is None:
-        return "", "", []
+        return "", "", [], {}
     index = ""
     try:
         summary = manager.skills_summary()
@@ -134,7 +171,7 @@ def _place_skills(
         if skill is not None:
             resolved.append(skill)
     fixed = _skill_preamble([sk for sk in resolved if not sk.expires_after_turn])
-    return index, fixed, [sk for sk in resolved if sk.expires_after_turn]
+    return index, fixed, [sk for sk in resolved if sk.expires_after_turn], {sk.slug: sk for sk in resolved}
 
 
 def _skill_preamble(skills: "Sequence[Skill]") -> str:
@@ -222,6 +259,16 @@ class Agent:
         input_settled: Callable[[tuple[QueuedInput, ...]], Awaitable[None]] | None = None,
     ) -> None:
         cfg = config or AgentConfig()
+        if type(cfg.event_buffer_size) is not int or cfg.event_buffer_size <= 0:
+            raise ValueError("event_buffer_size must be a positive integer")
+        self._event_buffer_size = cfg.event_buffer_size
+        if type(cfg.emit_snapshots) is not bool:
+            raise ValueError("emit_snapshots must be a boolean")
+        self._emit_snapshots = cfg.emit_snapshots
+        self._session_id = uuid.uuid4().hex
+        self._run_id = ""
+        self._event_sequence = 0
+        self._end_emitted = False
         self._input_transform = input_transform
         self._input_settled = input_settled
         self._input_checkpoint: Callable[[AgentEvent], Awaitable[None]] | None = None
@@ -249,7 +296,7 @@ class Agent:
         # beside its workflow and in installed packages, coding looks in its
         # group and shared directories. Placement is the same everywhere.
         _base_prompt = cfg.system_prompt
-        _index, _fixed_preamble, _transient = _place_skills(skills, active_skills)
+        _index, _fixed_preamble, _transient, _resolved = _place_skills(skills, active_skills)
         _front = _index + _fixed_preamble
         if _front:
             prompt = ((SystemPromptBlock(text=_front, cache=True), *_base_prompt)
@@ -283,11 +330,22 @@ class Agent:
         self._skills = skills
         self._index = _index
         self._fixed_preamble = _fixed_preamble
+        self._active_skill_slugs = tuple(dict.fromkeys(active_skills))
+        self._turn_skills = tuple(_transient)
+        self._resolved_skills = _resolved
+        self._compaction_state = CompactionSnapshot()
+        self._compaction_config = cfg.compaction or CompactionConfig()
+        self._compaction_task: asyncio.Task[CompactionResult | None] | None = None
+        self._compacting = False
+        self._active_turn_slugs: tuple[str, ...] = ()
+        self._resume_turn_skills: tuple[Skill, ...] = ()
+        self._restored_run_active = False
+        self._unconfirmed_tools: dict[str, str] = {}
         self._state = AgentState(
             system_prompt=cfg.system_prompt,
             model=cfg.model,
             tools=tuple(tools_list),
-            messages=_transient_messages(_transient),
+            messages=(),
         )
 
         self._active_tool_names: frozenset[str] | None = None
@@ -325,12 +383,80 @@ class Agent:
         self._current_stream: AgentEventStream[AgentEvent] | None = None
         self._producer_task: asyncio.Task[None] | None = None
         self._producer_started = asyncio.Event()
+        self._closing = False
+        self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
+        self._stream_cleanup_errors: list[Exception] = []
 
         # Idle tracking (for wait_for_idle)
         self._idle_event = asyncio.Event()
         self._idle_event.set()  # starts idle
 
     # -- Public properties ---------------------------------------------------
+
+    @property
+    def session_id(self) -> str:
+        """Data identity for the conversation; not an execution lease."""
+        return self._session_id
+
+    @property
+    def run_id(self) -> str:
+        """Most recent run identity, empty before the first run."""
+        return self._run_id
+
+    @property
+    def closed(self) -> bool:
+        """Whether owned runtime cleanup has completed, not merely been requested."""
+        return self._closed
+
+    def _ensure_open(self) -> None:
+        if self._stream_cleanup_errors:
+            raise RuntimeError("Agent stream cleanup is incomplete; cannot start new work")
+        if self._closing or self._closed:
+            raise RuntimeError("Agent is closing or closed")
+
+    async def __aenter__(self) -> Agent:
+        self._ensure_open()
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+        await self.aclose()
+
+    async def aclose(self) -> None:
+        """Permanently stop this agent and await its owned run's cleanup.
+
+        Call from the host, not a tool/hook running inside this agent (which
+        would await itself). A cancelled caller does not cancel cleanup; another
+        aclose() can await the same task. Shared provider adapters are not owned
+        by the Agent and are never closed here. Uncooperative tools must be
+        isolated by the host: this method cannot forcibly kill native code.
+        """
+        producer = self._producer_task
+        if producer is not None and not producer.done():
+            if producer.get_loop() is not asyncio.get_running_loop():
+                raise RuntimeError("Agent close must run on its owning loop")
+            if _running_agent.get() is self:
+                raise RuntimeError("Cannot await Agent close from its own run; ask the host to close it")
+        if self._closed:
+            return
+        if self._close_task is None:
+            self._closing = True  # Close admission before yielding to any task.
+            self.abort()
+            self._close_task = asyncio.create_task(self._close_owned_runtime())
+        await asyncio.shield(self._close_task)
+
+    async def _close_owned_runtime(self) -> None:
+        await self.cancel_and_wait()
+        compact_task = self._compaction_task
+        if compact_task is not None and not compact_task.done():
+            if not compact_task.cancelling():
+                compact_task.cancel()
+            await asyncio.gather(compact_task, return_exceptions=True)
+        if self._stream_cleanup_errors:
+            raise RuntimeError("Agent stream cleanup is incomplete") from self._stream_cleanup_errors[0]
+        self.clear_all_queues()
+        self._listeners.clear()
+        self._closed = True
 
     @property
     def state(self) -> AgentState:
@@ -405,15 +531,23 @@ class Agent:
         self._base_system_prompt = prompt
         self._recompose_system_prompt()
 
-    def set_active_skills(self, slugs: "Sequence[str]") -> None:
-        """Replace the skills whose instructions are in effect.
+    @property
+    def active_skills(self) -> tuple[str, ...]:
+        """Host-selected skill slugs; used turn skills retire when their run settles."""
+        return self._active_skill_slugs
 
-        One implementation of "where does a skill go", for every product. A
-        caller that lets a user activate and drop skills — coding's `/slug` and
-        `/unload` — calls this instead of rendering them into its own prompt, so
-        removal keeps working and the placement decision stays in one place.
+    def set_active_skills(self, slugs: "Sequence[str]") -> None:
+        """Replace idle skill selection; turn bodies belong to the next user prompt run.
+
+        A run includes all its tool rounds and queued continuations. No model entry
+        means no consumption. Skills never become persisted anonymous user history.
         """
-        self._index, self._fixed_preamble, _ = _place_skills(self._skills, slugs)
+        if self._state.is_streaming or not self._idle_event.is_set():
+            raise RuntimeError("Cannot change active skills during an active run")
+        selected = tuple(dict.fromkeys(slugs))
+        self._index, self._fixed_preamble, transient, self._resolved_skills = _place_skills(self._skills, selected)
+        self._active_skill_slugs = selected
+        self._turn_skills = tuple(transient)
         self._recompose_system_prompt()
 
     def _recompose_system_prompt(self) -> None:
@@ -598,6 +732,8 @@ class Agent:
     def replace_messages(self, messages: list[AgentMessage]) -> None:
         """Replace the entire message history."""
         self._update_state(messages=tuple(messages))
+        self._unconfirmed_tools.clear()
+        self._compaction_state = CompactionSnapshot()
 
     def append_message(self, message: AgentMessage) -> None:
         """Append a single message to the history."""
@@ -606,65 +742,263 @@ class Agent:
     def clear_messages(self) -> None:
         """Clear the message history."""
         self._update_state(messages=())
+        self._unconfirmed_tools.clear()
+        self._compaction_state = CompactionSnapshot()
+
+    # -- Built-in compaction --------------------------------------------------
+
+    async def compact(self, instructions: str = "") -> CompactionResult | None:
+        """Manually apply Coding's built-in policy at an idle owned boundary.
+
+        Does not enable auto mode. The returned removed history is data for the
+        host to archive, not a persistence ACK. Shared provider clients stay open.
+        """
+        self._ensure_open()
+        if not self._idle_event.is_set() or self._compacting:
+            raise RuntimeError("Manual compaction requires an idle Agent")
+        if self._unfinished_tools():
+            raise RuntimeError("Unconfirmed tools require reconciliation before compaction")
+        self._idle_event.clear()
+        self._compacting = True
+
+        async def perform() -> CompactionResult | None:
+            try:
+                messages = list(self._state.messages)
+                if self._transform_context is not None:
+                    messages = await self._transform_context(messages)
+                converter = self._convert_to_llm or _default_convert_to_llm
+                projected = converter(messages)
+                if inspect.isawaitable(projected):
+                    projected = await projected
+                tools = self.active_tools if self._supports_tool_calls is not False else ()
+                context = Context(system_prompt=self._state.system_prompt, messages=tuple(projected),
+                                  tools=tuple(Tool(name=t.name, description=t.description, parameters=t.parameters)
+                                              for t in tools))
+                return await self._compact_context(context, automatic=False, instructions=instructions)
+            finally:
+                self._compacting = False
+                self._idle_event.set()
+
+        self._compaction_task = asyncio.create_task(perform())
+        try:
+            return await self._compaction_task
+        finally:
+            # If cancelled before the task's first instruction, its finally
+            # never ran. Admission must still become idle, never remain wedged.
+            if self._compaction_task.done():
+                self._compacting = False
+                self._idle_event.set()
+
+    async def _observe(self, event: AgentEvent) -> None:
+        event = self._emit(event)
+        if self._current_stream is not None and not self._current_stream.closed:
+            try:
+                await self._current_stream.send(event)
+            except asyncio.CancelledError:
+                self._current_stream.send_cleanup(event)
+                raise
+
+    def _observe_cleanup(self, event: AgentEvent) -> None:
+        event = self._emit(event)
+        if self._current_stream is not None and not self._current_stream.closed:
+            self._current_stream.send_cleanup(event)
+
+    async def _compact_context(
+        self, request: Context, *, automatic: bool,
+        loop_context: AgentContext | None = None, prefix: tuple[UserMessage, ...] = (),
+        instructions: str = "",
+    ) -> CompactionResult | None:
+        cfg = self._compaction_config
+        original = self._state.messages
+        if not original:
+            return None
+        options, model, adapter = self._options, self._state.model, self._stream_fn
+        try:
+            metadata = adapter.resolve_model(model) if isinstance(adapter, ModelStreamFn) else None
+            budget = resolve_compaction_budget(metadata, options, context_window=cfg.context_window,
+                                               max_prompt_tokens=cfg.max_prompt_tokens,
+                                               output_reserve=cfg.output_reserve, safety_margin=cfg.safety_margin)
+            # Arbitrary host transforms cannot safely be inverted. Accept only
+            # an aligned projection; never guess which canonical data to drop.
+            projections = tuple(tuple(_default_convert_to_llm([message])) for message in original)
+            plan = plan_compaction(original, context=request, budget=budget, force=not automatic,
+                                   generation=self._compaction_state.generation, projections=projections,
+                                   prefix_messages=prefix, options=options)
+            if plan is None:
+                return None
+            await self._observe(CompactionStartEvent(automatic=automatic))
+            result = await summarize_compaction(plan, adapter, model, options=options,
+                                               instructions=instructions or cfg.instructions)
+            if self._closing or self._cancel.is_set() and automatic:
+                raise asyncio.CancelledError
+            if (self._state.messages != plan.original_messages or self._state.system_prompt != request.system_prompt
+                    or self._state.model != model or self._stream_fn is not adapter or self._options != options):
+                raise RuntimeError("Compaction source changed before commit; original history retained")
+            # Commit both views without an intervening await. Product persistence
+            # stays in its host adapter; this is only an in-memory transition.
+            self._update_state(messages=result.messages)
+            if loop_context is not None:
+                loop_context.messages[:] = result.messages
+            self._compaction_state = CompactionSnapshot(
+                generation=result.metadata.generation, summary=result.summary,
+                compacted_messages=self._compaction_state.compacted_messages + len(result.removed_messages))
+        except asyncio.CancelledError:
+            self._observe_cleanup(CompactionFailedEvent(error="Compaction cancelled; original history retained",
+                                                       automatic=automatic))
+            raise
+        except Exception as exc:
+            if isinstance(exc, CompactionError) and exc.cleanup_failed:
+                self._stream_cleanup_errors.append(exc)
+            await self._observe(CompactionFailedEvent(error=str(exc), automatic=automatic))
+            if isinstance(exc, CompactionError) and (exc.usage.total_tokens or exc.usage.input or exc.usage.output):
+                await self._observe(UsageEvent(usage=exc.usage, model=model, source="compaction"))
+            raise
+        ending = False
+        try:
+            await self._observe(UsageEvent(usage=result.usage, model=model, source="compaction"))
+            ending = True
+            await self._observe(CompactionEndEvent(summary=result.summary, removed_messages=result.removed_messages,
+                                                 generation=result.metadata.generation, automatic=automatic))
+        except asyncio.CancelledError:
+            # A committed compaction is not a failed compaction. Keep its
+            # original-history export available even when the consumer stalls.
+            if not ending:
+                self._observe_cleanup(CompactionEndEvent(summary=result.summary,
+                    removed_messages=result.removed_messages, generation=result.metadata.generation,
+                    automatic=automatic))
+            raise
+        return result
 
     # -- Session dump / restore ----------------------------------------------
 
-    def dump(self) -> dict[str, Any]:
-        """This agent's resumable context, as plain JSON — its session.
+    def _unfinished_tools(self) -> dict[str, str]:
+        pending: dict[str, str] = {}
+        for message in self._state.messages:
+            if isinstance(message, AssistantMessage):
+                for part in message.content:
+                    if isinstance(part, ToolCall):
+                        pending[part.id] = part.name
+            elif isinstance(message, ToolResultMessage):
+                pending.pop(message.tool_call_id, None)
+        return {**pending, **self._unconfirmed_tools}
 
-        An `Agent` instance *is* a session, so this is a projection of the state
-        it already owns rather than a second copy kept in step with it. What
-        comes back is what `restore` needs and nothing more: the history, what
-        the agent was told, which model, and the value half of its options.
+    def dump(self, *, recovery: bool = False) -> dict[str, Any]:
+        """Export a versioned JSON-only session, without runtime dependencies.
 
-        Two things are deliberately absent. `StreamOptions.cancel` is an
-        `asyncio.Event` — a live handle, not a value. Tools are callables handed
-        in at construction; a caller that restores a session supplies its own,
-        and flow re-resolves them per node regardless.
+        Ordinary export requires an idle, completely settled history. Explicit
+        recovery export also permits an interrupted/busy state, but is marked
+        non-resumable: it never authorizes replay of uncertain side effects.
+        The host saves the returned data; there is no persistence event or ACK.
+        Dump remains available after aclose(), which is not serialized.
         """
-        prompt = self._state.system_prompt
-        options = self._options
-        return {
-            "messages": messages_to_dicts(list(self._state.messages)),
-            "system_prompt": (
-                prompt
-                if isinstance(prompt, str) or prompt is None
-                else [{"text": b.text, "cache": b.cache} for b in prompt]
-            ),
-            "model": self._state.model,
-            "thinking": options.thinking,
-            "temperature": options.temperature,
-            "max_tokens": options.max_tokens,
-        }
+        busy = not self._idle_event.is_set()
+        pending = self._unfinished_tools()
+        if not recovery and (busy or pending):
+            raise RuntimeError("Session is not at a safe snapshot boundary; use dump(recovery=True) for diagnosis")
+        return self._snapshot_data(recovery=recovery, run_active=busy or self._restored_run_active)
 
-    def restore(self, session: Mapping[str, Any]) -> None:
-        """Adopt a dumped session.
+    def _snapshot_data(self, *, recovery: bool = False, run_active: bool = False) -> dict[str, Any]:
+        pending = self._unfinished_tools()
+        active = self._active_turn_slugs or tuple(skill.slug for skill in self._resume_turn_skills)
+        turn_skills = self._turn_skills if run_active or not active else ()
+        skills = capture_skill_snapshots(self._active_skill_slugs, turn_skills, self._resolved_skills,
+                                         active_turn_slugs=active if run_active else ())
+        state = self._state if recovery else replace(self._state, is_streaming=False, stream_message=None,
+                                                     pending_tool_calls=frozenset())
+        return encode_snapshot(
+            state, base_system_prompt=self._base_system_prompt,
+            options=self._options, skills=skills, compaction=self._compaction_state,
+            settings={"tool_execution": self._tool_execution, "steering_mode": self._steering_mode.value,
+                      "follow_up_mode": self._follow_up_mode.value},
+            session_id=self._session_id, run_id=self._run_id or None, run_active=run_active,
+            interrupted=recovery or bool(pending),
+            interrupted_tools=tuple(InterruptedTool(call_id, name) for call_id, name in pending.items()),
+        )
 
-        Absent keys leave the corresponding state untouched, so a partial dump
-        is a partial restore rather than a silent reset to defaults.
+    def restore(self, session: Mapping[str, Any], *, allowed_models: Sequence[str] | None = None) -> None:
+        """Validate then atomically adopt data; do not start a model or execute tools.
+
+        Versionless old snapshots retain partial-patch semantics. New snapshots
+        bind skills through this Agent's trusted manager and keep its tools,
+        permissions, provider and runtime resources. An optional host model
+        allowlist restricts the saved model; metadata-capable adapters must also
+        recognize it. Neither snapshots nor model IDs confer provider authority.
         """
-        if "messages" in session:
-            self.replace_messages(dicts_to_messages(list(session["messages"] or [])))
+        self._ensure_open()
+        if not self._idle_event.is_set():
+            raise RuntimeError("Cannot restore during an active run")
+        raw = dict(session)
+        versioned = "format" in raw or "version" in raw
+        if not versioned:
+            values = decode_legacy_snapshot(raw).values
+            model = values.get("model") or self._state.model
+            self._validate_restored_model(model, allowed_models)
+            # All data is validated before changing the Agent. Legacy composed
+            # skill prefixes cannot be separated reliably; no fidelity invented.
+            messages = (tuple(dicts_to_messages(values["messages"] or []))
+                        if "messages" in values else self._state.messages)
+            prompt = values.get("system_prompt", self._base_system_prompt)
+            if isinstance(prompt, list):
+                prompt = tuple(SystemPromptBlock(text=b["text"], cache=b.get("cache", False)) for b in prompt)
+            options = replace(self._options, **{key: values[key] for key in
+                              ("thinking", "temperature", "max_tokens") if key in values})
+            self._base_system_prompt = prompt
+            self._options = options
+            self._update_state(messages=messages, model=model)
+            self._recompose_system_prompt()
+            if "messages" in values:
+                self._unconfirmed_tools.clear()
+                self._compaction_state = CompactionSnapshot()
+            return
 
-        if "system_prompt" in session:
-            raw_prompt = session["system_prompt"]
-            self.set_system_prompt(
-                tuple(SystemPromptBlock(text=b["text"], cache=b.get("cache", False)) for b in raw_prompt)
-                if isinstance(raw_prompt, list)
-                else raw_prompt
-            )
+        candidate = decode_snapshot(raw)
+        candidate.require_resumable()
+        if candidate.compaction.generation:
+            expected = SUMMARY_TEMPLATE.format(summary=candidate.compaction.summary)
+            if (not candidate.messages or not isinstance(candidate.messages[0], UserMessage)
+                    or candidate.messages[0].content != expected):
+                raise ValueError("Compaction summary does not match the saved working history")
+        self._validate_restored_model(candidate.model, allowed_models)
+        bindings = {}
+        for record in candidate.skills:
+            if record.lifecycle != "consumed":
+                bindings[record.slug] = self._skills.load_skill(record.slug) if self._skills is not None else None
+        skills = validate_skill_bindings(candidate, bindings)
+        fixed = _skill_preamble([skill for skill in skills if not skill.expires_after_turn])
+        # Keep runtime-only options (including host credentials/headers/cancel)
+        # from the current host; restore only the decoder's explicit whitelist.
+        option_fields = raw["options"]
+        options = replace(self._options, **{key: getattr(candidate.options, key) for key in option_fields})
+        settings = candidate.settings
+        self._base_system_prompt = candidate.base_system_prompt
+        self._fixed_preamble = fixed
+        self._resolved_skills = {skill.slug: skill for skill in skills}
+        self._active_skill_slugs = tuple(skill.slug for skill in skills)
+        pending_slugs = {record.slug for record in candidate.skills if record.lifecycle == "pending"}
+        active_slugs = {record.slug for record in candidate.skills
+                        if record.scope == "turn" and record.lifecycle == "active"}
+        self._turn_skills = tuple(skill for skill in skills if skill.slug in pending_slugs)
+        self._resume_turn_skills = tuple(skill for skill in skills if skill.slug in active_slugs)
+        self._restored_run_active = candidate.run_active
+        self._compaction_state = candidate.compaction
+        self._session_id = candidate.session_id or self._session_id
+        self._run_id = candidate.run_id or ""
+        self._event_sequence = 0
+        self._options = options
+        self._tool_execution = settings.get("tool_execution", self._tool_execution)  # type: ignore[assignment]
+        self._steering_mode = QueueMode(settings.get("steering_mode", self._steering_mode.value))
+        self._follow_up_mode = QueueMode(settings.get("follow_up_mode", self._follow_up_mode.value))
+        self._unconfirmed_tools.clear()
+        self.clear_all_queues()
+        self._update_state(messages=candidate.messages, model=candidate.model, error=candidate.error,
+                           stream_message=None, pending_tool_calls=frozenset())
+        self._recompose_system_prompt()
 
-        if session.get("model"):
-            self.set_model(str(session["model"]))
-
-        option_keys = ("thinking", "temperature", "max_tokens")
-        if any(key in session for key in option_keys):
-            self.set_options(
-                replace(
-                    self._options,
-                    **{key: session[key] for key in option_keys if key in session},
-                )
-            )
+    def _validate_restored_model(self, model: str, allowed_models: Sequence[str] | None) -> None:
+        if allowed_models is not None and model not in allowed_models:
+            raise ValueError("Saved model is not allowed by the current host")
+        if model and isinstance(self._stream_fn, ModelStreamFn) and self._stream_fn.resolve_model(model) is None:
+            raise ValueError("Saved model is unavailable on the current host adapter")
 
     def reset(self) -> None:
         """Reset the agent to a clean state (messages, error, streaming)."""
@@ -676,6 +1010,8 @@ class Agent:
             pending_tool_calls=frozenset(),
         )
         self.clear_all_queues()
+        self._unconfirmed_tools.clear()
+        self._compaction_state = CompactionSnapshot()
 
     # -- Queue management ----------------------------------------------------
 
@@ -712,13 +1048,18 @@ class Agent:
 
         return unsubscribe
 
-    def _emit(self, event: AgentEvent) -> None:
-        """Dispatch an event to all registered listeners."""
+    def _emit(self, event: _EventT) -> _EventT:
+        """Correlate and dispatch an observation; callbacks are not storage ACKs."""
+        self._event_sequence += 1
+        event = replace(event, session_id=self._session_id, run_id=self._run_id, sequence=self._event_sequence)
+        if isinstance(event, AgentEndEvent):
+            self._end_emitted = True
         for listener in self._listeners:
             try:
                 listener(event)
             except Exception:
                 logger.exception("Error in agent event listener")
+        return event
 
     # -- Prompt / Continue ---------------------------------------------------
 
@@ -741,7 +1082,8 @@ class Agent:
         AgentEventStream[AgentEvent]
             Async iterable of agent lifecycle events.
         """
-        if self._state.is_streaming:
+        self._ensure_open()
+        if self._state.is_streaming or not self._idle_event.is_set():
             raise RuntimeError(
                 "Agent is already processing a prompt. "
                 "Use steer() or follow_up() to queue messages, or wait for completion."
@@ -762,6 +1104,11 @@ class Agent:
         else:
             msgs = [message]
 
+        if self._resume_turn_skills:
+            retired = {skill.slug for skill in self._resume_turn_skills}
+            self._active_skill_slugs = tuple(slug for slug in self._active_skill_slugs if slug not in retired)
+            self._resume_turn_skills = ()
+        self._restored_run_active = False
         return await self._run_loop(msgs, initial_prompt_context=initial_prompt_context)
 
     async def continue_(self) -> AgentEventStream[AgentEvent]:
@@ -771,7 +1118,8 @@ class Agent:
         - If last message is assistant, drains steering queue first, then follow-up.
         - Otherwise, continues from the existing context.
         """
-        if self._state.is_streaming:
+        self._ensure_open()
+        if self._state.is_streaming or not self._idle_event.is_set():
             raise RuntimeError(
                 "Agent is already processing. Wait for completion before continuing."
             )
@@ -794,7 +1142,7 @@ class Agent:
 
             raise RuntimeError("Cannot continue from message role: assistant")
 
-        return await self._run_loop(None)
+        return await self._run_loop(None, input_source="resume" if self._restored_run_active else "continue")
 
     # -- Steering & follow-up ------------------------------------------------
 
@@ -805,6 +1153,7 @@ class Agent:
         skip remaining tool calls, letting the model respond to the
         steering input instead.
         """
+        self._ensure_open()
         if isinstance(message, str):
             msg: AgentMessage = UserMessage(content=message)
         else:
@@ -817,6 +1166,7 @@ class Agent:
         Follow-ups are appended after all tool calls in a turn complete,
         causing the model to continue with the additional context.
         """
+        self._ensure_open()
         if isinstance(message, str):
             msg: AgentMessage = UserMessage(content=message)
         else:
@@ -827,6 +1177,7 @@ class Agent:
                              current: Callable[[], bool], prepare: Callable[[], Awaitable[None]],
                              persist: Callable[[], Awaitable[None]], rejected: Callable[[], None]) -> None:
         """Queue canonical custom data at existing tool boundaries, never user input."""
+        self._ensure_open()
         if (not self.is_streaming or delivery not in {'steer', 'follow_up'} or not current()
                 or len(self._custom_queue) >= 32):
             raise ValueError('Custom delivery requires its original active agent and queue capacity')
@@ -836,6 +1187,7 @@ class Agent:
     def queue_input(self, input_id: str, content: str, delivery: Delivery,
                     images: tuple[ImageContent, ...] = ()) -> QueuedInput:
         """Identify an input on the owning loop; acceptance is not consumption."""
+        self._ensure_open()
         if not input_id or len(input_id) > 128 or input_id in self._identified_inputs:
             raise ValueError("Input ID is missing, too long, or already queued")
         if delivery not in {"steer", "follow_up"} or not (content.strip() or images):
@@ -1058,10 +1410,10 @@ class Agent:
                         if key:
                             self._input_message_ids.pop(id(message), None)
                             self._identified_inputs.pop(key, None)
+                        completed = self._emit(completed)
                         self._handled_inputs.append(completed)
-                        self._emit(completed)
                         if self._current_stream is not None:
-                            self._current_stream.send_sync(completed)
+                            await self._current_stream.send(completed)
                         if key and self._input_settled is not None:
                             await self._input_settled(self.pending_inputs())
                         continue  # Logical handler consumption, never canonical/model input admission.
@@ -1085,9 +1437,9 @@ class Agent:
                     key = self._input_message_ids.get(id(message), "")
                     delivery = self._identified_inputs[key][0].delivery if key else source
                     event = InputRejectedEvent(message, delivery, key)
-                    self._emit(event)
+                    event = self._emit(event)
                     if self._current_stream is not None:
-                        self._current_stream.send_sync(event)
+                        await self._current_stream.send(event)
             raise
         for original, transformed, key, delivery in receipts:
             if key and original is not transformed:
@@ -1097,9 +1449,9 @@ class Agent:
                 self._identified_inputs[key] = item, transformed
             if original != transformed:
                 changed = InputTransformedEvent(original, transformed, delivery, key)
-                self._emit(changed)
+                changed = self._emit(changed)
                 if self._current_stream is not None:
-                    self._current_stream.send_sync(changed)
+                    await self._current_stream.send(changed)
         return prepared
 
     # -- Internal run --------------------------------------------------------
@@ -1113,6 +1465,9 @@ class Agent:
         initial_prompt_context: Callable[[], Awaitable[None]] | None = None,
     ) -> AgentEventStream[AgentEvent]:
         """Build the loop config and start the agent loop."""
+        self._ensure_open()
+        if self._unfinished_tools():
+            raise RuntimeError("Unconfirmed tool history requires host reconciliation before another run")
         loop = asyncio.get_running_loop()
         with self._cancel_lock:
             self._cancel_token += 1
@@ -1123,6 +1478,10 @@ class Agent:
                 self._pending_abort = False
                 self._cancel.set()
             cancel_event = self._cancel
+        if not (input_source == "resume" and self._restored_run_active):
+            self._run_id = uuid.uuid4().hex
+        self._event_sequence = 0
+        self._end_emitted = False
         self._idle_event.clear()
         self._input_rejected = False
 
@@ -1161,18 +1520,51 @@ class Agent:
                 return []
             return await self._prepare_inputs(self._dequeue_steering(), "steer")
 
+        # Capture instruction data once. Projection is request-local and never
+        # appended to canonical history, checkpoints or dumps.
+        turn_snapshot = (self._turn_skills if messages is not None and input_source == "prompt" else
+                         self._resume_turn_skills if input_source == "resume" else ())
+        turn_messages: tuple[UserMessage, ...] = _transient_messages(turn_snapshot) if input_source == "resume" else ()
+        skills_used = False
+
+        async def skill_context(items: list[AgentMessage]) -> list[AgentMessage]:
+            projected: list[AgentMessage] = [*turn_messages, *items]
+            if self._transform_context is not None:
+                return await self._transform_context(projected)
+            return projected
+
+        def model_requested() -> None:
+            nonlocal skills_used
+            if turn_messages:
+                skills_used = True
+                self._active_turn_slugs = tuple(skill.slug for skill in turn_snapshot)
+
+        async def prepare_request(current: AgentContext, request: Context) -> Context:
+            if not self._compaction_config.auto:
+                return request
+            self._compacting = True
+            try:
+                result = await self._compact_context(request, automatic=True, loop_context=current,
+                                                     prefix=turn_messages)
+                return result.context if result is not None else request
+            finally:
+                self._compacting = False
+
         config = AgentLoopConfig(
             tool_execution=self._tool_execution,
             before_tool_call=self._before_tool_call,
             after_tool_call=self._after_tool_call,
             convert_to_llm=self._convert_to_llm or _default_convert_to_llm,
-            transform_context=self._transform_context,
+            transform_context=skill_context,
+            on_model_request=model_requested,
+            prepare_request=prepare_request if self._compaction_config.auto else None,
+            on_stream_close_error=self._stream_cleanup_errors.append,
             get_tools=lambda: self.active_tools if self._supports_tool_calls is not False else (),
             get_steering_messages=_steering_cb,
             get_follow_up_messages=self._get_follow_up_messages,
         )
 
-        stream: AgentEventStream[AgentEvent] = AgentEventStream()
+        stream: AgentEventStream[AgentEvent] = AgentEventStream(self._event_buffer_size)
         self._current_stream = stream
 
         self._producer_started = asyncio.Event()
@@ -1188,7 +1580,7 @@ class Agent:
                 if cancel_event.is_set() or not custom[0]():
                     custom[3]()
                     raise ValueError('Custom queue owner revoked during validation')
-                self._process_loop_event(event, stream)
+                await self._process_loop_event(event, stream)
                 await custom[2]()  # Canonical durability before the next model call.
                 return
             identified = (isinstance(event, MessageEndEvent) and event.message is not None
@@ -1196,16 +1588,19 @@ class Agent:
             if (isinstance(event, MessageEndEvent) and isinstance(event.message, UserMessage)
                     and self._input_checkpoint is not None):
                 await self._input_checkpoint(event)
-            self._process_loop_event(event, stream)
+            await self._process_loop_event(event, stream)
             if identified and self._input_settled is not None:
                 await self._input_settled(self.pending_inputs())
 
         async def _run_and_wrap() -> None:
-            nonlocal skip_steering
+            nonlocal skip_steering, turn_messages
             self._producer_started.set()
+            owner_token = _running_agent.set(self)
             try:
                 if messages is not None:
                     messages_prepared = await self._prepare_inputs(messages, input_source)
+                    if turn_snapshot and any(isinstance(item, UserMessage) for item in messages_prepared):
+                        turn_messages = _transient_messages(turn_snapshot)
                     # Only this originally submitted user prompt may admit a
                     # captured context watermark. Handled/rejected input, queued
                     # replacement input, continue and tool iterations never do.
@@ -1236,7 +1631,7 @@ class Agent:
                             else:
                                 messages_prepared = await self._prepare_inputs(self._dequeue_follow_ups(), "follow_up")
                         if not messages_prepared:
-                            self._process_loop_event(AgentEndEvent(messages=()), stream)
+                            await self._process_loop_event(AgentEndEvent(messages=()), stream)
                             return  # All newly supplied input handled; no old-history model fallback.
                         skip_steering = True  # Already selected this boundary; preserve ONE_AT_A_TIME semantics.
                     await run_agent_loop(
@@ -1277,8 +1672,8 @@ class Agent:
                 error_end = AgentEndEvent(
                     messages=(*self._state.messages,),
                 )
-                self._emit(error_end)
-                await stream.send(error_end)
+                error_end = self._emit(error_end)
+                stream.send_final(error_end)
             finally:
                 with self._cancel_lock:
                     if cancel_token == self._cancel_token:
@@ -1293,13 +1688,24 @@ class Agent:
                     self._follow_up_queue[:] = [item for item in self._follow_up_queue if id(item) != identity]
                     self._custom_queue.pop(identity, None)
                     pending_custom[3]()
+                if skills_used:
+                    retired = {skill.slug for skill in turn_snapshot}
+                    self._turn_skills = tuple(skill for skill in self._turn_skills if skill.slug not in retired)
+                    self._active_skill_slugs = tuple(slug for slug in self._active_skill_slugs if slug not in retired)
+                self._active_turn_slugs = ()
+                if skills_used:
+                    self._resume_turn_skills = ()
+                self._restored_run_active = False
+                if not self._end_emitted:
+                    stream.send_final(self._emit(AgentEndEvent(messages=self._state.messages)))
+                _running_agent.reset(owner_token)
                 self._idle_event.set()
                 await stream.close()
 
         self._producer_task = asyncio.create_task(_run_and_wrap())
         return stream
 
-    def _process_loop_event(
+    async def _process_loop_event(
         self,
         event: AgentEvent,
         stream: AgentEventStream[AgentEvent],
@@ -1319,14 +1725,17 @@ class Agent:
                 if input_id is not None:
                     item, _message = self._identified_inputs.pop(input_id)
                     consumed = InputConsumedEvent(replace(item, selected=False))
-                    self._emit(consumed)
-                    stream.send_sync(consumed)
+                    consumed = self._emit(consumed)
+                    await stream.send(consumed)
 
         elif isinstance(event, ToolExecutionStartEvent):
+            self._unconfirmed_tools[event.tool_call_id] = event.tool_name
             pending = self._state.pending_tool_calls | frozenset({event.tool_call_id})
             self._update_state(pending_tool_calls=pending)
 
         elif isinstance(event, ToolExecutionEndEvent):
+            if not event.interrupted:
+                self._unconfirmed_tools.pop(event.tool_call_id, None)
             pending = self._state.pending_tool_calls - frozenset({event.tool_call_id})
             self._update_state(pending_tool_calls=pending)
 
@@ -1342,8 +1751,19 @@ class Agent:
                 stream_message=None,
             )
 
-        self._emit(event)
-        stream.send_sync(event)
+        event = self._emit(event)
+        if isinstance(event, AgentEndEvent):
+            stream.send_final(event)
+        else:
+            await stream.send(event)
+        if isinstance(event, TurnEndEvent) and isinstance(event.message, AssistantMessage):
+            usage = self._emit(UsageEvent(usage=event.message.usage, model=self._state.model))
+            await stream.send(usage)
+            if self._emit_snapshots and not self._unfinished_tools():
+                active = bool(event.tool_results) or self.has_queued_messages()
+                data = self._snapshot_data(run_active=active)
+                snapshot = self._emit(SnapshotEvent(snapshot_json=json.dumps(data, ensure_ascii=False)))
+                await stream.send(snapshot)
 
 
 # ---------------------------------------------------------------------------
