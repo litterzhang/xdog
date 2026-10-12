@@ -11,6 +11,7 @@ from typing import Any
 
 from xdog.agent.core import AgentTool
 from xdog.agent.tool_def import Param, ToolDef, action
+from xdog.claw.core.memory.simple_search import SimpleMemorySearch
 from xdog.claw.core.memory.types import MemoryChunk
 
 MEMORY_MAX_CHARS = 2200
@@ -37,31 +38,12 @@ class MemoryTool(ToolDef):
             top_k=Param("integer", default=5, description="Max results"))
     async def search(self, ctx: dict[str, Any], query: str, top_k: int = 5) -> str:
         search_fn = ctx.get("_memory_search")
-        if search_fn is not None:
-            chunks: list[MemoryChunk] = await search_fn(query, top_k=top_k)
-            if not chunks:
-                return "No results found."
-            lines = [f"[{c.source}] {c.text[:300]}" for c in chunks]
-            return "\n\n".join(lines)
-
-        # Fallback: inline keyword search when no search backend
-        ws = Path(ctx["workspace_dir"])
-        results: list[str] = []
-        for search_dir in [ws, ws / "memory"]:
-            if not search_dir.exists():
-                continue
-            for md_file in search_dir.glob("*.md"):
-                try:
-                    for line in md_file.read_text(encoding="utf-8").splitlines():
-                        if query.lower() in line.lower():
-                            results.append(f"[{md_file.name}] {line.strip()}")
-                            if len(results) >= top_k:
-                                break
-                except OSError:
-                    continue
-                if len(results) >= top_k:
-                    break
-        return "\n\n".join(results) if results else "No results found."
+        if search_fn is None:
+            search_fn = SimpleMemorySearch(Path(ctx["workspace_dir"])).search
+        chunks: list[MemoryChunk] = await search_fn(query, top_k=top_k)
+        if not chunks:
+            return "No results found."
+        return "\n\n".join(f"[{c.source}] {c.text[:300]}" for c in chunks)
 
     @action("write", description="Write to daily log or MEMORY.md",
             target=Param("string", required=True, enum=["daily", "memory"]),

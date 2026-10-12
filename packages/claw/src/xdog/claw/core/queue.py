@@ -97,8 +97,9 @@ class MessageQueue:
                 finally:
                     self._running.discard(group_id)
         else:
-            async with self._global_sem:
-                async with lock:
+            # Waiting behind a busy group must not consume capacity for other groups.
+            async with lock:
+                async with self._global_sem:
                     self._running.add(group_id)
                     try:
                         yield

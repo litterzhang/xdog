@@ -103,3 +103,22 @@ async def test_collect_with_debounce_waits_then_dequeues(queue):
     assert len(result) == 2
     assert result[0].content == "msg1"
     assert result[1].content == "msg2"
+
+
+async def test_busy_group_waiter_does_not_hold_global_capacity():
+    q = MessageQueue(max_concurrent=1)
+    waiting = asyncio.Event()
+
+    async def background():
+        waiting.set()
+        async with q.acquire("busy"):
+            pass
+
+    async with q.acquire("busy", is_user=True):
+        waiter = asyncio.create_task(background())
+        await waiting.wait()
+        # The only global slot is still available while the waiter waits for busy.
+        async with asyncio.timeout(1):
+            async with q.acquire("other"):
+                assert q.is_running("other")
+    await waiter

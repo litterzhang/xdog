@@ -202,6 +202,7 @@ class AgentSession:
                 "_memory_manager": runtime.memory,
                 "_skill_manager": runtime.skill_manager,
                 "_goal_manager": runtime.goal_manager,
+                "_task_scheduler": runtime.task_scheduler,
             },
             transform_context=self._extension_context,
             before_tool_call=self._before_tool_call,

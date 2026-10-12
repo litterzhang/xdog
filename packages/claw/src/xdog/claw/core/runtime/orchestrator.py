@@ -69,7 +69,11 @@ class Orchestrator:
         self._runtimes: dict[str, GroupRuntime] = {}
         self._navigation_groups: set[str] = set()
         self._queue = MessageQueue(max_concurrent=config.max_concurrent_agents)
-        self._scheduler = TaskScheduler(self._data_dir / "scheduled_tasks.json")
+        tasks_file = Path(config.tasks_file).expanduser()
+        if data_dir is not None and tasks_file == Path(config.data_dir) / "scheduled_tasks.json":
+            tasks_file = self._data_dir / "scheduled_tasks.json"
+        self._scheduler = TaskScheduler(tasks_file)
+        self._scheduled_runs: dict[str, asyncio.Task[TurnResult | None]] = {}
         self._chunker = BlockChunker()
 
     # -- Group registration ----------------------------------------------------
@@ -86,7 +90,7 @@ class Orchestrator:
             self._data_dir,
             model=self._model,
             stream_fn=self._stream_fn,
-            send_fn=self._send_to_channels, mcp_servers=self._config.mcp_servers,
+            send_fn=self._send_to_channels, task_scheduler=self._scheduler, mcp_servers=self._config.mcp_servers,
             mcp_credential_backend=self._config.mcp_credential_backend,
             extensions=self._config.extensions, extension_dir=self._config.extension_dir,
             extension_settings=self._config.extension_settings,
@@ -158,7 +162,10 @@ class Orchestrator:
         max_queued = group.config.max_queued_messages if group.config else 50
         debounce_ms = group.config.debounce_ms if group.config else 0
 
-        if self._queue.is_running(group_id) and not reserved:
+        scheduled = isinstance(message, SystemInput) and message.kind == SystemInputKind.SCHEDULER
+        # Scheduled inputs must retain their own completion/delivery callbacks while waiting.
+        # Never steer or fold them into another turn's fire-and-forget collected inputs.
+        if self._queue.is_running(group_id) and not reserved and not scheduled:
             active = runtime._active_session
             if group_id in self._navigation_groups or active is None or not active.agent.state.is_streaming:
                 mode = QueueMode.COLLECT  # No ready checkpoint owner: retain, never drop into a disposed session.
@@ -228,6 +235,12 @@ class Orchestrator:
 
         is_user = isinstance(message, UserInput)
         async with self._queue.acquire(group_id, is_user=is_user):
+            if isinstance(message, SystemInput) and message.kind == SystemInputKind.SCHEDULER:
+                task_id = message.metadata.get("task_id")
+                if task_id:
+                    current = self._scheduler.get_task(task_id)
+                    if current is None or not current.enabled or current.status != "running":
+                        return None  # Cancelled while waiting for the queue.
             if input_alive is not None and not input_alive():
                 raise ValueError("Reviewed message owner changed before turn admission; no replay")
             session = runtime.get_or_create_session(allow_reset=input_alive is None)
@@ -366,15 +379,15 @@ class Orchestrator:
 
     async def _send_to_channels(self, group_id: str, text: str) -> None:
         for channel in self._channels:
-            await channel.send_message(group_id, text)
+            if channel.accepts_group(group_id):
+                await channel.send_message(group_id, text)
 
-    async def _send_response(self, group_id: str, text: str) -> None:
-        chunks = self._chunker.chunk(text)
-        if not chunks:
-            await self._send_to_channels(group_id, text)
-            return
-        for chunk in chunks:
-            for channel in self._channels:
+    async def _send_response(self, group_id: str, text: str, *, require_delivery: bool = False) -> None:
+        channels = [channel for channel in self._channels if channel.accepts_group(group_id)]
+        if require_delivery and not channels:
+            raise RuntimeError(f"No delivery channel for group {group_id}")
+        for chunk in self._chunker.chunk(text) or [text]:
+            for channel in channels:
                 await channel.send_chunk(group_id, chunk)
 
     # -- Group operations (public API for Gateway) -----------------------------
@@ -1219,12 +1232,11 @@ class Orchestrator:
 
     async def tick(self) -> None:
         """Run one scheduler + goal manager cycle."""
-        due_tasks = self._scheduler.get_due_tasks()
-        for task in due_tasks:
-            try:
-                await self.run_scheduled_task(task)
-            except Exception:
-                logger.exception("Scheduled task %s failed", task.id)
+        for task in self._scheduler.get_due_tasks():
+            if task.id not in self._scheduled_runs:
+                run = asyncio.create_task(self.run_scheduled_task(task), name=f"scheduled:{task.id}")
+                self._scheduled_runs[task.id] = run
+                run.add_done_callback(partial(self._scheduled_done, task.id))
 
         # Goal manager tick — process queued verifications and re-plans
         for group_id in self.get_group_ids():
@@ -1238,20 +1250,62 @@ class Orchestrator:
                             "group_id": group_id,
                             "workspace_dir": str(runtime.workspace_dir) if runtime.workspace_dir else "",
                             "data_dir": str(runtime.data_dir),
+                            "_task_scheduler": self._scheduler,
                         },
                     )
                 except Exception:
                     logger.exception("Goal manager tick failed for group %s", group_id)
 
+    def _scheduled_done(self, task_id: str, run: asyncio.Task[TurnResult | None]) -> None:
+        self._scheduled_runs.pop(task_id, None)
+        if not run.cancelled() and run.exception() is not None:
+            logger.error("Scheduled task %s failed: %s", task_id, run.exception())
+
     async def run_scheduled_task(self, task: ScheduledTask) -> TurnResult | None:
-        """Execute a scheduled task as a system input."""
-        message = SystemInput(
-            group_id=task.group_id, content=task.prompt,
-            kind=SystemInputKind.SCHEDULER,
-        )
-        result = await self._execute_with_queue(message)
-        self._scheduler.mark_run(task.id)
-        return result
+        """Run through the normal queue; success requires both execution and delivery.
+
+        Failed one-offs are terminal, not retried automatically (tools may have had
+        side effects). Recurring tasks advance to a future occurrence after an attempt.
+        """
+        admitted = self._scheduler.start_run(task.id)
+        if admitted is None:
+            return None
+        delivered = False
+        delivery_error: str | None = None
+
+        async def report(text: str) -> None:
+            nonlocal delivered, delivery_error
+            try:
+                await self._send_response(task.group_id, text, require_delivery=True)
+                delivered = True
+            except Exception as exc:
+                # Keep draining the agent even if delivery fails; don't orphan its producer.
+                delivery_error = str(exc) or type(exc).__name__
+                logger.exception("Scheduled task %s report delivery failed", task.id)
+
+        try:
+            message = SystemInput(group_id=task.group_id, content=task.prompt,
+                                  kind=SystemInputKind.SCHEDULER, metadata={"task_id": task.id})
+            result = await self.route_message(message, on_assistant_message=report)
+            if result is None and self._scheduler.get_task(task.id) is None:
+                return None  # A cancelled queued task has no execution outcome to report.
+            error = result.error if result is not None else "Task not executed (unknown group or cancelled)"
+            if error:
+                await report(f"Scheduled task {task.id} failed: {error}")
+            error = error or delivery_error or (None if delivered else "Agent produced no report")
+            self._scheduler.finish_run(task.id, error=error, delivered=delivered and delivery_error is None)
+            if error:
+                logger.error("Scheduled task %s failed: %s", task.id, error)
+                return replace(result, error=error) if result is not None else TurnResult(error=error)
+            return result
+        except asyncio.CancelledError:
+            self._scheduler.finish_run(task.id, error="Scheduled execution cancelled; side effects may have occurred",
+                                       delivered=delivered and delivery_error is None)
+            raise
+        except Exception as exc:
+            self._scheduler.finish_run(task.id, error=str(exc), delivered=delivered and delivery_error is None)
+            logger.exception("Scheduled task %s failed", task.id)
+            return TurnResult(error=str(exc))
 
     # -- Lifecycle -------------------------------------------------------------
 
@@ -1260,6 +1314,10 @@ class Orchestrator:
             await channel.connect()
 
     async def stop(self) -> None:
+        scheduled = list(self._scheduled_runs.values())
+        for run in scheduled:
+            run.cancel()
+        await asyncio.gather(*scheduled, return_exceptions=True)
         children = [runtime._active_session.children.supervisor for runtime in self._runtimes.values()
                     if runtime._active_session is not None]
         await asyncio.gather(*(owner.aclose() for owner in children), return_exceptions=True)

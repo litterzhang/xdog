@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 from xdog.claw.core.memory.indexer import EmbeddingModel, MemoryIndexer
+from xdog.claw.core.memory.simple_search import SimpleMemorySearch, tokenize
 from xdog.claw.core.memory.types import MemoryChunk
 
 logger = logging.getLogger(__name__)
@@ -39,34 +40,32 @@ class HybridMemorySearch:
         self._workspace_dir = workspace_dir
         self._embedding_model = embedding_model
         self._indexer = MemoryIndexer(db_path, embedding_model)
-        self._indexed_once = False
+        self._keyword = SimpleMemorySearch(workspace_dir)
 
     async def search(self, query: str, top_k: int = 10) -> list[MemoryChunk]:
         """Run hybrid search: vector + BM25 + RRF + temporal decay.
 
-        1. Index any un-indexed files (first call only).
+        1. Incrementally refresh changed files.
         2. Embed the query and retrieve top-20 by vector similarity.
         3. Run BM25 over all indexed chunks for top-20 keyword matches.
         4. Merge with Reciprocal Rank Fusion.
         5. Apply temporal decay.
         6. Return *top_k* results.
         """
-        if not query.strip():
+        if not query.strip() or top_k <= 0:
             return []
 
-        # Ensure workspace is indexed on first search
-        if not self._indexed_once:
-            await self.index_workspace()
-            self._indexed_once = True
+        await self.index_workspace()
 
         candidate_k = max(top_k, 20)
 
         # Vector search
         try:
             query_embedding = await self._embedding_model.encode_query(query)
-            vector_results = await self._indexer.get_chunks(
-                query_embedding, top_k=candidate_k
-            )
+            vector_results = [
+                chunk for chunk in await self._indexer.get_chunks(query_embedding, top_k=candidate_k)
+                if chunk.score > 0
+            ]
         except Exception as exc:
             logger.warning("Vector search failed: %s", exc)
             vector_results = []
@@ -93,19 +92,19 @@ class HybridMemorySearch:
         self, query: str, top_k: int = 20
     ) -> list[MemoryChunk]:
         """Score all indexed chunks with BM25."""
-        all_chunks = await self._indexer.get_all_chunks()
-        if not all_chunks:
-            return []
-
         try:
             from rank_bm25 import BM25Okapi
         except ImportError:
-            logger.warning("rank-bm25 not installed, skipping BM25 search")
-            return []
+            logger.warning("rank-bm25 unavailable; using live keyword fallback")
+            return await self._keyword.search(query, top_k=top_k)
+
+        all_chunks = await self._indexer.get_all_chunks()
+        if not all_chunks:
+            return await self._keyword.search(query, top_k=top_k)
 
         # Tokenize documents
-        corpus = [chunk.text.lower().split() for chunk in all_chunks]
-        query_tokens = query.lower().split()
+        corpus = [tokenize(chunk.text) for chunk in all_chunks]
+        query_tokens = tokenize(query)
 
         if not corpus or not query_tokens:
             return []
@@ -120,7 +119,7 @@ class HybridMemorySearch:
             reverse=True,
         )
 
-        return [
+        results = [
             MemoryChunk(
                 text=chunk.text,
                 source=chunk.source,
@@ -130,6 +129,8 @@ class HybridMemorySearch:
             for score, chunk in scored[:top_k]
             if score > 0
         ]
+        # Okapi IDF can be zero/negative in small corpora even for exact hits.
+        return results or await self._keyword.search(query, top_k=top_k)
 
     async def index_workspace(self) -> None:
         """Index MEMORY.md, daily logs, and conversation archives."""

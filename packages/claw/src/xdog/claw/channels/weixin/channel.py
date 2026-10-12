@@ -277,6 +277,9 @@ class WeixinChannel(Channel):
         await self._api_client.close()
         logger.info("WeixinChannel disconnected: account=%s", self._account_id)
 
+    def accepts_group(self, group_id: str) -> bool:
+        return group_id in self._user_id_map
+
     async def send_message(self, group_id: str, text: str) -> None:
         """Send a text message to the WeChat user identified by group_id."""
         if not text:
@@ -287,11 +290,7 @@ class WeixinChannel(Channel):
         # Resolve the real WeChat user ID
         real_user_id = self._user_id_map.get(group_id)
         if real_user_id is None:
-            logger.warning(
-                "send_message: cannot resolve user for group %s (no prior inbound message)",
-                group_id,
-            )
-            return
+            raise ValueError(f"Cannot resolve Weixin recipient for group {group_id}")
 
         context_token = get_context_token(self._account_id, real_user_id) or ""
 
@@ -327,6 +326,7 @@ class WeixinChannel(Channel):
             logger.exception(
                 "Failed to send message to %s (group=%s)", real_user_id, group_id
             )
+            raise
 
     async def _start_typing(self, group_id: str, user_id: str, context_token: str) -> None:
         """Start the typing indicator for a user."""

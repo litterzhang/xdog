@@ -173,3 +173,18 @@ def httpx_mock():
     yield transport
 
     httpx.AsyncClient.__init__ = original_init
+
+
+@pytest.mark.parametrize("payload", [{"ret": -1}, {"ret": 0, "errcode": 400}, []])
+async def test_client_rejects_application_delivery_errors(payload):
+    from xdog.claw.channels.weixin.api import WeixinApiClient
+
+    client = WeixinApiClient(base_url="https://test.invalid", token="fake")
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json=payload),
+    ))
+    try:
+        with pytest.raises(RuntimeError):
+            await client.send_message(SendMessageReq(msg=WeixinMessage(to_user_id="fake")))
+    finally:
+        await client.close()

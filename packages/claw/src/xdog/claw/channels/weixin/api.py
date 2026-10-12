@@ -121,6 +121,7 @@ class WeixinApiClient:
         client = await self._get_client(timeout_s)
         resp = await client.post(url, json=payload, headers=headers, timeout=timeout_s)
         resp.raise_for_status()
+        _check_send_response(resp)
 
     async def send_typing(
         self,
@@ -227,3 +228,12 @@ async def send_message(
     async with httpx.AsyncClient(timeout=timeout_s) as client:
         resp = await client.post(url, json=payload, headers=headers)
         resp.raise_for_status()
+        _check_send_response(resp)
+
+
+def _check_send_response(response: httpx.Response) -> None:
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise RuntimeError("Invalid Weixin send response")
+    if payload.get("ret", 0) != 0 or payload.get("errcode", 0) != 0:
+        raise RuntimeError(f"Weixin delivery rejected: {payload}")

@@ -27,6 +27,7 @@ from xdog.claw.core.memory.manager import MemoryManager
 from xdog.claw.core.persistence.transcript_convert import TOOL_RESULT_ROLE, entry_text, transcript_to_messages
 from xdog.claw.core.persistence.transcript_store import TranscriptStore
 from xdog.claw.core.planning.goal_manager import GoalManager
+from xdog.claw.core.planning.task_scheduler import TaskScheduler
 from xdog.claw.core.prompt import build_system_prompt, init_workspace, workspace_path
 from xdog.claw.core.runtime.display_events import display_arguments, display_result
 from xdog.claw.core.runtime.transcript_source import SourceCapture
@@ -101,6 +102,7 @@ class GroupRuntime:
         flush_runner: FlushRunner | None = None,
         summarizer: Summarizer | None = None,
         send_fn: Callable[..., Awaitable[None]] | None = None,
+        task_scheduler: TaskScheduler | None = None,
         mcp_servers: dict[str, Any] | None = None,
         mcp_credential_backend: str = 'file',
         extensions: tuple[str, ...] = (), extension_dir: str = "",
@@ -135,6 +137,7 @@ class GroupRuntime:
         self.flush_runner = flush_runner
         self.summarizer = summarizer
         self._send_fn = send_fn
+        self.task_scheduler = task_scheduler
         self._enabled_tools = group.enabled_tools
         self._tools: list[AgentTool] | None = None
         self.mcp = McpManager(mcp_servers or {}, self.workspace_dir,
@@ -167,6 +170,7 @@ class GroupRuntime:
         model: str = "",
         stream_fn: StreamFn | None = None,
         send_fn: Callable[..., Awaitable[None]] | None = None,
+        task_scheduler: TaskScheduler | None = None,
         mcp_servers: dict[str, Any] | None = None,
         mcp_credential_backend: str = 'file',
         extensions: tuple[str, ...] = (), extension_dir: str = "",
@@ -225,7 +229,8 @@ class GroupRuntime:
             ),
             flush_runner=flush_runner,
             summarizer=summarizer,
-            send_fn=send_fn, mcp_servers=mcp_servers, mcp_credential_backend=mcp_credential_backend,
+            send_fn=send_fn, task_scheduler=task_scheduler, mcp_servers=mcp_servers,
+            mcp_credential_backend=mcp_credential_backend,
             extensions=extensions, extension_dir=extension_dir,
             extension_settings=extension_settings, extension_allow_tools=extension_allow_tools,
             child_presets=child_presets,

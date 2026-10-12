@@ -9,6 +9,7 @@ from xdog.agent.core import EmbedFn
 from xdog.claw.core.memory.daily_log import DailyLog
 from xdog.claw.core.memory.long_term import LongTermMemory
 from xdog.claw.core.memory.simple_search import SimpleMemorySearch
+from xdog.claw.core.memory.types import MemoryChunk
 
 # Optional: hybrid search with real embeddings
 try:
@@ -74,7 +75,12 @@ class MemoryManager:
             self._searcher = SimpleMemorySearch(workspace_dir)
             logger.info("Using SimpleMemorySearch for group %s", group_id)
 
-    @property
-    def search(self) -> Any:
-        """The search function (hybrid or keyword-only)."""
-        return self._searcher.search
+    async def search(self, query: str, top_k: int = 10) -> list[MemoryChunk]:
+        """Search memory, falling back on lazy backend failures as well as init failures."""
+        try:
+            chunks: list[MemoryChunk] = await self._searcher.search(query, top_k=top_k)
+            return chunks
+        except Exception:
+            logger.warning("Memory backend failed; using live keyword fallback", exc_info=True)
+            # Let read failures propagate: unavailable memory is not an empty result.
+            return await SimpleMemorySearch(self.workspace_dir).search(query, top_k=top_k)

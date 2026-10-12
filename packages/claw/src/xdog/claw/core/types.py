@@ -57,6 +57,7 @@ class TaskSchedule:
     cron: str | None = None
     interval_seconds: int | None = None
     run_at: float | None = None
+    timezone: str = ""
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,12 @@ class ScheduledTask:
     enabled: bool = True
     last_run: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: float = 0.0
+    next_run: float | None = None
+    last_attempt: float | None = None
+    last_error: str | None = None
+    status: str = "pending"
+    delivery_status: str = "pending"
 
 
 # ---------------------------------------------------------------------------

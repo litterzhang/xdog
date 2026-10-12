@@ -12,6 +12,49 @@ Nothing yet.
 
 ---
 
+## [2.3.1] — 2026-10-12
+
+### Fixed
+
+- Claw memory search now falls back to live keyword search when optional search
+  dependencies or lazily initialized backends are unavailable, instead of returning
+  misleading empty results. Search refreshes changed/new memory files, handles
+  Chinese and mixed-language queries, includes conversation archives in the tool
+  fallback, and preserves exact keyword hits in small BM25 corpora.
+- Claw's task tool and orchestrator now share one running scheduler and the
+  configured task store. Scheduled turns retain their report callbacks through the
+  normal Agent queue; slow runs no longer block scheduler polling, and waiting for
+  a busy group no longer consumes global background execution capacity.
+- Scheduled execution and delivery failures are persisted instead of recorded as
+  success. Weixin recipient, transport, and application errors propagate; only a
+  successful Agent turn and report delivery update `last_run`.
+
+### Added
+
+- One-off `run_at` scheduling with a future ISO-8601 timestamp and explicit UTC
+  offset, plus interval scheduling through the task tool.
+- Persisted next-run, attempt, execution, delivery, and error state; atomic task
+  store replacement and explicit migration of the legacy tool envelope.
+
+### Changed
+
+- Task actions require the live scheduler and current group context; creation,
+  listing, and cancellation are scoped to that group. Cron requires five fields,
+  an explicit IANA timezone, and `croniter`; invalid schedules fail closed instead
+  of falling back to a one-minute interval. First cron/interval runs are in the
+  future, not immediately after creation.
+- One-off tasks stop after an attempt, including failure. Recurring tasks advance
+  to a future occurrence without replaying missed batches. Queued cancellation
+  prevents admission but cannot undo already-started side effects. Interrupted
+  persisted runs and legacy cron records without a timezone are disabled for
+  review rather than blindly replayed. See `packages/claw/SCHEDULER.md` for details.
+- Scheduling retains the existing 30-second polling cadence and does not guarantee
+  hard real-time delivery or exactly-once external side effects.
+- Synchronized all seven package versions, the root project, internal dependency
+  requirements, and runtime/client version identifiers to 2.3.1.
+
+---
+
 ## [2.3.0] — 2026-10-11
 
 ### Added

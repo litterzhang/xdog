@@ -354,3 +354,17 @@ async def test_channel_defaults_to_main_group(tmp_path):
         token="test-token",
     )
     assert ch._group_id == "main"
+
+
+async def test_send_failure_and_unknown_recipient_are_not_silent(tmp_path):
+    ch = WeixinChannel(state_dir=tmp_path, account_id="test-failure", base_url="https://test.example.com",
+                       token="fake")
+    ch._api_client.send_message = AsyncMock(side_effect=RuntimeError("rejected"))
+    assert not ch.accepts_group("unknown")
+    with pytest.raises(ValueError, match="recipient"):
+        await ch.send_message("unknown", "report")
+    ch._user_id_map["g1"] = "fake-user"
+    assert ch.accepts_group("g1")
+    with pytest.raises(RuntimeError, match="rejected"):
+        await ch.send_message("g1", "report")
+    ch._api_client.send_message.assert_awaited_once()

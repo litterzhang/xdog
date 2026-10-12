@@ -10,9 +10,22 @@ hybrid vector + BM25 pipeline from :mod:`claw.memory.indexer` and
 
 from __future__ import annotations
 
+import asyncio
+import re
 from pathlib import Path
 
 from xdog.claw.core.memory.types import MemoryChunk
+
+
+def tokenize(text: str) -> list[str]:
+    """Split punctuation/Latin words and use overlapping bigrams for unspaced CJK."""
+    tokens: list[str] = []
+    for part in re.findall(r"[\u3400-\u9fff]+|[^\W_\u3400-\u9fff]+(?:[-_][^\W_\u3400-\u9fff]+)*", text.casefold()):
+        if re.fullmatch(r"[\u3400-\u9fff]+", part) and len(part) > 1:
+            tokens.extend(part[i:i + 2] for i in range(len(part) - 1))
+        else:
+            tokens.append(part)
+    return list(dict.fromkeys(tokens))
 
 
 class SimpleMemorySearch:
@@ -27,8 +40,11 @@ class SimpleMemorySearch:
 
     async def search(self, query: str, top_k: int = 10) -> list[MemoryChunk]:
         """Return up to *top_k* chunks matching *query* keywords."""
-        terms = [t.lower() for t in query.split() if t.strip()]
-        if not terms:
+        return await asyncio.to_thread(self._search, query, top_k)
+
+    def _search(self, query: str, top_k: int) -> list[MemoryChunk]:
+        terms = tokenize(query)
+        if not terms or top_k <= 0:
             return []
 
         results: list[MemoryChunk] = []
@@ -72,10 +88,9 @@ class SimpleMemorySearch:
         base_score: float,
     ) -> list[MemoryChunk]:
         """Search a single file for paragraphs matching query terms."""
-        try:
-            text = file_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        if not file_path.resolve().is_relative_to(self._workspace_dir.resolve()):
             return []
+        text = file_path.read_text(encoding="utf-8")
 
         ts = file_path.stat().st_mtime
 
@@ -85,10 +100,10 @@ class SimpleMemorySearch:
 
         for para in paragraphs:
             para = para.strip()
-            if not para or len(para) < 5:
+            if not para:
                 continue
 
-            lower_para = para.lower()
+            lower_para = para.casefold()
             matched = sum(1 for t in terms if t in lower_para)
             if matched == 0:
                 continue
