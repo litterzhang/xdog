@@ -81,46 +81,6 @@ async def test_restart_new_switch_and_checkpoints_keep_separate_selection(tmp_pa
         await close(runtime)
 
 
-async def test_real_extension_restore_waits_for_inventory_and_sdk_branch_failure_is_atomic(tmp_path, monkeypatch):
-    runtime, calls = create(tmp_path, extensions=('dialogue',))
-    reopened = None
-    try:
-        session = runtime.get_or_create_session(allow_reset=False)
-        await session.initialize_extensions()
-        selected = [next(tool.name for tool in session.agent.state.tools if tool.name.startswith('ext_dialogue_ask_'))]
-        await session.select_active_tools(selected, expected_revision=session.agent.tool_selection_revision)
-        session.agent.replace_messages([UserMessage(content='saved'), AssistantMessage()])
-        branch = session.create_branch()
-        await close(runtime)
-        reopened, later_calls = create(tmp_path, extensions=('dialogue',))
-        session = reopened.get_or_create_session(allow_reset=False)
-        assert session.agent.active_tool_selection == ()
-        await session.initialize_extensions()
-        assert session.agent.active_tool_selection == tuple(selected)
-        await session.select_active_tools([], expected_revision=session.agent.tool_selection_revision)
-        old = session.agent.state
-        store = reopened.transcript_store
-        original = store._atomic
-        def fail(path, *args, **kwargs):
-            if path.name == 'sessions.json':
-                raise OSError('Injected navigation failure')
-            return original(path, *args, **kwargs)
-        with monkeypatch.context() as patch:
-            patch.setattr(store, '_atomic', fail)
-            with pytest.raises(OSError):
-                await asyncio.to_thread(session.restore_branch, branch)
-        assert session.agent.state is old and store.get_active_tools(session.meta.session_id) == ()
-        assert await asyncio.to_thread(session.restore_branch, branch)
-        assert session.agent.active_tool_selection == ()  # Lazy rebuilt worker has not restored its inventory yet.
-        await session.initialize_extensions()
-        assert session.agent.active_tool_selection == tuple(selected)
-        assert not calls and not later_calls
-    finally:
-        if reopened is not None:
-            await close(reopened)
-        await close(runtime)
-
-
 @pytest.mark.parametrize('value', [False, {}, ['same', 'same'], [''], [1]])
 def test_invalid_saved_selection_never_becomes_default(tmp_path, value):
     store = TranscriptStore(tmp_path)

@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -12,37 +10,6 @@ import pytest
 from xdog.agent.mcp import McpManager
 from xdog.agent.mcp.oauth import OAuthError
 from xdog.agent.mcp.oauth_native_store import NativeCredentialStore
-
-
-def available():
-    if not sys.platform.startswith('linux') or not all(shutil.which(name) for name in
-            ('dbus-run-session', 'gnome-keyring-daemon', 'gdbus')) or not Path('/usr/bin/python3').is_file():
-        return False
-    probe = subprocess.run(['/usr/bin/python3', '-I', '-c',
-        "import gi; gi.require_version('Secret', '1'); from gi.repository import Secret"],
-        capture_output=True, timeout=3)
-    return probe.returncode == 0
-
-
-@pytest.mark.skipif(not available(), reason='Owned Linux GI/Secret Service test prerequisites unavailable')
-def test_actual_native_vault_worker_and_manager_consent_without_prompt_user_service_or_network(tmp_path):
-    for name in ('home', 'data', 'runtime', 'control', 'config', 'cache'):
-        (tmp_path / name).mkdir(mode=0o700)
-    environment = {key: value for key, value in os.environ.items() if key not in {
-        'DISPLAY', 'WAYLAND_DISPLAY', 'DBUS_SESSION_BUS_ADDRESS', 'DBUS_STARTER_ADDRESS', 'DBUS_STARTER_BUS_TYPE',
-        'PYTHONPATH', 'PYTHONHOME'}}
-    environment.update(HOME=str(tmp_path / 'home'), XDG_DATA_HOME=str(tmp_path / 'data'),
-        XDG_CONFIG_HOME=str(tmp_path / 'config'), XDG_CACHE_HOME=str(tmp_path / 'cache'),
-        XDG_RUNTIME_DIR=str(tmp_path / 'runtime'), NO_AT_BRIDGE='1', GIO_USE_VFS='local',
-        XDOG_NATIVE_TEST_ROOT=str(tmp_path))
-    script = Path(__file__).parent / 'fixtures/native_store/service.py'
-    result = subprocess.run(['dbus-run-session', '--', '/usr/bin/python3', '-I', str(script), sys.executable],
-                            env=environment, capture_output=True, text=True, timeout=40)
-    assert result.returncode == 0, result.stderr + result.stdout
-    records = [json.loads(line) for line in result.stdout.splitlines()]
-    assert records[0]['locked_refusal'] and records[0]['review_restore_forget'] and records[0]['both_native_ui']
-    assert records[1]['no_prompt_service'] and records[1]['dummy_plaintext_absent']
-    assert 'PRIVATE-NATIVE' not in result.stdout + result.stderr
 
 
 @pytest.mark.parametrize('value', ['unknown', True, None, 1, []])

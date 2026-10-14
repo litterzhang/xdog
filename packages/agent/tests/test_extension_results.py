@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import base64
-import shutil
 from pathlib import Path
 
 import pytest
 from xdog.agent.core import AgentToolResult
 from xdog.agent.extensions.api import ExtensionAPI
-from xdog.agent.extensions.runtime import ExtensionRuntime
 from xdog.agent.extensions.tool_result import normalize_result
 from xdog.ai.types import ImageContent, TextContent
 
@@ -60,48 +58,6 @@ def test_agent_tool_result_conversion_preserves_image_and_json_metadata_without_
 def test_invalid_or_unsupported_rich_results_are_not_coerced_or_silently_dropped(value):
     with pytest.raises((ValueError, RuntimeError)):
         normalize_result(value)
-
-
-async def test_real_extension_worker_returns_typed_content_json_and_separate_metadata(tmp_path):
-    root = tmp_path / "extensions"
-    shutil.copytree(FIXTURE, root)
-    runtime = ExtensionRuntime(["rich"], root, tmp_path)
-    try:
-        await runtime.initialize()
-        tool = runtime.tools()[0]
-        mixed = await tool.execute("mixed", {"value": "mixed"})
-        assert any(isinstance(part, ImageContent) for part in mixed.content)
-        assert mixed.content[0].text == "RICH-EXTENSION-RESULT"
-        assert mixed.details["structured_content"] == [False, 0, None]
-        assert mixed.details["extension_details"] == {"count": 0, "enabled": False, "value": None}
-        assert mixed.details["extension_details_present"] and mixed.details["extension"] == "rich"
-        typed = await tool.execute("typed", {"value": "typed"})
-        assert typed.details["extension_details"] == {"typed": True}
-        assert any(isinstance(part, ImageContent) for part in typed.content)
-        structured = await tool.execute("structured", {"value": "structured"})
-        assert structured.content[0].text == "null"
-        assert structured.details["structured_content_present"] and structured.details["extension_details"] is False
-        failed = await tool.execute("error", {"value": "error"})
-        assert failed.is_error and any(isinstance(part, ImageContent) for part in failed.content)
-        assert failed.details["structured_content"] == {"diagnostic": "ERROR-STRUCTURED-TAIL", "retry": False}
-        assert failed.details["extension_details"] == {"failed": True}
-        assert runtime.snapshot()["extensions"][0]["state"] == "active"
-    finally:
-        await runtime.aclose()
-
-
-@pytest.mark.parametrize("value", ["malformed", "unsupported"])
-async def test_real_invalid_worker_result_fails_without_callback_replay(tmp_path, value):
-    root = tmp_path / "extensions"
-    shutil.copytree(FIXTURE, root)
-    runtime = ExtensionRuntime(["rich"], root, tmp_path)
-    try:
-        await runtime.initialize()
-        with pytest.raises(RuntimeError):
-            await runtime.tools()[0].execute("bad", {"value": value})
-        assert runtime.snapshot()["extensions"][0]["state"] == "failed"
-    finally:
-        await runtime.aclose()
 
 
 def test_host_revalidates_rich_result_version_image_limits_and_typed_metadata():

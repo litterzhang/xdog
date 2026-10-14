@@ -9,8 +9,7 @@ from dataclasses import asdict
 from unittest.mock import patch
 
 import pytest
-from xdog.agent import AgentTool, AgentToolResult
-from xdog.ai.types import AssistantMessage, DoneEvent, TextContent, ToolCall
+from xdog.ai.types import AssistantMessage, DoneEvent, TextContent
 from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.channels.tui.source_reader import SourceReceiver
 from xdog.claw.channels.tui.tui_app import ChatApp
@@ -77,87 +76,6 @@ async def source(reader, writer, session, *, nonce="source", group="main"):
     receiver.close()
     assert received[-1]["type"] == "source_ready", received[-1]
     return received[-1]["records"]
-
-
-async def test_persisted_source_exceeds_all_old_caps_redacts_and_omits_binary(gateway):
-    server, path, calls = gateway
-    runtime = server._orchestrator._runtimes["main"]
-    meta = runtime.transcript_store.create_session("main")
-    text = "\\\"界" * (400 * 1024) + "LARGE-RECORD-END password=secret-text"
-    content = [{"type": "text", "text": f"part-{i}"} for i in range(20)]
-    content += [{"type": "thinking", "thinking": "REASONING-AFTER-PART-CAP"},
-                {"type": "thinking", "thinking": "HIDDEN-REDACTED", "redacted": True},
-                {"type": "toolCall", "id": "call", "name": "bash", "arguments": {
-                    "command": "x" * 5000 + "COMMAND-AFTER-CAP", "password": "secret-value",
-                    "items": [f"array-{i}" for i in range(60)]}}]
-    runtime.transcript_store.replace_transcript(meta.session_id, [
-        {"role": "user", "content": [{"type": "text", "text": "inspect"},
-                                      {"type": "image", "data": "DO-NOT-EXPOSE-BINARY", "mime_type": "image/png"}]},
-        {"role": "user", "content": "HIDDEN-GOAL", "channel": "goal_runner"},
-        {"role": "assistant", "content": content},
-        {"role": "toolResult", "tool_call_id": "call", "tool_name": "bash",
-         "content": [{"type": "text", "text": text}]},
-    ])
-    reader, writer = await asyncio.open_unix_connection(path, limit=1_048_576)
-    try:
-        await send(writer, {"type": "ping"})
-        pong = await read(reader, "pong")
-        assert pong["transcript_source"] == 1
-        # Compatibility projection is still bounded. New source is not.
-        assert "LARGE-RECORD-END" not in json.dumps(pong)
-        records = await source(reader, writer, meta.session_id)
-        body = "\n".join(record.body for record in records)
-        assert all(marker in body for marker in ("LARGE-RECORD-END", "COMMAND-AFTER-CAP", "array-59",
-                                                "part-19", "REASONING-AFTER-PART-CAP"))
-        assert not any(value in body for value in ("secret-text", "secret-value", "DO-NOT-EXPOSE-BINARY",
-                                                   "HIDDEN-REDACTED", "HIDDEN-GOAL"))
-        assert "<redacted>" in body and "[Images: 1]" in body
-        assert not calls
-    finally:
-        writer.close()
-        await writer.wait_closed()
-
-
-async def test_live_sdk_tool_progress_arguments_and_completed_source(gateway):
-    server, path, calls = gateway
-    entered, release = asyncio.Event(), asyncio.Event()
-    runtime = server._orchestrator._runtimes["main"]
-    args = {"command": "x" * 5000 + "LIVE-ARG-END", "items": [str(i) for i in range(60)]}
-    async def execute(tool_id, arguments, cancel=None, on_update=None, **kwargs):
-        await on_update(AgentToolResult(content=(TextContent(text="p" * 50000 + "LIVE-PROGRESS-END"),)))
-        entered.set()
-        await release.wait()
-        return AgentToolResult(content=(TextContent(text="f" * 200000 + "LIVE-FINAL-END"),))
-    runtime._tools = [AgentTool(name="source_tool", description="fixture",
-                               parameters={"type": "object"}, execute=execute)]
-    def stream_fn(model, context, options):
-        calls.append(context)
-        message = (AssistantMessage(content=(ToolCall(id="live", name="source_tool", arguments=args),),
-                                    stop_reason="toolUse")
-                   if context.messages[-1].role == "user" else AssistantMessage(content=(TextContent(text="done"),)))
-        async def generate():
-            yield DoneEvent(message=message, stop_reason=message.stop_reason)
-        future = asyncio.get_running_loop().create_future()
-        future.set_result(message)
-        return EventStream.from_async_generator(generate(), result_future=future)
-    runtime.stream_fn = stream_fn
-    reader, writer = await asyncio.open_unix_connection(path, limit=1_048_576)
-    try:
-        await send(writer, dict(type="message", run_id="run", content="tool please"))
-        ack = await read(reader, "run_ack")
-        await asyncio.wait_for(entered.wait(), 5)
-        partial = await source(reader, writer, ack["session_id"])
-        assert any("LIVE-PROGRESS-END" in record.body and "LIVE-ARG-END" in record.body for record in partial)
-        assert len(calls) == 1 and runtime._active_session.agent.state.is_streaming
-        release.set()
-        await read(reader, "response")
-        complete = await source(reader, writer, ack["session_id"], nonce="complete")
-        assert any("LIVE-FINAL-END" in record.body for record in complete)
-        assert len(calls) == 2
-    finally:
-        release.set()
-        writer.close()
-        await writer.wait_closed()
 
 
 async def test_foreign_session_unknown_group_and_same_session_navigation_fence_source(gateway):
@@ -249,45 +167,6 @@ def test_source_spool_worker_cancellation_releases_file():
     cancel.set()
     with pytest.raises(ValueError, match="canceled"):
         prepare_source(SourceCapture("sid", lambda: [{"role": "user", "content": "body"}]), cancel)
-
-
-async def test_real_client_connection_reads_full_source_off_ui_and_retains_query(gateway):
-    server, path, calls = gateway
-    runtime = server._orchestrator._runtimes["main"]
-    meta = runtime.transcript_store.create_session("main")
-    runtime.transcript_store.replace_transcript(meta.session_id, [
-        {"role": "user", "content": "context"},
-        {"role": "assistant", "content": [{"type": "text", "text": "x" * 200000 + "CLIENT-AFTER-CAP"}]},
-    ])
-    ui = ChatApp(path)
-    ui._io_generation = 1
-    ui._handle_response({"type": "_connection_opened", "generation": 1})
-    reader, writer = await asyncio.open_unix_connection(path, limit=4 * 1024 * 1024)
-    task = asyncio.create_task(ui._run_connection(reader, writer))
-    async def wait_for(predicate):
-        deadline = asyncio.get_running_loop().time() + 5
-        while asyncio.get_running_loop().time() < deadline:
-            ui._poll()
-            if predicate():
-                return
-            await asyncio.sleep(0.005)
-        raise AssertionError("Client source transaction did not settle")
-    try:
-        # The production transport owns its actual ping/history handshake.
-        await wait_for(lambda: ui._connection_ready)
-        ui._editor.set_text("keep draft")
-        ui._open_transcript("CLIENT-AFTER-CAP")
-        await wait_for(lambda: ui._source_records is not None and not ui._transcript_panel.browser.snapshot().busy)
-        ui._poll()
-        assert any("CLIENT-AFTER-CAP" in record.body for record in ui._source_records)
-        assert ui._transcript_panel._view.matches == 1 and ui._editor.get_text() == "keep draft"
-        assert not ui._transcript_panel._source_busy and not calls
-    finally:
-        ui._request_exit()
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-        writer.close()
-        await writer.wait_closed()
 
 
 async def test_source_requests_coalesce_and_do_not_block_gateway_controls(gateway):

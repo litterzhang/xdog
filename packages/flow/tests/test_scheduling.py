@@ -73,9 +73,13 @@ def test_hook_parsed() -> None:
     assert wf.schedule.listen == {"type": "http", "path": "/hooks/t", "port": 8787}
 
 
-@pytest.mark.parametrize(
-    ("schedule", "match"),
-    [
+def test_schedule_rejects() -> None:
+
+    def _check_case(schedule: "dict[str, Any]", match: "str") -> "None":
+        with pytest.raises(WorkflowValidationError, match=match):
+            parse_workflow(_wf(schedule))
+
+    for schedule, match in [
         ({"mode": "every-minute"}, "'timer' or 'hook'"),
         ({"mode": "timer", "every": "15m", "cron": "* * * * *"}, "exactly one"),
         ({"mode": "timer"}, "exactly one"),
@@ -84,11 +88,8 @@ def test_hook_parsed() -> None:
         ({"mode": "hook", "listen": {"type": "http"}}, "non-empty"),
         ({"mode": "hook", "signal": "s"}, "'listen' object"),
         ({"mode": "hook", "signal": "s", "listen": {"type": "grpc"}}, "listen.type"),
-    ],
-)
-def test_schedule_rejects(schedule: dict[str, Any], match: str) -> None:
-    with pytest.raises(WorkflowValidationError, match=match):
-        parse_workflow(_wf(schedule))
+    ]:
+        _check_case(schedule, match)
 
 
 def test_schedule_not_object_rejected() -> None:
@@ -241,7 +242,13 @@ def _installer(tmp_path: Path) -> tuple[Installer, Path]:
     log = tmp_path / "calls.log"
     stub.write_text(f'#!/usr/bin/env bash\necho "systemctl $@" >> "{log}"\n', encoding="utf-8")
     stub.chmod(stub.stat().st_mode | _stat.S_IEXEC | _stat.S_IXGRP | _stat.S_IXOTH)
-    inst = Installer(unit_dir=tmp_path / "units", data_dir=tmp_path / "data", systemctl=(str(stub),))
+    # Registry/unit tests do not need a real uv environment for every install.
+    # The dedicated provisioning test below checks that boundary separately.
+    class RegistryInstaller(Installer):
+        def _provision_venv(self, bundle_dir: Path) -> Path:
+            return bundle_dir / ".venv" / "bin" / "python"
+
+    inst = RegistryInstaller(unit_dir=tmp_path / "units", data_dir=tmp_path / "data", systemctl=(str(stub),))
     return inst, log
 
 

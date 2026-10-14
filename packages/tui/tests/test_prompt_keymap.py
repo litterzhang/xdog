@@ -33,16 +33,31 @@ def test_custom_bindings_replace_defaults_and_discover_current_keys() -> None:
     assert submitted == ["draft"]
 
 
-@pytest.mark.parametrize("overrides", [
-    {"unknown": "f2"}, {"details": "ctrl+a"}, {"send": "ctrl+s", "details": "CTRL+S"},
-    {"details": ["f2", "F2"]}, {"send": "a"}, {"send": "shift+a"},
-    {"details": "ctrl+wat"}, {"details": "ctrl+ctrl+a"}, {"details": 1},
-    {"details": [False]}, {"details": "ctrl+alt"}, {"details": "ctrl+"},
-    {"cancel": []}, {"redraw": "f2"}, {"external_editor": "escape"}, {"external_editor": "ctrl+l"},
-])
-def test_invalid_or_conflicting_keymap_is_rejected(overrides) -> None:
-    with pytest.raises(ValueError):
-        PromptKeymap.from_overrides(overrides)
+def test_invalid_or_conflicting_keymap_is_rejected() -> None:
+
+    def _check_case(overrides) -> "None":
+        with pytest.raises(ValueError):
+            PromptKeymap.from_overrides(overrides)
+
+    for overrides in [
+        {"unknown": "f2"},
+        {"details": "ctrl+a"},
+        {"send": "ctrl+s", "details": "CTRL+S"},
+        {"details": ["f2", "F2"]},
+        {"send": "a"},
+        {"send": "shift+a"},
+        {"details": "ctrl+wat"},
+        {"details": "ctrl+ctrl+a"},
+        {"details": 1},
+        {"details": [False]},
+        {"details": "ctrl+alt"},
+        {"details": "ctrl+"},
+        {"cancel": []},
+        {"redraw": "f2"},
+        {"external_editor": "escape"},
+        {"external_editor": "ctrl+l"},
+    ]:
+        _check_case(overrides)
 
 
 def test_invalid_file_keeps_all_defaults_with_diagnostic(tmp_path: Path) -> None:

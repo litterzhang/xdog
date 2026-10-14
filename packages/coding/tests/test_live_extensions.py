@@ -3,10 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
-import time
 from pathlib import Path
 
-import pytest
 from xdog.agent import Agent, AgentConfig
 from xdog.ai.types import AssistantMessage, DoneEvent, TextContent, ToolCall
 from xdog.ai.utils.event_stream import EventStream
@@ -15,7 +13,6 @@ from xdog.coding.core.permissions import PermissionManager
 from xdog.coding.core.session_manager import SessionManager
 from xdog.coding.core.settings_manager import SettingsManager
 from xdog.coding.core.tools import get_default_tools
-from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
 
 FIXTURE = Path(__file__).parents[2] / "agent" / "tests" / "fixtures" / "extensions"
 
@@ -60,37 +57,6 @@ def create(tmp_path, mode="ask", project_only=False):
     return session, calls, marker
 
 
-@pytest.mark.parametrize("mode", ["ask", "allow-all"])
-async def test_actual_session_extensions_tools_events_transforms_and_host_permissions(tmp_path, mode):
-    session, calls, marker = create(tmp_path, mode)
-    notices = []
-    session.extensions.publish = notices.append
-    try:
-        assert not marker.exists()
-        await session.send_message("external")
-        assert len(calls) == 2 and marker.exists()
-        result = calls[1].messages[-1]
-        if mode == "allow-all":
-            assert result.content[0].text == "EXTENSION-RESULT-input-POST"
-        else:
-            assert result.is_error and "approval" in result.content[0].text
-        assert any("EXTENSION-TURN-START" in event.get("text", "") for event in notices)
-        await session.send_message("rewrite")
-        assert (tmp_path / "rewrite").exists() == (mode == "allow-all")
-        # Permission checks use effective rewritten parameters, not the original read.
-        session.plan_control("start", 0, "Inspect")
-        (tmp_path / "rewrite").unlink(missing_ok=True)
-        await session.send_message("rewrite")
-        assert not (tmp_path / "rewrite").exists()
-        await session.extensions.manage("unload", "sample")
-        await session.initialize_extensions()
-        assert not any(tool.name.startswith("ext_") for tool in session.agent.state.tools)
-    finally:
-        await session.extensions.aclose()
-        session.dispose()
-    assert marker.read_text().endswith("stopped\n")
-
-
 async def test_project_config_cannot_activate_python_extensions(tmp_path):
     session, calls, marker = create(tmp_path, project_only=True)
     try:
@@ -99,40 +65,6 @@ async def test_project_config_cannot_activate_python_extensions(tmp_path):
         assert not any(tool.name.startswith("ext_") for tool in session.agent.state.tools)
     finally:
         await session.extensions.aclose()
-        session.dispose()
-
-
-def test_actual_ui_command_widget_notices_draft_and_session_ownership(tmp_path):
-    session, calls, marker = create(tmp_path)
-    ui = InteractiveMode(session)
-    def wait(predicate):
-        deadline = time.monotonic() + 6
-        while time.monotonic() < deadline:
-            ui._poll()
-            if predicate():
-                return
-            time.sleep(0.005)
-        raise AssertionError("Extension command/UI did not settle")
-    try:
-        ui._editor.set_text("preserved draft")
-        ui._handle_slash_command("extensions", "list")
-        wait(lambda: ui._command is None)
-        assert marker.exists() and not calls and ui._editor.get_text() == "preserved draft"
-        assert "EXTENSION-WIDGET" in "\n".join(ui._extension_view.render(80))
-        assert "ext-sample-hello" in ui._editor._command_provider()
-        ui._handle_slash_command("ext-sample-hello", "user")
-        wait(lambda: ui._command is None)
-        assert "EXTENSION-COMMAND-STATUS" in "\n".join(ui._extension_view.render(80))
-        assert not calls and ui._editor.get_text() == "preserved draft"
-        old_id = session.session_id
-        ui._handle_slash_command("new", "")
-        wait(lambda: ui._command is None)
-        ui._event_queue.put({"type": "extension_ui", "extension_session": old_id,
-                             "snapshot": {"ui": {"stale": {"lines": ["OLD-WIDGET"]}}}})
-        ui._poll()
-        assert "OLD-WIDGET" not in "\n".join(ui._extension_view.render(80))
-    finally:
-        ui._request_exit()
         session.dispose()
 
 

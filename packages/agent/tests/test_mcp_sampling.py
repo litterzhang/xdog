@@ -58,17 +58,24 @@ def test_sampling_result_exact_typed_block_metadata_not_plain_string(content):
     assert result(value, request(envelope())) == value
 
 
-@pytest.mark.parametrize('value', [
-    {'model': '', 'role': 'assistant', 'content': {'type': 'text', 'text': 'body'}},
-    {'model': 'chosen', 'role': 'system', 'content': {'type': 'text', 'text': 'body'}},
-    {'model': 'chosen', 'role': 'assistant', 'content': [{'type': 'text', 'text': 'body'}]},
-    {'model': 'chosen', 'role': 'assistant', 'content': {
-        'type': 'tool_use', 'name': 'unreviewed', 'id': 'call', 'input': {}}},
-    {'model': 'chosen', 'role': 'assistant', 'content': {'type': 'unknown', 'data': 'not dropped'}},
-])
-def test_invalid_result_cannot_impersonate_approved_model_or_tool(value):
-    with pytest.raises(McpError):
-        result(value, request(envelope()))
+def test_invalid_result_cannot_impersonate_approved_model_or_tool() -> None:
+
+    def _check_case(value):
+        with pytest.raises(McpError):
+            result(value, request(envelope()))
+
+    for value in [
+        {"model": "", "role": "assistant", "content": {"type": "text", "text": "body"}},
+        {"model": "chosen", "role": "system", "content": {"type": "text", "text": "body"}},
+        {"model": "chosen", "role": "assistant", "content": [{"type": "text", "text": "body"}]},
+        {
+            "model": "chosen",
+            "role": "assistant",
+            "content": {"type": "tool_use", "name": "unreviewed", "id": "call", "input": {}},
+        },
+        {"model": "chosen", "role": "assistant", "content": {"type": "unknown", "data": "not dropped"}},
+    ]:
+        _check_case(value)
 
 
 def test_tool_result_and_use_retained_only_with_explicit_named_tool_request():
@@ -110,36 +117,61 @@ def test_parallel_original_tool_pairing_and_icon_task_metadata_remain_inert_and_
     assert request(source) == source
 
 
-@pytest.mark.parametrize('fault', ['missing', 'duplicate-call', 'duplicate-result', 'foreign-result',
-                                  'user-call', 'assistant-result', 'early-assistant'])
-def test_invalid_tool_pairing_refuses_before_review_or_model_conversion(fault):
-    rows = paired_messages()
-    if fault == 'missing':
-        rows.pop(1)
-    elif fault == 'duplicate-call':
-        rows[0]['content'][1]['id'] = '1'
-    elif fault == 'duplicate-result':
-        rows[1]['content'][1]['toolUseId'] = '2'
-    elif fault == 'foreign-result':
-        rows[1]['content'][1]['toolUseId'] = 'foreign'
-    elif fault == 'user-call':
-        rows[0]['role'] = 'user'
-    elif fault == 'assistant-result':
-        rows[1]['role'] = 'assistant'
-    else:
-        rows.insert(1, {'role': 'assistant', 'content': {'type': 'text', 'text': 'premature'}})
-    with pytest.raises(McpError):
-        request(envelope(messages=rows))
+def test_invalid_tool_pairing_refuses_before_review_or_model_conversion() -> None:
+
+    def _check_case(fault):
+        rows = paired_messages()
+        if fault == "missing":
+            rows.pop(1)
+        elif fault == "duplicate-call":
+            rows[0]["content"][1]["id"] = "1"
+        elif fault == "duplicate-result":
+            rows[1]["content"][1]["toolUseId"] = "2"
+        elif fault == "foreign-result":
+            rows[1]["content"][1]["toolUseId"] = "foreign"
+        elif fault == "user-call":
+            rows[0]["role"] = "user"
+        elif fault == "assistant-result":
+            rows[1]["role"] = "assistant"
+        else:
+            rows.insert(1, {"role": "assistant", "content": {"type": "text", "text": "premature"}})
+        with pytest.raises(McpError):
+            request(envelope(messages=rows))
+
+    for fault in [
+        "missing",
+        "duplicate-call",
+        "duplicate-result",
+        "foreign-result",
+        "user-call",
+        "assistant-result",
+        "early-assistant",
+    ]:
+        _check_case(fault)
 
 
-@pytest.mark.parametrize('fields', [{'task': {'ttl': None}}, {'task': {'ttl': False}},
-                                  {'_meta': {'progressToken': True}},
-                                  {'tools': [{'name': 'x', 'inputSchema': {'type': 'object'}, 'icons': 'bad'}]},
-                                  {'tools': [{'name': 'x', 'inputSchema': {'type': 'object'},
-                                              'icons': [{'src': 'https://inert', 'theme': 'automatic'}]}]}])
-def test_bad_optional_icon_task_progress_metadata_is_not_silently_accepted(fields):
-    with pytest.raises(McpError):
-        request(envelope(**fields))
+def test_bad_optional_icon_task_progress_metadata_is_not_silently_accepted() -> None:
+
+    def _check_case(fields):
+        with pytest.raises(McpError):
+            request(envelope(**fields))
+
+    for fields in [
+        {"task": {"ttl": None}},
+        {"task": {"ttl": False}},
+        {"_meta": {"progressToken": True}},
+        {"tools": [{"name": "x", "inputSchema": {"type": "object"}, "icons": "bad"}]},
+        {
+            "tools": [
+                {
+                    "name": "x",
+                    "inputSchema": {"type": "object"},
+                    "icons": [{"src": "https://inert", "theme": "automatic"}],
+                }
+            ]
+        },
+    ]:
+        _check_case(fields)
 
 
 def test_duplicate_output_tool_calls_and_forged_tool_result_refused():

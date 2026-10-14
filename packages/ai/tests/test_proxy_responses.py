@@ -826,17 +826,21 @@ async def test_client_tool_search_call_and_discovery_replay(stream: bool) -> Non
     assert response["tools"] == [spec, discovered]
 
 
-@pytest.mark.parametrize("item,param", [
-    ({"type": "tool_search_call", "execution": "server"}, "input[0].execution"),
-    ({"type": "tool_search_call", "execution": "client", "arguments": {}}, "input[0].call_id"),
-    ({"type": "tool_search_call", "execution": "client", "call_id": "s", "arguments": "{}"}, "input[0].arguments"),
-    ({"type": "tool_search_output", "execution": "client", "call_id": "s", "tools": {}}, "input[0].tools"),
-    ({"type": "tool_search_output", "execution": "server", "call_id": "s", "tools": []}, "input[0].execution"),
-])
-def test_invalid_tool_search_history_is_rejected(item: dict[str, Any], param: str) -> None:
-    with pytest.raises(InvalidRequest) as exc:
-        parse_request({"model": "test", "input": [item]})
-    assert exc.value.param == param
+def test_invalid_tool_search_history_is_rejected() -> None:
+
+    def _check_case(item: "dict[str, Any]", param: "str") -> "None":
+        with pytest.raises(InvalidRequest) as exc:
+            parse_request({"model": "test", "input": [item]})
+        assert exc.value.param == param
+
+    for item, param in [
+        ({"type": "tool_search_call", "execution": "server"}, "input[0].execution"),
+        ({"type": "tool_search_call", "execution": "client", "arguments": {}}, "input[0].call_id"),
+        ({"type": "tool_search_call", "execution": "client", "call_id": "s", "arguments": "{}"}, "input[0].arguments"),
+        ({"type": "tool_search_output", "execution": "client", "call_id": "s", "tools": {}}, "input[0].tools"),
+        ({"type": "tool_search_output", "execution": "server", "call_id": "s", "tools": []}, "input[0].execution"),
+    ]:
+        _check_case(item, param)
 
 
 def test_server_tool_search_remains_unsupported() -> None:

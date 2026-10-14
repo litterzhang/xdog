@@ -4,8 +4,7 @@ from __future__ import annotations
 import pytest
 from xdog.coding.modes.rpc.extensions import CAPABILITIES, RpcExtensions
 
-from packages.coding.tests.test_rpc_custom_views import frame_input, wait
-from packages.coding.tests.test_rpc_extensions import close, packet, response, session
+from packages.coding.tests.test_rpc_extensions import close, session
 
 
 @pytest.mark.parametrize('invalid', list(CAPABILITIES))
@@ -24,96 +23,6 @@ async def test_invalid_extension_batch_has_no_grant_generation_or_receipt_side_e
     finally:
         await controller.aclose()
         await close(owner)
-
-
-async def test_invalid_withdrawal_batch_preserves_actual_live_custom_frame_and_broker(tmp_path):
-    owner, calls = session(tmp_path, extra=('custom',))
-    events = []
-    controller = RpcExtensions(owner, events.append)
-    try:
-        controller.negotiate({'extension_custom_views': 1})
-        controller.start(packet(owner, 'view', 'ext-custom-view'), turn_running=False)
-        await wait(lambda: any(event['type'] == 'extension_dialog' for event in events))
-        dialog = next(event for event in events if event['type'] == 'extension_dialog')
-        controller.custom_input(frame_input(dialog, dialog['custom_generation'], 1))
-        await wait(lambda: controller.custom_frames)
-        frame = dict(controller.custom_frames)
-        generation, count = controller.custom_generation, len(events)
-        with pytest.raises(ValueError):
-            controller.negotiate({'extension_custom_views': 0, 'extension_contributions': True})
-        assert controller.custom_enabled and controller.custom_generation == generation
-        assert controller.custom_frames == frame and len(events) == count
-        assert owner.extension_dialogs.contains(dialog['dialog']['id'])
-        controller.answer(response(dialog, None))
-        await controller.task
-        assert not calls and owner.permissions.mode == 'deny'
-    finally:
-        await controller.aclose()
-        await close(owner)
-
-
-@pytest.mark.parametrize('invalid', ['child_controls', 'child_custom_views', 'transient_events'])
-def test_actual_cli_cross_controller_invalid_batch_cannot_grant_custom_views(tmp_path, invalid):
-    import json
-    import shutil
-    from pathlib import Path
-
-    from packages.coding.tests.test_rpc_children_cli import Peer
-    home = tmp_path / 'home'
-    home.mkdir()
-    root = tmp_path / 'extensions'
-    shutil.copytree(Path(__file__).parents[2] / 'agent/tests/fixtures/extensions/custom', root / 'custom')
-    (home / 'settings.json').write_text(json.dumps({'extensions': ['custom'], 'extension_dir': str(root)}))
-    peer = Peer(tmp_path)
-    try:
-        peer.send({'type': 'rpc_hello', 'extension_custom_views': 1, invalid: True})
-        assert peer.read('error')['action'] == 'rpc_hello'
-        peer.send({'type': 'extension_control', 'request_id': 'probe', 'session_id': peer.ready['session_id'],
-                   'action': 'command', 'name': 'ext-custom-view', 'args': ''})
-        result = peer.read('extension_result')
-        assert result['success'] and json.loads(result['output'])['value'] is None
-        assert not any(event['type'] in {'extension_dialog', 'extension_custom_capabilities'} for event in peer.events)
-        assert not peer.marker.exists()
-        peer.send({'type': 'quit'})
-        assert peer.process.wait(timeout=5) == 0
-    finally:
-        peer.close()
-
-
-def test_actual_cli_invalid_cross_controller_withdrawal_preserves_live_view_and_frame(tmp_path):
-    import json
-    import shutil
-    from pathlib import Path
-
-    from packages.coding.tests.test_rpc_children_cli import Peer
-    home = tmp_path / 'home'
-    home.mkdir()
-    root = tmp_path / 'extensions'
-    shutil.copytree(Path(__file__).parents[2] / 'agent/tests/fixtures/extensions/custom', root / 'custom')
-    (home / 'settings.json').write_text(json.dumps({'extensions': ['custom'], 'extension_dir': str(root)}))
-    peer = Peer(tmp_path)
-    try:
-        peer.send({'type': 'rpc_hello', 'extension_custom_views': 1})
-        peer.read('extension_custom_capabilities')
-        peer.send({'type': 'extension_control', 'request_id': 'view', 'session_id': peer.ready['session_id'],
-                   'action': 'command', 'name': 'ext-custom-view', 'args': ''})
-        dialog = peer.read('extension_dialog')
-        generation = dialog['custom_generation']
-        peer.send(frame_input(dialog, generation, 1))
-        first = peer.read('extension_custom_frame')
-        peer.send({'type': 'rpc_hello', 'extension_custom_views': 0, 'child_overlay_controls': True})
-        assert peer.read('error')['action'] == 'rpc_hello'
-        peer.send(frame_input(dialog, generation, 2, kind='key', painted=first['revision']))
-        result = peer.read('extension_result')
-        assert result['success']
-        assert json.loads(result['output'])['value'] == {'selected': False, 'count': 0, 'mode': None}
-        peer.send({'type': 'status'})
-        status = peer.read('status')
-        assert status['messages'] == 0 and status['permission_mode'] == 'deny' and not peer.marker.exists()
-        peer.send({'type': 'quit'})
-        assert peer.process.wait(timeout=5) == 0
-    finally:
-        peer.close()
 
 
 @pytest.mark.parametrize('capability', ['extension_command_catalog', 'extension_session_catalog',

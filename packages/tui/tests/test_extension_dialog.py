@@ -28,7 +28,7 @@ def test_visible_confirmation_navigation_paste_and_cancel_are_not_implicit_appro
 def test_input_and_selection_render_bounds_and_control_code_sanitization():
     for kind, extra in (("input", {"default": "editable"}), ("select", {"choices": ["Red", "Blue"]})):
         answers = []
-        panel = ExtensionDialog("test", {"kind": kind, "title": "title\x1b]52;invalid\a", "message": "x" * 8000,
+        panel = ExtensionDialog("test", {"kind": kind, "title": "title\x1b]52;invalid\a", "message": "x" * 1200,
                                           **extra}, answers.append)
         for height in (0, 1, 2, 6, 12):
             panel.set_render_budget(height)

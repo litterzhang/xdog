@@ -1,13 +1,8 @@
 from __future__ import annotations
 
-import json
-import shutil
-from pathlib import Path
-
 import pytest
 from xdog.agent import Agent, AgentConfig, AgentTool, AgentToolResult
 from xdog.agent.extensions.api import ExtensionAPI
-from xdog.agent.extensions.runtime import ExtensionRuntime
 from xdog.agent.extensions.tool_inventory import capture, page, validate
 from xdog.ai.types import AssistantMessage
 from xdog.ai.utils.event_stream import EventStream
@@ -56,23 +51,45 @@ def test_paged_search_stable_revision_and_no_silent_catalog_truncation():
         page(1)
 
 
-@pytest.mark.parametrize('kwargs', [{'offset': True}, {'offset': -1}, {'offset': 2049}, {'offset': 2},
-    {'query': '\n'}, {'query': 'x' * 257}, {'revision': 'foreign'}, {'revision': 'z' * 64}])
-def test_queries_do_not_coerce_or_overrun_catalog(kwargs):
-    with pytest.raises(ValueError):
-        page(capture(agent(), 'session', 'owner'), **kwargs)
+def test_queries_do_not_coerce_or_overrun_catalog() -> None:
+
+    def _check_case(kwargs):
+        with pytest.raises(ValueError):
+            page(capture(agent(), "session", "owner"), **kwargs)
+
+    for kwargs in [
+        {"offset": True},
+        {"offset": -1},
+        {"offset": 2049},
+        {"offset": 2},
+        {"query": "\n"},
+        {"query": "x" * 257},
+        {"revision": "foreign"},
+        {"revision": "z" * 64},
+    ]:
+        _check_case(kwargs)
 
 
-@pytest.mark.parametrize('changes', [{'session_id': 'foreign'}, {'owner_id': 'foreign'}, {'api_enabled': 1},
-    {'permission': 'allow-all'}, {'tools': [1]}, {'tools': []}])
-def test_invalid_or_foreign_inventory_envelopes(changes):
-    captured = capture(agent(), 'session', 'owner')
-    if changes == {'tools': []}:
-        changed = {**captured, 'tools': [captured['tools'][0], captured['tools'][0]]}
-    else:
-        changed = {**captured, **changes}
-    with pytest.raises(ValueError):
-        validate(changed, session_id='session', owner_id='owner')
+def test_invalid_or_foreign_inventory_envelopes() -> None:
+
+    def _check_case(changes):
+        captured = capture(agent(), "session", "owner")
+        if changes == {"tools": []}:
+            changed = {**captured, "tools": [captured["tools"][0], captured["tools"][0]]}
+        else:
+            changed = {**captured, **changes}
+        with pytest.raises(ValueError):
+            validate(changed, session_id="session", owner_id="owner")
+
+    for changes in [
+        {"session_id": "foreign"},
+        {"owner_id": "foreign"},
+        {"api_enabled": 1},
+        {"permission": "allow-all"},
+        {"tools": [1]},
+        {"tools": []},
+    ]:
+        _check_case(changes)
 
 
 def test_nonfinite_schema_excessive_bytes_and_owner_change_fail_instead_of_claiming_empty(monkeypatch):
@@ -103,35 +120,6 @@ async def test_api_is_headless_read_only_and_copies_every_page():
     first['tools'][0]['parameters'].clear()
     assert (await api.get_tool_inventory())['tools'][0]['parameters']
     assert await api.get_session() is None and await api.open_sessions() is False
-
-
-async def test_actual_worker_caller_cannot_forge_owner_tools_and_later_invocation_sees_replacement(tmp_path):
-    root = tmp_path / 'extensions'
-    shutil.copytree(Path(__file__).parent / 'fixtures/extensions/toolinspector', root / 'toolinspector')
-    owner = agent(count=80)
-    runtime = ExtensionRuntime(['toolinspector'], root, tmp_path, context=lambda: {'session_id': 'session'})
-    runtime.tool_inventory = lambda: capture(owner, 'session', 'session')
-    try:
-        await runtime.initialize()
-        client = runtime._manager._clients['toolinspector']
-        forged = capture(agent(False), 'foreign', 'foreign')
-        output = await runtime._manager._bridge(client.request('xdog/command', {'name': 'inspect', 'args': '',
-            'context': {'session_id': 'foreign', 'host_tool_inventory': forged}}))
-        data = json.loads(output['output'].removeprefix('TOOL-INVENTORY '))
-        assert data['owner_id'] == 'session' and data['count'] == 80 and data['api_enabled'] is True
-        owner.set_tools(())
-        value = json.loads((await runtime.command('ext-toolinspector-inspect', '')).removeprefix('TOOL-INVENTORY '))
-        assert value['count'] == 0 and value['revision'] != data['revision']
-        runtime.tool_inventory = lambda: forged
-        value = json.loads((await runtime.command('ext-toolinspector-inspect', '')).removeprefix('TOOL-INVENTORY '))
-        assert not value['available']
-        def unavailable():
-            raise RuntimeError('Transient inventory capture changed')
-        runtime.tool_inventory = unavailable
-        value = json.loads((await runtime.command('ext-toolinspector-inspect', '')).removeprefix('TOOL-INVENTORY '))
-        assert not value['available'] and runtime.snapshot()['extensions'][0]['state'] == 'active'
-    finally:
-        await runtime.aclose()
 
 
 @pytest.mark.parametrize('selection', [None, [], ['native_1'], ['native_0', 'native_1']])

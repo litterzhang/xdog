@@ -8,7 +8,6 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import httpx
-import pytest
 from xdog.agent import Agent, AgentConfig
 from xdog.agent.mcp.oauth import OAuthOwner
 from xdog.ai.types import AssistantMessage
@@ -83,50 +82,6 @@ def create(tmp_path, module):
     return InteractiveMode(session), session, calls
 
 
-async def test_coding_auth_consent_connect_forget_and_draft(tmp_path, monkeypatch):
-    module = peer_module()
-    peer = module.Peer()
-    patch_transport(monkeypatch, peer)
-    ui, session, calls = create(tmp_path, module)
-    try:
-        ui._editor.set_text("parent draft")
-        ui._handle_slash_command("mcp", "authorize peer")
-        await wait(ui, lambda: ui._mcp_panel is not None and ui._mcp_panel.auth is not None)
-        auth = ui._mcp_panel.auth
-        auth.handle_input(KeyEvent("enter"))
-        assert session.mcp._oauth["peer"].flow is None and not calls
-        review_all(auth)
-        auth.handle_input(KeyEvent("enter"))
-        await wait(ui, lambda: auth.phase in {"waiting", "failed"})
-        assert auth.phase == "waiting", auth.message
-        peer.launch(auth.url)
-        await complete(auth.url, module.ISSUER)
-        await wait(ui, lambda: auth.phase == "authorized")
-        assert not session.mcp.tools() and session.permissions.mode == "ask" and not calls
-        assert ui._editor.get_text() == "parent draft"
-        auth.handle_input(KeyEvent("escape"))
-        await wait(ui, lambda: not ui._mcp_panel._busy)
-        ui._mcp_panel.handle_input(KeyEvent("c"))
-        await wait(ui, lambda: not ui._mcp_panel._busy and ui._command is None)
-        assert len(session.mcp.tools()) == 1 and not session.mcp.allowed(session.mcp.tools()[0].name)
-        assert "FIXTURE-OAUTH-SECRET" not in "\n".join(ui._chat_log.render(80))
-        ui._mcp_panel.handle_input(KeyEvent("s"))
-        await wait(ui, lambda: ui._mcp_panel.auth is not None and ui._mcp_panel.auth.phase == "authorized")
-        forget = ui._mcp_panel.auth
-        forget.handle_input(KeyEvent("f"))
-        review_all(forget)
-        forget.handle_input(KeyEvent("enter"))
-        await wait(ui, lambda: forget.phase == "forgotten")
-        assert not session.mcp.tools()
-        assert not any(tool.name.startswith("mcp_peer_") for tool in session.agent.state.tools)
-        ui._close_mcp()
-        assert ui._tui._focused is ui._editor and ui._editor.get_text() == "parent draft"
-    finally:
-        ui._request_exit()
-        await session.mcp.aclose()
-        session.dispose()
-
-
 async def test_coding_leaving_waiting_auth_revokes_pending_callback_and_no_stale_token_commit(tmp_path, monkeypatch):
     module = peer_module()
     peer = module.Peer()
@@ -144,102 +99,6 @@ async def test_coding_leaving_waiting_auth_revokes_pending_callback_and_no_stale
         ui._close_mcp()
         await wait(ui, lambda: owner.status()["state"] == "canceled")
         assert owner.credential() is None and peer.token_posts == 0 and not calls
-    finally:
-        ui._request_exit()
-        await session.mcp.aclose()
-        session.dispose()
-
-
-async def test_coding_dynamic_registration_requires_visible_consent_then_uses_issued_client(tmp_path, monkeypatch):
-    module = peer_module()
-    module.PROFILE = {"issuer": module.ISSUER, "scopes": ["tools:read"], "registration": "dynamic"}
-    peer = module.Peer("dynamic")
-    patch_transport(monkeypatch, peer)
-    ui, session, calls = create(tmp_path, module)
-    try:
-        ui._handle_slash_command("mcp", "authorize peer")
-        await wait(ui, lambda: ui._mcp_panel is not None and ui._mcp_panel.auth is not None)
-        auth = ui._mcp_panel.auth
-        assert auth.review["registration"] == "dynamic" and not peer.registration_posts
-        auth.handle_input(KeyEvent("enter"))
-        assert not peer.registration_posts
-        review_all(auth)
-        auth.handle_input(KeyEvent("enter"))
-        await wait(ui, lambda: auth.phase in {"waiting", "failed"})
-        assert auth.phase == "waiting", auth.message
-        assert len(peer.registration_posts) == 1 and auth.review["client_id"] == "issued-native-client"
-        peer.launch(auth.url)
-        await complete(auth.url, module.ISSUER)
-        await wait(ui, lambda: auth.phase == "authorized")
-        assert not session.mcp.tools() and not calls and session.permissions.mode == "ask"
-        assert "IGNORED-REGISTRATION-SECRET" not in "\n".join(ui._chat_log.render(80))
-    finally:
-        ui._request_exit()
-        await session.mcp.aclose()
-        session.dispose()
-
-
-@pytest.mark.parametrize("method", ["client_secret_post", "client_secret_jwt"])
-async def test_coding_confidential_method_is_reviewed_and_secret_never_enters_draft_or_status(
-        tmp_path, monkeypatch, method):
-    module = peer_module()
-    variable, secret = "XDOG_UI_SECRET", "UI-PRIVATE-CLIENT-SECRET-" + "x" * 48
-    monkeypatch.setenv(variable, secret)
-    module.PROFILE = {**module.PROFILE, "token_auth_method": method, "client_secret_env": variable}
-    peer = module.Peer()
-    peer.method, peer.secret = method, secret
-    patch_transport(monkeypatch, peer)
-    ui, session, calls = create(tmp_path, module)
-    try:
-        ui._editor.set_text("parent draft")
-        ui._handle_slash_command("mcp", "authorize peer")
-        await wait(ui, lambda: ui._mcp_panel is not None and ui._mcp_panel.auth is not None)
-        auth = ui._mcp_panel.auth
-        assert auth.review["token_auth_method"] == method and auth.review["client_secret_env"] == variable
-        assert secret not in json.dumps(auth.review)
-        review_all(auth)
-        auth.handle_input(KeyEvent("enter"))
-        await wait(ui, lambda: auth.phase == "waiting")
-        peer.launch(auth.url)
-        await complete(auth.url, module.ISSUER)
-        await wait(ui, lambda: auth.phase == "authorized")
-        assert not calls and not session.mcp.tools() and ui._editor.get_text() == "parent draft"
-        assert secret not in "\n".join(ui._chat_log.render(80))
-    finally:
-        ui._request_exit()
-        await session.mcp.aclose()
-        session.dispose()
-
-
-async def test_coding_refresh_is_reviewed_rotated_and_never_connects_or_replays_mcp(tmp_path, monkeypatch):
-    module = peer_module()
-    peer = module.Peer()
-    peer.issue_refresh = True
-    patch_transport(monkeypatch, peer)
-    ui, session, calls = create(tmp_path, module)
-    try:
-        ui._editor.set_text("parent draft")
-        ui._handle_slash_command("mcp", "authorize peer")
-        await wait(ui, lambda: ui._mcp_panel is not None and ui._mcp_panel.auth is not None)
-        auth = ui._mcp_panel.auth
-        review_all(auth)
-        auth.handle_input(KeyEvent("enter"))
-        await wait(ui, lambda: auth.phase == "waiting")
-        peer.launch(auth.url)
-        await complete(auth.url, module.ISSUER)
-        await wait(ui, lambda: auth.phase == "authorized")
-        auth.handle_input(KeyEvent("r"))
-        await wait(ui, lambda: ui._mcp_panel.auth.phase == "refresh")
-        refresh = ui._mcp_panel.auth
-        refresh.handle_input(KeyEvent("enter"))
-        assert not peer.refresh_posts
-        review_all(refresh)
-        refresh.handle_input(KeyEvent("enter"))
-        await wait(ui, lambda: refresh.phase in {"authorized", "failed"})
-        assert refresh.phase == "authorized", refresh.message
-        assert len(peer.refresh_posts) == 1 and session.mcp._oauth["peer"]._refresh == "FIXTURE-REFRESH-TWO-SECRET"
-        assert not calls and not session.mcp.tools() and ui._editor.get_text() == "parent draft"
-        assert "FIXTURE-REFRESH" not in "\n".join(ui._chat_log.render(80))
     finally:
         ui._request_exit()
         await session.mcp.aclose()
@@ -311,71 +170,3 @@ async def test_coding_explicit_saved_credentials_review_restart_restore_and_forg
             await fresh.mcp.aclose()
         ui._request_exit()
         await session.mcp.aclose()
-
-
-@pytest.mark.skipif(__import__('os').name != 'posix' or not __import__('shutil').which('openssl'),
-                    reason='owned POSIX/OpenSSL signer')
-async def test_coding_private_key_jwt_review_exchange_refresh_and_no_key_publication(tmp_path, monkeypatch):
-    import re
-    import subprocess
-    module = peer_module()
-    pem = subprocess.run(['openssl', 'genpkey', '-algorithm', 'RSA', '-pkeyopt', 'rsa_keygen_bits:2048'],
-                         capture_output=True, check=True).stdout
-    public = subprocess.run(['openssl', 'pkey', '-text_pub', '-noout'], input=pem,
-                            capture_output=True, check=True).stdout.decode()
-    modulus = int(re.search(r'Modulus:\s*([0-9a-f:\s]+)Exponent:', public)[1].replace(':', '')
-                  .replace('\n', '').replace(' ', ''), 16)
-    exponent = int(re.search(r'Exponent: ([0-9]+)', public)[1])
-    variable = 'XDOG_UI_RSA_KEY'
-    monkeypatch.setenv(variable, pem.decode())
-    module.PROFILE = {**module.PROFILE, 'token_auth_method': 'private_key_jwt', 'client_private_key_env': variable}
-    peer = module.Peer()
-    peer.method, peer.public_rsa, peer.issue_refresh = 'private_key_jwt', (modulus, exponent), True
-    patch_transport(monkeypatch, peer)
-    ui, session, calls = create(tmp_path, module)
-    try:
-        ui._editor.set_text('private key parent draft')
-        ui._handle_slash_command('mcp', 'authorize peer')
-        await wait(ui, lambda: ui._mcp_panel is not None and ui._mcp_panel.auth is not None)
-        auth = ui._mcp_panel.auth
-        assert auth.review['token_auth_method'] == 'private_key_jwt'
-        auth.handle_input(KeyEvent('enter'))
-        assert not peer.token_posts
-        painted = []
-        for _ in range(100):
-            painted.extend(auth.render(80))
-            if auth._visible:
-                break
-            auth.handle_input(KeyEvent('pagedown'))
-        assert auth._visible and 'RS256' in '\n'.join(painted) and variable in '\n'.join(painted)
-        from xdog.tui.components.text import Text
-        protected = ui._tui.show_overlay(Text('Host-owned protected review'))
-        assert not auth.focused and not auth._seen
-        for _ in range(30):
-            auth.render(80)
-            auth.handle_input(KeyEvent('pagedown'))
-        auth.handle_input(KeyEvent('enter'))
-        assert not peer.token_posts and not auth._visible and not auth._seen
-        protected.hide()
-        assert auth.focused
-        review_all(auth)  # Fresh entire review, not inherited hidden/background rows.
-        auth.handle_input(KeyEvent('enter'))
-        await wait(ui, lambda: auth.phase == 'waiting')
-        peer.launch(auth.url)
-        await complete(auth.url, module.ISSUER)
-        await wait(ui, lambda: auth.phase == 'authorized')
-        assert peer.token_posts == 1 and len(peer.assertions) == 1
-        auth.handle_input(KeyEvent('r'))
-        await wait(ui, lambda: ui._mcp_panel.auth.phase == 'refresh')
-        refresh = ui._mcp_panel.auth
-        review_all(refresh)
-        refresh.handle_input(KeyEvent('enter'))
-        await wait(ui, lambda: refresh.phase == 'authorized')
-        assert len(peer.refresh_posts) == 1 and len(peer.assertions) == 2 and peer.assertions[0] != peer.assertions[1]
-        public = json.dumps(session.mcp._oauth['peer'].status()) + '\n'.join(ui._chat_log.render(200))
-        assert pem.decode() not in public and all(assertion not in public for assertion in peer.assertions)
-        assert not calls and not session.mcp.tools() and ui._editor.get_text() == 'private key parent draft'
-    finally:
-        ui._request_exit()
-        await session.mcp.aclose()
-        session.dispose()

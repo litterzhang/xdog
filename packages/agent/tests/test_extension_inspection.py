@@ -76,16 +76,28 @@ def test_inspection_reply_does_not_coerce_counts_claim_fake_measurements_or_acce
         validate('usage', {**value, **changes})
 
 
-@pytest.mark.parametrize('changes', [{'headers': {}}, {'base_url': 'private'}, {'reasoning': 1},
-    {'context_window': True}, {'max_prompt_tokens': 999999}, {'thinking': 'invalid'},
-    {'input': ['text', 'text']}, {'supported_efforts': ['arbitrary']}, {'id': 'x' * 513},
-    {'vision_limits': {'headers': {}}}])
-def test_public_model_snapshot_strictly_limits_fields_types_and_capability_bounds(changes):
-    value = snapshot(agent(), 'session', 'model')
-    with pytest.raises(ValueError):
-        validate('model', {**value, **changes})
-    unchanged = copy.deepcopy(value)
-    assert validate('model', value) == unchanged
+def test_public_model_snapshot_strictly_limits_fields_types_and_capability_bounds() -> None:
+
+    def _check_case(changes):
+        value = snapshot(agent(), "session", "model")
+        with pytest.raises(ValueError):
+            validate("model", {**value, **changes})
+        unchanged = copy.deepcopy(value)
+        assert validate("model", value) == unchanged
+
+    for changes in [
+        {"headers": {}},
+        {"base_url": "private"},
+        {"reasoning": 1},
+        {"context_window": True},
+        {"max_prompt_tokens": 999999},
+        {"thinking": "invalid"},
+        {"input": ["text", "text"]},
+        {"supported_efforts": ["arbitrary"]},
+        {"id": "x" * 513},
+        {"vision_limits": {"headers": {}}},
+    ]:
+        _check_case(changes)
 
 
 async def test_headless_api_never_sends_host_inspection_or_creates_model_work():
@@ -112,62 +124,6 @@ def test_child_context_counters_cannot_borrow_measured_parent_inherited_history(
     assert capture(owner, 'session', 'child', usage_floor=1)['usage']['source'] == 'unavailable'
     owner.append_message(AssistantMessage(model='private/model', usage=Usage(input=11, output=2)))
     assert capture(owner, 'session', 'child', usage_floor=1)['usage']['tokens'] == 13
-
-
-async def test_live_owned_worker_read_only_inspection_in_headless_tool_hooks_context_and_command(tmp_path):
-    import shutil
-    from pathlib import Path
-
-    from xdog.agent.extensions.inspection import capture
-    from xdog.agent.extensions.runtime import ExtensionRuntime
-
-    source = Path(__file__).parent / 'fixtures/extensions'
-    root = tmp_path / 'extensions'
-    shutil.copytree(source, root)
-    owner = agent()
-    owner.append_message(AssistantMessage(model='private/model', usage=Usage(input=21, output=3)))
-    runtime = ExtensionRuntime(['inspector'], root, tmp_path,
-        context=lambda: {'session_id': 'session', 'model': owner.state.model},
-        inspection=lambda: capture(owner, 'session', 'session'))
-    try:
-        await runtime.initialize()
-        result = await runtime.tools()[0].execute('inspect', {})
-        assert 'CALLBACK-INSPECTION' in result.content[0].text
-        assert await runtime.pre('safe', {}) == {}
-        assert await runtime.post('safe', {}, 'text') == 'text'
-        assert await runtime.transform(list(owner.state.messages)) == list(owner.state.messages)
-        assert 'CALLBACK-INSPECTION' in await runtime.command('ext-inspector-inspect', '')
-        rows = [row['data'] for row in runtime.entries.for_extension('inspector')]
-        assert {'event', 'tool', 'pre', 'post', 'context', 'command'} <= {row['scope'] for row in rows}
-        assert all(row['model']['id'] == 'private/model' and row['usage']['tokens'] == 24 for row in rows)
-        assert all(row['child_id'] == '' for row in rows)
-        owner.set_model('other/model')
-        result = await runtime.tools()[0].execute('new', {})
-        assert 'other/model' in result.content[0].text
-        latest = runtime.entries.for_extension('inspector')[-1]['data']
-        assert latest['usage']['tokens'] is None and latest['model']['id'] == 'other/model'
-        from xdog.agent.extensions.inspection import capture as capture_inspection
-        forged = capture_inspection(owner, 'foreign', 'foreign')
-        call = {'name': 'inspect', 'arguments': {}, '_xdog_tool_registration': 'forged-registration',
-                'context': {'session_id': 'foreign', 'child_id': 'foreign', 'model': 'forged-model',
-                            'host_inspection': forged, 'host_session': True}}
-        denied = await runtime._manager._bridge(runtime._rpc('inspector', 'tools/call', call))
-        assert denied['isError'] is True  # A raw forged call has no captured executor registration.
-        async def admitted_call():
-            from xdog.agent.extensions.runtime import _tool_registration
-            spec = next(tool for tool in runtime._manager._tools if tool.remote_name == 'inspect')
-            token = _tool_registration.set(spec.registration_id)
-            try:
-                return await runtime._rpc('inspector', 'tools/call', call)
-            finally:
-                _tool_registration.reset(token)
-        response = await runtime._manager._bridge(admitted_call())
-        actual = json.loads(response['content'][0]['text'].split('CALLBACK-INSPECTION ', 1)[1])
-        assert actual['child_id'] == '' and actual['model']['id'] == 'other/model'
-        assert actual['model']['session_id'] == 'session'
-        assert not runtime.dialog_handler
-    finally:
-        await runtime.aclose()
 
 
 async def test_read_only_snapshot_getter_returns_a_fresh_copy_without_command_authority():

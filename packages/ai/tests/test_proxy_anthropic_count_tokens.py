@@ -76,9 +76,14 @@ def test_count_tokens_parser_takes_immutable_snapshot() -> None:
     assert parsed.native.json() == expected
 
 
-@pytest.mark.parametrize(
-    ("body", "param"),
-    [
+def test_count_tokens_parser_rejects_malformed_outer_structure() -> None:
+
+    def _check_case(body: "Any", param: "str") -> "None":
+        with pytest.raises(InvalidRequest) as caught:
+            parse_count_tokens_request(body)
+        assert caught.value.param == param
+
+    for body, param in [
         (None, "body"),
         ({}, "model"),
         ({"model": "", "messages": []}, "model"),
@@ -88,13 +93,8 @@ def test_count_tokens_parser_takes_immutable_snapshot() -> None:
         ({"model": "claude", "messages": [{"role": "tool", "content": "x"}]}, "messages[0].role"),
         ({"model": "claude", "messages": [{"role": "user", "content": {}}]}, "messages[0].content"),
         ({"model": "claude", "messages": [{"role": "user", "content": ["block"]}]}, "messages[0].content[0]"),
-    ],
-)
-def test_count_tokens_parser_rejects_malformed_outer_structure(body: Any, param: str) -> None:
-    with pytest.raises(InvalidRequest) as caught:
-        parse_count_tokens_request(body)
-
-    assert caught.value.param == param
+    ]:
+        _check_case(body, param)
 
 
 def test_count_tokens_estimator_is_deterministic_non_negative_and_ignores_model() -> None:

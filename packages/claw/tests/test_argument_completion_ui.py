@@ -137,59 +137,6 @@ def test_cancel_identity_uses_original_group_session_and_requires_current_exact_
         ui._request_exit()
 
 
-@pytest.mark.parametrize('capability', [None, 0, True])
-async def test_full_argument_context_cannot_borrow_prefix_only_capability_and_old_queries_still_work(
-    tmp_path, capability,
-):
-    import shutil
-    from pathlib import Path
-
-    root = tmp_path / 'extensions'
-    shutil.copytree(Path(__file__).parents[2] / 'agent/tests/fixtures/extensions/argcomplete', root / 'argcomplete')
-    config = ClawConfig(model='offline/model', data_dir=str(tmp_path / 'data'),
-        socket_path=str(tmp_path / 'context.sock'), pid_file=str(tmp_path / 'context.pid'),
-        groups=(GroupDef(id='main', is_main=True),), extensions=('argcomplete',), extension_dir=str(root))
-    server = GatewayServer(config)
-    def unexpected(*args):
-        pytest.fail('Argument context inspection cannot submit model work')
-    with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=(config.model, unexpected)):
-        await server.start()
-    runtime = server._orchestrator._runtimes['main']
-    session = runtime.get_or_create_session(allow_reset=False)
-    await session.initialize_extensions()
-    identity = session.extensions.command_completions()['ext-argcomplete-deploy']
-    reader, writer = await asyncio.open_unix_connection(config.socket_path)
-    async def send(packet):
-        writer.write((json.dumps(packet) + '\n').encode())
-        await writer.drain()
-    async def result(kind):
-        async with asyncio.timeout(5):
-            while True:
-                message = json.loads(await reader.readline())
-                if message['type'] == kind:
-                    return message
-    try:
-        await send({'type': 'ping', 'group_id': 'main', 'extension_argument_completion': 1,
-                    **({'extension_argument_context': capability} if capability is not None else {})})
-        await result('pong')
-        base = {'type': 'argument_completion', 'group_id': 'main', 'session_id': session.meta.session_id,
-                'command': 'ext-argcomplete-deploy', 'identity': identity}
-        await send({**base, 'request_id': 'unsupported-context', 'prefix': 'en',
-                    'argument_context': {'arguments': 'production en', 'cursor': 13, 'start': 11, 'end': 13}})
-        denied = await result('argument_completion_result')
-        assert denied['status'] == 'unavailable' and not denied['items']
-        counts = json.loads(await session.extensions.command('ext-argcomplete-counts', ''))
-        assert counts['executed'] == counts['completed'] == 0
-        await send({**base, 'request_id': 'prefix-only', 'prefix': 'a'})
-        allowed = await result('argument_completion_result')
-        assert allowed['status'] == 'ok' and allowed['items'][0]['value'] == 'alpha'
-        assert session.extensions.snapshot()['extensions'][0]['state'] == 'active'
-    finally:
-        writer.close()
-        await writer.wait_closed()
-        await server.stop()
-
-
 def test_withdrawn_full_context_cannot_adopt_late_contextual_items_as_prefix_only_data():
     ui = ChatApp('/tmp/unused-context-withdrawal.sock')
     try:

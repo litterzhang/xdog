@@ -47,32 +47,52 @@ def test_named_primitive_and_titled_enum_contract_retained(field):
     assert result({'action': 'accept', 'content': {'field': field['default']}}, source)['action'] == 'accept'
 
 
-@pytest.mark.parametrize('field', [
-    {'type': 'object'}, {'type': 'string', '$ref': 'https://never-fetch.invalid/schema'},
-    {'type': 'string', 'enum': ['duplicate', 'duplicate']},
-    {'type': 'string', 'enum': ['one'], 'enumNames': []},
-    {'type': 'string', 'minLength': 5, 'maxLength': 2},
-    {'type': 'boolean', 'default': 'not bool'}, {'type': 'integer', 'default': 1.5},
-    {'type': 'array', 'items': {'type': 'string'}}, {'type': 'string', 'format': 'password'},
-])
-def test_unsupported_or_invalid_schema_refuses_not_fetches_or_coerces(field):
-    with pytest.raises(McpError):
-        request(form(requestedSchema={'type': 'object', 'properties': {'field': field}}))
+def test_unsupported_or_invalid_schema_refuses_not_fetches_or_coerces() -> None:
+
+    def _check_case(field):
+        with pytest.raises(McpError):
+            request(form(requestedSchema={"type": "object", "properties": {"field": field}}))
+
+    for field in [
+        {"type": "object"},
+        {"type": "string", "$ref": "https://never-fetch.invalid/schema"},
+        {"type": "string", "enum": ["duplicate", "duplicate"]},
+        {"type": "string", "enum": ["one"], "enumNames": []},
+        {"type": "string", "minLength": 5, "maxLength": 2},
+        {"type": "boolean", "default": "not bool"},
+        {"type": "integer", "default": 1.5},
+        {"type": "array", "items": {"type": "string"}},
+        {"type": "string", "format": "password"},
+    ]:
+        _check_case(field)
 
 
-@pytest.mark.parametrize('url', ['https://operator.example/flow?id=one', 'http://operator.example/flow',
-                                'https://user:pass@operator.example/flow', 'file:///private', 'https://host/\nunsafe'])
-def test_url_is_inert_explicit_https_not_browser_or_login(url):
-    source = {'jsonrpc': '2.0', 'id': 'url', 'method': 'elicitation/create',
-              'params': {'mode': 'url', 'message': 'Review external interaction', 'elicitationId': 'owned', 'url': url}}
-    if url == 'https://operator.example/flow?id=one':
-        assert request(source) == source
-        assert result({'action': 'accept'}, source) == {'action': 'accept'}
-        with pytest.raises(McpError):
-            result({'action': 'accept', 'content': {'private': 'data'}}, source)
-    else:
-        with pytest.raises(McpError):
-            request(source)
+def test_url_is_inert_explicit_https_not_browser_or_login() -> None:
+
+    def _check_case(url):
+        source = {
+            "jsonrpc": "2.0",
+            "id": "url",
+            "method": "elicitation/create",
+            "params": {"mode": "url", "message": "Review external interaction", "elicitationId": "owned", "url": url},
+        }
+        if url == "https://operator.example/flow?id=one":
+            assert request(source) == source
+            assert result({"action": "accept"}, source) == {"action": "accept"}
+            with pytest.raises(McpError):
+                result({"action": "accept", "content": {"private": "data"}}, source)
+        else:
+            with pytest.raises(McpError):
+                request(source)
+
+    for url in [
+        "https://operator.example/flow?id=one",
+        "http://operator.example/flow",
+        "https://user:pass@operator.example/flow",
+        "file:///private",
+        "https://host/\nunsafe",
+    ]:
+        _check_case(url)
 
 
 async def test_reverse_elicitation_handler_independent_default_off_and_result_validation():

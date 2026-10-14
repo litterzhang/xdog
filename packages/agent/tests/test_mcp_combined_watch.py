@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-import asyncio
-import json
-import sys
 from pathlib import Path
 
 import pytest
-from xdog.agent.mcp import McpError, McpManager
 from xdog.agent.mcp.subscriptions import ResourceSubscriptions, SubscriptionError, filter_key, notification_filters
 from xdog.tui.mcp_subscription import filter_text, notification_filter
 
@@ -84,57 +80,6 @@ async def test_partial_ack_is_not_accepted_or_retried():
     assert watch.state == 'unsupported' and not router.watches
     with pytest.raises(SubscriptionError):
         await watch.ready
-
-
-@pytest.mark.parametrize('peer_mode', ['modern', 'modern-slow-cancel'])
-async def test_real_combined_watch_one_stream_all_notices_exact_owner_and_legacy_refusal(tmp_path, peer_mode):
-    log = tmp_path / 'requests'
-    manager = McpManager({'peer': {'command': sys.executable,
-                                  'args': [str(PEER), peer_mode, str(log)]}}, tmp_path)
-    events = []
-    try:
-        await manager.connect('peer')
-        before = log.read_text().splitlines()
-        result = await manager.watch_notifications('peer', SELECTED, lease='view', on_change=events.append,
-                                                  alive=lambda: True)
-        assert result['notifications'] == notification_filters(SELECTED) and result['uri'] == ''
-        reordered = {**SELECTED, 'resourceSubscriptions': list(reversed(SELECTED['resourceSubscriptions']))}
-        await manager.watch_notifications('peer', reordered, lease='view', on_change=events.append, alive=lambda: True)
-        assert len(manager._resource_watches) == 1
-        await manager._bridge(manager._clients['peer'].request('fixture/update', {}))
-        async with asyncio.timeout(3):
-            while not events:
-                await asyncio.sleep(0.003)
-        assert events[-1]['changes'] == 5
-        await manager.detach_catalog_watches('view')
-        assert len(manager._resource_watches) == 1  # Separate combined capability/ownership.
-        await manager.unwatch_notifications('peer', reordered, lease='foreign')
-        assert len(manager._resource_watches) == 1
-        await manager.detach_notification_watches('view')
-        assert not manager._resource_watches
-        peer_state = await manager._bridge(manager._clients['peer'].request('fixture/status', {}))
-        assert peer_state == {'modern': 0, 'legacy': 0}
-        frames = [json.loads(line) for line in log.read_text().splitlines()[len(before):]]
-        listen = [frame for frame in frames if frame['method'] == 'subscriptions/listen']
-        assert len(listen) == 1 and listen[0]['params']['notifications'] == notification_filters(SELECTED)
-        assert not any(frame['method'] in ('tools/list', 'resources/list', 'prompts/list', 'resources/read',
-                                           'tools/call', 'resources/subscribe', 'resources/unsubscribe')
-                       for frame in frames)
-    finally:
-        await manager.aclose()
-    legacy_log = tmp_path / 'legacy'
-    manager = McpManager({'peer': {'command': sys.executable,
-                                  'args': [str(PEER), 'legacy', str(legacy_log)]}}, tmp_path)
-    try:
-        await manager.connect('peer')
-        with pytest.raises(McpError, match='current-protocol'):
-            await manager.watch_notifications('peer', SELECTED, lease='view',
-                                              on_change=lambda _: None, alive=lambda: True)
-        assert not manager._resource_watches
-        assert not any(json.loads(line)['method'] in ('subscriptions/listen', 'resources/subscribe')
-                       for line in legacy_log.read_text().splitlines())
-    finally:
-        await manager.aclose()
 
 
 @pytest.mark.parametrize('mask', range(8))

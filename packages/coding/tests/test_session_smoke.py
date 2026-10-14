@@ -58,17 +58,8 @@ def test_rebuilding_the_system_prompt_does_not_raise(session: AgentSession) -> N
 
     assert session.agent.state.system_prompt
     assert session.agent.state.system_prompt != "placeholder"
-
-
-def test_the_rebuilt_prompt_is_the_real_one(session: AgentSession) -> None:
-    """Not asserting the model name appears — it does not, and pinning what the
-    prompt happens to contain would break on every wording change. What matters
-    is that the placeholder was replaced by something built."""
-    session._rebuild_system_prompt()
-
-    prompt = session.agent.state.system_prompt
-    assert "coding agent" in prompt
-    assert "Available Tools" in prompt
+    assert "coding agent" in session.agent.state.system_prompt
+    assert "Available Tools" in session.agent.state.system_prompt
 
 
 def test_rebuilding_survives_switching_model_and_thinking_level(

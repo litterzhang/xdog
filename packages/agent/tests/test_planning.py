@@ -66,11 +66,17 @@ def test_failed_persistence_retains_previous_state():
     assert owner.state == PlanState()
 
 
-@pytest.mark.parametrize("bad", [
-    {"mode": "other", "revision": 0}, {"mode": [], "revision": 0}, {"mode": "planning", "revision": True},
-    {"mode": "planning", "revision": 1, "objective": ""},
-    {"mode": "planning", "revision": 1, "objective": "x", "steps": [{"description": "x", "status": "wrong"}]},
-])
-def test_invalid_persistence_fails_closed_instead_of_disabling_plan(bad):
-    with pytest.raises(ValueError):
-        PlanState.from_dict(bad)
+def test_invalid_persistence_fails_closed_instead_of_disabling_plan() -> None:
+
+    def _check_case(bad):
+        with pytest.raises(ValueError):
+            PlanState.from_dict(bad)
+
+    for bad in [
+        {"mode": "other", "revision": 0},
+        {"mode": [], "revision": 0},
+        {"mode": "planning", "revision": True},
+        {"mode": "planning", "revision": 1, "objective": ""},
+        {"mode": "planning", "revision": 1, "objective": "x", "steps": [{"description": "x", "status": "wrong"}]},
+    ]:
+        _check_case(bad)

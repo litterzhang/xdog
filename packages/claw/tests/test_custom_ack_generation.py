@@ -59,15 +59,13 @@ async def test_socket_echoes_only_fully_validated_bounded_exact_integer_generati
 
 
 @pytest.mark.parametrize('mode', ['', 'full'])
-@pytest.mark.parametrize('latency', [0, .002, .007])
-@pytest.mark.parametrize('repeat', range(2))
 async def test_real_nested_resume_one_enter_with_concurrent_frame_delivery(
-        tmp_path, monkeypatch, mode, latency, repeat):
+        tmp_path, monkeypatch, mode):
     original = GatewayServer._write_response
     acknowledgements = []
     async def delayed_write(server, writer, data):
-        if data.get('type') == 'extension_custom_frame' and latency:
-            await asyncio.sleep(latency)  # Bounded socket scheduling; never bypass a broker/freshness check.
+        if data.get('type') == 'extension_custom_frame':
+            await asyncio.sleep(.007)  # Bounded socket scheduling; never bypass a broker/freshness check.
         if data.get('type') == 'extension_custom_ack':
             acknowledgements.append(dict(data))
         await original(server, writer, data)

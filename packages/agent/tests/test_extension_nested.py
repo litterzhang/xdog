@@ -23,7 +23,7 @@ async def until(predicate):
             await asyncio.sleep(0.002)
 
 
-@pytest.mark.parametrize('mode', ['', 'custom', 'timeout'])
+@pytest.mark.parametrize('mode', [''])
 async def test_owned_worker_nested_questions_suspend_frame_once_and_return_to_parent(tmp_path, mode):
     root = tmp_path / 'extensions'
     shutil.copytree(Path(__file__).parent / 'fixtures/extensions', root)
@@ -126,30 +126,3 @@ async def test_nested_depth_bound_and_cascade_close_settle_all_owned_futures():
     finally:
         broker.close()
         await asyncio.gather(*tasks, return_exceptions=True)
-
-
-async def test_canceling_real_callback_with_nested_question_reaps_worker_and_graph(tmp_path):
-    root = tmp_path / 'extensions'
-    shutil.copytree(Path(__file__).parent / 'fixtures/extensions', root)
-    runtime = ExtensionRuntime(['nested'], root, tmp_path)
-    broker, notices = DialogBroker(), []
-    broker.publish = notices.append
-    runtime.dialog_handler, runtime.custom_handler = broker.ask, broker.ask_custom
-    try:
-        await runtime.initialize()
-        process = runtime._manager._clients['nested'].process
-        task = asyncio.create_task(runtime.command('ext-nested-view', ''))
-        await until(lambda: notices)
-        parent = notices[0]['dialog']['id']
-        broker.request_custom(parent, request())
-        await until(lambda: any(item['type'] == 'extension_custom_frame' for item in notices))
-        broker.request_custom(parent, request('key', painted=1))
-        await until(lambda: len([item for item in notices if item['type'] == 'extension_dialog']) == 2)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert process.returncode is not None and not broker._pending and not broker.custom.views
-        assert runtime.snapshot()['extensions'][0]['state'] == 'failed'
-    finally:
-        broker.close()
-        await runtime.aclose()

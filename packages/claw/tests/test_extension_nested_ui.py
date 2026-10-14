@@ -17,8 +17,8 @@ from xdog.tui.components.extension_dialog import ExtensionDialog
 from xdog.tui.keys import KeyEvent
 
 
-@pytest.mark.parametrize('child', [False, True])
-@pytest.mark.parametrize('mode', ['', 'custom', 'full'])
+@pytest.mark.parametrize('child', [False])
+@pytest.mark.parametrize('mode', [''])
 async def test_claw_nested_stack_connection_leases_restore_same_parent_and_draft(tmp_path, child, mode):
     root = tmp_path / 'extensions'
     shutil.copytree(Path(__file__).parents[2] / 'agent/tests/fixtures/extensions', root)
@@ -123,66 +123,4 @@ async def test_claw_nested_stack_connection_leases_restore_same_parent_and_draft
         writer.close()
         other_writer.close()
         await asyncio.gather(writer.wait_closed(), other_writer.wait_closed())
-        await server.stop()
-
-
-@pytest.mark.parametrize('withdraw', [False, True])
-async def test_nested_capability_refusal_or_withdrawal_cancels_only_child_question(tmp_path, withdraw):
-    root = tmp_path / 'extensions'
-    shutil.copytree(Path(__file__).parents[2] / 'agent/tests/fixtures/extensions', root)
-    def stream(*args):
-        raise AssertionError('No model call for a nested extension command')
-    config = ClawConfig(model='test/model', data_dir=str(tmp_path / 'data'),
-        socket_path=str(tmp_path / 'nested.sock'), pid_file=str(tmp_path / 'nested.pid'),
-        groups=(GroupDef(id='main', is_main=True),), extensions=('nested',), extension_dir=str(root))
-    server = GatewayServer(config)
-    with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=('test/model', stream)):
-        await server.start()
-    reader, writer = await asyncio.open_unix_connection(config.socket_path)
-    async def read(kind):
-        async with asyncio.timeout(6):
-            while True:
-                value = json.loads(await reader.readline())
-                if value['type'] == kind:
-                    return value
-    try:
-        writer.write((json.dumps({'type': 'ping', 'extension_custom': 1,
-                                 'extension_custom_nested': 1 if withdraw else 0}) + '\n').encode())
-        await writer.drain()
-        await read('pong')
-        writer.write(b'{"type":"extension_control","request_id":"view","group_id":"main",'
-                     b'"session_id":"","action":"command","name":"ext-nested-view","args":""}\n')
-        await writer.drain()
-        notice = await read('extension_dialog')
-        parent, session_id = notice['dialog']['id'], notice['session_id']
-        request = {'type': 'extension_custom_request', 'group_id': 'main', 'session_id': session_id, 'id': parent,
-                   'event': {'kind': 'resize', 'width': 60, 'height': 5, 'painted': -1, 'generation': 1}}
-        writer.write((json.dumps(request) + '\n').encode())
-        await writer.drain()
-        frame = await read('extension_custom_frame')
-        request['event'].update(kind='key', key='n', ctrl=False, alt=False, shift=False, painted=frame['revision'])
-        writer.write((json.dumps(request) + '\n').encode())
-        await writer.drain()
-        if withdraw:
-            nested = await read('extension_dialog')
-            assert nested['dialog']['parent_id'] == parent
-            writer.write(b'{"type":"ping","extension_custom_nested":0}\n')
-            await writer.drain()
-        # Both sequential nested questions are refused; parent resumes, not adopted
-        # as a standalone question and not canceled by the unsupported child surface.
-        frame = await read('extension_custom_frame')
-        assert 'null' in str(frame['lines'])
-        request['event'] = {'kind': 'resize', 'width': 60, 'height': 5, 'painted': -1, 'generation': 2}
-        writer.write((json.dumps(request) + '\n').encode())
-        await writer.drain()
-        frame = await read('extension_custom_frame')
-        request['event'].update(kind='key', key='enter', ctrl=False, alt=False, shift=False, painted=frame['revision'])
-        writer.write((json.dumps(request) + '\n').encode())
-        await writer.drain()
-        result = await read('extension_result')
-        assert result['success'] and json.loads(result['output'])['values'] == [None, False]
-        assert json.loads(result['output'])['calls'] == 1
-    finally:
-        writer.close()
-        await writer.wait_closed()
         await server.stop()

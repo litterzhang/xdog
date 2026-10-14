@@ -4,11 +4,32 @@ import pytest
 from xdog.agent.session_name import session_name
 
 
-@pytest.mark.parametrize('value', [None, False, 4, [], 'x' * 257, '界' * 86, '\x1b[31mname',
-    'a\nb', 'a\tb', '\x7f', '\x85', '\u2028', '\u2029', '\ud800', '\u202eabc', '\u2066x', '\ufeff'])
-def test_session_name_rejects_nontext_oversize_or_invisible_terminal_controls(value):
-    with pytest.raises(ValueError):
-        session_name(value)
+def test_session_name_rejects_nontext_oversize_or_invisible_terminal_controls() -> None:
+
+    def _check_case(value):
+        with pytest.raises(ValueError):
+            session_name(value)
+
+    for value in [
+        None,
+        False,
+        4,
+        [],
+        "x" * 257,
+        "界" * 86,
+        "\x1b[31mname",
+        "a\nb",
+        "a\tb",
+        "\x7f",
+        "\x85",
+        "\u2028",
+        "\u2029",
+        "\ud800",
+        "\u202eabc",
+        "\u2066x",
+        "\ufeff",
+    ]:
+        _check_case(value)
 
 
 @pytest.mark.parametrize('value', ['', 'x' * 256, '界' * 85, '开发 · café', '👩\u200d💻', 'کار\u200cها'])

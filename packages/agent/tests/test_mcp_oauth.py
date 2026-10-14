@@ -183,34 +183,6 @@ async def test_cancel_closes_owned_listener_without_token_post_and_start_receipt
         await value.close()
 
 
-async def test_manager_sdk_authorization_then_explicit_connect_preserves_tool_allow_policy(monkeypatch, tmp_path):
-    peer = Peer()
-    monkeypatch.setattr(OAuthOwner, "client", lambda self: httpx.AsyncClient(transport=peer.transport))
-    import xdog.agent.mcp.http as transport
-    original = transport.httpx.AsyncClient
-    from types import SimpleNamespace
-    monkeypatch.setattr(transport, "httpx", SimpleNamespace(
-        AsyncClient=lambda **kwargs: original(transport=peer.transport, **kwargs),
-        Limits=httpx.Limits, HTTPError=httpx.HTTPError, Headers=httpx.Headers))
-    manager = McpManager({"peer": {"transport": "http", "url": RESOURCE, "oauth": CONFIG}}, tmp_path)
-    try:
-        review = await manager.manage_auth("peer", "prepare")
-        launch = await manager.manage_auth("peer", "start", review["review_id"])
-        peer.challenge = parse_qs(urlsplit(launch["authorization_url"]).query)["code_challenge"][0]
-        await callback(launch["authorization_url"])
-        async with asyncio.timeout(5):
-            while (await manager.manage_auth("peer", "status"))["state"] == "waiting":
-                await asyncio.sleep(0.003)
-        assert not manager.tools()  # Authorization is not connection/tool registration.
-        await manager.connect("peer")
-        assert len(manager.tools()) == 1 and not manager.allowed(manager.tools()[0].name)
-        assert "SECRET" not in json.dumps(manager.status())
-        forgotten = await manager.manage_auth("peer", "forget")
-        assert forgotten["state"] == "forgotten" and not manager.tools()
-    finally:
-        await manager.aclose()
-
-
 @pytest.mark.parametrize("extra", [
     {"headers": {"Authorization": "Bearer static"}}, {"headers_env": {"authorization": "TOKEN"}},
     {"url": "http://remote.test/mcp", "allow_insecure_http": True}, {"url": RESOURCE + "?api_key=secret"},

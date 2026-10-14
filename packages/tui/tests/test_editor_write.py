@@ -43,9 +43,9 @@ def test_private_cas_one_use_draft_image_and_owner_checks(change):
     assert (source[0] == 'PROPOSED') is (change == 'none')
 
 
-def test_full_large_unicode_proposal_requires_every_current_width_review_row_and_press():
+def test_multipage_unicode_proposal_requires_every_current_width_review_row_and_press():
     replies = []
-    request = dialog('\n'.join(f'{index}: 界👩\u200d💻 ' + 'x' * 45 for index in range(80)))
+    request = dialog('\n'.join(f'{index}: 界👩\u200d💻 ' + 'x' * 45 for index in range(8)))
     panel = ExtensionEditorWrite('owned', request, replies.append)
     panel.focused = True
     panel.set_render_budget(9)

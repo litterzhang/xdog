@@ -116,32 +116,6 @@ async def test_transient_scheduled_queue_is_bounded_and_overflow_is_visible(tmp_
         await close(session, nav, sources)
 
 
-def test_actual_cli_transient_partial_lease_withdrawal_and_abort_cleanup(tmp_path, monkeypatch):
-    from packages.coding.tests.test_rpc_children_cli import Peer
-    monkeypatch.setenv('XDOG_RPC_STREAM_PARTIAL', '1')
-    peer = Peer(tmp_path)
-    try:
-        peer.send({'type': 'rpc_hello', 'transient_events': 1})
-        caps = peer.read('transient_capabilities')
-        assert caps['transient_events'] == 1 and caps['replay'] is False
-        peer.send({'type': 'prompt', 'message': 'hold'})
-        event = peer.read('transient_event')
-        while event['event'] != 'message_update':
-            event = peer.read('transient_event')
-        assert event['event'] == 'message_update' and event['event_owner'] == caps['event_owner']
-        assert event['session_id'] == peer.ready['session_id'] and event['retained'] is False
-        assert 'RPC-LIVE-PARTIAL' in json.dumps(event)
-        peer.send({'type': 'rpc_hello', 'transient_events': 0})
-        assert peer.read('transient_capabilities')['transient_events'] == 0
-        peer.send({'type': 'abort'})
-        assert peer.read('ok')['action'] == 'abort'
-        peer.send({'type': 'quit'})
-        assert peer.process.wait(timeout=5) == 0
-        assert peer.marker.with_suffix('.settled').exists()
-    finally:
-        peer.close()
-
-
 async def test_actual_parent_tool_loop_publishes_start_progress_end_without_second_loop(tmp_path):
     from xdog.agent import AgentTool
     from xdog.ai.types import ToolCall

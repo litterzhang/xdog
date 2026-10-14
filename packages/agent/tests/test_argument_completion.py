@@ -33,10 +33,14 @@ def test_invalid_completion_data_is_refused_instead_of_running_or_reinterpreting
         items(bad)
 
 
-@pytest.mark.parametrize('bad', ['\x1bcontrol', '\n', '\u2066', 'x' * 4097, False])
-def test_completion_prefix_is_strict_plain_text(bad):
-    with pytest.raises(ValueError):
-        plain(bad, 4096)
+def test_completion_prefix_is_strict_plain_text() -> None:
+
+    def _check_case(bad):
+        with pytest.raises(ValueError):
+            plain(bad, 4096)
+
+    for bad in ["\x1bcontrol", "\n", "\u2066", "x" * 4097, False]:
+        _check_case(bad)
 
 
 async def test_actual_owned_worker_completion_never_executes_command_and_revalidates_replacements(tmp_path):

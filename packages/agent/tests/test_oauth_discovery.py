@@ -26,14 +26,23 @@ def test_quoted_header_boundaries_and_non_bearer_tickets_do_not_corrupt_operatio
     assert challenge('Basic realm="private"') is None
 
 
-@pytest.mark.parametrize("value", [
-    'Bearer scope="read", Scope="write"', 'Bearer scope="unterminated', 'Bearer scope="read" trailing',
-    'Bearer resource_metadata="https://user:secret@resource.test/meta"', 'Bearer realm="x", Bearer realm="y"',
-    'Bearer scope="read\r\nprivate"', 'Bearer resource_metadata="/relative"', 'Bearer scope="read"' + 'x' * 16384,
-])
-def test_malformed_duplicate_or_ambiguous_challenges_are_not_silently_ignored(value):
-    with pytest.raises(OAuthError):
-        challenge(value)
+def test_malformed_duplicate_or_ambiguous_challenges_are_not_silently_ignored() -> None:
+
+    def _check_case(value):
+        with pytest.raises(OAuthError):
+            challenge(value)
+
+    for value in [
+        'Bearer scope="read", Scope="write"',
+        'Bearer scope="unterminated',
+        'Bearer scope="read" trailing',
+        'Bearer resource_metadata="https://user:secret@resource.test/meta"',
+        'Bearer realm="x", Bearer realm="y"',
+        'Bearer scope="read\r\nprivate"',
+        'Bearer resource_metadata="/relative"',
+        'Bearer scope="read"' + "x" * 16384,
+    ]:
+        _check_case(value)
 
 
 def test_well_known_candidate_order_and_pointer_origin_pinning():

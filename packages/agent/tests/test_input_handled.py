@@ -71,19 +71,20 @@ async def test_all_handled_initial_and_queued_input_does_not_call_model_with_old
     assert len([event for event in events if isinstance(event, InputHandledEvent)]) == 2
 
 
-@pytest.mark.parametrize(
-    "value",
-    [
+def test_handled_requires_explicit_bounded_feedback_not_implicit_drop_or_command_execution() -> None:
+
+    def _check_case(value):
+        with pytest.raises(ValueError):
+            decision(value)
+
+    for value in [
         {"action": "handled"},
         {"action": "handled", "feedback": ""},
         {"action": "handled", "feedback": True},
         {"action": "handled", "feedback": "x", "images": []},
         {"action": "handled", "feedback": "x" * 65537},
-    ],
-)
-def test_handled_requires_explicit_bounded_feedback_not_implicit_drop_or_command_execution(value):
-    with pytest.raises(ValueError):
-        decision(value)
+    ]:
+        _check_case(value)
 
 
 async def test_empty_prompt_list_keeps_existing_explicit_continuation_behavior():

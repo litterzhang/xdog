@@ -11,7 +11,8 @@ XDOG is a local-first Python 3.12+ `uv` workspace; its core tools do not require
 uv sync
 
 # Core test, lint, and type-check commands used by CI
-uv run pytest -q
+uv run python scripts/test.py  # all configured test paths, balanced package workers
+uv run pytest -q              # direct pytest alternative; supports normal selection flags
 uv run ruff check packages
 uv run mypy --strict \
   -p xdog.ai -p xdog.agent -p xdog.tui -p xdog.flow \

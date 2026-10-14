@@ -74,24 +74,36 @@ def test_default_false_and_escape_never_accept_queued_input():
     assert denied == [False]
 
 
-@pytest.mark.parametrize('changes', [
-    {'images': [{'data': 'binary'}]}, {'images': ()}, {'operation': 'navigate'}, {'kind': 'form'},
-    {'delivery': []}, {'delivery': 'nextTurn'}, {'host_message': 'other text'}, {'text': '\x00'},
-    {'title': []}, {'image_summaries': {}}, {'image_summaries': [None]},
-    {'image_summaries': [{'mime_type': [], 'bytes': 1, 'sha256': 'a' * 64}]},
-    {'image_summaries': [{'mime_type': 'image/png', 'bytes': True, 'sha256': 'a' * 64}]},
-    {'image_summaries': [{'mime_type': 'image/png', 'bytes': 0, 'sha256': 'a' * 64}]},
-    {'image_summaries': [{'mime_type': 'image/png', 'bytes': 1, 'sha256': 'A' * 64}]},
-    {'image_summaries': [{'mime_type': 'image/png', 'bytes': 1, 'sha256': 'a' * 64, 'data': 'binary'}]},
-    {'image_summaries': [{'mime_type': 'image/png', 'bytes': 1, 'sha256': 'a' * 64}] * 5},
-    {'image_summaries': [{'mime_type': 'image/png', 'bytes': 4 * 1024 * 1024, 'sha256': 'a' * 64}] * 2},
-    {'image_refs': ['foreign draft']},
-])
-def test_renderer_refuses_malformed_or_hidden_binary_projections(changes):
-    value = copy.deepcopy(dialog())
-    value.update(changes)
-    with pytest.raises(ValueError):
-        ExtensionQueuedInput('queuedrequest', value, lambda _: None, 'parent')
+def test_renderer_refuses_malformed_or_hidden_binary_projections() -> None:
+
+    def _check_case(changes):
+        value = copy.deepcopy(dialog())
+        value.update(changes)
+        with pytest.raises(ValueError):
+            ExtensionQueuedInput("queuedrequest", value, lambda _: None, "parent")
+
+    for changes in [
+        {"images": [{"data": "binary"}]},
+        {"images": ()},
+        {"operation": "navigate"},
+        {"kind": "form"},
+        {"delivery": []},
+        {"delivery": "nextTurn"},
+        {"host_message": "other text"},
+        {"text": "\x00"},
+        {"title": []},
+        {"image_summaries": {}},
+        {"image_summaries": [None]},
+        {"image_summaries": [{"mime_type": [], "bytes": 1, "sha256": "a" * 64}]},
+        {"image_summaries": [{"mime_type": "image/png", "bytes": True, "sha256": "a" * 64}]},
+        {"image_summaries": [{"mime_type": "image/png", "bytes": 0, "sha256": "a" * 64}]},
+        {"image_summaries": [{"mime_type": "image/png", "bytes": 1, "sha256": "A" * 64}]},
+        {"image_summaries": [{"mime_type": "image/png", "bytes": 1, "sha256": "a" * 64, "data": "binary"}]},
+        {"image_summaries": [{"mime_type": "image/png", "bytes": 1, "sha256": "a" * 64}] * 5},
+        {"image_summaries": [{"mime_type": "image/png", "bytes": 4 * 1024 * 1024, "sha256": "a" * 64}] * 2},
+        {"image_refs": ["foreign draft"]},
+    ]:
+        _check_case(changes)
 
 
 def test_bounded_host_child_metadata_is_distinct_from_registered_extension_identity():

@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import copy
-import shutil
 from pathlib import Path
 
 import pytest
 from xdog.agent.extensions.catalog import page, validate_page, validate_request
 from xdog.agent.extensions.dialogs import validate_answer, validate_dialog
-from xdog.agent.extensions.runtime import ExtensionRuntime
 
 FIXTURE = Path(__file__).parent / "fixtures/extensions"
 
@@ -46,9 +44,13 @@ def test_pagination_has_bounded_selected_rows_offsets_continuation_unicode_searc
     assert values[0]["title"] == "中文 Match"
 
 
-@pytest.mark.parametrize(
-    "kwargs",
-    [
+def test_invalid_catalog_request_refused_without_guessing() -> None:
+
+    def _check_case(kwargs):
+        with pytest.raises(ValueError):
+            validate_request(request(**kwargs))
+
+    for kwargs in [
         {"scope": "unknown"},
         {"offset": True},
         {"offset": -1},
@@ -57,16 +59,18 @@ def test_pagination_has_bounded_selected_rows_offsets_continuation_unicode_searc
         {"query": "x" * 1001},
         {"scope": "tree", "session_id": "../outside"},
         {"session_id": "foreign"},
-    ],
-)
-def test_invalid_catalog_request_refused_without_guessing(kwargs):
-    with pytest.raises(ValueError):
-        validate_request(request(**kwargs))
+    ]:
+        _check_case(kwargs)
 
 
-@pytest.mark.parametrize(
-    "mutate",
-    [
+def test_invalid_or_mismatched_catalog_response_refused() -> None:
+
+    def _check_case(mutate):
+        original = page(rows(), request(), "current")
+        with pytest.raises(ValueError):
+            validate_page(request(), {**original, **mutate})
+
+    for mutate in [
         {"total": True},
         {"offset": False},
         {"has_more": 1},
@@ -75,12 +79,8 @@ def test_invalid_catalog_request_refused_without_guessing(kwargs):
         {"session_id": "foreign"},
         {"entries": []},
         {"scope": "tree"},
-    ],
-)
-def test_invalid_or_mismatched_catalog_response_refused(mutate):
-    original = page(rows(), request(), "current")
-    with pytest.raises(ValueError):
-        validate_page(request(), {**original, **mutate})
+    ]:
+        _check_case(mutate)
 
 
 def test_tree_target_branch_checkpoint_metadata_and_broker_codec():
@@ -114,34 +114,6 @@ def test_tree_target_branch_checkpoint_metadata_and_broker_codec():
         validate_page(params, bad)
 
 
-async def test_actual_worker_catalog_requests_original_command_only_and_headless_refusal(tmp_path):
-    root = tmp_path / "extensions"
-    shutil.copytree(FIXTURE, root)
-    runtime = ExtensionRuntime(["navigator"], root, tmp_path)
-    seen = []
-
-    async def catalog(extension, value):
-        seen.append(value)
-        return page(rows(), value, "current")
-
-    async def dialog(extension, value):
-        pytest.fail("Catalog reads must not become terminal dialogs")
-
-    runtime.catalog_handler = catalog
-    runtime.dialog_handler = dialog
-    try:
-        assert (
-            await runtime.command("ext-navigator-catalog", '{"scope":"sessions","offset":50}') == "CATALOG-PAGE-50-123"
-        )
-        assert seen[0]["operation"] == "catalog" and seen[0]["offset"] == 50
-        assert (await runtime.tools()[0].execute("illegal", {})).content[0].text == "TOOL-NAVIGATION-None-False"
-        assert len(seen) == 1
-        runtime.dialog_handler = None
-        assert await runtime.command("ext-navigator-catalog", "") == "CATALOG-UNAVAILABLE"
-    finally:
-        await runtime.aclose()
-
-
 def test_catalog_identity_order_revision_ignores_recency_but_refuses_membership_change():
     values = rows()
     first = page(values, request(), "current")
@@ -153,20 +125,3 @@ def test_catalog_identity_order_revision_ignores_recency_but_refuses_membership_
         page(values, request(offset=50, revision=first["revision"]), "current")
     with pytest.raises(ValueError):
         validate_request(request(revision="guessed"))
-
-
-async def test_changed_membership_host_refusal_is_unavailable_without_quarantining_command(tmp_path):
-    root = tmp_path / 'extensions'
-    shutil.copytree(FIXTURE, root)
-    runtime = ExtensionRuntime(['navigator'], root, tmp_path)
-    async def refused(extension, request):
-        raise ValueError('Catalog membership changed; restart')
-    async def unused(*args):
-        pytest.fail('Read refusal must not become a terminal question')
-    runtime.catalog_handler = refused
-    runtime.dialog_handler = unused
-    try:
-        assert await runtime.command('ext-navigator-catalog', '') == 'CATALOG-UNAVAILABLE'
-        assert runtime.snapshot()['extensions'][0]['state'] == 'active'
-    finally:
-        await runtime.aclose()

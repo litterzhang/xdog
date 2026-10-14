@@ -68,30 +68,33 @@ def _imports(source_root: pathlib.Path) -> dict[str, list[tuple[pathlib.Path, bo
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError:  # pragma: no cover - generated samples may be partial
             continue
-        guarded_nodes: set[int] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Try):
-                for child in ast.walk(node):
-                    guarded_nodes.add(id(child))
-        for node in ast.walk(tree):
+        # One traversal preserves the old "any enclosing try is guarded"
+        # rule without repeatedly walking every nested try subtree.
+        pending: list[tuple[ast.AST, bool]] = [(tree, False)]
+        while pending:
+            node, guarded = pending.pop()
+            guarded = guarded or isinstance(node, ast.Try)
             if isinstance(node, ast.Import):
-                names = [a.name.split(".")[0] for a in node.names]
+                names = [alias.name.split(".")[0] for alias in node.names]
             elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                 names = [node.module.split(".")[0]]
             else:
-                continue
+                names = []
             for name in names:
-                found.setdefault(name, []).append((path, id(node) in guarded_nodes))
+                found.setdefault(name, []).append((path, guarded))
+            pending.extend((child, guarded) for child in ast.iter_child_nodes(node))
     return found
 
 
 @pytest.mark.parametrize("package", _PACKAGES)
-def test_every_third_party_import_is_declared(package: str) -> None:
+def test_third_party_dependencies_are_declared_and_optional_imports_guarded(package: str) -> None:
     root = _REPO / "packages" / package
-    declared = _declared(tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8")))
+    pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    declared = _declared(pyproject)
+    imports = _imports(root / "src")
 
     undeclared = []
-    for module, sites in _imports(root / "src").items():
+    for module, sites in imports.items():
         if module in sys.stdlib_module_names or module == "xdog" or module in declared:
             continue
         if (package, module) in _ALLOWED:
@@ -111,22 +114,11 @@ def test_every_third_party_import_is_declared(package: str) -> None:
         "It works here only because another package pulled them in."
     )
 
-
-@pytest.mark.parametrize("package", _PACKAGES)
-def test_optional_dependencies_are_imported_defensively(package: str) -> None:
-    """An extra you did not install must degrade, not crash.
-
-    `croniter` sat in claw's `search` extra and was imported bare at the top of
-    the task scheduler, so a default install raised ModuleNotFoundError on a
-    core path — the extra bought nothing but a way to break.
-    """
-    root = _REPO / "packages" / package
-    pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     optional_only = _declared(pyproject) - _required_only(pyproject)
 
     unguarded = [
         f"{module} in {path.relative_to(root)}"
-        for module, sites in _imports(root / "src").items()
+        for module, sites in imports.items()
         if module in optional_only
         for path, guarded in sites
         if not guarded

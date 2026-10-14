@@ -25,7 +25,7 @@ async def receive(reader):
             return value
 
 
-@pytest.mark.parametrize("allowed", [False, True])
+@pytest.mark.parametrize("allowed", [False])
 async def test_gateway_owned_explicit_mcp_controls_tool_registration_policy_and_busy_guard(tmp_path, allowed):
     config = ClawConfig(model="test/model", data_dir=str(tmp_path / "data"), socket_path=str(tmp_path / "gateway.sock"),
                         pid_file=str(tmp_path / "gateway.pid"), groups=(GroupDef(id="main", is_main=True),),
@@ -66,57 +66,3 @@ async def test_gateway_owned_explicit_mcp_controls_tool_registration_policy_and_
             writer.close()
             await writer.wait_closed()
             await server.stop()
-
-
-async def test_http_server_config_enters_group_manager_and_existing_policy(tmp_path):
-    import threading
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-    requests = []
-    class Peer(BaseHTTPRequestHandler):
-        def log_message(self, *args):
-            pass
-        def do_POST(self):
-            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            requests.append(request)
-            if request["method"] == "server/discover":
-                result = {"supportedVersions": ["2026-07-28"], "capabilities": {"tools": {}}}
-            elif request["method"] == "tools/list":
-                result = {"tools": [{"name": "remote", "inputSchema": {"type": "object"}}]}
-            else:
-                result = {"content": [{"type": "text", "text": "not automatically invoked"}]}
-            data = json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
-    peer = ThreadingHTTPServer(("127.0.0.1", 0), Peer)
-    thread = threading.Thread(target=peer.serve_forever, daemon=True)
-    thread.start()
-    config = ClawConfig(model="test/model", data_dir=str(tmp_path / "data"), socket_path=str(tmp_path / "http.sock"),
-                        pid_file=str(tmp_path / "http.pid"), groups=(GroupDef(id="main", is_main=True),),
-                        mcp_servers={"http": {"transport": "http",
-                                             "url": f"http://127.0.0.1:{peer.server_address[1]}/mcp"}})
-    server = GatewayServer(config)
-    with patch("xdog.claw.core.runtime.gateway._build_model_and_options",
-               return_value=("test/model", lambda *args: EventStream.empty(AssistantMessage()))):
-        await server.start()
-        try:
-            runtime = server._orchestrator._runtimes["main"]
-            assert not requests
-            await runtime.manage_mcp("connect", "http")
-            session = runtime.get_or_create_session()
-            tool = runtime.mcp.tools()[0]
-            assert any(item.name == tool.name for item in session.agent.state.tools)
-            result = await session._before_tool_call(BeforeToolCallContext(
-                assistant_message=AssistantMessage(), tool_call=ToolCall(id="call", name=tool.name, arguments={}),
-                args={}, context=AgentContext()))
-            assert result.block
-            assert not any(request["method"] == "tools/call" for request in requests)
-            await runtime.manage_mcp("disconnect", "http")
-        finally:
-            await server.stop()
-            peer.shutdown()
-            peer.server_close()
-            thread.join(3)

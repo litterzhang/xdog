@@ -10,10 +10,14 @@ from xdog.agent.mcp.config import McpServerConfig
 from xdog.agent.mcp.stdio import StdioClient
 
 
-@pytest.mark.parametrize('identifier', [True, False, None, [], {}, '', 'x' * 129, 2**53])
-def test_reverse_request_invalid_identity_never_reflected(identifier):
-    with pytest.raises(ValueError, match='identity'):
-        reverse_response({'jsonrpc': '2.0', 'id': identifier, 'method': 'ping'})
+def test_reverse_request_invalid_identity_never_reflected() -> None:
+
+    def _check_case(identifier):
+        with pytest.raises(ValueError, match="identity"):
+            reverse_response({"jsonrpc": "2.0", "id": identifier, "method": "ping"})
+
+    for identifier in [True, False, None, [], {}, "", "x" * 129, 2**53]:
+        _check_case(identifier)
 
 
 @pytest.mark.parametrize('method', ['roots/list', 'sampling/createMessage', 'elicitation/create',

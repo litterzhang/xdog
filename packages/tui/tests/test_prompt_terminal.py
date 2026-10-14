@@ -195,8 +195,15 @@ def test_typing_burst_uses_one_bounded_hook_and_original_submit_stays_fifo():
     assert submitted == [text] and not editor.get_text() and len(sent) == 1
 
 
-def test_burst_chunks_preserve_whole_utf8_and_enhanced_key_tokens_and_byte_limits():
+def test_burst_chunks_preserve_whole_utf8_and_enhanced_key_tokens_and_byte_limits(monkeypatch):
     tui, editor, hooks, sent, _, _, _, _ = create()
+    delivered = []
+    # Small tests above cover real editing; capture parsed keys here so a
+    # 16 KiB framing boundary does not require 6000 repeated grapheme edits.
+    def capture(event):
+        delivered.append(event.key)
+        return True
+    monkeypatch.setattr(editor, "handle_input", capture)
     text = '界' * 6000
     tui._handle_frame(KeyBytes(text.encode() + b'\x1b[97u'))
     assert hooks.queue.pending == 2
@@ -206,7 +213,7 @@ def test_burst_chunks_preserve_whole_utf8_and_enhanced_key_tokens_and_byte_limit
             hooks.queue.accept(sent[-1].id, {})
     assert all(len(item.data.encode()) <= 16000 for item in sent)
     assert ''.join(item.data for item in sent) == text + '\x1b[97u'
-    assert editor.get_text() == text + 'a' and not hooks.paused
+    assert ''.join(delivered) == text + 'a' and not hooks.paused
 
 
 def test_last_unsubscribe_drains_already_held_input_once_without_reinvoking_a_hook():

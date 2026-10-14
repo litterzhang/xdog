@@ -153,7 +153,7 @@ class ResumePeer:
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.server.daemon_threads = True
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}/mcp"
 
     def __enter__(self) -> ResumePeer:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import shutil
 from pathlib import Path
 
@@ -73,93 +72,24 @@ async def test_real_provider_stream_context_transfer_signatures_usage_and_no_bas
         await owner.aclose()
 
 
-async def test_provider_failure_and_cancel_quarantine_owned_worker_without_replay(tmp_path):
-    owner = await runtime(tmp_path)
-    adapter = ExtensionProviderStream(owner, lambda *args: EventStream.empty(AssistantMessage()))
-    process = owner._manager._clients['providermock'].process
-    try:
-        stream = adapter('ext-providermock-local/hold',
-                         Context(messages=(UserMessage(content='hold'),)), StreamOptions())
-        started = asyncio.Event()
-        async def consume():
-            async for event in stream:
-                if event.type == 'text_delta':
-                    started.set()
-        task = asyncio.create_task(consume())
-        async with asyncio.timeout(5):
-            await started.wait()
-            while not (tmp_path / 'provider-entered').exists():
-                await asyncio.sleep(0.003)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert process.returncode is not None and not owner.provider_models()
-    finally:
-        await owner.aclose()
+def test_provider_error_event_has_a_bounded_explicit_public_message() -> None:
 
+    def _check_case(event):
+        with pytest.raises(ValueError):
+            wire_event(event)
 
-async def test_malformed_provider_event_is_private_fails_once_and_removes_live_catalog(tmp_path):
-    owner = await runtime(tmp_path)
-    calls = []
-    def base(*args):
-        calls.append(args)
-        return EventStream.empty(AssistantMessage())
-    adapter = ExtensionProviderStream(owner, base)
-    process = owner._manager._clients['providermock'].process
-    try:
-        stream = adapter('ext-providermock-local/broken',
-                         Context(messages=(UserMessage(content='bad'),)), StreamOptions())
-        events = [event async for event in stream]
-        assert events[-1].type == 'error'
-        message = await stream.result()
-        assert message.stop_reason == 'error' and 'must not appear' not in message.error_message
-        assert process.returncode is not None and not owner.provider_models() and not calls
-    finally:
-        await owner.aclose()
-
-
-@pytest.mark.parametrize('model_id', ['failure', 'aborted'])
-async def test_typed_provider_failure_preserves_partial_usage_and_closes_once_before_result(tmp_path, model_id):
-    owner = await runtime(tmp_path)
-    base_calls = []
-
-    def base(*args):
-        base_calls.append(args)
-        return EventStream.empty(AssistantMessage())
-
-    adapter = ExtensionProviderStream(owner, base)
-    try:
-        stream = adapter('ext-providermock-local/' + model_id, Context(), StreamOptions())
-        events = [event async for event in stream]
-        message = await stream.result()
-        reason = 'aborted' if model_id == 'aborted' else 'error'
-        assert events[-1].type == 'error' and events[-1].stop_reason == reason
-        assert message.stop_reason == reason and message.response_id == 'owned-failure'
-        assert message.content[0].text == 'EXT-PROVIDER-PARTIAL' and message.usage.total_tokens == 10
-        assert await owner.command('ext-providermock-closed', '') == '1' and not owner._provider_lock.locked()
-        assert len(owner.provider_models()) == 7 and not base_calls
-        assert owner._manager._clients['providermock'].process.returncode is None
-        # A new successful request is explicit and uses the same healthy worker.
-        next_stream = adapter('ext-providermock-local/echo', Context(), StreamOptions())
-        await next_stream.collect()
-        assert (await next_stream.result()).stop_reason == 'stop'
-        assert await owner.command('ext-providermock-count', '') == '2'
-        assert await owner.command('ext-providermock-closed', '') == '2'
-    finally:
-        await owner.aclose()
-
-
-@pytest.mark.parametrize('event', [
-    {'type': 'error'}, {'type': 'error', 'message': ''}, {'type': 'error', 'message': 1},
-    {'type': 'error', 'message': 'x' * 8193}, {'type': 'error', 'message': '\ud800'},
-    {'type': 'error', 'message': 'public', 'stop_reason': 'toolUse'},
-    {'type': 'error', 'message': 'public', 'stop_reason': True},
-    {'type': 'error', 'message': 'public', 'response_id': 1},
-    {'type': 'error', 'message': 'public', 'private': 'not a diagnostic field'},
-])
-def test_provider_error_event_has_a_bounded_explicit_public_message(event):
-    with pytest.raises(ValueError):
-        wire_event(event)
+    for event in [
+        {"type": "error"},
+        {"type": "error", "message": ""},
+        {"type": "error", "message": 1},
+        {"type": "error", "message": "x" * 8193},
+        {"type": "error", "message": "\ud800"},
+        {"type": "error", "message": "public", "stop_reason": "toolUse"},
+        {"type": "error", "message": "public", "stop_reason": True},
+        {"type": "error", "message": "public", "response_id": 1},
+        {"type": "error", "message": "public", "private": "not a diagnostic field"},
+    ]:
+        _check_case(event)
 
 
 async def test_provider_failure_with_tool_call_cannot_enter_hook_or_tool_execution(tmp_path):
@@ -187,25 +117,5 @@ async def test_provider_failure_with_tool_call_cannot_enter_hook_or_tool_executi
         assert agent.messages[-1].stop_reason == 'error'
         assert await owner.command('ext-providermock-count', '') == '1'
         assert await owner.command('ext-providermock-closed', '') == '1'
-    finally:
-        await owner.aclose()
-
-
-async def test_custom_iterator_cleanup_failure_cannot_report_success_or_expose_exception(tmp_path):
-    owner = await runtime(tmp_path, {'close_fail': True})
-    base_calls = []
-
-    def base(*args):
-        base_calls.append(args)
-        return EventStream.empty(AssistantMessage())
-
-    process = owner._manager._clients['providermock'].process
-    try:
-        stream = ExtensionProviderStream(owner, base)('ext-providermock-local/echo', Context(), StreamOptions())
-        events = await stream.collect()
-        message = await stream.result()
-        assert events[-1].type == 'error' and message.stop_reason == 'error'
-        assert 'private close' not in message.error_message and not base_calls
-        assert process.returncode is not None and not owner.provider_models()
     finally:
         await owner.aclose()

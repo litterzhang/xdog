@@ -31,12 +31,25 @@ def test_private_credential_records_are_bounded_and_never_coerced(value):
         credentials(value)
 
 
-@pytest.mark.parametrize('value', ['http://auth.test', 'file:///tmp/token', 'javascript:alert(1)',
-    'https://user:password@auth.test', 'https://auth.test\n.evil.test', 'https://auth.test:invalid',
-    'https://auth.test/\u202eprivate', 'https://[invalid', None, {}])
-def test_worker_and_host_reject_unsafe_auth_url_before_review(value):
-    with pytest.raises(ValueError):
-        authorization_url(value, '')
+def test_worker_and_host_reject_unsafe_auth_url_before_review() -> None:
+
+    def _check_case(value):
+        with pytest.raises(ValueError):
+            authorization_url(value, "")
+
+    for value in [
+        "http://auth.test",
+        "file:///tmp/token",
+        "javascript:alert(1)",
+        "https://user:password@auth.test",
+        "https://auth.test\n.evil.test",
+        "https://auth.test:invalid",
+        "https://auth.test/\u202eprivate",
+        "https://[invalid",
+        None,
+        {},
+    ]:
+        _check_case(value)
 
 
 @pytest.mark.parametrize('value', ['', None, 'x' * 4001])

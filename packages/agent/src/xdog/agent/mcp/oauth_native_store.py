@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -143,7 +144,10 @@ class NativeCredentialStore:
                 except subprocess.TimeoutExpired:
                     os.killpg(process.pid, signal.SIGKILL)
                     process.wait(timeout=1)
-            process.stdin.close()
+            # Reaping the helper can break a buffered write. Cleanup must not
+            # mask its safe public failure or prevent the other pipe closing.
+            with suppress(OSError):
+                process.stdin.close()
             process.stdout.close()
 
     def _run_platform(self, action: str, request: bytes, alive: Callable[[], bool]) -> dict[str, Any]:
@@ -240,7 +244,10 @@ class NativeCredentialStore:
             for thread in threads:
                 if thread.ident is not None:
                     thread.join(1)
-            process.stdin.close()
+            # Reaping the helper can break a buffered write. Cleanup must not
+            # mask its safe public failure or prevent the other pipe closing.
+            with suppress(OSError):
+                process.stdin.close()
             process.stdout.close()
 
     def save(self, value: SavedCredential, alive: Callable[[], bool]) -> None:

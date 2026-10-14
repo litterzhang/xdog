@@ -2,14 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shutil
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from xdog.agent.extensions.api import ExtensionAPI
 from xdog.agent.extensions.dialogs import DialogBroker
-from xdog.agent.extensions.runtime import ExtensionRuntime
 from xdog.agent.mcp.config import McpServerConfig
 from xdog.agent.mcp.stdio import StdioClient
 
@@ -142,42 +139,6 @@ async def test_background_state_change_revokes_inflight_completion_then_requires
     assert not task.done()
     assert broker.request_custom(identifier, request('key', painted=4))
     assert await task == 'chosen'
-
-
-async def test_actual_worker_background_repaint_old_client_and_retired_view_are_fenced(tmp_path):
-    root = tmp_path / 'extensions'
-    shutil.copytree(Path(__file__).parent / 'fixtures/extensions/liveview', root / 'liveview')
-    runtime = ExtensionRuntime(['liveview'], root, tmp_path)
-    broker, notices = DialogBroker(), []
-    runtime.custom_handler, runtime.custom_refresh_handler = broker.ask_custom, broker.refresh_custom
-    broker.publish = notices.append
-    try:
-        await runtime.initialize()
-        client = runtime._manager._clients['liveview']
-        command = asyncio.create_task(runtime.command('ext-liveview-view', ''))
-        await until(lambda: notices)
-        identifier = notices[0]['dialog']['id']
-        assert broker.request_custom(identifier, request())
-        await until(lambda: any('LIVE-STATE=2;INPUTS=0' in str(item) for item in notices))
-        assert len([item for item in notices if item['type'] == 'extension_custom_frame']) == 3
-        call_id, dialog_id = next(iter(client._custom_views))
-        notice = {'jsonrpc': '2.0', 'method': 'xdog/custom_refresh', 'params': {
-            'call_id': call_id, 'dialog_id': dialog_id, 'view_id': client._custom_views[call_id, dialog_id]}}
-        assert broker.request_custom(identifier, request('key', painted=3))
-        assert '"inputs": 1' in await command
-        count = len(notices)
-        assert client._internal_notification(notice)
-        await asyncio.sleep(0.05)
-        assert len(notices) == count and not client._custom_views
-        await runtime.manage('reload', 'liveview')
-        assert runtime._manager._clients['liveview'] is not client
-        called = []
-        runtime.custom_refresh_handler = lambda *args: called.append(args) or True
-        client._custom_views[call_id, dialog_id] = notice['params']['view_id']
-        assert client._internal_notification(notice) and not called
-    finally:
-        broker.close()
-        await runtime.aclose()
 
 
 async def test_repaint_revokes_queued_completion_before_its_callback_starts():

@@ -101,14 +101,21 @@ async def test_real_confidential_exchange_sends_environment_secret_only_to_pinne
         await value.close()
 
 
-@pytest.mark.parametrize("bad", [
-    {"token_auth_method": "private_key_jwt"}, {"client_secret": "inline"}, {"client_secret_env": "BAD NAME"},
-    {"registration": "metadata", "client_id": "https://client.test/data.json", "callback_port": 3000},
-    {"registration": "dynamic", "client_id": ""}, {"token_auth_method": "none"},
-])
-def test_inline_secret_implicit_public_credentials_and_unimplemented_methods_are_rejected(bad):
-    with pytest.raises(OAuthError):
-        OAuthConfig.parse({**config("client_secret_basic"), **bad})
+def test_inline_secret_implicit_public_credentials_and_unimplemented_methods_are_rejected() -> None:
+
+    def _check_case(bad):
+        with pytest.raises(OAuthError):
+            OAuthConfig.parse({**config("client_secret_basic"), **bad})
+
+    for bad in [
+        {"token_auth_method": "private_key_jwt"},
+        {"client_secret": "inline"},
+        {"client_secret_env": "BAD NAME"},
+        {"registration": "metadata", "client_id": "https://client.test/data.json", "callback_port": 3000},
+        {"registration": "dynamic", "client_id": ""},
+        {"token_auth_method": "none"},
+    ]:
+        _check_case(bad)
 
 
 @pytest.mark.parametrize("secret", [None, "", "bad\r\nheader", "non-ascii-😀"])

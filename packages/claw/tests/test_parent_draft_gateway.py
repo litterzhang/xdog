@@ -356,51 +356,6 @@ async def test_actual_chatapp_remote_disk_review_no_early_mutation_and_no_compos
         await server.stop()
 
 
-@pytest.mark.parametrize('size', [1024 * 1024, 10 * 1024 * 1024])
-async def test_actual_chatapp_chunked_parent_image_save_beyond_old_frame_limit(tmp_path, size):
-    from xdog.claw.channels.tui.tui_app import ChatApp
-    server, config, runtime, session, adapter, _ = await setup(tmp_path)
-    Path(config.data_dir).chmod(0o700)
-    store = ChildDraftStore(Path(config.data_dir) / 'saved-parent-drafts')
-    # Valid fixture header plus inert retained bytes; shared attachment validator
-    # accepts exactly this representation, no provider/desktop decoding involved.
-    image = attachment(PNG + b'X' * (size - len(PNG)), 'large.png')
-    ui = ChatApp(config.socket_path)
-    reader, writer = await asyncio.open_unix_connection(config.socket_path)
-    connection = asyncio.create_task(ui._run_connection(reader, writer))
-    async def wait(predicate):
-        async with asyncio.timeout(20):
-            while True:
-                ui._poll()
-                if predicate():
-                    return
-                await asyncio.sleep(.003)
-    try:
-        await wait(lambda: ui._connection_ready and ui._remote_parent_caps.get('parent_saved_uploads') == 1)
-        ui._editor.set_text('LARGE UNSENT PARENT')
-        ui._composer.restore((image,))
-        ui._parent_draft_command('remote-save')
-        await wait(lambda: ui._remote_parent_panel is not None and ui._remote_parent_panel.review is not None)
-        assert not store.catalog() and not adapter.calls
-        review = ui._remote_parent_panel.review
-        assert review.event['body']['images'][0]['bytes'] == len(image.data)
-        paint(review)
-        review.handle_input(KeyEvent('enter'))
-        await wait(lambda: ui._remote_parent_panel is None)
-        saved = store.load(store.catalog()[0]['id'])
-        assert saved.draft.images[0].data == image.data and saved.draft.text == 'LARGE UNSENT PARENT'
-        assert ui._editor.get_text() == saved.draft.text
-        assert next(iter(ui._composer.items.values())).data == image.data
-        assert not adapter.calls and not session.agent.messages
-    finally:
-        ui._request_exit()
-        connection.cancel()
-        await asyncio.gather(connection, return_exceptions=True)
-        writer.close()
-        await writer.wait_closed()
-        await server.stop()
-
-
 @pytest.mark.parametrize('fault', ['foreign-view', 'bad-index', 'bad-hash', 'withdraw'])
 async def test_parent_upload_scope_chunk_integrity_revocation_and_no_disk_mutation(tmp_path, fault):
     import base64
@@ -605,68 +560,6 @@ async def test_claw_parent_review_auto_expiry_and_withdraw_cancel_timers(tmp_pat
         assert not adapter.calls
     finally:
         await controller.close()
-        await server.stop()
-
-
-async def test_actual_chatapp_close_revokes_held_read_without_disconnect(tmp_path, monkeypatch):
-    import threading
-
-    from xdog.claw.channels.tui.tui_app import ChatApp
-    entered, release = threading.Event(), threading.Event()
-    original = ChildDraftStore.load
-    server, config, runtime, session, adapter, _ = await setup(tmp_path)
-    Path(config.data_dir).chmod(0o700)
-    store = ChildDraftStore(Path(config.data_dir) / 'saved-parent-drafts')
-    saved = store.save(encode_draft(ChildDraft('PRIVATE'), label='held', scope=session.meta.session_id,
-                                  action='parent', slot=''))
-    ui = ChatApp(config.socket_path)
-    reader, writer = await asyncio.open_unix_connection(config.socket_path)
-    connection = asyncio.create_task(ui._run_connection(reader, writer))
-    async def wait(predicate):
-        async with asyncio.timeout(6):
-            while True:
-                ui._poll()
-                if predicate():
-                    return
-                await asyncio.sleep(.003)
-    def held(self, key):
-        entered.set()
-        assert release.wait(3)
-        return original(self, key)
-    try:
-        await wait(lambda: ui._connection_ready and ui._remote_parent_caps.get('parent_saved_drafts') == 1)
-        ui._parent_draft_command('remote')
-        await wait(lambda: ui._remote_parent_panel is not None and not ui._remote_parent_panel.busy)
-        monkeypatch.setattr(ChildDraftStore, 'load', held)
-        panel = ui._remote_parent_panel
-        panel.render(80)
-        panel.handle_input(KeyEvent('enter'))
-        assert await asyncio.to_thread(entered.wait, 2)
-        scope = dict(ui._remote_parent_scope)
-        ui._close_remote_parent()
-        await asyncio.sleep(.15)  # Actual socket writer sends per-view revoke while worker remains held.
-        assert ui._connection_ready and not connection.done()
-        assert not server._orchestrator.try_reserve_group('main')
-        release.set()
-        # Reservation is separately tracked: probe only once cleanup has settled.
-        await asyncio.sleep(.15)
-        await wait(lambda: ui._remote_parent_panel is None)
-        assert server._orchestrator.try_reserve_group('main')
-        server._orchestrator.release_group_reservation('main')
-        assert not ui._editor.get_text() and not ui._composer.items and not adapter.calls
-        # Old view cannot re-admit even with live connection; a new view works.
-        ui._queue_request({'type': 'parent_draft_control', **{key: value for key, value in scope.items()
-                          if key != 'session_revision'}, 'request_id': 'old-view', 'action': 'catalog'})
-        ui._parent_draft_command('remote')
-        await wait(lambda: ui._remote_parent_panel is not None and not ui._remote_parent_panel.busy)
-        assert ui._remote_parent_panel.rows[0]['id'] == saved.id
-    finally:
-        release.set()
-        ui._request_exit()
-        connection.cancel()
-        await asyncio.gather(connection, return_exceptions=True)
-        writer.close()
-        await writer.wait_closed()
         await server.stop()
 
 

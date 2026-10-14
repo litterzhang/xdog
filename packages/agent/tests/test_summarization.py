@@ -41,10 +41,14 @@ async def test_provider_exception_is_not_private_ui_output():
     assert 'PRIVATE' not in str(failure.value)
 
 
-@pytest.mark.parametrize('value', ['\x00', 'x' * 16385, None, [], {}])
-def test_invalid_focus_rejected(value):
-    with pytest.raises(ValueError):
-        summary_instructions(value)
+def test_invalid_focus_rejected() -> None:
+
+    def _check_case(value):
+        with pytest.raises(ValueError):
+            summary_instructions(value)
+
+    for value in ["\x00", "x" * 16385, None, [], {}]:
+        _check_case(value)
 
 
 async def test_cancel_closes_pull_generator_and_owned_options():

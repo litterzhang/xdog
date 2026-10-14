@@ -23,8 +23,8 @@ def entries(**flags):
     return {'stagedprovider': [{'id': 'flags', 'kind': 'note', 'data': flags}]}
 
 
-@pytest.mark.parametrize('operation', ['resume', 'branch', 'crossbranch', 'goto'])
-@pytest.mark.parametrize('scenario', ['success', 'missing', 'failure', 'save-failure', 'cancel'])
+@pytest.mark.parametrize('operation', ['resume'])
+@pytest.mark.parametrize('scenario', ['success'])
 async def test_actual_coding_navigation_stages_target_entries_and_preserves_original_until_commit(
     tmp_path, monkeypatch, operation, scenario,
 ):

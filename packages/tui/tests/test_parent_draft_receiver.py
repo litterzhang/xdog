@@ -77,36 +77,49 @@ def test_exact_receive_full_review_and_atomic_adoption_once_even_with_second_pan
     assert len(adopted) == 1
 
 
-@pytest.mark.parametrize('fault', ['generation-bool', 'foreign', 'chunk-before-begin', 'duplicate-begin',
-                                   'duplicate-chunk', 'missing-chunk', 'hash', 'failed-result', 'missing-end'])
-def test_invalid_transfer_never_produces_adoptable_recovery(fault):
-    receiver, scope, composer, frames, result = setup()
-    try:
-        if fault == 'generation-bool':
-            frames[0]['parent_draft_generation'] = True
-        elif fault == 'foreign':
-            frames[0]['parent_draft_owner'] = 'foreign'
-        elif fault == 'chunk-before-begin':
-            frames[0], frames[1] = frames[1], frames[0]
-        elif fault == 'duplicate-begin':
-            frames.insert(1, frames[0])
-        elif fault == 'duplicate-chunk':
-            frames.insert(2, frames[1])
-        elif fault == 'missing-chunk':
-            frames.pop(1)
-        elif fault == 'hash':
-            frames[0]['review']['images'][0]['sha256'] = 'c' * 64
-        elif fault == 'failed-result':
-            result['success'] = False
-        elif fault == 'missing-end':
-            frames.pop()
-        with pytest.raises(ValueError):
-            for frame in frames:
-                receiver.feed(frame)
-            receiver.finish('read', result)
-        assert not receiver.pending
-    finally:
-        receiver.close()
+def test_invalid_transfer_never_produces_adoptable_recovery() -> None:
+
+    def _check_case(fault):
+        receiver, scope, composer, frames, result = setup()
+        try:
+            if fault == "generation-bool":
+                frames[0]["parent_draft_generation"] = True
+            elif fault == "foreign":
+                frames[0]["parent_draft_owner"] = "foreign"
+            elif fault == "chunk-before-begin":
+                frames[0], frames[1] = (frames[1], frames[0])
+            elif fault == "duplicate-begin":
+                frames.insert(1, frames[0])
+            elif fault == "duplicate-chunk":
+                frames.insert(2, frames[1])
+            elif fault == "missing-chunk":
+                frames.pop(1)
+            elif fault == "hash":
+                frames[0]["review"]["images"][0]["sha256"] = "c" * 64
+            elif fault == "failed-result":
+                result["success"] = False
+            elif fault == "missing-end":
+                frames.pop()
+            with pytest.raises(ValueError):
+                for frame in frames:
+                    receiver.feed(frame)
+                receiver.finish("read", result)
+            assert not receiver.pending
+        finally:
+            receiver.close()
+
+    for fault in [
+        "generation-bool",
+        "foreign",
+        "chunk-before-begin",
+        "duplicate-begin",
+        "duplicate-chunk",
+        "missing-chunk",
+        "hash",
+        "failed-result",
+        "missing-end",
+    ]:
+        _check_case(fault)
 
 
 @pytest.mark.parametrize('change', ['owner', 'revision', 'nonempty'])

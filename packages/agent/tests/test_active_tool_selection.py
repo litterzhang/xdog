@@ -40,13 +40,17 @@ def test_selection_is_configured_subset_cas_and_survives_refresh_without_growing
     assert agent.messages == original_messages
 
 
-@pytest.mark.parametrize('names', [['foreign'], ['allowed', 'allowed'], [True], 'allowed', [''], [1]])
-def test_bad_selection_never_changes_configured_or_active_tools(names):
-    agent = Agent(lambda *args: EventStream.empty(AssistantMessage()), tools=tools([]))
-    before = agent.state, agent.active_tools, agent.tool_selection_revision
-    with pytest.raises(ValueError):
-        agent.set_active_tools(names, expected_revision=agent.tool_selection_revision)
-    assert before == (agent.state, agent.active_tools, agent.tool_selection_revision)
+def test_bad_selection_never_changes_configured_or_active_tools() -> None:
+
+    def _check_case(names):
+        agent = Agent(lambda *args: EventStream.empty(AssistantMessage()), tools=tools([]))
+        before = (agent.state, agent.active_tools, agent.tool_selection_revision)
+        with pytest.raises(ValueError):
+            agent.set_active_tools(names, expected_revision=agent.tool_selection_revision)
+        assert before == (agent.state, agent.active_tools, agent.tool_selection_revision)
+
+    for names in [["foreign"], ["allowed", "allowed"], [True], "allowed", [""], [1]]:
+        _check_case(names)
 
 
 @pytest.mark.parametrize('mode', ['parallel', 'sequential'])

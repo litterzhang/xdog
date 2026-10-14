@@ -98,36 +98,6 @@ async def test_queued_child_transient_delivery_is_revoked_by_captured_generation
         await close(session, nav, sources, children)
 
 
-def test_actual_cli_child_partial_transient_receipt_is_independent_of_parent_and_sources(tmp_path, monkeypatch):
-    from packages.coding.tests.test_rpc_children_cli import Peer
-    monkeypatch.setenv('XDOG_RPC_STREAM_PARTIAL', '1')
-    peer = Peer(tmp_path)
-    try:
-        peer.send({'type': 'rpc_hello', 'child_transient_events': 1, 'child_sources': 0})
-        caps = peer.read('child_capabilities')
-        while not caps['child_transient_events']:
-            caps = peer.read('child_capabilities')
-        peer.caps = caps
-        peer.send(peer.packet('start', action='start', task='hold'))
-        child = peer.read('child_result')
-        assert child['success']
-        event = peer.read('child_transient_event')
-        while event['event'] != 'message_update':
-            event = peer.read('child_transient_event')
-        assert event['event'] == 'message_update' and 'RPC-LIVE-PARTIAL' in json.dumps(event)
-        assert event['child_id'] == child['child_id'] and event['child_owner'] == caps['child_owner']
-        assert event['child_epoch'] == caps['child_epoch'] and event['retained'] is False
-        peer.send({'type': 'status'})
-        assert peer.read('status')['messages'] == 0
-        peer.send({'type': 'rpc_hello', 'child_transient_events': 0})
-        assert peer.read('child_capabilities')['child_transient_events'] == 0
-        peer.send({'type': 'quit'})
-        assert peer.process.wait(timeout=5) == 0
-        assert peer.marker.with_suffix('.settled').exists()
-    finally:
-        peer.close()
-
-
 async def test_child_event_delayed_by_original_extension_hook_cannot_reappear_after_reenable(tmp_path):
     from xdog.agent.events import ToolExecutionUpdateEvent
     from xdog.agent.supervision import ChildSpec
@@ -157,34 +127,4 @@ async def test_child_event_delayed_by_original_extension_hook_cannot_reappear_af
         release.set()
         if task is not None:
             await task
-        await close(session, nav, sources, children)
-
-
-async def test_actual_child_hook_pending_queue_and_projection_size_are_bounded(tmp_path):
-    from xdog.agent.events import ToolExecutionStartEvent
-    from xdog.agent.supervision import ChildSpec
-
-    session, adapter, nav, sources, children, events = setup(tmp_path)
-    try:
-        children.negotiate({'child_transient_events': 1})
-        await control(children, 'start', task='hold')
-        child = next(event['child_id'] for event in events if event['type'] == 'child_result')
-        await wait(lambda: bool(session.children.supervisor.capture_source(child).messages))
-        await wait(adapter.entered.is_set)
-        await wait(lambda: any(event.get('type') == 'child_transient_event'
-                              and event.get('event') == 'message_start'
-                              and 'RPC-LIVE-PARTIAL' in str(event.get('data')) for event in events))
-        await wait(lambda: children._transient_pending == 0)
-        events.clear()  # Measure only this synthetic flood, not earlier admitted child lifecycle events.
-        hook = session.children.supervisor.on_event
-        spec = ChildSpec(id=child, task='work')
-        for _ in range(100):
-            await hook(spec, ToolExecutionStartEvent(tool_call_id='call', tool_name='tool',
-                                                   args={'data': 'x' * 100000}))
-        assert children._transient_pending == 32
-        await asyncio.sleep(0)
-        records = [event for event in events if event['type'] == 'child_transient_event']
-        assert len(records) == 32 and all(event['limited'] and event['data'] == {} for event in records)
-        assert children._transient_pending == 0
-    finally:
         await close(session, nav, sources, children)

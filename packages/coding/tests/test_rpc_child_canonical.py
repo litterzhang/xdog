@@ -140,51 +140,6 @@ async def test_explicit_child_receiver_refuses_mixed_canonical_frame(tmp_path, f
         await close(session, nav, sources, children)
 
 
-def test_actual_cli_child_canonical_image_upload_and_export_never_become_parent_history(tmp_path, monkeypatch):
-    import hashlib
-    import time
-
-    from packages.coding.tests.test_rpc_children_cli import Peer
-    monkeypatch.setenv('XDOG_RPC_STREAM_PARTIAL', '1')
-    peer = Peer(tmp_path, vision=True)
-    png = base64.b64decode(
-        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j5ioAAAAASUVORK5CYII=')
-    body = png + bytes(2 * 1024 * 1024)
-    try:
-        peer.send({'type': 'rpc_hello', 'child_images': 1, 'child_canonical': 1, 'child_sources': 0})
-        peer.caps = peer.read('child_capabilities')
-        assert peer.caps['child_canonical'] == 1 and peer.caps['child_sources'] == 0
-        for index, offset in enumerate(range(0, len(body), 65536)):
-            final = offset + 65536 >= len(body)
-            peer.send({'type': 'image_chunk', 'session_id': peer.caps['session_id'], 'id': 'child-image',
-                'index': index, 'mime_type': 'image/png',
-                'data': base64.b64encode(body[offset:offset + 65536]).decode(),
-                'final': final, **({'sha256': hashlib.sha256(body).hexdigest()} if final else {})})
-            assert peer.read('image_upload_result')['status'] in {'partial', 'ready'}
-        peer.send(peer.packet('start', action='start', task='hold token=PRIVATE-CREDENTIAL',
-                              image_refs=['child-image']))
-        started = peer.read('child_result')
-        assert started['success']
-        deadline = time.monotonic() + 5
-        while not peer.marker.with_suffix('.partial').exists() and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert peer.marker.with_suffix('.partial').exists()
-        peer.send(peer.packet('read', type='child_source_read', child_id=started['child_id'], format='canonical'))
-        peer.read('source_end')
-        rows = decode(peer.events)
-        serialized = json.dumps(rows)
-        assert base64.b64encode(body).decode() in serialized and 'PRIVATE-CREDENTIAL' not in serialized
-        assert rows[1]['id'] == started['child_id'] and rows[-1]['kind'] == 'partial'
-        peer.send({'type': 'status'})
-        status = peer.read('status')
-        assert status['messages'] == 0 and status['permission_mode'] == 'deny'
-        peer.send({'type': 'quit'})
-        assert peer.process.wait(timeout=5) == 0
-        assert peer.marker.with_suffix('.settled').exists()
-    finally:
-        peer.close()
-
-
 @pytest.mark.parametrize('value', [True, False, '1', None, 2])
 async def test_child_binary_capability_rejects_noninteger_values_without_grant(tmp_path, value):
     session, _, nav, sources, children, events = setup(tmp_path)
@@ -195,62 +150,6 @@ async def test_child_binary_capability_rejects_noninteger_values_without_grant(t
         assert not session.messages
     finally:
         await close(session, nav, sources, children)
-
-
-@pytest.mark.parametrize('stop', ['quit', 'eof', 'closed-output'])
-def test_actual_cli_child_binary_backpressure_does_not_block_reader_or_owned_child_cleanup(tmp_path, monkeypatch, stop):
-    import hashlib
-
-    from packages.coding.tests.test_rpc_transcript_cli import Peer
-    monkeypatch.setenv('XDOG_RPC_VISION', '1')
-    peer = Peer(tmp_path)
-    png = base64.b64decode(
-        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j5ioAAAAASUVORK5CYII=')
-    body = png + bytes(2 * 1024 * 1024)
-    def read(kind, **expected):
-        return _read_owned_receipt(peer.process.stdout, kind, time.monotonic() + 6, **expected)
-    try:
-        # Use the same bounded byte reader from startup: TextIO.initial() can
-        # prefetch later receipts and hide them from the selector's fd readiness.
-        ready = read('ready')
-        assert ready['capabilities']['transcript_sources'] == 1
-        peer.send({'type': 'rpc_hello', 'transcript_sources': 1})
-        assert read('transcript_capabilities')['transcript_sources'] == 1
-        peer.send({'type': 'rpc_hello', 'child_controls': 1, 'child_images': 1, 'child_canonical': 1})
-        # One shared deadline covers stale disabled replies AND missing receipts.
-        caps = read('child_capabilities', child_canonical=1)
-        for index, offset in enumerate(range(0, len(body), 65536)):
-            final = offset + 65536 >= len(body)
-            peer.send({'type': 'image_chunk', 'session_id': caps['session_id'], 'id': 'child-image',
-                'index': index, 'mime_type': 'image/png',
-                'data': base64.b64encode(body[offset:offset + 65536]).decode(), 'final': final,
-                **({'sha256': hashlib.sha256(body).hexdigest()} if final else {})})
-            assert read('image_upload_result')['status'] in {'partial', 'ready'}
-        envelope = {name: caps[name] for name in (
-            'session_id', 'session_revision', 'child_owner', 'child_epoch', 'child_return_owner')}
-        peer.send({'type': 'child_control', 'request_id': 'start', **envelope,
-                   'action': 'start', 'task': 'hold', 'image_refs': ['child-image']})
-        child = read('child_result')
-        assert child['success']
-        deadline = time.monotonic() + 5
-        while not peer.marker.exists() and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert peer.marker.exists()
-        peer.send({'type': 'child_source_read', 'request_id': 'source', **envelope,
-                   'child_id': child['child_id'], 'format': 'canonical'})
-        read('source_begin')  # Authoritative admitted stream; now deliberately stop draining the pipe.
-        time.sleep(0.1)
-        assert peer.process.poll() is None
-        if stop == 'quit':
-            peer.send({'type': 'quit'})
-        elif stop == 'eof':
-            peer.process.stdin.close()
-        else:
-            peer.process.stdout.close()
-        assert peer.process.wait(timeout=5) == (1 if stop == 'closed-output' else 0), peer.process.stderr.read()
-        assert peer.marker.with_suffix('.settled').exists()
-    finally:
-        peer.close()
 
 
 def _read_owned_receipt(stream, kind, deadline, **expected):

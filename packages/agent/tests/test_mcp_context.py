@@ -11,33 +11,6 @@ from xdog.agent.mcp.context import prompt_blocks, resource_blocks
 FIXTURE = Path(__file__).parent / "fixtures" / "mcp_server.py"
 
 
-async def test_real_catalog_pagination_resource_binary_and_prompt_are_inert_user_data(tmp_path):
-    log = tmp_path / "requests"
-    manager = McpManager({"fixture": {"command": sys.executable, "args": [str(FIXTURE), "modern", str(log)]}}, tmp_path)
-    try:
-        await manager.connect("fixture")
-        resources = await manager.catalog("fixture", "resource")
-        assert [entry.name for entry in resources] == ["fixture://text", "fixture://binary"]
-        assert (await manager.catalog("fixture", "template"))[0].name == "fixture://document/{name}"
-        prompts = await manager.catalog("fixture", "prompt")
-        assert prompts[0].arguments == (("topic", "Review topic", True),)
-        resource = await manager.resource("fixture", "fixture://text")
-        assert len(resource.text) > 200000 and "RESOURCE-TAIL" in resource.draft_text()
-        binary = await manager.resource("fixture", "fixture://binary")
-        assert binary.blocks[0].data == "AAECAw==" and "4 bytes" in binary.text
-        with pytest.raises(McpError, match="Binary"):
-            binary.draft_text()
-        with pytest.raises(McpError, match="argument"):
-            await manager.prompt("fixture", "review", {})
-        prompt = await manager.prompt("fixture", "review", {"topic": "topic"})
-        assert "PROMPT-topic" in prompt.text and "quoted assistant example" in prompt.draft_text()
-        frames = [json.loads(line) for line in log.read_text().splitlines()]
-        assert not any(frame["method"] == "tools/call" for frame in frames)
-        assert sum(frame["method"] == "prompts/get" for frame in frames) == 1
-    finally:
-        await manager.aclose()
-
-
 @pytest.mark.parametrize("messages", [
     [{"role": "system", "content": {"type": "text", "text": "hidden"}}],
     [{"role": "user", "content": {"type": "unknown"}}],

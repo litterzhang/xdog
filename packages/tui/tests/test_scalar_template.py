@@ -42,12 +42,14 @@ def test_unicode_prefix_percent_handling_dotted_and_encoded_variable_names_are_s
     assert expand("{a.b,var%20name}", {"a.b": "first", "var%20name": "second"}) == "first,second"
 
 
-@pytest.mark.parametrize(
-    "template", ["{}", "{", "}", "{{name}}", "{=name}", "{name:0}", "{name:10000}", "{name**}", "{a..b}"]
-)
-def test_invalid_expressions_fail_without_fetch_or_silent_partial_expansion(template):
-    with pytest.raises(ValueError):
-        expand(template, {"name": "x"})
+def test_invalid_expressions_fail_without_fetch_or_silent_partial_expansion() -> None:
+
+    def _check_case(template):
+        with pytest.raises(ValueError):
+            expand(template, {"name": "x"})
+
+    for template in ["{}", "{", "}", "{{name}}", "{=name}", "{name:0}", "{name:10000}", "{name**}", "{a..b}"]:
+        _check_case(template)
 
 
 def test_scalar_limits_reject_oversized_inputs_and_encoded_uri():

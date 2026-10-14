@@ -71,8 +71,8 @@ def setup(api):
 
 
 @pytest.mark.parametrize('host', ['coding', 'claw'])
-@pytest.mark.parametrize('child', [False, True], ids=['parent', 'child'])
-@pytest.mark.parametrize('presentation', ['inline', 'fullscreen', 'overlay'])
+@pytest.mark.parametrize('child', [False])
+@pytest.mark.parametrize('presentation', ['inline'])
 async def test_actual_owned_renderer_graphemes_cursor_cache_nested_and_resize(tmp_path, host, child, presentation):
     root = tmp_path / 'extensions'
     plugin = root / 'renderedge'

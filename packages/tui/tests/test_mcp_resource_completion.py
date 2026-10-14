@@ -82,27 +82,35 @@ def test_context_variable_edits_scope_cancellation_and_parent_json_are_preserved
         panel.close()
 
 
-@pytest.mark.parametrize('data', [[], {}, {'uri': '', 'argument': 'x', 'value': '', 'context': {}},
-    {'uri': 'opaque:ref', 'argument': '', 'value': '', 'context': {}},
-    {'uri': 'opaque:ref', 'argument': 'x', 'value': '', 'context': {'x': 'duplicate'}},
-    {'uri': 'opaque:ref', 'argument': 'x', 'value': False, 'context': {}},
-    {'uri': 'opaque:ref', 'argument': 'x', 'value': '', 'context': []},
-    {'uri': 'opaque:ref', 'argument': 'x', 'value': '', 'context': {'y': True}},
-    {'uri': 'opaque:ref', 'argument': 'x', 'value': '', 'context': {}, 'extra': 'bad'},
-    {'uri': 'opaque:ref', 'argument': 'x', 'value': 'x' * 8193, 'context': {}}])
-def test_invalid_manual_resource_envelope_preserves_input_without_network(data):
-    panel, sent = form()
-    try:
-        draft = json.dumps(data)
-        panel._arguments.set_text(draft)
-        panel.handle_input(KeyEvent('enter'))
-        assert panel._arguments.get_text() == draft
-        panel.handle_input(KeyEvent('space', ctrl=True))
-        assert panel.completion is None and sent == [('list', '', '', {})]
-        with pytest.raises(ValueError):
-            resource_request(draft)
-    finally:
-        panel.close()
+def test_invalid_manual_resource_envelope_preserves_input_without_network() -> None:
+
+    def _check_case(data):
+        panel, sent = form()
+        try:
+            draft = json.dumps(data)
+            panel._arguments.set_text(draft)
+            panel.handle_input(KeyEvent("enter"))
+            assert panel._arguments.get_text() == draft
+            panel.handle_input(KeyEvent("space", ctrl=True))
+            assert panel.completion is None and sent == [("list", "", "", {})]
+            with pytest.raises(ValueError):
+                resource_request(draft)
+        finally:
+            panel.close()
+
+    for data in [
+        [],
+        {},
+        {"uri": "", "argument": "x", "value": "", "context": {}},
+        {"uri": "opaque:ref", "argument": "", "value": "", "context": {}},
+        {"uri": "opaque:ref", "argument": "x", "value": "", "context": {"x": "duplicate"}},
+        {"uri": "opaque:ref", "argument": "x", "value": False, "context": {}},
+        {"uri": "opaque:ref", "argument": "x", "value": "", "context": []},
+        {"uri": "opaque:ref", "argument": "x", "value": "", "context": {"y": True}},
+        {"uri": "opaque:ref", "argument": "x", "value": "", "context": {}, "extra": "bad"},
+        {"uri": "opaque:ref", "argument": "x", "value": "x" * 8193, "context": {}},
+    ]:
+        _check_case(data)
 
 
 def test_manual_unicode_context_and_opaque_uri_are_data_not_templates_or_paths():

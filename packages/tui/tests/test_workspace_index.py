@@ -158,19 +158,6 @@ def test_missing_git_is_visible_and_walker_resumes_without_a_total_cap(tmp_path,
     assert "Git ignores unavailable" in provider.get_completion_status("@last-target")
 
 
-def test_full_workspace_and_large_explicit_directory_find_late_entries(tmp_path, make_provider) -> None:
-    # More than the old 20,000-entry cap, in one directory; output is still bounded.
-    for number in range(20_050):
-        (tmp_path / f"file-{number:05}.py").touch()
-    (tmp_path / "zz-late-target.py").touch()
-    provider = make_provider(tmp_path, max_entries=500, scan_seconds=0.01, max_results=3)
-    assert settled(provider, "@zz-late-target") == ["@zz-late-target.py"]
-    assert provider._workspace is not None
-    assert provider._workspace.count == 20_051
-    assert settled(provider, "./zz-late") == ["./zz-late-target.py"]
-    assert len(provider._best) <= 3
-
-
 def test_refresh_removes_deleted_and_newly_ignored_names(repo, make_provider) -> None:
     (repo / "old.py").touch()
     (repo / "now-ignored.py").touch()

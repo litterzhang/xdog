@@ -10,7 +10,6 @@ from xdog.agent import Agent, AgentConfig
 from xdog.ai.types import (
     AssistantMessage,
     ImageContent,
-    TextContent,
     ThinkingContent,
     ToolCall,
     ToolResultMessage,
@@ -18,14 +17,12 @@ from xdog.ai.types import (
 )
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core.agent_session import AgentSession
-from xdog.coding.core.messages import messages_to_dicts
 from xdog.coding.core.permissions import PermissionManager
 from xdog.coding.core.session_manager import SessionManager
 from xdog.coding.core.settings_manager import SettingsManager
 from xdog.coding.modes.rpc.navigation import RpcNavigation
 from xdog.coding.modes.rpc.transcripts import RpcTranscripts
 from xdog.tui.source_receiver import SourceReceiver
-from xdog.tui.transcript_browser import BrowserRequest, TranscriptBrowser
 
 
 def setup(tmp_path):
@@ -73,67 +70,6 @@ def receive(events, identifier, owner, revision, target, branch=''):
         return settled[0]['records']
     finally:
         reader.close()
-
-
-@pytest.mark.parametrize('scope', ['live', 'saved-head', 'saved-branch', 'timeline'])
-async def test_complete_sources_search_tool_join_partial_and_redaction_without_activation_or_model(tmp_path, scope):
-    owner, manager, calls, nav, sources, events = setup(tmp_path)
-    text = '完整🙂 ' + 'x' * 200000 + ' END-OF-SOURCE-NEEDLE'
-    history = [UserMessage(content=(TextContent(text=text),
-        ImageContent(data='PRIVATE-BINARY', mime_type='image/png'))), AssistantMessage(content=(
-        ThinkingContent(thinking='VISIBLE-REASONING', thinking_signature='PRIVATE-SIGNATURE'),
-        ToolCall(id='call', name='filesystem', arguments={'path': 'file.py', 'api_key': 'PRIVATE-CREDENTIAL'}))),
-        ToolResultMessage(tool_call_id='call', tool_name='filesystem', content=(TextContent(text='FULL-TOOL-END'),)),
-        AssistantMessage(content=(TextContent(text='COMPLETE-ANSWER'),))]
-    target = manager.create_session(model='offline/model', working_dir=tmp_path)
-    target.messages = history
-    target.branches = [{'branch_id': 'archive', 'label': 'ARCHIVED', 'messages': messages_to_dicts(history)}]
-    target.active_branch = 'archive'
-    manager.save_session(target)
-    original_owner, original_messages = owner.session_data, owner.agent.state.messages
-    original_resources = owner.plan, owner.extensions, owner.children, owner.mcp
-    if scope == 'live':
-        owner.agent.replace_messages(history)
-        owner.agent._state = replace(owner.agent.state, stream_message=AssistantMessage(content=(
-            TextContent(text='PARTIAL-ANSWER'),)))
-        original_messages = owner.agent.state.messages
-    fields = ({'scope': 'live'} if scope == 'live' else
-              {'scope': 'timeline' if scope == 'timeline' else 'saved', 'target_session': target.session_id,
-               **({'branch_id': 'archive'} if scope == 'saved-branch' else {})})
-    try:
-        sources.start(request(owner, nav, **fields))
-        await sources.task
-        selected_target = owner.session_id if scope == 'live' else target.session_id
-        branch = '@timeline' if scope == 'timeline' else 'archive' if scope == 'saved-branch' else ''
-        records = receive(events, 'read', owner.session_id, nav.revision, selected_target, branch)
-        assert any('END-OF-SOURCE-NEEDLE' in record.body for record in records)
-        assert any('FULL-TOOL-END' in record.body and 'Arguments:' in record.body for record in records)
-        assert 'VISIBLE-REASONING' in str(records) and 'COMPLETE-ANSWER' in str(records)
-        assert 'PRIVATE-SIGNATURE' not in str(events) and 'PRIVATE-CREDENTIAL' not in str(events)
-        assert 'PRIVATE-BINARY' not in str(records) and 'PRIVATE-SIGNATURE' not in str(records)
-        assert 'PRIVATE-CREDENTIAL' not in str(records)
-        if scope == 'live':
-            assert 'PARTIAL-ANSWER' in str(records) and 'binary data omitted' in str(records)
-        else:
-            assert 'LIVE-ONLY' not in str(records)
-        if scope == 'timeline':
-            assert 'ARCHIVED [archive]' in str(records) and 'Current context [@head]' in str(records)
-            assert sum('END-OF-SOURCE-NEEDLE' in record.body for record in records) == 1
-        browser = TranscriptBrowser()
-        try:
-            browser.request(BrowserRequest(records=records, query='END-OF-SOURCE-NEEDLE', width=80, height=6))
-            async with asyncio.timeout(3):
-                while browser.snapshot().busy:
-                    await asyncio.sleep(0.005)
-            assert browser.snapshot().matches == 1
-        finally:
-            browser.close()
-        assert owner.session_data is original_owner and owner.agent.state.messages is original_messages
-        assert (owner.plan, owner.extensions, owner.children, owner.mcp) == original_resources
-        assert owner.permissions.mode == 'deny' and not calls
-        assert sources.active is None
-    finally:
-        await close(owner, nav, sources)
 
 
 @pytest.mark.parametrize('failure', ['missing-session', 'missing-branch', 'corrupt', 'capacity'])

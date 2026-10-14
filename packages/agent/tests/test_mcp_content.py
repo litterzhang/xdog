@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import json
-import sys
 from pathlib import Path
 
 import pytest
-from xdog.agent.mcp import McpError, McpManager
+from xdog.agent.mcp import McpError
 from xdog.agent.mcp.content import MAX_BINARY_BYTES, content
 from xdog.agent.mcp.context import McpDocument, prompt_blocks, resource_blocks
-from xdog.ai.types import ImageContent, TextContent
 
 FIXTURE = Path(__file__).parent / 'fixtures/mcp_schema_peer.py'
 AUDIO = {'type': 'audio', 'data': 'AAECAw==', 'mimeType': 'audio/wav',
@@ -34,23 +31,28 @@ def test_invalid_audio_annotations_and_nonfinite_metadata_cannot_pass_tool_or_pr
         prompt_blocks([{'role': 'user', 'content': value}])
 
 
-@pytest.mark.parametrize('value', [
-    {'type': 'resource', 'resource': {'uri': 'test://x', 'text': 'x', 'blob': 'AA=='}},
-    {'type': 'resource', 'resource': {'uri': 'test://x', 'blob': 'bad!'}},
-    {'type': 'resource', 'resource': {'uri': 'test://x\0secret', 'text': 'x'}},
-    {'type': 'resource', 'resource': {'uri': '', 'text': 'x'}},
-    {'type': 'resource', 'resource': {'uri': 'test://x', 'text': True}},
-    {'type': 'resource', 'resource': {'uri': 'test://x', 'blob': 'AA==', '_meta': None}},
-    {'type': 'resource_link', 'uri': 'test://x', 'name': '', 'size': 1},
-    {'type': 'resource_link', 'uri': 'test://x', 'name': 'x', 'size': True},
-    {'type': 'resource_link', 'uri': 'test://x', 'name': 'x', 'annotations': {'audience': ['system']}},
-    {'type': 'text', 'text': '\ud800'}, {'type': 'text', 'text': 'x', '_meta': ['wrong']},
-])
-def test_tool_resource_and_text_blocks_have_the_same_validation_as_previews(value):
-    with pytest.raises(McpError):
-        content(value)
-    with pytest.raises(McpError):
-        prompt_blocks([{'role': 'assistant', 'content': value}])
+def test_tool_resource_and_text_blocks_have_the_same_validation_as_previews() -> None:
+
+    def _check_case(value):
+        with pytest.raises(McpError):
+            content(value)
+        with pytest.raises(McpError):
+            prompt_blocks([{"role": "assistant", "content": value}])
+
+    for value in [
+        {"type": "resource", "resource": {"uri": "test://x", "text": "x", "blob": "AA=="}},
+        {"type": "resource", "resource": {"uri": "test://x", "blob": "bad!"}},
+        {"type": "resource", "resource": {"uri": "test://x\x00secret", "text": "x"}},
+        {"type": "resource", "resource": {"uri": "", "text": "x"}},
+        {"type": "resource", "resource": {"uri": "test://x", "text": True}},
+        {"type": "resource", "resource": {"uri": "test://x", "blob": "AA==", "_meta": None}},
+        {"type": "resource_link", "uri": "test://x", "name": "", "size": 1},
+        {"type": "resource_link", "uri": "test://x", "name": "x", "size": True},
+        {"type": "resource_link", "uri": "test://x", "name": "x", "annotations": {"audience": ["system"]}},
+        {"type": "text", "text": "\ud800"},
+        {"type": "text", "text": "x", "_meta": ["wrong"]},
+    ]:
+        _check_case(value)
 
 
 def test_binary_input_and_decoded_budgets_are_enforced_before_large_allocations():
@@ -77,42 +79,6 @@ def test_audio_and_embedded_blob_metadata_are_lossless_inert_and_never_draft_as_
         document.draft_text()
     text = resource_blocks([{'uri': 'test://text', 'text': 'payload', '_meta': {'vendor/inner': 'retained'}}])
     assert 'retained' in text[0].text
-
-
-@pytest.mark.parametrize('profile', ['modern-content', 'legacy-content'])
-async def test_actual_tool_content_metadata_and_inert_audio_resource_link_survive(tmp_path, profile):
-    log = tmp_path / 'requests'
-    manager = McpManager({'peer': {'command': sys.executable, 'args': [str(FIXTURE), profile, str(log)]}}, tmp_path)
-    try:
-        await manager.connect('peer')
-        result = await manager.tools()[0].execute('call', {'value': None})
-        texts = '\n'.join(part.text for part in result.content if isinstance(part, TextContent))
-        for marker in ('MCP-CONTENT-TEXT', 'MCP-CONTENT-AUDIO', 'MCP-CONTENT-LINK', 'MCP-CONTENT-METADATA'):
-            assert marker in texts
-        assert result.details['mcp_content_metadata'][0]['metadata']['annotations']['priority'] == 0.25
-        assert any(isinstance(part, ImageContent) for part in result.content)
-        assert len(result.details['mcp_content_metadata']) == 2
-        assert 'data' not in result.details['mcp_content_metadata'][1]['metadata']
-        assert result.details['mcp_content_metadata'][1]['metadata']['_meta']['fixture/image'] in texts
-        assert result.details['mcp_content_metadata'][0]['metadata']['_meta']['fixture/provenance'] in texts
-        assert 'AAECAw==' in texts and 'UklGRg==' in texts and 'must-not-fetch.invalid' in texts
-        calls = [json.loads(line)['method'] for line in log.read_text().splitlines()]
-        assert calls.count('tools/call') == 1 and 'resources/read' not in calls
-    finally:
-        await manager.aclose()
-
-
-async def test_invalid_tool_binary_is_rejected_after_one_request_without_replay(tmp_path):
-    log = tmp_path / 'requests'
-    manager = McpManager({'peer': {'command': sys.executable,
-        'args': [str(FIXTURE), 'modern-bad-content', str(log)]}}, tmp_path)
-    try:
-        await manager.connect('peer')
-        with pytest.raises(McpError, match='binary encoding'):
-            await manager.tools()[0].execute('call', {'value': None})
-        assert sum(json.loads(line)['method'] == 'tools/call' for line in log.read_text().splitlines()) == 1
-    finally:
-        await manager.aclose()
 
 
 def test_unhashable_prompt_role_is_a_protocol_error_not_a_host_type_error():

@@ -33,11 +33,23 @@ def test_flags_preserve_task_suffix_and_fresh_subset_and_budget_selection():
     assert parse_child_start('-- --unknown literal task')[0] == '--unknown literal task'
 
 
-@pytest.mark.parametrize("value", ["--unknown task", "--calls bad task", "--inherit", "--label", "--label 'broken",
-                                    "--fresh --fresh task", "--tokens 0 task", "--tools agent_control task"])
-def test_invalid_flags_never_admit_child(value):
-    with pytest.raises(ValueError):
-        parse_child_start(value)
+def test_invalid_flags_never_admit_child() -> None:
+
+    def _check_case(value):
+        with pytest.raises(ValueError):
+            parse_child_start(value)
+
+    for value in [
+        "--unknown task",
+        "--calls bad task",
+        "--inherit",
+        "--label",
+        "--label 'broken",
+        "--fresh --fresh task",
+        "--tokens 0 task",
+        "--tools agent_control task",
+    ]:
+        _check_case(value)
 
 
 async def test_selected_tools_and_specialist_prompt_are_applied_and_persisted_without_parent_mutation(tmp_path):

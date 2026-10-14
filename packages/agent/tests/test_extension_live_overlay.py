@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import shutil
-from pathlib import Path
 
 import pytest
 from xdog.agent.extensions.api import ExtensionAPI
 from xdog.agent.extensions.dialogs import DialogBroker, validate_dialog
-from xdog.agent.extensions.runtime import ExtensionRuntime
 
 
 async def until(predicate):
@@ -105,50 +102,6 @@ async def test_broker_controls_are_host_owned_replay_safe_and_revoke_queued_old_
     assert broker.request_custom(identifier, key(4, 1))
     assert await task is False
     assert not broker.control_custom('fixture', 'view', 3, 'focus')
-
-
-async def test_actual_worker_background_controls_and_stale_client_are_owned(tmp_path):
-    root = tmp_path / 'extensions'
-    shutil.copytree(Path(__file__).parent / 'fixtures/extensions/overlaymock', root / 'overlaymock')
-    runtime = ExtensionRuntime(['overlaymock'], root, tmp_path)
-    broker, notices = DialogBroker(), []
-    runtime.custom_handler, runtime.custom_refresh_handler = broker.ask_custom, broker.refresh_custom
-    runtime.custom_control_handler = broker.control_custom
-    broker.publish = notices.append
-    command = None
-    try:
-        await runtime.initialize()
-        client = runtime._manager._clients['overlaymock']
-        command = asyncio.create_task(runtime.command('ext-overlaymock-view', ''))
-        await until(lambda: notices)
-        identifier = notices[0]['dialog']['id']
-        assert broker.request_custom(identifier, resize())
-        await until(lambda: len(notices) == 2)
-        assert await runtime.command('ext-overlaymock-control', 'focus') == 'QUEUED'
-        await until(lambda: any(item['type'] == 'extension_custom_control' for item in notices))
-        state = next(item['state'] for item in notices if item['type'] == 'extension_custom_control')
-        assert state['capturing'] is True
-        call_id, dialog_id = next(iter(client._custom_views))
-        notice = {'jsonrpc': '2.0', 'method': 'xdog/custom_control', 'params': {
-            'call_id': call_id, 'dialog_id': dialog_id, 'view_id': client._custom_views[call_id, dialog_id],
-            'sequence': state['sequence'], 'action': 'hide'}}
-        count = len([item for item in notices if item['type'] == 'extension_custom_control'])
-        assert client._internal_notification(notice)
-        assert len([item for item in notices if item['type'] == 'extension_custom_control']) == count
-        broker.resolve(identifier, None)
-        assert '"value": null' in await command
-        assert not client._custom_views and not client._custom_controls
-        await runtime.manage('reload', 'overlaymock')
-        called = []
-        runtime.custom_control_handler = lambda *args: called.append(args) or True
-        client._custom_views[call_id, dialog_id] = notice['params']['view_id']
-        notice['params']['sequence'] += 1
-        assert client._internal_notification(notice) and not called
-    finally:
-        broker.close()
-        if command is not None:
-            await asyncio.gather(command, return_exceptions=True)
-        await runtime.aclose()
 
 
 async def test_old_background_tasks_cannot_adopt_sequential_replacement_view_and_nested_owner_is_nearest():

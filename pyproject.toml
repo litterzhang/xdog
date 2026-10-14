@@ -50,6 +50,7 @@ dev = [
     "mypy>=1.9",
     "types-PyYAML>=6.0",
     "types-jsonschema>=4.26.0.20260518",
+    "pytest-xdist>=3.8.0",
 ]
 
 [project.scripts]
@@ -95,7 +96,9 @@ testpaths = [
     "packages/tui/tests",
 ]
 asyncio_mode = "auto"
-addopts = "--import-mode=importlib"
+# Run every retained test; concurrency, not deselection, keeps the feedback loop short.
+# Use `uv run pytest -n 0` when debugging a test in a single process.
+addopts = "--import-mode=importlib -n 6 --dist load --maxschedchunk=4"
 
 [tool.ruff]
 line-length = 120

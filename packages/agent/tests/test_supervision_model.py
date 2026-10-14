@@ -140,11 +140,14 @@ def test_provider_adapter_resolves_only_its_actual_provider_without_activating_f
     assert adapter.resolve_model("inactive/known") is None
 
 
-@pytest.mark.parametrize("config", [{"model": ""}, {"model": "bad\nmodel"}, {"thinking": "normal"},
-                                    {"thinking": []}, {"model": 123}])
-def test_model_reasoning_config_is_strict(config):
-    with pytest.raises(ValueError):
-        ChildConfig.from_dict(config)
+def test_model_reasoning_config_is_strict() -> None:
+
+    def _check_case(config):
+        with pytest.raises(ValueError):
+            ChildConfig.from_dict(config)
+
+    for config in [{"model": ""}, {"model": "bad\nmodel"}, {"thinking": "normal"}, {"thinking": []}, {"model": 123}]:
+        _check_case(config)
 
 
 def test_cli_model_reasoning_flags_retain_literal_task():
@@ -184,40 +187,58 @@ async def test_default_same_model_children_validate_actual_user_and_tool_images(
     assert stream.lookups[-1] == selected.id
 
 
-@pytest.mark.parametrize('scenario', ['unknown', 'text-only', 'too-many', 'too-large', 'media', 'withdrawn',
-                                      'model-type', 'streaming', 'malformed', 'changed-route'])
-def test_final_child_image_admission_fails_before_adapter_call(scenario):
-    from xdog.ai.types import VisionLimits
-    stream = CatalogStream()
-    selected = select(stream, {})
-    context = _image_context()
-    model = selected.id
-    if scenario == 'unknown':
-        stream.models.clear()
-    elif scenario == 'text-only':
-        stream.models[model] = replace(stream.models[model], input=('text',))
-    elif scenario == 'too-many':
-        context = _image_context(5)
-        stream.models[model] = replace(stream.models[model], vision_limits=VisionLimits(max_prompt_images=4))
-    elif scenario == 'too-large':
-        stream.models[model] = replace(stream.models[model], vision_limits=VisionLimits(max_prompt_image_size=8))
-    elif scenario == 'media':
-        stream.models[model] = replace(stream.models[model],
-                                      vision_limits=VisionLimits(supported_media_types=('image/jpeg',)))
-    elif scenario == 'withdrawn':
-        selected = select(stream, {'model': model})
-        stream.models.clear()  # Never fall back to the earlier selection metadata.
-    elif scenario == 'model-type':
-        stream.models[model] = replace(stream.models[model], model_type='embeddings')
-    elif scenario == 'streaming':
-        stream.models[model] = replace(stream.models[model], supports_streaming=False)
-    elif scenario == 'malformed':
-        context = Context(messages=[UserMessage(content=(ImageContent(data='not-base64', mime_type='image/png'),))])
-    else:
-        model = 'inactive/other'  # Never use old metadata for an unadvertised new route.
-    with pytest.raises(ValueError):
-        selected.stream(stream)(model, context, selected.options)
-    assert not stream.calls
+def test_final_child_image_admission_fails_before_adapter_call() -> None:
+
+    # Never fall back to the earlier selection metadata.
+    # Never use old metadata for an unadvertised new route.
+    def _check_case(scenario):
+        from xdog.ai.types import VisionLimits
+
+        stream = CatalogStream()
+        selected = select(stream, {})
+        context = _image_context()
+        model = selected.id
+        if scenario == "unknown":
+            stream.models.clear()
+        elif scenario == "text-only":
+            stream.models[model] = replace(stream.models[model], input=("text",))
+        elif scenario == "too-many":
+            context = _image_context(5)
+            stream.models[model] = replace(stream.models[model], vision_limits=VisionLimits(max_prompt_images=4))
+        elif scenario == "too-large":
+            stream.models[model] = replace(stream.models[model], vision_limits=VisionLimits(max_prompt_image_size=8))
+        elif scenario == "media":
+            stream.models[model] = replace(
+                stream.models[model], vision_limits=VisionLimits(supported_media_types=("image/jpeg",))
+            )
+        elif scenario == "withdrawn":
+            selected = select(stream, {"model": model})
+            stream.models.clear()
+        elif scenario == "model-type":
+            stream.models[model] = replace(stream.models[model], model_type="embeddings")
+        elif scenario == "streaming":
+            stream.models[model] = replace(stream.models[model], supports_streaming=False)
+        elif scenario == "malformed":
+            context = Context(messages=[UserMessage(content=(ImageContent(data="not-base64", mime_type="image/png"),))])
+        else:
+            model = "inactive/other"
+        with pytest.raises(ValueError):
+            selected.stream(stream)(model, context, selected.options)
+        assert not stream.calls
+
+    for scenario in [
+        "unknown",
+        "text-only",
+        "too-many",
+        "too-large",
+        "media",
+        "withdrawn",
+        "model-type",
+        "streaming",
+        "malformed",
+        "changed-route",
+    ]:
+        _check_case(scenario)
 
 
 def test_metadata_less_custom_child_adapter_is_text_compatible_but_cannot_send_images():

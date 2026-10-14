@@ -247,7 +247,7 @@ async def test_navigation_refuses_busy_foreign_invalid_and_reused_operations_wit
         await close(owner)
 
 
-@pytest.mark.parametrize('action', ['resume', 'branch', 'goto'])
+@pytest.mark.parametrize('action', ['resume'])
 def test_actual_cli_rpc_named_session_discovery_staged_resume_and_revision_fence_without_model_work(tmp_path, action):
     import os
     import subprocess

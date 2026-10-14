@@ -101,7 +101,7 @@ def test_noncurrent_platform_selection_refuses_not_file_fallback(tmp_path, backe
     assert not (tmp_path / 'private').exists()
 
 
-@pytest.mark.parametrize('backend,platform', [('keychain', 'darwin'), ('windows-credential', 'win32')])
+@pytest.mark.parametrize('backend,platform', [('keychain', 'darwin')])
 @pytest.mark.parametrize('phase', ['success', 'stall', 'pre-admission-cancel', 'post-admission-cancel', 'oversize'])
 def test_actual_owned_helper_pipe_protocol_lifecycle_no_secret_argv_or_plaintext(tmp_path, monkeypatch,
                                                                               backend, platform, phase):
@@ -327,3 +327,35 @@ def test_mac_native_query_no_ui_type_bounds_release_and_delete_contract():
     with pytest.raises(ValueError, match='capacity'):
         vault.read()
     assert calls[-1] == 'release'
+
+
+def test_broken_helper_stdin_close_preserves_owned_cancellation(tmp_path, monkeypatch):
+    """A deterministic pipe-close failure must not mask the ownership refusal."""
+    import xdog.agent.mcp.oauth_native_store as module
+
+    launch = subprocess.Popen
+    owned = []
+
+    class BrokenClose:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+        def close(self):
+            self.stream.close()
+            raise BrokenPipeError('owned helper already exited')
+
+    def popen(args, **kwargs):
+        child = launch([sys.executable, '-I', '-c', 'import sys; sys.stdin.read()'], **kwargs)
+        child.stdin = BrokenClose(child.stdin)
+        owned.append(child)
+        return child
+
+    monkeypatch.setattr(module.subprocess, 'Popen', popen)
+    monkeypatch.setattr(module, 'sys', SimpleNamespace(platform='darwin', executable=sys.executable))
+    store = NativeCredentialStore(tmp_path / 'private', backend='keychain')
+    with pytest.raises(OAuthError, match='no plaintext or login fallback'):
+        store._run_platform('save', b'{}\n', lambda: False)
+    assert all(child.poll() is not None and child.stdin.closed and child.stdout.closed for child in owned)

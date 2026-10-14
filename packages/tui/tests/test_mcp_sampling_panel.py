@@ -123,21 +123,25 @@ def test_disable_cannot_repaint_or_confirm_but_escape_still_cancels_once(phase):
     assert canceled == [True]
 
 
-@pytest.mark.parametrize('fault', ['receipt', 'digest', 'phase', 'body', 'notice'])
-def test_bad_review_refused_without_display_or_receipt_admission(fault):
-    value = event()
-    if fault == 'receipt':
-        value['receipt'] = 'wrong'
-    elif fault == 'digest':
-        value['body']['params']['maxTokens'] = 15
-    elif fault == 'phase':
-        value['phase'] = 'executing'
-    elif fault == 'body':
-        value['body'] = []
-    else:
-        value['notice'] = '\x1b[31munsafe'
-    with pytest.raises(ValueError):
-        McpSamplingPanel(value, ('host-model',), lambda _: None, lambda: None)
+def test_bad_review_refused_without_display_or_receipt_admission() -> None:
+
+    def _check_case(fault):
+        value = event()
+        if fault == "receipt":
+            value["receipt"] = "wrong"
+        elif fault == "digest":
+            value["body"]["params"]["maxTokens"] = 15
+        elif fault == "phase":
+            value["phase"] = "executing"
+        elif fault == "body":
+            value["body"] = []
+        else:
+            value["notice"] = "\x1b[31munsafe"
+        with pytest.raises(ValueError):
+            McpSamplingPanel(value, ("host-model",), lambda _: None, lambda: None)
+
+    for fault in ["receipt", "digest", "phase", "body", "notice"]:
+        _check_case(fault)
 
 
 def test_long_unicode_and_literal_terminal_controls_remain_inspectable_not_executed():

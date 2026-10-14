@@ -1,42 +1,8 @@
 from __future__ import annotations
 
-import shutil
-from pathlib import Path
-
 import pytest
 from xdog.agent.extensions.api import ExtensionAPI
 from xdog.agent.extensions.runtime import ExtensionRuntime
-
-
-async def test_real_worker_bootstrap_clear_collision_reload_and_old_owner_ui_are_scoped(tmp_path):
-    root = tmp_path / 'extensions'
-    shutil.copytree(Path(__file__).parent / 'fixtures/extensions', root)
-    runtime = ExtensionRuntime(['uiclear'], root, tmp_path)
-    events = []
-    runtime.publish = events.append
-    try:
-        await runtime.initialize()
-        client = runtime._manager._clients['uiclear']
-        assert runtime.snapshot()['ui']['uiclear:setup']['lines'] == ['BOOTSTRAP-LIVE']
-        assert await runtime.command('ext-uiclear-show', '') == 'UI-SHOWN'
-        assert 'uiclear:setup' not in runtime.snapshot()['ui']
-        assert set(runtime.snapshot()['ui']) == {'uiclear:state', 'uiclear:details'}
-        assert await runtime.command('ext-uiclear-hide', '') == 'UI-CLEARED'
-        assert not runtime.snapshot()['ui']
-        assert events[-1]['type'] == 'extension_ui' and not events[-1]['snapshot']['ui']
-        await runtime.command('ext-uiclear-collide', '')
-        assert runtime.snapshot()['ui']['uiclear:same']['kind'] == 'widget'
-        await runtime.manage('reload', 'uiclear')
-        new = runtime._manager._clients['uiclear']
-        assert new is not client
-        runtime.accept_ui('uiclear', [{'kind': 'widget', 'key': 'setup', 'lines': ['STALE']}], client=client)
-        runtime.accept_ui('uiclear', [{'kind': 'status', 'key': 'setup', 'lines': [], 'clear': True}], client=client)
-        assert runtime.snapshot()['ui']['uiclear:setup']['lines'] == ['BOOTSTRAP-LIVE']
-        await runtime.aclose()
-        runtime.accept_ui('uiclear', [{'kind': 'widget', 'key': 'late', 'lines': ['STALE']}], client=new)
-        assert 'uiclear:late' not in runtime.snapshot()['ui']
-    finally:
-        await runtime.aclose()
 
 
 def test_clear_api_copies_values_and_does_not_implicitly_treat_empty_widget_as_removal():

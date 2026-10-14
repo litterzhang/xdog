@@ -40,28 +40,32 @@ def test_private_snapshot_restart_and_reviewed_discard_preserve_bytes_without_ol
     assert not store.list() and not list(store.root.glob('.draft-*'))
 
 
-@pytest.mark.parametrize('fault', ['version', 'receipt', 'base64', 'mime', 'unknown', 'duplicate', 'cursor'])
-def test_invalid_draft_snapshots_refuse_instead_of_partial_text_recovery(fault):
-    data, _ = encoded()
-    value = json.loads(data)
-    if fault == 'version':
-        value['version'] = True
-    elif fault == 'receipt':
-        value['receipt']['content'] = 'other'
-    elif fault == 'base64':
-        value['images'][0]['data'] = 'wrong!'
-    elif fault == 'mime':
-        value['images'][0]['mime_type'] = 'image/jpeg'
-    elif fault == 'unknown':
-        value['automatic_submit'] = True
-    elif fault == 'cursor':
-        value['cursor'] = True
-    else:
-        with pytest.raises(ValueError, match='Duplicate'):
-            decode_draft('a' * 32, data[:-1] + b',"text":"duplicate"}')
-        return
-    with pytest.raises(ValueError):
-        decode_draft('a' * 32, json.dumps(value).encode())
+def test_invalid_draft_snapshots_refuse_instead_of_partial_text_recovery() -> None:
+
+    def _check_case(fault):
+        data, _ = encoded()
+        value = json.loads(data)
+        if fault == "version":
+            value["version"] = True
+        elif fault == "receipt":
+            value["receipt"]["content"] = "other"
+        elif fault == "base64":
+            value["images"][0]["data"] = "wrong!"
+        elif fault == "mime":
+            value["images"][0]["mime_type"] = "image/jpeg"
+        elif fault == "unknown":
+            value["automatic_submit"] = True
+        elif fault == "cursor":
+            value["cursor"] = True
+        else:
+            with pytest.raises(ValueError, match="Duplicate"):
+                decode_draft("a" * 32, data[:-1] + b',"text":"duplicate"}')
+            return
+        with pytest.raises(ValueError):
+            decode_draft("a" * 32, json.dumps(value).encode())
+
+    for fault in ["version", "receipt", "base64", "mime", "unknown", "duplicate", "cursor"]:
+        _check_case(fault)
 
 
 @pytest.mark.skipif(os.name != 'posix', reason='POSIX file ownership/type guards')

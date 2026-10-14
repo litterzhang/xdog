@@ -37,12 +37,16 @@ def test_user_can_remap_unbind_and_configure_unloaded_shortcuts_without_enabling
         PromptKeymap.from_overrides({"ext-keyed-compose": "ctrl+e"})
 
 
-@pytest.mark.parametrize("key", ["escape", "ctrl+c", "ctrl+d", "ctrl+l", "ctrl+z", "enter", "tab"])
-def test_extension_overrides_cannot_take_reserved_routes_even_after_user_unbinds_action(key):
-    with pytest.raises(ValueError):
-        PromptKeymap.from_overrides(
-            {"interrupt": [], "exit": [], "suspend": [], "send": [], "complete": [], "ext-keyed-compose": key}
-        )
+def test_extension_overrides_cannot_take_reserved_routes_even_after_user_unbinds_action() -> None:
+
+    def _check_case(key):
+        with pytest.raises(ValueError):
+            PromptKeymap.from_overrides(
+                {"interrupt": [], "exit": [], "suspend": [], "send": [], "complete": [], "ext-keyed-compose": key}
+            )
+
+    for key in ["escape", "ctrl+c", "ctrl+d", "ctrl+l", "ctrl+z", "enter", "tab"]:
+        _check_case(key)
 
 
 def test_case_insensitive_command_overrides_cannot_silently_replace_one_another():

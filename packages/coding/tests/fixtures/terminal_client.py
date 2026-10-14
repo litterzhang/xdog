@@ -85,6 +85,30 @@ if os.environ.get('XDOG_FIXTURE_ARGUMENT_STATE'):
         return changed
     ChatApp._poll = _observed_argument_poll
 
+    from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
+    _coding_argument_poll = InteractiveMode._poll
+    def _observed_coding_argument_poll(self):
+        global _argument_last_state
+        changed = _coding_argument_poll(self)
+        request_path = _argument_state_path.with_suffix('.request')
+        if request_path.exists():
+            feed = self._argument_feed
+            with self._argument_jobs_lock:
+                requests = list(self._argument_jobs)
+            client = self._session.extensions._manager._clients.get('argcomplete')
+            state = {'nonce': request_path.read_text(), 'connected': client is not None and client.state == 'connected',
+                'editor': self._editor.get_text(), 'requests': requests,
+                'inflight': feed._inflight.serial if feed._inflight else None,
+                'queued': feed._request.serial if feed._request else None,
+                'canceling': feed._canceling.serial if feed._canceling else None}
+            if state != _argument_last_state:
+                temporary = _argument_state_path.with_suffix('.tmp')
+                temporary.write_text(json.dumps(state))
+                temporary.replace(_argument_state_path)
+                _argument_last_state = state
+        return changed
+    InteractiveMode._poll = _observed_coding_argument_poll
+
 # Exercise the production macOS helper protocol on Linux/private tmux; this is
 # not native AppKit/desktop validation. Replace only this module's sys reference.
 if os.environ.get("XDOG_FIXTURE_MAC_CLIPBOARD") == "1":

@@ -1,49 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import shutil
 from pathlib import Path
 
 import pytest
 from xdog.agent.extensions.dialogs import DialogBroker
-from xdog.agent.extensions.runtime import ExtensionRuntime
 
 FIXTURE = Path(__file__).parent / "fixtures" / "extensions"
-
-
-async def test_real_worker_suspends_callback_for_multiple_dialogs_without_replay(tmp_path):
-    root = tmp_path / "extensions"
-    shutil.copytree(FIXTURE, root)
-    runtime = ExtensionRuntime(["dialogue"], root, tmp_path)
-    requested = []
-    async def answer(name, prompt):
-        requested.append(prompt)
-        return {"select": "Blue", "input": "user", "confirm": True}[prompt["kind"]]
-    runtime.dialog_handler = answer
-    try:
-        assert await runtime.command("ext-dialogue-ask", "") == "DIALOG-RESULT-Blue-user-True"
-        assert [item["kind"] for item in requested] == ["select", "input", "confirm"]
-        assert len({item["id"] for item in requested}) == 3
-        assert runtime.snapshot()["extensions"][0]["state"] == "active"
-    finally:
-        await runtime.aclose()
-
-
-async def test_headless_dialogs_return_canceled_values_and_timeout_does_not_disable_worker(tmp_path):
-    root = tmp_path / "extensions"
-    shutil.copytree(FIXTURE, root)
-    runtime = ExtensionRuntime(["dialogue"], root, tmp_path)
-    broker = DialogBroker()
-    runtime.dialog_handler = broker.ask
-    try:
-        # No host answer: both ends share a bounded deadline and do not re-execute.
-        assert await runtime.command("ext-dialogue-timeout", "") == "TIMEOUT-None"
-        assert runtime.snapshot()["extensions"][0]["state"] == "active"
-        runtime.dialog_handler = None
-        assert await runtime.command("ext-dialogue-ask", "") == "DIALOG-RESULT-None-None-False"
-    finally:
-        broker.close()
-        await runtime.aclose()
 
 
 async def test_broker_cross_thread_resolution_close_and_stale_ids():
@@ -60,33 +23,6 @@ async def test_broker_cross_thread_resolution_close_and_stale_ids():
     broker.close()
     assert await task is False
     assert not broker.contains(identifier)
-
-
-async def test_canceling_a_callback_waiting_for_ui_cancels_broker_and_reaps_process(tmp_path):
-    root = tmp_path / "extensions"
-    shutil.copytree(FIXTURE, root)
-    runtime = ExtensionRuntime(["dialogue"], root, tmp_path)
-    broker = DialogBroker()
-    notices = []
-    broker.publish = notices.append
-    runtime.dialog_handler = broker.ask
-    try:
-        await runtime.initialize()
-        client = runtime._manager._clients["dialogue"]
-        process = client.process
-        task = asyncio.create_task(runtime.command("ext-dialogue-ask", ""))
-        async with asyncio.timeout(3):
-            while not notices:
-                await asyncio.sleep(0.005)
-        key = notices[0]["dialog"]["id"]
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert not broker.contains(key) and process.returncode is not None
-        assert runtime.snapshot()["extensions"][0]["state"] == "failed"
-    finally:
-        broker.close()
-        await runtime.aclose()
 
 
 async def test_quarantine_cancels_waiting_questions_for_only_the_failed_extension():

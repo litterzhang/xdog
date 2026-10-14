@@ -31,13 +31,22 @@ def test_chunked_images_are_scoped_complete_validated_and_bounded():
     assert uploads._bytes == 0
 
 
-@pytest.mark.parametrize("bad", [
-    {"id": "", "index": 0}, {"index": True}, {"mime_type": []}, {"data": "notbase64"},
-    {"index": 1}, {"sha256": "wrong"}, {"data": "A" * 100_001},
-])
-def test_invalid_uploads_never_become_ready(bad):
-    uploads = ImageUploads()
-    with pytest.raises((ValueError, TypeError)):
-        uploads.chunk({**chunk(), **bad})
-    with pytest.raises(ValueError):
-        uploads.resolve(["image"])
+def test_invalid_uploads_never_become_ready() -> None:
+
+    def _check_case(bad):
+        uploads = ImageUploads()
+        with pytest.raises((ValueError, TypeError)):
+            uploads.chunk({**chunk(), **bad})
+        with pytest.raises(ValueError):
+            uploads.resolve(["image"])
+
+    for bad in [
+        {"id": "", "index": 0},
+        {"index": True},
+        {"mime_type": []},
+        {"data": "notbase64"},
+        {"index": 1},
+        {"sha256": "wrong"},
+        {"data": "A" * 100001},
+    ]:
+        _check_case(bad)

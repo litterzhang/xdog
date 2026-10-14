@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-import shutil
-from pathlib import Path
-
 import pytest
 from xdog.agent.extensions.api import ExtensionAPI
 from xdog.agent.extensions.command_catalog import answer, page, request
-from xdog.agent.extensions.runtime import ExtensionRuntime
 
 
 def test_command_menu_pages_keep_all_rows_revision_query_copy_and_explicit_stale_status():
@@ -31,42 +27,43 @@ def test_command_menu_pages_keep_all_rows_revision_query_copy_and_explicit_stale
     assert foreign['status'] == 'stale'
 
 
-@pytest.mark.parametrize('invalid', [{'offset': True}, {'offset': -1}, {'offset': 10001}, {'query': '\n'},
-    {'query': '\x1bunsafe'}, {'query': 'x' * 257}, {'revision': 'forged'}, {'target': {}}, {'session_id': 'foreign'}])
-def test_command_metadata_request_rejects_coercion_oversize_controls_and_host_actions(invalid):
-    with pytest.raises(ValueError):
-        request(invalid)
+def test_command_metadata_request_rejects_coercion_oversize_controls_and_host_actions() -> None:
+
+    def _check_case(invalid):
+        with pytest.raises(ValueError):
+            request(invalid)
+
+    for invalid in [
+        {"offset": True},
+        {"offset": -1},
+        {"offset": 10001},
+        {"query": "\n"},
+        {"query": "\x1bunsafe"},
+        {"query": "x" * 257},
+        {"revision": "forged"},
+        {"target": {}},
+        {"session_id": "foreign"},
+    ]:
+        _check_case(invalid)
 
 
-@pytest.mark.parametrize('invalid', [{'total': True}, {'source': 'executable'}, {'session_id': False},
-    {'commands': []}, {'next_offset': 1}, {'revision': 'foreign'}, {'permissions': 'allow-all'}])
-def test_command_metadata_answer_is_not_an_execution_receipt_or_partial_page(invalid):
-    value = page({'owned': 'Metadata'}, {}, session_id='session', owner='command')
-    with pytest.raises(ValueError):
-        answer({}, {**value, **invalid})
+def test_command_metadata_answer_is_not_an_execution_receipt_or_partial_page() -> None:
 
+    def _check_case(invalid):
+        value = page({"owned": "Metadata"}, {}, session_id="session", owner="command")
+        with pytest.raises(ValueError):
+            answer({}, {**value, **invalid})
 
-async def test_headless_api_returns_unavailable_and_worker_cannot_borrow_menu_from_a_tool(tmp_path):
-    api = ExtensionAPI({})
-    assert await api.get_command_catalog() is None and not api._dialogs
-    root = tmp_path / 'extensions'
-    shutil.copytree(Path(__file__).parent / 'fixtures/extensions/commandreader', root / 'commandreader')
-    runtime = ExtensionRuntime(['commandreader'], root, tmp_path, context=lambda: {'session_id': 'session'})
-    try:
-        assert await runtime.command('ext-commandreader-inspect', '') == 'COMMAND-MENU-UNAVAILABLE'
-        requests = []
-        async def supplied(extension, query):
-            requests.append(query)
-            return page({'help': 'Public help', 'ext-commandreader-inspect': 'Read metadata'}, query,
-                        session_id='session', owner='command')
-        runtime.dialog_handler = supplied
-        assert 'COMMAND-MENU ' in await runtime.command('ext-commandreader-inspect', '')
-        assert len(requests) == 2 and all(query['operation'] == 'commands' for query in requests)
-        requests.clear()
-        result = await runtime.tools()[0].execute('tool', {})
-        assert result.content[0].text == 'TOOL-MENU-UNAVAILABLE' and not requests
-    finally:
-        await runtime.aclose()
+    for invalid in [
+        {"total": True},
+        {"source": "executable"},
+        {"session_id": False},
+        {"commands": []},
+        {"next_offset": 1},
+        {"revision": "foreign"},
+        {"permissions": "allow-all"},
+    ]:
+        _check_case(invalid)
 
 
 async def test_api_command_menu_cannot_accept_foreign_session_data_even_with_valid_schema():

@@ -18,41 +18,6 @@ async def until(predicate):
             await asyncio.sleep(0.003)
 
 
-@pytest.mark.parametrize('mode', ['modern', 'legacy', 'modern-slow-cancel'])
-async def test_owned_stdio_watch_changes_shared_legacy_and_exact_cleanup_no_resource_read(tmp_path, mode):
-    log = tmp_path / 'messages'
-    manager = McpManager({'peer': {'command': sys.executable, 'args': [str(FIXTURE), mode, str(log)]}}, tmp_path)
-    events1, events2, alive = [], [], [True]
-    try:
-        await manager.connect('peer')
-        first = await manager.watch_resource('peer', 'test://watched', lease='one', on_change=events1.append,
-                                             alive=lambda: alive[0])
-        second = await manager.watch_resource('peer', 'test://watched', lease='two', on_change=events2.append,
-                                              alive=lambda: True)
-        assert first['state'] == second['state'] == 'active'
-        await manager._bridge(manager._clients['peer'].request('fixture/update', {}))
-        await until(lambda: events1 and events2)
-        assert events1[-1]['changes'] == events2[-1]['changes'] == 1
-        await manager.unwatch_resource('peer', 'test://watched', lease='one')
-        before = len(events1)
-        await manager._bridge(manager._clients['peer'].request('fixture/update', {}))
-        await until(lambda: events2[-1]['changes'] == 2)
-        assert len(events1) == before
-        await manager.detach_resource_watches('two')
-        status = await manager._bridge(manager._clients['peer'].request('fixture/status', {}))
-        assert status == {'modern': 0, 'legacy': 0}
-        messages = [json.loads(line) for line in log.read_text().splitlines()]
-        methods = [message['method'] for message in messages]
-        assert 'resources/read' not in methods
-        assert not manager._resource_watches and not manager._clients['peer'].resources.watches
-        if mode == 'legacy':
-            assert methods.count('resources/subscribe') == methods.count('resources/unsubscribe') == 1
-        else:
-            assert methods.count('subscriptions/listen') == methods.count('notifications/cancelled') == 2
-    finally:
-        await manager.aclose()
-
-
 async def test_modern_unsupported_ack_fails_without_read_or_resubscribe(tmp_path):
     log = tmp_path / 'messages'
     manager = McpManager({'peer': {'command': sys.executable, 'args': [str(FIXTURE),

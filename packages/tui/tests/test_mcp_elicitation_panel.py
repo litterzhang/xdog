@@ -162,21 +162,25 @@ def test_required_and_declared_type_edit_mistakes_keep_form_and_receipt(value):
     assert panel.editor.get_text() == value and panel.event['receipt'] == 'b' * 32
 
 
-@pytest.mark.parametrize('fault', ['missing-digest', 'digest', 'phase', 'body', 'identity'])
-def test_malformed_review_refuses_without_adopting_or_echoing_data(fault):
-    value = event()
-    if fault == 'missing-digest':
-        del value['sha256']
-    elif fault == 'digest':
-        value['body']['params']['message'] = 'changed'
-    elif fault == 'phase':
-        value['phase'] = 'executing'
-    elif fault == 'body':
-        value['body'] = []
-    else:
-        value['receipt'] = 'unowned'
-    with pytest.raises(ValueError):
-        McpElicitationPanel(value, lambda _: None, lambda: None)
+def test_malformed_review_refuses_without_adopting_or_echoing_data() -> None:
+
+    def _check_case(fault):
+        value = event()
+        if fault == "missing-digest":
+            del value["sha256"]
+        elif fault == "digest":
+            value["body"]["params"]["message"] = "changed"
+        elif fault == "phase":
+            value["phase"] = "executing"
+        elif fault == "body":
+            value["body"] = []
+        else:
+            value["receipt"] = "unowned"
+        with pytest.raises(ValueError):
+            McpElicitationPanel(value, lambda _: None, lambda: None)
+
+    for fault in ["missing-digest", "digest", "phase", "body", "identity"]:
+        _check_case(fault)
 
 
 def test_invisible_and_tiny_viewports_cannot_accept_and_disabled_focus_stays_revoked():

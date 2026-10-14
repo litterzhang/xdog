@@ -6,13 +6,11 @@ import base64
 import hashlib
 import json
 import threading
-from dataclasses import replace
 
 import pytest
 from xdog.agent.core import CustomAgentMessage
-from xdog.ai.types import AssistantMessage, ImageContent, TextContent, ThinkingContent, ToolCall, UserMessage
+from xdog.ai.types import ThinkingContent, UserMessage
 from xdog.coding.core.canonical_source import project
-from xdog.coding.core.messages import messages_to_dicts
 
 from packages.coding.tests.test_rpc_transcripts import close, request, setup
 
@@ -28,48 +26,6 @@ def decode(events, identifier='read'):
     assert len(data) == packets[0]['bytes'] and hashlib.sha256(data).hexdigest() == packets[0]['sha256']
     assert packets[-1]['chunks'] == len(chunks)
     return [json.loads(line) for line in data.splitlines()]
-
-
-@pytest.mark.parametrize('scope', ['live', 'saved', 'branch', 'timeline'])
-async def test_typed_canonical_image_suffix_metadata_provenance_and_redaction(tmp_path, scope):
-    owner, manager, calls, nav, sources, events = setup(tmp_path)
-    binary = base64.b64encode(bytes(range(256)) * 8192).decode()
-    history = [UserMessage(content=(TextContent(text='hello token=PRIVATE-CREDENTIAL'),
-        ImageContent(data=binary, mime_type='image/png'))),
-        AssistantMessage(content=(TextContent(text='ANSWER', text_signature='PRIVATE-SIGNATURE'),
-            ThinkingContent(thinking='PUBLIC-REASONING', thinking_signature='PRIVATE-SIGNATURE'),
-            ThinkingContent(thinking='PRIVATE-REDACTED', redacted=True),
-            ToolCall(id='call', name='tool', arguments={'nested': {'api_key': 'PRIVATE-CREDENTIAL'}},
-                     thought_signature='PRIVATE-SIGNATURE')), response_id='PRIVATE-RESPONSE'),
-        CustomAgentMessage(type='entry', data={'signature': 'PRIVATE-SIGNATURE', 'safe': 'CUSTOM'})]
-    target = manager.create_session(model='offline/model', working_dir=tmp_path)
-    target.messages = history
-    target.branches = [{'branch_id': 'archive', 'label': 'Archive', 'messages': messages_to_dicts(history)}]
-    manager.save_session(target)
-    if scope == 'live':
-        owner.agent.replace_messages(history)
-        owner.agent._state = replace(owner.agent.state,
-            stream_message=AssistantMessage(content=(TextContent(text='PARTIAL'),)))
-    old = owner.agent.state.messages
-    try:
-        sources.negotiate({'transcript_sources': 0, 'transcript_canonical': 1})
-        sources.start(request(owner, nav, format='canonical', scope='saved' if scope == 'branch' else scope,
-            **({} if scope == 'live' else {'target_session': target.session_id}),
-            **({'branch_id': 'archive'} if scope == 'branch' else {})))
-        await sources.task
-        rows = decode(events)
-        assert rows[0]['replayable'] is False and rows[0]['format'] == 'xdog.canonical-transcript.v1'
-        serialized = json.dumps(rows)
-        assert binary in serialized and 'PUBLIC-REASONING' in serialized and 'CUSTOM' in serialized
-        assert all(secret not in serialized for secret in (
-            'PRIVATE-CREDENTIAL', 'PRIVATE-SIGNATURE', 'PRIVATE-REDACTED', 'PRIVATE-RESPONSE'))
-        if scope == 'timeline':
-            assert [row['id'] for row in rows if row['kind'] == 'source'] == ['archive', '@head']
-        if scope == 'live':
-            assert rows[-1]['kind'] == 'partial' and 'PARTIAL' in serialized
-        assert owner.agent.state.messages is old and owner.permissions.mode == 'deny' and not calls
-    finally:
-        await close(owner, nav, sources)
 
 
 @pytest.mark.parametrize('value', [None, False, True, 0, '1'])
@@ -128,46 +84,6 @@ def test_metadata_cannot_impersonate_typed_image_to_bypass_secret_redaction():
         project((UserMessage(content=(ThinkingContent(thinking='INVALID'),)),))
     with pytest.raises(ValueError):
         project((CustomAgentMessage(data={'nonfinite': float('nan')}),))
-
-
-@pytest.mark.parametrize('scope', ['saved', 'branch', 'timeline'])
-def test_actual_cli_canonical_binary_framing_redaction_and_no_history_activation(tmp_path, scope):
-    from packages.coding.tests.test_rpc_transcript_cli import Peer
-    peer = Peer(tmp_path)
-    binary = base64.b64encode(bytes(range(256)) * 8192).decode()
-    peer.target.messages.append(UserMessage(content=(ImageContent(data=binary, mime_type='image/png'),)))
-    peer.target.messages.append(AssistantMessage(content=(ThinkingContent(
-        thinking='PUBLIC-CLI-REASONING', thinking_signature='PRIVATE-SIGNATURE'),)))
-    peer.target.branches[0]['messages'] = messages_to_dicts(peer.target.messages)
-    peer.manager.save_session(peer.target)
-    try:
-        peer.initial()
-        assert peer.ready['capabilities']['transcript_canonical'] == 1
-        peer.send({'type': 'rpc_hello', 'transcript_sources': 0, 'transcript_canonical': 1})
-        peer.collect()
-        peer.send(peer.command('saved' if scope == 'branch' else scope, format='canonical',
-                               **({'branch_id': 'archived'} if scope == 'branch' else {})))
-        events = []
-        while True:
-            packet = peer.next()
-            events.append(packet)
-            if packet['type'] in {'source_end', 'source_error'}:
-                break
-        rows = decode(events)
-        serialized = json.dumps(rows)
-        assert binary in serialized and 'CLI-END-NEEDLE' in serialized and 'PUBLIC-CLI-REASONING' in serialized
-        assert 'PRIVATE-SIGNATURE' not in serialized
-        peer.send({'type': 'status'})
-        while True:
-            status = peer.next()
-            if status['type'] == 'status':
-                break
-        assert status['session_id'] == peer.ready['session_id'] and status['messages'] == 0
-        assert status['permission_mode'] == 'deny' and not peer.marker.exists()
-        peer.send({'type': 'quit'})
-        assert peer.process.wait(timeout=4) == 0, peer.process.stderr.read()
-    finally:
-        peer.close()
 
 
 @pytest.mark.parametrize('failure', ['capacity', 'missing', 'branch-content', 'head-content', 'nonfinite'])

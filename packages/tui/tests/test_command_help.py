@@ -22,14 +22,27 @@ def test_help_does_not_execute_metadata_sanitize_control_bearing_descriptions_or
     assert 'Plain /quit' in text  # Inert flattened description, never a submitted line.
 
 
-@pytest.mark.parametrize('commands,query', [({'bad name': 'bad'}, ''), ({'bad\u202ename': 'bad'}, ''),
-    ({'bad\x1b': 'bad'}, ''),
-    ({'': 'bad'}, ''), ({'name': False}, ''), ({'x' * 257: 'name'}, ''), ({'name': 'x' * 8193}, ''),
-    ({'name': 'normal'}, 'x' * 257), ({'name': 'normal'}, '\x1bunsafe'), ({'name': 'normal'}, '\u2066query'),
-    ({'name': 'normal'}, 'multiline\nquery'), ({'same': 'one', '/same': 'two'}, '')])
-def test_invalid_help_data_is_unavailable_not_partial_or_silently_reinterpreted(commands, query):
-    with pytest.raises(ValueError):
-        command_help(commands, query)
+def test_invalid_help_data_is_unavailable_not_partial_or_silently_reinterpreted() -> None:
+
+    def _check_case(commands, query):
+        with pytest.raises(ValueError):
+            command_help(commands, query)
+
+    for commands, query in [
+        ({"bad name": "bad"}, ""),
+        ({"bad\u202ename": "bad"}, ""),
+        ({"bad\x1b": "bad"}, ""),
+        ({"": "bad"}, ""),
+        ({"name": False}, ""),
+        ({"x" * 257: "name"}, ""),
+        ({"name": "x" * 8193}, ""),
+        ({"name": "normal"}, "x" * 257),
+        ({"name": "normal"}, "\x1bunsafe"),
+        ({"name": "normal"}, "\u2066query"),
+        ({"name": "normal"}, "multiline\nquery"),
+        ({"same": "one", "/same": "two"}, ""),
+    ]:
+        _check_case(commands, query)
 
 
 def test_help_retains_every_match_and_refuses_excessive_metadata_without_partial_catalog():

@@ -201,7 +201,8 @@ async def test_steer_mode_calls_executor_steer(tmp_path):
     config = ClawConfig(data_dir=str(tmp_path / "data"))
     steer_config = GroupConfig(queue_mode=QueueMode.STEER)
 
-    # Use a slow stream_fn so the agent is "running" when second message arrives
+    # Observe the actual streaming boundary; sleeps race under concurrent load.
+    entered, release = asyncio.Event(), asyncio.Event()
     call_count = [0]
 
     def slow_stream_fn(model_id, context, options=None):
@@ -209,10 +210,10 @@ async def test_steer_mode_calls_executor_steer(tmp_path):
         msg = AssistantMessage(content=(TextContent(text="response"),))
 
         async def _gen():
-            if call_count[0] == 1:
-                # First call: simulate slow processing
-                await asyncio.sleep(0.1)
             yield StartEvent(partial=msg)
+            if call_count[0] == 1:
+                entered.set()
+                await release.wait()
             yield DoneEvent(message=msg)
 
         fut = asyncio.get_running_loop().create_future()
@@ -243,13 +244,14 @@ async def test_steer_mode_calls_executor_steer(tmp_path):
     task1 = asyncio.create_task(
         o.route_message(UserInput(group_id="steer_group", content="first", sender="user"))
     )
-    await asyncio.sleep(0.02)  # let the first message start processing
-
-    # Send second message while agent is running — should trigger steer
-    await o.route_message(UserInput(group_id="steer_group", content="urgent", sender="user"))
-    await task1
-
-    assert len(steered) == 1
-    assert steered[0] == "urgent"
-
-    await o.stop()
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        # Send while the first stream is held, not merely scheduled.
+        await o.route_message(UserInput(group_id="steer_group", content="urgent", sender="user"))
+        assert steered == ["urgent"]
+    finally:
+        release.set()
+        try:
+            await asyncio.wait_for(task1, 5)
+        finally:
+            await o.stop()

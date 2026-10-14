@@ -56,7 +56,7 @@ jobs:
           PY
 
       - name: Tests
-        run: uv run pytest -q
+        run: uv run python scripts/test.py
 
       - name: Lint
         run: uv run ruff check packages

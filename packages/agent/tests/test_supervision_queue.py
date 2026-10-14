@@ -92,9 +92,17 @@ async def test_queue_edit_preserves_image_identity_and_return_refuses_lossy_chil
         await owner.aclose()
 
 
-@pytest.mark.parametrize('value', [{'action': []}, {'action': 'edit'}, {'action': 'list', 'content': 'extra'},
-    {'action': 'move', 'id': 'input', 'revision': 'a' * 64, 'direction': True},
-    {'action': 'edit', 'id': 'input', 'revision': 'a' * 64, 'content': 'x' * 16001}])
-def test_malformed_child_queue_commands_fail_before_mutation(value):
-    with pytest.raises(ValueError):
-        request(value)
+def test_malformed_child_queue_commands_fail_before_mutation() -> None:
+
+    def _check_case(value):
+        with pytest.raises(ValueError):
+            request(value)
+
+    for value in [
+        {"action": []},
+        {"action": "edit"},
+        {"action": "list", "content": "extra"},
+        {"action": "move", "id": "input", "revision": "a" * 64, "direction": True},
+        {"action": "edit", "id": "input", "revision": "a" * 64, "content": "x" * 16001},
+    ]:
+        _check_case(value)

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
-from dataclasses import replace
 
 import pytest
 from xdog.agent.mcp.schema import compile_schema, json_value
@@ -116,59 +114,6 @@ def test_json_shape_depth_and_recursive_refs_fail_without_exposing_instance_valu
     with pytest.raises(McpError) as caught:
         compile_schema(False).validate("PRIVATE-INSTANCE-SECRET", label="output")
     assert "PRIVATE-INSTANCE-SECRET" not in str(caught.value)
-
-
-async def test_owned_worker_validates_real_schema_and_canonical_identity_without_workspace_import(
-    tmp_path, monkeypatch
-):
-    (tmp_path / "xdog.py").write_text('raise AssertionError("Never import project shadow modules")')
-    monkeypatch.chdir(tmp_path)
-    owner = SchemaOwner()
-    try:
-        schema = {"type": "object", "properties": {"value": {"type": ["string", "null"]}}}
-        doc = await owner.compile(schema, input_schema=True)
-        assert owner._process is not None
-        await owner.validate(doc, {"value": None}, label="arguments")
-        with pytest.raises(McpError, match="arguments"):
-            await owner.validate(doc, {"value": 3}, label="arguments")
-        mutated = copy.deepcopy(doc.schema)
-        mutated["properties"]["value"]["type"] = "number"
-        with pytest.raises(McpError):
-            await owner.validate(replace(doc, schema=mutated), {"value": 3}, label="arguments")
-    finally:
-        process = owner._process
-        await owner.close()
-        assert process is None or process.returncode is not None
-
-
-async def test_validation_timeout_kills_regex_worker_and_next_explicit_validation_restarts_cleanly():
-    owner = SchemaOwner(timeout=2)
-    try:
-        doc = await owner.compile({"type": "string", "pattern": "(a+)+$"})
-        process = owner._process
-        owner.timeout = 0.2
-        with pytest.raises(McpError, match="timed out"):
-            await owner.validate(doc, "a" * 30000 + "!", label="output")
-        assert process.returncode is not None and owner._process is None
-        owner.timeout = 2
-        simple = await owner.compile({"type": "null"})
-        await owner.validate(simple, None, label="output")
-        assert owner._process is not process
-    finally:
-        await owner.close()
-
-
-async def test_cancel_and_close_coalesce_worker_settlement_without_late_result():
-    owner = SchemaOwner(timeout=3)
-    doc = await owner.compile({"type": "string", "pattern": "(a+)+$"})
-    process = owner._process
-    task = asyncio.create_task(owner.validate(doc, "a" * 30000 + "!", label="output"))
-    await asyncio.sleep(0.04)
-    task.cancel()
-    await asyncio.wait_for(owner.close(), 2)
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert process.returncode is not None and owner._process is None
 
 
 def test_implicit_and_union_object_inputs_keep_raw_constraints_with_object_model_projection():

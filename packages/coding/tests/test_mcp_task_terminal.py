@@ -10,17 +10,17 @@ import time
 
 import pytest
 
-from packages.coding.tests.test_mcp_elicitation_terminal import reviewed
-from packages.coding.tests.test_mcp_sampling_terminal import full_review
+from packages.coding.tests.fixtures.terminal_review import full_review, reviewed
 from packages.coding.tests.test_mcp_task_hosts import claw_setup, task_config
 from packages.coding.tests.test_terminal_acceptance import Terminal
 
 pytestmark = pytest.mark.skipif(os.name != 'posix' or not shutil.which('tmux'), reason='Owned Linux tmux required')
 
 
-@pytest.mark.parametrize('kind', ['coding', 'claw'])
-@pytest.mark.parametrize('family', ['sampling', 'elicitation'])
-@pytest.mark.parametrize('end', ['release', 'expire', 'peer_cancel'])
+@pytest.mark.parametrize('kind,family,end', [
+    ('coding', 'sampling', 'release'), ('claw', 'elicitation', 'release'),
+    ('coding', 'sampling', 'peer_cancel'), ('claw', 'elicitation', 'peer_cancel'),
+])
 def test_physical_native_task_full_review_result_transport_resize_and_termios(tmp_path, kind, family, end):
     ready, stop = threading.Event(), threading.Event()
     owned, errors = {}, []

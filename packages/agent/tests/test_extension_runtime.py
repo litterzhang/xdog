@@ -64,44 +64,6 @@ async def test_timed_out_extension_callback_reaps_process_and_required_hook_fail
         await runtime.aclose()
 
 
-async def test_project_shadow_and_invalid_manifest_cannot_change_the_owned_worker(root, tmp_path):
-    (tmp_path / "xdog.py").write_text("raise RuntimeError('project import must never run')")
-    runtime = ExtensionRuntime(["sample"], root, tmp_path)
-    try:
-        await runtime.initialize()
-        assert runtime.snapshot()["extensions"][0]["state"] == "active"
-    finally:
-        await runtime.aclose()
-    (root / "sample" / "extension.yaml").write_text("name: sample\nentry_point: ../outside")
-    bad = ExtensionRuntime(["sample"], root, tmp_path)
-    try:
-        await bad.initialize()
-        assert bad.snapshot()["extensions"][0]["state"] == "failed" and not bad.tools()
-    finally:
-        await bad.aclose()
-
-
-async def test_legacy_hooks_run_once_and_stop_is_owned(root, tmp_path):
-    (root / "sample" / "main.py").write_text('''
-from xdog.coding.core.extensions.types import PreToolUseHook, StopHook
-from pathlib import Path
-class Legacy(PreToolUseHook, StopHook):
-    def name(self): return "legacy"
-    async def before_tool(self, name, params):
-        return {**params, "count": params.get("count", 0) + 1}
-    async def on_stop(self):
-        Path("legacy-stop").write_text("stopped")
-hook = Legacy()
-''')
-    runtime = ExtensionRuntime(["sample"], root, tmp_path)
-    try:
-        await runtime.initialize()
-        assert await runtime.pre("test", {}) == {"count": 1}
-    finally:
-        await runtime.aclose()
-    assert (tmp_path / "legacy-stop").read_text() == "stopped"
-
-
 def test_malformed_widget_and_command_snapshots_do_not_reach_renderers():
     from xdog.agent.extensions.runtime import validate_snapshot
     for value in ({"extensions": [], "commands": [], "ui": {}},

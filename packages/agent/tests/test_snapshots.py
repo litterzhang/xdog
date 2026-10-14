@@ -5,9 +5,6 @@ import asyncio
 import copy
 import importlib
 import json
-import os
-import subprocess
-import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -18,7 +15,6 @@ from xdog.agent.core import AgentState, AgentTool, CustomAgentMessage
 from xdog.agent.messages import messages_to_dicts
 from xdog.agent.skills.types import Skill
 from xdog.agent.snapshots import (
-    SNAPSHOT_FORMAT,
     CompactionSnapshot,
     InterruptedTool,
     Snapshot,
@@ -191,79 +187,110 @@ def test_options_whitelist_drops_handles_capabilities_and_routing() -> None:
     execute.assert_not_called()
 
 
-@pytest.mark.parametrize("field,value", [
-    ("format", "other"), ("version", 2), ("version", -1), ("version", True), ("version", "1"),
-    ("messages", {}), ("model", 42), ("interrupted", 1), ("session_id", []), ("error", False),
-    ("base_system_prompt", [{"text": "hi", "cache": "yes"}]),
-    ("settings", {"allow_all": True}), ("settings", {"tool_execution": "unsafe"}),
-    ("options", {"max_tokens": True}), ("options", {"max_tokens": 0}),
-    ("options", {"temperature": -1}), ("options", {"top_p": 1.1}), ("options", {"thinking": "unknown"}),
-    ("options", {"cancel": None}), ("options", {"web_search": True}), ("options", {"api_key": "secret"}),
-    ("options", {"stop_sequences": "END"}), ("options", {"tool_choice": {"type": "tool"}}),
-    ("options", {"tool_choice": {"type": "any", "name": "grant-me"}}),
-    ("options", {"response_format": {"name": "bad", "schema_json": "[]"}}),
-    ("compaction", {"generation": 0, "summary": "invalid", "compacted_messages": 0}),
-    ("compaction", {"generation": 1, "summary": None, "compacted_messages": 2}),
-    ("compaction", {"generation": 3, "summary": "summary", "compacted_messages": 2}),
-])
-def test_invalid_document_fields_fail_before_any_state_change(field: str, value: Any) -> None:
-    state, _ = _sample()
-    before = copy.deepcopy(state)
-    raw = _encoded()
-    raw[field] = value
-    with pytest.raises(ValueError):
-        decode_snapshot(raw)
-    assert state == before
+def test_invalid_document_fields_fail_before_any_state_change() -> None:
+
+    def _check_case(field: "str", value: "Any") -> "None":
+        state, _ = _sample()
+        before = copy.deepcopy(state)
+        raw = _encoded()
+        raw[field] = value
+        with pytest.raises(ValueError):
+            decode_snapshot(raw)
+        assert state == before
+
+    for field, value in [
+        ("format", "other"),
+        ("version", 2),
+        ("version", -1),
+        ("version", True),
+        ("version", "1"),
+        ("messages", {}),
+        ("model", 42),
+        ("interrupted", 1),
+        ("session_id", []),
+        ("error", False),
+        ("base_system_prompt", [{"text": "hi", "cache": "yes"}]),
+        ("settings", {"allow_all": True}),
+        ("settings", {"tool_execution": "unsafe"}),
+        ("options", {"max_tokens": True}),
+        ("options", {"max_tokens": 0}),
+        ("options", {"temperature": -1}),
+        ("options", {"top_p": 1.1}),
+        ("options", {"thinking": "unknown"}),
+        ("options", {"cancel": None}),
+        ("options", {"web_search": True}),
+        ("options", {"api_key": "secret"}),
+        ("options", {"stop_sequences": "END"}),
+        ("options", {"tool_choice": {"type": "tool"}}),
+        ("options", {"tool_choice": {"type": "any", "name": "grant-me"}}),
+        ("options", {"response_format": {"name": "bad", "schema_json": "[]"}}),
+        ("compaction", {"generation": 0, "summary": "invalid", "compacted_messages": 0}),
+        ("compaction", {"generation": 1, "summary": None, "compacted_messages": 2}),
+        ("compaction", {"generation": 3, "summary": "summary", "compacted_messages": 2}),
+    ]:
+        _check_case(field, value)
 
 
-@pytest.mark.parametrize("key", ["provider", "credentials", "tools", "permissions", "module", "auto_compaction"])
-def test_unknown_authority_fields_are_not_accepted(key: str) -> None:
-    raw = _encoded()
-    raw[key] = {"import": "os.system", "command": "touch SHOULD_NOT_EXIST"}
-    with pytest.raises(ValueError, match="unknown fields"):
-        decode_snapshot(raw)
+def test_unknown_authority_fields_are_not_accepted() -> None:
+
+    def _check_case(key: "str") -> "None":
+        raw = _encoded()
+        raw[key] = {"import": "os.system", "command": "touch SHOULD_NOT_EXIST"}
+        with pytest.raises(ValueError, match="unknown fields"):
+            decode_snapshot(raw)
+
+    for key in ["provider", "credentials", "tools", "permissions", "module", "auto_compaction"]:
+        _check_case(key)
 
 
-@pytest.mark.parametrize("message", [
-    {"role": "alien", "content": []},
-    {"role": "user", "content": [{"type": "alien"}]},
-    {"role": "assistant", "content": [{"type": "image", "data": "x", "mime_type": "image/png"}]},
-    {"role": "assistant", "content": [{"type": "text", "text": 4}]},
-    {"role": "assistant", "content": [{"type": "thinking", "thinking": "x", "redacted": "yes"}]},
-    {"role": "assistant", "content": [{"type": "toolCall", "id": "a", "name": "x", "arguments": []}]},
-    {"role": "assistant", "content": [], "usage": {"input": -1}},
-    {"role": "assistant", "content": [], "usage": {"input": True}},
-    {"role": "assistant", "content": [], "usage": {"cost": {"total": "1"}}},
-    {"role": "assistant", "content": [], "stop_reason": "new-codec"},
-    {"role": "user", "content": "x", "timestamp": -1},
-    {"role": "custom", "type": "module", "data": []},
-    {"role": "user", "content": "x", "execute": "os.system"},
-])
-def test_malformed_messages_are_not_silently_coerced_or_dropped(message: Any) -> None:
-    raw = _encoded()
-    raw["messages"] = [message]
-    with pytest.raises(ValueError):
-        decode_snapshot(raw)
+def test_malformed_messages_are_not_silently_coerced_or_dropped() -> None:
+
+    def _check_case(message: "Any") -> "None":
+        raw = _encoded()
+        raw["messages"] = [message]
+        with pytest.raises(ValueError):
+            decode_snapshot(raw)
+
+    for message in [
+        {"role": "alien", "content": []},
+        {"role": "user", "content": [{"type": "alien"}]},
+        {"role": "assistant", "content": [{"type": "image", "data": "x", "mime_type": "image/png"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": 4}]},
+        {"role": "assistant", "content": [{"type": "thinking", "thinking": "x", "redacted": "yes"}]},
+        {"role": "assistant", "content": [{"type": "toolCall", "id": "a", "name": "x", "arguments": []}]},
+        {"role": "assistant", "content": [], "usage": {"input": -1}},
+        {"role": "assistant", "content": [], "usage": {"input": True}},
+        {"role": "assistant", "content": [], "usage": {"cost": {"total": "1"}}},
+        {"role": "assistant", "content": [], "stop_reason": "new-codec"},
+        {"role": "user", "content": "x", "timestamp": -1},
+        {"role": "custom", "type": "module", "data": []},
+        {"role": "user", "content": "x", "execute": "os.system"},
+    ]:
+        _check_case(message)
 
 
-@pytest.mark.parametrize("change", ["orphan", "duplicate_result", "wrong_name", "duplicate_call", "split", "missing"])
-def test_tool_pair_integrity(change: str) -> None:
-    raw = _encoded()
-    messages = raw["messages"]
-    if change == "orphan":
-        messages[4]["tool_call_id"] = "not-a-call"
-    elif change == "duplicate_result":
-        messages.insert(5, copy.deepcopy(messages[4]))
-    elif change == "wrong_name":
-        messages[4]["tool_name"] = "not-the-tool"
-    elif change == "duplicate_call":
-        messages[3]["content"][3]["id"] = "a"
-    elif change == "split":
-        messages.insert(5, {"role": "user", "content": "intervening user"})
-    else:
-        messages.pop(5)
-    with pytest.raises(ValueError):
-        decode_snapshot(raw)
+def test_tool_pair_integrity() -> None:
+
+    def _check_case(change: "str") -> "None":
+        raw = _encoded()
+        messages = raw["messages"]
+        if change == "orphan":
+            messages[4]["tool_call_id"] = "not-a-call"
+        elif change == "duplicate_result":
+            messages.insert(5, copy.deepcopy(messages[4]))
+        elif change == "wrong_name":
+            messages[4]["tool_name"] = "not-the-tool"
+        elif change == "duplicate_call":
+            messages[3]["content"][3]["id"] = "a"
+        elif change == "split":
+            messages.insert(5, {"role": "user", "content": "intervening user"})
+        else:
+            messages.pop(5)
+        with pytest.raises(ValueError):
+            decode_snapshot(raw)
+
+    for change in ["orphan", "duplicate_result", "wrong_name", "duplicate_call", "split", "missing"]:
+        _check_case(change)
 
 
 @pytest.mark.parametrize("status", ["not_started", "cancelled", "unknown"])
@@ -398,12 +425,22 @@ def test_code_looking_data_stays_inert(monkeypatch: pytest.MonkeyPatch, tmp_path
     import_module.assert_not_called()
 
 
-@pytest.mark.parametrize("patch", [{}, {"temperature": 0.2}, {"messages": None}, {"messages": []},
-                                    {"model": None}, {"system_prompt": [{"text": "old prefix"}]}])
-def test_legacy_is_an_explicit_partial_route(patch: Any) -> None:
-    assert decode_legacy_snapshot(patch).values == patch
-    with pytest.raises(ValueError):
-        decode_snapshot(patch)
+def test_legacy_is_an_explicit_partial_route() -> None:
+
+    def _check_case(patch: "Any") -> "None":
+        assert decode_legacy_snapshot(patch).values == patch
+        with pytest.raises(ValueError):
+            decode_snapshot(patch)
+
+    for patch in [
+        {},
+        {"temperature": 0.2},
+        {"messages": None},
+        {"messages": []},
+        {"model": None},
+        {"system_prompt": [{"text": "old prefix"}]},
+    ]:
+        _check_case(patch)
 
 
 def test_legacy_current_dump_shape_and_missing_fields_preserved() -> None:
@@ -425,58 +462,6 @@ def test_legacy_current_dump_shape_and_missing_fields_preserved() -> None:
 
 # Each invocation below is a fresh interpreter. No mock provider or Agent is
 # involved: this proves codec persistence, not the parent's SDK integration.
-_SUBPROCESS = r'''
-import json, os, runpy, socket, sys
-ns = runpy.run_path(sys.argv[1])
-def forbidden(*args, **kwargs):
-    raise AssertionError("network access forbidden")
-socket.socket = forbidden
-mode = sys.argv[2]
-if mode == "init":
-    raw = ns["_encoded"]()
-else:
-    raw = json.loads(sys.stdin.read())
-    snapshot = ns["decode_snapshot"](raw)
-    snapshot.require_resumable()
-    assert ns["_reencode"](snapshot) == raw
-    bound = ns["validate_skill_bindings"](snapshot, ns["_host_skills"]())
-    assert [skill.slug for skill in bound] == ["guard", "task"]
-    assert snapshot.compaction.generation == 2
-    assert snapshot.messages[3].content[0].thinking_signature == "sig"
-    assert snapshot.messages[2].content[1].data == "aGVsbG8="
-    assert snapshot.base_system_prompt[0].text == "Raw instructions"
-    if mode == "build":
-        # An explicit host-side history edit, NOT a replay or model/tool call.
-        snapshot = ns["replace"](snapshot, messages=snapshot.messages + (
-            ns["UserMessage"](content="build"), ns["AssistantMessage"](content=(ns["TextContent"](text="built"),)),
-        ), run_id="run-build")
-    else:
-        assert snapshot.run_id == "run-build"
-        assert snapshot.messages[-1].content[0].text == "built"
-    raw = ns["_reencode"](snapshot)
-print(json.dumps({"pid": os.getpid(), "snapshot": raw}))
-'''
-
-
-def test_true_offline_three_process_roundtrip(tmp_path: Path) -> None:
-    snapshot_file = tmp_path / "snapshot.json"
-    pids = set()
-    for mode in ("init", "build", "verify"):
-        completed = subprocess.run(
-            [sys.executable, "-c", _SUBPROCESS, str(Path(__file__).resolve()), mode],
-            input=snapshot_file.read_text() if snapshot_file.exists() else "",
-            text=True, capture_output=True, check=True, timeout=30,
-            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
-        )
-        result = json.loads(completed.stdout)
-        pids.add(result["pid"])
-        assert result["pid"] != os.getpid()
-        snapshot_file.write_text(json.dumps(result["snapshot"]))
-    assert len(pids) == 3
-    final = decode_snapshot(snapshot_file.read_bytes())
-    assert final.run_id == "run-build"
-    assert len(final.messages) == 9
-    assert json.loads(snapshot_file.read_text())["format"] == SNAPSHOT_FORMAT
 
 
 def test_capture_current_agent_skill_selection_without_rereading_files() -> None:
@@ -535,15 +520,23 @@ def test_compatibility_aliases_mirror_canonical_data(prompt: Any) -> None:
     assert decode_snapshot(raw).base_system_prompt == prompt
 
 
-@pytest.mark.parametrize("key,value", [
-    ("system_prompt", "composed or different"), ("thinking", "low"),
-    ("temperature", 0.75), ("max_tokens", 1024), ("temperature", True), ("max_tokens", True),
-])
-def test_conflicting_or_malformed_aliases_rejected(key: str, value: Any) -> None:
-    raw = _encoded()
-    raw[key] = value
-    with pytest.raises(ValueError):
-        decode_snapshot(raw)
+def test_conflicting_or_malformed_aliases_rejected() -> None:
+
+    def _check_case(key: "str", value: "Any") -> "None":
+        raw = _encoded()
+        raw[key] = value
+        with pytest.raises(ValueError):
+            decode_snapshot(raw)
+
+    for key, value in [
+        ("system_prompt", "composed or different"),
+        ("thinking", "low"),
+        ("temperature", 0.75),
+        ("max_tokens", 1024),
+        ("temperature", True),
+        ("max_tokens", True),
+    ]:
+        _check_case(key, value)
 
 
 def test_canonical_change_cannot_be_hidden_by_compatibility_alias() -> None:

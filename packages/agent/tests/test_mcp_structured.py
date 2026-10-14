@@ -146,7 +146,7 @@ def peer():
                 self.wfile.flush()
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     try:
         yield f"http://127.0.0.1:{server.server_port}/mcp", state
@@ -178,14 +178,15 @@ async def test_cancel_event_covers_schema_validation_before_remote_call(tmp_path
     try:
         await client.connect("peer")
         entered, settled = asyncio.Event(), asyncio.Event()
+        caller_loop = asyncio.get_running_loop()
         original = client._schemas.validate
 
         async def blocked(document, value, *, label):
-            entered.set()
+            caller_loop.call_soon_threadsafe(entered.set)
             try:
                 await asyncio.Event().wait()
             finally:
-                settled.set()
+                caller_loop.call_soon_threadsafe(settled.set)
 
         client._schemas.validate = blocked
         cancel = asyncio.Event()
@@ -205,14 +206,15 @@ async def test_agent_abort_during_pre_permission_validation_settles_without_hook
     try:
         await client.connect("peer")
         entered, settled = asyncio.Event(), asyncio.Event()
+        caller_loop = asyncio.get_running_loop()
         checks = []
 
         async def blocked(document, value, *, label):
-            entered.set()
+            caller_loop.call_soon_threadsafe(entered.set)
             try:
                 await asyncio.Event().wait()
             finally:
-                settled.set()
+                caller_loop.call_soon_threadsafe(settled.set)
 
         client._schemas.validate = blocked
         tool = client.tools()[0]

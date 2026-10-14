@@ -45,21 +45,25 @@ def test_lossless_file_codec_preserves_original_binary_and_typed_metadata_withou
     assert "NO redaction" in preview and "image/png" in preview and "SHA-256" in preview
 
 
-@pytest.mark.parametrize("mutate", ["schema", "checksum", "image", "command", "extra"])
-def test_tampering_and_unsupported_file_versions_refused(mutate):
-    value = json.loads(artifact_bytes(artifact()))
-    if mutate == "schema":
-        value["schema"] = "unsupported/v2"
-    elif mutate == "checksum":
-        value["sha256"] = "0" * 64
-    elif mutate == "image":
-        value["artifact"]["result"]["content"][1]["data"] = "bad"
-    elif mutate == "command":
-        value["artifact"]["command"] = "/quit"
-    else:
-        value["extra"] = "ignored must not be accepted"
-    with pytest.raises((ValueError, RuntimeError)):
-        artifact_from_bytes(json.dumps(value).encode())
+def test_tampering_and_unsupported_file_versions_refused() -> None:
+
+    def _check_case(mutate):
+        value = json.loads(artifact_bytes(artifact()))
+        if mutate == "schema":
+            value["schema"] = "unsupported/v2"
+        elif mutate == "checksum":
+            value["sha256"] = "0" * 64
+        elif mutate == "image":
+            value["artifact"]["result"]["content"][1]["data"] = "bad"
+        elif mutate == "command":
+            value["artifact"]["command"] = "/quit"
+        else:
+            value["extra"] = "ignored must not be accepted"
+        with pytest.raises((ValueError, RuntimeError)):
+            artifact_from_bytes(json.dumps(value).encode())
+
+    for mutate in ["schema", "checksum", "image", "command", "extra"]:
+        _check_case(mutate)
 
 
 def test_nonregular_fifo_and_oversized_sources_do_not_hang(tmp_path):
