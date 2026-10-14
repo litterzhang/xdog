@@ -33,6 +33,7 @@ dependencies = [
     # import ships to PyPI unnoticed (it did: xdog-claw 0.57.x).
     "xdog-claw>=2.4.1",
     "xdog-coding>=2.4.1",
+    "xdog-eyes>=2.4.1",
 ]
 
 [project.urls]
@@ -74,6 +75,7 @@ members = [
     "packages/site",
     "packages/claw",
     "packages/coding",
+    "packages/eyes",
 ]
 
 [tool.uv.sources]
@@ -84,6 +86,7 @@ xdog-tui = { workspace = true }
 xdog-site = { workspace = true }
 xdog-claw = { workspace = true }
 xdog-coding = { workspace = true }
+xdog-eyes = { workspace = true }
 
 [tool.pytest.ini_options]
 testpaths = [
@@ -94,6 +97,7 @@ testpaths = [
     "packages/claw/tests",
     "packages/coding/tests",
     "packages/tui/tests",
+    "packages/eyes/tests",
 ]
 asyncio_mode = "auto"
 # Run every retained test; concurrency, not deselection, keeps the feedback loop short.

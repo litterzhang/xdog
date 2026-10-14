@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "xdog-eyes"
+version = "2.4.1"
+description = "Declarative local observation and source-neutral agent event delivery"
+requires-python = ">=3.12"
+readme = "README.md"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
+dependencies = []
+
+[project.scripts]
+xdog-eyes = "xdog.eyes.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/xdog"]
+
+[tool.hatch.build]
+exclude = ["**/__pycache__", "**/*.pyc"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

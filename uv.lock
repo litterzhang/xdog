@@ -9,6 +9,7 @@ members = [
     "xdog-ai",
     "xdog-claw",
     "xdog-coding",
+    "xdog-eyes",
     "xdog-flow",
     "xdog-site",
     "xdog-tui",
@@ -150,37 +151,37 @@ wheels = [
 
 [package.optional-dependencies]
 cublas = [
-    { name = "nvidia-cublas", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cublas" },
 ]
 cudart = [
-    { name = "nvidia-cuda-runtime", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cuda-runtime" },
 ]
 cufft = [
-    { name = "nvidia-cufft", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cufft" },
 ]
 cufile = [
-    { name = "nvidia-cufile", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-cufile" },
 ]
 cupti = [
-    { name = "nvidia-cuda-cupti", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cuda-cupti" },
 ]
 curand = [
-    { name = "nvidia-curand", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-curand" },
 ]
 cusolver = [
-    { name = "nvidia-cusolver", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cusolver" },
 ]
 cusparse = [
-    { name = "nvidia-cusparse", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cusparse" },
 ]
 nvjitlink = [
-    { name = "nvidia-nvjitlink", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-nvjitlink" },
 ]
 nvrtc = [
-    { name = "nvidia-cuda-nvrtc", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cuda-nvrtc" },
 ]
 nvtx = [
-    { name = "nvidia-nvtx", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-nvtx" },
 ]
 
 [[package]]
@@ -1928,6 +1929,7 @@ dependencies = [
     { name = "xdog-ai" },
     { name = "xdog-claw" },
     { name = "xdog-coding" },
+    { name = "xdog-eyes" },
     { name = "xdog-flow" },
     { name = "xdog-site" },
 ]
@@ -1950,6 +1952,7 @@ requires-dist = [
     { name = "xdog-ai", editable = "packages/ai" },
     { name = "xdog-claw", editable = "packages/claw" },
     { name = "xdog-coding", editable = "packages/coding" },
+    { name = "xdog-eyes", editable = "packages/eyes" },
     { name = "xdog-flow", editable = "packages/flow" },
     { name = "xdog-site", editable = "packages/site" },
 ]
@@ -2091,6 +2094,11 @@ requires-dist = [
     { name = "xdog-ai", extras = ["openai"], editable = "packages/ai" },
     { name = "xdog-tui", editable = "packages/tui" },
 ]
+
+[[package]]
+name = "xdog-eyes"
+version = "2.4.1"
+source = { editable = "packages/eyes" }
 
 [[package]]
 name = "xdog-flow"
