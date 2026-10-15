@@ -56,6 +56,10 @@ def test_resume_restores_thinking_and_provider_context_window(tmp_path, monkeypa
     assert created.session.max_prompt_tokens == 120_000
     assert created.session.context_limit == 120_000
 
+    with pytest.raises(RuntimeError, match="owned"):
+        create_agent_session(CreateSessionOptions(working_dir=tmp_path, resume_id=session_id))
+    created.session.dispose()
+
     resumed = create_agent_session(CreateSessionOptions(
         working_dir=tmp_path,
         resume_id=session_id,
@@ -64,3 +68,5 @@ def test_resume_restores_thinking_and_provider_context_window(tmp_path, monkeypa
     assert resumed.session.agent.options.thinking == "xhigh"
     assert resumed.session.context_window == 128_000
     assert resumed.session.max_prompt_tokens == 120_000
+
+    resumed.session.dispose()

@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 import asyncio
 import concurrent.futures
 import logging
+import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -80,6 +81,27 @@ class CreateSessionResult:
 
 
 def create_agent_session(options: CreateSessionOptions | None = None) -> CreateSessionResult:
+    """Claim the writer before reading or constructing a writable session."""
+    from xdog.coding.core.sessions.ownership import SessionLease, runtime_directory
+    opts = options or CreateSessionOptions()
+    sessions = get_sessions_dir()
+    if opts.resume:
+        listing = SessionManager(sessions_dir=sessions).list_sessions(limit=1)
+        if not listing:
+            raise RuntimeError("No previous session to resume.")
+        opts = replace(opts, resume=False, resume_id=listing[0].session_id)
+    selected = opts.resume_id or uuid.uuid4().hex
+    lease = SessionLease.acquire(runtime_directory(sessions), selected)
+    try:
+        result = _build_agent_session(opts, new_session_id=selected)
+        result.session._lease = lease
+        return result
+    except BaseException:
+        lease.close()
+        raise
+
+
+def _build_agent_session(options: CreateSessionOptions, *, new_session_id: str) -> CreateSessionResult:
     """Create a fully-wired AgentSession.
 
     This factory:
@@ -155,7 +177,7 @@ def create_agent_session(options: CreateSessionOptions | None = None) -> CreateS
                     and initial_thinking not in initial.supported_efforts):
                 raise ValueError('Configured thinking level is not advertised by selected model; no fallback')
             model_name = initial.id
-        session_data = session_mgr.create_session(model=model_name, working_dir=wd)
+        session_data = session_mgr.create_session(model=model_name, working_dir=wd, session_id=new_session_id)
 
     if not session_data.working_dir:
         session_data.working_dir = str(wd)
@@ -239,38 +261,44 @@ def create_agent_session(options: CreateSessionOptions | None = None) -> CreateS
         model_info=model,
         permissions=permissions,
     )
-    if extension_model:
-        async def activate() -> None:
-            try:
-                await session.initialize_extensions()
-                declared = session.extensions.provider_model(model_id)
-                if declared is None:
-                    raise ValueError("Configured extension model is not declared by an explicitly trusted worker")
-                thinking = session.agent.options.thinking
-                if (thinking is not None and declared.reasoning and declared.supported_efforts is not None
-                        and thinking not in declared.supported_efforts):
-                    raise ValueError("Configured thinking level is not advertised by selected extension model")
-                session.set_model(model_id)
-                if not declared.reasoning:
-                    session.agent.set_options(replace(session.agent.options, thinking=None))
-            except BaseException:
-                await session.children.supervisor.aclose()
-                await session.extensions.aclose()
-                if session.mcp is not None:
-                    await session.mcp.aclose()
-                raise
-        # This synchronous factory is also called from running event loops. Use
-        # one owned bootstrap loop, never nest asyncio.run on the caller's loop.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="xdog-provider-bootstrap") as pool:
-            pool.submit(lambda: asyncio.run(activate())).result()
-    # Persist the effective value rather than a legacy alias such as "normal".
-    session.settings.set_session_thinking(session.agent.options.thinking or "off")
-    session._persist()
+    try:
+        if extension_model:
+            async def activate() -> None:
+                try:
+                    await session.initialize_extensions()
+                    declared = session.extensions.provider_model(model_id)
+                    if declared is None:
+                        raise ValueError("Configured extension model is not declared by an explicitly trusted worker")
+                    thinking = session.agent.options.thinking
+                    if (thinking is not None and declared.reasoning and declared.supported_efforts is not None
+                            and thinking not in declared.supported_efforts):
+                        raise ValueError(
+                        "Configured thinking level is not advertised by selected extension model")
+                    session.set_model(model_id)
+                    if not declared.reasoning:
+                        session.agent.set_options(replace(session.agent.options, thinking=None))
+                except BaseException:
+                    await session.children.supervisor.aclose()
+                    await session.extensions.aclose()
+                    if session.mcp is not None:
+                        await session.mcp.aclose()
+                    raise
+            # This synchronous factory is also called from running event loops. Use
+            # one owned bootstrap loop, never nest asyncio.run on the caller's loop.
+            with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="xdog-provider-bootstrap") as pool:
+                pool.submit(lambda: asyncio.run(activate())).result()
+        # Persist the effective value rather than a legacy alias such as "normal".
+        session.settings.set_session_thinking(session.agent.options.thinking or "off")
+        session._persist()
 
-    return CreateSessionResult(
-        session=session,
-        model_fallback_message=model_fallback_message,
-    )
+        return CreateSessionResult(
+            session=session,
+            model_fallback_message=model_fallback_message,
+        )
+    except BaseException:
+        session.dispose()
+        raise
 
 
 def _coding_skill_manager() -> "SkillManager | None":

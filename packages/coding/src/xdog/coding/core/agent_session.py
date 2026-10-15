@@ -55,6 +55,7 @@ from xdog.coding.core.system_prompt import build_system_prompt
 if TYPE_CHECKING:
     from xdog.coding.core.external_events.binding import ExternalEventBinding
     from xdog.coding.core.session_staging import StagedExtensions
+    from xdog.coding.core.sessions.ownership import SessionLease
 
 logger = logging.getLogger(__name__)
 
@@ -76,9 +77,24 @@ def _idle_change(method: Callable[Concatenate["AgentSession", P], R]) -> Callabl
             if method.__name__ in {'switch_session', 'restore_branch', 'navigate_checkpoint'}:
                 self._navigation_cancel.clear()
             self._context_changes += 1
+            target_lease = None
             try:
-                return method(self, *args, **kwargs)
+                if method.__name__ in {'switch_session', 'navigate_checkpoint'}:
+                    target = args[0] if args else kwargs.get('session_id')
+                    if isinstance(target, str) and target != self.session_id:
+                        from xdog.coding.core.sessions.ownership import SessionLease, runtime_directory
+                        pending = self._pending_lease
+                        target_lease = (pending if pending is not None and pending.session_id == target else
+                            SessionLease.acquire(runtime_directory(self.session_manager._dir), target))
+                result = method(self, *args, **kwargs)
+                if target_lease is not None and self.session_id == target_lease.session_id:
+                    previous, self._lease = self._lease, target_lease
+                    if previous is not None:
+                        previous.close()
+                return result
             finally:
+                if target_lease is not None and self._lease is not target_lease:
+                    target_lease.close()
                 self._context_changes -= 1
                 if self.external_events is not None:
                     self.external_events.refresh_owner()
@@ -118,6 +134,8 @@ class AgentSession:
     handled_feedback: list[str] = field(default_factory=list, init=False)
     _base_input_transform: InputTransformFn | None = field(default=None, init=False, repr=False)
     external_events: ExternalEventBinding | None = field(default=None, init=False, repr=False)
+    _lease: SessionLease | None = field(default=None, init=False, repr=False)
+    _pending_lease: SessionLease | None = field(default=None, init=False, repr=False)
     _unsubscribe: Any = field(default=None, init=False, repr=False)
     _context_changes: int = field(default=0, init=False, repr=False)
     _auth_changing: bool = field(default=False, init=False, repr=False)
@@ -1021,21 +1039,30 @@ class AgentSession:
         self._children_idle()
         if self.agent.state.is_streaming:
             raise RuntimeError("Session navigation requires an idle agent")
-        created = self.session_manager.create_session(model=self.model, working_dir=self.working_dir)
-        candidate = self.session_manager._session_path(created.session_id)
-        original = candidate.read_bytes()
+        from xdog.coding.core.sessions.ownership import SessionLease, runtime_directory
+        selected = uuid.uuid4().hex
+        lease = SessionLease.acquire(runtime_directory(self.session_manager._dir), selected)
+        self._pending_lease = lease
+        created = None
+        original = b""
         try:
+            created = self.session_manager.create_session(model=self.model, working_dir=self.working_dir,
+                                                           session_id=selected)
+            candidate = self.session_manager._session_path(created.session_id)
+            original = candidate.read_bytes()
             if not self.switch_session(created.session_id):
                 raise ValueError('New session candidate unavailable; current owner retained')
+            return created.session_id
         except BaseException:
-            # Only remove our unchanged unadmitted candidate. Never remove an
-            # adopted head or overwrite independently changed target data.
-            if self.session_id != created.session_id:
+            if created is not None and self.session_id != created.session_id:
                 owned = self.session_manager._session_path(created.session_id)
                 if owned.is_file() and owned.read_bytes() == original:
                     self.session_manager.delete_session(created.session_id)
             raise
-        return created.session_id
+        finally:
+            self._pending_lease = None
+            if self._lease is not lease:
+                lease.close()
 
     # -- Branch management --
 
@@ -1430,6 +1457,9 @@ class AgentSession:
         if self._unsubscribe:
             self._unsubscribe()
             self._unsubscribe = None
+        if self._lease is not None:
+            self._lease.close()
+            self._lease = None
 
 
 def _skills_context(active: frozenset[str] = frozenset()) -> str:

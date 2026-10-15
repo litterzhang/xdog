@@ -125,12 +125,13 @@ class SessionManager:
 
     # --- CRUD ---
 
-    def create_session(self, *, model: str = "", summary: str = "", working_dir: Path | None = None) -> SessionData:
+    def create_session(self, *, model: str = "", summary: str = "", working_dir: Path | None = None,
+                       session_id: str | None = None) -> SessionData:
         """Create a new empty session and persist it."""
         self._ensure_dir()
         now = time.time()
         session = SessionData(
-            session_id=uuid.uuid4().hex,
+            session_id=session_id or uuid.uuid4().hex,
             created_at=now,
             updated_at=now,
             summary=summary,
