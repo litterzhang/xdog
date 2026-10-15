@@ -53,11 +53,14 @@ async def observe(
     cancel: asyncio.Event,
     resume: asyncio.Event | None = None,
 ) -> None:
-    detectors = {item.id: FileChangeDetector(item) for item in definition.detectors}
+    sources = {item.id: item for item in definition.sources}
+    detectors = {item.id: FileChangeDetector(item, source_root=str(sources[item.source].root))
+                 for item in definition.detectors}
     handlers = {item.id: item for item in definition.handlers}
     scans: dict[str, asyncio.Task[FileSnapshot]] = {}
     next_scan = {item.id: clock() for item in definition.sources}
     baselined: set[str] = set()
+    source_errors: set[str] = set()
     pending: dict[str, _Pending] = {}
     backlog: dict[str, Delivery] = {}
     overflowed = False
@@ -110,13 +113,15 @@ async def observe(
                     try:
                         snapshot = task.result()
                     except SourceError as exc:
+                        source_errors.add(source.id)
                         report("source_error", source=source.id, error=str(exc))
                     else:
                         for detector_def in definition.detectors:
                             if detector_def.source == source.id:
                                 detectors[detector_def.id].observe(snapshot, now=now)
-                        if source.id not in baselined:
+                        if source.id not in baselined or source.id in source_errors:
                             baselined.add(source.id)
+                            source_errors.discard(source.id)
                             report("watching", source=source.id)
                 if not overflowed and source.id not in scans and now >= next_scan[source.id]:
                     scans[source.id] = asyncio.create_task(collect(source))

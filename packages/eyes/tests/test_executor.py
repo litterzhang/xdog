@@ -245,3 +245,30 @@ async def test_unexpected_handler_failure_is_visible_and_not_retried(tmp_path, o
                   deliver=deliver, emit=emit, clock=clock.now, sleep=clock.sleep, cancel=cancel)
     assert len(attempts) == 1
     assert any(event.kind == "delivery_failed" and "handler failed" in event.error for event in statuses)
+
+
+async def test_source_health_recovers_without_a_false_change(tmp_path, observer_data):
+    from xdog.eyes.errors import SourceError
+    from xdog.eyes.executor import observe
+    from xdog.eyes.testing import FakeClock
+
+    cancel, clock, calls, statuses = asyncio.Event(), FakeClock(limit=5), [0], []
+
+    async def scanner(source):
+        calls[0] += 1
+        if calls[0] == 2:
+            raise SourceError("temporary read error")
+        return FileSnapshot((("a", FileState("same", 3)),))
+
+    async def deliver(value):
+        raise AssertionError("A recovered identical snapshot is not an event")
+
+    def emit(event):
+        statuses.append(event.kind)
+        if calls[0] >= 3 and event.kind == "watching":
+            cancel.set()
+
+    await observe(parse(observer_data, base_dir=tmp_path), registration_id="registration", scanner=scanner,
+                  deliver=deliver, emit=emit, clock=clock.now, sleep=clock.sleep, cancel=cancel)
+    assert statuses.count("watching") == 2
+    assert "source_error" in statuses

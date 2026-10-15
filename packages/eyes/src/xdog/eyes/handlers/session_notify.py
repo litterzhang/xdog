@@ -1,6 +1,7 @@
 """Register trusted processing instructions separately from evidence delivery."""
 from __future__ import annotations
 
+import json
 from dataclasses import asdict
 
 from xdog.eyes.executor import Delivery
@@ -37,7 +38,9 @@ class SessionNotifier:
         if (delivery.registration_id != self.registration_id
                 or delivery.route_id not in {route.id for route in self.definition.routes}):
             raise ProtocolError("Delivery does not belong to this registration")
-        events: list[JsonValue] = [json_value(asdict(event)) for event in delivery.events]
+        events: list[JsonValue] = [
+            json_value(json.loads(json.dumps(asdict(event), allow_nan=False))) for event in delivery.events
+        ]
         response = await self.client.request({"action": "deliver", "body": {
             "registration_id": self.registration_id, "route_id": delivery.route_id,
             "delivery_id": delivery.id, "events": events,

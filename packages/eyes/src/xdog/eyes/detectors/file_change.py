@@ -8,8 +8,9 @@ from xdog.eyes.sources.file import FileSnapshot
 
 
 class FileChangeDetector:
-    def __init__(self, definition: DetectorDef) -> None:
+    def __init__(self, definition: DetectorDef, *, source_root: str = "") -> None:
         self.definition = definition
+        self.source_root = source_root
         self._baseline: FileSnapshot | None = None
         self._latest: FileSnapshot | None = None
         self._first: float | None = None
@@ -45,7 +46,7 @@ class FileChangeDetector:
             if old == new:
                 continue
             kind = "file.created" if old is None else "file.deleted" if new is None else "file.modified"
-            groups[kind].append(FileEvidence(path, old, new, self._observed.get(path, now)))
+            groups[kind].append(FileEvidence(path, old, new, self._observed.get(path, now), self.source_root))
         result = tuple(Event(uuid.uuid4().hex, self.definition.source, self.definition.id, kind, now,
                              tuple(groups[kind])) for kind in EVENT_TYPES if groups[kind])
         self._baseline = self._latest

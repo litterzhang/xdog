@@ -68,6 +68,7 @@ class FileEvidence:
     before: FileState | None
     after: FileState | None
     observed_at: float
+    root: str = ""
 
 
 @dataclass(frozen=True)
