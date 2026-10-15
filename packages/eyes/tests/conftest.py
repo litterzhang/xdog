@@ -12,7 +12,7 @@ def observer_data():
             {
                 "id": "notify",
                 "type": "acp",
-                "command": ["xdog-coding", "--acp"],
+                "connection": {"transport": "stdio", "command": ["third-party-acp"]},
                 "session": "session-1",
                 "instruction": "Review tests",
             }

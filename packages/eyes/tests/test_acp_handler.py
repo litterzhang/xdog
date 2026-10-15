@@ -23,7 +23,9 @@ def definition(record, *, mode="success", xdog=False, gate=None):
         argv.append("--xdog")
     if gate is not None:
         argv.extend(["--gate", str(gate)])
-    return HandlerDef("handler", "acp", tuple(argv), "target", "Review tests")
+    from xdog.eyes.connections import StdioConnection
+
+    return HandlerDef("handler", "acp", StdioConnection(tuple(argv)), "target", "Review tests")
 
 
 def delivery(identifier="d1"):

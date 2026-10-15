@@ -1,4 +1,4 @@
-"""An opt-in official-SDK stdio client; no harness imports or tool execution."""
+"""An opt-in official-SDK ACP client; no harness imports or tool execution."""
 
 from __future__ import annotations
 
@@ -6,10 +6,12 @@ import asyncio
 import os
 from contextlib import AsyncExitStack
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
+
+from xdog.eyes.connections import ConnectionDef, StdioConnection, UnixConnection, validate_endpoint
 
 try:
-    from acp import PROTOCOL_VERSION, spawn_agent_process
+    from acp import PROTOCOL_VERSION, connect_to_agent, spawn_agent_process
     from acp import RequestError as RequestError
     from acp.client.connection import ClientSideConnection
     from acp.interfaces import Client
@@ -19,8 +21,12 @@ except ImportError as exc:
 
 
 class AcpClient:
-    def __init__(self, command: tuple[str, ...], session_id: str, cwd: Path) -> None:
-        self.command, self.session_id, self.cwd = command, session_id, cwd.resolve()
+    def __init__(
+        self, connection: ConnectionDef, session_id: str, cwd: Path, *,
+        delivery: Literal["prompt", "enqueue"] = "prompt",
+    ) -> None:
+        self.connection, self.session_id, self.cwd = connection, session_id, cwd.resolve()
+        self.delivery = delivery
         self.conn: ClientSideConnection | None = None
         self.process: asyncio.subprocess.Process | None = None
         self.owner_generation: str | None = None
@@ -42,20 +48,26 @@ class AcpClient:
         if self._opened or self._close_task is not None:
             raise RuntimeError("ACP connections cannot be automatically reattached")
         self._opened = True
-        if not self.command or any(not arg or "\x00" in arg for arg in self.command):
-            raise ValueError("ACP command requires nonempty argv without NUL")
         try:
             async with asyncio.timeout(10):
-                self.conn, self.process = await self._stack.enter_async_context(
-                    spawn_agent_process(
-                        cast(Client, self),
-                        self.command[0],
-                        *self.command[1:],
-                        cwd=self.cwd,
-                        env=dict(os.environ),
-                        transport_kwargs={"stderr": asyncio.subprocess.DEVNULL, "limit": 1024 * 1024},
+                if self.delivery != "prompt":
+                    raise RuntimeError("ACP enqueue delivery requires the inbox extension implementation")
+                if isinstance(self.connection, UnixConnection):
+                    await asyncio.to_thread(validate_endpoint, self.connection)
+                    reader, writer = await asyncio.open_unix_connection(self.connection.path, limit=1024 * 1024)
+                    self._stack.push_async_callback(self._close_writer, writer)
+                    self.conn = connect_to_agent(cast(Client, self), writer, reader)
+                    self._stack.push_async_callback(self.conn.close)
+                elif isinstance(self.connection, StdioConnection):
+                    self.conn, self.process = await self._stack.enter_async_context(
+                        spawn_agent_process(
+                            cast(Client, self), self.connection.command[0], *self.connection.command[1:],
+                            cwd=self.cwd, env=dict(os.environ),
+                            transport_kwargs={"stderr": asyncio.subprocess.DEVNULL, "limit": 1024 * 1024},
+                        )
                     )
-                )
+                else:
+                    raise ValueError("Unsupported ACP connection")
                 assert self.conn is not None
                 response = await self.conn.initialize(
                     protocol_version=PROTOCOL_VERSION, client_info=Implementation(name="xdog-eyes", version="2.4.1")
@@ -108,6 +120,15 @@ class AcpClient:
             prompt=[TextContentBlock.model_validate(item) for item in parameters["prompt"]],
             **parameters["_meta"],
         )
+
+    @staticmethod
+    async def _close_writer(writer: asyncio.StreamWriter) -> None:
+        writer.close()
+        try:
+            async with asyncio.timeout(5):
+                await writer.wait_closed()
+        except (OSError, TimeoutError):
+            pass
 
     async def close(self) -> None:
         if self._close_task is None:

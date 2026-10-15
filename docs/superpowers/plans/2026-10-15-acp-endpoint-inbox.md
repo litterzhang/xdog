@@ -13,7 +13,7 @@
 - `docs/superpowers/specs/2026-10-15-session-inbox-design.md`（用户于 2026-10-15 确认，endpoint 补充设计优先）。
 - `docs/superpowers/specs/2026-10-15-acp-session-routing-design.md`（其余已批准约束）。
 
-**Status:** 本计划等待用户审核；Native 执行选择不变，尚未开始本计划的产品代码修改。
+**Status:** 用户于 2026-10-15 批准实施；按 Native/TDD 顺序执行，进度记录于本计划的 SDD ledger。
 
 ## Global Constraints
 
@@ -191,7 +191,7 @@ class InboxCoordinator:
 
 ---
 
-## R1: Eyes direct ACP connections, preserving third-party stdio
+## Task 1: R1 — Eyes direct ACP connections, preserving third-party stdio
 
 **Files:**
 - Create `packages/eyes/src/xdog/eyes/connections.py`.
@@ -232,7 +232,7 @@ git add packages/eyes
 git commit -m "feat(eyes): connect ACP handlers directly to Unix endpoints"
 ```
 
-## R2: Durable session inbox with identity, quotas and crash-safe state
+## Task 2: R2 — Durable session inbox with identity, quotas and crash-safe state
 
 **Files:**
 - Create `packages/coding/src/xdog/coding/core/sessions/inbox_models.py`, `inbox_store.py`.
@@ -278,7 +278,7 @@ git add packages/coding/src/xdog/coding/core/sessions/inbox* packages/coding/src
 git commit -m "feat(coding): persist session inbox without creating agent runtimes"
 ```
 
-## R3: Independent lightweight ACP ingress and owner routing
+## Task 3: R3 — Independent lightweight ACP ingress and owner routing
 
 **Files:**
 - Create `packages/coding/src/xdog/coding/acp/ingress_backend.py`, `ingress.py`, `ingress_main.py`.
@@ -320,7 +320,7 @@ git add packages/coding/src/xdog/coding/acp packages/coding/tests/test_acp_ingre
 git commit -m "feat(coding): serve ACP ingress independently of session and TUI owners"
 ```
 
-## R4: Inbox approval/attempts through the sole controller
+## Task 4: R4 — Inbox approval/attempts through the sole controller
 
 **Files:**
 - Create `packages/coding/src/xdog/coding/core/sessions/inbox_runtime.py`.
@@ -369,7 +369,7 @@ git add packages/coding/src/xdog/coding/core packages/coding/tests/test_inbox_co
 git commit -m "feat(coding): execute reviewed inbox attempts through the session controller"
 ```
 
-## R5: Inbox review/display, optional CLI and ACP adapter access
+## Task 5: R5 — Inbox review/display, optional CLI and ACP adapter access
 
 **Files:**
 - Create `packages/coding/src/xdog/coding/core/inbox_commands.py`.
@@ -407,7 +407,7 @@ git add packages/coding
 git commit -m "feat(coding): display and explicitly review durable session inbox messages"
 ```
 
-## R6: Eyes enqueue mode and honest receipt telemetry
+## Task 6: R6 — Eyes enqueue mode and honest receipt telemetry
 
 **Files:**
 - Modify `packages/eyes/src/xdog/eyes/acp_client.py`, `handlers/acp.py`, `events.py`, `executor.py`.
@@ -454,7 +454,7 @@ git add packages/eyes
 git commit -m "feat(eyes): enqueue evidence through negotiated ACP inbox extensions"
 ```
 
-## R7: Eyes-owned lifecycle/control, no coding context dependency
+## Task 7: R7 — Eyes-owned lifecycle/control, no coding context dependency
 
 **Files:**
 - Create `packages/eyes/src/xdog/eyes/local_control.py`.
@@ -498,7 +498,7 @@ git add packages/eyes packages/coding/tests
 git commit -m "refactor(eyes): own observer lifecycle with direct ACP session delivery"
 ```
 
-## R8: Remove old host, finish docs/packaging and independently audit goal
+## Task 8: R8 — Remove old host, finish docs/packaging and independently audit goal
 
 **Files:** Exact original Task 10 deletion set, verified with git ls-files before deletion; all remaining tests/docs/env wiring referencing old host. Add `packages/coding/tests/test_no_legacy_event_host.py`, `test_acp_optional_imports.py`; `packages/agent/tests/test_acp_packaging.py`, `packages/eyes/tests/test_acp_packaging.py`; create/update `docs/acp-session-routing.md`, `docs/eyes-verification.md`, package READMEs and root AGENTS.md.
 

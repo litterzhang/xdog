@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 class AcpHandler:
     def __init__(self, definition: HandlerDef, *, cwd: Path) -> None:
         self.definition = definition
-        self.client = AcpClient(definition.command, definition.session, cwd)
+        self.client = AcpClient(definition.connection, definition.session, cwd, delivery=definition.delivery)
         self.state = "new"
         self.wake_budget: int | None = 0
         self._serial = asyncio.Lock()

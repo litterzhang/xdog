@@ -71,7 +71,9 @@ async def test_real_sdk_disconnect_records_one_request_and_freezes_source_until_
 
     record = tmp_path / "peer.jsonl"
     target = definition(record, mode="disconnect")
-    observer_data["handlers"][0].update(command=list(target.command), session=target.session)
+    observer_data["handlers"][0].update(
+        connection={"transport": "stdio", "command": list(target.connection.command)}, session=target.session
+    )
     config = parse(observer_data, base_dir=tmp_path)
     handler = AcpHandler(config.handlers[0], cwd=tmp_path)
     clock, cancel, resume = FakeClock(limit=8), asyncio.Event(), asyncio.Event()

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from xdog.eyes.connections import ConnectionDef
+
 EventType = Literal["file.created", "file.modified", "file.deleted"]
 EVENT_TYPES: tuple[EventType, ...] = ("file.created", "file.modified", "file.deleted")
 
@@ -34,9 +36,10 @@ class DetectorDef:
 class HandlerDef:
     id: str
     type: Literal["acp"]
-    command: tuple[str, ...]
+    connection: ConnectionDef
     session: str
     instruction: str
+    delivery: Literal["prompt", "enqueue"] = "prompt"
 
 
 @dataclass(frozen=True)
