@@ -69,3 +69,62 @@ async def test_untrusted_metadata_cannot_grant_human_wake_budget(coding_session)
     finally:
         await adapter.aclose()
         await asyncio.wrap_future(runtime.close())
+
+
+@pytest.mark.parametrize('bound',[False,True])
+async def test_session_info_truthfully_reports_prompt_budget_ownership(coding_session,bound):
+    from xdog.agent.acp.adapter import AcpAdapter
+    from xdog.coding.acp.backend import CodingBackend
+    from xdog.coding.core.sessions.runtime import SessionRuntime
+
+    runtime = SessionRuntime(coding_session,bound=bound)
+    runtime.start()
+
+    class Client:
+        async def session_update(self,*args,**kwargs):
+            pass
+
+    adapter = AcpAdapter(CodingBackend(runtime.router,runtime.registry,inbox_store=runtime.inbox.store))
+    adapter.on_connect(Client())
+    try:
+        await adapter.load_session(session_id=coding_session.session_id,cwd=str(coding_session.working_dir))
+        info = await adapter.ext_method('xdog/session_info',{'session_id':coding_session.session_id})
+        assert info['automatic_budget'] is bound
+    finally:
+        await adapter.aclose()
+        await asyncio.wrap_future(runtime.close())
+
+
+async def test_disconnect_settles_pending_resume_and_cannot_grant_a_ghost_credit(coding_session):
+    from xdog.agent.acp.adapter import AcpAdapter
+    from xdog.coding.acp.backend import CodingBackend
+    from xdog.coding.core.sessions.runtime import SessionRuntime
+
+    runtime = SessionRuntime(coding_session,bound=True)
+    runtime.start()
+    requests = []
+    coding_session.permissions.set_request_handler(requests.append)
+
+    class Client:
+        async def session_update(self,*args,**kwargs):
+            pass
+
+    adapter = AcpAdapter(CodingBackend(runtime.router,runtime.registry,inbox_store=runtime.inbox.store))
+    adapter.on_connect(Client())
+    task = None
+    try:
+        await adapter.load_session(session_id=coding_session.session_id,cwd=str(coding_session.working_dir))
+        task = asyncio.create_task(adapter.ext_method('xdog/resume',{'session_id':coding_session.session_id}))
+        async with asyncio.timeout(3):
+            while not requests:
+                await asyncio.sleep(0.01)
+        await adapter.aclose()
+        await asyncio.sleep(0)
+        assert not coding_session.permissions.has_pending_requests, 'closed ACP peer must retire its approval producer'
+        assert not coding_session.permissions.resolve(requests[0].id,'allow_once')
+        assert runtime.controller._budget==0
+    finally:
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task,return_exceptions=True)
+        await asyncio.wrap_future(runtime.close())

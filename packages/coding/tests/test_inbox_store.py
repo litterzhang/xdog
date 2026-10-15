@@ -328,3 +328,14 @@ assert len(s.records(sys.argv[3],Path(sys.argv[4])))==1
     result = subprocess.run([sys.executable, '-c', script, str(manager._dir), str(store.root),
                              message.session_id, str(message.cwd)], capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stderr
+
+
+def test_durable_scope_identity_survives_reopen_but_changes_with_a_new_store(box,tmp_path):
+    from xdog.coding.core.sessions.inbox_store import InboxStore
+
+    store,message,manager,data = box
+    first = store.scope_id(message.session_id,message.cwd)
+    assert InboxStore(manager._dir,store.root).scope_id(message.session_id,message.cwd)==first
+    assert InboxStore(manager._dir,tmp_path/'another-inbox').scope_id(message.session_id,message.cwd)!=first
+    (store.root/'.store-id').unlink()
+    assert store.scope_id(message.session_id,message.cwd)!=first

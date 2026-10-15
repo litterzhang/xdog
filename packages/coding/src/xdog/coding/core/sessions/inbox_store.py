@@ -102,6 +102,38 @@ class InboxStore:
         self.sessions_dir = sessions_dir.absolute()
         self.root = root.absolute()
 
+    def scope_id(self, session_id: str, cwd: Path) -> str:
+        """Persistent opaque dedup namespace, not a capability or a storage-path disclosure."""
+        self.identity(session_id, cwd)
+        root = private_directory(self.root)
+        lock = private_open(root / '.store-id.lock', os.O_CREAT | os.O_RDWR)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            path = root / '.store-id'
+            if not path.exists() and not path.is_symlink():
+                fd, name = tempfile.mkstemp(prefix='.identity-', dir=root)
+                try:
+                    with os.fdopen(fd, 'wb') as stream:
+                        stream.write(encoded({'version': 1, 'id': uuid.uuid4().hex}, 4096))
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    os.replace(name, path)
+                    _sync_directory(root)
+                    _sync_directory(root.parent)
+                finally:
+                    if os.path.exists(name):
+                        os.unlink(name)
+            value = _read(path, 4096)
+            if (not isinstance(value, dict) or set(value) != {'version', 'id'}
+                    or type(value['version']) is not int or value['version'] != 1
+                    or not isinstance(value['id'], str) or re.fullmatch(r'[0-9a-f]{32}', value['id']) is None):
+                raise ValueError('Invalid durable inbox namespace')
+            _sync_file(path)
+            return hashlib.sha256((value['id'] + '\0' + session_id).encode()).hexdigest()
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            os.close(lock)
+
     def identity(self, session_id: str, cwd: Path | None = None) -> tuple[Path, str]:
         session_id = identifier(session_id)
         if self.sessions_dir.resolve() != self.sessions_dir:

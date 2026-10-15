@@ -30,6 +30,10 @@ class AcpClient:
         self.conn: ClientSideConnection | None = None
         self.process: asyncio.subprocess.Process | None = None
         self.owner_generation: str | None = None
+        self.automatic_budget = False
+        self._budget_contract: bool | None = None
+        self.inbox_id: str | None = None
+        self.branch_id: str | None = None
         self.extensions: dict[str, int] = {}
         self.updates = 0
         self._stack = AsyncExitStack()
@@ -50,8 +54,6 @@ class AcpClient:
         self._opened = True
         try:
             async with asyncio.timeout(10):
-                if self.delivery != "prompt":
-                    raise RuntimeError("ACP enqueue delivery requires the inbox extension implementation")
                 if isinstance(self.connection, UnixConnection):
                     await asyncio.to_thread(validate_endpoint, self.connection)
                     reader, writer = await asyncio.open_unix_connection(self.connection.path, limit=1024 * 1024)
@@ -74,20 +76,26 @@ class AcpClient:
                 )
                 if response.protocol_version != PROTOCOL_VERSION:
                     raise ValueError("Unsupported ACP protocol version")
-                if response.agent_capabilities is None or response.agent_capabilities.load_session is not True:
-                    raise ValueError("ACP agent must support explicit session load")
                 meta = response.field_meta or {}
                 namespace = meta.get("xdog", {})
                 advertised = namespace.get("extensions", {}) if isinstance(namespace, dict) else {}
                 if isinstance(advertised, dict):
                     self.extensions = {
                         key: 1
-                        for key in ("session_info", "resume")
+                        for key in ("session_info", "resume", "enqueue", "inbox_status")
                         if type(advertised.get(key)) is int and advertised[key] == 1
                     }
-                await self.conn.load_session(session_id=self.session_id, cwd=str(self.cwd), mcp_servers=[])
-                if "session_info" in self.extensions:
-                    self.owner_generation = await self.generation()
+                if self.delivery == 'enqueue':
+                    if not {'enqueue', 'inbox_status'} <= self.extensions.keys():
+                        raise ValueError('ACP target must advertise durable enqueue/inbox_status v1')
+                    scope = await self.inbox_status()
+                    self.inbox_id, self.branch_id = scope['inbox_id'], scope['branch_id']
+                else:
+                    if response.agent_capabilities is None or response.agent_capabilities.load_session is not True:
+                        raise ValueError("ACP agent must support explicit session load")
+                    await self.conn.load_session(session_id=self.session_id, cwd=str(self.cwd), mcp_servers=[])
+                    if "session_info" in self.extensions:
+                        self.owner_generation = await self.generation()
         except BaseException:
             await self.close()
             raise
@@ -108,7 +116,41 @@ class AcpClient:
             or Path(cwd).resolve() != self.cwd
         ):
             raise ValueError("Invalid ACP owner identity")
+        managed = info.get('automatic_budget') is True and 'resume' in self.extensions
+        if self._budget_contract is not None and self._budget_contract != managed:
+            raise ValueError('ACP automatic budget contract changed; explicit reattach required')
+        self._budget_contract = self.automatic_budget = managed
         return generation
+
+    async def inbox_status(self, message_id: str | None = None) -> dict[str, Any]:
+        if self.conn is None or 'inbox_status' not in self.extensions:
+            raise RuntimeError('Durable inbox status is not negotiated')
+        params = {'session_id': self.session_id, 'cwd': str(self.cwd)}
+        if message_id is not None:
+            params['message_id'] = message_id
+        result = await self.conn.ext_method('xdog/inbox_status', params)
+        branch, namespace, cwd = result.get('branch_id'), result.get('inbox_id'), result.get('cwd')
+        if (result.get('session_id') != self.session_id or not isinstance(cwd, str)
+                or not Path(cwd).is_absolute() or Path(cwd).resolve() != self.cwd
+                or not isinstance(branch, str) or '\x00' in branch or len(branch.encode()) > 256
+                or not isinstance(namespace, str) or not namespace.strip() or '\x00' in namespace
+                or len(namespace.encode()) > 256 or not isinstance(result.get('messages'), list)):
+            raise ValueError('Invalid durable ACP inbox scope')
+        if self.inbox_id is not None and (self.inbox_id != namespace or self.branch_id != branch):
+            raise ValueError('ACP inbox namespace/branch changed; explicit rebaseline required')
+        return result
+
+    async def enqueue(self, parameters: dict[str, Any]) -> dict[str, Any]:
+        if self.conn is None or 'enqueue' not in self.extensions:
+            raise RuntimeError('Durable enqueue is not negotiated')
+        result = await self.conn.ext_method('xdog/enqueue', parameters)
+        states = {'pending_review', 'approved', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted'}
+        if (result.get('session_id') != self.session_id or result.get('message_id') != parameters['message_id']
+                or result.get('branch_id') != self.branch_id or result.get('status') not in {'queued', 'duplicate'}
+                or result.get('message_state') not in states
+                or result.get('status') == 'queued' and result.get('message_state') != 'pending_review'):
+            raise ValueError('Invalid durable enqueue receipt; acceptance is unknown')
+        return result
 
     async def prompt(self, parameters: dict[str, Any]) -> PromptResponse:
         if self.conn is None:

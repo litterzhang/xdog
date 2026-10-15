@@ -71,6 +71,7 @@ class SessionController:
         self._active: asyncio.Task[None] | None = None
         self._current: _Job | None = None
         self._revoked: set[str] = set()
+        self._resume_tasks: dict[str, set[asyncio.Task[Any]]] = {}
         self._budget = 0
         self._budget_targets: frozenset[str] | None = None
         self._human_pending = False
@@ -533,6 +534,7 @@ class SessionController:
     def disconnect(self, peer_id: str) -> Future[None]:
         async def run() -> None:
             self._revoked.add(peer_id)
+            await self._cancel_resumes(peer_id)
             tasks = []
             for job in tuple(self._jobs.values()):
                 if job.peer == peer_id:
@@ -569,26 +571,52 @@ class SessionController:
                 await asyncio.gather(task, return_exceptions=True)
         return self._async(run)
 
+    async def _cancel_resumes(self, peer_id: str | None = None) -> None:
+        tasks = tuple(task for peer, pending in tuple(self._resume_tasks.items())
+                      if peer_id is None or peer == peer_id for task in tuple(pending))
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            receipt = asyncio.gather(*tasks, return_exceptions=True)
+            while not receipt.done():
+                try:
+                    await asyncio.shield(receipt)
+                except asyncio.CancelledError:
+                    continue
+
     def resume(self, peer_id: str) -> Future[bool]:
         async def run() -> bool:
+            if self._closing or peer_id in self._revoked:
+                return False
             from xdog.agent import AgentContext, BeforeToolCallContext
             from xdog.ai.types import AssistantMessage, ToolCall
 
-            captured = self.generation
-            args = {"session_id": self.session.session_id, "generation": captured}
-            context = BeforeToolCallContext(
-                assistant_message=AssistantMessage(),
-                tool_call=ToolCall(id=uuid.uuid4().hex, name="session_resume", arguments=args),
-                args=args,
-                context=AgentContext(),
-            )
-            verdict = await self.session.permissions.before_tool_call(context)
-            allowed = verdict is None and not self._closing and captured == self.generation
-            if allowed:
-                self._budget = 1
-                self._budget_targets = None
-                self._pump()
-            return allowed
+            task = asyncio.current_task()
+            assert task is not None
+            self._resume_tasks.setdefault(peer_id, set()).add(task)
+            try:
+                captured = self.generation
+                args = {"session_id": self.session.session_id, "generation": captured}
+                context = BeforeToolCallContext(
+                    assistant_message=AssistantMessage(),
+                    tool_call=ToolCall(id=uuid.uuid4().hex, name="session_resume", arguments=args),
+                    args=args,
+                    context=AgentContext(),
+                )
+                verdict = await self.session.permissions.before_tool_call(context)
+                allowed = (verdict is None and not self._closing and captured == self.generation
+                           and peer_id not in self._revoked)
+                if allowed:
+                    self._budget = 1
+                    self._budget_targets = None
+                    self._pump()
+                return allowed
+            finally:
+                pending = self._resume_tasks.get(peer_id)
+                if pending is not None:
+                    pending.discard(task)
+                    if not pending:
+                        self._resume_tasks.pop(peer_id, None)
 
         return self._async(run)
 
@@ -601,6 +629,7 @@ class SessionController:
         return self._closed
 
     async def _shutdown(self) -> None:
+        await self._cancel_resumes()
         if self._readiness_timer is not None:
             self._readiness_timer.cancel()
             self._readiness_timer = None

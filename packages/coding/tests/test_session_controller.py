@@ -244,3 +244,23 @@ async def test_cancellation_during_admission_cannot_start_model_after_disk_commi
     finally:
         release.set()
         await asyncio.wrap_future(controller.close())
+
+
+async def test_owner_close_settles_pending_resume_approval(coding_session):
+    from xdog.coding.core.sessions.controller import SessionController
+
+    controller = SessionController(coding_session,bound=True)
+    controller.start()
+    requests = []
+    coding_session.permissions.set_request_handler(requests.append)
+    pending = controller.resume('peer')
+    try:
+        async with asyncio.timeout(3):
+            while not requests:
+                await asyncio.sleep(0.01)
+        await asyncio.wait_for(asyncio.wrap_future(controller.close()),3)
+        assert not coding_session.permissions.has_pending_requests
+        assert pending.done() and controller._budget==0
+    finally:
+        pending.cancel()
+        await asyncio.gather(asyncio.wrap_future(pending),return_exceptions=True)

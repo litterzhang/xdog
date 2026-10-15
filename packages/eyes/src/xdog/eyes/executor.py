@@ -7,11 +7,12 @@ import json
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 from xdog.eyes.detectors.file_change import FileChangeDetector
 from xdog.eyes.errors import SourceError
-from xdog.eyes.events import DeliveryResult, RuntimeEvent, prompt_parameters
-from xdog.eyes.models import Event, ObserverDef, SourceDef
+from xdog.eyes.events import DeliveryResult, RuntimeEvent, enqueue_parameters, prompt_parameters
+from xdog.eyes.models import Event, HandlerDef, ObserverDef, SourceDef
 from xdog.eyes.sources.file import FileSnapshot
 
 MAX_PENDING = 128
@@ -38,10 +39,12 @@ class _Pending:
     terminal: bool = False
 
 
-def _bounded(delivery: Delivery) -> bool:
+def _bounded(delivery: Delivery, *, handler: HandlerDef | None = None, cwd: Path | None = None) -> bool:
     paths = {(evidence.root, evidence.path) for event in delivery.events for evidence in event.evidence}
     try:
-        encoded = json.dumps(prompt_parameters(delivery), ensure_ascii=True, allow_nan=False).encode()
+        parameters = (enqueue_parameters(delivery, session_id=handler.session, cwd=str(cwd or Path.cwd()))
+                      if handler is not None and handler.delivery == 'enqueue' else prompt_parameters(delivery))
+        encoded = json.dumps(parameters, ensure_ascii=True, allow_nan=False).encode()
     except (ValueError, TypeError, UnicodeError):
         return False
     return len(paths) <= MAX_PATHS and len(encoded) <= MAX_DELIVERY_BYTES
@@ -58,12 +61,14 @@ async def observe(
     sleep: Callable[[float], Awaitable[None]],
     cancel: asyncio.Event,
     resume: asyncio.Event | None = None,
+    cwd: Path | None = None,
 ) -> None:
     sources = {item.id: item for item in definition.sources}
     detectors = {
         item.id: FileChangeDetector(item, source_root=str(sources[item.source].root)) for item in definition.detectors
     }
     handlers = {item.id: item for item in definition.handlers}
+    routes = {item.id: item for item in definition.routes}
     scans: dict[str, asyncio.Task[FileSnapshot]] = {}
     next_scan = {item.id: clock() for item in definition.sources}
     baselined: set[str] = set()
@@ -72,7 +77,8 @@ async def observe(
     backlog: dict[str, Delivery] = {}
     overflowed = False
 
-    def report(kind: str, *, source: str = "", delivery: Delivery | None = None, error: str = "") -> None:
+    def report(kind: str, *, source: str = "", delivery: Delivery | None = None, error: str = "",
+               receipt: DeliveryResult | None = None) -> None:
         emit(
             RuntimeEvent(
                 kind,
@@ -82,6 +88,9 @@ async def observe(
                 delivery_id=delivery.id if delivery else "",
                 error=error,
                 event_ids=tuple(event.id for event in delivery.events) if delivery else (),
+                receipt_status=receipt.receipt_status if receipt else '',
+                message_state=receipt.message_state if receipt else '',
+                retry_on_resume=receipt.retry_on_resume if receipt else False,
             )
         )
 
@@ -91,7 +100,8 @@ async def observe(
         # Never alter a delivery after its first attempt: a lost ACK may hide acceptance.
         previous = current.delivery if current is not None and current.attempts == 0 else backlog.get(route_id)
         candidate = replace(previous, events=previous.events + events) if previous else created
-        if not _bounded(candidate) or (previous is None and len(pending) + len(backlog) >= MAX_PENDING):
+        if (not _bounded(candidate, handler=handlers[routes[route_id].handler], cwd=cwd)
+                or previous is None and len(pending) + len(backlog) >= MAX_PENDING):
             report("paused", delivery=created, error="overflow: stop and restart to establish a new baseline")
             return False
         if current is None:
@@ -135,8 +145,9 @@ async def observe(
                     result = DeliveryResult("outcome-unknown", "Handler task cancelled after a possible send")
                 except Exception as exc:
                     result = DeliveryResult("outcome-unknown", str(exc))
-                if result.status == "succeeded":
-                    report("delivery_succeeded", delivery=item.delivery)
+                if result.status in {'succeeded', 'queued'}:
+                    report('delivery_queued' if result.status == 'queued' else 'delivery_succeeded',
+                           delivery=item.delivery, receipt=result)
                     del pending[route_id]
                     if route_id in backlog:
                         pending[route_id] = _Pending(backlog.pop(route_id))
@@ -145,10 +156,13 @@ async def observe(
                     item.retry_at = now + min(5.0, 0.25 * 2 ** min(item.attempts - 1, 5))
                 else:
                     item.paused = True
-                    item.terminal = result.status != "paused"
-                    if item.terminal:
+                    durable_retry = (handlers[routes[route_id].handler].delivery == 'enqueue'
+                                     and result.status == 'outcome-unknown' and result.retry_on_resume)
+                    item.terminal = result.status != "paused" and not durable_retry
+                    if item.terminal or result.status == 'outcome-unknown':
                         report(
-                            "delivery_" + result.status.replace("-", "_"), delivery=item.delivery, error=result.error
+                            "delivery_" + result.status.replace("-", "_"), delivery=item.delivery,
+                            error=result.error, receipt=result
                         )
                     report(
                         "paused",
@@ -156,6 +170,7 @@ async def observe(
                         error=(
                             result.error + "; stop/rebaseline, never blind retry" if item.terminal else result.error
                         ),
+                        receipt=result,
                     )
             blocked = overflowed or any(item.paused for item in pending.values())
             if blocked or cancel.is_set():

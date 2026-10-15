@@ -222,10 +222,11 @@ class IngressBackend:
                     raise ValueError('Invalid inbox status cursor/selection')
                 rows = await self._disk(self.store.records, session_id, cwd)
                 working, branch = await self._disk(self.store.identity, session_id, cwd)
+                inbox_id = await self._disk(self.store.scope_id, session_id, cwd)
                 if selected is not None:
                     rows = tuple(row for row in rows if row.message.message_id == selected)
                 page = rows[cursor:cursor + 64]
-                return {'session_id': session_id, 'cwd': str(working), 'branch_id': branch,
+                return {'session_id': session_id, 'cwd': str(working), 'branch_id': branch, 'inbox_id': inbox_id,
                         'messages': [{'message_id': r.message.message_id, 'status': r.status,
                                       'branch_id': r.branch_id, 'attempt_id': r.attempt_id,
                                       'request_id': r.request_id} for r in page],

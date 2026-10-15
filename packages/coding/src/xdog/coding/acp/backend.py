@@ -50,6 +50,7 @@ class CodingBackend:
         self._remote: dict[tuple[str, str], AcpAttachment] = {}
         self._refs: dict[tuple[str, str], SessionRef] = {}
         self._running: dict[tuple[str, str], tuple[SessionController, Submission]] = {}
+        self._control_owners: dict[tuple[str, str], SessionController] = {}
         self._remote_busy: set[tuple[str, str]] = set()
 
     def _target(self, session_id: str) -> None:
@@ -245,6 +246,7 @@ class CodingBackend:
     async def disconnect(self, peer: Peer) -> None:
         await self._inbox.disconnect(peer)
         controllers = {row[0] for key, row in self._running.items() if key[0] == peer.id}
+        controllers.update(controller for key, controller in self._control_owners.items() if key[0] == peer.id)
         for controller in controllers:
             await asyncio.wrap_future(controller.disconnect(peer.id))
         for key, remote in tuple(self._remote.items()):
@@ -259,6 +261,9 @@ class CodingBackend:
         for key in tuple(self._refs):
             if key[0] == peer.id:
                 del self._refs[key]
+        for key in tuple(self._control_owners):
+            if key[0] == peer.id:
+                del self._control_owners[key]
 
     async def extension(self, peer: Peer, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method in {'xdog/enqueue', 'xdog/inbox_status'}:
@@ -283,7 +288,9 @@ class CodingBackend:
                 "cwd": str(ref.cwd),
                 "generation": ref.generation,
                 "branch_id": controller.branch,
+                "automatic_budget": controller.bound,
             }
         if method == "xdog/resume":
+            self._control_owners[peer.id, session_id] = controller
             return {"resumed": await asyncio.wrap_future(controller.resume(peer.id))}
         raise RequestError(-32601, "Unsupported extension")

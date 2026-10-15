@@ -236,3 +236,18 @@ async def test_v2_does_not_fall_back_to_the_retired_event_host_during_runtime_mi
         assert not runtime.entries
     finally:
         await runtime.client.aclose()
+
+
+@pytest.mark.parametrize('mode',['headless','no-budget-hint'])
+async def test_resume_extension_names_alone_do_not_claim_owner_managed_automatic_budget(tmp_path,mode):
+    from xdog.eyes.handlers.acp import AcpHandler
+
+    record = tmp_path/'peer.jsonl'
+    handler = AcpHandler(definition(record,mode=mode,xdog=True),cwd=tmp_path)
+    try:
+        await handler.connect()
+        assert (await handler.deliver(delivery())).status=='succeeded'
+        assert (await handler.deliver(delivery('second'))).status=='paused'
+        assert len([r for r in rows(record) if r['kind']=='prompt'])==1
+    finally:
+        await handler.close()

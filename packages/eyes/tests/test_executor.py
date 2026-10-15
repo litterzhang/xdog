@@ -1,5 +1,6 @@
 import asyncio
 
+import pytest
 from xdog.eyes.events import DeliveryResult
 from xdog.eyes.loader import parse
 from xdog.eyes.models import FileState
@@ -354,3 +355,46 @@ async def test_source_health_recovers_without_a_false_change(tmp_path, observer_
     )
     assert statuses.count("watching") == 2
     assert "source_error" in statuses
+
+
+@pytest.mark.parametrize('mode,attempts', [('prompt',1),('enqueue',2)])
+async def test_unknown_receipt_retries_only_an_explicitly_resumed_durable_route(tmp_path,observer_data,mode,attempts):
+    from xdog.eyes.executor import observe
+    from xdog.eyes.testing import FakeClock
+
+    observer_data['handlers'][0]['delivery']=mode
+    definition = parse(observer_data,base_dir=tmp_path)
+    clock,cancel,resume = FakeClock(limit=6),asyncio.Event(),asyncio.Event()
+    sent,events = [],[]
+    scanned = []
+    resumed = False
+
+    async def scan(source):
+        scanned.append(clock.now())
+        return FileSnapshot(()) if len(scanned)==1 else FileSnapshot((('a',FileState('new',3)),))
+
+    async def send(item):
+        sent.append(item)
+        return (DeliveryResult('outcome-unknown','lost',retry_on_resume=True)
+                if len(sent)==1 else DeliveryResult('queued'))
+
+    def emit(event):
+        events.append(event)
+        if event.kind=='delivery_queued':
+            cancel.set()
+
+    async def sleep(seconds):
+        nonlocal resumed
+        if any(e.kind=='paused' for e in events) and not resumed:
+            resume.set()  # Explicit operator action; production handler also validates/reconnects its target.
+            resumed = True
+        if mode=='prompt' and resumed and clock.now()>3:
+            cancel.set()
+        await clock.sleep(seconds)
+
+    await observe(definition,registration_id='r',scanner=scan,deliver=send,emit=emit,
+                  clock=clock.now,sleep=sleep,cancel=cancel,resume=resume,cwd=tmp_path)
+    assert len(sent)==attempts
+    if attempts==2:
+        assert sent[0]==sent[1] and sent[0].id==sent[1].id
+    assert not any(e.kind=='delivery_succeeded' for e in events)

@@ -46,24 +46,36 @@ class Peer(Agent):
 
     async def initialize(self, protocol_version, **kwargs):
         self.record("initialize", kwargs=kwargs, pid=os.getpid())
+        if options.mode == 'inbox-disconnect-once-slow' and options.record.with_suffix('.dropped').exists():
+            while not options.gate.exists():
+                await asyncio.sleep(0.01)
         if options.mode == "stderr":
             os.write(2, b"noise\n" * 32768)
+        extensions = ({"enqueue": 1, "inbox_status": 1} if options.mode.startswith("inbox") else
+                      {"session_info": 1, "resume": 1} if options.xdog else {})
+        if options.mode == 'inbox-bool-version':
+            extensions['enqueue'] = True
         return InitializeResponse.model_validate(
             {
                 "protocolVersion": protocol_version,
-                "agentCapabilities": AgentCapabilities(load_session=options.mode != "no-load"),
-                **({"_meta": {"xdog": {"extensions": {"session_info": 1, "resume": 1}}}} if options.xdog else {}),
+                "agentCapabilities": AgentCapabilities(load_session=not options.mode.startswith("inbox")
+                                                       and options.mode != "no-load"),
+                **({"_meta": {"xdog": {"extensions": extensions}}} if extensions else {}),
             }
         )
 
     async def load_session(self, session_id, cwd, mcp_servers=None, **kwargs):
         self.record("load", session_id=session_id, cwd=cwd, mcp_servers=mcp_servers)
+        if options.mode.startswith('inbox'):
+            raise RequestError(-32601, 'Offline intake never loads a model/session owner')
         if session_id != "target":
             raise RequestError(-32602, "Unknown session")
         return LoadSessionResponse()
 
     async def ext_method(self, method, params):
         self.record("extension", method=method, params=params)
+        if options.mode.startswith('inbox'):
+            return self.inbox(method, params)
         if not options.xdog:
             raise RequestError(-32601, "No XDOG extensions")
         if method == "xdog/session_info":
@@ -73,6 +85,7 @@ class Peer(Agent):
                 "cwd": str(Path.cwd()),
                 "branch_id": "main",
                 "generation": "g2" if options.mode == "changed-owner" and self.info_queries > 1 else "g1",
+                **({"automatic_budget": options.mode != "headless"} if options.mode != "no-budget-hint" else {}),
             }
         if method == "xdog/resume":
             approved = options.mode != "deny-resume"
@@ -82,9 +95,44 @@ class Peer(Agent):
             return {"resumed": approved}
         raise RequestError(-32601, "Unknown extension")
 
+    def inbox(self, method, params):
+        store = options.record.with_suffix('.inbox-store')
+        existing = json.loads(store.read_text()) if store.exists() else {}
+        changed = options.gate is not None and options.gate.exists()
+        branch = 'other' if options.mode == 'inbox-changed-branch' and changed else 'main'
+        namespace = 'store-other' if options.mode == 'inbox-changed-store' and changed else 'store-main'
+        if method == 'xdog/inbox_status':
+            result = {'session_id': 'wrong' if options.mode == 'inbox-wrong-scope' else 'target',
+                      'cwd': '/other' if options.mode == 'inbox-wrong-cwd' else str(Path.cwd()),
+                      'branch_id': branch, 'inbox_id': namespace, 'messages': [], 'next_cursor': None}
+            if options.mode == 'inbox-no-store':
+                result.pop('inbox_id')
+            return result
+        if method != 'xdog/enqueue':
+            raise RequestError(-32601, 'No execution/resume in offline inbox')
+        if options.mode == 'inbox-quota':
+            raise RequestError(-32000, 'Inbox capacity exceeded')
+        key = params['message_id']
+        duplicate = key in existing
+        if duplicate and existing[key] != params:
+            raise RequestError(-32602, 'Inbox message content conflict')
+        if not duplicate:
+            existing[key] = params
+            store.write_text(json.dumps(existing))
+            self.record('stored', message_id=key)
+        dropped = options.record.with_suffix('.dropped')
+        if options.mode.startswith('inbox-disconnect-once') and not dropped.exists():
+            dropped.touch()
+            os._exit(0)
+        return {'session_id': 'wrong' if options.mode == 'inbox-bad-session' else 'target',
+                'message_id': 'wrong' if options.mode == 'inbox-bad-id' else key,
+                'status': 'duplicate' if duplicate else 'queued',
+                'message_state': 'unknown' if options.mode == 'inbox-bad-state' else 'pending_review',
+                'branch_id': 'wrong' if options.mode == 'inbox-bad-branch' else branch}
+
     async def prompt(self, session_id, prompt, **kwargs):
         self.record("received", session_id=session_id)
-        if options.xdog:
+        if options.xdog and options.mode not in {"headless", "no-budget-hint"}:
             while self.budget <= 0 and not self.cancelled.is_set():
                 if options.mode == "human-credit" and options.gate.exists():
                     self.budget = 1  # Explicit external human actor, not a model result.
