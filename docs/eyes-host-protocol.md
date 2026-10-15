@@ -80,6 +80,12 @@ Admission statuses:
 - `rejected`: invalid registration, data or authorization; do not start a model.
 - `ok`: non-admission control response.
 
+Control/status presentation is bounded independently of authoritative state. Replies
+include total counts and a `truncated` flag when rows do not fit; processing rows
+are newest first, and display includes at most the latest eight constituent
+delivery IDs with a full delivery count. Dedup records are not discarded. A
+registration filter is applied before the presentation budget.
+
 Processing status is separately reported as waiting, running, succeeded,
 failed, cancelled or discarded. Admission ACK is not a completed agent task.
 Retried deliveries retain both ID and contents, including when the connection

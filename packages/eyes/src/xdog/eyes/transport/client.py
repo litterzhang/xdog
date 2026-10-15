@@ -34,7 +34,7 @@ class HostClient:
         frame = encode_frame(validate_request(request))
         writer: asyncio.StreamWriter | None = None
         try:
-            async with asyncio.timeout(self.timeout):
+            async with asyncio.timeout(120 if message["action"] == "resume" else self.timeout):
                 reader, writer = await asyncio.open_unix_connection(self.context.address, limit=MAX_FRAME)
                 self._writers.add(writer)
                 writer.write(frame)

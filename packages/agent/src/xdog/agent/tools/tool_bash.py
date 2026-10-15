@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import tempfile
 import uuid
 from pathlib import Path
@@ -81,11 +82,17 @@ def create_bash_tool(*, initial_cwd: Path | None = None) -> AgentTool:
         timeout_s = timeout_ms / 1000.0
 
         try:
+            extra = kwargs.get("subprocess_env")
+            if extra is not None and (not isinstance(extra, dict)
+                    or any(not isinstance(key, str) or not isinstance(value, str) for key, value in extra.items())):
+                raise ValueError("Caller subprocess environment must map strings to strings")
+            environment = {**os.environ, **extra} if extra is not None else None
             proc = await asyncio.create_subprocess_shell(
                 command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(state["cwd"]),
+                env=environment,
                 start_new_session=True,
             )
 

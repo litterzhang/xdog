@@ -53,6 +53,7 @@ from xdog.coding.core.settings_manager import SettingsManager
 from xdog.coding.core.system_prompt import build_system_prompt
 
 if TYPE_CHECKING:
+    from xdog.coding.core.external_events.binding import ExternalEventBinding
     from xdog.coding.core.session_staging import StagedExtensions
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,8 @@ def _idle_change(method: Callable[Concatenate["AgentSession", P], R]) -> Callabl
                 return method(self, *args, **kwargs)
             finally:
                 self._context_changes -= 1
+                if self.external_events is not None:
+                    self.external_events.refresh_owner()
     return wrapped
 
 
@@ -114,6 +117,7 @@ class AgentSession:
     _base_context_transform: TransformContextFn | None = field(default=None, init=False, repr=False)
     handled_feedback: list[str] = field(default_factory=list, init=False)
     _base_input_transform: InputTransformFn | None = field(default=None, init=False, repr=False)
+    external_events: ExternalEventBinding | None = field(default=None, init=False, repr=False)
     _unsubscribe: Any = field(default=None, init=False, repr=False)
     _context_changes: int = field(default=0, init=False, repr=False)
     _auth_changing: bool = field(default=False, init=False, repr=False)
@@ -128,6 +132,13 @@ class AgentSession:
     _tool_selection_retiring: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        # A new/unbound session must not borrow an inherited parent host capability.
+        context = self.agent.tool_context
+        environment = context.get("subprocess_env", {})
+        if not isinstance(environment, dict):
+            raise ValueError("Invalid caller subprocess environment")
+        context["subprocess_env"] = {**environment, "XDOG_EVENT_CONTEXT": ""}
+        self.agent.set_tool_context(context)
         # Restore session-level settings
         if self.session_data.settings:
             self.settings.load_session_settings(self.session_data.settings)
@@ -1379,8 +1390,19 @@ class AgentSession:
             await self._persist_tool_retirement()
             return f"MCP {server}: {action} completed; external tools remain subject to current permission policy"
 
+    def enable_external_events(self, *, notify: Callable[[], None] | None = None) -> ExternalEventBinding:
+        """Enable a generic local event receiver; one-shot clients do not call this."""
+        if self.external_events is None:
+            from xdog.coding.core.external_events.binding import ExternalEventBinding
+            binding = ExternalEventBinding(self, notify=notify)
+            binding.start()
+            self.external_events = binding
+        return self.external_events
+
     def dispose(self) -> None:
         """Clean up resources."""
+        if self.external_events is not None:
+            self.external_events.close()
         self.children.close()
         self.extension_dialogs.close()
         self.extensions.close()
