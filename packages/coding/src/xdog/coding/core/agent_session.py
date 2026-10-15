@@ -560,6 +560,11 @@ class AgentSession:
 
     async def send_message(self, user_text: str, *, images: tuple[ImageContent, ...] = (),
                            input_origin: str = "user") -> AssistantMessage | None:
+        """Compatibility SDK entry; modes migrate to the shared controller."""
+        return await self._execute_message(user_text, images=images, input_origin=input_origin)
+
+    async def _execute_message(self, user_text: str, *, images: tuple[ImageContent, ...] = (),
+                           input_origin: str = "user") -> AssistantMessage | None:
         """Send a user message and run the full agent loop.
 
         Returns the final assistant message, or None if aborted.
@@ -568,7 +573,7 @@ class AgentSession:
             raise RuntimeError("Tool retirement persistence owns this session")
         if self._compacting:
             raise RuntimeError("Compaction owns this session; cancel/wait before sending input")
-        if input_origin not in {'user', 'extension', 'system', 'custom_context', 'external_event'}:
+        if input_origin not in {'user', 'extension', 'system', 'custom_context', 'external_event', 'session_input'}:
             raise ValueError('Invalid input origin')
         if input_origin == 'user' and self.external_events is not None:
             self.external_events.inbox.human_input()
@@ -592,7 +597,12 @@ class AgentSession:
             await self._maybe_compact()
 
             # Run the agent loop
-            if input_origin == 'external_event':
+            if input_origin == 'session_input':
+                import json
+
+                from xdog.agent.session_input import decode_input, encode_input
+                event_stream = await self.agent.prompt(encode_input(decode_input(json.loads(user_text))))
+            elif input_origin == 'external_event':
                 from xdog.agent.external_event import message
                 if images:
                     raise ValueError("External event input cannot inject image attachments")
