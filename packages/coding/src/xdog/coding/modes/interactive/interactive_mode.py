@@ -58,8 +58,6 @@ from xdog.ai.types import (
     ImageContent,
     TextContent,
     ThinkingContent,
-    ToolCall,
-    ToolResultMessage,
     UserMessage,
 )
 from xdog.coding.config import get_config_dir
@@ -73,6 +71,7 @@ from xdog.coding.modes.interactive.components.footer import FooterComponent
 from xdog.coding.modes.interactive.components.permission_prompt import PermissionPromptComponent
 from xdog.coding.modes.interactive.components.tool_execution import ToolExecutionComponent
 from xdog.coding.modes.interactive.run_status import RunPhase, RunStatus
+from xdog.coding.modes.interactive.session_presenter import SessionHistory, capture_history
 from xdog.coding.modes.interactive.theme import create_default_theme
 from xdog.tui.attachments import Attachment, AttachmentComposer
 from xdog.tui.child_browser import ChildSourceWorker, child_entries
@@ -2828,44 +2827,34 @@ class InteractiveMode:
                     if thread is not None and thread.ident is not None and thread is not threading.current_thread():
                         thread.join(timeout=2.0)
 
-    def _replay_history(self) -> None:
+    def _replay_history(self, snapshot: SessionHistory | None = None) -> None:
         self._output_epoch += 1
         if self._transcript_panel is not None:
             self._close_transcript()
         """Replay messages, including persisted tool calls and their results."""
-        tool_components: dict[str, Any] = {}
-        for msg in self._session.messages:
-            if isinstance(msg, UserMessage):
-                text = msg.content if isinstance(msg.content, str) else "\n".join(
-                    part.text for part in msg.content if isinstance(part, TextContent)
-                )
-                image_count = (sum(isinstance(part, ImageContent) for part in msg.content)
-                               if not isinstance(msg.content, str) else 0)
-                if image_count:
-                    text += f"\n[Images: {image_count}]"
+        from xdog.coding.core.sessions.store import InputStore
+        from xdog.coding.modes.interactive.session_presenter import human_input_text
+        events = self._session_events
+        if snapshot is None and events.initial_history is not None:
+            snapshot, events.initial_history = events.initial_history, None
+        events.initial_history = None
+        if snapshot is not None:
+            if (snapshot.session_id != self._session.session_id
+                    or snapshot.branch_id != self._session.session_data.active_branch):
+                self._chat_log.add_system('History view owner changed; stale snapshot discarded')
+                return
+            records, messages = snapshot.records, snapshot.messages
+        else:
+            runtime = self._session.runtime
+            store = runtime.controller.store if runtime is not None else InputStore(self._session)
+            records = tuple(row for row in store.records() if row.branch_id == self._session.session_data.active_branch)
+            messages = tuple(self._session.messages)
+        events.presenter.replay(records, messages)
+        for message in messages:
+            if isinstance(message, UserMessage):
+                text = human_input_text(message)
                 if text:
-                    self._chat_log.add_user(text)
                     self._editor.add_to_history(text)
-            elif isinstance(msg, AssistantMessage):
-                text, thinking = _assistant_content(msg)
-                if text or thinking:
-                    self._chat_log.add_assistant(text, thinking=thinking)
-                for part in msg.content:
-                    if isinstance(part, ToolCall):
-                        tool_components[part.id] = self._chat_log.add_tool(
-                            part.name,
-                            part.arguments,
-                        )
-            elif getattr(msg, "type", None) == "xdog.external_event.v1":
-                self._chat_log.add_system("External event · recorded input; not a human message")
-            elif isinstance(msg, ToolResultMessage):
-                component = tool_components.pop(msg.tool_call_id, None)
-                if component is None:
-                    component = self._chat_log.add_tool(msg.tool_name, None)
-                result_text = "\n".join(
-                    part.text for part in msg.content if isinstance(part, TextContent)
-                )
-                component.set_result(result_text, is_error=msg.is_error)
 
     # -- Header / Footer --
 
@@ -3519,6 +3508,8 @@ class InteractiveMode:
                 return {
                     "output": result.output, "exit": result.exit_requested,
                     "prompt": result.prompt, "history_changed": changed,
+                    "history_snapshot": (await capture_history(captured)
+                                         if changed and captured.runtime is not None else None),
                     "rich_output": result.rich_output, "owner_session": session_id,
                     "extension_snapshot": (captured.extensions.snapshot()
                                            if command.name == "extensions" or command.name.startswith("ext-")
@@ -4619,7 +4610,7 @@ class InteractiveMode:
                 self._chat_log.clear_all()
                 self._streaming_text = ""
                 self._streaming_thinking = ""
-                self._replay_history()
+                self._replay_history(event.get('history_snapshot'))
             rich = event.get("rich_output")
             if isinstance(rich, ExtensionCommandResult):
                 if event.get("owner_session") == self._session.session_id:

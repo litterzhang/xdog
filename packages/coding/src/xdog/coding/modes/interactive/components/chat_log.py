@@ -17,6 +17,19 @@ from xdog.tui.tui import Component
 from xdog.tui.utils import sanitize_terminal_text
 
 
+class SessionInputComponent(Text):
+    """Keyed preview and complete read-only details of an external request."""
+
+    def __init__(self, identifier: str, theme: Theme) -> None:
+        super().__init__('', 1, 0)
+        self.identifier, self.theme = identifier, theme
+        self.detail_body = ''
+
+    def update(self, preview: str, details: str) -> None:
+        self.set_text(self.theme.system('  ' + sanitize_terminal_text(preview)))
+        self.detail_body = sanitize_terminal_text(details)
+
+
 class ChatLog(Transcript):
     """Retained chat components plus a mutable streaming tail."""
 
@@ -26,6 +39,7 @@ class ChatLog(Transcript):
         self._streaming: dict[str, AssistantMessageComponent] = {}
         self._last_tool: ToolExecutionComponent | None = None
         self._details_expanded = False
+        self._session_inputs: dict[str, SessionInputComponent] = {}
 
     def add_user(self, text: str) -> None:
         """Add a user message."""
@@ -39,6 +53,14 @@ class ChatLog(Transcript):
         """Add a system/info message."""
         safe_text = sanitize_terminal_text(text)
         self._append(Text(self._theme.system(f"  {safe_text}"), 1, 0))
+
+    def update_session_input(self, identifier: str, preview: str, details: str) -> None:
+        component = self._session_inputs.get(identifier)
+        if component is None or component not in self.children:
+            component = SessionInputComponent(identifier, self._theme)
+            self._session_inputs[identifier] = component
+            self._append(component)
+        component.update(preview, details)
 
     def add_tool(self, tool_name: str, arguments: dict[str, Any] | None = None) -> ToolExecutionComponent:
         """Add a tool execution component."""
@@ -110,6 +132,7 @@ class ChatLog(Transcript):
         self.clear()
         self._streaming.clear()
         self._last_tool = None
+        self._session_inputs.clear()
 
     def detail_records(self) -> tuple[DetailRecord, ...]:
         """Snapshot tool and reasoning details without changing transcript state."""
@@ -123,6 +146,8 @@ class ChatLog(Transcript):
                 ))
             elif isinstance(child, ExtensionCommand) and child.detail_body:
                 records.append(DetailRecord(child.detail_title, child.detail_body, "command"))
+            elif isinstance(child, SessionInputComponent):
+                records.append(DetailRecord('External input ' + child.identifier, child.detail_body, 'input'))
             elif isinstance(child, ToolExecutionComponent) and child.detail_body:
                 records.append(DetailRecord(
                     title=child.detail_title,

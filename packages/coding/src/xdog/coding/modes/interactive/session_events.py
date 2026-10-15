@@ -7,11 +7,54 @@ import threading
 import uuid
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
+from xdog.agent import (
+    AgentEndEvent,
+    MessageEndEvent,
+    MessageStartEvent,
+    MessageUpdateEvent,
+    ToolExecutionEndEvent,
+    ToolExecutionUpdateEvent,
+    TurnEndEvent,
+)
 from xdog.agent.session_input import SessionInput
-from xdog.coding.core.sessions.models import InputRecord, SessionEvent, Submission, TurnResult
+from xdog.ai.types import AssistantMessage, TextContent
+from xdog.coding.core.sessions.models import SessionEvent, Submission, TurnResult
+from xdog.coding.modes.interactive.session_presenter import SessionHistory, capture_history
+from xdog.coding.modes.interactive.session_presenter import SessionPresenter as SessionPresenter
+from xdog.coding.modes.interactive.session_presenter import external_input_text as external_input_text
+
+
+@dataclass(frozen=True)
+class _AgentUiProjection:
+    sequence: int
+    payload: dict[str, Any]
+
+
+def _snapshot_agent_event(data: object) -> object | None:
+    # AgentToolResult is intentionally mutable in the tool API. Only its UI
+    # projection crosses EventQueue; arbitrary tool details are not UI state.
+    if isinstance(data, ToolExecutionEndEvent):
+        content = data.result.content if data.result is not None else ()
+        text = '\n'.join(part.text for part in content if isinstance(part, TextContent))
+        return _AgentUiProjection(data.sequence, {'type': 'tool_result', 'id': data.tool_call_id,
+            'name': data.tool_name, 'result': text, 'content': content,
+            'is_error': data.is_error or text.startswith('Error:')})
+    if isinstance(data, ToolExecutionUpdateEvent):
+        content = data.partial_result.content if data.partial_result is not None else ()
+        text = ''.join(part.text for part in content if isinstance(part, TextContent))
+        return _AgentUiProjection(data.sequence, {'type': 'tool_update', 'id': data.tool_call_id,
+                                                  'name': data.tool_name, 'text': text}) if text else None
+    if isinstance(data, TurnEndEvent):
+        return _AgentUiProjection(data.sequence, {'type': 'turn_footer_update'})
+    if isinstance(data, (MessageStartEvent, MessageUpdateEvent, MessageEndEvent)):
+        return data if isinstance(data.message, AssistantMessage) else None
+    if isinstance(data, AgentEndEvent):
+        final = data.messages[-1] if data.messages else None
+        return replace(data, messages=(final,) if isinstance(final, AssistantMessage) else ())
+    return data
 
 
 @dataclass
@@ -36,6 +79,16 @@ class NativeSessionEvents:
         self.cancelled: set[str] = set()
         self.display_request: str | None = None
         self.queue_sequence = 0
+        self._presenter: SessionPresenter | None = None
+        self.completed: set[tuple[str, str]] = set()
+        self.stream_sequences: dict[str, int] = {}
+        self.initial_history: SessionHistory | None = None
+
+    @property
+    def presenter(self) -> SessionPresenter:
+        if self._presenter is None:
+            self._presenter = SessionPresenter(self.ui._chat_log)
+        return self._presenter
 
     def start(self) -> None:
         if self.runtime is not None:
@@ -47,6 +100,7 @@ class NativeSessionEvents:
         controller.after_turn = self.finished
         self.unsubscribe = controller.subscribe(self.receive)
         self.ui._session.permissions.set_request_handler(self.ui._on_permission_request)
+        self.initial_history = controller._async(lambda: capture_history(self.ui._session)).result(timeout=10)
         if sys.version_info < (3, 15):
             controller._async(self.runtime.open_endpoint).result(timeout=10)
 
@@ -99,6 +153,11 @@ class NativeSessionEvents:
                 self.holds.add(token)
 
     def receive(self, event: SessionEvent) -> None:
+        if event.kind == 'agent_event':
+            data = _snapshot_agent_event(event.data)
+            if data is None:
+                return
+            event = replace(event, data=data)
         if event.kind == 'input_running':
             with self.lock:
                 item = self.local.get(event.request_id)
@@ -202,13 +261,12 @@ class NativeSessionEvents:
         if self.runtime is None or event.generation != self.runtime.controller.generation:
             return
         ui = self.ui
+        key = event.generation, event.request_id
+        if key in self.completed:
+            return
+        self.presenter.apply(event)
         item = self.local.get(event.request_id)
-        if event.kind in {'input_queued', 'input_paused'} and isinstance(event.data, InputRecord):
-            if item is None:
-                value = event.data.input
-                ui._chat_log.add_system(f'External input · {value.source} (self-reported, untrusted)\n'
-                                        f'{value.instruction}\nStatus: {event.data.status}')
-        elif event.kind == 'input_running':
+        if event.kind == 'input_running':
             self.display_request = event.request_id
             ui._worker_active = True
             ui._cancel_requested = False
@@ -223,13 +281,23 @@ class NativeSessionEvents:
             self.refresh_queue()
             ui._set_busy(True)
         elif event.kind == 'agent_event' and event.request_id not in self.cancelled:
+            if self.display_request != event.request_id:
+                return
+            sequence = getattr(event.data, 'sequence', 0)
+            if sequence:
+                if sequence <= self.stream_sequences.get(event.request_id, 0):
+                    return
+                self.stream_sequences[event.request_id] = sequence
             # Projection and consumption happen on the terminal thread in FIFO
             # order. A fast successor cannot invalidate its predecessor's text.
-            ui._turn_event_sink = ui._handle_ui_event
-            try:
-                ui._dispatch_agent_event(event.data)
-            finally:
-                ui._turn_event_sink = None
+            if isinstance(event.data, _AgentUiProjection):
+                ui._handle_ui_event({**event.data.payload, 'stamp': ui._active_stamp})
+            else:
+                ui._turn_event_sink = ui._handle_ui_event
+                try:
+                    ui._dispatch_agent_event(event.data)
+                finally:
+                    ui._turn_event_sink = None
         elif event.kind == 'input_edited' and item is not None and isinstance(event.data, SessionInput):
             item.text = event.data.instruction
             self.refresh_queue()
@@ -245,6 +313,8 @@ class NativeSessionEvents:
                     self.local = {key: self.local[key] for key in keys}
             self.refresh_queue()
         elif event.kind == 'input_completed' and isinstance(event.data, TurnResult):
+            self.completed.add(key)
+            self.stream_sequences.pop(event.request_id, None)
             with self.lock:
                 self.local.pop(event.request_id, None)
                 self.cancelled.discard(event.request_id)
@@ -256,7 +326,7 @@ class NativeSessionEvents:
                 ui._update_footer()
                 ui._update_header()
                 self.display_request = None
-            if event.data.status == 'failed':
+            if event.data.status == 'failed' and item is not None:
                 ui._chat_log.add_system('Session task failed: ' + event.data.error)
             if (item and item.images and item.origin == 'user'
                     and (event.data.status == 'failed' or event.data.status == 'cancelled' and item.started)):

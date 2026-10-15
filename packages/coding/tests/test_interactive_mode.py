@@ -688,8 +688,6 @@ class TestInteractiveMessageHandling:
         assert all(f"result-{index}" in rendered for index in range(3))
 
     def test_replay_restores_tool_call_and_result(self):
-        from types import SimpleNamespace
-
         from xdog.ai.types import (
             AssistantMessage,
             TextContent,
@@ -697,13 +695,11 @@ class TestInteractiveMessageHandling:
             ToolResultMessage,
         )
         from xdog.coding.modes.interactive.components.chat_log import ChatLog
-        from xdog.coding.modes.interactive.components.custom_editor import CustomEditorComponent
-        from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
+        from xdog.coding.modes.interactive.session_events import SessionPresenter
         from xdog.tui.utils import strip_ansi
 
         theme = create_default_theme()
-        mode = object.__new__(InteractiveMode)
-        mode._session = SimpleNamespace(messages=[
+        messages = (
             AssistantMessage(content=(
                 ToolCall(id="call-1", name="bash", arguments={"command": "pwd"}),
             )),
@@ -712,14 +708,10 @@ class TestInteractiveMessageHandling:
                 tool_name="bash",
                 content=(TextContent(text="/workspace"),),
             ),
-        ])
-        mode._chat_log = ChatLog(theme)
-        mode._editor = CustomEditorComponent(theme)
-        mode._transcript_panel = None
-        mode._output_epoch = 0
-
-        mode._replay_history()
-        rendered = "\n".join(strip_ansi(line) for line in mode._chat_log.render(80))
+        )
+        log = ChatLog(theme)
+        SessionPresenter(log).replay((), messages)
+        rendered = "\n".join(strip_ansi(line) for line in log.render(80))
 
         assert "bash" in rendered
         assert "pwd" in rendered
