@@ -118,6 +118,11 @@ class SessionManager:
             raise ValueError("Session files must not be symbolic links")
         return path
 
+    def input_history_path(self, session_id: str) -> Path:
+        """Separate request ledger, excluded from the session_*.json listing."""
+        self._session_path(session_id)  # Apply the same ID/path validation.
+        return self._dir / f"session-{session_id}.inputs.json"
+
     # --- CRUD ---
 
     def create_session(self, *, model: str = "", summary: str = "", working_dir: Path | None = None) -> SessionData:
@@ -160,6 +165,7 @@ class SessionManager:
         path = self._session_path(session_id)
         if path.exists():
             path.unlink()
+            self.input_history_path(session_id).unlink(missing_ok=True)
             return True
         return False
 
