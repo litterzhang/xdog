@@ -4,7 +4,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ## Repository and toolchain
 
-XDOG is a local-first Python 3.12+ `uv` workspace; its core tools do not require a hosted control plane or database. Seven distributions share the `xdog.*` namespace under `packages/`: `ai`, `agent`, `flow`, `coding`, `claw`, `tui`, and `site`. Run development commands from the repository root so the root `pyproject.toml` configuration applies.
+XDOG is a local-first Python 3.12+ `uv` workspace; its core tools do not require a hosted control plane or database. Eight distributions share the `xdog.*` namespace under `packages/`: `ai`, `agent`, `flow`, `coding`, `claw`, `tui`, `site`, and `eyes`. Run development commands from the repository root so the root `pyproject.toml` configuration applies.
 
 ```bash
 # Create/update the workspace environment
@@ -16,7 +16,7 @@ uv run pytest -q              # direct pytest alternative; supports normal selec
 uv run ruff check packages
 uv run mypy --strict \
   -p xdog.ai -p xdog.agent -p xdog.tui -p xdog.flow \
-  -p xdog.site -p xdog.claw -p xdog.coding
+  -p xdog.site -p xdog.claw -p xdog.coding -p xdog.eyes
 
 # Package, file, and individual-test examples
 uv run pytest packages/flow/tests -q
@@ -43,6 +43,7 @@ uv run xdog-claw --help       # persistent assistant runtime
 uv run xdog-ai --help         # model/provider CLI
 uv run xdog-agent --help      # generic agent CLI
 uv run xdog-site              # documentation/demo site
+uv run xdog-eyes --help       # observation CLI
 ```
 
 ## Architecture
@@ -112,6 +113,26 @@ Scheduler and goal work re-enter through the same orchestrator path as system in
 Prompt construction intentionally separates a cacheable static prefix from mutable workspace, memory, environment, and goal content. Compaction flushes durable memory, summarizes through the LLM, archives the transcript, then replaces older history. Memory uses vector+BM25 search when optional dependencies initialize and falls back to keyword search otherwise.
 
 Importing `xdog.claw.core` intentionally registers claw-specific tools. Preserve these side-effect imports when reorganizing code.
+
+### `xdog.eyes`: observation and activation layer
+
+Like flow, eyes owns a versioned JSON definition, frozen models, whole-definition
+validation, asynchronous executor, CLI and packaged `eyes-observers` skill.
+Sources collect evidence; detectors emit events; explicit routes connect handlers.
+The first source observes regular-file content changes with bounded polling.
+
+Eyes does not depend on agent/ai/coding/claw/flow and does not execute an agent
+loop. Its independent process binds to the current coding context through a
+private generic event capability. Coding never imports eyes or specific sources;
+its mode owner admits external events only after full producer/control settlement.
+Canonical `xdog.external_event.v1` messages preserve provenance and project labelled
+untrusted evidence without granting permissions. Automatic work has a one-turn
+budget after human input or approved resume, preventing self-edit loops.
+
+Definitions persist, registrations do not. Navigation/exit revoke capabilities;
+there is no crash replay or automatic harness startup. Unix-local transport,
+file sources and current-session notification are the first-release boundaries.
+See `docs/eyes-host-protocol.md` and the package README for the protocol/commands.
 
 ### `xdog.tui` and `xdog.site`
 

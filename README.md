@@ -40,12 +40,41 @@ Python module that needs nothing from flow at run time.
 | [`xdog-agent`](https://pypi.org/project/xdog-agent/) | `xdog.agent` | `xdog-agent` | Agent runtime: tool calling, structured output, steering |
 | [`xdog-coding`](https://pypi.org/project/xdog-coding/) | `xdog.coding` | `xdog-coding` | Interactive coding-agent CLI with session management |
 | [`xdog-claw`](https://pypi.org/project/xdog-claw/) | `xdog.claw` | `xdog-claw` | Agent orchestration runtime |
+| `xdog-eyes` | `xdog.eyes` | `xdog-eyes` | Declarative observation, evidence-to-event routing, session-bound activation |
+| `xdog-site` | `xdog.site` | `xdog-site` | Local documentation and trusted workflow demo site |
 | [`xdog-tui`](https://pypi.org/project/xdog-tui/) | `xdog.tui` | — | Terminal UI library with differential rendering |
 
 Every package shares the `xdog` namespace, so they install side by side without
 colliding with anything else on PyPI.
 
 所有包共用 `xdog` 命名空间，彼此并存，也不会和 PyPI 上的同名项目冲突。
+
+---
+
+## Eyes · 主动观察
+
+`xdog-eyes` uses the same file-first shape as flow: JSON definitions, validation,
+an asynchronous runtime, CLI and a packaged authoring skill. Ask a live coding
+session to use **eyes-observers** to watch a small file scope and register a
+processing instruction. The harness receives generic events; it does not know
+which source implementation collected them.
+
+```bash
+xdog-eyes validate eyes.json       # standalone, no model/host required
+xdog-eyes start eyes.json          # inside the live host's approved tool environment
+xdog-eyes status                   # collection health and separate processing states
+xdog-eyes stop <registration-id>
+xdog-eyes resume <registration-id> # subject to existing host approval policy
+```
+
+The first release supports local Unix file polling and current-session
+notification. Events wait for idle; at most one automatic turn starts after a
+human prompt or approved resume. Definitions can be saved, but registrations end
+on session/branch change or exit. No persistent replay, automatic coding startup,
+or permission escalation. See [the package README](packages/eyes/README.md).
+
+本地 eyes runtime 采集证据、生成事件、按声明式路由投递；coding 只负责通用事件接纳和
+空闲调度。内置 skill 帮助 agent 定义 source 与 handler，不需要 coding 理解文件监控实现。
 
 ---
 

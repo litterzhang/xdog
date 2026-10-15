@@ -200,10 +200,14 @@ class ObserverRuntime:
             if not await asyncio.to_thread(self.context_alive):
                 self.stop.set()
                 break
+            if now - confirmed >= 15:
+                self.stop.set()
+                break
             if now >= next_ping:
                 next_ping = now + 5
                 try:
-                    response = await self.client.request({"action": "ping", "body": {}})
+                    response = await asyncio.wait_for(self.client.request({"action": "ping", "body": {}}),
+                                                      timeout=min(5.0, 15 - (now - confirmed)))
                     if response["status"] == "ok":
                         confirmed = self.clock()
                     elif response["status"] in {"stale-owner", "rejected"}:

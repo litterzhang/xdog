@@ -82,3 +82,17 @@ async def test_external_input_uses_normal_sdk_and_persists_custom_provenance(tmp
         assert "not a human message" in text and "Review tests" in text
     finally:
         value.dispose()
+
+
+async def test_resume_policy_is_fail_closed_unless_explicitly_allowed(tmp_path):
+    value = session(tmp_path)
+    binding = value.enable_external_events()
+    try:
+        value.permissions.set_mode("ask")
+        assert await binding._approve("observer") is False
+        value.permissions.set_mode("deny")
+        assert await binding._approve("observer") is False
+        value.permissions.set_mode("allow-all")
+        assert await binding._approve("observer") is True
+    finally:
+        value.dispose()

@@ -42,7 +42,7 @@ jobs:
           import importlib, sys
           mods = ["xdog.ai", "xdog.agent", "xdog.agent.skills", "xdog.tui",
                   "xdog.flow", "xdog.flow.cli", "xdog.claw.core",
-                  "xdog.coding.core.slash_commands"]
+                  "xdog.coding.core.slash_commands", "xdog.eyes", "xdog.eyes.cli"]
           bad = []
           for m in mods:
               try:
@@ -68,7 +68,7 @@ jobs:
         run: >
           uv run mypy --strict
           -p xdog.ai -p xdog.agent -p xdog.tui -p xdog.flow
-          -p xdog.site -p xdog.claw -p xdog.coding
+          -p xdog.site -p xdog.claw -p xdog.coding -p xdog.eyes
 
       # The examples are executable artifacts, not decoration: this catches a
       # workflow whose companion suite stopped passing after a kernel change.
@@ -93,6 +93,20 @@ jobs:
           if missing:
               sys.exit(f"wheel is missing packaged data: {missing}")
           print(f"wheel carries {len([n for n in names if '/examples/' in n])} example files")
+          PY
+
+      - name: Eyes example and independently packaged skill
+        run: |
+          uv run xdog-eyes validate packages/eyes/src/xdog/eyes/examples/source-test-review.json
+          uv build --package xdog-eyes --out-dir /tmp/eyes-wheelcheck
+          python - <<'PY'
+          import glob, zipfile
+          wheel = zipfile.ZipFile(glob.glob("/tmp/eyes-wheelcheck/xdog_eyes-*.whl")[0])
+          need = {"xdog/eyes/skills/eyes-observers/SKILL.md",
+                  "xdog/eyes/examples/source-test-review.json", "xdog/eyes/py.typed"}
+          assert need <= set(wheel.namelist()), need - set(wheel.namelist())
+          metadata = wheel.read(next(n for n in wheel.namelist() if n.endswith("METADATA"))).decode()
+          assert "Requires-Dist:" not in metadata, "eyes must remain independently installable"
           PY
 
       # A dependency named `ai` or `flow` on PyPI is somebody else's package.

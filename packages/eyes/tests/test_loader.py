@@ -83,3 +83,19 @@ def test_load_rejects_duplicate_json_keys(tmp_path):
     path.write_text('{"version":1,"version":2}')
     with pytest.raises(ObserverValidationError):
         load(path)
+
+
+@pytest.mark.parametrize("target", ["name", "identifier", "instruction"])
+def test_definition_text_respects_host_protocol_capacity(tmp_path, observer_data, target):
+    from xdog.eyes.errors import ObserverValidationError
+    from xdog.eyes.loader import parse
+
+    if target == "name":
+        observer_data["name"] = "x" * 257
+    elif target == "identifier":
+        observer_data["sources"][0]["id"] = "x" * 257
+        observer_data["detectors"][0]["source"] = "x" * 257
+    else:
+        observer_data["handlers"][0]["instruction"] = "x" * 65537
+    with pytest.raises(ObserverValidationError):
+        parse(observer_data, base_dir=tmp_path)

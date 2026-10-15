@@ -28,9 +28,15 @@ def _object(value: object, path: str, allowed: set[str]) -> dict[str, object]:
     return data
 
 
-def _text(value: object, path: str) -> str:
+def _text(value: object, path: str, *, maximum: int = 256) -> str:
     if not isinstance(value, str) or not value.strip() or "\x00" in value:
         raise ObserverValidationError("Expected nonempty text", path=path, code="wrong_shape")
+    try:
+        size = len(value.encode("utf-8"))
+    except UnicodeError as exc:
+        raise ObserverValidationError("Expected valid UTF-8 text", path=path, code="wrong_shape") from exc
+    if size > maximum:
+        raise ObserverValidationError(f"Text exceeds {maximum} bytes", path=path, code="capacity")
     return value
 
 
@@ -49,7 +55,7 @@ def _items(value: object, path: str, *, empty: bool = False) -> list[object]:
 def _patterns(value: object, path: str, *, empty: bool = False) -> tuple[str, ...]:
     result = []
     for index, item in enumerate(_items(value, path, empty=empty)):
-        pattern = _text(item, f"{path}[{index}]")
+        pattern = _text(item, f"{path}[{index}]", maximum=4096)
         segments = pattern.split("/")
         if (pattern.startswith(("/", "!")) or any(part in {"", ".", ".."} for part in segments)
                 or any(char in pattern for char in "[]\\") or any("**" in part and part != "**" for part in segments)):
@@ -63,7 +69,7 @@ def _source(value: object, path: str, base_dir: Path) -> SourceDef:
                                  "max_files", "max_file_bytes"})
     if data.get("type") != "file":
         raise ObserverValidationError("Only file sources are supported", path=path, code="unknown_type")
-    root = Path(_text(data.get("root"), path + ".root"))
+    root = Path(_text(data.get("root"), path + ".root", maximum=4096))
     # Absolute lexical roots retain symlink components for the no-follow scanner to reject.
     root = Path(os.path.abspath(base_dir / root))
     return SourceDef(
@@ -93,7 +99,7 @@ def _handler(value: object, path: str) -> HandlerDef:
     if data.get("type") != "session.notify" or data.get("target") != "current":
         raise ObserverValidationError("Only current-session notification is supported", path=path, code="unknown_type")
     return HandlerDef(_text(data.get("id"), path + ".id"), "session.notify", "current",
-                      _text(data.get("instruction"), path + ".instruction"))
+                      _text(data.get("instruction"), path + ".instruction", maximum=65536))
 
 
 def _route(value: object, path: str) -> RouteDef:
