@@ -21,10 +21,15 @@ class LocalServer:
         self.record = runtime.record
         self.identity: tuple[int, int] | None = None
         self.server: asyncio.AbstractServer | None = None
+        self.closing = False
         self.writers: set[asyncio.StreamWriter] = set()
         self.tasks: set[asyncio.Task[None]] = set()
 
     async def accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        if self.closing:
+            writer.close()
+            await writer.wait_closed()
+            return
         task = asyncio.current_task()
         assert task is not None
         self.tasks.add(task)
@@ -41,12 +46,15 @@ class LocalServer:
             await writer.wait_closed()
 
     async def close(self) -> None:
+        self.closing = True
         if self.server is not None:
             self.server.close()
-            await self.server.wait_closed()
-            self.server = None
         for writer in tuple(self.writers):
             writer.close()
+        if self.server is not None:
+            # Python >=3.12 waits for client transports too; close them first.
+            await self.server.wait_closed()
+            self.server = None
         if self.tasks:
             await asyncio.gather(*tuple(self.tasks), return_exceptions=True)
         path = self.record.address

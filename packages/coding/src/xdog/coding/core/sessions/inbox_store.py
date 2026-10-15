@@ -102,7 +102,7 @@ class InboxStore:
         self.sessions_dir = sessions_dir.absolute()
         self.root = root.absolute()
 
-    def _identity(self, session_id: str, cwd: Path | None = None) -> tuple[Path, str]:
+    def identity(self, session_id: str, cwd: Path | None = None) -> tuple[Path, str]:
         session_id = identifier(session_id)
         if self.sessions_dir.resolve() != self.sessions_dir:
             raise ValueError('Session directory must not contain symbolic links')
@@ -123,7 +123,7 @@ class InboxStore:
     @contextmanager
     def _locked(self, session_id: str, cwd: Path | None = None) -> Iterator[tuple[Path, Path, str]]:
         # Validate before creating any intake files for an unknown session.
-        self._identity(session_id, cwd)
+        self.identity(session_id, cwd)
         root = private_directory(self.root)
         directory = private_directory(root / identifier(session_id))
         for folder in FOLDERS:
@@ -134,7 +134,7 @@ class InboxStore:
         fd = private_open(directory / 'inbox.lock', os.O_CREAT | os.O_RDWR)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
-            working, branch = self._identity(session_id, cwd)
+            working, branch = self.identity(session_id, cwd)
             yield directory, working, branch
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
