@@ -62,6 +62,11 @@ class ChatLog(Transcript):
             self._append(component)
         component.update(preview, details)
 
+    def remove_session_input(self, identifier: str) -> None:
+        component = self._session_inputs.pop(identifier, None)
+        if component is not None and component in self.children:
+            self.remove_child(component)
+
     def add_tool(self, tool_name: str, arguments: dict[str, Any] | None = None) -> ToolExecutionComponent:
         """Add a tool execution component."""
         comp = ToolExecutionComponent(tool_name, arguments, self._theme)

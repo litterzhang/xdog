@@ -103,6 +103,7 @@ class NativeSessionEvents:
         self.initial_history = controller._async(lambda: capture_history(self.ui._session)).result(timeout=10)
         if sys.version_info < (3, 15):
             controller._async(self.runtime.open_endpoint).result(timeout=10)
+        controller._async(self.runtime.start_inbox_watch).result(timeout=10)
 
     def reserve_producer(self, name: str) -> Callable[[], None]:
         """Reserve non-turn callbacks before launching a worker; return its settlement receipt."""
@@ -258,7 +259,11 @@ class NativeSessionEvents:
         return False
 
     def display(self, event: SessionEvent) -> None:
-        if self.runtime is None or event.generation != self.runtime.controller.generation:
+        if (self.runtime is None or event.generation != self.runtime.controller.generation
+                or event.session_id != self.ui._session.session_id):
+            return
+        if event.kind == 'inbox_error':
+            self.ui._chat_log.add_system('Inbox refresh unavailable: ' + str(event.data))
             return
         ui = self.ui
         key = event.generation, event.request_id

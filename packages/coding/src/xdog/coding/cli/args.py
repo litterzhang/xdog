@@ -82,6 +82,8 @@ from xdog.coding.cli.session_picker import pick_session_command
     default=False,
     help="Interactively pick a session to resume.",
 )
+@click.option("--enqueue", is_flag=True, help="Persist input for explicit review, without running an agent.")
+@click.option("--message-id", default=None, help="Stable message identity for durable enqueue and safe retries.")
 @click.option("--acp", is_flag=True, help="Run standard stdio Agent Client Protocol.")
 @click.option("--session", "session_id", default=None, help="Send to an exact live session ID.")
 @click.option(
@@ -113,6 +115,8 @@ def cli(
     rpc: bool,
     acp: bool,
     session_id: str | None,
+    enqueue: bool,
+    message_id: str | None,
     verbose: bool,
     files: tuple[Path, ...],
 ) -> None:
@@ -120,6 +124,14 @@ def cli(
 
     Optionally pass FILES to include their contents in the initial context.
     """
+    if message_id is not None and not enqueue:
+        raise click.UsageError("--message-id requires --enqueue")
+    if enqueue:
+        if not session_id or not prompt or not message_id:
+            raise click.UsageError("--enqueue requires --session, --message-id and --prompt")
+        if any((acp, rpc, print_mode, resume, resume_id, pick_session, list_models, model, thinking_level,
+                permission_mode, working_dir, config_path, files)):
+            raise click.UsageError("--enqueue cannot combine with other modes or target configuration overrides")
     if session_id and resume_id:
         raise click.UsageError("--session cannot be combined with --resume-id")
     if acp and (rpc or print_mode or prompt or files or resume or resume_id or pick_session):
@@ -159,6 +171,7 @@ def cli(
     # Defer to the main entry-point for actual execution
     from xdog.coding.main import run_agent
 
+    enqueue_options: dict[str, Any] = {"enqueue": True, "message_id": message_id} if enqueue else {}
     run_agent(
         overrides=overrides,
         resume=resume,
@@ -171,6 +184,7 @@ def cli(
         rpc=rpc,
         acp=acp,
         session_id=session_id,
+        **enqueue_options,
         verbose=verbose,
         files=files,
     )

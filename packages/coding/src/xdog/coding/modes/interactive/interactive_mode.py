@@ -153,6 +153,8 @@ class _ArgumentJob:
 
 
 def _command_is_read_only(command: str, args: str) -> bool:
+    if command == "inbox":
+        return not args.strip() or args.split()[0] in {'list', 'show'}
     if command == "agents":
         return args.strip().partition(" ")[0] != "start"
     if command == "plan":
@@ -2843,13 +2845,20 @@ class InteractiveMode:
                     or snapshot.branch_id != self._session.session_data.active_branch):
                 self._chat_log.add_system('History view owner changed; stale snapshot discarded')
                 return
-            records, messages = snapshot.records, snapshot.messages
+            records, messages, inbox = snapshot.records, snapshot.messages, snapshot.inbox
         else:
             runtime = self._session.runtime
             store = runtime.controller.store if runtime is not None else InputStore(self._session)
             records = tuple(row for row in store.records() if row.branch_id == self._session.session_data.active_branch)
             messages = tuple(self._session.messages)
-        events.presenter.replay(records, messages)
+            inbox = ()
+            manager = getattr(self._session, 'session_manager', None)
+            if isinstance(getattr(manager, '_dir', None), Path) and isinstance(self._session.working_dir, Path):
+                from xdog.coding.core.inbox_commands import session_inbox
+                disk = session_inbox(self._session)
+                if (disk.root / self._session.session_id).exists():
+                    inbox = disk.records(self._session.session_id, self._session.working_dir)
+        events.presenter.replay(records, messages, inbox)
         for message in messages:
             if isinstance(message, UserMessage):
                 text = human_input_text(message)
@@ -2986,12 +2995,13 @@ class InteractiveMode:
             return
 
         self._editor.add_to_history(value)
+        parsed = parse_slash_command(value)
         session_events = getattr(self, "_session_events", None)
-        if session_events is not None:
+        if session_events is not None and (parsed is None or parsed[0] != 'inbox'):
             session_events.human_input()
 
-        # Check for slash commands
-        parsed = parse_slash_command(value)
+        # Inbox queries never grant credit; approvals grant only their selected IDs.
+        # Other human input retains the existing automatic-turn budget behavior.
         if parsed is not None:
             cmd, args = parsed
             self._handle_slash_command(cmd, args)
@@ -3478,6 +3488,10 @@ class InteractiveMode:
                     raise asyncio.CancelledError
                 self._command_loop_ref = asyncio.get_running_loop()
                 self._command_task = asyncio.current_task()
+            if command.mutating:
+                command_stamp = self._active_stamp
+                captured.permissions.set_request_handler(
+                    lambda request: self._put_turn_event('permission_request', stamp=command_stamp, request=request))
             try:
                 changes_history = command.mutating and command.name in {
                     "clear", "compact", "branch", "goto", "resume", "new",
@@ -3522,8 +3536,9 @@ class InteractiveMode:
 
         try:
             runtime = getattr(captured, 'runtime', None)
+            inbox_read = command.name == 'inbox' and not command.mutating
             payload = (runtime.controller.control(owned_command, name=command.name).result()
-                       if runtime is not None else asyncio.run(owned_command()))
+                       if runtime is not None and not inbox_read else asyncio.run(owned_command()))
         except asyncio.CancelledError:
             notice = ("; an admitted commit may have completed — inspect /transcript before retrying"
                       if command.name == "compact" else

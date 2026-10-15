@@ -35,7 +35,8 @@ class LocalServer:
         self.tasks.add(task)
         self.writers.add(writer)
         adapter = AcpAdapter(
-            CodingBackend(self.runtime.router, self.runtime.registry, fixed_session=self.record.session_id)
+            CodingBackend(self.runtime.router, self.runtime.registry, fixed_session=self.record.session_id,
+                          inbox_store=self.runtime.inbox.store)
         )
         try:
             await serve(adapter, reader, writer)

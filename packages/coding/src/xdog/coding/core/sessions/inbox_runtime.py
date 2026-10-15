@@ -46,6 +46,8 @@ class InboxCoordinator:
         self._workers: set[asyncio.Task[Any]] = set()
         self._retired = False
         self._last: tuple[InboxRecord, ...] | None = None
+        self._snapshot_sequence = 0
+        self._published_sequence = -1
 
     def is_submission(self, request_id: str) -> bool:
         return request_id in self._bindings
@@ -118,19 +120,27 @@ class InboxCoordinator:
 
     async def _snapshot(self) -> tuple[InboxRecord, ...]:
         await self._initialize()
-        rows = await self._disk(lambda: self.store.records(self.session_id, self.cwd))
+        sequence, rows = await self._read_snapshot()
         self._context()
-        self._publish(rows)
-        return rows
+        return self._publish(rows, sequence)
 
-    def _publish(self, rows: tuple[InboxRecord, ...]) -> None:
+    async def _read_snapshot(self) -> tuple[int, tuple[InboxRecord, ...]]:
+        self._snapshot_sequence += 1
+        sequence = self._snapshot_sequence
+        return sequence, await self._disk(lambda: self.store.records(self.session_id, self.cwd))
+
+    def _publish(self, rows: tuple[InboxRecord, ...], sequence: int) -> tuple[InboxRecord, ...]:
         controller = self.runtime.controller
         if (self._retired or controller.generation != self.generation
                 or self.runtime.session.session_id != self.session_id):
-            return
+            return rows
+        if sequence < self._published_sequence:
+            return self._last if self._last is not None else rows
+        self._published_sequence = sequence
         if rows != self._last:
             self._last = rows
             self.runtime.controller.publish('inbox_snapshot', rows)
+        return rows
 
     async def approve(self, message_ids: tuple[str, ...], *, peer_id: str) -> tuple[str, ...]:
         return await self._owner(lambda: self._review(message_ids, peer_id, retry=False))
@@ -252,7 +262,8 @@ class InboxCoordinator:
         await self._disk(lambda: self.store.finish(self.session_id, row.message.message_id,
             generation=self.generation, attempt_id=row.attempt_id, status=status, error=result.error[:1024]))
         self._bindings.pop(value.id, None)
-        self._publish(await self._disk(lambda: self.store.records(self.session_id, self.cwd)))
+        sequence, rows = await self._read_snapshot()
+        self._publish(rows, sequence)
 
     async def retire(self) -> None:
         await self._owner(self._retire)

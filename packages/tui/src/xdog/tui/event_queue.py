@@ -5,6 +5,7 @@ import queue
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import fields, is_dataclass, replace
+from pathlib import PurePath
 from types import MappingProxyType
 from typing import Any
 
@@ -25,7 +26,7 @@ def _freeze(value: Any) -> Any:
             raise TypeError("UI events require frozen dataclasses")
         snapshot = {field.name: _freeze(getattr(value, field.name)) for field in fields(value) if field.init}
         return replace(value, **snapshot)
-    if value is None or isinstance(value, (str, bytes, int, float, bool)):
+    if value is None or isinstance(value, (str, bytes, int, float, bool, PurePath)):
         return value
     raise TypeError(f"Unsupported UI event payload: {type(value).__name__}")
 

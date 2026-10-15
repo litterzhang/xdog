@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from concurrent.futures import Future
 from typing import TYPE_CHECKING, Any
 
@@ -53,6 +54,7 @@ class SessionRuntime:
         self._started = False
         self._closed: Future[None] | None = None
         self.disposing = False
+        self._inbox_watch: asyncio.Task[None] | None = None
 
     def retain_lease(self, lease: SessionLease) -> None:
         """A navigated-away writer stays exclusive until all control cleanup settles."""
@@ -79,7 +81,35 @@ class SessionRuntime:
             finally:
                 await self.session._aclose_resources()
 
+    async def start_inbox_watch(self) -> None:
+        if self._closed is None and (self._inbox_watch is None or self._inbox_watch.done()):
+            self._inbox_watch = asyncio.create_task(self._watch_inbox())
+
+    async def _watch_inbox(self) -> None:
+        error = ''
+        while self._closed is None and not self.controller._closing:
+            await asyncio.sleep(0.5)
+            if self._closed is not None or self.controller._closing:
+                break
+            try:
+                await self.inbox.snapshot()
+                error = ''
+            except (OSError, ValueError, RuntimeError) as exc:
+                if self.record.generation != self.controller.generation:
+                    continue  # A context rebind is still settling, not a new target to follow.
+                if str(exc) != error:
+                    error = str(exc)
+                    self.controller.publish('inbox_error', error)
+
+    async def _stop_inbox_watch(self) -> None:
+        task, self._inbox_watch = self._inbox_watch, None
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
     async def open_endpoint(self) -> None:
+        if sys.version_info >= (3, 15):
+            return
         async with self._endpoint_lock:
             if self.server is None:
                 from xdog.coding.acp.server import serve_local
@@ -146,6 +176,7 @@ class SessionRuntime:
                     closed.set_exception(error)
 
         async def stop_endpoint() -> None:
+            await self._stop_inbox_watch()
             if self.server is not None:
                 await self.server.close()
                 self.server = None

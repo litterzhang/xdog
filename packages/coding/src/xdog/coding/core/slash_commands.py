@@ -29,6 +29,7 @@ class CommandResult:
 
 # Registry of built-in slash commands: name → description
 BUILTIN_COMMANDS: dict[str, str] = {
+    "inbox": "Read/review durable input: /inbox [list [OFFSET]|show ID|approve ID [ID...]|retry ID]",
     "help": "Search terminal commands: /help [QUERY]",
     "artifact": "Load a checksummed command artifact read-only: /artifact PATH",
     "terminal-input": "Inspect/restore/discard original rejected terminal input",
@@ -107,6 +108,9 @@ async def execute_command(
         result = await session.extension_command(cmd, args)
         return (CommandResult(output=result.summary, rich_output=result) if isinstance(result, ExtensionCommandResult)
                 else CommandResult(output=result))
+    if cmd == "inbox":
+        from xdog.coding.core.inbox_commands import inbox_command
+        return await inbox_command(session, args)
     if cmd == 'tools':
         import asyncio
         import json

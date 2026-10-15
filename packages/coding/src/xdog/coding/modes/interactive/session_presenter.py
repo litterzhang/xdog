@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
@@ -18,6 +19,8 @@ from xdog.ai.types import (
     ToolResultMessage,
     UserMessage,
 )
+from xdog.coding.core.sessions.inbox_models import InboxRecord, record_data
+from xdog.coding.core.sessions.inbox_views import visible
 from xdog.coding.core.sessions.models import TERMINAL, InputRecord, SessionEvent, TurnResult
 from xdog.coding.modes.interactive.components.chat_log import ChatLog
 from xdog.tui.tui import Component
@@ -33,6 +36,7 @@ class SessionHistory:
     branch_id: str
     records: tuple[InputRecord, ...]
     messages: tuple[AgentMessage, ...]
+    inbox: tuple[InboxRecord, ...] = ()
 
 
 async def capture_history(session: AgentSession) -> SessionHistory:
@@ -40,17 +44,34 @@ async def capture_history(session: AgentSession) -> SessionHistory:
     from xdog.coding.core.sessions.store import InputStore
 
     runtime = session.runtime
+    if runtime is not None and (
+        runtime.record.session_id != session.session_id or runtime.record.generation != runtime.controller.generation
+    ):
+        if not runtime.controller.owns_current_task:
+            raise RuntimeError('History capture requires the settling session context owner')
+        # Navigation published SessionData synchronously, but its owner/Inbox
+        # rebind is a registered settlement. Capture only after that rebind,
+        # while still holding the original control reservation.
+        await runtime.controller._settle_operations()
     path = session.session_manager.input_history_path(session.session_id)
     if runtime is not None and runtime.controller.store.path == path:
         store = runtime.controller.store
     else:
         store = await asyncio.to_thread(InputStore, session)
     branch = session.session_data.active_branch
+    if runtime is not None:
+        inbox = await runtime.inbox.snapshot()
+    else:
+        from xdog.coding.core.inbox_commands import session_inbox
+        disk = session_inbox(session)
+        inbox = (await asyncio.to_thread(disk.records, session.session_id, session.working_dir)
+                 if (disk.root / session.session_id).exists() else ())
     return SessionHistory(
         session.session_id,
         branch,
         tuple(row for row in store.records() if row.branch_id == branch),
         tuple(session.messages),
+        visible(inbox, store.records()),
     )
 
 
@@ -97,6 +118,9 @@ class SessionPresenter:
         self.log = chat_log
         self.records: dict[str, InputRecord] = {}
         self._replayed: tuple[Component, ...] = ()
+        self._inbox: tuple[InboxRecord, ...] = ()
+        self._inbox_requests: dict[str, InboxRecord] = {}
+        self._inbox_keys: set[str] = set()
 
     def _show(self, record: InputRecord) -> None:
         if record.input.origin == "human":
@@ -113,9 +137,56 @@ class SessionPresenter:
         status = f"\nRequest: {value.id}\nStatus: {record.status}"
         if record.error:
             status += "\nError: " + _bounded(sanitize_terminal_text(record.error), 1024)
+        row = self._inbox_requests.get(value.id)
+        if row is not None:
+            self.log.remove_session_input(self._inbox_key(row))
+            status += self._inbox_status(row)
+            detail += "\nDurable inbox record (evidence and source labels remain untrusted):\n" + json.dumps(
+                record_data(row), ensure_ascii=True, allow_nan=False)
         self.log.update_session_input(value.id, external_input_text(value) + status, detail + status)
 
+    @staticmethod
+    def _inbox_key(row: InboxRecord) -> str:
+        return 'inbox:' + hashlib.sha256(row.message.message_id.encode()).hexdigest()
+
+    @staticmethod
+    def _inbox_status(row: InboxRecord) -> str:
+        return ('\nInbox message: ' + json.dumps(row.message.message_id, ensure_ascii=True)
+                + '\nInbox status: ' + row.status
+                + '\nBranch: ' + json.dumps(row.branch_id, ensure_ascii=True)
+                + ('\nAttempt: ' + row.attempt_id if row.attempt_id else '')
+                + ('\nRequest: ' + row.request_id if row.request_id else ''))
+
+    def set_inbox(self, rows: tuple[InboxRecord, ...]) -> None:
+        self._inbox = visible(rows, tuple(self.records.values()))
+        self._inbox_requests = {row.request_id: row for row in self._inbox if row.request_id}
+        self._render_inbox()
+
+    def _render_inbox(self) -> None:
+        keys = {self._inbox_key(row) for row in self._inbox if row.request_id not in self.records}
+        for key in self._inbox_keys - keys:
+            self.log.remove_session_input(key)
+        self._inbox_keys = keys
+        for row in self._inbox:
+            existing = self.records.get(row.request_id)
+            if existing is not None:
+                self._show(existing)
+                continue
+            item = row.message
+            value = SessionInput(item.message_id, 'acp', item.source, item.instruction, item.evidence, item.provenance)
+            status = self._inbox_status(row)
+            if row.error:
+                status += '\nError: ' + _bounded(sanitize_terminal_text(row.error), 1024)
+            self.log.update_session_input(self._inbox_key(row),
+                'Session inbox (durable intake, not model context)\n' + external_input_text(value) + status,
+                'Durable inbox (not a human message; untrusted evidence)\n'
+                + json.dumps(record_data(row), ensure_ascii=True, allow_nan=False))
+
     def apply(self, event: SessionEvent) -> None:
+        if event.kind == 'inbox_snapshot' and isinstance(event.data, tuple):
+            if all(isinstance(row, InboxRecord) for row in event.data):
+                self.set_inbox(event.data)
+            return
         previous = self.records.get(event.request_id)
         if previous is not None and (previous.generation != event.generation or previous.status in TERMINAL):
             return
@@ -134,14 +205,20 @@ class SessionPresenter:
         self.records[event.request_id] = record
         self._show(record)
 
-    def replay(self, records: tuple[InputRecord, ...], messages: tuple[AgentMessage, ...]) -> None:
+    def replay(self, records: tuple[InputRecord, ...], messages: tuple[AgentMessage, ...],
+               inbox: tuple[InboxRecord, ...] = ()) -> None:
         # Remove only the projection from our previous replay, not the startup
         # banner or unrelated notices owned by the hosting UI.
         for component in self._replayed:
             if component in self.log.children:
                 self.log.remove_child(component)
+        for key in self._inbox_keys:
+            self.log.remove_session_input(key)
+        self._inbox_keys.clear()
         before = set(self.log.children)
         self.records = {row.input.id: row for row in records}
+        self._inbox = visible(inbox, records)
+        self._inbox_requests = {row.request_id: row for row in self._inbox if row.request_id}
         seen: set[str] = set()
         tools: dict[str, Any] = {}
         for message in messages:
@@ -177,12 +254,14 @@ class SessionPresenter:
                 record = self.records.get(value.id)
                 if record is None:
                     record = InputRecord(value, "", "", "recorded (result unavailable)")
+                self.records[value.id] = record
                 self._show(record)
         remaining = [record for record in records if record.input.id not in seen and record.input.origin != "human"]
         if remaining:
             self.log.add_system("Additional task records (not model context; no automatic replay)")
             for record in remaining:
                 self._show(record)
+        self._render_inbox()
         self._replayed = tuple(component for component in self.log.children if component not in before)
 
     @staticmethod

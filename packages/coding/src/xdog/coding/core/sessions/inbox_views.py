@@ -1,0 +1,36 @@
+"""Read-only, bounded JSON projections shared by terminal, RPC and CLI clients."""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from xdog.coding.core.sessions.inbox_models import RESOLVED, EnqueueReceipt, InboxRecord
+from xdog.coding.core.sessions.models import InputRecord
+
+
+def receipt_data(receipt: EnqueueReceipt) -> dict[str, Any]:
+    row = receipt.record
+    return {'session_id': row.message.session_id, 'message_id': row.message.message_id,
+            'status': 'duplicate' if receipt.duplicate else 'queued',
+            'message_state': row.status, 'branch_id': row.branch_id}
+
+
+def summary(row: InboxRecord) -> dict[str, Any]:
+    evidence = json.dumps(row.message.evidence[:3], ensure_ascii=True, allow_nan=False)
+    return {'message_id': row.message.message_id, 'status': row.status, 'branch_id': row.branch_id,
+            'attempt_id': row.attempt_id, 'request_id': row.request_id,
+            'source': row.message.source, 'instruction': row.message.instruction[:2048],
+            'evidence_count': len(row.message.evidence),
+            'evidence_preview': evidence[:3072],
+            'truncated': len(row.message.instruction) > 2048 or len(row.message.evidence) > 3 or len(evidence) > 3072,
+            'untrusted': True}
+
+
+def visible(records: tuple[InboxRecord, ...], inputs: tuple[InputRecord, ...] = ()) -> tuple[InboxRecord, ...]:
+    """Every unresolved message and at most 16 completed entries; input history supplies recency."""
+    order = {row.input.id: index for index, row in enumerate(inputs)}
+    pending = [row for row in records if row.status not in RESOLVED]
+    terminal = [row for row in records if row.status in RESOLVED]
+    terminal.sort(key=lambda row: (order.get(row.request_id, -1), row.message.message_id), reverse=True)
+    return tuple(pending + terminal[:16])

@@ -29,6 +29,8 @@ def run_agent(
     rpc: bool = False,
     acp: bool = False,
     session_id: str | None = None,
+    enqueue: bool = False,
+    message_id: str | None = None,
     verbose: bool = False,
     files: tuple[Path, ...] = (),
 ) -> None:
@@ -36,6 +38,21 @@ def run_agent(
 
     Called by :func:`coding.cli.args.cli` after argument parsing.
     """
+    if enqueue:
+        if (not session_id or not message_id or not prompt or any((acp, rpc, resume, resume_id, print_mode,
+                                                                 working_dir, config_path, overrides, files))):
+            raise ValueError("Enqueue requires exact session/message/instruction without runtime overrides")
+        import json
+
+        from xdog.coding.cli.enqueue import enqueue as persist
+        try:
+            print(json.dumps(persist(session_id, message_id, prompt), ensure_ascii=True, allow_nan=False))
+        except (ValueError, OSError) as exc:
+            print(str(exc), file=sys.stderr)
+            raise SystemExit(1) from exc
+        return
+    if message_id is not None:
+        raise ValueError("message_id requires enqueue")
     if acp or session_id is not None:
         if sys.version_info >= (3, 15):
             raise RuntimeError("ACP currently requires Python 3.12–3.14")

@@ -7,6 +7,8 @@ from typing import Any
 
 from xdog.agent.events import EventMetadata
 from xdog.agent.session_input import SessionInput, input_data
+from xdog.coding.core.sessions.inbox_models import InboxRecord
+from xdog.coding.core.sessions.inbox_views import summary, visible
 from xdog.coding.core.sessions.models import InputRecord, SessionEvent, TurnResult
 
 
@@ -15,6 +17,8 @@ class RpcSessionEvents:
         self.session, self.runtime, self.extensions, self.emit = session, runtime, extensions, emit
         self.scopes: dict[str, Any] = {}
         self.external: set[str] = set()
+        self._ready = False
+        self._initial_inbox: SessionEvent | None = None
         self.unsubscribe = runtime.controller.subscribe(self.receive)
         runtime.controller.before_turn = self.prepare
         runtime.controller.after_turn = self.finished
@@ -52,7 +56,29 @@ class RpcSessionEvents:
             producer_outcome(result.status == 'succeeded')
             await manager.__aexit__(None, None, None)
 
+    def ready(self) -> None:
+        self._ready = True
+        event, self._initial_inbox = self._initial_inbox, None
+        if event is not None:
+            self.receive(event)
+
     def receive(self, event: SessionEvent) -> None:
+        if event.session_id != self.session.session_id or event.generation != self.runtime.controller.generation:
+            return
+        if event.kind == 'inbox_snapshot' and isinstance(event.data, tuple):
+            if not all(isinstance(row, InboxRecord) for row in event.data):
+                return
+            if not self._ready:
+                self._initial_inbox = event
+                return
+            rows = visible(event.data, self.runtime.controller.store.records())
+            self.emit({'type': 'inbox_snapshot', 'session_id': event.session_id, 'generation': event.generation,
+                       'messages': [summary(row) for row in rows], 'untrusted': True})
+            return
+        if event.kind == 'inbox_error':
+            self.emit({'type': 'inbox_error', 'session_id': event.session_id, 'generation': event.generation,
+                       'message': str(event.data)})
+            return
         if isinstance(event.data, InputRecord):
             if event.data.input.origin == 'human':
                 return

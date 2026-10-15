@@ -15,7 +15,9 @@ from xdog.agent.acp.events import EventProjector
 from xdog.agent.session_input import SessionInput
 from xdog.ai.types import AssistantMessage, TextContent, UserMessage
 from xdog.coding.acp.client import AcpAttachment
+from xdog.coding.acp.ingress_backend import IngressBackend
 from xdog.coding.core.sessions.controller import SessionController
+from xdog.coding.core.sessions.inbox_store import InboxStore
 from xdog.coding.core.sessions.models import SessionEvent, Submission
 from xdog.coding.core.sessions.ownership import OwnerRegistry, runtime_directory
 from xdog.coding.core.sessions.router import SessionRouter
@@ -26,7 +28,7 @@ if TYPE_CHECKING:
 
 
 class CodingBackend:
-    extensions = {"session_info": 1, "resume": 1}
+    extensions = {"session_info": 1, "resume": 1, "enqueue": 1, "inbox_status": 1}
 
     def __init__(
         self,
@@ -35,12 +37,15 @@ class CodingBackend:
         *,
         fixed_session: str | None = None,
         factory: Callable[[Path], AgentSession] | None = None,
+        inbox_store: InboxStore | None = None,
     ) -> None:
         from xdog.coding.config import get_sessions_dir
 
         self.router = router or SessionRouter()
         self.registry = registry or OwnerRegistry(runtime_directory(get_sessions_dir()))
         self.fixed_session, self.factory = fixed_session, factory
+        from xdog.coding.config import get_inbox_dir
+        self._inbox = IngressBackend(inbox_store or InboxStore(get_sessions_dir(), get_inbox_dir()), self.registry)
         self._owned: dict[str, tuple[str, SessionRuntime, Any]] = {}
         self._remote: dict[tuple[str, str], AcpAttachment] = {}
         self._refs: dict[tuple[str, str], SessionRef] = {}
@@ -238,6 +243,7 @@ class CodingBackend:
             await asyncio.wrap_future(running[0].cancel(running[1].id, peer_id=peer.id))
 
     async def disconnect(self, peer: Peer) -> None:
+        await self._inbox.disconnect(peer)
         controllers = {row[0] for key, row in self._running.items() if key[0] == peer.id}
         for controller in controllers:
             await asyncio.wrap_future(controller.disconnect(peer.id))
@@ -255,6 +261,12 @@ class CodingBackend:
                 del self._refs[key]
 
     async def extension(self, peer: Peer, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if method in {'xdog/enqueue', 'xdog/inbox_status'}:
+            target = params.get('session_id')
+            if not isinstance(target, str):
+                raise invalid('Expected explicit session_id')
+            self._target(target)
+            return await self._inbox.extension(peer, method, params)
         session_id = params.get("session_id")
         if not isinstance(session_id, str) or set(params) != {"session_id"}:
             raise invalid("Expected a bound session_id")

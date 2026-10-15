@@ -87,3 +87,18 @@ def test_drain_does_not_swallow_handler_errors() -> None:
 def test_drain_rejects_nonpositive_budgets(limits) -> None:
     with pytest.raises(ValueError):
         EventQueue().drain(lambda event: None, **limits)
+
+
+def test_immutable_paths_roundtrip_inside_frozen_domain_snapshots(tmp_path):
+    @dataclass(frozen=True)
+    class Snapshot:
+        path: object
+        arguments: dict
+
+    queue = EventQueue()
+    source = {'names':['before']}
+    queue.put({'snapshot':Snapshot(tmp_path,source)})
+    source['names'].append('after')
+    local = thaw_event(queue.get_nowait())['snapshot']
+    assert local.path==tmp_path
+    assert local.arguments=={'names':['before']}

@@ -80,12 +80,15 @@ async def run_rpc_mode(session: AgentSession) -> int:
     extensions = RpcExtensions(session, _emit, navigation=navigation, send=output.send)
     session.permissions.set_request_handler(_permission_request)
     turn_task: asyncio.Task[None] | None = None
+    from xdog.coding.modes.rpc.inbox import RpcInbox
     from xdog.coding.modes.rpc.session_events import RpcSessionEvents
     runtime = session.enable_runtime(bound=True) if isinstance(session, AgentSession) else None
     session_events = None
+    inbox = RpcInbox(session, navigation, _emit) if runtime is not None else None
     if runtime is not None:
         runtime.start()
         session_events = RpcSessionEvents(session, runtime, extensions, _emit)
+        await runtime.inbox.snapshot()
         await runtime.open_endpoint()
     _emit({
         "type": "ready",
@@ -97,12 +100,17 @@ async def run_rpc_mode(session: AgentSession) -> int:
                          "session_checkpoint_targets": 1, "transcript_sources": 1, "transcript_canonical": 1,
                          "transient_events": 1, "terminal_input": 1, "terminal_release_input": 1,
                          "rpc_async_output": int(output.fd is not None),
-                         "acp": int(runtime is not None), "session_routing": int(runtime is not None)},
+                         "acp": int(runtime is not None and sys.version_info < (3, 15)),
+                         "session_inbox": int(runtime is not None), "session_routing": int(runtime is not None)},
         "session_revision": navigation.revision,
         "max_input_frame_bytes": MAX_RPC_LINE_BYTES,
         "max_output_backlog_bytes": MAX_OUTPUT_BYTES,
     })
 
+    if session_events is not None:
+        session_events.ready()
+    if runtime is not None:
+        await runtime.start_inbox_watch()
     try:
         while True:
             transient.bind()
@@ -154,6 +162,18 @@ async def run_rpc_mode(session: AgentSession) -> int:
             turn_running = (turn_task is not None and not turn_task.done()
                             or extensions.prompting or runtime is not None and runtime.controller.busy)
 
+            if cmd_type in {'inbox', 'inbox_cancel'}:
+                try:
+                    if inbox is None:
+                        raise RuntimeError('Inbox requires an active session runtime')
+                    if cmd_type == 'inbox':
+                        inbox.start(cmd)
+                    else:
+                        inbox.cancel(cmd)
+                except (ValueError, RuntimeError, OSError) as exc:
+                    _emit({'type': 'error', 'action': cmd_type, 'request_id': cmd.get('request_id'),
+                           'message': str(exc)})
+                continue
             if cmd_type in {'parent_draft_control', 'parent_draft_cancel'}:
                 try:
                     if cmd_type == 'parent_draft_control':
@@ -454,6 +474,8 @@ async def run_rpc_mode(session: AgentSession) -> int:
             except (ValueError, RuntimeError, OSError) as exc:
                 _emit({'type': 'error', 'action': cmd_type, 'message': str(exc)})
     finally:
+        if inbox is not None:
+            await inbox.aclose()
         if session_events is not None:
             session_events.close()
         extensions.abort_prompt()
