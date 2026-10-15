@@ -95,6 +95,11 @@ def get_sessions_dir() -> Path:
     return get_data_dir() / "sessions"
 
 
+def get_inbox_dir() -> Path:
+    """Durable reviewed input, separate from session history and live endpoints."""
+    return get_data_dir() / "inbox"
+
+
 def get_extensions_dir() -> Path:
     """Extensions directory inside data dir."""
     return get_data_dir() / "extensions"
