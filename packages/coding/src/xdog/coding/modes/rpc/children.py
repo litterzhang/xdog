@@ -20,6 +20,7 @@ from xdog.coding.config import get_config_dir
 from xdog.coding.core.agent_session import AgentSession
 from xdog.coding.core.child_agents import CodingChildren
 from xdog.coding.core.permissions import PermissionDecision, PermissionRequest
+from xdog.coding.core.sessions.operations import run_control
 from xdog.coding.modes.rpc.custom_delivery import CustomDelivery
 from xdog.coding.modes.rpc.images import RpcImages
 from xdog.coding.modes.rpc.navigation import RpcNavigation
@@ -597,7 +598,7 @@ class RpcChildren:
                 result['terminal_registry'] = owner.extensions.terminal_metadata(self.lease)
             if not self.closed:
                 self.emit(result)
-        task = asyncio.create_task(run())
+        task = asyncio.create_task(run_control(self.session, run, name="rpc-children"))
         self.jobs[key] = task, envelope, owner
         def done(completed: asyncio.Task[None]) -> None:
             self.jobs.pop(key, None)
@@ -1048,7 +1049,7 @@ class RpcChildren:
                     self.starting = False
             if not self.closed:
                 self.emit(reply)
-        job = asyncio.create_task(run())
+        job = asyncio.create_task(run_control(self.session, run, name="rpc-children"))
         self.jobs[key] = job, envelope, owner
         def done(completed: asyncio.Task[None]) -> None:
             self.jobs.pop(key, None)

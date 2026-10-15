@@ -16,6 +16,7 @@ from xdog.tui.utils import strip_ansi
 
 def app(working_dir: str = "/workspace") -> InteractiveMode:
     session = MagicMock()
+    session.runtime = None
     session.children.supervisor.aclose = AsyncMock()
     session.agent.subscribe.return_value = lambda: None
     session.agent.options.thinking = "medium"
@@ -25,7 +26,11 @@ def app(working_dir: str = "/workspace") -> InteractiveMode:
     session.messages = []
     session.working_dir = working_dir
     session.context_limit = 1000
-    return InteractiveMode(session)
+    ui = InteractiveMode(session)
+    # Presentation tests use a mock session; real owner lifecycle is exercised
+    # by test_native_session_queue and the real-session EOF regression below.
+    ui._session_events.start = lambda: None
+    return ui
 
 
 def plain(component) -> str:

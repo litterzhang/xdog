@@ -13,6 +13,7 @@ from xdog.agent.extensions.command_result import ExtensionCommandResult
 from xdog.agent.extensions.dialogs import validate_answer
 from xdog.agent.supervision import settle_on
 from xdog.coding.core.agent_session import AgentSession
+from xdog.coding.core.sessions.operations import run_control
 from xdog.coding.modes.rpc.custom_delivery import CustomDelivery
 
 if TYPE_CHECKING:
@@ -1039,7 +1040,7 @@ class RpcExtensions:
                     await self.context_messages.finish_command(successful[0])
                 finally:
                     await finish_tools()
-        self.task = asyncio.create_task(owned_run())
+        self.task = asyncio.create_task(run_control(self.session, owned_run, name="rpc-extensions"))
         def done(task: asyncio.Task[None]) -> None:
             if task.cancelled() and not admitted[0] and not self.closed:
                 self.emit({'type': 'extension_result', 'request_id': key, 'session_id': captured_session,

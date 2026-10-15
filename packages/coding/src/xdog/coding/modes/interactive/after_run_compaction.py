@@ -20,6 +20,7 @@ class _Producer:
     completed: bool = False
     worker_success: bool = False
     applying: bool = False
+    settled: bool = False
 
 
 class NativeAfterRunCompaction:
@@ -42,13 +43,18 @@ class NativeAfterRunCompaction:
     def worker_finished(self, generation: int, success: bool) -> None:
         if self.current is not None and self.current.generation == generation:
             self.current.worker_success = success
+            self.current.settled = True
+
+    def _running(self) -> bool:
+        runtime = getattr(self.ui._session, "runtime", None)
+        return bool(self.ui._worker_active or runtime is not None and runtime.controller.current_request is not None)
 
     async def request(self, extension: str, dialog: dict[str, Any]) -> bool:
         producer = self.current
         lease = current_invocation()
         ui = self.ui
         if (producer is None or lease is None or lease.child_id or lease.session_id != producer.session.session_id
-                or not ui._worker_active or producer.thread is None or producer.session._compacting):
+                or not self._running() or producer.session._compacting):
             return False
 
         tool_revision = producer.session.agent.tool_selection_revision
@@ -67,7 +73,7 @@ class NativeAfterRunCompaction:
             return await producer.session.extension_dialogs.ask(name, projected) if alive() else False
 
         return await self.queue.reviewed(extension, dialog, producer=producer, ask=ask, alive=alive,
-            settled=lambda: not producer.thread.is_alive(),
+            settled=lambda: producer.settled,
             successful=lambda: producer.completed and producer.worker_success)
 
     def poll(self) -> None:

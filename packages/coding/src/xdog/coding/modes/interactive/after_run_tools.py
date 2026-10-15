@@ -18,8 +18,8 @@ class NativeAfterRunTools:
         ui = self.ui
         producer = ui._after_run_compaction.current  # Observation only; no compaction grant is borrowed.
         lease = current_invocation()
-        if (producer is None or lease is None or lease.child_id or not ui._worker_active
-                or producer.thread is None or lease.session_id != producer.session.session_id):
+        if (producer is None or lease is None or lease.child_id or not ui._after_run_compaction._running()
+                or lease.session_id != producer.session.session_id):
             return False
         session, agent = producer.session, producer.agent
         current = snapshot(agent, session.session_id)
@@ -37,7 +37,7 @@ class NativeAfterRunTools:
         # The wrapper owns its own applying bit: another after-run action cannot
         # make this selection survive that action's source/cancel-epoch change.
         return await self.queue.reviewed(extension, dialog, producer=(producer, applying), ask=ask, current=current,
-            alive=alive, settled=lambda: not producer.thread.is_alive(),
+            alive=alive, settled=lambda: producer.settled,
             successful=lambda: producer.completed and producer.worker_success)
 
     def poll(self) -> None:

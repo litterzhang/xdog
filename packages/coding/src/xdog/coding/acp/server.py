@@ -18,6 +18,8 @@ if TYPE_CHECKING:
 class LocalServer:
     def __init__(self, runtime: SessionRuntime) -> None:
         self.runtime = runtime
+        self.record = runtime.record
+        self.identity: tuple[int, int] | None = None
         self.server: asyncio.AbstractServer | None = None
         self.writers: set[asyncio.StreamWriter] = set()
         self.tasks: set[asyncio.Task[None]] = set()
@@ -28,7 +30,7 @@ class LocalServer:
         self.tasks.add(task)
         self.writers.add(writer)
         adapter = AcpAdapter(
-            CodingBackend(self.runtime.router, self.runtime.registry, fixed_session=self.runtime.record.session_id)
+            CodingBackend(self.runtime.router, self.runtime.registry, fixed_session=self.record.session_id)
         )
         try:
             await serve(adapter, reader, writer)
@@ -47,12 +49,13 @@ class LocalServer:
             writer.close()
         if self.tasks:
             await asyncio.gather(*tuple(self.tasks), return_exceptions=True)
-        path = self.runtime.record.address
+        path = self.record.address
         if path.exists():
             info = path.lstat()
-            if stat.S_ISSOCK(info.st_mode) and info.st_uid == os.getuid():
+            if (stat.S_ISSOCK(info.st_mode) and info.st_uid == os.getuid()
+                    and (info.st_dev, info.st_ino) == self.identity):
                 path.unlink()
-        self.runtime.registry.remove(self.runtime.record)
+        self.runtime.registry.remove(self.record)
 
 
 async def serve_local(runtime: SessionRuntime) -> LocalServer:
@@ -69,7 +72,10 @@ async def serve_local(runtime: SessionRuntime) -> LocalServer:
     try:
         result.server = await asyncio.start_unix_server(result.accept, path=str(path), limit=1024 * 1024)
         os.chmod(path, 0o600)
+        info = path.lstat()
+        result.identity = info.st_dev, info.st_ino
         runtime.registry.publish(runtime.record)
+        runtime.server = result
         return result
     except BaseException:
         await result.close()

@@ -55,7 +55,9 @@ from xdog.coding.core.system_prompt import build_system_prompt
 if TYPE_CHECKING:
     from xdog.coding.core.external_events.binding import ExternalEventBinding
     from xdog.coding.core.session_staging import StagedExtensions
+    from xdog.coding.core.sessions.controller import SessionController
     from xdog.coding.core.sessions.ownership import SessionLease
+    from xdog.coding.core.sessions.runtime import SessionRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +69,18 @@ R = TypeVar("R")
 def _idle_change(method: Callable[Concatenate["AgentSession", P], R]) -> Callable[Concatenate["AgentSession", P], R]:
     @wraps(method)
     def wrapped(self: AgentSession, /, *args: P.args, **kwargs: P.kwargs) -> R:
+        runtime = self.runtime
+        if runtime is not None and not runtime.controller.owns_current_task:
+            async def owned() -> R:
+                return wrapped(self, *args, **kwargs)
+            try:
+                same_loop = asyncio.get_running_loop() is runtime.controller._loop
+            except RuntimeError:
+                same_loop = False
+            if same_loop:
+                raise RuntimeError("Session controls must be submitted to the session owner")
+            return runtime.controller.control(owned, name=method.__name__).result()
+        before_scope = (self.session_id, self.session_data.active_branch)
         if self._tool_selection_retiring:
             raise RuntimeError("Tool retirement persistence owns this session")
         if self._compacting:
@@ -98,6 +112,9 @@ def _idle_change(method: Callable[Concatenate["AgentSession", P], R]) -> Callabl
                 self._context_changes -= 1
                 if self.external_events is not None:
                     self.external_events.refresh_owner()
+                if (self._context_changes == 0 and self.runtime is not None
+                        and before_scope != (self.session_id, self.session_data.active_branch)):
+                    self.runtime.context_changed()
     return wrapped
 
 
@@ -134,6 +151,10 @@ class AgentSession:
     handled_feedback: list[str] = field(default_factory=list, init=False)
     _base_input_transform: InputTransformFn | None = field(default=None, init=False, repr=False)
     external_events: ExternalEventBinding | None = field(default=None, init=False, repr=False)
+    runtime: SessionRuntime | None = field(default=None, init=False, repr=False)
+    _sdk_controller: SessionController | None = field(default=None, init=False, repr=False)
+    _sdk_users: int = field(default=0, init=False, repr=False)
+    _sdk_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _lease: SessionLease | None = field(default=None, init=False, repr=False)
     _pending_lease: SessionLease | None = field(default=None, init=False, repr=False)
     _unsubscribe: Any = field(default=None, init=False, repr=False)
@@ -578,8 +599,51 @@ class AgentSession:
 
     async def send_message(self, user_text: str, *, images: tuple[ImageContent, ...] = (),
                            input_origin: str = "user") -> AssistantMessage | None:
-        """Compatibility SDK entry; modes migrate to the shared controller."""
-        return await self._execute_message(user_text, images=images, input_origin=input_origin)
+        """Submit through the same owner used by ACP and native modes."""
+        from xdog.agent.session_input import SessionInput
+        from xdog.coding.core.sessions.controller import SessionController
+        if self.runtime is not None:
+            controller = self.runtime.controller
+            temporary = False
+        else:
+            with self._sdk_lock:
+                if self._sdk_controller is None:
+                    self._sdk_controller = SessionController(self, bound=False)
+                    self._sdk_controller.start()
+                controller = self._sdk_controller
+                self._sdk_users += 1
+            temporary = True
+        try:
+            # A trusted control operation may run a turn under its existing
+            # reservation, but a tool cannot recursively start another model loop.
+            if controller.owns_current_task:
+                if not self.agent.is_idle:
+                    raise RuntimeError("Cannot recursively prompt an active agent")
+                return await self._execute_message(user_text, images=images, input_origin=input_origin)
+            value = SessionInput(uuid.uuid4().hex, "human" if input_origin == "user" else "automatic",
+                                 "coding", user_text if user_text.strip() else "[Image/context input]", (), {})
+            ticket = controller.submit(value, peer_id="local-sdk", images=images,
+                                       input_origin=input_origin, raw_text=user_text)
+            try:
+                await asyncio.wrap_future(ticket.accepted)
+                result = await asyncio.wrap_future(ticket.result)
+            except asyncio.CancelledError:
+                await asyncio.wrap_future(controller.cancel(ticket.id, peer_id="local-sdk", wait=True))
+                raise
+            if result.cause is not None:
+                raise result.cause
+            return result.response
+        finally:
+            if temporary:
+                with self._sdk_lock:
+                    self._sdk_users -= 1
+                    last = self._sdk_users == 0
+                    if last and self._sdk_controller is controller:
+                        # Retire before yielding to cleanup. A new caller must
+                        # not attach to a controller already closing its loop.
+                        self._sdk_controller = None
+                if last:
+                    await asyncio.wrap_future(controller.close())
 
     async def _execute_message(self, user_text: str, *, images: tuple[ImageContent, ...] = (),
                            input_origin: str = "user") -> AssistantMessage | None:
@@ -1434,6 +1498,19 @@ class AgentSession:
             await self._persist_tool_retirement()
             return f"MCP {server}: {action} completed; external tools remain subject to current permission policy"
 
+    def enable_runtime(self, *, bound: bool) -> SessionRuntime:
+        from xdog.coding.core.sessions.runtime import SessionRuntime
+        if self.runtime is None:
+            self.runtime = SessionRuntime(self, bound=bound)
+        return self.runtime
+
+    async def _aclose_resources(self) -> None:
+        await self.children.supervisor.aclose()
+        self.extension_dialogs.close()
+        await self.extensions.aclose()
+        if self.mcp is not None:
+            await self.mcp.aclose()
+
     def enable_external_events(self, *, notify: Callable[[], None] | None = None) -> ExternalEventBinding:
         """Enable a generic local event receiver; one-shot clients do not call this."""
         if self.external_events is None:
@@ -1444,7 +1521,13 @@ class AgentSession:
         return self.external_events
 
     def dispose(self) -> None:
-        """Clean up resources."""
+        """Close the owner before releasing resources and the writer lease."""
+        if self.runtime is not None and not self.runtime.disposing:
+            self.runtime.close()
+            return
+        self._dispose_resources()
+
+    def _dispose_resources(self) -> None:
         if self.external_events is not None:
             self.external_events.close()
         self.children.close()

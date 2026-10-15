@@ -9,10 +9,12 @@ import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable
 from concurrent.futures import Future
-from dataclasses import dataclass
+from contextvars import ContextVar
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from xdog.agent.session_input import SessionInput, decode_input, input_data
+from xdog.ai.types import ImageContent
 from xdog.coding.core.sessions.models import InputRecord, SessionEvent, Submission, TurnResult
 from xdog.coding.core.sessions.store import InputStore
 
@@ -22,6 +24,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
 MAX_PENDING = 128
+_OWNER: ContextVar[tuple[object, str] | None] = ContextVar("coding_session_owner", default=None)
 
 
 @dataclass
@@ -32,6 +35,10 @@ class _Job:
     branch: str
     generation: str
     finishing: bool = False
+    cancelled: bool = False
+    images: tuple[ImageContent, ...] = ()
+    input_origin: str | None = None
+    raw_text: str | None = None
 
 
 class SessionController:
@@ -58,29 +65,100 @@ class SessionController:
         self._jobs: dict[str, _Job] = {}
         self._controls: deque[tuple[Callable[[], Awaitable[Any]], str, Future[Any]]] = deque()
         self._admissions: set[asyncio.Task[None]] = set()
+        self._admitting_jobs: dict[str, _Job] = {}
         self._listeners: list[Callable[[SessionEvent], None]] = []
         self._active: asyncio.Task[None] | None = None
         self._current: _Job | None = None
         self._revoked: set[str] = set()
         self._budget = 0
         self._human_pending = False
+        self._queue_changes = 0
+        self._producers: set[str] = set()
+        self._producer_receipts: dict[str, tuple[Future[None], Callable[[], None] | None]] = {}
+        self._settlements: set[Future[None]] = set()
+        self._owner_token: str | None = None
+        self._control_future: Future[Any] | None = None
+        self._close_hook: Callable[[], Awaitable[None]] | None = None
+        self.before_turn: Callable[[SessionInput], Awaitable[None]] | None = None
+        self.after_turn: Callable[[SessionInput, TurnResult], Awaitable[None]] | None = None
         self._closing = False
         self._closed: Future[None] = Future()
         self._broken: BaseException | None = None
+        self._readiness_timer: asyncio.TimerHandle | None = None
 
-    def start(self) -> None:
+    def start(self, *, own_thread: bool = False) -> None:
         with self._start_lock:
             if self._loop is not None:
                 return
             if self._closing:
                 raise RuntimeError("Session controller is closed")
             try:
+                if own_thread:
+                    raise RuntimeError("Synchronous host owns a dedicated loop")
                 self._loop = asyncio.get_running_loop()
                 self._ready.set()
             except RuntimeError:
                 self._thread = threading.Thread(target=self._thread_main, name="xdog-session-owner", daemon=True)
                 self._thread.start()
                 self._ready.wait()
+
+    @property
+    def busy(self) -> bool:
+        return self._active is not None or bool(self._producers)
+
+    @property
+    def owns_current_task(self) -> bool:
+        # asyncio.to_thread copies context. A trusted synchronous mutation can
+        # retain the original reservation without opening a second control queue.
+        scope = _OWNER.get()
+        return scope is not None and scope[0] is self and scope[1] == self._owner_token
+
+    @property
+    def current_request(self) -> str | None:
+        return self._current.value.id if self._current is not None else None
+
+    def hold_producer(self, token: str) -> None:
+        if self.owns_current_task:
+            self._producers.add(token)
+        else:
+            self._post(lambda: self._producers.add(token))
+
+    def release_producer(self, token: str) -> None:
+        def release() -> None:
+            self._producers.discard(token)
+            self._pump()
+        self._post(release)
+
+    def reserve_producer(self, name: str, *, cancel: Callable[[], None] | None = None) -> Callable[[], None]:
+        """Track callback settlement across loops, including during owner shutdown."""
+        if self._closing:
+            raise RuntimeError("Session controller is closed")
+        token = name + '-' + uuid.uuid4().hex
+        receipt: Future[None] = Future()
+        def reserve() -> None:
+            self._producers.add(token)
+            self._producer_receipts[token] = receipt, cancel
+        self._post(reserve)
+        def release() -> None:
+            if receipt.done():
+                return
+            def settled() -> None:
+                self._producers.discard(token)
+                self._producer_receipts.pop(token, None)
+                self._settle(receipt, None)
+                self._pump()
+            self._post(settled)
+        return release
+
+    def settle_before_release(self, operation: Awaitable[None]) -> None:
+        if not self.owns_current_task:
+            raise RuntimeError("Settlement must be registered by the session owner")
+        self._settlements.add(self._async(lambda: operation))
+
+    async def _settle_operations(self) -> None:
+        while self._settlements:
+            tasks, self._settlements = self._settlements, set()
+            await asyncio.gather(*(asyncio.wrap_future(task) for task in tasks))
 
     def _thread_main(self) -> None:
         try:
@@ -131,15 +209,18 @@ class SessionController:
         from xdog.coding.core.sessions.turns import run_turn
 
         job = self._jobs[value.id]
-        return await run_turn(self.session, value, emit=lambda event: self._emit("agent_event", job, event))
+        return await run_turn(self.session, value, emit=lambda event: self._emit("agent_event", job, event),
+                              images=job.images, input_origin=job.input_origin, raw_text=job.raw_text)
 
-    def submit(self, value: SessionInput, *, peer_id: str) -> Submission:
+    def submit(self, value: SessionInput, *, peer_id: str, images: tuple[ImageContent, ...] = (),
+               input_origin: str | None = None, raw_text: str | None = None) -> Submission:
         ticket = Submission(value.id, Future(), Future())
         try:
             if self._closing:
                 raise RuntimeError("Session controller is closed")
             snapshot = decode_input(input_data(value))
-            job = _Job(snapshot, peer_id, ticket, self.branch, self.generation)
+            job = _Job(snapshot, peer_id, ticket, self.branch, self.generation,
+                       images=images, input_origin=input_origin, raw_text=raw_text)
 
             def spawn() -> None:
                 task = asyncio.create_task(self._accept(job))
@@ -160,17 +241,18 @@ class SessionController:
                 raise RuntimeError("Session persistence is unavailable") from self._broken
             if len(self._jobs) + len(self._admissions) > MAX_PENDING:
                 raise ValueError("Session queue exceeds capacity")
-            if job.value.id in self._jobs:
+            if job.value.id in self._jobs or job.value.id in self._admitting_jobs:
                 raise ValueError("Duplicate request identity")
             paused = self.bound and job.value.origin != "human" and self._budget == 0
             record = InputRecord(job.value, job.branch, job.generation, "paused" if paused else "queued")
+            self._admitting_jobs[job.value.id] = job
             await self.store.accept(record)
             self._jobs[job.value.id] = job
             self._emit("input_" + record.status, job, record)
             self._settle(job.ticket.accepted, None)
             if job.value.origin == "human":
                 self._budget = 1
-            if self._closing or job.peer in self._revoked:
+            if self._closing or job.peer in self._revoked or job.cancelled:
                 await self._finish(job, TurnResult("cancelled", None))
             elif job.generation != self.generation:
                 await self._finish(job, TurnResult("discarded", None))
@@ -178,17 +260,34 @@ class SessionController:
         except BaseException as exc:
             self._settle(job.ticket.accepted, error=exc)
             self._settle(job.ticket.result, error=exc)
+        finally:
+            if self._admitting_jobs.get(job.value.id) is job:
+                self._admitting_jobs.pop(job.value.id, None)
 
     def _pump(self) -> None:
-        if self._closing or self._active is not None:
+        if self._closing or self._active is not None or self._queue_changes or self._producer_receipts:
             return
-        if self._controls:
+        while self._controls:
             operation, name, future = self._controls.popleft()
-            self._active = asyncio.create_task(self._run_control(operation, future))
-            return
+            if not future.cancelled():
+                self._control_future = future
+                self._active = asyncio.create_task(self._run_control(operation, future))
+                return
         jobs = [job for job in self._jobs.values() if not job.finishing]
         human = next((job for job in jobs if job.value.origin == "human"), None)
-        if human is None and (self._human_pending or self.bound and self._budget <= 0):
+        if human is None and (self._human_pending or self._producers or self.bound and self._budget <= 0):
+            return
+        resource_busy = (not self.session.agent.is_idle or self.session.children.supervisor.active
+            or self.session.permissions.has_pending_requests or self.session._compacting
+            or self.session._auth_changing or self.session._context_changes
+            or self.session._tool_selection_retiring or self.session._tool_selection_restore_pending)
+        if jobs and resource_busy:
+            if self._readiness_timer is None:
+                assert self._loop is not None
+                def retry() -> None:
+                    self._readiness_timer = None
+                    self._pump()
+                self._readiness_timer = self._loop.call_later(0.05, retry)
             return
         selected = human or next(iter(jobs), None)
         if selected is not None:
@@ -196,15 +295,29 @@ class SessionController:
             self._active = asyncio.create_task(self._run_job(selected))
 
     async def _run_control(self, operation: Callable[[], Awaitable[Any]], future: Future[Any]) -> None:
+        self._owner_token = uuid.uuid4().hex
+        token = _OWNER.set((self, self._owner_token))
         try:
-            self._settle(future, await operation())
+            result = await operation()
+            await self._settle_operations()
+            self._settle(future, result)
         except BaseException as exc:
+            try:
+                await self._settle_operations()
+            except BaseException:
+                logger.exception("Session control settlement failed")
             self._settle(future, error=exc)
         finally:
+            self._control_future = None
+            self._owner_token = None
+            _OWNER.reset(token)
             self._active = None
             self._pump()
 
     async def _run_job(self, job: _Job) -> None:
+        self._owner_token = uuid.uuid4().hex
+        token = _OWNER.set((self, self._owner_token))
+        outcome = TurnResult("cancelled", None)
         try:
             if self._broken is not None:
                 raise RuntimeError("Session persistence is unavailable") from self._broken
@@ -212,19 +325,28 @@ class SessionController:
                 outcome = TurnResult("discarded", None)
             else:
                 await self.store.transition(job.value.id, "running")
+                if self.before_turn is not None:
+                    await self.before_turn(job.value)
                 self._emit("input_running", job, job.value)
                 if self.bound and job.value.origin != "human":
                     self._budget -= 1
                 outcome = await self._execute(job.value)
-            await self._finish(job, outcome)
         except asyncio.CancelledError:
             if not self.session.agent.is_idle:
                 await self.session.agent.cancel_and_wait()
-            await self._finish(job, TurnResult("cancelled", None))
         except Exception as exc:
-            await self._finish(job, TurnResult("failed", None, str(exc)))
+            outcome = TurnResult("failed", None, str(exc), exc)
         finally:
+            try:
+                if self.after_turn is not None:
+                    await self.after_turn(job.value, outcome)
+                await self._settle_operations()
+            except Exception as exc:
+                outcome = TurnResult("failed", outcome.response, str(exc), exc)
+            await self._finish(job, outcome)
             self._current = None
+            self._owner_token = None
+            _OWNER.reset(token)
             self._active = None
             self._pump()
 
@@ -238,7 +360,7 @@ class SessionController:
             self._broken = exc
             result = TurnResult("failed", result.response, "Session persistence failed: " + str(exc))
         self._jobs.pop(job.value.id, None)
-        self._emit("input_completed", job, result)
+        self._emit("input_completed", job, replace(result, cause=None))
         self._settle(job.ticket.result, result)
 
     def control(self, operation: Callable[[], Awaitable[T]], *, name: str) -> Future[T]:
@@ -252,7 +374,28 @@ class SessionController:
             self._pump()
 
         self._post(enqueue)
+        def cancelled(done: Future[T]) -> None:
+            if done.cancelled() and self._loop is not None and not self._loop.is_closed():
+                def stop() -> None:
+                    if self._control_future is done and self._active is not None:
+                        self._active.cancel()
+                self._loop.call_soon_threadsafe(stop)
+        future.add_done_callback(cancelled)
         return future
+
+    def cancel_control(self, future: Future[Any]) -> None:
+        """Request cancellation without completing the caller's settlement receipt."""
+        def stop() -> None:
+            if self._control_future is future and self._active is not None:
+                if not self._active.cancelling():
+                    self._active.cancel()
+            else:
+                for item in tuple(self._controls):
+                    if item[2] is future:
+                        self._controls.remove(item)
+                        self._settle(future, error=asyncio.CancelledError())
+                        break
+        self._post(stop)
 
     def human_input(self) -> None:
         def grant() -> None:
@@ -277,13 +420,63 @@ class SessionController:
 
         return asyncio.run_coroutine_threadsafe(run(), self._loop)
 
-    def cancel(self, request_id: str, *, peer_id: str) -> Future[bool]:
+    def change_pending(self, request_id: str, *, peer_id: str, action: str,
+                       content: str = "", direction: int = 0) -> Future[bool]:
+        """Change an unselected human submission on the owner loop, not a UI mirror."""
         async def run() -> bool:
             job = self._jobs.get(request_id)
-            if job is None or job.peer != peer_id:
+            if (job is None or job.peer != peer_id or job is self._current or job.finishing
+                    or job.value.origin != "human"):
+                return False
+            self._queue_changes += 1
+            try:
+                if action == "remove":
+                    await self._finish(job, TurnResult("cancelled", None))
+                elif action == "edit":
+                    changed = decode_input(input_data(replace(job.value, instruction=content)))
+                    if not await self.store.edit_pending(changed) or self._jobs.get(request_id) is not job:
+                        return False
+                    job.value = changed
+                    job.raw_text = content
+                    self._emit("input_edited", job, changed)
+                elif action == "move" and direction in {-1, 1}:
+                    pending = [item for item in self._jobs.values() if item is not self._current
+                               and not item.finishing and item.value.origin == "human" and item.peer == peer_id]
+                    position = pending.index(job)
+                    target = position + direction
+                    if not 0 <= target < len(pending):
+                        return False
+                    keys = list(self._jobs)
+                    a, b = keys.index(request_id), keys.index(pending[target].value.id)
+                    keys[a], keys[b] = keys[b], keys[a]
+                    self._jobs = {key: self._jobs[key] for key in keys}
+                    self._emit("input_moved", job, direction)
+                else:
+                    return False
+                return True
+            finally:
+                self._queue_changes -= 1
+                self._pump()
+        return self._async(run)
+
+    def cancel(self, request_id: str, *, peer_id: str, wait: bool = False) -> Future[bool]:
+        async def run() -> bool:
+            job = self._jobs.get(request_id)
+            if job is None:
+                job = self._admitting_jobs.get(request_id)
+                if job is None or job.peer != peer_id:
+                    return False
+                job.cancelled = True
+                if wait:
+                    await asyncio.gather(asyncio.wrap_future(job.ticket.result), return_exceptions=True)
+                return True
+            if job.peer != peer_id:
                 return False
             if self._current is job and self._active is not None:
-                self._active.cancel()
+                task = self._active
+                task.cancel()
+                if wait:
+                    await asyncio.gather(task, return_exceptions=True)
             else:
                 await self._finish(job, TurnResult("cancelled", None))
             return True
@@ -301,20 +494,32 @@ class SessionController:
                         tasks.append(self._active)
                     else:
                         await self._finish(job, TurnResult("cancelled", None))
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
+            admissions = [asyncio.wrap_future(job.ticket.result) for job in self._admitting_jobs.values()
+                          if job.peer == peer_id]
+            if tasks or admissions:
+                await asyncio.gather(*tasks, *admissions, return_exceptions=True)
 
         return self._async(run)
 
-    def rotate(self, branch_id: str) -> None:
+    def rotate(self, branch_id: str) -> Future[None]:
+        # Publish the fence before scheduling cleanup so a successor cannot start
+        # on the already-mutated SessionData with the old generation.
+        self.branch, self.generation = branch_id, uuid.uuid4().hex
+        self._budget = 0
         async def run() -> None:
-            self.branch, self.generation = branch_id, uuid.uuid4().hex
-            self._budget = 0
             for job in tuple(self._jobs.values()):
-                if job is not self._current:
+                if job is not self._current and job.generation != self.generation:
                     await self._finish(job, TurnResult("discarded", None))
+        return self._async(run)
 
-        self._async(run)
+    def abort(self) -> Future[None]:
+        async def run() -> None:
+            if self._active is not None:
+                task = self._active
+                if not task.cancelling():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        return self._async(run)
 
     def resume(self, peer_id: str) -> Future[bool]:
         async def run() -> bool:
@@ -347,17 +552,31 @@ class SessionController:
         return self._closed
 
     async def _shutdown(self) -> None:
+        if self._readiness_timer is not None:
+            self._readiness_timer.cancel()
+            self._readiness_timer = None
         try:
             if self._admissions:
                 await asyncio.gather(*tuple(self._admissions), return_exceptions=True)
             if self._active is not None:
-                self._active.cancel()
-                await asyncio.gather(self._active, return_exceptions=True)
+                task = self._active
+                if not task.cancelling():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
             for job in tuple(self._jobs.values()):
                 await self._finish(job, TurnResult("cancelled", None))
             while self._controls:
                 _, _, future = self._controls.popleft()
                 self._settle(future, error=RuntimeError("Session controller closed"))
+            await self._settle_operations()
+            receipts = tuple(self._producer_receipts.values())
+            for _, cancel in receipts:
+                if cancel is not None:
+                    cancel()
+            if receipts:
+                await asyncio.gather(*(asyncio.wrap_future(receipt) for receipt, _ in receipts))
+            if self._close_hook is not None:
+                await self._close_hook()
         except BaseException as exc:
             self._settle(self._closed, error=exc)
         finally:

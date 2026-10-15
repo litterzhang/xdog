@@ -10,7 +10,7 @@ import tempfile
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from xdog.agent.session_input import decode_input, input_data
+from xdog.agent.session_input import SessionInput, decode_input, input_data
 from xdog.coding.core.sessions.models import STATES, TERMINAL, InputRecord
 
 if TYPE_CHECKING:
@@ -104,6 +104,15 @@ class InputStore:
                 raise ValueError("Invalid or duplicate input record")
             checked = replace(record, input=decode_input(input_data(record.input)))
             await self._save((*self._records, checked))
+
+    async def edit_pending(self, value: SessionInput) -> bool:
+        async with self._lock:
+            if not any(row.input.id == value.id and row.status in {"queued", "paused"} for row in self._records):
+                return False
+            checked = decode_input(input_data(value))
+            await self._save(tuple(replace(row, input=checked) if row.input.id == value.id else row
+                                   for row in self._records))
+            return True
 
     async def transition(self, identifier: str, status: str, error: str = "") -> None:
         async with self._lock:

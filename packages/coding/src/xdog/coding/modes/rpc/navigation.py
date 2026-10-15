@@ -12,6 +12,7 @@ from typing import Any
 from xdog.agent.extensions.catalog import page
 from xdog.coding.core.agent_session import AgentSession
 from xdog.coding.core.navigation import navigation_entries
+from xdog.coding.core.sessions.operations import run_control
 
 EmitFn = Callable[[dict[str, Any]], None]
 
@@ -100,7 +101,7 @@ class RpcNavigation:
         self.owner = key, expected
         self._action, self._admitted = action, False
         self.cancel_event = canceled = threading.Event()
-        async def run() -> None:
+        async def run() -> dict[str, Any]:
             self._admitted = True
             response: dict[str, Any] = {'type': 'session_result', 'request_id': key, 'action': action,
                                         'expected_session': expected, 'success': False}
@@ -206,8 +207,11 @@ class RpcNavigation:
                 response.update(type='ok' if response['success'] else 'error', messages=len(self.session.messages))
                 if not response['success']:
                     response['message'] = response['error']
-            self.emit(response)
-        self.task = asyncio.create_task(run())
+            return response
+        async def settled() -> None:
+            response = await run_control(self.session, run, name="rpc-navigation")
+            self.emit(response)  # Includes endpoint rebind and durable cleanup, not just the mutation body.
+        self.task = asyncio.create_task(settled())
 
     def cancel(self, packet: dict[str, Any]) -> None:
         if self.owner != (packet.get('request_id'), packet.get('expected_session')) or not self.busy:

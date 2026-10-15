@@ -6,7 +6,6 @@ import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from xdog.agent import Agent, AgentConfig
 from xdog.ai.types import AssistantMessage, DoneEvent, StartEvent, TextContent, UserMessage
 from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.channels.tui.tui_app import ChatApp
@@ -73,7 +72,7 @@ def test_claw_edited_slash_message_is_literal_not_a_gateway_command() -> None:
     ui._request_exit()
 
 
-def test_coding_live_owner_controls_and_consumption_receipts() -> None:
+def test_coding_live_owner_controls_and_consumption_receipts(coding_session) -> None:
     entered, release = threading.Event(), threading.Event()
     contexts = []
 
@@ -95,10 +94,9 @@ def test_coding_live_owner_controls_and_consumption_receipts() -> None:
         future.set_result(message)
         return EventStream.from_async_generator(generate(), result_future=future)
 
-    ui = coding()
-    agent = Agent(stream_fn, config=AgentConfig(model="test/dummy"))
-    ui._session.agent = agent
-    ui._session.cancel = lambda **kwargs: agent.abort()
+    coding_session.agent.set_stream_fn(stream_fn)
+    agent = coding_session.agent
+    ui = InteractiveMode(coding_session)
 
     def wait_for(predicate):
         deadline = time.monotonic() + 3
@@ -270,7 +268,7 @@ def test_malformed_claw_receipt_keeps_input_uncertain_then_restores_it_without_r
     ui._request_exit()
 
 
-def test_coding_cancel_restores_only_unconsumed_runtime_inputs_once() -> None:
+def test_coding_cancel_restores_only_unconsumed_runtime_inputs_once(coding_session) -> None:
     entered = threading.Event()
 
     def stream_fn(model, context, options=None):
@@ -285,10 +283,9 @@ def test_coding_cancel_restores_only_unconsumed_runtime_inputs_once() -> None:
         future.set_result(AssistantMessage(stop_reason="aborted"))
         return EventStream.from_async_generator(generate(), result_future=future)
 
-    ui = coding()
-    agent = Agent(stream_fn, config=AgentConfig(model="test/dummy"))
-    ui._session.agent = agent
-    ui._session.cancel = lambda **kwargs: agent.abort()
+    coding_session.agent.set_stream_fn(stream_fn)
+    agent = coding_session.agent
+    ui = InteractiveMode(coding_session)
     try:
         ui._start_turn("original")
         assert entered.wait(3)

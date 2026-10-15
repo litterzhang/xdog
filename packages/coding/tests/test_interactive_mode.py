@@ -231,57 +231,69 @@ class TestChatLog:
 
 
 class TestInteractiveMessageHandling:
-    def test_submit_while_busy_queues_message_below_editor(self):
-        from unittest.mock import MagicMock
+    def test_submit_while_busy_queues_message_below_editor(self, coding_session):
+        import asyncio
+        import threading
 
         from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
         from xdog.tui.utils import strip_ansi
 
-        session = MagicMock()
-        session.agent.subscribe.return_value = lambda: None
-        session.permissions.mode = "ask"
-        mode = InteractiveMode(session)
-        mode._worker_active = True
-        mode._run_status = RunStatus().start(0.0)
+        mode = InteractiveMode(coding_session)
+        mode._session_events.start()
+        release, entered = threading.Event(), threading.Event()
+        async def control():
+            entered.set()
+            await asyncio.to_thread(release.wait)
+        coding_session.runtime.controller.control(control, name='busy-control')
+        assert entered.wait(3)
+        try:
+            mode._start_turn("run this after the current turn")
+            mode._start_turn("and include this too")
+            assert [item.content for item in mode._queue_entries()] == [
+                "run this after the current turn", "and include this too"]
+            rendered = "\n".join(strip_ansi(line) for line in mode._message_queue_container.render(80))
+            assert "Queued messages (2)" in rendered
+            assert "run this after the current turn" in rendered
+            assert "and include this too" in rendered
+        finally:
+            release.set()
+            mode._request_exit()
+            mode._session_events.close()
 
-        mode._start_turn("run this after the current turn")
-        mode._start_turn("and include this too")
-
-        assert list(mode._pending_messages) == [
-            ("run this after the current turn", True),
-            ("and include this too", True),
-        ]
-        rendered = "\n".join(
-            strip_ansi(line) for line in mode._message_queue_container.render(80)
-        )
-        assert "Queued messages (2)" in rendered
-        assert "run this after the current turn" in rendered
-        assert "and include this too" in rendered
-
-    def test_queue_worker_drains_messages_in_order(self):
+    def test_queue_controller_drains_messages_in_order(self, coding_session):
         import asyncio
-        from unittest.mock import AsyncMock, MagicMock
+        import threading
 
+        from xdog.coding.core.sessions.models import TurnResult
         from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
 
-        session = MagicMock()
-        session.agent.subscribe.return_value = lambda: None
-        session.permissions.mode = "ask"
-        mode = InteractiveMode(session)
-        mode._worker_active = True
-        mode._pending_messages.append(("second", True))
-        mode._pending_messages.append(("third", True))
-        mode._async_agent_turn = AsyncMock()
-
-        asyncio.run(mode._async_agent_queue("first"))
-
-        assert [call.args[0] for call in mode._async_agent_turn.await_args_list] == [
-            "first",
-            "second",
-            "third",
-        ]
-        assert not mode._worker_active
-        assert list(mode._pending_messages) == []
+        mode = InteractiveMode(coding_session)
+        runtime = coding_session.enable_runtime(bound=True)
+        seen = []
+        release, entered = threading.Event(), threading.Event()
+        async def execute(value):
+            seen.append(value.instruction)
+            if len(seen) == 1:
+                entered.set()
+                await asyncio.to_thread(release.wait)
+            return TurnResult('succeeded', None)
+        runtime.controller._execute = execute
+        try:
+            first = mode._session_events.enqueue('first', (), 'user')
+            assert entered.wait(3)
+            second = mode._session_events.enqueue('second', (), 'user')
+            third = mode._session_events.enqueue('third', (), 'user')
+            release.set()
+            for ticket in (first, second, third):
+                assert ticket.result.result(timeout=3).status == 'succeeded'
+            mode._poll()
+            assert seen == ['first', 'second', 'third']
+            assert not mode._worker_active
+            assert not mode._queue_entries()
+        finally:
+            release.set()
+            mode._request_exit()
+            mode._session_events.close()
 
     def test_escape_cancels_active_work_and_clears_queue(self):
         from unittest.mock import MagicMock

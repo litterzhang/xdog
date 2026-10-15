@@ -20,7 +20,11 @@ def mode():
     session.messages = []
     session.working_dir = "/workspace"
     session.context_limit = 1000
-    return InteractiveMode(session)
+    ui = InteractiveMode(session)
+    # Presentation tests use a mock session; real owner lifecycle is exercised
+    # by test_native_session_queue and the real-session EOF regression below.
+    ui._session_events.start = lambda: None
+    return ui
 
 
 def plain(component, width=100):
@@ -500,29 +504,26 @@ def test_exit_stops_terminal_even_when_disposal_raises():
     assert not app._tui.is_running
 
 
-def test_exit_cancels_owned_worker_before_agent_prompt_or_compaction_finishes(monkeypatch):
+def test_exit_cancels_controller_before_agent_prompt_or_compaction_finishes(monkeypatch, coding_session):
     import asyncio
     import threading
-    app = mode()
+    app = InteractiveMode(coding_session)
     entered = threading.Event()
     finished = threading.Event()
-
-    async def blocked_turn(message, generation, images=()):
+    runtime = coding_session.enable_runtime(bound=True)
+    async def blocked_turn(value):
         entered.set()
         try:
             await asyncio.Event().wait()
         finally:
             finished.set()
-
-    monkeypatch.setattr(app, "_async_agent_queue", blocked_turn)
-
+    runtime.controller._execute = blocked_turn
     def terminal():
-        app._start_turn("blocked")
-        assert entered.wait(1)
+        app._start_turn('blocked')
+        assert entered.wait(3)
         # EOF: TUI returns without a keyboard callback.
-
-    monkeypatch.setattr(app._tui, "start", terminal)
+    monkeypatch.setattr(app._tui, 'start', terminal)
     app.run()
     assert finished.wait(1)
-    assert app._worker_thread is not None and not app._worker_thread.is_alive()
+    assert not runtime.controller._thread.is_alive()
     assert app._worker_loop_ref is None and app._worker_task is None

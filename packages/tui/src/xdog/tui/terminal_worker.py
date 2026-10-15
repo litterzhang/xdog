@@ -20,19 +20,21 @@ class TerminalHookWorker:
         self._cancel = threading.Event()
 
     def send(self, item: HeldTerminalInput,
-             run: Callable[[HeldTerminalInput], Coroutine[Any, Any, dict[str, Any]]]) -> bool:
+             run: Callable[[HeldTerminalInput], Coroutine[Any, Any, dict[str, Any]]],
+             *, settled: Callable[[], None] | None = None) -> bool:
         with self._lock:
             if self._busy:
                 return False
             self._busy = True
             stop = self._cancel = threading.Event()
-            self._thread = threading.Thread(target=self._work, args=(item, stop, run),
+            self._thread = threading.Thread(target=self._work, args=(item, stop, run, settled),
                                             daemon=True, name='xdog-terminal-hook')
             self._thread.start()
         return True
 
     def _work(self, item: HeldTerminalInput, stop: threading.Event,
-              run: Callable[[HeldTerminalInput], Coroutine[Any, Any, dict[str, Any]]]) -> None:
+              run: Callable[[HeldTerminalInput], Coroutine[Any, Any, dict[str, Any]]],
+              settled: Callable[[], None] | None = None) -> None:
         async def owned() -> dict[str, Any]:
             task = asyncio.create_task(run(item))
             with self._lock:
@@ -50,7 +52,11 @@ class TerminalHookWorker:
             result = {'error': True}
         with self._lock:
             self._busy = False
-        self.publish({'type': 'terminal_input_result', 'id': item.id, 'result': result})
+        try:
+            self.publish({'type': 'terminal_input_result', 'id': item.id, 'result': result})
+        finally:
+            if settled is not None:
+                settled()
 
     def cancel(self) -> None:
         with self._lock:

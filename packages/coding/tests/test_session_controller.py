@@ -136,6 +136,7 @@ async def test_synchronous_host_owns_loop_thread_and_closes_it(coding_session):
         assert (await result(ticket)).status == "succeeded"
     finally:
         await asyncio.wrap_future(controller.close())
+    await asyncio.to_thread(controller._thread.join, 2)
     assert not controller._thread.is_alive()
 
 
@@ -170,4 +171,76 @@ async def test_storage_failure_after_execution_stops_following_model_work(coding
         assert (await result(b)).status == "failed"
         assert started == ["a"]
     finally:
+        await asyncio.wrap_future(controller.close())
+
+
+async def test_pending_human_edits_moves_and_removals_change_owner_queue(coding_session):
+    """Editing the display alone must not leave the original model submission runnable."""
+    from xdog.coding.core.sessions.controller import SessionController
+    from xdog.coding.core.sessions.models import TurnResult
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    seen = []
+
+    async def execute(item):
+        seen.append(item.instruction)
+        if item.id == 'first':
+            entered.set()
+            await release.wait()
+        return TurnResult('succeeded', None)
+
+    controller = SessionController(coding_session, bound=True, execute=execute)
+    controller.start()
+    tickets = []
+    try:
+        first = controller.submit(value('first', 'human'), peer_id='native')
+        await entered.wait()
+        for identifier in ('second', 'third', 'removed'):
+            ticket = controller.submit(value(identifier, 'human'), peer_id='native')
+            await asyncio.wrap_future(ticket.accepted)
+            tickets.append(ticket)
+        assert not await asyncio.wrap_future(controller.change_pending('second', peer_id='other', action='edit',
+                                                                        content='forged'))
+        assert await asyncio.wrap_future(controller.change_pending('second', peer_id='native', action='edit',
+                                                                    content='edited second'))
+        assert await asyncio.wrap_future(
+            controller.change_pending('third', peer_id='native', action='move', direction=-1))
+        assert await asyncio.wrap_future(controller.change_pending('removed', peer_id='native', action='remove'))
+        release.set()
+        assert (await result(first)).status == 'succeeded'
+        assert [ (await result(ticket)).status for ticket in tickets] == ['succeeded', 'succeeded', 'cancelled']
+        assert seen == ['Review tests', 'Review tests', 'edited second']
+        edited = next(row for row in controller.store.records() if row.input.id == 'second')
+        assert edited.input.instruction == 'edited second'
+    finally:
+        release.set()
+        await asyncio.wrap_future(controller.close())
+
+
+async def test_cancellation_during_admission_cannot_start_model_after_disk_commit(coding_session, monkeypatch):
+    from xdog.coding.core.sessions.controller import SessionController
+    from xdog.coding.core.sessions.models import TurnResult
+    entered, release = threading.Event(), threading.Event()
+    started = []
+    async def execute(item):
+        started.append(item.id)
+        return TurnResult('succeeded', None)
+    controller = SessionController(coding_session, bound=False, execute=execute)
+    controller.start()
+    commit = controller.store._commit
+    def blocked(records):
+        if not entered.is_set():
+            entered.set()
+            assert release.wait(3)
+        commit(records)
+    monkeypatch.setattr(controller.store, '_commit', blocked)
+    try:
+        ticket = controller.submit(value('cancel-before-admission', 'human'), peer_id='native')
+        assert await asyncio.to_thread(entered.wait, 2)
+        assert await asyncio.wrap_future(controller.cancel(ticket.id, peer_id='native'))
+        release.set()
+        assert (await result(ticket)).status == 'cancelled'
+        assert started == []
+    finally:
+        release.set()
         await asyncio.wrap_future(controller.close())

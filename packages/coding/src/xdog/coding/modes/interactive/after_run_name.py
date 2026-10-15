@@ -16,7 +16,7 @@ class NativeAfterRunName:
     async def request(self, extension: str, dialog: dict[str, Any]) -> bool:
         ui, lease = self.ui, current_invocation()
         producer = ui._after_run_compaction.current
-        if producer is None or lease is None or lease.child_id or producer.thread is None or not ui._worker_active:
+        if producer is None or lease is None or lease.child_id or not ui._after_run_compaction._running():
             return False
         session = producer.session
         def alive() -> bool:
@@ -29,7 +29,7 @@ class NativeAfterRunName:
         async def ask(name: str, value: dict[str, Any]) -> Any:
             return await session.extension_dialogs.ask(name, value) if alive() else False
         return await self.queue.reviewed(extension, dialog, producer=producer, ask=ask, alive=alive,
-            settled=lambda: not producer.thread.is_alive(),
+            settled=lambda: producer.settled,
             successful=lambda: producer.completed and producer.worker_success)
 
     def poll(self) -> None:

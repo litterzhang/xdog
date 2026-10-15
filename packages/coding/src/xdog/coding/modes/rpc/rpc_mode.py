@@ -80,30 +80,13 @@ async def run_rpc_mode(session: AgentSession) -> int:
     extensions = RpcExtensions(session, _emit, navigation=navigation, send=output.send)
     session.permissions.set_request_handler(_permission_request)
     turn_task: asyncio.Task[None] | None = None
-    from xdog.coding.modes.rpc.external_events import RpcExternalEvents
-
-    def external_busy() -> bool:
-        return (turn_task is not None and not turn_task.done() or extensions.busy or navigation.busy
-                or children.busy or terminal.busy or parent_drafts.busy
-                or any(not task.done() for owner in
-                       (extensions.after_run_compaction, extensions.after_run_name, extensions.after_run_tools)
-                       for task in getattr(owner, "jobs", ())))
-
-    async def external_run(message: str) -> bool:
-        failed = False
-        def emit_event(event: dict[str, Any]) -> None:
-            nonlocal failed
-            failed = failed or event.get('type') == 'error' or event.get('is_error') is True
-            _emit(event)
-        if extensions.ui_enabled:
-            async with extensions.bind('external-' + json.loads(message)['id']):
-                await _handle_prompt(session, message, emit_event, input_origin='external_event')
-        else:
-            await _handle_prompt(session, message, emit_event, input_origin='external_event')
-        return not failed
-
-    external = RpcExternalEvents(session, _emit, busy=external_busy, run=external_run)
-    await external.start()
+    from xdog.coding.modes.rpc.session_events import RpcSessionEvents
+    runtime = session.enable_runtime(bound=True) if isinstance(session, AgentSession) else None
+    session_events = None
+    if runtime is not None:
+        runtime.start()
+        session_events = RpcSessionEvents(session, runtime, extensions, _emit)
+        await runtime.open_endpoint()
     _emit({
         "type": "ready",
         "session_id": session.session_id,
@@ -114,7 +97,7 @@ async def run_rpc_mode(session: AgentSession) -> int:
                          "session_checkpoint_targets": 1, "transcript_sources": 1, "transcript_canonical": 1,
                          "transient_events": 1, "terminal_input": 1, "terminal_release_input": 1,
                          "rpc_async_output": int(output.fd is not None),
-                         "external_events": int(external.binding is not None)},
+                         "acp": int(runtime is not None), "session_routing": int(runtime is not None)},
         "session_revision": navigation.revision,
         "max_input_frame_bytes": MAX_RPC_LINE_BYTES,
         "max_output_backlog_bytes": MAX_OUTPUT_BYTES,
@@ -124,9 +107,7 @@ async def run_rpc_mode(session: AgentSession) -> int:
         while True:
             transient.bind()
             try:
-                if external.binding is not None:
-                    raw_line, frame_error = await external.read(inputs, output.failure)
-                elif output.fd is None:
+                if output.fd is None:
                     raw_line, frame_error = await inputs.read()
                 else:
                     reading = asyncio.create_task(inputs.read())
@@ -171,7 +152,7 @@ async def run_rpc_mode(session: AgentSession) -> int:
                 continue
             transient.bind()
             turn_running = (turn_task is not None and not turn_task.done()
-                            or extensions.prompting or external.running)
+                            or extensions.prompting or runtime is not None and runtime.controller.busy)
 
             if cmd_type in {'parent_draft_control', 'parent_draft_cancel'}:
                 try:
@@ -327,6 +308,11 @@ async def run_rpc_mode(session: AgentSession) -> int:
                 continue
             if cmd_type == "prompt":
                 message = cmd.get("message", "")
+                try:
+                    navigation.prompt_owner(cmd)
+                except ValueError as exc:
+                    _emit({'type': 'error', 'action': 'prompt', 'message': str(exc)})
+                    continue
                 if (turn_running or extensions.busy or navigation.busy or children.starting
                         or terminal.busy or parent_drafts.busy):
                     _emit({'type': 'error', 'message': 'A prompt is already running'})
@@ -348,7 +334,8 @@ async def run_rpc_mode(session: AgentSession) -> int:
                 elif turn_running or extensions.busy:
                     _emit({"type": "error", "message": "A prompt is already running"})
                 else:
-                    external.human_input()
+                    if runtime is not None:
+                        runtime.controller.human_input()
                     if extensions.ui_enabled:
                         request_id = cmd.get('request_id')
                         try:
@@ -371,7 +358,8 @@ async def run_rpc_mode(session: AgentSession) -> int:
                 continue
 
             if cmd_type == "abort":
-                external.abort()
+                if runtime is not None:
+                    runtime.controller.abort()
                 navigation.abort_compaction()
                 extensions.abort_prompt()
                 extensions.after_run_tools.abort()
@@ -415,12 +403,22 @@ async def run_rpc_mode(session: AgentSession) -> int:
                     if not isinstance(model_id, str) or not model_id:
                         _emit({"type": "error", "message": "Missing 'model' field"})
                         continue
-                    session.set_model(model_id)
+                    if runtime is not None:
+                        async def change_model() -> None:
+                            session.set_model(model_id)
+                        await asyncio.wrap_future(runtime.controller.control(change_model, name='set-model'))
+                    else:
+                        session.set_model(model_id)
                     _emit({"type": "ok", "action": "set_model", "model": model_id, **navigation.refresh_revision()})
                 elif cmd_type == "set_thinking":
                     level = cmd.get("level", "")
                     if level in ("off", ""):
-                        session.set_thinking_level(None)
+                        if runtime is not None:
+                            async def clear_thinking() -> None:
+                                session.set_thinking_level(None)
+                            await asyncio.wrap_future(runtime.controller.control(clear_thinking, name='thinking'))
+                        else:
+                            session.set_thinking_level(None)
                         _emit({"type": "ok", "action": "set_thinking", "level": "off", **navigation.refresh_revision()})
                     elif level in ("minimal", "low", "medium", "high", "xhigh"):
                         session.set_thinking_level(cast(Any, level))
@@ -456,7 +454,8 @@ async def run_rpc_mode(session: AgentSession) -> int:
             except (ValueError, RuntimeError, OSError) as exc:
                 _emit({'type': 'error', 'action': cmd_type, 'message': str(exc)})
     finally:
-        await external.aclose()
+        if session_events is not None:
+            session_events.close()
         extensions.abort_prompt()
         # Stop the parent before waiting for child/source/extension ownership to
         # settle; EOF/output failure must not leave it producing more turns.
@@ -481,6 +480,8 @@ async def run_rpc_mode(session: AgentSession) -> int:
             if not turn_task.done():
                 turn_task.cancel()  # EOF/connection loss owns cleanup just as explicit quit does.
             await asyncio.gather(turn_task, return_exceptions=True)
+        if runtime is not None:
+            await asyncio.wrap_future(runtime.close())
         await output.aclose()
 
     return 1 if output.error is not None else 0
@@ -509,13 +510,37 @@ async def _handle_prompt(
                     emit({'type': 'thinking_delta', 'text': part.thinking})
                 elif isinstance(part, ToolCall):
                     emit({'type': 'tool_call', 'name': part.name, 'arguments': part.arguments})
-    unsubscribe = session.agent.subscribe(on_event)
+    runtime = getattr(session, 'runtime', None)
+    correlated = runtime is not None and not runtime.controller.owns_current_task
+    identifier = __import__('uuid').uuid4().hex
+    ticket = None
+    if correlated:
+        assert runtime is not None
+        def owned_event(event: Any) -> None:
+            if event.request_id == identifier and event.kind == 'agent_event':
+                on_event(event.data)
+        unsubscribe = runtime.controller.subscribe(owned_event)
+    else:
+        unsubscribe = session.agent.subscribe(on_event)
     compaction_success = False
     try:
         # The SDK owns prompt rebuild/compaction/lifecycle/skill retirement and
         # persistence. This subscriber only adapts events to the existing wire format.
-        last_assistant = (await session.send_message(message, images=images) if input_origin == 'user' else
-                          await session.send_message(message, images=images, input_origin=input_origin))
+        if correlated:
+            assert runtime is not None
+            from xdog.agent.session_input import SessionInput
+            value = SessionInput(identifier, 'human' if input_origin == 'user' else 'automatic', 'coding RPC',
+                                 message if message.strip() else '[Image/context input]', (), {})
+            ticket = runtime.controller.submit(value, peer_id='rpc', images=images,
+                                                input_origin=input_origin, raw_text=message)
+            await asyncio.wrap_future(ticket.accepted)
+            outcome = await asyncio.wrap_future(ticket.result)
+            if outcome.cause is not None:
+                raise outcome.cause
+            last_assistant = outcome.response
+        else:
+            last_assistant = (await session.send_message(message, images=images) if input_origin == 'user' else
+                              await session.send_message(message, images=images, input_origin=input_origin))
 
         error = getattr(session.agent.state, "error", None)
         if last_assistant is None and isinstance(error, str) and error:
@@ -542,7 +567,13 @@ async def _handle_prompt(
     except asyncio.CancelledError:
         # Canceling this consumer must also settle its owned producer before the
         # RPC reader/session can admit another prompt or dispose permissions/tools.
-        cleanup = asyncio.create_task(session.agent.cancel_and_wait())
+        async def settle_prompt() -> None:
+            if correlated and ticket is not None:
+                assert runtime is not None
+                await asyncio.wrap_future(runtime.controller.cancel(ticket.id, peer_id='rpc', wait=True))
+            else:
+                await session.agent.cancel_and_wait()
+        cleanup = asyncio.create_task(settle_prompt())
         while not cleanup.done():
             try:
                 await asyncio.shield(cleanup)

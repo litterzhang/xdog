@@ -21,12 +21,15 @@ async def run_turn(
     *,
     emit: Callable[[AgentEvent], None],
     images: tuple[ImageContent, ...] = (),
+    input_origin: str | None = None,
+    raw_text: str | None = None,
 ) -> TurnResult:
     unsubscribe = session.agent.subscribe(emit)
     try:
         text = value.instruction if value.origin == "human" else json.dumps(encode_input(value).data)
         response = await session._execute_message(
-            text, images=images, input_origin="user" if value.origin == "human" else "session_input"
+            text if raw_text is None else raw_text, images=images,
+            input_origin=input_origin or ("user" if value.origin == "human" else "session_input"),
         )
         error = session.agent.state.error or ""
         return TurnResult("failed" if error else "succeeded", response, error)

@@ -84,9 +84,10 @@ async def test_actual_turn_start_provider_withdrawal_refuses_image_before_model_
     finally:
         if ui is not None:
             ui._request_exit()
+            ui._session_events.close()
         if server is not None:
             await server.stop()
-        else:
+        elif ui is None:
             await owner.children.supervisor.aclose()
             await owner.extensions.aclose()
             owner.dispose()

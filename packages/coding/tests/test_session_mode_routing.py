@@ -1,0 +1,53 @@
+import asyncio
+import inspect
+
+
+async def test_sdk_entry_uses_single_session_controller(coding_session, monkeypatch):
+    from xdog.coding.core.sessions.controller import SessionController
+    submitted = []
+    original = SessionController.submit
+    def submit(self, *args, **kwargs):
+        submitted.append(id(self))
+        return original(self, *args, **kwargs)
+    monkeypatch.setattr(SessionController, 'submit', submit)
+    await asyncio.gather(coding_session.send_message('one'), coding_session.send_message('two'))
+    assert len(submitted) == 2
+    assert len(set(submitted)) == 1
+
+
+def test_tui_does_not_own_a_second_agent_prompt_loop():
+    from xdog.coding.modes.interactive import interactive_mode
+    source = inspect.getsource(interactive_mode)
+    assert '.agent.prompt(' not in source
+    assert 'NativeExternalEvents' not in source
+
+
+def test_rpc_does_not_start_old_event_dispatcher():
+    from xdog.coding.modes.rpc import rpc_mode
+    assert 'RpcExternalEvents' not in inspect.getsource(rpc_mode)
+
+
+async def test_new_sdk_input_does_not_reuse_a_controller_whose_last_user_is_closing(coding_session, monkeypatch):
+    from concurrent.futures import Future
+
+    from xdog.coding.core.sessions.controller import SessionController
+    original = SessionController.close
+    closing = asyncio.Event()
+    receipt = Future()
+    underlying = []
+    def delayed(self):
+        closed = original(self)
+        if not underlying:
+            underlying.append(closed)
+            closing.set()
+            return receipt
+        return closed
+    monkeypatch.setattr(SessionController, 'close', delayed)
+    first = asyncio.create_task(coding_session.send_message('first'))
+    try:
+        await asyncio.wait_for(closing.wait(), 2)
+        await asyncio.wait_for(coding_session.send_message('new input during previous cleanup'), 2)
+    finally:
+        await asyncio.wrap_future(underlying[0])
+        receipt.set_result(None)
+        await first

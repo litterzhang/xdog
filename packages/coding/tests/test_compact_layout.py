@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock
 
@@ -152,30 +151,27 @@ def test_cancel_status_is_not_replaced_by_thinking_timer() -> None:
 
 
 @pytest.mark.parametrize("outcome", ["success", "error", "cancel"])
-def test_worker_exit_clears_thinking_timer(outcome: str) -> None:
-    from unittest.mock import AsyncMock
-
-    session = _session()
-    async def stream():
-        if outcome == "error":
-            raise RuntimeError("upstream failed")
-        if outcome == "cancel":
-            raise asyncio.CancelledError
-        if False:
-            yield
-
-    session.agent.prompt = AsyncMock(return_value=stream())
-    session._maybe_compact = AsyncMock()
-    mode = InteractiveMode(session)
-    mode._worker_active = True
+def test_controller_exit_clears_thinking_timer(outcome: str, coding_session) -> None:
+    from xdog.coding.core.sessions.models import TurnResult
+    runtime = coding_session.enable_runtime(bound=True)
+    async def execute(value):
+        if outcome == 'error':
+            raise RuntimeError('upstream failed')
+        return TurnResult('cancelled' if outcome == 'cancel' else 'succeeded', None)
+    runtime.controller._execute = execute
+    mode = InteractiveMode(coding_session)
     mode._set_busy(True)
-    mode._run_agent_turn("hello", 0)
-    mode._poll()
-    mode._poll()
-    assert not mode._worker_active
-    assert not mode._is_busy
-    assert mode._busy_started is None
-    assert "thinking..." not in _plain(mode._footer)[0]
+    try:
+        ticket = mode._session_events.enqueue('hello', (), 'user')
+        ticket.result.result(timeout=3)
+        mode._poll()
+        assert not mode._worker_active
+        assert not mode._is_busy
+        assert mode._busy_started is None
+        assert 'thinking...' not in _plain(mode._footer)[0]
+    finally:
+        mode._request_exit()
+        mode._session_events.close()
 
 
 def test_initial_banner_is_added_to_transcript_once() -> None:
@@ -237,25 +233,17 @@ def test_permission_preempts_open_details_in_single_aux_slot() -> None:
     assert mode._layout._auxiliary() is mode._permission_prompt
 
 
-def test_all_worker_events_carry_the_captured_turn_stamp() -> None:
-    import asyncio
-
+def test_agent_projection_events_carry_the_captured_turn_stamp() -> None:
+    from xdog.agent import MessageStartEvent
+    from xdog.ai.types import AssistantMessage
     mode = InteractiveMode(_session())
-    mode._worker_generation = 3
-    mode._active_stamp = type(mode._active_stamp)(3, 4)
-    mode._worker_active = True
-
-    async def finish(_message: str, _images=()) -> None:
-        return None
-
-    mode._async_agent_turn = finish  # type: ignore[method-assign]
-    asyncio.run(mode._async_agent_queue("first", 3))
-
-    events = []
-    while not mode._event_queue.empty():
-        events.append(mode._event_queue.get_nowait())
-    assert events
-    assert all(event.get("stamp") == mode._active_stamp for event in events)
+    origin = type(mode._active_stamp)(3, 4)
+    mode._dispatch_stamp = origin
+    mode._active_stamp = type(origin)(4, 4)
+    mode._dispatch_agent_event(MessageStartEvent(message=AssistantMessage()))
+    event = mode._event_queue.get_nowait()
+    assert event['type'] == 'assistant_start'
+    assert event['stamp'] == origin
 
 
 def test_delayed_old_error_does_not_restore_over_new_draft() -> None:
@@ -275,26 +263,29 @@ def test_delayed_old_error_does_not_restore_over_new_draft() -> None:
     assert mode._editor.get_text() == "current draft"
 
 
-def test_worker_error_never_mutates_editor_and_carries_restore_payload() -> None:
-    mode = InteractiveMode(_session())
+def test_controller_failure_never_mutates_editor_on_owner_thread(coding_session) -> None:
+    from xdog.coding.core.sessions.models import TurnResult
+    mode = InteractiveMode(coding_session)
     mode._editor = MagicMock()
-    mode._pending_messages.append(("queued draft", True))
-    mode._worker_active = True
-
-    async def fail(_message: str, _generation: int | None = None) -> None:
-        raise RuntimeError("boom")
-
-    mode._async_agent_queue = fail  # type: ignore[method-assign]
-    mode._run_agent_turn("first", 7)
-
-    mode._editor.get_text.assert_not_called()
-    mode._editor.set_text.assert_not_called()
-    events = []
-    while not mode._event_queue.empty():
-        events.append(mode._event_queue.get_nowait())
-    error = next(event for event in events if event["type"] == "error")
-    assert error["restore"] == ("queued draft",)
-    assert error["stamp"].generation == 7
+    runtime = coding_session.enable_runtime(bound=True)
+    async def fail(value):
+        raise RuntimeError('boom')
+    runtime.controller._execute = fail
+    try:
+        ticket = mode._session_events.enqueue('first', (), 'user')
+        assert ticket.result.result(timeout=3).status == 'failed'
+        mode._editor.get_text.assert_not_called()
+        mode._editor.set_text.assert_not_called()
+        events = []
+        while not mode._event_queue.empty():
+            events.append(mode._event_queue.get_nowait())
+        result = next(event['event'].data for event in events
+                      if event['type'] == 'session_event' and event['event'].kind == 'input_completed')
+        assert isinstance(result, TurnResult) and result.error == 'boom'
+        assert result.cause is None  # Exceptions never cross the immutable UI event queue.
+    finally:
+        mode._request_exit()
+        mode._session_events.close()
 
 
 @pytest.mark.parametrize('presentation', ['unicode', 'ascii', 'dumb'])
@@ -412,25 +403,25 @@ def test_short_multiline_tool_result_is_compact_and_retained_in_details() -> Non
     assert "TAIL" in tool.detail_body
 
 
-async def test_delayed_permission_request_retains_originating_stamp() -> None:
-    from unittest.mock import AsyncMock
-
+async def test_delayed_permission_request_retains_originating_stamp(coding_session) -> None:
     from xdog.coding.core.permissions import PermissionRequest
-    mode = InteractiveMode(_session())
-    async def empty():
-        if False:
-            yield None
-    mode._session._maybe_compact = AsyncMock()
-    mode._session.agent.prompt = AsyncMock(return_value=empty())
+    mode = InteractiveMode(coding_session)
     origin = mode._active_stamp
-    await mode._async_agent_turn("old")
-    callback = mode._session.permissions.set_request_handler.call_args_list[0].args[0]
-    mode._active_stamp = type(origin)(origin.generation + 1, origin.cancel_epoch)
-    callback(PermissionRequest(id="old", tool_name="bash", arguments={}, summary="old"))
-    event = mode._event_queue.get_nowait()
-    assert event["stamp"] == origin
-    mode._handle_ui_event(event)
-    assert mode._permission_prompt is None
+    try:
+        await mode._session_events.submit('old', (), 'user')
+        callback = coding_session.permissions._handler
+        mode._active_stamp = type(origin)(origin.generation + 1, origin.cancel_epoch)
+        callback(PermissionRequest(id='old', tool_name='bash', arguments={}, summary='old'))
+        events = []
+        while not mode._event_queue.empty():
+            events.append(mode._event_queue.get_nowait())
+        event = next(event for event in events if event['type'] == 'permission_request')
+        assert event['stamp'] == origin
+        mode._handle_ui_event(event)
+        assert mode._permission_prompt is None
+    finally:
+        mode._request_exit()
+        mode._session_events.close()
 
 
 def test_streaming_tool_output_is_available_in_details() -> None:

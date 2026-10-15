@@ -61,7 +61,7 @@ def test_coding_sends_and_persists_real_typed_images_not_path_placeholders(tmp_p
         assert not ui._composer.items
     finally:
         ui._request_exit()
-        ui._worker_thread.join(3)
+        ui._session_events.close()
 
 
 def test_model_capability_rejection_keeps_images_and_text_editable(tmp_path):
@@ -110,26 +110,38 @@ async def test_identified_steering_edit_and_recovery_retain_image_parts():
     assert agent.drain_inputs()[0].images == (image,)
 
 
-def test_coding_later_queue_failure_recovers_current_images_not_first_turn(tmp_path):
-    session = MagicMock()
-    session.working_dir = tmp_path
-    session.context_limit = 100_000
-    ui = InteractiveMode(session)
+def test_coding_later_queue_failure_recovers_current_images_not_first_turn(coding_session):
+    import threading
+
+    from xdog.coding.core.sessions.models import TurnResult
+    ui = InteractiveMode(coding_session)
     first, second = attachment(PNG, "first.png"), attachment(PNG, "second.png")
+    entered, release = threading.Event(), threading.Event()
+    runtime = coding_session.enable_runtime(bound=True)
+    async def execute(value):
+        if value.instruction == 'first':
+            entered.set()
+            await asyncio.to_thread(release.wait)
+            return TurnResult('succeeded', None)
+        raise ValueError('second failed')
+    runtime.controller._execute = execute
     try:
-        ui._worker_active = True
-        ui._active_images = (first,)
-        ui._pending_messages.append(("second", True))
-        keys = ui._pending_ids.sync(1)
-        ui._local_images[keys[0]] = (second,)
-        ui._async_agent_turn = AsyncMock(side_effect=[None, ValueError("second failed")])
-        ui._run_agent_turn("first", ui._worker_generation, (first,))
+        ui._start_turn('first', images=(first,))
+        assert entered.wait(3)
+        ui._start_turn('second', images=(second,))
+        release.set()
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and ui._worker_active:
+            ui._poll()
+            time.sleep(.005)
         ui._poll()
         assert tuple(ui._composer.items.values()) == (second,)
         assert not ui._local_images
         assert not ui._worker_active
     finally:
+        release.set()
         ui._request_exit()
+        ui._session_events.close()
 
 
 @pytest.mark.parametrize("limits", [None, [], {"count": "four"}, {"bytes": True}, {"types": 123}])

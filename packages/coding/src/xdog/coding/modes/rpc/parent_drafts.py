@@ -19,6 +19,7 @@ from typing import Any
 
 from xdog.agent.supervision_transfer import settled_image_work
 from xdog.coding.core.agent_session import AgentSession
+from xdog.coding.core.sessions.operations import run_control
 from xdog.coding.modes.rpc.navigation import RpcNavigation
 from xdog.tui.attachments import attachment
 from xdog.tui.child_draft_store import ChildDraftStore, encode_draft
@@ -306,7 +307,7 @@ class RpcParentDrafts:
             finally:
                 if not delivered and isinstance(reply.get('review_id'), str):
                     self._retire_review(reply['review_id'])
-        self.task = asyncio.create_task(run())
+        self.task = asyncio.create_task(run_control(self.session, run, name="rpc-parent_drafts"))
 
     def cancel(self, packet: dict[str, Any]) -> None:
         self._owner(packet)

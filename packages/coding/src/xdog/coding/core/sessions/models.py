@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import Future
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from xdog.agent.session_input import SessionInput
 from xdog.ai.types import AssistantMessage
@@ -26,6 +26,7 @@ class TurnResult:
     status: str
     response: AssistantMessage | None
     error: str = ""
+    cause: BaseException | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)

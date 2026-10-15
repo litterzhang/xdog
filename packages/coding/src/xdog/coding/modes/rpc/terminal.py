@@ -9,6 +9,7 @@ from typing import Any
 from xdog.agent.extensions.terminal_input import event_decision
 from xdog.coding.config import get_config_dir
 from xdog.coding.core.agent_session import AgentSession
+from xdog.coding.core.sessions.operations import run_control
 from xdog.coding.modes.rpc.navigation import RpcNavigation
 from xdog.coding.modes.rpc.terminal_data import editable_data
 from xdog.tui.prompt_keymap import PromptKeymap
@@ -117,7 +118,7 @@ class RpcTerminal:
                 result['error'] = 'Terminal input unavailable/unsafe; original not replayed'
             if not self.closed:
                 self.emit(result)
-        self.task = asyncio.create_task(run())
+        self.task = asyncio.create_task(run_control(self.session, run, name="rpc-terminal"))
         def done(task: asyncio.Task[None]) -> None:
             if task.cancelled() and not admitted[0] and not self.closed:
                 self.emit({'type': 'terminal_result', **scope, 'kind': kind, 'success': False,

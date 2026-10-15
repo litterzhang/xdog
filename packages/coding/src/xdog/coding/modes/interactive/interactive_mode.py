@@ -340,8 +340,8 @@ class InteractiveMode:
 
         # Event queue for thread-safe UI updates from agent events
         self._event_queue = EventQueue()
-        from xdog.coding.modes.interactive.external_events import NativeExternalEvents
-        self._external_events = NativeExternalEvents(self)
+        from xdog.coding.modes.interactive.session_events import NativeSessionEvents
+        self._session_events = NativeSessionEvents(self)
         from xdog.coding.modes.interactive.message_inputs import NativeMessageInputs
         self._message_inputs = NativeMessageInputs(self)
         self._saved_worker = SavedSourceWorker(self._event_queue.put)
@@ -506,6 +506,7 @@ class InteractiveMode:
             except ValueError:
                 return False
         generation = extensions.generation
+        release = self._session_events.reserve_producer('terminal')
         async def run(held: HeldTerminalInput) -> dict[str, Any]:
             if extensions.generation != generation or not alive():
                 raise ValueError("Terminal worker selection changed before dispatch")
@@ -513,7 +514,10 @@ class InteractiveMode:
             if not alive():
                 raise ValueError("Child terminal worker/UI owner changed before delivery")
             return result
-        return self._terminal_worker.send(item, run)
+        accepted = self._terminal_worker.send(item, run, settled=release)
+        if not accepted:
+            release()
+        return accepted
 
     @property
     def _is_busy(self) -> bool:
@@ -2196,6 +2200,7 @@ class InteractiveMode:
         self._child_jobs.add(identifier)
         if action == 'start':
             self._child_image_starting = True
+        release = self._session_events.reserve_producer('child-image')
         def work() -> None:
             error = ''
             data: Any = None
@@ -2216,6 +2221,8 @@ class InteractiveMode:
                 data = asyncio.run(run())
             except (Exception, asyncio.CancelledError) as exc:
                 error = str(exc) or 'Child image operation canceled after settlement; inspect before retrying'
+            finally:
+                release()
             self._event_queue.put({'type': 'child_ui_result', 'id': identifier, 'action': action,
                                    'context': context, 'panel_owner': panel.owner_token,
                                    'image_start': action == 'start',
@@ -2270,6 +2277,7 @@ class InteractiveMode:
         def return_alive() -> bool:
             return (not self._exit_requested and self._child_panel is panel and panel.queue is queue_panel
                     and self._child_context_key() == context)
+        release = self._session_events.reserve_producer('child-control')
         def work() -> None:
             error = ""
             data: Any = None
@@ -2282,6 +2290,8 @@ class InteractiveMode:
                     images = decode_recovery(data.pop('image_recovery'))
             except (Exception, asyncio.CancelledError) as exc:
                 error = str(exc) or "Child control canceled after settlement"
+            finally:
+                release()
             self._event_queue.put({"type": "child_ui_result", "id": identifier, "action": action,
                                    "context": context, "error": error, "data": data, 'images': images,
                                    'panel_owner': panel.owner_token,
@@ -2780,9 +2790,9 @@ class InteractiveMode:
         if self._exit_requested:
             return
         try:
-            external = getattr(self, "_external_events", None)
-            if external is not None:
-                external.start()
+            session_events = getattr(self, "_session_events", None)
+            if session_events is not None:
+                session_events.start()
             self._update_header()
             self._update_footer()
             model_name = self._session.model or "unknown"
@@ -2804,6 +2814,9 @@ class InteractiveMode:
                 if self._unsubscribe is not None:
                     self._unsubscribe()
                     self._unsubscribe = None
+                events = getattr(self, '_session_events', None)
+                if events is not None:
+                    events.close()
                 asyncio.run(self._session.children.supervisor.aclose())
                 with self._argument_jobs_lock:
                     argument_threads = tuple(self._argument_threads)
@@ -2984,9 +2997,9 @@ class InteractiveMode:
             return
 
         self._editor.add_to_history(value)
-        external = getattr(self, "_external_events", None)
-        if external is not None:
-            external.human_input()
+        session_events = getattr(self, "_session_events", None)
+        if session_events is not None:
+            session_events.human_input()
 
         # Check for slash commands
         parsed = parse_slash_command(value)
@@ -3029,6 +3042,8 @@ class InteractiveMode:
             rows.extend(f"{entry.id} [{entry.delivery} · {entry.state}{self._queued_image_label(entry.id)}] "
                         f"{entry.content}" for entry in entries)
             self._chat_log.add_system("\n".join(rows))
+        elif self._session_events.change(command.id, command.action, command.content, command.direction):
+            pass  # Receipt and SessionEvents update the display mirror.
         else:
             with self._queue_lock:
                 ids = self._pending_ids.sync(len(self._pending_messages))
@@ -3253,40 +3268,21 @@ class InteractiveMode:
             self._composer.restore(images)
             self._preserve_input(message, "Local queue is full (50); message kept in draft")
             return
-        with self._queue_lock:
-            if self._worker_active:
-                self._pending_messages.append((message, echo))
-                keys = self._pending_ids.sync(len(self._pending_messages))
-                self._local_images[keys[-1]] = images
-                queued = True
-            else:
-                self._worker_active = True
-                self._cancel_requested = False
-                self._worker_generation += 1
-                generation = self._worker_generation
-                self._active_stamp = _TurnStamp(generation, self._cancel_epoch)
-                queued = False
-
-        if queued:
-            self._update_message_queue()
-            self._tui.request_render()
-            return
-
-        self._active_images = images
-        self._active_input_origin = input_origin
-        if echo:
-            self._chat_log.add_user(message + (f"\n[Images: {len(images)}]" if images else ""))
+        events = self._session_events
+        if not self._worker_active:
+            self._worker_generation += 1
+            self._active_stamp = _TurnStamp(self._worker_generation, self._cancel_epoch)
+        self._worker_active = True
+        self._cancel_requested = False
         self._set_busy(True)
-        self._streaming_text = ""
-        self._streaming_thinking = ""
-
-        self._worker_thread = threading.Thread(
-            target=self._run_agent_turn,
-            args=(message, generation, images),
-            kwargs={'input_origin': input_origin} if input_origin != 'user' else {},
-            daemon=True,
-        )
-        self._worker_thread.start()
+        try:
+            events.enqueue(message, images, input_origin, echo=echo)
+        except Exception as exc:
+            self._composer.restore(images)
+            self._preserve_input(message, f"Input not admitted: {exc}")
+            self._worker_active = False
+            self._set_busy(False)
+        self._tui.request_render()
 
     def _preserve_input(self, value: str, notice: str) -> None:
         draft = self._editor.get_text()
@@ -3534,7 +3530,9 @@ class InteractiveMode:
                     self._command_task = None
 
         try:
-            payload = asyncio.run(owned_command())
+            runtime = getattr(captured, 'runtime', None)
+            payload = (runtime.controller.control(owned_command, name=command.name).result()
+                       if runtime is not None else asyncio.run(owned_command()))
         except asyncio.CancelledError:
             notice = ("; an admitted commit may have completed — inspect /transcript before retrying"
                       if command.name == "compact" else
@@ -3622,6 +3620,7 @@ class InteractiveMode:
             component.set_canceled()
         self._tool_components.clear()
 
+        self._session_events.cancel_local()
         self._session.cancel(preserve_identified=True)
         self._permission_waiters.clear()
         self._permission_child = None
@@ -3746,222 +3745,26 @@ class InteractiveMode:
 
     # -- Agent execution --
 
-    def _run_agent_turn(self, message: str, generation: int, images: tuple[Attachment, ...] = (),
-                        *, input_origin: str = 'user') -> None:
-        """Own the turn's event loop so exit cancels pre-turn work as well."""
-        async def owned_turn() -> None:
-            with self._queue_lock:
-                if self._exit_requested:
-                    return
-                self._worker_loop_ref = asyncio.get_running_loop()
-                self._worker_task = asyncio.current_task()
-            try:
-                if input_origin == 'user':
-                    await self._async_agent_queue(message, generation, images)
-                else:
-                    await self._async_agent_queue(message, generation, images, input_origin=input_origin)
-            finally:
-                with self._queue_lock:
-                    self._worker_loop_ref = None
-                    self._worker_task = None
-
-        producer_success = False
-        try:
-            asyncio.run(owned_turn())
-            producer_success = True
-        except (Exception, asyncio.CancelledError) as exc:
-            with self._queue_lock:
-                self._worker_active = False
-                queued = tuple(message for message, _echo in self._pending_messages)
-                self._pending_messages.clear()
-                self._pending_ids.clear()
-                recovered = tuple(item for group in self._local_images.values() for item in group)
-                self._local_images.clear()
-            if recovered:
-                self._event_queue.put({"type": "restore_attachments", "images": recovered})
-            stamp = _TurnStamp(generation, self._active_stamp.cancel_epoch)
-            self._event_queue.put({
-                "type": "queue_changed",
-                "generation": generation,
-                "stamp": stamp,
-            })
-            if isinstance(exc, asyncio.CancelledError):
-                self._event_queue.put({
-                    "type": "restore_draft",
-                    "messages": queued,
-                    "stamp": stamp,
-                })
-                self._event_queue.put({
-                    "type": "turn_end",
-                    "generation": generation,
-                    "stamp": stamp,
-                })
-                return
-            self._event_queue.put({
-                "type": "error",
-                "message": str(exc),
-                "generation": generation,
-                "restore": queued,
-                "stamp": stamp,
-            })
-
-        finally:
-            self._after_run_compaction.worker_finished(generation, producer_success)
-
-    async def _async_agent_queue(
-        self,
-        first_message: str,
-        generation: int | None = None,
-        images: tuple[Attachment, ...] = (),
-        *, input_origin: str = 'user',
-    ) -> None:
-        if generation is None:
-            generation = self._worker_generation
-        message = first_message
-        while not self._exit_requested:
-            try:
-                if input_origin == 'user':
-                    await self._async_agent_turn(message, images)
-                else:
-                    await self._async_agent_turn(message, images, input_origin=input_origin)
-            except (Exception, asyncio.CancelledError) as exc:
-                if input_origin == 'external_event':
-                    self._external_events.finish(message,
-                        status='cancelled' if isinstance(exc, asyncio.CancelledError) else 'failed', error=str(exc))
-                # This tuple owns the CURRENT turn, not necessarily the worker's
-                # first input. Restore it before the error/settlement receipt.
-                if images and input_origin == 'user':
-                    self._event_queue.put({"type": "restore_attachments", "images": images})
-                raise
-            if input_origin == 'external_event':
-                error = self._session.agent.state.error
-                self._external_events.finish(message, status='failed' if error else 'succeeded', error=error)
-            self._session._expire_turn_scoped_skills()
-
-            with self._queue_lock:
-                if self._cancel_requested:
-                    self._cancel_requested = False
-                    settling = tuple(text for text, _echo in self._pending_messages)
-                    self._pending_messages.clear()
-                    self._pending_ids.clear()
-                    recovered = tuple(item for group in self._local_images.values() for item in group)
-                    self._local_images.clear()
-                    if recovered:
-                        self._event_queue.put({"type": "restore_attachments", "images": recovered})
-                    next_item = None
-                    self._worker_active = False
-                elif self._pending_messages:
-                    settling = ()
-                    keys = self._pending_ids.sync(len(self._pending_messages))
-                    images = self._local_images.pop(keys[0], ())
-                    next_item = self._pending_messages.popleft()
-                    self._pending_ids.pop()
-                else:
-                    settling = ()
-                    next_item = None
-                if next_item is None:
-                    self._worker_active = False
-
-            stamp = _TurnStamp(generation, self._active_stamp.cancel_epoch)
-            if settling:
-                self._event_queue.put({
-                    "type": "restore_draft",
-                    "messages": settling,
-                    "stamp": stamp,
-                })
-            if next_item is None:
-                break
-
-            message, echo = next_item
-            input_origin = 'user'  # Existing local next-turn queue contains explicit user submissions.
-            self._event_queue.put({
-                "type": "queued_message_started",
-                "message": message,
-                "echo": echo,
-                "image_count": len(images),
-                "images": images,
-                "stamp": stamp,
-            })
-
-        stamp = _TurnStamp(generation, self._active_stamp.cancel_epoch)
-        self._event_queue.put({"type": "queue_changed", "generation": generation, "stamp": stamp})
-        self._event_queue.put({"type": "turn_end", "generation": generation, "stamp": stamp})
-
     async def _async_agent_turn(self, message: str, images: tuple[Attachment, ...] = (),
                                 *, input_origin: str = 'user') -> None:
-        """Run one agent turn without releasing the queue worker."""
-        compaction_producer = self._after_run_compaction.begin()
-        compaction_success = False
+        """Submit prepared native input; do not duplicate the session's turn loop."""
         stamp = self._active_stamp
         self._dispatch_stamp = stamp
         self._dispatch_images = images
         self._dispatch_input_origin = input_origin
         self._dispatch_failed_message = None
-        self._session.permissions.set_request_handler(
-            lambda request: self._put_turn_event(
-                "permission_request",
-                stamp=stamp,
-                request=request,
-            )
-        )
         try:
-            from xdog.agent.context_messages import ContextMessages
-            context_store = getattr(self._session, 'context_messages', None)
-            if not isinstance(context_store, ContextMessages):
-                context_store = None  # Older/minimal host adapters have no owned context-message store.
-            context_snapshot = (await context_store.capture()
-                                if input_origin == 'user' and context_store is not None else None)
-            captured_session = self._session.session_id
-            self._bind_extension_dialogs()
-            self._session.extensions.publish = lambda event: self._event_queue.put(
-                {**event, "extension_session": captured_session})
-            await self._session.initialize_extensions()
-            await self._session.extensions.event("turn_start", {"user_input": message})
-            await self._session.initialize_extensions()  # Lifecycle hooks may update provider metadata.
-            if images:
-                from xdog.ai.utils.image_files import validate_references
-                await asyncio.to_thread(validate_references, self._image_parts(images), self._session.model_info)
-            self._session._rebuild_system_prompt()
-            await self._session._maybe_compact()
-            if self._exit_requested:
-                return
-
-            self._session.validate_image_inputs(tuple((item.mime_type, len(item.data)) for item in images))
-            if input_origin == 'external_event':
-                from xdog.agent.external_event import message as external_message
-                event_stream = await self._session.agent.prompt(external_message(message))
-            elif input_origin == 'custom_context':
-                from xdog.agent.core import CustomAgentMessage
-                from xdog.agent.extensions.context_message import TYPE
-                history = self._session.agent.messages
-                if not history or not isinstance(history[-1], CustomAgentMessage) or history[-1].type != TYPE:
-                    raise ValueError('Reviewed canonical context tail changed before continuation')
-                from xdog.agent.extensions.context_message import images as context_images
-                from xdog.agent.supervision_transfer import settled_image_work
-                from xdog.ai.utils.image_files import validate_references
-                await settled_image_work(lambda: validate_references(
-                    context_images((history[-1],)), self._session.model_info))
-                event_stream = await self._session.agent.continue_()
-            elif context_snapshot is None:
-                event_stream = await self._session.agent.prompt(message, images=list(self._image_parts(images)) or None)
+            events = getattr(self, '_session_events', None)
+            if events is not None:
+                result = await events.submit(message, images, input_origin)
+                if result.cause is not None:
+                    raise result.cause
+                if result.status == 'cancelled':
+                    raise asyncio.CancelledError
             else:
-                assert context_store is not None
-                event_stream = await self._session.agent.prompt(message, images=list(self._image_parts(images)) or None,
-                    initial_prompt_context=lambda: context_store.admit(context_snapshot))
-            async for event in event_stream:
-                self._dispatch_agent_event(event)
-                if isinstance(event, MessageEndEvent):
-                    await self._session.extensions.event("message_end", {
-                        "role": getattr(event.message, "role", "custom")})
-                if isinstance(event, ToolExecutionEndEvent):
-                    await self._session.extensions.event("tool_end", {
-                        "tool_name": event.tool_name, "is_error": event.is_error})
-
-            self._session._persist()
-            await self._session.extensions.event("turn_end")
-            compaction_success = not bool(self._session.agent.state.error)
+                # Minimal embedded/native adapters still use the shared SDK owner.
+                await self._session.send_message(message, images=self._image_parts(images), input_origin=input_origin)
         finally:
-            self._after_run_compaction.finish(compaction_producer, compaction_success)
             undelivered = [dict(id=item.id, content=item.content) for item in self._session.agent.drain_inputs()]
             if self._cancel_requested or self._exit_requested:
                 self._session.agent.clear_all_queues()
@@ -3970,13 +3773,18 @@ class InteractiveMode:
             self._session.agent.drain_handled_inputs()
             self._dispatch_stamp = None
             self._dispatch_images = ()
-            self._session.permissions.set_request_handler(
-                self._on_permission_request if getattr(self._session, "external_events", None) is not None else None)
+
+    def _emit_agent_ui_event(self, event: Mapping[str, Any]) -> None:
+        sink = getattr(self, '_turn_event_sink', None)
+        if sink is None:
+            self._event_queue.put(event)
+        else:
+            sink(event)
 
     def _put_turn_event(self, event_type: str, *, stamp: _TurnStamp | None = None, **payload: Any) -> None:
         dispatch_stamp = getattr(self, "_dispatch_stamp", None)
         stamp = stamp or dispatch_stamp or getattr(self, "_active_stamp", _TurnStamp(0, 0))
-        self._event_queue.put({
+        self._emit_agent_ui_event({
             "type": event_type,
             "stamp": stamp,
             **payload,
@@ -3997,9 +3805,9 @@ class InteractiveMode:
                 changed = event.message.content
                 data["content"] = (changed if isinstance(changed, str) else
                                    "\n".join(p.text for p in changed if isinstance(p, TextContent)))
-            self._event_queue.put(data)
+            self._emit_agent_ui_event(data)
         elif isinstance(event, InputConsumedEvent):
-            self._event_queue.put({"type": "input_consumed", "id": event.input.id, "content": event.input.content})
+            self._emit_agent_ui_event({"type": "input_consumed", "id": event.input.id, "content": event.input.content})
         elif isinstance(event, MessageStartEvent):
             if isinstance(event.message, AssistantMessage):
                 self._put_turn_event("assistant_start")
@@ -4215,9 +4023,9 @@ class InteractiveMode:
                 self._set_status_busy(label)
                 changed = True
 
-        external = getattr(self, "_external_events", None)
-        if external is not None:
-            changed = external.poll() or changed
+        session_events = getattr(self, "_session_events", None)
+        if session_events is not None:
+            changed = session_events.poll() or changed
         if changed:
             self._tui.request_render()
 
@@ -4311,8 +4119,22 @@ class InteractiveMode:
         """Handle a UI event from the event queue."""
         event = thaw_event(event)
         event_type = event.get("type")
-        if event_type == 'external_event_status':
-            return  # The idle poll presents a coalesced authoritative snapshot.
+        if event_type == 'native_admission_failed':
+            self._session_events.admission_failed(event['id'], event['error'])
+            return
+        if event_type == 'native_queue_ack':
+            if not event['success']:
+                if event['action'] == 'edit':
+                    self._preserve_input(event['content'], event['error'])
+                else:
+                    self._chat_log.add_system(event['error'])
+            else:
+                self._chat_log.add_system('Queue change applied: ' + event['action'])
+            return
+        if event_type == 'session_event':
+            self._session_events.display(event['event'])
+            self._tui.request_render()
+            return
         if event_type == 'mcp_elicitation_failed':
             binding = self._elicitation_bindings.get(str(event['server']))
             if binding is not None and binding[1] == event['lease']:
