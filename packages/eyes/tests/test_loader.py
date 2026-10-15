@@ -16,24 +16,27 @@ def test_relative_root_and_defaults(tmp_path, observer_data):
         result.name = "changed"
 
 
-@pytest.mark.parametrize("collection,field,value", [
-    ("sources", "unknown", True),
-    ("sources", "type", "http"),
-    ("sources", "poll_interval_ms", True),
-    ("sources", "max_files", 0),
-    ("sources", "include", ["../secret"]),
-    ("sources", "include", ["[ab].py"]),
-    ("sources", "include", ["!private"]),
-    ("sources", "include", []),
-    ("detectors", "source", "missing"),
-    ("detectors", "debounce_ms", float("nan")),
-    ("detectors", "max_batch_delay_ms", 1),
-    ("handlers", "target", "other-session"),
-    ("handlers", "instruction", ""),
-    ("routes", "handler", "missing"),
-    ("routes", "event_types", ["file.modified", "file.modified"]),
-    ("routes", "event_types", ["arbitrary"]),
-])
+@pytest.mark.parametrize(
+    "collection,field,value",
+    [
+        ("sources", "unknown", True),
+        ("sources", "type", "http"),
+        ("sources", "poll_interval_ms", True),
+        ("sources", "max_files", 0),
+        ("sources", "include", ["../secret"]),
+        ("sources", "include", ["[ab].py"]),
+        ("sources", "include", ["!private"]),
+        ("sources", "include", []),
+        ("detectors", "source", "missing"),
+        ("detectors", "debounce_ms", float("nan")),
+        ("detectors", "max_batch_delay_ms", 1),
+        ("handlers", "target", "other-session"),
+        ("handlers", "instruction", ""),
+        ("routes", "handler", "missing"),
+        ("routes", "event_types", ["file.modified", "file.modified"]),
+        ("routes", "event_types", ["arbitrary"]),
+    ],
+)
 def test_invalid_configuration_rejected(tmp_path, observer_data, collection, field, value):
     from xdog.eyes.errors import ObserverValidationError
     from xdog.eyes.loader import parse
@@ -99,3 +102,36 @@ def test_definition_text_respects_host_protocol_capacity(tmp_path, observer_data
         observer_data["handlers"][0]["instruction"] = "x" * 65537
     with pytest.raises(ObserverValidationError):
         parse(observer_data, base_dir=tmp_path)
+
+
+def test_v2_acp_target_is_explicit(tmp_path, observer_data):
+    from xdog.eyes.errors import ObserverValidationError
+    from xdog.eyes.loader import parse
+
+    definition = parse(observer_data, base_dir=tmp_path)
+    assert definition.version == 2
+    assert definition.handlers[0].session == "session-1"
+    assert definition.handlers[0].command == ("xdog-coding", "--acp")
+    observer_data["handlers"][0].pop("session")
+    with pytest.raises(ObserverValidationError):
+        parse(observer_data, base_dir=tmp_path)
+
+
+@pytest.mark.parametrize("argv", ["xdog-coding --acp", [], [""], ["arg\x00bad"], ["\ud800"], [123]])
+def test_acp_command_is_utf8_argv_not_a_shell_string(tmp_path, observer_data, argv):
+    from xdog.eyes.errors import ObserverValidationError
+    from xdog.eyes.loader import parse
+
+    observer_data["handlers"][0]["command"] = argv
+    with pytest.raises(ObserverValidationError):
+        parse(observer_data, base_dir=tmp_path)
+
+
+def test_v1_fails_with_an_explicit_migration_diagnostic(tmp_path, observer_data):
+    from xdog.eyes.errors import ObserverValidationError
+    from xdog.eyes.loader import parse
+
+    observer_data["version"] = 1
+    with pytest.raises(ObserverValidationError, match="migrat") as error:
+        parse(observer_data, base_dir=tmp_path)
+    assert error.value.code == "unknown_version"

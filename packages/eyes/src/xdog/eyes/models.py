@@ -33,8 +33,9 @@ class DetectorDef:
 @dataclass(frozen=True)
 class HandlerDef:
     id: str
-    type: Literal["session.notify"]
-    target: Literal["current"]
+    type: Literal["acp"]
+    command: tuple[str, ...]
+    session: str
     instruction: str
 
 
@@ -48,7 +49,7 @@ class RouteDef:
 
 @dataclass(frozen=True)
 class ObserverDef:
-    version: Literal[1]
+    version: Literal[2]
     name: str
     sources: tuple[SourceDef, ...]
     detectors: tuple[DetectorDef, ...]

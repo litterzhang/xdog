@@ -1,5 +1,6 @@
 import asyncio
 
+from xdog.eyes.events import DeliveryResult
 from xdog.eyes.loader import parse
 from xdog.eyes.models import FileState
 from xdog.eyes.sources.file import FileSnapshot
@@ -9,8 +10,9 @@ async def test_shared_source_routes_and_runtime_status(tmp_path, observer_data):
     from xdog.eyes.executor import observe
     from xdog.eyes.testing import FakeClock
 
-    observer_data["routes"].append({"id": "second-route", "detector": "changes", "handler": "notify",
-                                     "event_types": ["file.created"]})
+    observer_data["routes"].append(
+        {"id": "second-route", "detector": "changes", "handler": "notify", "event_types": ["file.created"]}
+    )
     definition = parse(observer_data, base_dir=tmp_path)
     cancel = asyncio.Event()
     clock = FakeClock(limit=5.0)
@@ -22,15 +24,23 @@ async def test_shared_source_routes_and_runtime_status(tmp_path, observer_data):
 
     async def deliver(value):
         deliveries.append(value)
-        return "accepted"
+        return DeliveryResult("succeeded")
 
     def emit(event):
         statuses.append(event.kind)
-        if statuses.count("delivery_accepted") == 2:
+        if statuses.count("delivery_succeeded") == 2:
             cancel.set()
 
-    await observe(definition, registration_id="registration", scanner=scanner, deliver=deliver,
-                  emit=emit, clock=clock.now, sleep=clock.sleep, cancel=cancel)
+    await observe(
+        definition,
+        registration_id="registration",
+        scanner=scanner,
+        deliver=deliver,
+        emit=emit,
+        clock=clock.now,
+        sleep=clock.sleep,
+        cancel=cancel,
+    )
     assert scans == ["files", "files"]
     assert {item.route_id for item in deliveries} == {"review", "second-route"}
     assert len({item.id for item in deliveries}) == 2
@@ -51,11 +61,11 @@ async def test_retries_keep_identity_and_backoff(tmp_path, observer_data):
     async def deliver(value):
         attempts.append((value.id, now[0]))
         if len(attempts) == 1:
-            raise OSError("lost ACK")
-        return "duplicate"
+            return DeliveryResult("not-sent", "connection unavailable before write")
+        return DeliveryResult("succeeded")
 
     def emit(event):
-        if event.kind == "delivery_accepted":
+        if event.kind == "delivery_succeeded":
             cancel.set()
 
     async def sleep(seconds):
@@ -63,8 +73,16 @@ async def test_retries_keep_identity_and_backoff(tmp_path, observer_data):
         assert now[0] < 6
         await asyncio.sleep(0)
 
-    await observe(parse(observer_data, base_dir=tmp_path), registration_id="registration", scanner=scanner,
-                  deliver=deliver, emit=emit, clock=lambda: now[0], sleep=sleep, cancel=cancel)
+    await observe(
+        parse(observer_data, base_dir=tmp_path),
+        registration_id="registration",
+        scanner=scanner,
+        deliver=deliver,
+        emit=emit,
+        clock=lambda: now[0],
+        sleep=sleep,
+        cancel=cancel,
+    )
     assert len(attempts) == 2
     assert attempts[0][0] == attempts[1][0]
     assert attempts[1][1] - attempts[0][1] >= 0.25
@@ -85,7 +103,7 @@ async def test_failed_scan_does_not_create_deletions(tmp_path, observer_data):
 
     async def deliver(value):
         deliveries.append(value)
-        return "accepted"
+        return DeliveryResult("succeeded")
 
     def emit(event):
         statuses.append(event.kind)
@@ -96,8 +114,16 @@ async def test_failed_scan_does_not_create_deletions(tmp_path, observer_data):
             cancel.set()
         await asyncio.sleep(0)
 
-    await observe(parse(observer_data, base_dir=tmp_path), registration_id="registration", scanner=scanner,
-                  deliver=deliver, emit=emit, clock=lambda: now[0], sleep=sleep, cancel=cancel)
+    await observe(
+        parse(observer_data, base_dir=tmp_path),
+        registration_id="registration",
+        scanner=scanner,
+        deliver=deliver,
+        emit=emit,
+        clock=lambda: now[0],
+        sleep=sleep,
+        cancel=cancel,
+    )
     assert "source_error" in statuses
     assert deliveries == []
 
@@ -110,12 +136,15 @@ async def test_overflow_is_visible_and_pauses_registration(tmp_path, observer_da
 
     async def scanner(source):
         scans[0] += 1
-        return FileSnapshot(()) if scans[0] == 1 else FileSnapshot(
-            tuple((f"{i}.py", FileState("new", 3)) for i in range(257)))
+        return (
+            FileSnapshot(())
+            if scans[0] == 1
+            else FileSnapshot(tuple((f"{i}.py", FileState("new", 3)) for i in range(257)))
+        )
 
     async def deliver(value):
         deliveries.append(value)
-        return "accepted"
+        return DeliveryResult("succeeded")
 
     def emit(event):
         statuses.append(event)
@@ -127,13 +156,21 @@ async def test_overflow_is_visible_and_pauses_registration(tmp_path, observer_da
         assert now[0] < 5
         await asyncio.sleep(0)
 
-    await observe(parse(observer_data, base_dir=tmp_path), registration_id="registration", scanner=scanner,
-                  deliver=deliver, emit=emit, clock=lambda: now[0], sleep=sleep, cancel=cancel)
+    await observe(
+        parse(observer_data, base_dir=tmp_path),
+        registration_id="registration",
+        scanner=scanner,
+        deliver=deliver,
+        emit=emit,
+        clock=lambda: now[0],
+        sleep=sleep,
+        cancel=cancel,
+    )
     assert any(event.kind == "paused" and "overflow" in event.error for event in statuses)
     assert deliveries == []
 
 
-async def test_stale_owner_stops_and_closes_inflight_work(tmp_path, observer_data):
+async def test_retired_owner_pauses_and_closes_inflight_work(tmp_path, observer_data):
     from xdog.eyes.executor import observe
 
     cancel = asyncio.Event()
@@ -144,17 +181,29 @@ async def test_stale_owner_stops_and_closes_inflight_work(tmp_path, observer_dat
         return FileSnapshot(()) if scans[0] == 1 else FileSnapshot((("a", FileState("new", 3)),))
 
     async def deliver(value):
-        return "stale-owner"
+        return DeliveryResult("cancelled", "owner retired; stop/rebaseline")
 
     async def sleep(seconds):
         now[0] += seconds
         assert now[0] < 5
         await asyncio.sleep(0)
 
-    await observe(parse(observer_data, base_dir=tmp_path), registration_id="registration", scanner=scanner,
-                  deliver=deliver, emit=lambda event: statuses.append(event.kind), clock=lambda: now[0],
-                  sleep=sleep, cancel=cancel)
-    assert cancel.is_set()
+    def emit(event):
+        statuses.append(event.kind)
+        if event.kind == "paused":
+            cancel.set()
+
+    await observe(
+        parse(observer_data, base_dir=tmp_path),
+        registration_id="registration",
+        scanner=scanner,
+        deliver=deliver,
+        emit=emit,
+        clock=lambda: now[0],
+        sleep=sleep,
+        cancel=cancel,
+    )
+    assert "delivery_cancelled" in statuses and cancel.is_set()
     assert statuses[-1] == "stopped"
 
 
@@ -170,10 +219,10 @@ async def test_paused_delivery_waits_for_explicit_resume(tmp_path, observer_data
 
     async def deliver(value):
         attempts.append((value.id, now[0]))
-        return "paused" if len(attempts) == 1 else "accepted"
+        return DeliveryResult("paused" if len(attempts) == 1 else "succeeded")
 
     def emit(event):
-        if event.kind == "delivery_accepted":
+        if event.kind == "delivery_succeeded":
             cancel.set()
 
     async def sleep(seconds):
@@ -183,8 +232,17 @@ async def test_paused_delivery_waits_for_explicit_resume(tmp_path, observer_data
         assert now[0] < 4
         await asyncio.sleep(0)
 
-    await observe(parse(observer_data, base_dir=tmp_path), registration_id="registration", scanner=scanner,
-                  deliver=deliver, emit=emit, clock=lambda: now[0], sleep=sleep, cancel=cancel, resume=resume)
+    await observe(
+        parse(observer_data, base_dir=tmp_path),
+        registration_id="registration",
+        scanner=scanner,
+        deliver=deliver,
+        emit=emit,
+        clock=lambda: now[0],
+        sleep=sleep,
+        cancel=cancel,
+        resume=resume,
+    )
     assert len(attempts) == 2
     assert attempts[0][0] == attempts[1][0]
     assert attempts[1][1] >= 3
@@ -214,8 +272,16 @@ async def test_cancel_settles_active_delivery(tmp_path, observer_data):
         assert now[0] < 4
         await asyncio.sleep(0)
 
-    await observe(parse(observer_data, base_dir=tmp_path), registration_id="registration", scanner=scanner,
-                  deliver=deliver, emit=lambda event: None, clock=lambda: now[0], sleep=sleep, cancel=cancel)
+    await observe(
+        parse(observer_data, base_dir=tmp_path),
+        registration_id="registration",
+        scanner=scanner,
+        deliver=deliver,
+        emit=lambda event: None,
+        clock=lambda: now[0],
+        sleep=sleep,
+        cancel=cancel,
+    )
     assert len(started) == 1
     assert settled == started
     assert scans[0] >= 3
@@ -241,10 +307,18 @@ async def test_unexpected_handler_failure_is_visible_and_not_retried(tmp_path, o
         if event.kind == "paused":
             cancel.set()
 
-    await observe(parse(observer_data, base_dir=tmp_path), registration_id="registration", scanner=scanner,
-                  deliver=deliver, emit=emit, clock=clock.now, sleep=clock.sleep, cancel=cancel)
+    await observe(
+        parse(observer_data, base_dir=tmp_path),
+        registration_id="registration",
+        scanner=scanner,
+        deliver=deliver,
+        emit=emit,
+        clock=clock.now,
+        sleep=clock.sleep,
+        cancel=cancel,
+    )
     assert len(attempts) == 1
-    assert any(event.kind == "delivery_failed" and "handler failed" in event.error for event in statuses)
+    assert any(event.kind == "delivery_outcome_unknown" and "handler failed" in event.error for event in statuses)
 
 
 async def test_source_health_recovers_without_a_false_change(tmp_path, observer_data):
@@ -268,7 +342,15 @@ async def test_source_health_recovers_without_a_false_change(tmp_path, observer_
         if calls[0] >= 3 and event.kind == "watching":
             cancel.set()
 
-    await observe(parse(observer_data, base_dir=tmp_path), registration_id="registration", scanner=scanner,
-                  deliver=deliver, emit=emit, clock=clock.now, sleep=clock.sleep, cancel=cancel)
+    await observe(
+        parse(observer_data, base_dir=tmp_path),
+        registration_id="registration",
+        scanner=scanner,
+        deliver=deliver,
+        emit=emit,
+        clock=clock.now,
+        sleep=clock.sleep,
+        cancel=cancel,
+    )
     assert statuses.count("watching") == 2
     assert "source_error" in statuses

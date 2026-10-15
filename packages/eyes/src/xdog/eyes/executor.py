@@ -1,15 +1,16 @@
 """Continuous readiness-based observation, separate from a finite workflow run."""
+
 from __future__ import annotations
 
 import asyncio
 import json
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 
 from xdog.eyes.detectors.file_change import FileChangeDetector
 from xdog.eyes.errors import SourceError
-from xdog.eyes.events import RuntimeEvent
+from xdog.eyes.events import DeliveryResult, RuntimeEvent, prompt_parameters
 from xdog.eyes.models import Event, ObserverDef, SourceDef
 from xdog.eyes.sources.file import FileSnapshot
 
@@ -32,21 +33,26 @@ class _Pending:
     delivery: Delivery
     retry_at: float = 0.0
     attempts: int = 0
-    task: asyncio.Task[str] | None = None
+    task: asyncio.Task[DeliveryResult] | None = None
     paused: bool = False
+    terminal: bool = False
 
 
 def _bounded(delivery: Delivery) -> bool:
-    paths = {evidence.path for event in delivery.events for evidence in event.evidence}
-    return (len(paths) <= MAX_PATHS
-            and len(json.dumps(asdict(delivery), ensure_ascii=True, allow_nan=False).encode()) <= MAX_DELIVERY_BYTES)
+    paths = {(evidence.root, evidence.path) for event in delivery.events for evidence in event.evidence}
+    try:
+        encoded = json.dumps(prompt_parameters(delivery), ensure_ascii=True, allow_nan=False).encode()
+    except (ValueError, TypeError, UnicodeError):
+        return False
+    return len(paths) <= MAX_PATHS and len(encoded) <= MAX_DELIVERY_BYTES
 
 
 async def observe(
     definition: ObserverDef,
-    *, registration_id: str,
+    *,
+    registration_id: str,
     scanner: Callable[[SourceDef], Awaitable[FileSnapshot]],
-    deliver: Callable[[Delivery], Awaitable[str]],
+    deliver: Callable[[Delivery], Awaitable[DeliveryResult]],
     emit: Callable[[RuntimeEvent], None],
     clock: Callable[[], float],
     sleep: Callable[[float], Awaitable[None]],
@@ -54,8 +60,9 @@ async def observe(
     resume: asyncio.Event | None = None,
 ) -> None:
     sources = {item.id: item for item in definition.sources}
-    detectors = {item.id: FileChangeDetector(item, source_root=str(sources[item.source].root))
-                 for item in definition.detectors}
+    detectors = {
+        item.id: FileChangeDetector(item, source_root=str(sources[item.source].root)) for item in definition.detectors
+    }
     handlers = {item.id: item for item in definition.handlers}
     scans: dict[str, asyncio.Task[FileSnapshot]] = {}
     next_scan = {item.id: clock() for item in definition.sources}
@@ -66,16 +73,23 @@ async def observe(
     overflowed = False
 
     def report(kind: str, *, source: str = "", delivery: Delivery | None = None, error: str = "") -> None:
-        emit(RuntimeEvent(kind, registration_id, source_id=source,
-                          route_id=delivery.route_id if delivery else "",
-                          delivery_id=delivery.id if delivery else "", error=error,
-                          event_ids=tuple(event.id for event in delivery.events) if delivery else ()))
+        emit(
+            RuntimeEvent(
+                kind,
+                registration_id,
+                source_id=source,
+                route_id=delivery.route_id if delivery else "",
+                delivery_id=delivery.id if delivery else "",
+                error=error,
+                event_ids=tuple(event.id for event in delivery.events) if delivery else (),
+            )
+        )
 
     def enqueue(route_id: str, instruction: str, events: tuple[Event, ...]) -> bool:
         created = Delivery(uuid.uuid4().hex, registration_id, route_id, instruction, events)
         current = pending.get(route_id)
         # Never alter a delivery after its first attempt: a lost ACK may hide acceptance.
-        previous = (current.delivery if current is not None and current.attempts == 0 else backlog.get(route_id))
+        previous = current.delivery if current is not None and current.attempts == 0 else backlog.get(route_id)
         candidate = replace(previous, events=previous.events + events) if previous else created
         if not _bounded(candidate) or (previous is None and len(pending) + len(backlog) >= MAX_PENDING):
             report("paused", delivery=created, error="overflow: stop and restart to establish a new baseline")
@@ -92,7 +106,7 @@ async def observe(
     async def collect(source: SourceDef) -> FileSnapshot:
         return await scanner(source)
 
-    async def send(value: Delivery) -> str:
+    async def send(value: Delivery) -> DeliveryResult:
         return await deliver(value)
 
     report("baselining")
@@ -101,10 +115,53 @@ async def observe(
             now = clock()
             if resume is not None and resume.is_set():
                 resume.clear()
-                if not overflowed:
+                if overflowed or any(item.terminal for item in pending.values()):
+                    report("paused", error="Execution/overflow cannot be replayed: stop and restart to rebaseline")
+                else:
                     for item in pending.values():
                         item.paused = False
                         item.retry_at = now
+            # Resolve processing before touching source evidence. An ambiguous
+            # result freezes observation immediately, not after another scan.
+            for route_id, item in list(pending.items()):
+                if item.task is None or not item.task.done():
+                    continue
+                finished, item.task = item.task, None
+                try:
+                    result = finished.result()
+                    if not isinstance(result, DeliveryResult):
+                        raise TypeError("Handler returned no DeliveryResult; execution outcome is unknown")
+                except asyncio.CancelledError:
+                    result = DeliveryResult("outcome-unknown", "Handler task cancelled after a possible send")
+                except Exception as exc:
+                    result = DeliveryResult("outcome-unknown", str(exc))
+                if result.status == "succeeded":
+                    report("delivery_succeeded", delivery=item.delivery)
+                    del pending[route_id]
+                    if route_id in backlog:
+                        pending[route_id] = _Pending(backlog.pop(route_id))
+                elif result.status == "not-sent":
+                    report("delivery_retry", delivery=item.delivery, error=result.error)
+                    item.retry_at = now + min(5.0, 0.25 * 2 ** min(item.attempts - 1, 5))
+                else:
+                    item.paused = True
+                    item.terminal = result.status != "paused"
+                    if item.terminal:
+                        report(
+                            "delivery_" + result.status.replace("-", "_"), delivery=item.delivery, error=result.error
+                        )
+                    report(
+                        "paused",
+                        delivery=item.delivery,
+                        error=(
+                            result.error + "; stop/rebaseline, never blind retry" if item.terminal else result.error
+                        ),
+                    )
+            blocked = overflowed or any(item.paused for item in pending.values())
+            if blocked or cancel.is_set():
+                if not cancel.is_set():
+                    await sleep(0.05)
+                continue
             for source in definition.sources:
                 task = scans.get(source.id)
                 if task is not None and task.done():
@@ -131,8 +188,11 @@ async def observe(
                     if not events:
                         continue
                     for event in events:
-                        emit(RuntimeEvent("event_detected", registration_id, source_id=event.source_id,
-                                          event_ids=(event.id,)))
+                        emit(
+                            RuntimeEvent(
+                                "event_detected", registration_id, source_id=event.source_id, event_ids=(event.id,)
+                            )
+                        )
                     for route in definition.routes:
                         matching = tuple(event for event in events if event.type in route.event_types)
                         if route.detector == detector_id and matching:
@@ -141,33 +201,10 @@ async def observe(
                                 break
                     if overflowed:
                         break
-            for route_id, item in list(pending.items()):
-                if item.task is not None and item.task.done():
-                    finished, item.task = item.task, None
-                    try:
-                        status = finished.result()
-                    except (OSError, TimeoutError) as exc:
-                        status = "busy"
-                        report("delivery_retry", delivery=item.delivery, error=str(exc))
-                    except Exception as exc:
-                        status = "rejected"
-                        report("delivery_failed", delivery=item.delivery, error=str(exc))
-                    if status in {"accepted", "duplicate"}:
-                        report("delivery_accepted", delivery=item.delivery)
-                        del pending[route_id]
-                        if route_id in backlog:
-                            pending[route_id] = _Pending(backlog.pop(route_id))
-                        continue
-                    if status == "stale-owner":
-                        cancel.set()
-                        break
-                    if status != "busy":
-                        item.paused = True
-                        report("paused", delivery=item.delivery, error=status)
-                    else:
-                        item.retry_at = now + min(5.0, 0.25 * 2 ** min(item.attempts - 1, 5))
+            for item in pending.values():
                 if not overflowed and not item.paused and item.task is None and now >= item.retry_at:
                     item.attempts += 1
+                    report("delivery_processing", delivery=item.delivery)
                     item.task = asyncio.create_task(send(item.delivery))
             if not cancel.is_set():
                 await sleep(0.05)
@@ -192,8 +229,15 @@ async def observe(
 
 class Registration:
     """Own and await one observer task; active state is not persisted."""
-    def __init__(self, identifier: str, definition: ObserverDef,
-                 task: asyncio.Task[None], cancel: asyncio.Event, resume: asyncio.Event) -> None:
+
+    def __init__(
+        self,
+        identifier: str,
+        definition: ObserverDef,
+        task: asyncio.Task[None],
+        cancel: asyncio.Event,
+        resume: asyncio.Event,
+    ) -> None:
         self.id = identifier
         self.definition = definition
         self.task = task

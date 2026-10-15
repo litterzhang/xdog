@@ -2115,6 +2115,12 @@ requires-dist = [
 name = "xdog-eyes"
 version = "2.4.1"
 source = { editable = "packages/eyes" }
+dependencies = [
+    { name = "agent-client-protocol", marker = "python_full_version < '3.15'" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "agent-client-protocol", marker = "python_full_version < '3.15'", specifier = ">=0.12.1,<0.13" }]
 
 [[package]]
 name = "xdog-flow"

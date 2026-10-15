@@ -1,4 +1,5 @@
 """Load and validate the complete observer before starting any side effects."""
+
 from __future__ import annotations
 
 import json
@@ -57,23 +58,30 @@ def _patterns(value: object, path: str, *, empty: bool = False) -> tuple[str, ..
     for index, item in enumerate(_items(value, path, empty=empty)):
         pattern = _text(item, f"{path}[{index}]", maximum=4096)
         segments = pattern.split("/")
-        if (pattern.startswith(("/", "!")) or any(part in {"", ".", ".."} for part in segments)
-                or any(char in pattern for char in "[]\\") or any("**" in part and part != "**" for part in segments)):
+        if (
+            pattern.startswith(("/", "!"))
+            or any(part in {"", ".", ".."} for part in segments)
+            or any(char in pattern for char in "[]\\")
+            or any("**" in part and part != "**" for part in segments)
+        ):
             raise ObserverValidationError("Invalid relative glob", path=path, code="invalid_pattern")
         result.append(pattern)
     return tuple(result)
 
 
 def _source(value: object, path: str, base_dir: Path) -> SourceDef:
-    data = _object(value, path, {"id", "type", "root", "include", "exclude", "poll_interval_ms",
-                                 "max_files", "max_file_bytes"})
+    data = _object(
+        value, path, {"id", "type", "root", "include", "exclude", "poll_interval_ms", "max_files", "max_file_bytes"}
+    )
     if data.get("type") != "file":
         raise ObserverValidationError("Only file sources are supported", path=path, code="unknown_type")
     root = Path(_text(data.get("root"), path + ".root", maximum=4096))
     # Absolute lexical roots retain symlink components for the no-follow scanner to reject.
     root = Path(os.path.abspath(base_dir / root))
     return SourceDef(
-        id=_text(data.get("id"), path + ".id"), type="file", root=root,
+        id=_text(data.get("id"), path + ".id"),
+        type="file",
+        root=root,
         include=_patterns(data.get("include", ["**"]), path + ".include"),
         exclude=_patterns(data.get("exclude", []), path + ".exclude", empty=True),
         poll_interval_ms=_integer(data.get("poll_interval_ms", 1000), path + ".poll_interval_ms"),
@@ -90,16 +98,30 @@ def _detector(value: object, path: str) -> DetectorDef:
     maximum = _integer(data.get("max_batch_delay_ms", 2000), path + ".max_batch_delay_ms")
     if maximum < debounce:
         raise ObserverValidationError("Maximum batch delay must cover debounce", path=path)
-    return DetectorDef(_text(data.get("id"), path + ".id"), "file.change",
-                       _text(data.get("source"), path + ".source"), debounce, maximum)
+    return DetectorDef(
+        _text(data.get("id"), path + ".id"),
+        "file.change",
+        _text(data.get("source"), path + ".source"),
+        debounce,
+        maximum,
+    )
 
 
 def _handler(value: object, path: str) -> HandlerDef:
-    data = _object(value, path, {"id", "type", "target", "instruction"})
-    if data.get("type") != "session.notify" or data.get("target") != "current":
-        raise ObserverValidationError("Only current-session notification is supported", path=path, code="unknown_type")
-    return HandlerDef(_text(data.get("id"), path + ".id"), "session.notify", "current",
-                      _text(data.get("instruction"), path + ".instruction", maximum=65536))
+    data = _object(value, path, {"id", "type", "command", "session", "instruction"})
+    if data.get("type") != "acp":
+        raise ObserverValidationError("Only ACP handlers are supported", path=path, code="unknown_type")
+    command = tuple(
+        _text(arg, f"{path}.command[{i}]", maximum=65536)
+        for i, arg in enumerate(_items(data.get("command"), path + ".command"))
+    )
+    return HandlerDef(
+        _text(data.get("id"), path + ".id"),
+        "acp",
+        command,
+        _text(data.get("session"), path + ".session"),
+        _text(data.get("instruction"), path + ".instruction", maximum=65536),
+    )
 
 
 def _route(value: object, path: str) -> RouteDef:
@@ -107,36 +129,53 @@ def _route(value: object, path: str) -> RouteDef:
     values = _items(data.get("event_types"), path + ".event_types")
     if any(value not in EVENT_TYPES for value in values) or len(set(map(str, values))) != len(values):
         raise ObserverValidationError("Expected unique supported event types", path=path)
-    return RouteDef(_text(data.get("id"), path + ".id"), _text(data.get("detector"), path + ".detector"),
-                    _text(data.get("handler"), path + ".handler"), tuple(cast(EventType, value) for value in values))
+    return RouteDef(
+        _text(data.get("id"), path + ".id"),
+        _text(data.get("detector"), path + ".detector"),
+        _text(data.get("handler"), path + ".handler"),
+        tuple(cast(EventType, value) for value in values),
+    )
 
 
 def parse(value: object, *, base_dir: Path) -> ObserverDef:
     data = _object(value, "$", {"version", "name", "sources", "detectors", "handlers", "routes"})
-    if type(data.get("version")) is not int or data["version"] != 1:
-        raise ObserverValidationError("Expected version 1", path="$.version", code="unknown_version")
+    if type(data.get("version")) is not int or data["version"] != 2:
+        raise ObserverValidationError(
+            "Expected version 2; migrate v1 session.notify to an explicit ACP command and session",
+            path="$.version",
+            code="unknown_version",
+        )
     name = _text(data.get("name"), "$.name")
-    sources = tuple(_source(item, f"$.sources[{i}]", base_dir)
-                    for i, item in enumerate(_items(data.get("sources"), "$.sources")))
-    detectors = tuple(_detector(item, f"$.detectors[{i}]")
-                      for i, item in enumerate(_items(data.get("detectors"), "$.detectors")))
-    handlers = tuple(_handler(item, f"$.handlers[{i}]")
-                     for i, item in enumerate(_items(data.get("handlers"), "$.handlers")))
-    routes = tuple(_route(item, f"$.routes[{i}]")
-                   for i, item in enumerate(_items(data.get("routes"), "$.routes")))
-    identifiers = ([item.id for item in sources] + [item.id for item in detectors]
-                   + [item.id for item in handlers] + [item.id for item in routes])
+    sources = tuple(
+        _source(item, f"$.sources[{i}]", base_dir) for i, item in enumerate(_items(data.get("sources"), "$.sources"))
+    )
+    detectors = tuple(
+        _detector(item, f"$.detectors[{i}]") for i, item in enumerate(_items(data.get("detectors"), "$.detectors"))
+    )
+    handlers = tuple(
+        _handler(item, f"$.handlers[{i}]") for i, item in enumerate(_items(data.get("handlers"), "$.handlers"))
+    )
+    routes = tuple(_route(item, f"$.routes[{i}]") for i, item in enumerate(_items(data.get("routes"), "$.routes")))
+    identifiers = (
+        [item.id for item in sources]
+        + [item.id for item in detectors]
+        + [item.id for item in handlers]
+        + [item.id for item in routes]
+    )
     if len(set(identifiers)) != len(identifiers):
         raise ObserverValidationError("Identifiers must be unique", code="duplicate_id")
-    source_ids, detector_ids, handler_ids = ({item.id for item in sources}, {item.id for item in detectors},
-                                            {item.id for item in handlers})
+    source_ids, detector_ids, handler_ids = (
+        {item.id for item in sources},
+        {item.id for item in detectors},
+        {item.id for item in handlers},
+    )
     for detector in detectors:
         if detector.source not in source_ids:
             raise ObserverValidationError(f"Missing source: {detector.source}", code="missing_reference")
     for route in routes:
         if route.detector not in detector_ids or route.handler not in handler_ids:
             raise ObserverValidationError(f"Missing reference in route: {route.id}", code="missing_reference")
-    return ObserverDef(1, name, sources, detectors, handlers, routes)
+    return ObserverDef(2, name, sources, detectors, handlers, routes)
 
 
 def _unique_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:

@@ -3,22 +3,19 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
 import json
 import os
 import secrets
 import time
-import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from xdog.eyes.events import RuntimeEvent
-from xdog.eyes.executor import Registration, observe
+from xdog.eyes.executor import Registration
 from xdog.eyes.handlers.session_notify import SessionNotifier
 from xdog.eyes.loader import parse
 from xdog.eyes.models import ObserverDef
-from xdog.eyes.sources.file import scan_async
 from xdog.eyes.transport.client import HostClient
 from xdog.eyes.transport.protocol import (
     MAX_FRAME,
@@ -102,29 +99,10 @@ class ObserverRuntime:
             os.close(fd)
 
     async def start(self, data: object) -> dict[str, JsonValue]:
-        definition = parse(data, base_dir=Path("/"))
-        normalized = definition_data(definition)
-        digest = hashlib.sha256(json.dumps(normalized, sort_keys=True).encode()).hexdigest()
-        async with self.lock:
-            previous = self.names.get(definition.name)
-            if previous is not None:
-                if self.entries[previous].digest != digest:
-                    raise ProtocolError("Observer name already has another definition; stop it before replacing")
-                return {"registration_id": previous, "state": self.entries[previous].state}
-            identifier = uuid.uuid4().hex
-            notifier = SessionNotifier(self.client, definition, identifier)
-            await notifier.register()
-            cancel, resume = asyncio.Event(), asyncio.Event()
-            task = asyncio.create_task(observe(
-                definition, registration_id=identifier, scanner=scan_async, deliver=notifier.deliver,
-                emit=lambda event: self.emit(identifier, event), clock=time.time, sleep=asyncio.sleep,
-                cancel=cancel, resume=resume,
-            ))
-            entry = Entry(Registration(identifier, definition, task, cancel, resume), notifier, digest,
-                          "baselining", {})
-            self.entries[identifier] = entry
-            self.names[definition.name] = identifier
-            return {"registration_id": identifier, "state": "baselining"}
+        # V2 must never be sent through the retired capability/register/deliver
+        # path. Task 9 replaces this runtime with Eyes-owned ACP lifecycle.
+        parse(data, base_dir=Path("/"))
+        raise RuntimeError("Eyes v2 requires the independent ACP runtime; legacy host activation is removed")
 
     async def stop_entry(self, identifier: str) -> dict[str, JsonValue]:
         async with self.lock:
