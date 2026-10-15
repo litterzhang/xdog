@@ -51,9 +51,10 @@ async def run_rpc_mode(session: AgentSession) -> int:
     output = RpcOutput()
     output.open()
     _emit = output.emit
+    rpc_loop = asyncio.get_running_loop()
 
     def _permission_request(request: PermissionRequest) -> None:
-        _emit({
+        rpc_loop.call_soon_threadsafe(_emit, {
             "type": "permission_request",
             "id": request.id,
             "tool": request.tool_name,
@@ -78,6 +79,31 @@ async def run_rpc_mode(session: AgentSession) -> int:
     children = RpcChildren(session, navigation, transcripts, _emit, images=uploads, send=output.send)
     extensions = RpcExtensions(session, _emit, navigation=navigation, send=output.send)
     session.permissions.set_request_handler(_permission_request)
+    turn_task: asyncio.Task[None] | None = None
+    from xdog.coding.modes.rpc.external_events import RpcExternalEvents
+
+    def external_busy() -> bool:
+        return (turn_task is not None and not turn_task.done() or extensions.busy or navigation.busy
+                or children.busy or terminal.busy or parent_drafts.busy
+                or any(not task.done() for owner in
+                       (extensions.after_run_compaction, extensions.after_run_name, extensions.after_run_tools)
+                       for task in getattr(owner, "jobs", ())))
+
+    async def external_run(message: str) -> bool:
+        failed = False
+        def emit_event(event: dict[str, Any]) -> None:
+            nonlocal failed
+            failed = failed or event.get('type') == 'error' or event.get('is_error') is True
+            _emit(event)
+        if extensions.ui_enabled:
+            async with extensions.bind('external-' + json.loads(message)['id']):
+                await _handle_prompt(session, message, emit_event, input_origin='external_event')
+        else:
+            await _handle_prompt(session, message, emit_event, input_origin='external_event')
+        return not failed
+
+    external = RpcExternalEvents(session, _emit, busy=external_busy, run=external_run)
+    await external.start()
     _emit({
         "type": "ready",
         "session_id": session.session_id,
@@ -87,18 +113,20 @@ async def run_rpc_mode(session: AgentSession) -> int:
                          "session_controls": 1, "session_compaction": 1,
                          "session_checkpoint_targets": 1, "transcript_sources": 1, "transcript_canonical": 1,
                          "transient_events": 1, "terminal_input": 1, "terminal_release_input": 1,
-                         "rpc_async_output": int(output.fd is not None)},
+                         "rpc_async_output": int(output.fd is not None),
+                         "external_events": int(external.binding is not None)},
         "session_revision": navigation.revision,
         "max_input_frame_bytes": MAX_RPC_LINE_BYTES,
         "max_output_backlog_bytes": MAX_OUTPUT_BYTES,
     })
 
-    turn_task: asyncio.Task[None] | None = None
     try:
         while True:
             transient.bind()
             try:
-                if output.fd is None:
+                if external.binding is not None:
+                    raw_line, frame_error = await external.read(inputs, output.failure)
+                elif output.fd is None:
                     raw_line, frame_error = await inputs.read()
                 else:
                     reading = asyncio.create_task(inputs.read())
@@ -142,7 +170,8 @@ async def run_rpc_mode(session: AgentSession) -> int:
                 _emit({'type': 'error', 'message': 'RPC command type must be text'})
                 continue
             transient.bind()
-            turn_running = turn_task is not None and not turn_task.done() or extensions.prompting
+            turn_running = (turn_task is not None and not turn_task.done()
+                            or extensions.prompting or external.running)
 
             if cmd_type in {'parent_draft_control', 'parent_draft_cancel'}:
                 try:
@@ -319,6 +348,7 @@ async def run_rpc_mode(session: AgentSession) -> int:
                 elif turn_running or extensions.busy:
                     _emit({"type": "error", "message": "A prompt is already running"})
                 else:
+                    external.human_input()
                     if extensions.ui_enabled:
                         request_id = cmd.get('request_id')
                         try:
@@ -341,6 +371,7 @@ async def run_rpc_mode(session: AgentSession) -> int:
                 continue
 
             if cmd_type == "abort":
+                external.abort()
                 navigation.abort_compaction()
                 extensions.abort_prompt()
                 extensions.after_run_tools.abort()
@@ -425,6 +456,7 @@ async def run_rpc_mode(session: AgentSession) -> int:
             except (ValueError, RuntimeError, OSError) as exc:
                 _emit({'type': 'error', 'action': cmd_type, 'message': str(exc)})
     finally:
+        await external.aclose()
         extensions.abort_prompt()
         # Stop the parent before waiting for child/source/extension ownership to
         # settle; EOF/output failure must not leave it producing more turns.

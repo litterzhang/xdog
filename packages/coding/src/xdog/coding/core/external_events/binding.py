@@ -64,3 +64,11 @@ class ExternalEventBinding:
             return
         self._closed = True
         self.host.close()
+
+
+def session_busy(session: AgentSession) -> bool:
+    """Shared mode fence; streaming alone is not producer/session settlement."""
+    return (not session.agent.is_idle or session.children.supervisor.active
+            or session.permissions.has_pending_requests or session._compacting or session._auth_changing
+            or bool(session._context_changes) or session._tool_selection_retiring
+            or session._tool_selection_restore_pending)

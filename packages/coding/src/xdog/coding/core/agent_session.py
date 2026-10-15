@@ -568,8 +568,10 @@ class AgentSession:
             raise RuntimeError("Tool retirement persistence owns this session")
         if self._compacting:
             raise RuntimeError("Compaction owns this session; cancel/wait before sending input")
-        if input_origin not in {'user', 'extension', 'system', 'custom_context'}:
+        if input_origin not in {'user', 'extension', 'system', 'custom_context', 'external_event'}:
             raise ValueError('Invalid input origin')
+        if input_origin == 'user' and self.external_events is not None:
+            self.external_events.inbox.human_input()
         context_snapshot = await self.context_messages.capture() if input_origin == 'user' else None
         try:
             self.handled_feedback = []
@@ -590,7 +592,12 @@ class AgentSession:
             await self._maybe_compact()
 
             # Run the agent loop
-            if input_origin == 'custom_context':
+            if input_origin == 'external_event':
+                from xdog.agent.external_event import message
+                if images:
+                    raise ValueError("External event input cannot inject image attachments")
+                event_stream = await self.agent.prompt(message(user_text))
+            elif input_origin == 'custom_context':
                 from xdog.agent.core import CustomAgentMessage
                 from xdog.agent.extensions.context_message import TYPE
                 if (images or not self.agent.messages or not isinstance(self.agent.messages[-1], CustomAgentMessage)

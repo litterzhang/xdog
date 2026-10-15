@@ -340,6 +340,8 @@ class InteractiveMode:
 
         # Event queue for thread-safe UI updates from agent events
         self._event_queue = EventQueue()
+        from xdog.coding.modes.interactive.external_events import NativeExternalEvents
+        self._external_events = NativeExternalEvents(self)
         from xdog.coding.modes.interactive.message_inputs import NativeMessageInputs
         self._message_inputs = NativeMessageInputs(self)
         self._saved_worker = SavedSourceWorker(self._event_queue.put)
@@ -2778,6 +2780,9 @@ class InteractiveMode:
         if self._exit_requested:
             return
         try:
+            external = getattr(self, "_external_events", None)
+            if external is not None:
+                external.start()
             self._update_header()
             self._update_footer()
             model_name = self._session.model or "unknown"
@@ -2838,6 +2843,8 @@ class InteractiveMode:
                             part.name,
                             part.arguments,
                         )
+            elif getattr(msg, "type", None) == "xdog.external_event.v1":
+                self._chat_log.add_system("External event · recorded input; not a human message")
             elif isinstance(msg, ToolResultMessage):
                 component = tool_components.pop(msg.tool_call_id, None)
                 if component is None:
@@ -2977,6 +2984,9 @@ class InteractiveMode:
             return
 
         self._editor.add_to_history(value)
+        external = getattr(self, "_external_events", None)
+        if external is not None:
+            external.human_input()
 
         # Check for slash commands
         parsed = parse_slash_command(value)
@@ -3814,12 +3824,18 @@ class InteractiveMode:
                     await self._async_agent_turn(message, images)
                 else:
                     await self._async_agent_turn(message, images, input_origin=input_origin)
-            except (Exception, asyncio.CancelledError):
+            except (Exception, asyncio.CancelledError) as exc:
+                if input_origin == 'external_event':
+                    self._external_events.finish(message,
+                        status='cancelled' if isinstance(exc, asyncio.CancelledError) else 'failed', error=str(exc))
                 # This tuple owns the CURRENT turn, not necessarily the worker's
                 # first input. Restore it before the error/settlement receipt.
                 if images and input_origin == 'user':
                     self._event_queue.put({"type": "restore_attachments", "images": images})
                 raise
+            if input_origin == 'external_event':
+                error = self._session.agent.state.error
+                self._external_events.finish(message, status='failed' if error else 'succeeded', error=error)
             self._session._expire_turn_scoped_skills()
 
             with self._queue_lock:
@@ -3911,7 +3927,10 @@ class InteractiveMode:
                 return
 
             self._session.validate_image_inputs(tuple((item.mime_type, len(item.data)) for item in images))
-            if input_origin == 'custom_context':
+            if input_origin == 'external_event':
+                from xdog.agent.external_event import message as external_message
+                event_stream = await self._session.agent.prompt(external_message(message))
+            elif input_origin == 'custom_context':
                 from xdog.agent.core import CustomAgentMessage
                 from xdog.agent.extensions.context_message import TYPE
                 history = self._session.agent.messages
@@ -3951,7 +3970,8 @@ class InteractiveMode:
             self._session.agent.drain_handled_inputs()
             self._dispatch_stamp = None
             self._dispatch_images = ()
-            self._session.permissions.set_request_handler(None)
+            self._session.permissions.set_request_handler(
+                self._on_permission_request if getattr(self._session, "external_events", None) is not None else None)
 
     def _put_turn_event(self, event_type: str, *, stamp: _TurnStamp | None = None, **payload: Any) -> None:
         dispatch_stamp = getattr(self, "_dispatch_stamp", None)
@@ -4195,6 +4215,9 @@ class InteractiveMode:
                 self._set_status_busy(label)
                 changed = True
 
+        external = getattr(self, "_external_events", None)
+        if external is not None:
+            changed = external.poll() or changed
         if changed:
             self._tui.request_render()
 
@@ -4288,6 +4311,8 @@ class InteractiveMode:
         """Handle a UI event from the event queue."""
         event = thaw_event(event)
         event_type = event.get("type")
+        if event_type == 'external_event_status':
+            return  # The idle poll presents a coalesced authoritative snapshot.
         if event_type == 'mcp_elicitation_failed':
             binding = self._elicitation_bindings.get(str(event['server']))
             if binding is not None and binding[1] == event['lease']:

@@ -54,3 +54,31 @@ def test_unbound_session_masks_inherited_parent_capability(tmp_path, monkeypatch
         assert value.agent.tool_context["subprocess_env"]["XDOG_EVENT_CONTEXT"] == ""
     finally:
         value.dispose()
+
+
+async def test_external_input_uses_normal_sdk_and_persists_custom_provenance(tmp_path):
+    from xdog.agent.core import CustomAgentMessage
+
+    value = session(tmp_path)
+    observed = []
+
+    def stream(model, context, options):
+        observed.extend(context.messages)
+        return EventStream.empty(AssistantMessage(content=()))
+
+    value.agent.set_stream_fn(stream)
+    record = {"id": "job", "registration_id": "observer", "route_id": "route",
+              "instruction": "Review tests", "delivery_ids": ["delivery"],
+              "events": [{"id": "event", "source_id": "source", "detector_id": "detector",
+                          "type": "file.modified", "observed_at": 1,
+                          "evidence": [{"path": "src/a.py"}]}]}
+    try:
+        await value.send_message(json.dumps(record), input_origin="external_event")
+        assert any(isinstance(row, CustomAgentMessage) and row.type == "xdog.external_event.v1"
+                   for row in value.messages)
+        saved = value.session_manager.load_session(value.session_id)
+        assert any(isinstance(row, CustomAgentMessage) for row in saved.messages)
+        text = " ".join(part.text for row in observed for part in row.content if hasattr(part, "text"))
+        assert "not a human message" in text and "Review tests" in text
+    finally:
+        value.dispose()

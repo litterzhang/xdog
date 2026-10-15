@@ -474,6 +474,13 @@ class Agent:
         return self._state.is_streaming
 
     @property
+    def is_idle(self) -> bool:
+        """A new run may start only after the producer and cleanup have settled."""
+        return (self._idle_event.is_set() and not self._state.is_streaming
+                and (self._producer_task is None or self._producer_task.done())
+                and not self._closing and not self._closed and not self._stream_cleanup_errors)
+
+    @property
     def cancellation_requested(self) -> bool:
         """Whether the current run has observed an abort request."""
         return self._cancel.is_set()
@@ -1773,6 +1780,7 @@ class Agent:
 def _default_convert_to_llm(messages: list[AgentMessage]) -> list[Message]:
     """Project named canonical context content; keep unknown custom metadata out of the LLM."""
     from xdog.agent.extensions.context_message import llm_message
+    from xdog.agent.external_event import llm_message as external_message
     from xdog.ai.types import AssistantMessage, ToolResultMessage, UserMessage
 
     result: list[Message] = []
@@ -1781,4 +1789,6 @@ def _default_convert_to_llm(messages: list[AgentMessage]) -> list[Message]:
             result.append(message)
         elif (projected := llm_message(message)) is not None:
             result.append(projected)
+        elif (external := external_message(message)) is not None:
+            result.append(external)
     return result
