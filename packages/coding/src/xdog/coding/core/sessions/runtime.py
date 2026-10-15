@@ -7,6 +7,8 @@ from concurrent.futures import Future
 from typing import TYPE_CHECKING, Any
 
 from xdog.coding.core.sessions.controller import SessionController
+from xdog.coding.core.sessions.inbox_runtime import InboxCoordinator
+from xdog.coding.core.sessions.inbox_store import InboxStore
 from xdog.coding.core.sessions.ownership import OwnerRecord, OwnerRegistry, SessionLease, runtime_directory
 from xdog.coding.core.sessions.router import SessionRouter
 
@@ -15,7 +17,8 @@ if TYPE_CHECKING:
 
 
 class SessionRuntime:
-    def __init__(self, session: AgentSession, *, bound: bool, router: SessionRouter | None = None) -> None:
+    def __init__(self, session: AgentSession, *, bound: bool, router: SessionRouter | None = None,
+                 inbox_store: InboxStore | None = None) -> None:
         self.session = session
         claimed = session._lease is None
         if claimed:
@@ -36,14 +39,29 @@ class SessionRuntime:
                 session._lease.close()
                 session._lease = None
             raise
+        self._retiring_leases: set[SessionLease] = set()
+        self.controller.on_control_settled = self._release_retired_leases
         self.controller._close_hook = self._aclose_resources
         self.producer_tasks: set[asyncio.Task[None]] = set()
         session.runtime = self
         self.server: Any = None
+        # A custom SessionManager must not write its inbox into ambient user data.
+        store = inbox_store or InboxStore(session.session_manager._dir, session.session_manager._dir.parent / 'inbox')
+        self.inbox = InboxCoordinator(self, store)
+        self.controller.inbox = self.inbox
         self._endpoint_lock = asyncio.Lock()
         self._started = False
         self._closed: Future[None] | None = None
         self.disposing = False
+
+    def retain_lease(self, lease: SessionLease) -> None:
+        """A navigated-away writer stays exclusive until all control cleanup settles."""
+        self._retiring_leases.add(lease)
+
+    def _release_retired_leases(self) -> None:
+        for lease in tuple(self._retiring_leases):
+            lease.close()
+            self._retiring_leases.discard(lease)
 
     def start(self, *, own_thread: bool = False) -> None:
         if not self._started:
@@ -52,9 +70,14 @@ class SessionRuntime:
             self._started = True
 
     async def _aclose_resources(self) -> None:
-        if self.producer_tasks:
-            await asyncio.gather(*tuple(self.producer_tasks), return_exceptions=True)
-        await self.session._aclose_resources()
+        try:
+            await self.inbox.retire()
+        finally:
+            try:
+                if self.producer_tasks:
+                    await asyncio.gather(*tuple(self.producer_tasks), return_exceptions=True)
+            finally:
+                await self.session._aclose_resources()
 
     async def open_endpoint(self) -> None:
         async with self._endpoint_lock:
@@ -64,20 +87,30 @@ class SessionRuntime:
 
     def context_changed(self) -> None:
         old = self.record
+        previous_inbox = self.inbox
         discarded = self.controller.rotate(self.session.session_data.active_branch)
         async def rebind() -> None:
-            await asyncio.wrap_future(discarded)
-            if self.server is not None:
-                await self.server.close()
-                self.server = None
-            self.router.retire(old.session_id, old.generation)
-            self.registry.remove(old)
-            from xdog.coding.core.sessions.store import InputStore
-            self.controller.store = InputStore(self.session)
-            self.record = OwnerRecord(self.session.session_id, self.session.working_dir.resolve(),
-                                      self.registry.socket_path(self.session.session_id), self.controller.generation)
-            self.router.register(self.controller, self.record)
-            await self.open_endpoint()
+            try:
+                await asyncio.wrap_future(discarded)
+                if self.server is not None:
+                    await self.server.close()
+                    self.server = None
+                await previous_inbox.retire()
+                self.router.retire(old.session_id, old.generation)
+                self.registry.remove(old)
+                from xdog.coding.core.sessions.store import InputStore
+                self.controller.store = InputStore(self.session)
+                self.record = OwnerRecord(
+                    self.session.session_id, self.session.working_dir.resolve(),
+                    self.registry.socket_path(self.session.session_id), self.controller.generation,
+                )
+                self.inbox = InboxCoordinator(self, previous_inbox.store)
+                self.controller.inbox = self.inbox
+                self.router.register(self.controller, self.record)
+                await self.open_endpoint()
+            except BaseException as exc:
+                self.controller._broken = exc
+                raise
         self.controller.settle_before_release(rebind())
 
     def close(self) -> Future[None]:
@@ -86,29 +119,43 @@ class SessionRuntime:
         self._closed = Future()
         closed = self._closed
 
+        shutdown_error: BaseException | None = None
+
         def finalized(completed: Future[None]) -> None:
+            error = shutdown_error
             try:
                 completed.result()
+            except BaseException as exc:
+                error = error or exc
+            try:
                 self.router.retire(self.record.session_id, self.record.generation)
                 self.registry.remove(self.record)
-                self.disposing = True
-                self.session.dispose()
-                if not closed.done():
-                    closed.set_result(None)
             except BaseException as exc:
-                if not closed.done():
-                    closed.set_exception(exc)
+                error = error or exc
+            finally:
+                self.disposing = True
+                try:
+                    self._release_retired_leases()
+                    self.session.dispose()
+                except BaseException as exc:
+                    error = error or exc
+            if not closed.done():
+                if error is None:
+                    closed.set_result(None)
+                else:
+                    closed.set_exception(error)
 
         async def stop_endpoint() -> None:
             if self.server is not None:
                 await self.server.close()
                 self.server = None
+
         def stopped(completed: Future[None]) -> None:
+            nonlocal shutdown_error
             try:
                 completed.result()
             except BaseException as exc:
-                if not closed.done():
-                    closed.set_exception(exc)
+                shutdown_error = exc
             self.controller.close().add_done_callback(finalized)
         self.controller._async(stop_endpoint).add_done_callback(stopped)
         return closed

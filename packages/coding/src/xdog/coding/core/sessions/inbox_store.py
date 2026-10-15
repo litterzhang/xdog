@@ -209,11 +209,15 @@ class InboxStore:
             return tuple(row for key, (path, row) in sorted(rows.items()))
 
     def approve(self, session_id: str, message_ids: tuple[str, ...], *, cwd: Path,
-                branch_id: str, generation: str) -> tuple[InboxRecord, ...]:
+                branch_id: str, generation: str,
+                expected: tuple[InboxRecord, ...] | None = None) -> tuple[InboxRecord, ...]:
         label(generation)
         label(branch_id, empty=True)
         if not message_ids or len(set(message_ids)) != len(message_ids):
             raise ValueError('Approval requires distinct explicit message IDs')
+        reviewed = {r.message.message_id: r for r in expected} if expected is not None else None
+        if reviewed is not None and (set(reviewed) != set(message_ids) or len(reviewed) != len(expected or ())):
+            raise ValueError('Inbox reviewed selection changed')
         with self._locked(session_id, cwd) as (directory, working, branch):
             rows = self._scan(directory, working)
             if branch_id != branch:
@@ -224,6 +228,11 @@ class InboxStore:
                 if previous is None:
                     raise ValueError('Unknown inbox message')
                 path, row = previous
+                if reviewed is not None and (
+                    encoded(record_data(row), MAX_RECORD_BYTES)
+                    != encoded(record_data(reviewed[key]), MAX_RECORD_BYTES)
+                ):
+                    raise ValueError('Inbox content/state changed after review')
                 if row.branch_id != branch:
                     raise ValueError('Inbox message branch mismatch')
                 if row.status not in {'pending_review', 'interrupted'}:

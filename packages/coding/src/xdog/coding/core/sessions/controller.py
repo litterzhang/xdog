@@ -20,6 +20,7 @@ from xdog.coding.core.sessions.store import InputStore
 
 if TYPE_CHECKING:
     from xdog.coding.core.agent_session import AgentSession
+    from xdog.coding.core.sessions.inbox_runtime import InboxCoordinator
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -71,6 +72,7 @@ class SessionController:
         self._current: _Job | None = None
         self._revoked: set[str] = set()
         self._budget = 0
+        self._budget_targets: frozenset[str] | None = None
         self._human_pending = False
         self._queue_changes = 0
         self._producers: set[str] = set()
@@ -78,7 +80,9 @@ class SessionController:
         self._settlements: set[Future[None]] = set()
         self._owner_token: str | None = None
         self._control_future: Future[Any] | None = None
+        self.on_control_settled: Callable[[], None] | None = None
         self._close_hook: Callable[[], Awaitable[None]] | None = None
+        self.inbox: InboxCoordinator | None = None
         self.before_turn: Callable[[SessionInput], Awaitable[None]] | None = None
         self.after_turn: Callable[[SessionInput, TurnResult], Awaitable[None]] | None = None
         self._closing = False
@@ -156,9 +160,23 @@ class SessionController:
         self._settlements.add(self._async(lambda: operation))
 
     async def _settle_operations(self) -> None:
+        error: BaseException | None = None
+        cancelled = False
         while self._settlements:
             tasks, self._settlements = self._settlements, set()
-            await asyncio.gather(*(asyncio.wrap_future(task) for task in tasks))
+            receipt = asyncio.gather(*(asyncio.wrap_future(task) for task in tasks), return_exceptions=True)
+            while not receipt.done():
+                try:
+                    await asyncio.shield(receipt)
+                except asyncio.CancelledError:
+                    cancelled = True
+            for result in receipt.result():
+                if isinstance(result, BaseException) and error is None:
+                    error = result
+        if cancelled:
+            raise asyncio.CancelledError
+        if error is not None:
+            raise error
 
     def _thread_main(self) -> None:
         try:
@@ -199,6 +217,13 @@ class SessionController:
 
     def _emit(self, kind: str, job: _Job, data: object) -> None:
         event = SessionEvent(self.session.session_id, job.generation, job.value.id, kind, data)
+        self._notify(event)
+
+    def publish(self, kind: str, data: object) -> None:
+        """Display-only state; never an executable submission or a permission grant."""
+        self._notify(SessionEvent(self.session.session_id, self.generation, '', kind, data))
+
+    def _notify(self, event: SessionEvent) -> None:
         for listener in tuple(self._listeners):
             try:
                 listener(event)
@@ -243,7 +268,7 @@ class SessionController:
                 raise ValueError("Session queue exceeds capacity")
             if job.value.id in self._jobs or job.value.id in self._admitting_jobs:
                 raise ValueError("Duplicate request identity")
-            paused = self.bound and job.value.origin != "human" and self._budget == 0
+            paused = self._needs_credit(job) and not self._can_start(job)
             record = InputRecord(job.value, job.branch, job.generation, "paused" if paused else "queued")
             self._admitting_jobs[job.value.id] = job
             await self.store.accept(record)
@@ -252,6 +277,7 @@ class SessionController:
             self._settle(job.ticket.accepted, None)
             if job.value.origin == "human":
                 self._budget = 1
+                self._budget_targets = None
             if self._closing or job.peer in self._revoked or job.cancelled:
                 await self._finish(job, TurnResult("cancelled", None))
             elif job.generation != self.generation:
@@ -264,6 +290,14 @@ class SessionController:
             if self._admitting_jobs.get(job.value.id) is job:
                 self._admitting_jobs.pop(job.value.id, None)
 
+    def _needs_credit(self, job: _Job) -> bool:
+        return job.value.origin != 'human' and (
+            self.bound or self.inbox is not None and self.inbox.is_submission(job.value.id))
+
+    def _can_start(self, job: _Job) -> bool:
+        return not self._needs_credit(job) or (
+            self._budget > 0 and (self._budget_targets is None or job.value.id in self._budget_targets))
+
     def _pump(self) -> None:
         if self._closing or self._active is not None or self._queue_changes or self._producer_receipts:
             return
@@ -275,7 +309,7 @@ class SessionController:
                 return
         jobs = [job for job in self._jobs.values() if not job.finishing]
         human = next((job for job in jobs if job.value.origin == "human"), None)
-        if human is None and (self._human_pending or self._producers or self.bound and self._budget <= 0):
+        if human is None and (self._human_pending or self._producers):
             return
         resource_busy = (not self.session.agent.is_idle or self.session.children.supervisor.active
             or self.session.permissions.has_pending_requests or self.session._compacting
@@ -289,7 +323,7 @@ class SessionController:
                     self._pump()
                 self._readiness_timer = self._loop.call_later(0.05, retry)
             return
-        selected = human or next(iter(jobs), None)
+        selected = human or next((job for job in jobs if self._can_start(job)), None)
         if selected is not None:
             self._current = selected
             self._active = asyncio.create_task(self._run_job(selected))
@@ -300,12 +334,16 @@ class SessionController:
         try:
             result = await operation()
             await self._settle_operations()
+            if self.on_control_settled is not None:
+                self.on_control_settled()
             self._settle(future, result)
         except BaseException as exc:
             try:
                 await self._settle_operations()
             except BaseException:
                 logger.exception("Session control settlement failed")
+            if self.on_control_settled is not None:
+                self.on_control_settled()
             self._settle(future, error=exc)
         finally:
             self._control_future = None
@@ -324,11 +362,13 @@ class SessionController:
             if job.generation != self.generation:
                 outcome = TurnResult("discarded", None)
             else:
+                if self.inbox is not None:
+                    await self.inbox.starting(job.value)
                 await self.store.transition(job.value.id, "running")
                 if self.before_turn is not None:
                     await self.before_turn(job.value)
                 self._emit("input_running", job, job.value)
-                if self.bound and job.value.origin != "human":
+                if self._needs_credit(job):
                     self._budget -= 1
                 outcome = await self._execute(job.value)
         except asyncio.CancelledError:
@@ -354,6 +394,12 @@ class SessionController:
         if job.finishing:
             return
         job.finishing = True
+        try:
+            if self.inbox is not None:
+                await self.inbox.finished(job.value, result)
+        except BaseException as exc:
+            self._broken = exc
+            result = TurnResult("failed", result.response, "Inbox persistence failed: " + str(exc))
         try:
             await self.store.transition(job.value.id, result.status, result.error)
         except BaseException as exc:
@@ -400,6 +446,7 @@ class SessionController:
     def human_input(self) -> None:
         def grant() -> None:
             self._budget = 1
+            self._budget_targets = None
             self._pump()
 
         self._post(grant)
@@ -506,6 +553,7 @@ class SessionController:
         # on the already-mutated SessionData with the old generation.
         self.branch, self.generation = branch_id, uuid.uuid4().hex
         self._budget = 0
+        self._budget_targets = None
         async def run() -> None:
             for job in tuple(self._jobs.values()):
                 if job is not self._current and job.generation != self.generation:
@@ -538,6 +586,7 @@ class SessionController:
             allowed = verdict is None and not self._closing and captured == self.generation
             if allowed:
                 self._budget = 1
+                self._budget_targets = None
                 self._pump()
             return allowed
 

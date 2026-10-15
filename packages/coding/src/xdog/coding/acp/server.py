@@ -69,6 +69,7 @@ class LocalServer:
 async def serve_local(runtime: SessionRuntime) -> LocalServer:
     if runtime.session._lease is None or runtime.session._lease._fd < 0:
         raise RuntimeError("Cannot serve a session without its writer lease")
+    await runtime.inbox.snapshot()
     path = runtime.record.address
     if path.exists() or path.is_symlink():
         info = path.lstat()

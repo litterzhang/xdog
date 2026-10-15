@@ -104,7 +104,10 @@ def _idle_change(method: Callable[Concatenate["AgentSession", P], R]) -> Callabl
                 if target_lease is not None and self.session_id == target_lease.session_id:
                     previous, self._lease = self._lease, target_lease
                     if previous is not None:
-                        previous.close()
+                        if self.runtime is not None:
+                            self.runtime.retain_lease(previous)
+                        else:
+                            previous.close()
                 return result
             finally:
                 if target_lease is not None and self._lease is not target_lease:
