@@ -1,10 +1,10 @@
 # Session 持久收件箱：离线接收与显式恢复
 
 日期：2026-10-15
-状态：用户已同意会话离线时保存消息、恢复后先展示并确认的原则；本文等待书面审核。离线实现计划尚未编写。
+状态：用户已于 2026-10-15 确认本文及 endpoint 补充设计；实施计划 `../plans/2026-10-15-acp-endpoint-inbox.md` 已编写，等待审核。产品离线收件尚未实现。
 关联设计：`2026-10-15-acp-session-routing-design.md`。
 
-> **2026-10-15 回调边界修订：** 见 `2026-10-15-acp-endpoint-callback-design.md`（待书面审核）。Eyes 必须能直连 ACP endpoint，不依赖启动 coding CLI；下文短命 stdio 接收进程仅可作为可选客户端入口，不再是离线投递的必经路径。独立、显式启动的接入服务可在所有 TUI/session owner 退出后继续收件；接入服务也未运行时明确不可达。消息持久化、权限和显式恢复规则不变。
+> **2026-10-15 回调边界修订：** 见 `2026-10-15-acp-endpoint-callback-design.md`（已确认）。Eyes 必须能直连 ACP endpoint，不依赖启动 coding CLI；下文短命 stdio 接收进程仅可作为可选客户端入口，不再是离线投递的必经路径。独立、显式启动的接入服务可在所有 TUI/session owner 退出后继续收件；接入服务也未运行时明确不可达。消息持久化、权限和显式恢复规则不变。
 
 ## 1. 用户意图和范围
 
@@ -149,4 +149,4 @@ ACP handler 增加显式 `delivery: 'prompt' | 'enqueue'`；缺省 prompt 保持
 
 本文自审：离线接收与执行 ACK 已区分；message 与 attempt 身份已区分；批准明确绑定当前 owner 而非永久授权；TUI 生命周期与 session/Eyes 生命周期已分开；不声称副作用恰好一次；没有借持久化恢复旧 event host。
 
-用户审核本文后，编写与既有重构计划接口一致的 inbox 实施补充计划，再按已选择的 Native/TDD 方式执行。已批准且不受修订影响的 ACP/session 工作仍可继续；受 endpoint 接口和服务生命周期修订影响的 Tasks 8/9 接线必须先完成补充设计与实施计划审核，不能继续强制 command-only 路径。
+本文已获确认；inbox 和 endpoint 实施补充计划见 `../plans/2026-10-15-acp-endpoint-inbox.md`，审核后按已选择的 Native/TDD 方式执行。已批准且不受修订影响的 ACP/session 工作仍可继续；受 endpoint 接口和服务生命周期修订影响的 Tasks 8/9 接线必须先完成补充设计与实施计划审核，不能继续强制 command-only 路径。

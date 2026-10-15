@@ -1,7 +1,7 @@
 # ACP endpoint 回调：与 coding CLI、TUI 生命周期解耦
 
 日期：2026-10-15
-状态：用户已确认架构边界；本文等待书面审核。尚未批准本补充设计的实施计划，尚未修改相应产品代码。
+状态：用户已于 2026-10-15 确认本文及关联 inbox 设计。实施补充计划 `../plans/2026-10-15-acp-endpoint-inbox.md` 已编写，等待审核；尚未开始该计划的产品代码修改。
 关联：`2026-10-15-acp-session-routing-design.md`、`2026-10-15-session-inbox-design.md`。
 
 ## 1. 用户意图与替代范围
@@ -138,7 +138,7 @@ stdio 与 Unix 都复用同一套 ACP initialize、能力协商和请求/结果�
 
 本文自审：没有把“没有 TUI/owner”混同为“没有接入进程”；没有把 durable ACK 当执行完成；没有把 stdio 与 ACP 本身混同；没有由 Eyes 读取 coding 内部目录；没有自动启动模型或绕过单一 owner；没有以新名称恢复旧 event host。
 
-用户审核本文及关联 inbox 设计后，按 writing-plans 更新受影响任务和 inbox 实施计划，再提交用户审核；沿用 Native 执行选择，不自行改为实现子代理或 worktree。当前不自动 push/PR/发布。
+本文及关联 inbox 设计已获确认；受影响任务和 inbox 实施计划已更新为 `../plans/2026-10-15-acp-endpoint-inbox.md`，等待用户审核；沿用 Native 执行选择，不自行改为实现子代理或 worktree。当前不自动 push/PR/发布。
 
 ## 9. 协议依据
 

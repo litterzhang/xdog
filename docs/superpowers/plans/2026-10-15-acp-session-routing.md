@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-15-acp-session-routing-design.md`（用户已于 2026-10-15 批准）。
 
-> **2026-10-15 修订待审：** Tasks 1–8 已提交，但 Task 8 的 command-only 接口不是最终交付。用户确认 callback 直接使用 ACP endpoint，不依赖 coding CLI；见 `../specs/2026-10-15-acp-endpoint-callback-design.md`。Task 9 尚未编辑产品代码，先完成补充设计/计划审核，再更新受影响的连接接口、独立接入服务和离线收件任务。本文原 Task 8/9 的 command-only 示例不能继续作为实现依据。
+> **2026-10-15 修订：** Tasks 1–8 已提交，但 Task 8 的 command-only 接口不是最终交付。用户确认 callback 直接使用 ACP endpoint，不依赖 coding CLI；见 `../specs/2026-10-15-acp-endpoint-callback-design.md`。Task 9 尚未编辑产品代码；补充设计已确认，后续任务由 `2026-10-15-acp-endpoint-inbox.md` 取代，等待该补充计划审核后实施。本文原 Task 8/9 的 command-only 示例不能继续作为实现依据。
 
 ## Global Constraints
 
