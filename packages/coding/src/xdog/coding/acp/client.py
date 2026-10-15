@@ -7,7 +7,7 @@ from typing import Any, cast
 
 from acp import PROTOCOL_VERSION, connect_to_agent
 from acp.interfaces import Client
-from acp.schema import DeniedOutcome, RequestPermissionResponse, TextContentBlock
+from acp.schema import AgentMessageChunk, DeniedOutcome, RequestPermissionResponse, TextContentBlock
 from xdog.agent.acp.contracts import UpdateSink
 from xdog.coding.core.sessions.models import TurnResult
 from xdog.coding.core.sessions.ownership import OwnerRecord, OwnerRegistry, runtime_directory
@@ -61,12 +61,12 @@ async def send_prompt(session_id: str, text: str) -> TurnResult:
     parts = []
 
     async def output(update: Any) -> None:
-        content = getattr(update, "content", None)
-        if isinstance(content, TextContentBlock):
-            parts.append(content.text)
+        if isinstance(update, AgentMessageChunk) and isinstance(update.content, TextContentBlock):
+            parts.append(update.content.text)
 
     try:
-        await attachment.connect(output)
+        await attachment.connect()  # session/load replay belongs to history, never this request's answer.
+        attachment.sink = output
         response = await attachment.conn.prompt(
             session_id=session_id, prompt=[TextContentBlock(type="text", text=text)]
         )

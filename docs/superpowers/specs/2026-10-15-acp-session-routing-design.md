@@ -1,10 +1,10 @@
 # ACP 会话路由与 Eyes 迁移设计
 
 日期：2026-10-15
-状态：原设计及 endpoint/inbox 补充设计与实施计划已获用户批准。实现与旧 host 删除已完成，完整测试、构建与隔离验证已通过；最终独立审核和完成审计仍在进行。以 `docs/acp-session-routing.md` 为当前协议说明，保留本文中的历史方案与修订标记。
+状态：原设计及 endpoint/inbox 补充设计与实施计划已获用户批准。实现与旧 host 删除已完成，完整测试、构建与隔离验证已通过；最终独立审核发现的五项 Important 问题均已通过 RED→GREEN 回归修复，全量测试及重建隔离验证通过；验收与裁决见 `docs/eyes-verification.md`、`docs/acp-review-resolution.md`。以 `docs/acp-session-routing.md` 为当前协议说明，保留本文中的历史方案与修订标记。
 替代范围：本文获批并实施后，替代 `2026-10-14-eyes-design.md` 中的专用宿主协议、绑定和调度方案；保留 Eyes 的 source/detector/route、文件采集与 Flow 风格产品形态。
 
-> **2026-10-15 架构修订：** 用户已确认 Eyes 直接连接 ACP endpoint、接入服务生命周期独立于 TUI、不由 Eyes 启动 coding。见 `2026-10-15-acp-endpoint-callback-design.md`（已确认；补充计划 `../plans/2026-10-15-acp-endpoint-inbox.md` 待审核）。下文 §3/§10 的强制 coding stdio bridge 与 command-only handler 不再作为最终方案；保留原文用于说明已实施迁移的历史依据。离线收件同时受 `2026-10-15-session-inbox-design.md` 约束。
+> **2026-10-15 架构修订：** 用户已确认 Eyes 直接连接 ACP endpoint、接入服务生命周期独立于 TUI、不由 Eyes 启动 coding。见 `2026-10-15-acp-endpoint-callback-design.md`（已确认；补充计划 `../plans/2026-10-15-acp-endpoint-inbox.md` 已批准并实施）。下文 §3/§10 的强制 coding stdio bridge 与 command-only handler 不再作为最终方案；保留原文用于说明已实施迁移的历史依据。离线收件同时受 `2026-10-15-session-inbox-design.md` 约束。
 
 ## 1. 用户意图与验收目标
 

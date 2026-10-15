@@ -1,7 +1,7 @@
 # ACP endpoint 回调：与 coding CLI、TUI 生命周期解耦
 
 日期：2026-10-15
-状态：原设计及 endpoint/inbox 补充设计与实施计划已获用户批准。实现与旧 host 删除已完成，完整测试、构建与隔离验证已通过；最终独立审核和完成审计仍在进行。以 `docs/acp-session-routing.md` 为当前协议说明，保留本文中的历史方案与修订标记。
+状态：原设计及 endpoint/inbox 补充设计与实施计划已获用户批准。实现与旧 host 删除已完成，完整测试、构建与隔离验证已通过；最终独立审核发现的五项 Important 问题均已通过 RED→GREEN 回归修复，全量测试及重建隔离验证通过；验收与裁决见 `docs/eyes-verification.md`、`docs/acp-review-resolution.md`。以 `docs/acp-session-routing.md` 为当前协议说明，保留本文中的历史方案与修订标记。
 关联：`2026-10-15-acp-session-routing-design.md`、`2026-10-15-session-inbox-design.md`。
 
 ## 1. 用户意图与替代范围
@@ -132,7 +132,7 @@ stdio 与 Unix 都复用同一套 ACP initialize、能力协商和请求/结果�
 9. 通用 stdio third-party ACP 测试保留；Python/SDK optional-import、权限、自动预算、包隔离与现有 CLI attach 行为无回退。
 10. 删除旧 host、capability、transport、env 接线；全八包测试、Ruff、strict mypy、Flow 示例、构建和隔离安装，以及最终独立审核完成。未验证真实 provider/外部 IDE 明确记录。
 
-## 8. 状态与实施交接
+## 8. 状态与实施交接（获批实施前的历史记录）
 
 当前树已有 agent ACP、coding controller/owner endpoint/TUI 展示，以及 Eyes command-only ACP handler；独立接入服务、Unix Eyes client 和 durable inbox 均未完成。原 Task 9 尚未修改产品代码。不能以既有局部测试通过声称完成此补充设计。
 

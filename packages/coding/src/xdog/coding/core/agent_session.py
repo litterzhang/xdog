@@ -53,6 +53,8 @@ from xdog.coding.core.settings_manager import SettingsManager
 from xdog.coding.core.system_prompt import build_system_prompt
 
 if TYPE_CHECKING:
+    from concurrent.futures import Future
+
     from xdog.coding.core.session_staging import StagedExtensions
     from xdog.coding.core.sessions.controller import SessionController
     from xdog.coding.core.sessions.ownership import SessionLease
@@ -69,16 +71,32 @@ def _idle_change(method: Callable[Concatenate["AgentSession", P], R]) -> Callabl
     @wraps(method)
     def wrapped(self: AgentSession, /, *args: P.args, **kwargs: P.kwargs) -> R:
         runtime = self.runtime
-        if runtime is not None and not runtime.controller.owns_current_task:
+        controller = runtime.controller if runtime is not None else self._sdk_controller
+        if (controller is None and runtime is None and self._sdk_closing is not None
+                and not self._sdk_closing.done()):
+            raise RuntimeError('SDK owner cleanup is still settling; wait before changing session controls')
+        if controller is not None and not controller.owns_current_task:
             async def owned() -> R:
                 return wrapped(self, *args, **kwargs)
             try:
-                same_loop = asyncio.get_running_loop() is runtime.controller._loop
+                same_loop = asyncio.get_running_loop() is controller._loop
             except RuntimeError:
                 same_loop = False
             if same_loop:
                 raise RuntimeError("Session controls must be submitted to the session owner")
-            return runtime.controller.control(owned, name=method.__name__).result()
+            borrowed = runtime is None
+            if borrowed:
+                with self._sdk_lock:
+                    if self._sdk_controller is not controller:
+                        raise RuntimeError('SDK session owner changed; retry the control')
+                    self._sdk_users += 1
+            try:
+                return controller.control(owned, name=method.__name__).result()
+            finally:
+                if borrowed:
+                    closing = self._release_sdk_owner(controller)
+                    if closing is not None:
+                        closing.result()
         before_scope = (self.session_id, self.session_data.active_branch)
         if self._tool_selection_retiring:
             raise RuntimeError("Tool retirement persistence owns this session")
@@ -105,6 +123,8 @@ def _idle_change(method: Callable[Concatenate["AgentSession", P], R]) -> Callabl
                     if previous is not None:
                         if self.runtime is not None:
                             self.runtime.retain_lease(previous)
+                        elif controller is not None:
+                            self._sdk_retiring_leases.add(previous)
                         else:
                             previous.close()
                 return result
@@ -113,9 +133,19 @@ def _idle_change(method: Callable[Concatenate["AgentSession", P], R]) -> Callabl
                     target_lease.close()
                 self._context_changes -= 1
                 self._refresh_session_hint()
-                if (self._context_changes == 0 and self.runtime is not None
+                if (self._context_changes == 0
                         and before_scope != (self.session_id, self.session_data.active_branch)):
-                    self.runtime.context_changed()
+                    if self.runtime is not None:
+                        self.runtime.context_changed()
+                    elif controller is not None:
+                        discarded = controller.rotate(self.session_data.active_branch)
+
+                        async def rebind_sdk() -> None:
+                            from xdog.coding.core.sessions.store import InputStore
+                            await asyncio.wrap_future(discarded)
+                            controller.store = await asyncio.to_thread(InputStore, self)
+
+                        controller.settle_before_release(rebind_sdk())
     return wrapped
 
 
@@ -154,6 +184,9 @@ class AgentSession:
     runtime: SessionRuntime | None = field(default=None, init=False, repr=False)
     _sdk_controller: SessionController | None = field(default=None, init=False, repr=False)
     _sdk_users: int = field(default=0, init=False, repr=False)
+    _sdk_closing: Future[None] | None = field(default=None, init=False, repr=False)
+    _sdk_retiring_leases: set[SessionLease] = field(default_factory=set, init=False, repr=False)
+    _sdk_disposing: bool = field(default=False, init=False, repr=False)
     _sdk_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _lease: SessionLease | None = field(default=None, init=False, repr=False)
     _pending_lease: SessionLease | None = field(default=None, init=False, repr=False)
@@ -591,22 +624,55 @@ class AgentSession:
         self._rebuild_system_prompt()
         return True
 
+    def _release_sdk_leases(self) -> None:
+        for lease in tuple(self._sdk_retiring_leases):
+            lease.close()
+            self._sdk_retiring_leases.discard(lease)
+
+    async def _close_sdk_owner(self) -> None:
+        self._release_sdk_leases()
+
+    async def _acquire_owner(self) -> tuple[SessionController, bool]:
+        from xdog.coding.core.sessions.controller import SessionController
+        from xdog.coding.core.sessions.ownership import SessionLease, runtime_directory
+
+        while True:
+            with self._sdk_lock:
+                if self._sdk_disposing:
+                    raise RuntimeError('Session owner is closing')
+                if self.runtime is not None:
+                    return self.runtime.controller, False
+                closing = self._sdk_closing
+                if closing is None or closing.done():
+                    if closing is not None:
+                        closing.result()  # Never reopen an owner whose cleanup failed.
+                    if self._sdk_controller is None:
+                        if self._lease is None:
+                            self._lease = SessionLease.acquire(
+                                runtime_directory(self.session_manager._dir), self.session_id)
+                        controller = SessionController(self, bound=False)
+                        controller.on_control_settled = self._release_sdk_leases
+                        controller._close_hook = self._close_sdk_owner
+                        controller.start()
+                        self._sdk_controller = controller
+                    self._sdk_users += 1
+                    return self._sdk_controller, True
+            await asyncio.shield(asyncio.wrap_future(closing))
+
+    def _release_sdk_owner(self, controller: SessionController) -> Future[None] | None:
+        with self._sdk_lock:
+            self._sdk_users -= 1
+            if self._sdk_users == 0 and self._sdk_controller is controller:
+                self._sdk_controller = None
+                self._sdk_closing = controller.close()
+                return self._sdk_closing
+        return None
+
     async def send_message(self, user_text: str, *, images: tuple[ImageContent, ...] = (),
                            input_origin: str = "user") -> AssistantMessage | None:
         """Submit through the same owner used by ACP and native modes."""
         from xdog.agent.session_input import SessionInput
-        from xdog.coding.core.sessions.controller import SessionController
-        if self.runtime is not None:
-            controller = self.runtime.controller
-            temporary = False
-        else:
-            with self._sdk_lock:
-                if self._sdk_controller is None:
-                    self._sdk_controller = SessionController(self, bound=False)
-                    self._sdk_controller.start()
-                controller = self._sdk_controller
-                self._sdk_users += 1
-            temporary = True
+        controller, temporary = await self._acquire_owner()
         try:
             # A trusted control operation may run a turn under its existing
             # reservation, but a tool cannot recursively start another model loop.
@@ -624,20 +690,18 @@ class AgentSession:
             except asyncio.CancelledError:
                 await asyncio.wrap_future(controller.cancel(ticket.id, peer_id="local-sdk", wait=True))
                 raise
+            if result.status == 'failed':
+                if result.cause is not None:
+                    raise result.cause
+                raise RuntimeError(result.error or 'Session task failed; inspect effects before retrying')
             if result.cause is not None:
                 raise result.cause
             return result.response
         finally:
             if temporary:
-                with self._sdk_lock:
-                    self._sdk_users -= 1
-                    last = self._sdk_users == 0
-                    if last and self._sdk_controller is controller:
-                        # Retire before yielding to cleanup. A new caller must
-                        # not attach to a controller already closing its loop.
-                        self._sdk_controller = None
-                if last:
-                    await asyncio.wrap_future(controller.close())
+                closing = self._release_sdk_owner(controller)
+                if closing is not None:
+                    await asyncio.shield(asyncio.wrap_future(closing))
 
     async def _execute_message(self, user_text: str, *, images: tuple[ImageContent, ...] = (),
                            input_origin: str = "user") -> AssistantMessage | None:
@@ -822,11 +886,23 @@ class AgentSession:
     # -- Compaction --
 
     async def compact(self, instructions: str = "", alive: Callable[[], bool] = lambda: True) -> None:
-        """Force conversation compaction."""
-        self._children_idle()
-        if self.agent.is_streaming or self._auth_changing:
-            raise RuntimeError("Compaction requires an idle owning session")
-        await self._run_compaction(instructions=instructions, force=True, alive=alive)
+        """Reserve the same owner used by all turn and context producers."""
+        from xdog.coding.core.sessions.operations import run_control
+
+        controller, temporary = await self._acquire_owner()
+        try:
+            async def owned() -> None:
+                self._children_idle()
+                if self.agent.is_streaming or self._auth_changing:
+                    raise RuntimeError("Compaction requires an idle owning session")
+                await self._run_compaction(instructions=instructions, force=True, alive=alive)
+
+            await run_control(self, owned, name='compact')
+        finally:
+            if temporary:
+                closing = self._release_sdk_owner(controller)
+                if closing is not None:
+                    await asyncio.shield(asyncio.wrap_future(closing))
 
     async def _maybe_compact(self) -> None:
         """Check if the conversation needs compaction and run it if so."""
@@ -1496,9 +1572,12 @@ class AgentSession:
 
     def enable_runtime(self, *, bound: bool) -> SessionRuntime:
         from xdog.coding.core.sessions.runtime import SessionRuntime
-        if self.runtime is None:
-            self.runtime = SessionRuntime(self, bound=bound)
-        return self.runtime
+        with self._sdk_lock:
+            if self.runtime is None:
+                if self._sdk_controller is not None or self._sdk_closing is not None and not self._sdk_closing.done():
+                    raise RuntimeError('An SDK owner is active/settling; cannot create a second session owner')
+                self.runtime = SessionRuntime(self, bound=bound)
+            return self.runtime
 
     async def _aclose_resources(self) -> None:
         await self.children.supervisor.aclose()
@@ -1512,6 +1591,16 @@ class AgentSession:
         if self.runtime is not None and not self.runtime.disposing:
             self.runtime.close()
             return
+        self._sdk_disposing = True
+        controller = self._sdk_controller
+        closing = controller.close() if controller is not None else self._sdk_closing
+        if closing is not None and not closing.done():
+            def settled(done: Future[None]) -> None:
+                self._release_sdk_leases()
+                self._dispose_resources()
+            closing.add_done_callback(settled)
+            return
+        self._release_sdk_leases()
         self._dispose_resources()
 
     def _dispose_resources(self) -> None:

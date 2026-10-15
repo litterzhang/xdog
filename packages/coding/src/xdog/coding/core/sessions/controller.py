@@ -400,12 +400,12 @@ class SessionController:
                 await self.inbox.finished(job.value, result)
         except BaseException as exc:
             self._broken = exc
-            result = TurnResult("failed", result.response, "Inbox persistence failed: " + str(exc))
+            result = TurnResult("failed", result.response, "Inbox persistence failed: " + str(exc), exc)
         try:
             await self.store.transition(job.value.id, result.status, result.error)
         except BaseException as exc:
             self._broken = exc
-            result = TurnResult("failed", result.response, "Session persistence failed: " + str(exc))
+            result = TurnResult("failed", result.response, "Session persistence failed: " + str(exc), exc)
         self._jobs.pop(job.value.id, None)
         self._emit("input_completed", job, replace(result, cause=None))
         self._settle(job.ticket.result, result)

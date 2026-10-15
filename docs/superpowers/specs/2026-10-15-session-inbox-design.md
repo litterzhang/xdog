@@ -1,7 +1,7 @@
 # Session 持久收件箱：离线接收与显式恢复
 
 日期：2026-10-15
-状态：原设计及 endpoint/inbox 补充设计与实施计划已获用户批准。实现与旧 host 删除已完成，完整测试、构建与隔离验证已通过；最终独立审核和完成审计仍在进行。以 `docs/acp-session-routing.md` 为当前协议说明，保留本文中的历史方案与修订标记。
+状态：原设计及 endpoint/inbox 补充设计与实施计划已获用户批准。实现与旧 host 删除已完成，完整测试、构建与隔离验证已通过；最终独立审核发现的五项 Important 问题均已通过 RED→GREEN 回归修复，全量测试及重建隔离验证通过；验收与裁决见 `docs/eyes-verification.md`、`docs/acp-review-resolution.md`。以 `docs/acp-session-routing.md` 为当前协议说明，保留本文中的历史方案与修订标记。
 关联设计：`2026-10-15-acp-session-routing-design.md`。
 
 > **2026-10-15 回调边界修订：** 见 `2026-10-15-acp-endpoint-callback-design.md`（已确认）。Eyes 必须能直连 ACP endpoint，不依赖启动 coding CLI；下文短命 stdio 接收进程仅可作为可选客户端入口，不再是离线投递的必经路径。独立、显式启动的接入服务可在所有 TUI/session owner 退出后继续收件；接入服务也未运行时明确不可达。消息持久化、权限和显式恢复规则不变。
@@ -145,7 +145,7 @@ ACP handler 增加显式 `delivery: 'prompt' | 'enqueue'`；缺省 prompt 保持
 9. 旧 event host 和旧 capability 不存在；离线入队仅通过复用的 ACP adapter 与 session inbox 完成。
 10. 完成后执行全仓测试、lint、strict mypy、Flow 示例、打包和隔离安装验证；未做的真实 provider/IDE 验证明确说明。
 
-## 10. 审核与实施交接
+## 10. 审核与实施交接（获批实施前的历史记录）
 
 本文自审：离线接收与执行 ACK 已区分；message 与 attempt 身份已区分；批准明确绑定当前 owner 而非永久授权；TUI 生命周期与 session/Eyes 生命周期已分开；不声称副作用恰好一次；没有借持久化恢复旧 event host。
 

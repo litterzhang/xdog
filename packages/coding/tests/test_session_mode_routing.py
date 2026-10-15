@@ -44,10 +44,15 @@ async def test_new_sdk_input_does_not_reuse_a_controller_whose_last_user_is_clos
         return closed
     monkeypatch.setattr(SessionController, 'close', delayed)
     first = asyncio.create_task(coding_session.send_message('first'))
+    second = None
     try:
         await asyncio.wait_for(closing.wait(), 2)
-        await asyncio.wait_for(coding_session.send_message('new input during previous cleanup'), 2)
+        second = asyncio.create_task(coding_session.send_message('new input during previous cleanup'))
+        await asyncio.sleep(0.02)
+        assert not second.done()  # A new owner cannot write until the previous close receipt settles.
     finally:
         await asyncio.wrap_future(underlying[0])
         receipt.set_result(None)
         await first
+        if second is not None:
+            await asyncio.wait_for(second, 2)

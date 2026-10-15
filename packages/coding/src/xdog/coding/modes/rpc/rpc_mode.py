@@ -441,7 +441,12 @@ async def run_rpc_mode(session: AgentSession) -> int:
                             session.set_thinking_level(None)
                         _emit({"type": "ok", "action": "set_thinking", "level": "off", **navigation.refresh_revision()})
                     elif level in ("minimal", "low", "medium", "high", "xhigh"):
-                        session.set_thinking_level(cast(Any, level))
+                        if runtime is not None:
+                            async def change_thinking() -> None:
+                                session.set_thinking_level(cast(Any, level))
+                            await asyncio.wrap_future(runtime.controller.control(change_thinking, name='thinking'))
+                        else:
+                            session.set_thinking_level(cast(Any, level))
                         _emit({"type": "ok", "action": "set_thinking", "level": level, **navigation.refresh_revision()})
                     else:
                         _emit({"type": "error", "message": f"Invalid thinking level: {level}"})
@@ -533,38 +538,45 @@ async def _handle_prompt(
                 elif isinstance(part, ToolCall):
                     emit({'type': 'tool_call', 'name': part.name, 'arguments': part.arguments})
     runtime = getattr(session, 'runtime', None)
-    correlated = runtime is not None and not runtime.controller.owns_current_task
+    controller = runtime.controller if runtime is not None else None
+    temporary_owner = False
+    if controller is None and isinstance(session, AgentSession):
+        controller, temporary_owner = await session._acquire_owner()
+    correlated = controller is not None and not controller.owns_current_task
     identifier = __import__('uuid').uuid4().hex
     ticket = None
     if correlated:
-        assert runtime is not None
+        assert controller is not None
         def owned_event(event: Any) -> None:
             if event.request_id == identifier and event.kind == 'agent_event':
                 on_event(event.data)
-        unsubscribe = runtime.controller.subscribe(owned_event)
+        unsubscribe = controller.subscribe(owned_event)
     else:
         unsubscribe = session.agent.subscribe(on_event)
     compaction_success = False
+    final_error = ""
     try:
         # The SDK owns prompt rebuild/compaction/lifecycle/skill retirement and
         # persistence. This subscriber only adapts events to the existing wire format.
         if correlated:
-            assert runtime is not None
+            assert controller is not None
             from xdog.agent.session_input import SessionInput
             value = SessionInput(identifier, 'human' if input_origin == 'user' else 'automatic', 'coding RPC',
                                  message if message.strip() else '[Image/context input]', (), {})
-            ticket = runtime.controller.submit(value, peer_id='rpc', images=images,
+            ticket = controller.submit(value, peer_id='rpc', images=images,
                                                 input_origin=input_origin, raw_text=message)
             await asyncio.wrap_future(ticket.accepted)
             outcome = await asyncio.wrap_future(ticket.result)
-            if outcome.cause is not None:
+            if outcome.status == 'failed':
+                final_error = outcome.error or 'Session task failed; inspect effects before retrying'
+            elif outcome.cause is not None:
                 raise outcome.cause
             last_assistant = outcome.response
         else:
             last_assistant = (await session.send_message(message, images=images) if input_origin == 'user' else
                               await session.send_message(message, images=images, input_origin=input_origin))
 
-        error = getattr(session.agent.state, "error", None)
+        error = final_error or getattr(session.agent.state, "error", None)
         if last_assistant is None and isinstance(error, str) and error:
             raise RuntimeError(error)
         content_parts: list[dict[str, Any]] = []
@@ -591,8 +603,8 @@ async def _handle_prompt(
         # RPC reader/session can admit another prompt or dispose permissions/tools.
         async def settle_prompt() -> None:
             if correlated and ticket is not None:
-                assert runtime is not None
-                await asyncio.wrap_future(runtime.controller.cancel(ticket.id, peer_id='rpc', wait=True))
+                assert controller is not None
+                await asyncio.wrap_future(controller.cancel(ticket.id, peer_id='rpc', wait=True))
             else:
                 await session.agent.cancel_and_wait()
         cleanup = asyncio.create_task(settle_prompt())
@@ -612,3 +624,8 @@ async def _handle_prompt(
         from xdog.coding.modes.rpc.after_run_compaction import producer_outcome
         producer_outcome(compaction_success)
         unsubscribe()
+        if temporary_owner:
+            assert controller is not None
+            closing = session._release_sdk_owner(controller)
+            if closing is not None:
+                await asyncio.shield(asyncio.wrap_future(closing))
