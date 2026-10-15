@@ -30,6 +30,7 @@ _PACKAGES = ("ai", "agent", "flow", "tui", "site", "claw", "coding")
 #: Distribution name -> the name you import it by, where they differ.
 _IMPORT_NAME = {
     "pyyaml": "yaml",
+    "agent_client_protocol": "acp",
     "python_frontmatter": "frontmatter",
     "pillow": "PIL",
 }

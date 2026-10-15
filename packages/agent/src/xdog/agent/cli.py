@@ -537,6 +537,9 @@ def main() -> None:
     # -- login ---------------------------------------------------------------
     sub.add_parser("login", help="Login to AI provider (GitHub Copilot OAuth)")
 
+    acp_p = sub.add_parser("acp", help="Run standard stdio Agent Client Protocol")
+    acp_p.add_argument("--model", default=None)
+
     # -- chat ----------------------------------------------------------------
     chat_p = sub.add_parser("chat", help="Chat with an agent")
     chat_p.add_argument("model", nargs="?", help="Model name (e.g. claude-sonnet-4.5)")
@@ -564,6 +567,11 @@ def main() -> None:
 
     if args.command == "login":
         asyncio.run(_cmd_login())
+    elif args.command == "acp":
+        if sys.version_info >= (3, 15):
+            parser.error("ACP currently requires Python 3.12–3.14")
+        from xdog.agent.acp.cli import run
+        asyncio.run(run(args.model))
     elif args.command == "chat":
         asyncio.run(_cmd_chat(
             model_id=args.model,
