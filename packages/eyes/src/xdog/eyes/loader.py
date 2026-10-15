@@ -216,3 +216,9 @@ def load(path: Path) -> ObserverDef:
             raise
         raise ObserverValidationError(str(exc), code="invalid_document") from exc
     return parse(data, base_dir=path.absolute().parent)
+
+
+def definition_data(definition: ObserverDef) -> dict[str, object]:
+    from dataclasses import asdict
+
+    return cast(dict[str, object], json.loads(json.dumps(asdict(definition), default=str, allow_nan=False)))

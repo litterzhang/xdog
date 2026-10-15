@@ -146,8 +146,8 @@ class AcpHandler:
         self._pending_enqueue = None
         return DeliveryResult('queued', receipt_status=receipt['status'], message_state=receipt['message_state'])
 
-    async def _resume_enqueue(self) -> bool:
-        if self._closed or self._pending_enqueue is None or self.state == 'processing':
+    async def _resume_enqueue(self, *, allow_idle: bool = False) -> bool:
+        if self._closed or self._pending_enqueue is None and not allow_idle or self.state == 'processing':
             return False
         async with self._resuming:
             try:
@@ -177,6 +177,18 @@ class AcpHandler:
             self._halted = None
             self.state = 'ready'
             return True
+
+    async def reconnect(self) -> bool:
+        """Explicit data-only recovery, including an idle connection with no pending message."""
+        if self.definition.delivery != 'enqueue' or self._closed:
+            return False
+        task = asyncio.current_task()
+        assert task is not None
+        self._resumes.add(task)
+        try:
+            return await self._resume_enqueue(allow_idle=True)
+        finally:
+            self._resumes.discard(task)
 
     async def resume(self) -> bool:
         if self._closed:

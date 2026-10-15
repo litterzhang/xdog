@@ -62,6 +62,7 @@ async def observe(
     cancel: asyncio.Event,
     resume: asyncio.Event | None = None,
     cwd: Path | None = None,
+    suspended: asyncio.Event | None = None,
 ) -> None:
     sources = {item.id: item for item in definition.sources}
     detectors = {
@@ -173,7 +174,7 @@ async def observe(
                         receipt=result,
                     )
             blocked = overflowed or any(item.paused for item in pending.values())
-            if blocked or cancel.is_set():
+            if blocked or cancel.is_set() or suspended is not None and suspended.is_set():
                 if not cancel.is_set():
                     await sleep(0.05)
                 continue

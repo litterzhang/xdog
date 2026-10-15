@@ -35,10 +35,17 @@ class AcpClient:
         self.inbox_id: str | None = None
         self.branch_id: str | None = None
         self.extensions: dict[str, int] = {}
+        self._reader: asyncio.StreamReader | None = None
         self.updates = 0
         self._stack = AsyncExitStack()
         self._close_task: asyncio.Task[None] | None = None
         self._opened = False
+
+    @property
+    def connected(self) -> bool:
+        return (self.conn is not None and self._close_task is None
+                and (self._reader is None or not self._reader.at_eof())
+                and (self.process is None or self.process.returncode is None))
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
         if session_id != self.session_id:
@@ -57,6 +64,7 @@ class AcpClient:
                 if isinstance(self.connection, UnixConnection):
                     await asyncio.to_thread(validate_endpoint, self.connection)
                     reader, writer = await asyncio.open_unix_connection(self.connection.path, limit=1024 * 1024)
+                    self._reader = reader
                     self._stack.push_async_callback(self._close_writer, writer)
                     self.conn = connect_to_agent(cast(Client, self), writer, reader)
                     self._stack.push_async_callback(self.conn.close)
@@ -68,6 +76,7 @@ class AcpClient:
                             transport_kwargs={"stderr": asyncio.subprocess.DEVNULL, "limit": 1024 * 1024},
                         )
                     )
+                    self._reader = self.process.stdout if self.process is not None else None
                 else:
                     raise ValueError("Unsupported ACP connection")
                 assert self.conn is not None

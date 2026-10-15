@@ -1,41 +1,51 @@
-"""Private runtime control uses the same current-context capability as delivery."""
+"""Eyes lifecycle requests never carry agent input or a harness capability."""
+
 from __future__ import annotations
 
 import asyncio
 
-from xdog.eyes.transport.protocol import (
+from xdog.eyes.local_control import (
     MAX_FRAME,
-    HostContext,
+    ControlError,
     JsonValue,
-    ProtocolError,
+    RuntimeLocation,
     decode_frame,
     encode_frame,
-    validate_response,
+    read_location,
+    validate_socket,
 )
 
 
-async def request(context: HostContext, action: str, body: dict[str, JsonValue], *,
+async def request(location: RuntimeLocation, action: str, body: dict[str, JsonValue], *,
                   timeout: float = 5.0) -> dict[str, JsonValue]:
-    frame = encode_frame({"version": 1, "action": action, "body": body,
-                          "owner": context.owner.as_json(), "token": context.token})
-    writer: asyncio.StreamWriter | None = None
+    if not location.generation and action != 'hello':
+        location = await asyncio.to_thread(read_location, location)
+    await asyncio.to_thread(validate_socket, location)
+    writer = None
     try:
-        async with asyncio.timeout(125 if action == "resume" else timeout):
-            reader, writer = await asyncio.open_unix_connection(context.directory / "eyes.sock", limit=MAX_FRAME)
-            writer.write(frame)
+        async with asyncio.timeout(timeout):
+            reader, writer = await asyncio.open_unix_connection(location.socket, limit=MAX_FRAME)
+            writer.write(encode_frame(
+                {'version': 1, 'generation': location.generation, 'action': action, 'body': body}))
             await writer.drain()
-            try:
-                response = await reader.readline()
-            except ValueError as exc:
-                raise ProtocolError("Runtime response exceeds frame capacity") from exc
-            if not response.endswith(b"\n"):
-                raise ConnectionError("Runtime ended before acknowledging the command")
-            return validate_response(decode_frame(response))
+            response = decode_frame(await reader.readline())
+            if (set(response) != {'version', 'generation', 'cwd', 'status', 'body'}
+                    or type(response['version']) is not int or response['version'] != 1
+                    or response['cwd'] != str(location.cwd)
+                    or not isinstance(response['generation'], str)
+                    or not isinstance(response['status'], str)
+                    or response['status'] not in {'ok', 'accepted', 'duplicate', 'rejected', 'stale-generation'}
+                    or not isinstance(response['body'], dict)):
+                raise ControlError('Invalid Eyes control response')
+            if (location.generation and response['generation'] != location.generation
+                    and response['status'] != 'stale-generation'):
+                raise ControlError('Eyes runtime generation changed')
+            return response
     finally:
         if writer is not None:
             writer.close()
             try:
-                async with asyncio.timeout(timeout):
+                async with asyncio.timeout(2):
                     await writer.wait_closed()
             except (OSError, TimeoutError):
                 pass

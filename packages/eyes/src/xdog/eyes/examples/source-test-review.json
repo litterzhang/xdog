@@ -1,8 +1,51 @@
 {
-  "version": 1,
+  "version": 2,
   "name": "review-source-changes",
-  "sources": [{"id": "files", "type": "file", "root": ".", "include": ["src/**"], "exclude": ["**/__pycache__/**"]}],
-  "detectors": [{"id": "changes", "type": "file.change", "source": "files", "debounce_ms": 500, "max_batch_delay_ms": 2000}],
-  "handlers": [{"id": "review", "type": "session.notify", "target": "current", "instruction": "Review changed source and determine whether related tests need updates. Follow current tool permissions."}],
-  "routes": [{"id": "review-route", "detector": "changes", "handler": "review", "event_types": ["file.created", "file.modified", "file.deleted"]}]
+  "sources": [
+    {
+      "id": "files",
+      "type": "file",
+      "root": ".",
+      "include": [
+        "src/**"
+      ],
+      "exclude": [
+        "**/__pycache__/**"
+      ]
+    }
+  ],
+  "detectors": [
+    {
+      "id": "changes",
+      "type": "file.change",
+      "source": "files",
+      "debounce_ms": 500,
+      "max_batch_delay_ms": 2000
+    }
+  ],
+  "handlers": [
+    {
+      "id": "review",
+      "type": "acp",
+      "connection": {
+        "transport": "unix",
+        "path": "/tmp/example-private/acp.sock"
+      },
+      "session": "EXPLICIT_SESSION_ID",
+      "delivery": "enqueue",
+      "instruction": "Review changed source and related tests after user approval. Follow target tool permissions."
+    }
+  ],
+  "routes": [
+    {
+      "id": "review-route",
+      "detector": "changes",
+      "handler": "review",
+      "event_types": [
+        "file.created",
+        "file.modified",
+        "file.deleted"
+      ]
+    }
+  ]
 }

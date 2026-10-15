@@ -218,24 +218,6 @@ async def test_human_credit_at_target_does_not_need_a_second_eyes_budget(tmp_pat
         await handler.close()
 
 
-async def test_v2_does_not_fall_back_to_the_retired_event_host_during_runtime_migration(tmp_path, observer_data):
-    from xdog.eyes.runtime import ObserverRuntime
-    from xdog.eyes.transport.protocol import HostContext, Owner
-
-    observer_data["sources"][0]["root"] = str(tmp_path)
-    context = HostContext(
-        tmp_path / "unused.sock",
-        Owner("old", "session", "branch", "generation"),
-        "unused-test-token",
-        tmp_path / "unused.json",
-    )
-    runtime = ObserverRuntime(context)
-    try:
-        with pytest.raises(RuntimeError, match="ACP"):
-            await runtime.start(observer_data)
-        assert not runtime.entries
-    finally:
-        await runtime.client.aclose()
 
 
 @pytest.mark.parametrize('mode',['headless','no-budget-hint'])
