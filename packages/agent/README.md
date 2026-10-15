@@ -2287,3 +2287,19 @@ caller-owned: the validator does NOT borrow another/global provider's catalog or
 claim that unknown limits passed. Such callers need to supply their own capability
 contract/validation. Native/registered metadata-backed app paths are exercised;
 unknown-provider/raster/native-platform interoperability remains open.
+
+## Agent Client Protocol (ACP)
+
+`xdog.agent.acp` is an opt-in, harness-neutral adapter/backend contract using the
+official Python ACP SDK; it does not import coding, Eyes, TUI, claw or flow.
+`xdog-agent acp` exposes standard stdio initialize/new/load/prompt/update/cancel
+interoperation. Permission/tool policy stays in the injected backend. JSON/frame
+validation rejects duplicate/nonfinite/reserved routing metadata; stdout is only
+protocol. Progress is not final prompt completion.
+
+The direct dependency is `agent-client-protocol>=0.12.1,<0.13` on Python 3.12–3.14
+(the current SDK is excluded by marker on 3.15+). Normal non-ACP imports remain
+independent of that SDK. Coding's session ownership and durable inbox extensions
+are product policy, not a second generic Agent loop. Historical external-event
+records retain only codec/projection compatibility, not a live event host.
+See [ACP session routing](../../docs/acp-session-routing.md).

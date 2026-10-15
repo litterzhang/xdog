@@ -1,5 +1,8 @@
 # XDOG Eyes：声明式观察与会话事件投递
 
+> Superseded for transport, binding and scheduling by the approved ACP/session and endpoint/inbox designs dated 2026-10-15. This is a historical design, not the shipped host protocol; see `docs/acp-session-routing.md`.
+
+
 日期：2026-10-14
 状态：用户已批准，按关联实施计划实现。本文不是实现计划。
 

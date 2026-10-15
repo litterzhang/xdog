@@ -4437,3 +4437,37 @@ approval admission revisions. Opening then closing an approval still invalidates
 earlier hook result, even when no request remains pending at delivery. Replacing the
 child approval-manager inventory also refuses the old result. This prevents edits
 crossing an input ownership change; it is not a tool policy change or callback rollback.
+
+## ACP session routing and reviewed inbox
+
+`--session ID --prompt TEXT` sends through ACP to the exact live owner without
+constructing another Agent. It differs from `--resume-id ID` (explicit history
+restore), rejects inactive/unknown/cwd mismatch, and cannot override target policy.
+`--acp` is the standard stdio adapter; `--acp --session ID` fixes a bridge to an
+existing owner. Ordinary native/RPC/navigation usage does not require optional ACP
+activation; the pinned SDK currently supports Python 3.12–3.14 only.
+
+Callbacks use an explicitly configured **ACP endpoint + session**, not a required
+coding CLI subprocess or TUI event host. The independent lightweight ingress
+(`python -m xdog.coding.acp.ingress_main --help`) receives into a durable per-session
+inbox even when every TUI/owner is closed. It does not create an Agent or silently
+restore history. Starting/stopping the ingress is explicit and independent.
+
+`/inbox list [OFFSET]` and `/inbox show ID` inspect without running a model or
+refilling credit. `/inbox approve ID [ID...]` selects exact messages through the
+normal permission hook and sole controller. No implicit all or startup replay.
+A batch starts at most one automatic turn; interrupted attempts need explicit
+`/inbox retry ID`, retaining prior attempt evidence. TUI/RPC label external source,
+evidence, status and full details, joining canonical attempts without duplicates.
+
+Optional `--session ID --enqueue --message-id STABLE_ID --prompt TEXT` writes data
+without ACP/model startup, with a durable JSON receipt, not an execution result.
+It cannot combine with model/permission/resume overrides. Enqueue ACK loss permits
+same-ID/content dedup retry; standard prompt outcome-unknown never does. There is
+no automatic harness/observer startup or exactly-once side-effect guarantee.
+
+The old event-host package/environment/capabilities are removed, while stored
+`xdog.external_event.v1` history remains readable. New external model input is
+`xdog.session_input.v1`; a nonsecret `XDOG_SESSION_ID` tool-environment hint follows
+session navigation without granting permissions. See the [full protocol and
+receiver setup](../../docs/acp-session-routing.md).

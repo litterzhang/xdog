@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 from concurrent.futures import Future
 from typing import TYPE_CHECKING, Any
 
+from xdog.coding.core.sessions.availability import acp_available
 from xdog.coding.core.sessions.controller import SessionController
 from xdog.coding.core.sessions.inbox_runtime import InboxCoordinator
 from xdog.coding.core.sessions.inbox_store import InboxStore
@@ -108,11 +108,14 @@ class SessionRuntime:
             await asyncio.gather(task, return_exceptions=True)
 
     async def open_endpoint(self) -> None:
-        if sys.version_info >= (3, 15):
+        if not acp_available():
             return
         async with self._endpoint_lock:
             if self.server is None:
-                from xdog.coding.acp.server import serve_local
+                try:
+                    from xdog.coding.acp.server import serve_local
+                except ImportError:
+                    return  # Ordinary session ownership/inbox works without optional ACP.
                 self.server = await serve_local(self)
 
     def context_changed(self) -> None:

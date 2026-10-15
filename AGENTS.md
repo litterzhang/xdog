@@ -92,7 +92,7 @@ The core invariant in `models.py` and `loader.py` is node-private typed ports co
 
 `packages/coding/src/xdog/coding/main.py` selects interactive TUI, one-shot print, or JSON-lines RPC modes. `core/sdk.py` resolves layered configuration, model metadata, permissions, skills, tools, and persisted state before constructing an `xdog.agent.Agent`. Configuration precedence is global settings, project `.coding/settings.json`, then CLI overrides.
 
-`core/agent_session.py` rebuilds the prompt and checks compaction before each turn, then adapts agent events to the selected UI mode. Session history, settings, summaries, and branches are persisted as JSON by `core/session_manager.py`. Project context discovery is non-recursive from the working directory: `AGENTS.md`, `AGENTS.md`, `.coding/INSTRUCTIONS.md`, and `.coding/instructions.md`, each capped at 64 KiB. Permissions belong in the coding client's pre-tool hook, not in the generic agent runtime. Preserve the default fail-closed behavior: read-only calls may run automatically, mutating calls require approval, and unattended execution may mutate only when `allow-all` was explicitly selected. Permission gates are not an OS sandbox.
+`core/agent_session.py` rebuilds the prompt and checks compaction before each turn, then adapts agent events to the selected UI mode. Session history, settings, summaries, and branches are persisted as JSON by `core/session_manager.py`. `core/sessions/` owns the single controller, writer lease, route ownership and separate durable reviewed inbox; TUI/RPC/ACP share that execution path, and offline ingress never constructs a second Agent. Project context discovery is non-recursive from the working directory: `AGENTS.md`, `AGENTS.md`, `.coding/INSTRUCTIONS.md`, and `.coding/instructions.md`, each capped at 64 KiB. Permissions belong in the coding client's pre-tool hook, not in the generic agent runtime. Preserve the default fail-closed behavior: read-only calls may run automatically, mutating calls require approval, and unattended execution may mutate only when `allow-all` was explicitly selected. Permission gates are not an OS sandbox.
 
 ### `xdog.claw`: persistent multi-channel assistant
 
@@ -114,25 +114,38 @@ Prompt construction intentionally separates a cacheable static prefix from mutab
 
 Importing `xdog.claw.core` intentionally registers claw-specific tools. Preserve these side-effect imports when reorganizing code.
 
-### `xdog.eyes`: observation and activation layer
+### `xdog.eyes`: observation and ACP activation layer
 
 Like flow, eyes owns a versioned JSON definition, frozen models, whole-definition
 validation, asynchronous executor, CLI and packaged `eyes-observers` skill.
-Sources collect evidence; detectors emit events; explicit routes connect handlers.
-The first source observes regular-file content changes with bounded polling.
+Sources collect evidence, detectors emit events, and explicit routes invoke ACP
+handlers. Regular-file content changes use bounded no-follow polling.
 
-Eyes does not depend on agent/ai/coding/claw/flow and does not execute an agent
-loop. Its independent process binds to the current coding context through a
-private generic event capability. Coding never imports eyes or specific sources;
-its mode owner admits external events only after full producer/control settlement.
-Canonical `xdog.external_event.v1` messages preserve provenance and project labelled
-untrusted evidence without granting permissions. Automatic work has a one-turn
-budget after human input or approved resume, preventing self-edit loops.
+Eyes depends only on the optional version-bounded ACP SDK, never on
+agent/ai/coding/claw/flow, and does not execute tools or an agent loop. A coding
+callback connects directly to an explicitly configured private Unix ACP endpoint
+and exact session ID; it does not launch coding CLI or inspect coding registry.
+Stdio is an optional generic third-party ACP transport. Loading a skill does not
+start observation, a model, a receiver or TUI.
 
-Definitions persist, registrations do not. Navigation/exit revoke capabilities;
-there is no crash replay or automatic harness startup. Unix-local transport,
-file sources and current-session notification are the first-release boundaries.
-See `docs/eyes-host-protocol.md` and the package README for the protocol/commands.
+Coding's independently managed lightweight ACP ingress forwards live prompts or
+persists negotiated XDOG enqueue messages without constructing AgentSession.
+TUI/owner absence does not prevent durable intake while the receiver is running.
+Opening a session displays pending/interrupted messages without consuming them;
+exact approval/retry uses the sole controller, existing permissions and one-turn
+credit. Message and execution-attempt identities differ; crash running becomes
+interrupted, never automatic side-effect replay. Persisted inbox namespace,
+project/branch and stable IDs make explicit enqueue ACK-loss recovery safe;
+standard prompt outcome-unknown is never blindly resent. Source labels/evidence
+are untrusted, not identities or permissions. New canonical input is
+`xdog.session_input.v1`; old `xdog.external_event.v1` is historical codec only.
+
+Definitions persist, registrations do not. Receiver disconnect pauses collection;
+restart alone does not reconnect. No automatic harness/observer startup,
+permanent installed daemon, hosted broker, TCP/Windows transport, API/web sources,
+scripts or claw/flow-specific adapters. Eyes lifecycle controls are not agent
+event delivery endpoints. Old host/capability/descriptor/env wiring is removed.
+See `docs/acp-session-routing.md` and package README for protocol/commands/limits.
 
 ### `xdog.tui` and `xdog.site`
 

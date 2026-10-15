@@ -1,7 +1,7 @@
 # Session 持久收件箱：离线接收与显式恢复
 
 日期：2026-10-15
-状态：用户已于 2026-10-15 确认本文及 endpoint 补充设计；实施计划 `../plans/2026-10-15-acp-endpoint-inbox.md` 已编写，等待审核。产品离线收件尚未实现。
+状态：原设计及 endpoint/inbox 补充设计与实施计划已获用户批准。实现与旧 host 删除已完成，完整测试、构建与隔离验证已通过；最终独立审核和完成审计仍在进行。以 `docs/acp-session-routing.md` 为当前协议说明，保留本文中的历史方案与修订标记。
 关联设计：`2026-10-15-acp-session-routing-design.md`。
 
 > **2026-10-15 回调边界修订：** 见 `2026-10-15-acp-endpoint-callback-design.md`（已确认）。Eyes 必须能直连 ACP endpoint，不依赖启动 coding CLI；下文短命 stdio 接收进程仅可作为可选客户端入口，不再是离线投递的必经路径。独立、显式启动的接入服务可在所有 TUI/session owner 退出后继续收件；接入服务也未运行时明确不可达。消息持久化、权限和显式恢复规则不变。

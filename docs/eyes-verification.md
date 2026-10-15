@@ -1,66 +1,114 @@
-# Eyes implementation verification — 2026-10-15
+# ACP / Eyes / session inbox verification — 2026-10-15
 
-Spec: `docs/superpowers/specs/2026-10-14-eyes-design.md`.
-Plan: `docs/superpowers/plans/2026-10-14-eyes.md`.
-Implemented in the requested checkout `/data/workspaces/pyspace/xdog`; no worktree,
-merge, push or publication was performed.
+Implemented in the requested checkout `/data/workspaces/pyspace/xdog`, feature
+branch `feat/eyes-observation`, without a worktree, merge, push, PR or publication.
+Specs: ACP session routing, ACP endpoint callback and session inbox designs dated
+2026-10-15. The 2026-10-14 host design is historical/superseded.
 
-## Requirement evidence
+**Status:** implementation, deletion, first complete verification and isolated
+artifact checks passed; the required final independent review and its fixes are
+still pending. This document does not yet claim the full goal complete.
 
-| Requirement | Implementation / authoritative checks |
-| --- | --- |
-| Flow-like independent package | frozen models, strict loader, async executor, adapters, argparse CLI; eyes declares no runtime dependencies |
-| Sources/handlers through a skill | packaged `eyes-observers`, JSON example, existing packaged-skill discovery/loader test |
-| Coding does not know sources | coding imports no eyes modules; generic protocol, inbox, binding and mode owners |
-| Actual file changes activate handling | real file/runtime/Unix transport test and normal SDK end-to-end custom-history/model-input test |
-| Evidence not instructions | registered handler instruction stored separately; delivery cannot replace it; canonical external message projects labelled untrusted data |
-| No new agent loop | native normal turn path and RPC `_handle_prompt`; full prompt/compaction/permission/persistence paths retained |
-| Baseline, content changes, noise | scanner/detector tests for same-content saves, net changes, rename, debounce/max-delay and source error recovery |
-| Confinement and limits | no-follow descriptor scans; regular-file/file-count/file-size tests; explicit overflow and bounded presentation |
-| Session/branch lifecycle | generation-specific private descriptors, navigation revocation, context retirement and cancellation tests |
-| Duplicate and retry policy | real lost-ACK client test, immutable delivery IDs, thread-serialized host admission and 4096-ID no-eviction test |
-| Self-edit loop prevention | end-to-end model stub edits its watched source; exactly one turn, later evidence queued and budget paused |
-| Resume permissions | actual PermissionManager ask/deny fail closed; explicit allow-all permits; end-to-end runtime resume deny/allow checks |
-| Independent process | real CLI start/stop and concurrent-start tests; one runtime/registration; last stop retires socket |
-| Heartbeat ownership | injected-clock five-second retries and fifteen-second failure test; descriptor revocation stops runtime without replay |
-| Resource cleanup | scan-thread cancellation, incomplete socket shutdown, active delivery cancellation, source/context shutdown tests |
-| Installed artifacts | wheel and sdist build; Twine; isolated no-deps install; import/CLI/skill/example/license/py.typed inspection |
+## Acceptance evidence
 
-## Fresh verification results
+Paths in the table are repository-relative test files. Test implementations use
+real owner/controller instances, files, subprocesses and official ACP SDK peers;
+SDK-only peer fixtures do not import XDOG. Scoped unit fault injection complements
+those integrations, not replacements for them.
 
-- `uv sync`: resolved 115 packages; environment synchronized.
-- `uv run python scripts/test.py`: all eight configured paths passed;
-  **5,837 passed / 67 skipped**, 54.16 seconds. Package counts: eyes 95, ai 813,
-  flow 583, tui 688, site 42, agent 1766, claw 917, coding 933.
+| ID / requirement | Authoritative evidence |
+|---|---|
+| O1 generic Agent ACP initialize/new/load/prompt/update/cancel without coding | `packages/agent/tests/test_acp_{adapter,backend,stdio}.py`; isolated agent wheel consumer |
+| O2 human priority, queueing and full producer/control settlement | `packages/coding/tests/test_session_controller.py`, `test_session_turns.py`, `test_native_session_queue.py`, `test_inbox_controller.py` |
+| O3 single writable owner, before-load lease, no duplicate Agent in bridge | `packages/coding/tests/test_session_ownership.py`, `test_session_router.py`, `test_acp_bridge.py` (real owner subprocess) |
+| O4 invalid/inactive/session/cwd/generation/UID/mode/symlink rejection | coding `test_acp_backend.py`, `test_session_ownership.py`, `test_acp_ingress_lifecycle.py`, `test_inbox_store.py`; Eyes `test_acp_unix.py`, `test_local_control.py` |
+| O5 source/evidence/state/assistant/tool live and replay display, no human masquerade | coding `test_session_message_display.py`, `test_session_history_display.py`, `test_inbox_display.py`; Eyes `test_end_to_end.py` |
+| O6 scoped cancel, EOF/crash/navigation/compaction/approval cleanup | coding `test_session_controller.py`, `test_acp_ingress.py`, `test_acp_ingress_lifecycle.py`, `test_acp_backend.py`, native/RPC cancellation suites; Eyes `test_acp_enqueue.py` |
+| O7 fail-closed default permission, no approver/mode escalation, real TUI/RPC approval | coding `test_inbox_controller.py`, `test_inbox_commands.py`, `test_inbox_display.py`, `test_acp_backend.py`; Eyes `test_acp_handler.py` |
+| O8 self-edit anti-loop and truthful headless budget | Eyes `test_end_to_end.py::test_file_to_acp_coding_turn_then_self_edit_budget_pause`, `test_acp_handler.py`; coding `test_acp_backend.py`, `test_inbox_controller.py` |
+| O9 final response vs update/ACK, unknown prompt no-replay, only not-sent auto retry | Eyes `test_acp_handler.py`, `test_acp_delivery.py`, `test_executor.py`, `test_acp_enqueue.py` |
+| O10 real subprocess/stdIO/Unix and full file→target session closure | coding `test_acp_bridge.py`; Eyes `test_runtime.py`, `test_end_to_end.py` |
+| O11 old implementation absent, historical decoder still usable | coding `test_no_legacy_event_host.py`; agent `test_external_event_messages.py`; physical deletion inventory below |
+| O12 global lint/types/tests/examples and artifacts | commands/results below; final independent review remains required |
+| E1 generic Unix ACP without coding imports/executable/spawn | Eyes `test_acp_unix.py`; `test_runtime.py::test_cli_uses_unix_acp_without_coding_cli` |
+| E2 explicit connection/session; all targets checked before zero-source admission | Eyes `test_loader.py`, `test_runtime.py::test_all_handlers_must_connect_before_any_source_scan` |
+| E3 existing owner + ingress + Eyes without second AgentSession, TUI/live replay | coding `test_acp_ingress.py`; Eyes `test_end_to_end.py` |
+| E4 no TUI/owner, complete enqueue/status with no AgentSession/model/owner socket | coding `test_acp_offline_inbox.py`, `test_acp_enqueue_cli.py`; isolated coding wheel import blocker |
+| E5 TUI exit preserves observation; receiver exit pauses; ACKed data remains | Eyes `test_end_to_end.py` (offline owner lifetime and explicit receiver recovery) |
+| E6 show pending on open, zero model calls, explicit selected review | coding `test_inbox_display.py`, `test_inbox_controller.py`; Eyes offline-to-TUI E2E |
+| E7 competing starters, stale/live sockets, failed/cancelled startup, inode cleanup | coding `test_acp_ingress_lifecycle.py`; Eyes `test_local_control.py`, `test_runtime.py` |
+| E8 unknown prompt vs durable same-ID retry, branch/store/generation fences | Eyes `test_acp_enqueue.py`, `test_acp_handler.py`, `test_acp_delivery.py`; coding `test_inbox_store.py` |
+| E9 preserved third-party stdio, absent SDK/future-version non-ACP, CLI attach | Eyes SDK-only fixture tests; coding `test_acp_optional_imports.py`, `test_acp_cli.py`, `test_acp_bridge.py`; isolated environments |
+| E10 complete deletion/artifacts/global checks/review | deletion/build evidence below; final review pending |
+| I1 real stdio offline enqueue without load/new/model | coding `test_acp_enqueue_cli.py::test_standard_stdio_adapter_can_enqueue_without_load_or_model` |
+| I2 durable identity/content conflict/concurrency/quota/ACK-loss | coding `test_inbox_store.py`, `test_inbox_crash.py`, `test_acp_offline_inbox.py`; Eyes `test_acp_enqueue.py` |
+| I3 absent/cwd/private-files/forged-control fail closed | coding `test_inbox_store.py`, `test_acp_offline_inbox.py`, `test_no_legacy_event_host.py` |
+| I4 no implicit consumption on open, one controller after explicit review | coding `test_inbox_controller.py`, `test_inbox_display.py`; Eyes offline E2E |
+| I5 selected approval/content CAS/current branch/generation/no extra credit | coding `test_inbox_controller.py`; native query-credit regression in `test_inbox_display.py` |
+| I6 actual process death at running→interrupted, no replay, fresh reviewed attempt | coding `test_inbox_crash.py`, `test_inbox_controller.py::test_real_owner_crash_leaves_interrupted_attempt_and_retry_is_explicit` |
+| I7 observation outlives owner, no source crash restart/replay, stop preserves inbox | Eyes `test_end_to_end.py`, `test_runtime.py::test_crashed_runtime_is_not_restarted_by_status_and_explicit_start_rebaselines` |
+| I8 live/reloaded TUI/RPC, original prompt/attach interoperable | coding display/controller/RPC/bridge tests and real Eyes E2E |
+| I9 no old host/capabilities; shared ACP backend and separate inbox | deletion audit; standard stdio enqueue and model-free Unix ingress tests |
+| I10 complete verification and explicit unverified boundaries | results below; final review pending |
+
+## Physical deletion and compatibility
+
+Removed complete `coding/core/external_events/`, Eyes `transport/` and
+`handlers/session_notify.py`, `docs/eyes-host-protocol.md` and its v1 fixture.
+AgentSession no longer exposes an event-host field/enable method, capability
+rotation, event-context environment masking or the legacy new-input route.
+Old host/inbox/protocol-specific tests were replaced by the stronger protocol,
+ownership, persistence and permission tests above; generic per-tool environment
+isolation tests remain and use a neutral test variable.
+
+`test_no_legacy_event_host.py` audits shipped source absence and reads actual
+persisted `xdog.external_event.v1` history through TUI projection. New model input
+uses `xdog.session_input.v1`. `XDOG_SESSION_ID` is a nonsecret current-session hint
+that preserves caller environment and refreshes after navigation, not a token.
+
+## Fresh verification (pre-review tree)
+
+- `uv run python scripts/test.py`: all eight paths passed in 74.97s. Counts:
+  flow 813; claw 583; eyes 169; agent 1785/48 skipped; site 42;
+  ai 688/7 skipped; tui 919; coding 1141/12 skipped. Skip reasons belong to
+  pre-existing optional independent MCP SDK/platform fixtures, not hidden ACP
+  failures; final run records exact reasons.
 - `uv run ruff check packages`: passed.
-- Strict mypy for all eight namespaces: passed, 589 source files. Existing unused
-  override notes are not newly introduced type errors.
+- Strict mypy over all eight namespaces: passed, 620 source files.
 - `uv run xdog-flow test packages/flow/examples/ --allow-script-stub`: 17 passed.
-- Shipped eyes example: actual CLI validation passed.
-- Skill frontmatter validator: passed; package skill discovery and loading passed.
-- `uv build --package xdog-eyes`: wheel and sdist built.
-- `uvx twine check`: both artifacts passed.
-- Wheel installed with `--no-deps` in `/tmp/xdog-eyes-isolated`; isolated Python
-  import and CLI validation passed, with no ai/agent/coding/claw/flow present.
-- CI YAML parses and includes eyes import, tests, strict types, example/wheel checks.
+- Shipped Eyes v2 example: actual CLI validate passed.
+- Agent and Eyes actual wheel/sdist pytest inspection: 4 passed, checking protocol
+  source, SDK Python marker, typing/license/skill/example and no retired modules.
+- `uv build --package` for ai/agent/tui/coding/eyes: all five wheels and five
+  sdists built. `uvx twine check`: all ten passed.
+- `uv run python scripts/verify_acp_artifacts.py DIST`: fresh wheel-only Eyes,
+  ai+agent-only and coding environments outside repo, with no PYTHONPATH/editable
+  fallback, all passed. SDK baseline 0.12.1. Eyes has no ai/agent/coding/claw/flow/tui
+  installed; its CLI validates the packaged example/skill. Agent runs official SDK
+  stdio initialize/new/load/prompt/update with deterministic model and no coding.
+  Coding runs real Unix enqueue/status/dedup while AgentSession/sdk model-bootstrap
+  imports are forbidden; no model or owner is created. Data remains after close.
+- Packaged skill behavior: read-only baseline consumer produced obsolete v1 and
+  could not satisfy offline intake; fresh consumer of updated skill produced valid
+  v2 explicit endpoint/session enqueue and required user review/no model startup.
+  No code implementation was delegated; final code review is a separate gate.
 - `git diff --check`: passed.
 
-The test model is local/deterministic: no live paid/provider request was needed.
-Skill reference examples and their runtime/permissions contracts are validated;
-no separate autonomous-agent pressure benchmark was run. Final review was inline,
-consistent with the approved no-subagent plan.
+Build paths/logs are reproducible from the commands and script; temporary paths
+in one run are evidence, not configuration or a public API. No publisher,
+credential, system daemon, remote service, live model or external IDE was invoked.
 
-## Deliberate boundaries
+## Remaining gate and exclusions
 
-Only local Unix file polling and current-session notifications ship here.
-Definitions are reusable, activity is ephemeral; no crash replay, automatic
-coding startup, API/web sources, script handlers, Windows transport or claw/flow
-adapters are advertised. Polling may miss transient changes; historical file
-contents are not stored. Permission gates/private same-UID capabilities are not
-an OS hostile-code sandbox.
+The final independent whole-branch review must inspect the original branch
+base→final implementation, the three approved designs, cancellation/ownership,
+permissions, no-CLI intake and actual verification evidence. Any Important or
+Critical findings need a RED→GREEN fix and fresh verification. This document and
+the active goal cannot be marked complete merely because this pre-review suite
+is green.
 
-Publication requires externally configuring the `pypi-xdog-eyes` environment and
-PyPI trusted publisher. The automatic publish matrix is intentionally not
-expanded before that provisioning; users can select eyes for the existing manual
-publish workflow after setup. No publication or external provisioning is part of
-this implementation.
+First-release exclusions remain TCP/HTTP/Windows transport, claw/flow-specific
+adapters, API/web/script sources, automatic harness/observer startup, crash replay
+of active registrations or tool side effects, exhaustive filesystem audit and
+hosted broker/database requirements. Actual provider/paid-model and external IDE
+integration were not exercised and are not implied by deterministic SDK tests.

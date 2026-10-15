@@ -53,28 +53,32 @@ colliding with anything else on PyPI.
 
 ## Eyes · 主动观察
 
-`xdog-eyes` uses the same file-first shape as flow: JSON definitions, validation,
-an asynchronous runtime, CLI and a packaged authoring skill. Ask a live coding
-session to use **eyes-observers** to watch a small file scope and register a
-processing instruction. The harness receives generic events; it does not know
-which source implementation collected them.
+`xdog-eyes` follows flow's file-first shape: versioned JSON, frozen models,
+validation, asynchronous execution, CLI and the packaged **eyes-observers** skill.
+Sources collect evidence, detectors emit events and routes invoke generic ACP
+handlers. Coding never needs to know a concrete source or start an event host.
 
 ```bash
-xdog-eyes validate eyes.json       # standalone, no model/host required
-xdog-eyes start eyes.json          # inside the live host's approved tool environment
-xdog-eyes status                   # collection health and separate processing states
-xdog-eyes stop <registration-id>
-xdog-eyes resume <registration-id> # subject to existing host approval policy
+xdog-eyes validate eyes.json
+xdog-eyes start eyes.json          # explicitly approved observation; endpoint/session configured in v2
+xdog-eyes status REGISTRATION_ID
+xdog-eyes stop REGISTRATION_ID
+xdog-eyes resume REGISTRATION_ID  # data reconnect or target-approved prompt credit; not self-approval
 ```
 
-The first release supports local Unix file polling and current-session
-notification. Events wait for idle; at most one automatic turn starts after a
-human prompt or approved resume. Definitions can be saved, but registrations end
-on session/branch change or exit. No persistent replay, automatic coding startup,
-or permission escalation. See [the package README](packages/eyes/README.md).
+The callback connects directly to an explicit Unix ACP endpoint and session ID,
+not a coding CLI subprocess or TUI widget. An independently managed lightweight
+receiver supports `delivery: "enqueue"` while TUI/session owners are offline,
+without constructing an Agent or model. Queued receipt is not execution: opening
+TUI displays pending evidence, and `/inbox approve ID [ID...]` is a separate exact,
+permission-gated action. `delivery: "prompt"` instead requires a live owner and
+waits for its final ACP result. Unknown prompt outcomes are never blindly replayed.
 
-本地 eyes runtime 采集证据、生成事件、按声明式路由投递；coding 只负责通用事件接纳和
-空闲调度。内置 skill 帮助 agent 定义 source 与 handler，不需要 coding 理解文件监控实现。
+本地 Eyes 负责采集、事件和路由；coding 通过通用 ACP/session controller 接收并展示。
+收件持久化但不自动执行，观察注册不崩溃重放或自动启动。默认权限、来源标签和单一执行
+所有权保持不变。首版仅文件轮询、本地 Unix/可选通用 stdio ACP，不增加远程服务或
+claw/flow 专用 adapter。详见 [包说明](packages/eyes/README.md) 与
+[ACP/session/inbox 协议](docs/acp-session-routing.md)。
 
 ---
 

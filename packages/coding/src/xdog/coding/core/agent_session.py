@@ -53,7 +53,6 @@ from xdog.coding.core.settings_manager import SettingsManager
 from xdog.coding.core.system_prompt import build_system_prompt
 
 if TYPE_CHECKING:
-    from xdog.coding.core.external_events.binding import ExternalEventBinding
     from xdog.coding.core.session_staging import StagedExtensions
     from xdog.coding.core.sessions.controller import SessionController
     from xdog.coding.core.sessions.ownership import SessionLease
@@ -113,8 +112,7 @@ def _idle_change(method: Callable[Concatenate["AgentSession", P], R]) -> Callabl
                 if target_lease is not None and self._lease is not target_lease:
                     target_lease.close()
                 self._context_changes -= 1
-                if self.external_events is not None:
-                    self.external_events.refresh_owner()
+                self._refresh_session_hint()
                 if (self._context_changes == 0 and self.runtime is not None
                         and before_scope != (self.session_id, self.session_data.active_branch)):
                     self.runtime.context_changed()
@@ -153,7 +151,6 @@ class AgentSession:
     _base_context_transform: TransformContextFn | None = field(default=None, init=False, repr=False)
     handled_feedback: list[str] = field(default_factory=list, init=False)
     _base_input_transform: InputTransformFn | None = field(default=None, init=False, repr=False)
-    external_events: ExternalEventBinding | None = field(default=None, init=False, repr=False)
     runtime: SessionRuntime | None = field(default=None, init=False, repr=False)
     _sdk_controller: SessionController | None = field(default=None, init=False, repr=False)
     _sdk_users: int = field(default=0, init=False, repr=False)
@@ -174,13 +171,7 @@ class AgentSession:
     _tool_selection_retiring: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        # A new/unbound session must not borrow an inherited parent host capability.
-        context = self.agent.tool_context
-        environment = context.get("subprocess_env", {})
-        if not isinstance(environment, dict):
-            raise ValueError("Invalid caller subprocess environment")
-        context["subprocess_env"] = {**environment, "XDOG_EVENT_CONTEXT": ""}
-        self.agent.set_tool_context(context)
+        self._refresh_session_hint()
         # Restore session-level settings
         if self.session_data.settings:
             self.settings.load_session_settings(self.session_data.settings)
@@ -658,10 +649,8 @@ class AgentSession:
             raise RuntimeError("Tool retirement persistence owns this session")
         if self._compacting:
             raise RuntimeError("Compaction owns this session; cancel/wait before sending input")
-        if input_origin not in {'user', 'extension', 'system', 'custom_context', 'external_event', 'session_input'}:
+        if input_origin not in {'user', 'extension', 'system', 'custom_context', 'session_input'}:
             raise ValueError('Invalid input origin')
-        if input_origin == 'user' and self.external_events is not None:
-            self.external_events.inbox.human_input()
         context_snapshot = await self.context_messages.capture() if input_origin == 'user' else None
         try:
             self.handled_feedback = []
@@ -687,11 +676,6 @@ class AgentSession:
 
                 from xdog.agent.session_input import decode_input, encode_input
                 event_stream = await self.agent.prompt(encode_input(decode_input(json.loads(user_text))))
-            elif input_origin == 'external_event':
-                from xdog.agent.external_event import message
-                if images:
-                    raise ValueError("External event input cannot inject image attachments")
-                event_stream = await self.agent.prompt(message(user_text))
             elif input_origin == 'custom_context':
                 from xdog.agent.core import CustomAgentMessage
                 from xdog.agent.extensions.context_message import TYPE
@@ -1379,8 +1363,18 @@ class AgentSession:
         """
         return self.agent.supports_tool_calls is True
 
+    def _refresh_session_hint(self) -> None:
+        """Nonsecret routing hint only; never an authorization capability."""
+        context = self.agent.tool_context
+        environment = context.get('subprocess_env', {})
+        if not isinstance(environment, dict):
+            raise ValueError('Invalid caller subprocess environment')
+        context['subprocess_env'] = {**environment, 'XDOG_SESSION_ID': self.session_id}
+        self.agent.set_tool_context(context)
+
     def _rebuild_system_prompt(self) -> None:
         """Rebuild and set the system prompt from config and tools."""
+        self._refresh_session_hint()
         from xdog.coding.config import PlatformInfo, RuntimeConfig
 
         # Get tool definitions from the agent's current tools
@@ -1406,7 +1400,6 @@ class AgentSession:
             native_tool_calls=self._native_tool_calls(),
         )
         self.agent.set_system_prompt(prompt + self.plan.state.prompt())
-
     def _on_agent_event(self, event: AgentEvent) -> None:
         """Handle agent lifecycle events."""
         if isinstance(event, AgentEndEvent):
@@ -1514,15 +1507,6 @@ class AgentSession:
         if self.mcp is not None:
             await self.mcp.aclose()
 
-    def enable_external_events(self, *, notify: Callable[[], None] | None = None) -> ExternalEventBinding:
-        """Enable a generic local event receiver; one-shot clients do not call this."""
-        if self.external_events is None:
-            from xdog.coding.core.external_events.binding import ExternalEventBinding
-            binding = ExternalEventBinding(self, notify=notify)
-            binding.start()
-            self.external_events = binding
-        return self.external_events
-
     def dispose(self) -> None:
         """Close the owner before releasing resources and the writer lease."""
         if self.runtime is not None and not self.runtime.disposing:
@@ -1531,8 +1515,6 @@ class AgentSession:
         self._dispose_resources()
 
     def _dispose_resources(self) -> None:
-        if self.external_events is not None:
-            self.external_events.close()
         self.children.close()
         self.extension_dialogs.close()
         self.extensions.close()

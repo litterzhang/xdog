@@ -1,7 +1,7 @@
 # ACP endpoint 回调：与 coding CLI、TUI 生命周期解耦
 
 日期：2026-10-15
-状态：用户已于 2026-10-15 确认本文及关联 inbox 设计。实施补充计划 `../plans/2026-10-15-acp-endpoint-inbox.md` 已编写，等待审核；尚未开始该计划的产品代码修改。
+状态：原设计及 endpoint/inbox 补充设计与实施计划已获用户批准。实现与旧 host 删除已完成，完整测试、构建与隔离验证已通过；最终独立审核和完成审计仍在进行。以 `docs/acp-session-routing.md` 为当前协议说明，保留本文中的历史方案与修订标记。
 关联：`2026-10-15-acp-session-routing-design.md`、`2026-10-15-session-inbox-design.md`。
 
 ## 1. 用户意图与替代范围

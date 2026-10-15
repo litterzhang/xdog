@@ -100,7 +100,7 @@ async def run_rpc_mode(session: AgentSession) -> int:
                          "session_checkpoint_targets": 1, "transcript_sources": 1, "transcript_canonical": 1,
                          "transient_events": 1, "terminal_input": 1, "terminal_release_input": 1,
                          "rpc_async_output": int(output.fd is not None),
-                         "acp": int(runtime is not None and sys.version_info < (3, 15)),
+                         "acp": int(runtime is not None and runtime.server is not None),
                          "session_inbox": int(runtime is not None), "session_routing": int(runtime is not None)},
         "session_revision": navigation.revision,
         "max_input_frame_bytes": MAX_RPC_LINE_BYTES,

@@ -54,8 +54,9 @@ def run_agent(
     if message_id is not None:
         raise ValueError("message_id requires enqueue")
     if acp or session_id is not None:
-        if sys.version_info >= (3, 15):
-            raise RuntimeError("ACP currently requires Python 3.12–3.14")
+        from xdog.coding.core.sessions.availability import acp_available
+        if not acp_available():
+            raise RuntimeError("ACP requires Python 3.12–3.14 and agent-client-protocol>=0.12.1,<0.13")
         if acp:
             from xdog.coding.acp.cli import run_acp
             asyncio.run(run_acp(session_id))

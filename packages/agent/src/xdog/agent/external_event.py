@@ -1,4 +1,4 @@
-"""Canonical external input: retain provenance, project only validated evidence."""
+"""Historical external-event codec and untrusted projection; not a live host/input protocol."""
 from __future__ import annotations
 
 import json
