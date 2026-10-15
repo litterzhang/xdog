@@ -82,6 +82,8 @@ from xdog.coding.cli.session_picker import pick_session_command
     default=False,
     help="Interactively pick a session to resume.",
 )
+@click.option("--acp", is_flag=True, help="Run standard stdio Agent Client Protocol.")
+@click.option("--session", "session_id", default=None, help="Send to an exact live session ID.")
 @click.option(
     "--rpc",
     is_flag=True,
@@ -109,6 +111,8 @@ def cli(
     list_models: bool,
     pick_session: bool,
     rpc: bool,
+    acp: bool,
+    session_id: str | None,
     verbose: bool,
     files: tuple[Path, ...],
 ) -> None:
@@ -116,6 +120,18 @@ def cli(
 
     Optionally pass FILES to include their contents in the initial context.
     """
+    if session_id and resume_id:
+        raise click.UsageError("--session cannot be combined with --resume-id")
+    if acp and (rpc or print_mode or prompt or files or resume or resume_id or pick_session):
+        raise click.UsageError("--acp cannot be combined with RPC/print/prompt/resume/file inputs")
+    if session_id:
+        if any((resume, pick_session, model, thinking_level, permission_mode, working_dir, config_path, rpc, files)):
+            raise click.UsageError("--session cannot override the target session configuration")
+        if not acp and not prompt:
+            raise click.UsageError("--session requires --prompt or --acp")
+    if acp and any((model, thinking_level, permission_mode, working_dir, config_path)):
+        raise click.UsageError("Configure ACP sessions through project settings, not CLI overrides")
+
     # Early-exit commands
     if list_models:
         list_models_command()
@@ -153,6 +169,8 @@ def cli(
         working_dir=working_dir,
         config_path=config_path,
         rpc=rpc,
+        acp=acp,
+        session_id=session_id,
         verbose=verbose,
         files=files,
     )

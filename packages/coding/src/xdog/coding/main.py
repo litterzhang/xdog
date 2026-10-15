@@ -27,6 +27,8 @@ def run_agent(
     working_dir: Path | None = None,
     config_path: Path | None = None,
     rpc: bool = False,
+    acp: bool = False,
+    session_id: str | None = None,
     verbose: bool = False,
     files: tuple[Path, ...] = (),
 ) -> None:
@@ -34,6 +36,23 @@ def run_agent(
 
     Called by :func:`coding.cli.args.cli` after argument parsing.
     """
+    if acp or session_id is not None:
+        if sys.version_info >= (3, 15):
+            raise RuntimeError("ACP currently requires Python 3.12–3.14")
+        if acp:
+            from xdog.coding.acp.cli import run_acp
+            asyncio.run(run_acp(session_id))
+        else:
+            from xdog.coding.acp.client import send_prompt
+            from xdog.coding.modes.print_mode import PrintModeRenderer
+            if not prompt:
+                raise ValueError("--session requires a prompt")
+            assert session_id is not None
+            outcome = asyncio.run(send_prompt(session_id, prompt))
+            if outcome.response is not None:
+                PrintModeRenderer(output_format=output_format).render_message(outcome.response)
+        return
+
     from xdog.coding.core.sdk import CreateSessionOptions, create_agent_session
 
     try:

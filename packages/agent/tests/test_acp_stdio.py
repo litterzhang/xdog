@@ -29,3 +29,30 @@ async def test_official_client_over_stdio(tmp_path):
             assert result.stop_reason == "end_turn"
             assert "".join(update.content.text for update in client.updates) == "stdio reviewed"
             await conn.load_session(session_id=created.session_id, cwd=str(tmp_path), mcp_servers=[])
+
+
+async def test_metadata_cannot_shadow_validated_protocol_fields():
+    import json
+
+    import pytest
+    from xdog.agent.acp.transport import ValidatedReader
+
+    reader = asyncio.StreamReader()
+    reader.feed_data(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": "target",
+                    "prompt": [{"type": "text", "text": "review"}],
+                    "_meta": {"session_id": "another"},
+                },
+            }
+        ).encode()
+        + b"\n"
+    )
+    reader.feed_eof()
+    with pytest.raises(ValueError, match="metadata"):
+        await ValidatedReader(reader).readuntil(b"\n")

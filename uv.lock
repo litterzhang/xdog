@@ -2091,6 +2091,7 @@ name = "xdog-coding"
 version = "2.4.1"
 source = { editable = "packages/coding" }
 dependencies = [
+    { name = "agent-client-protocol", marker = "python_full_version < '3.15'" },
     { name = "click" },
     { name = "pydantic" },
     { name = "pyyaml" },
@@ -2101,6 +2102,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "agent-client-protocol", marker = "python_full_version < '3.15'", specifier = ">=0.12.1,<0.13" },
     { name = "click", specifier = ">=8.1.0" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pyyaml", specifier = ">=6.0" },

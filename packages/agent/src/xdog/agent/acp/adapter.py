@@ -105,7 +105,7 @@ class AcpAdapter(SdkAgent):
             raise invalid("Only nonempty text prompts are supported")
         text = "\n".join(block.text for block in prompt)
         try:
-            meta = metadata(kwargs.get("field_meta", kwargs.get("_meta")))
+            meta = metadata(kwargs.get("field_meta", kwargs.get("_meta", kwargs)))
             if not text.strip() or len(text.encode()) + len(str(meta).encode()) > MAX_INPUT_BYTES:
                 raise ValueError("Prompt exceeds capacity or is empty")
         except (ValueError, UnicodeError) as exc:
