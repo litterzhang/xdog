@@ -1,6 +1,7 @@
 """Native live and persisted projections share one actual multi-input Agent turn."""
 import asyncio
 import threading
+import time
 
 import pytest
 from xdog.ai.types import AssistantMessage, TextContent
@@ -9,6 +10,13 @@ from xdog.coding.modes.interactive.components.chat_log import ChatLog
 from xdog.coding.modes.interactive.session_presenter import SessionPresenter
 from xdog.coding.modes.interactive.theme import create_default_theme
 from xdog.tui.utils import strip_ansi
+
+
+def paint(ui):
+    deadline = time.monotonic()+3
+    while not ui._event_queue.empty():
+        assert time.monotonic()<deadline, 'paint every bounded FIFO frame, not just the first eight milliseconds'
+        ui._poll()
 
 
 def rendered(log):
@@ -54,16 +62,15 @@ def test_native_five_inputs_one_answer_live_and_reopened(coding_session, externa
                 lambda message=message: runtime.inbox.submit_prompt(message, peer_id=message.source)))
         if external:
             # A synchronous reader here observes committed data, not scheduled model work.
-            import time
             deadline = time.monotonic() + 3
-            while len(runtime.inbox.store.records(runtime.inbox.session_id, runtime.inbox.cwd)) < external_count:
+            while sum(name == 'inbox-prompt-intake' for _, name, _ in runtime.controller._controls) < external_count:
                 assert time.monotonic() < deadline
                 time.sleep(0.01)
         release.set()
         barrier.result(timeout=3)
         tickets = local + [future.result(timeout=3) for future in external]
         results = [ticket.result.result(timeout=5) for ticket in tickets]
-        ui._poll()
+        paint(ui)
         live = rendered(ui._chat_log)
         assert all(result.status == 'succeeded' for result in results)
         assert len(calls) == 1 and len(calls[0]) == 5
@@ -79,7 +86,7 @@ def test_native_five_inputs_one_answer_live_and_reopened(coding_session, externa
         # Repeated delivery cannot repeat any input or the shared stream.
         for event in observed:
             events.receive(event)
-        ui._poll()
+        paint(ui)
         assert rendered(ui._chat_log) == live
         saved = coding_session.session_manager.load_session(coding_session.session_id)
         log = ChatLog(create_default_theme())
@@ -161,5 +168,57 @@ def test_native_tool_approval_keeps_batch_identity_when_new_human_input_arrives(
         assert target.exists() is (decision == 'allow_once')
     finally:
         release.set()
+        ui._request_exit()
+        ui._session_events.close()
+
+
+def test_native_batch_keeps_all_attachment_metadata_until_shared_stream_finishes(coding_session, monkeypatch):
+    from xdog.agent import MessageStartEvent
+    from xdog.ai.types import ImageContent, Model, UserMessage
+    from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
+    from xdog.tui.attachments import attachment
+
+    from packages.coding.tests.test_image_composer import PNG
+
+    coding_session.model_info = Model(id='vision', input=('text','image'))
+    calls,painted = [],[]
+    coding_session.agent.set_stream_fn(lambda _,context,*args: calls.append(context) or EventStream.empty(
+        AssistantMessage(content=(TextContent(text='images answered'),))))
+    ui = InteractiveMode(coding_session)
+    ui._session_events.start()
+    runtime = coding_session.runtime
+    entered,release = threading.Event(),threading.Event()
+    first,second = attachment(PNG,'first.png'),attachment(PNG,'second.png')
+    dispatch = ui._dispatch_agent_event
+
+    def inspect(event):
+        if isinstance(event,MessageStartEvent) and isinstance(event.message,AssistantMessage):
+            painted.append(ui._active_images)
+        dispatch(event)
+    monkeypatch.setattr(ui,'_dispatch_agent_event',inspect)
+
+    async def control():
+        entered.set()
+        await asyncio.to_thread(release.wait)
+
+    barrier = runtime.controller.control(control,name='test-batch-images')
+    try:
+        assert entered.wait(2)
+        tickets = [ui._session_events.enqueue('first image',(first,),'user'),
+                   ui._session_events.enqueue('second image',(second,),'user'),
+                   ui._session_events.enqueue('text only',(),'user')]
+        for ticket in tickets:
+            ticket.accepted.result(timeout=3)
+        release.set()
+        for ticket in tickets:
+            assert ticket.result.result(timeout=3).status=='succeeded'
+        paint(ui)
+        assert len(calls)==1 and painted==[(first,second)]
+        assert sum(isinstance(part,ImageContent) for message in calls[0].messages
+                   if isinstance(message,UserMessage) for part in message.content)==2
+        assert ui._active_images==()
+    finally:
+        release.set()
+        barrier.result(timeout=3)
         ui._request_exit()
         ui._session_events.close()

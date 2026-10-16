@@ -26,6 +26,8 @@ def session_inbox(session: AgentSession) -> InboxStore:
 
 async def inbox_action(session: AgentSession, action: str, ids: tuple[str, ...] = (), *,
                        cursor: int = 0) -> dict[str, Any]:
+    if action == 'approve':
+        raise ValueError(USAGE + '; message approval is obsolete; delivery is automatic')
     if action not in {'list', 'show', 'cancel', 'retry'} or type(cursor) is not int or not 0 <= cursor <= 4096:
         raise ValueError(USAGE)
     if any(not isinstance(key, str) or key == '--all' for key in ids) or len(set(ids)) != len(ids):
@@ -36,19 +38,24 @@ async def inbox_action(session: AgentSession, action: str, ids: tuple[str, ...] 
     for key in ids:
         label(key)
     sid, cwd = session.session_id, session.working_dir.resolve()
+    branch = session.session_data.active_branch
     store = session_inbox(session)
     if action in {'list', 'show'}:
         rows = await asyncio.to_thread(store.records, sid, cwd)
-        if sid != session.session_id or cwd != session.working_dir.resolve():
+        if (sid != session.session_id or cwd != session.working_dir.resolve()
+                or branch != session.session_data.active_branch):
             raise RuntimeError('Inbox inspection context changed')
         if action == 'show':
             selected = next((row for row in rows if row.message.message_id == ids[0]), None)
             if selected is None:
                 raise ValueError('Unknown inbox message')
             return {'session_id': sid, 'record': record_data(selected), 'untrusted': True,
+                    'current_branch': branch,
+                    'blocked_reason': summary(selected,current_branch=branch)['blocked_reason'],
                     'notice': 'Read-only evidence; delivery is automatic and tool permissions are unchanged'}
         page = rows[cursor:cursor + 64]
-        return {'session_id': sid, 'messages': [summary(row) for row in page],
+        return {'session_id': sid, 'current_branch': branch,
+                'messages': [summary(row,current_branch=branch) for row in page],
                 'next_cursor': cursor + len(page) if cursor + len(page) < len(rows) else None,
                 'notice': 'Durable intake is not completion; pending messages are delivered automatically'}
     runtime = session.runtime

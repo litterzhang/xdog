@@ -188,8 +188,9 @@ class InboxCoordinator:
         error = ''
         while not self._retired and not self.controller._closing:
             try:
-                await self._snapshot()
-                await self._drain()
+                rows = await self._snapshot()
+                if any(row.status == 'pending' and row.branch_id == self.branch for row in rows):
+                    await self._drain()
                 error = ''
             except (OSError, ValueError, RuntimeError) as exc:
                 if self._retired or self.controller._closing:

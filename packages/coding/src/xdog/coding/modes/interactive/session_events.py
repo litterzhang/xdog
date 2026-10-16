@@ -289,13 +289,17 @@ class NativeSessionEvents:
         if event.kind == 'input_running':
             if self.display_batch != event.batch_id:
                 self.display_batch = event.batch_id
-                self.display_members = set(event.request_ids or (event.request_id,))
+                identifiers = event.request_ids or (event.request_id,)
+                self.display_members = set(identifiers)
+                members = [self.local.get(identifier) for identifier in identifiers]
+                ui._dispatch_images = tuple(
+                    image for member in members if member is not None for image in member.images)
+                origins = {member.origin if member is not None else 'session_input' for member in members}
+                ui._dispatch_input_origin = origins.pop() if len(origins) == 1 else 'session_input'
+                ui._active_images = ui._dispatch_images
+                ui._active_input_origin = ui._dispatch_input_origin
             ui._worker_active = True
             ui._cancel_requested = False
-            ui._dispatch_images = item.images if item else ()
-            ui._dispatch_input_origin = item.origin if item else 'session_input'
-            ui._active_images = ui._dispatch_images
-            ui._active_input_origin = ui._dispatch_input_origin
             if item:
                 item.started = True
                 if item.echo:

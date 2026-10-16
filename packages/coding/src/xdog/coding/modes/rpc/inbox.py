@@ -1,4 +1,4 @@
-"""Asynchronous RPC review requests; execution remains in the session controller."""
+"""Asynchronous Inbox inspection and cancel/retry controls, never message approval."""
 
 from __future__ import annotations
 
@@ -36,18 +36,14 @@ class RpcInbox:
         if key in self.used or len(self.used) >= 256 or len(self.tasks) >= 16:
             raise ValueError('Reused inbox request ID or RPC request capacity exceeded')
         action, cursor = packet.get('action', 'list'), packet.get('cursor', 0)
-        if not isinstance(action, str) or action not in {'list', 'show', 'approve', 'retry'}:
-            raise ValueError('Invalid inbox action')
+        ids: tuple[str, ...]
         if action == 'approve':
-            raw = packet.get('message_ids')
-            if not isinstance(raw, list) or not raw or len(raw) > 128 or 'message_id' in packet or cursor:
-                raise ValueError('Inbox approve requires explicit message_ids only')
-            ids = tuple(label(value) for value in raw)
-            if len(set(ids)) != len(ids):
-                raise ValueError('Duplicate inbox review selection')
-        elif action in {'show', 'retry'}:
+            raise ValueError('Inbox message approval is obsolete; delivery is automatic; use list/show/cancel/retry')
+        if not isinstance(action, str) or action not in {'list', 'show', 'cancel', 'retry'}:
+            raise ValueError('Invalid inbox action')
+        if action in {'show', 'cancel', 'retry'}:
             if 'message_ids' in packet or cursor:
-                raise ValueError('Inbox show/retry requires exactly one message_id')
+                raise ValueError('Inbox show/cancel/retry requires exactly one message_id')
             ids = (label(packet.get('message_id')),)
         else:
             if 'message_ids' in packet or 'message_id' in packet:
@@ -57,17 +53,27 @@ class RpcInbox:
             raise ValueError('Invalid inbox cursor')
         self.used.add(key)
         sid = self.session.session_id
+        revision,branch = self.navigation.revision,runtime.controller.branch
 
         async def run() -> None:
             response: dict[str, Any] = {'type': 'inbox_result', 'request_id': key, 'session_id': sid,
                                         'generation': generation, 'action': action, 'success': False}
             try:
-                if self.session.session_id != sid or runtime.controller.generation != generation:
+                if (self.session.session_id != sid or self.session.runtime is not runtime
+                        or runtime.controller.generation != generation or runtime.controller.branch != branch
+                        or self.navigation.revision != revision):
                     raise ValueError('Inbox context changed before admission')
-                response['result'] = await inbox_action(self.session, action, ids, cursor=cursor)
+                result = await inbox_action(self.session, action, ids, cursor=cursor)
+                if (self.session.session_id != sid or self.session.runtime is not runtime
+                        or runtime.controller.generation != generation or runtime.controller.branch != branch
+                        or self.navigation.revision != revision):
+                    response['effects_uncertain'] = action in {'cancel', 'retry'}
+                    raise ValueError('Inbox context changed during request; inspect durable status before retrying')
+                response['result'] = result
                 response['success'] = True
             except asyncio.CancelledError:
-                response.update(cancelled=True, message='Review cancelled; inspect inbox before retrying accepted work')
+                response.update(cancelled=True,
+                                message='Request cancelled; inspect inbox before retrying accepted work')
             except (ValueError, RuntimeError, OSError) as exc:
                 response['message'] = str(exc)
             if not self.closed:

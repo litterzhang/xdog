@@ -2,6 +2,7 @@
 import asyncio
 from dataclasses import replace
 
+import pytest
 from xdog.coding.core.sessions.models import InputRecord, SessionEvent
 from xdog.coding.modes.interactive.components.chat_log import ChatLog
 from xdog.coding.modes.interactive.theme import create_default_theme
@@ -30,16 +31,16 @@ async def test_capture_history_includes_pending_inbox_but_never_starts_model(cod
 
     store,message = pending(coding_session,tmp_path)
     runtime = SessionRuntime(coding_session,bound=True,inbox_store=store)
-    runtime.start()
+    runtime.start(setup_pending=True)
     try:
         snapshot = await capture_history(coding_session)
-        assert snapshot.inbox[0].status=='pending_review'
+        assert snapshot.inbox[0].status=='pending'
         log = ChatLog(create_default_theme())
         presenter = SessionPresenter(log)
         presenter.replay(snapshot.records,snapshot.messages,snapshot.inbox)
         output = text(log)
         assert 'Inspect late.py' in output and 'late.py' in output and 'Eyes' in output
-        assert 'pending_review' in output and 'not a human' in output
+        assert 'pending' in output and 'not a human' in output
         assert not coding_session.messages and not runtime.controller.store.records()
     finally:
         await asyncio.wrap_future(runtime.close())
@@ -71,25 +72,25 @@ async def test_pending_component_is_joined_with_canonical_attempt_without_duplic
 
     store,message = pending(coding_session,tmp_path)
     runtime = SessionRuntime(coding_session,bound=True,inbox_store=store)
-    runtime.start()
+    runtime.start(setup_pending=True)
     controller = runtime.controller
     log = ChatLog(create_default_theme())
     presenter = SessionPresenter(log)
     try:
         row = (await runtime.inbox.snapshot())[0]
         presenter.apply(SessionEvent(message.session_id,controller.generation,'','inbox_snapshot',(row,)))
-        approved = store.approve(
+        claimed = store.reserve(
             message.session_id,('m1',),cwd=tmp_path,branch_id='',generation=controller.generation)[0]
-        value = SessionInput(approved.request_id,'acp','Eyes',message.instruction,message.evidence,
-                             {'inbox':{'message_id':'m1','attempt_id':approved.attempt_id},'submitted':{}})
-        record = InputRecord(value,'',controller.generation,'paused')
-        presenter.apply(SessionEvent(message.session_id,controller.generation,value.id,'input_paused',record))
-        presenter.apply(SessionEvent(message.session_id,controller.generation,'','inbox_snapshot',(approved,)))
-        presenter.apply(SessionEvent(message.session_id,controller.generation,'','inbox_snapshot',(approved,)))
+        value = SessionInput(claimed.request_id,'acp','Eyes',message.instruction,message.evidence,
+                             {'inbox':{'message_id':'m1','attempt_id':claimed.attempt_id},'submitted':{}})
+        record = InputRecord(value,'',controller.generation,'queued')
+        presenter.apply(SessionEvent(message.session_id,controller.generation,value.id,'input_queued',record))
+        presenter.apply(SessionEvent(message.session_id,controller.generation,'','inbox_snapshot',(claimed,)))
+        presenter.apply(SessionEvent(message.session_id,controller.generation,'','inbox_snapshot',(claimed,)))
         output = text(log)
         assert output.count('Inspect late.py')==1
-        assert 'm1' in output and approved.attempt_id in output
-        assert 'approved' in output and 'paused' in output
+        assert 'm1' in output and claimed.attempt_id in output
+        assert 'claimed' in output and 'queued' in output
         assert len(log.detail_records())==1
     finally:
         await asyncio.wrap_future(runtime.close())
@@ -111,7 +112,7 @@ async def test_untrusted_labels_are_safe_and_full_evidence_is_in_details(coding_
     assert 'file-49' in log.detail_records()[0].body
 
 
-def test_native_late_enqueue_refreshes_display_without_starting_an_agent(coding_session,tmp_path):
+def test_native_late_enqueue_is_automatically_consumed_without_message_approval(coding_session,tmp_path):
     import time
 
     from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
@@ -128,18 +129,25 @@ def test_native_late_enqueue_refreshes_display_without_starting_an_agent(coding_
             assert time.monotonic()<deadline
             ui._poll()
             time.sleep(0.02)
-        assert not coding_session.messages
+        deadline = time.monotonic()+4
+        while store.records(message.session_id,message.cwd)[-1].status!='succeeded':
+            assert time.monotonic()<deadline
+            ui._poll()
+            time.sleep(0.01)
+        ui._poll()
+        assert coding_session.messages and not coding_session.permissions.has_pending_requests
+        assert text(ui._chat_log).count('Second late message')==1
     finally:
         ui._request_exit()
         ui._session_events.close()
 
 
-def test_native_review_after_a_turn_still_displays_the_current_permission_request(coding_session,tmp_path):
+def test_obsolete_native_approval_after_a_turn_never_opens_a_permission_dialog(coding_session,tmp_path):
     import time
 
     from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
 
-    store,message = pending(coding_session,tmp_path)
+    pending(coding_session,tmp_path)
     ui = InteractiveMode(coding_session)
     ui._session_events.start()
     try:
@@ -148,12 +156,13 @@ def test_native_review_after_a_turn_still_displays_the_current_permission_reques
         ui._poll()
         ui._handle_slash_command('inbox','approve m1')
         deadline = time.monotonic()+4
-        while ui._permission_prompt is None:
-            assert time.monotonic()<deadline, 'review permission request was lost under a previous turn stamp'
+        while ui._command is not None:
+            assert time.monotonic()<deadline
             ui._poll()
             time.sleep(0.01)
-        assert ui._permission_prompt.request.tool_name=='session_inbox_approve'
-        coding_session.permissions.resolve(ui._permission_prompt.request.id,'deny')
+        ui._poll()
+        assert 'obsolete' in text(ui._chat_log)
+        assert ui._permission_prompt is None and not coding_session.permissions.has_pending_requests
     finally:
         ui._request_exit()
         if ui._command_thread is not None:
@@ -168,7 +177,7 @@ async def test_late_poll_snapshot_cannot_rewind_a_completed_attempt(coding_sessi
 
     store,message = pending(coding_session,tmp_path)
     runtime = SessionRuntime(coding_session,bound=True,inbox_store=store)
-    runtime.start()
+    runtime.start(setup_pending=True)
     await runtime.inbox.snapshot()
     coding_session.permissions.set_mode('allow-all')
     entered,release = threading.Event(),threading.Event()
@@ -189,7 +198,7 @@ async def test_late_poll_snapshot_cannot_rewind_a_completed_attempt(coding_sessi
     stale = asyncio.create_task(runtime.inbox.snapshot())
     try:
         assert await asyncio.to_thread(entered.wait,3)
-        await runtime.inbox.approve(('m1',),peer_id='reviewer')
+        await runtime.activate_inputs()
         async with asyncio.timeout(3):
             while runtime.controller.store.records()[-1].status!='succeeded':
                 await asyncio.sleep(0.01)
@@ -218,14 +227,15 @@ def test_replay_replaces_old_pending_inbox_components_without_touching_other_not
     assert 'Unrelated notice' in text(log)
 
 
-def test_native_inbox_read_does_not_wait_for_a_busy_model(coding_session,tmp_path):
+@pytest.mark.parametrize('action',['list','approve m1','cancel m2'])
+def test_native_inbox_controls_do_not_wait_for_an_unrelated_busy_model(coding_session,tmp_path,action):
     import threading
     import time
 
     from xdog.coding.core.sessions.models import TurnResult
     from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
 
-    pending(coding_session,tmp_path)
+    store,message = pending(coding_session,tmp_path)
     ui = InteractiveMode(coding_session)
     ui._session_events.start()
     controller = coding_session.runtime.controller
@@ -242,14 +252,23 @@ def test_native_inbox_read_does_not_wait_for_a_busy_model(coding_session,tmp_pat
         ticket = ui._session_events.enqueue('A running turn',(),'user')
         assert entered.wait(3)
         ui._poll()
-        ui._handle_slash_command('inbox','list')
+        if action=='cancel m2':
+            store.enqueue(replace(message,message_id='m2'))
+        ui._handle_slash_command('inbox',action)
         deadline = time.monotonic()+1
         while ui._command is not None:
             assert time.monotonic()<deadline, 'read-only inbox inspection must not queue behind model execution'
             ui._poll()
             time.sleep(0.01)
         assert not ticket.result.done()
-        assert 'm1' in text(ui._chat_log)
+        if action=='approve m1':
+            assert 'obsolete' in text(ui._chat_log)
+        elif action=='cancel m2':
+            assert next(row for row in store.records(message.session_id,tmp_path)
+                        if row.message.message_id=='m2').status=='cancelled'
+        else:
+            assert 'm1' in text(ui._chat_log)
+        assert not coding_session.permissions.has_pending_requests
     finally:
         release.set()
         ui._request_exit()
@@ -258,45 +277,38 @@ def test_native_inbox_read_does_not_wait_for_a_busy_model(coding_session,tmp_pat
         ui._session_events.close()
 
 
-def test_native_inbox_query_is_not_a_new_human_wake_credit(coding_session,tmp_path):
-    import threading
+def test_native_inbox_query_does_not_repeat_automatically_delivered_input(coding_session,tmp_path):
     import time
 
-    from xdog.agent.session_input import SessionInput
-    from xdog.coding.core.sessions.models import TurnResult
+    from xdog.ai.types import AssistantMessage
+    from xdog.ai.utils.event_stream import EventStream
     from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
 
-    pending(coding_session,tmp_path)
+    store,message = pending(coding_session,tmp_path)
+    calls = []
+    coding_session.agent.set_stream_fn(lambda *_: calls.append(True) or EventStream.empty(AssistantMessage()))
     ui = InteractiveMode(coding_session)
     ui._session_events.start()
     runtime = coding_session.runtime
-    started = threading.Event()
-
-    async def execute(value):
-        started.set()
-        return TurnResult('succeeded',None)
-
-    async def barrier():
-        await asyncio.sleep(0)
-
-    runtime.controller.max_messages_per_turn = 1
-    runtime.controller._execute_batch = single_input_execute(execute)
-    ticket = runtime.controller.submit(
-        SessionInput('older-query','acp','Other','Unapproved backlog',(),{}),peer_id='other')
-    ticket.accepted.result(timeout=3)
     try:
-        ui._handle_submit('/inbox list')
         deadline = time.monotonic()+3
+        while (store.records(message.session_id,message.cwd)[0].status!='succeeded'
+               or not runtime.controller.store.records()
+               or runtime.controller.store.records()[0].status!='succeeded'):
+            assert time.monotonic()<deadline
+            ui._poll()
+            time.sleep(0.01)
+        records = runtime.controller.store.records()
+        before = len(calls)
+        assert before==1 and len(records)==1
+        ui._handle_submit('/inbox list')
         while ui._command is not None:
             assert time.monotonic()<deadline
             ui._poll()
             time.sleep(0.01)
         ui._poll()
-        runtime.controller._async(barrier).result(timeout=3)
-        assert runtime.controller.current_request is None and not started.is_set(), (
-            'inbox inspection cannot select an automatic task while its result is still being persisted')
-        assert not ticket.result.done(), 'read-only inbox commands must not grant automatic execution credit'
-        assert not coding_session.messages
+        assert runtime.controller.store.records()==records and len(calls)==before
+        assert not coding_session.permissions.has_pending_requests
     finally:
         ui._request_exit()
         if ui._command_thread is not None:
@@ -353,3 +365,15 @@ async def test_navigation_history_capture_waits_for_the_new_inbox_scope(coding_s
         release.set()
         await asyncio.gather(asyncio.wrap_future(receipt),return_exceptions=True)
         await asyncio.wrap_future(runtime.close())
+
+
+def test_inbox_summary_explains_branch_block_without_implying_message_approval(coding_session,tmp_path):
+    from xdog.coding.core.sessions.inbox_views import summary
+
+    store,message = pending(coding_session,tmp_path)
+    row = store.records(message.session_id,tmp_path)[0]
+    projected = summary(row,current_branch='another-branch')
+    assert projected['blocked_reason']=='branch_changed'
+    assert projected['status']=='pending' and projected['branch_id']==''
+    assert projected['sequence']==row.sequence and projected['batch_id']==row.batch_id
+    assert summary(row,current_branch='')['blocked_reason'] is None

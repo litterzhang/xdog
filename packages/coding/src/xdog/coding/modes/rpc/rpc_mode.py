@@ -54,7 +54,12 @@ async def run_rpc_mode(session: AgentSession) -> int:
     rpc_loop = asyncio.get_running_loop()
 
     def _permission_request(request: PermissionRequest) -> None:
+        owner = getattr(session, 'runtime', None)
+        batch = owner.controller._batch if owner is not None else None
+        identity = ({'batch_id': batch.id, 'request_ids': list(batch.request_ids),
+                     'session_id': batch.session_id, 'generation': batch.generation} if batch is not None else {})
         rpc_loop.call_soon_threadsafe(_emit, {
+            **identity,
             "type": "permission_request",
             "id": request.id,
             "tool": request.tool_name,
@@ -356,6 +361,7 @@ async def run_rpc_mode(session: AgentSession) -> int:
                 else:
                     if runtime is not None:
                         runtime.controller.human_input()
+                    prompt_options: dict[str, Any] = {'batch_stream': True} if session_events is not None else {}
                     if extensions.ui_enabled:
                         request_id = cmd.get('request_id')
                         try:
@@ -366,15 +372,20 @@ async def run_rpc_mode(session: AgentSession) -> int:
                         if 'image_refs' in cmd:
                             images = uploads.consume(cmd)  # Lease/header accepted; single-use admission, not peek.
                         async def ui_prompt(text: str, key: str, attachments: tuple[ImageContent, ...]) -> None:
-                            async with extensions.bind(key):
-                                await _handle_prompt(session, text, _emit, images=attachments)
+                            if session_events is not None:
+                                await _handle_prompt(session, text, _emit, images=attachments, batch_stream=True)
+                            else:
+                                async with extensions.bind(key):
+                                    await _handle_prompt(session, text, _emit, images=attachments)
                         turn_task = asyncio.create_task(ui_prompt(message, request_id, images))
                     elif images:
                         if 'image_refs' in cmd:
                             images = uploads.consume(cmd)
-                        turn_task = asyncio.create_task(_handle_prompt(session, message, _emit, images=images))
+                        turn_task = asyncio.create_task(_handle_prompt(session, message, _emit, images=images,
+                            **prompt_options))
                     else:
-                        turn_task = asyncio.create_task(_handle_prompt(session, message, _emit))
+                        turn_task = asyncio.create_task(_handle_prompt(session, message, _emit,
+                            **prompt_options))
                 continue
 
             if cmd_type == "abort":
@@ -481,8 +492,6 @@ async def run_rpc_mode(session: AgentSession) -> int:
     finally:
         if inbox is not None:
             await inbox.aclose()
-        if session_events is not None:
-            session_events.close()
         extensions.abort_prompt()
         # Stop the parent before waiting for child/source/extension ownership to
         # settle; EOF/output failure must not leave it producing more turns.
@@ -509,6 +518,8 @@ async def run_rpc_mode(session: AgentSession) -> int:
             await asyncio.gather(turn_task, return_exceptions=True)
         if runtime is not None:
             await asyncio.wrap_future(runtime.close())
+        if session_events is not None:
+            session_events.close()
         await output.aclose()
 
     return 1 if output.error is not None else 0
@@ -518,10 +529,11 @@ async def _handle_prompt(
     session: AgentSession,
     message: str,
     emit: EmitFn,
-    *, images: tuple[ImageContent, ...] = (), input_origin: str = 'user',
+    *, images: tuple[ImageContent, ...] = (), input_origin: str = 'user', batch_stream: bool = False,
 ) -> None:
     """Handle one prompt while the RPC command reader remains active."""
-    emit({"type": "message_start"})
+    if not batch_stream:
+        emit({"type": "message_start"})
 
     input_handled = False
     def on_event(event: AgentEvent) -> None:
@@ -545,7 +557,10 @@ async def _handle_prompt(
     correlated = controller is not None and not controller.owns_current_task
     identifier = __import__('uuid').uuid4().hex
     ticket = None
-    if correlated:
+    if batch_stream:
+        def unsubscribe() -> None:
+            pass
+    elif correlated:
         assert controller is not None
         def owned_event(event: Any) -> None:
             if (event.request_id == identifier or identifier in event.request_ids) and event.kind == 'agent_event':
@@ -578,6 +593,11 @@ async def _handle_prompt(
             last_assistant = (await session.send_message(message, images=images) if input_origin == 'user' else
                               await session.send_message(message, images=images, input_origin=input_origin))
 
+        if batch_stream:
+            # RpcSessionEvents publishes the sole stream and terminal durable
+            # outcome for every member; this consumer only owns its submission.
+            compaction_success = not bool(final_error)
+            return
         error = final_error or getattr(session.agent.state, "error", None)
         if last_assistant is None and isinstance(error, str) and error:
             raise RuntimeError(error)
@@ -601,6 +621,8 @@ async def _handle_prompt(
             emit({'type': 'error', 'message': error})
         compaction_success = not bool(error)
     except asyncio.CancelledError:
+        if batch_stream and ticket is not None and ticket.result.done():
+            return  # A durable result was already projected before reader shutdown.
         # Canceling this consumer must also settle its owned producer before the
         # RPC reader/session can admit another prompt or dispose permissions/tools.
         async def settle_prompt() -> None:

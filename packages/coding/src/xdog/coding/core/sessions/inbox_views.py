@@ -16,10 +16,13 @@ def receipt_data(receipt: EnqueueReceipt) -> dict[str, Any]:
             'message_state': row.status, 'branch_id': row.branch_id}
 
 
-def summary(row: InboxRecord) -> dict[str, Any]:
+def summary(row: InboxRecord, *, current_branch: str | None = None) -> dict[str, Any]:
     evidence = json.dumps(row.message.evidence[:3], ensure_ascii=True, allow_nan=False)
     return {'message_id': row.message.message_id, 'status': row.status, 'branch_id': row.branch_id,
             'attempt_id': row.attempt_id, 'request_id': row.request_id,
+            'batch_id': row.batch_id, 'sequence': row.sequence,
+            'blocked_reason': ('branch_changed' if current_branch is not None and row.branch_id != current_branch
+                               else 'explicit_retry_required' if row.status == 'interrupted' else None),
             'source': row.message.source, 'instruction': row.message.instruction[:2048],
             'evidence_count': len(row.message.evidence),
             'evidence_preview': evidence[:3072],

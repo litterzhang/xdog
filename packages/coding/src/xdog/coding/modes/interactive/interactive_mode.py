@@ -154,7 +154,9 @@ class _ArgumentJob:
 
 def _command_is_read_only(command: str, args: str) -> bool:
     if command == "inbox":
-        return not args.strip() or args.split()[0] in {'list', 'show'}
+        # This command never mutates the agent directly. Cancel/retry use the
+        # independently fenced InboxCoordinator; obsolete input fails parsing.
+        return True
     if command == "agents":
         return args.strip().partition(" ")[0] != "start"
     if command == "plan":

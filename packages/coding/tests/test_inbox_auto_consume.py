@@ -378,3 +378,36 @@ async def test_duplicate_prompt_intake_joins_one_controller_attempt(coding_sessi
         assert len(calls) == 1 and len(rows) == 1 and len(rows[0].attempts) == 1
     finally:
         await asyncio.wrap_future(runtime.close())
+
+
+async def test_idle_inbox_poll_does_not_reserve_a_prompt_control(coding_session,monkeypatch):
+    from xdog.coding.core.sessions.runtime import SessionRuntime
+
+    runtime = SessionRuntime(coding_session,bound=True)
+    runtime.start(setup_pending=True)
+    admissions,reads = [],[]
+    polled = asyncio.Event()
+    admit,snapshot = runtime.inbox._admit_pending,runtime.inbox._snapshot
+
+    async def counted_admit():
+        admissions.append(True)
+        return await admit()
+
+    async def counted_snapshot():
+        result = await snapshot()
+        reads.append(True)
+        if len(reads)>=2:
+            polled.set()
+        return result
+
+    monkeypatch.setattr(runtime.inbox,'_admit_pending',counted_admit)
+    try:
+        await runtime.activate_inputs()
+        baseline = len(admissions)
+        monkeypatch.setattr(runtime.inbox,'_snapshot',counted_snapshot)
+        await asyncio.wait_for(polled.wait(),2)
+        await asyncio.sleep(0.05)
+        assert len(admissions)==baseline, 'an empty poll must not masquerade as busy prompt/control work'
+        assert not runtime.controller.busy
+    finally:
+        await asyncio.wrap_future(runtime.close())

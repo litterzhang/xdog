@@ -231,7 +231,7 @@ async def test_public_compact_waits_for_owner_preparation_reservation(coding_ses
     async def compact_owned(**kwargs):
         compacted.append(runtime.controller.owns_current_task)
 
-    runtime.controller.before_turn=prepare
+    runtime.controller.before_batch=prepare
     monkeypatch.setattr(coding_session,'_run_compaction',compact_owned)
     ticket=runtime.controller.submit(SessionInput('turn','human','Human','work',(),{}),peer_id='human')
     task=None

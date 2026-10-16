@@ -99,8 +99,6 @@ class SessionController:
         self._inputs_ready = True
         self.before_batch: Callable[[TurnBatch], Awaitable[None]] | None = None
         self.after_batch: Callable[[TurnBatch, TurnResult], Awaitable[None]] | None = None
-        self.before_turn: Callable[[SessionInput], Awaitable[None]] | None = None
-        self.after_turn: Callable[[SessionInput, TurnResult], Awaitable[None]] | None = None
         self._closing = False
         self._closed: Future[None] = Future()
         self._broken: BaseException | None = None
@@ -441,8 +439,6 @@ class SessionController:
                 prepared = True
                 if self.before_batch is not None:
                     await self.before_batch(batch)
-                elif self.before_turn is not None:
-                    await self.before_turn(jobs[0].value)
                 for job in jobs:
                     self._emit('input_running', job, job.value)
                 outcome = replace(await self._execute_batch(batch), batch_id=batch.id)
@@ -456,8 +452,6 @@ class SessionController:
                 try:
                     if prepared and self.after_batch is not None:
                         await self.after_batch(batch, outcome)
-                    elif prepared and self.after_turn is not None:
-                        await self.after_turn(jobs[0].value, outcome)
                 except asyncio.CancelledError:
                     if outcome.status != 'failed':
                         outcome = replace(outcome, status='cancelled', error='Batch finalization cancelled')

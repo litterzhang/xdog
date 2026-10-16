@@ -269,7 +269,8 @@ async def test_real_rpc_reader_accepts_status_and_permission_response_while_sour
         entered.set()
         assert release.wait(4)
         return result
-    async def prompt(session, message, emit):
+    async def prompt(session, message, emit, *, batch_stream=False):
+        assert batch_stream  # Actual runtime owns the batch projection; this stub only tests reader liveness.
         decision = await session.permissions.before_tool_call(BeforeToolCallContext(
             assistant_message=AssistantMessage(), tool_call=ToolCall(id='owned', name='bash', arguments={}),
             args={'command': 'pytest'}, context=AgentContext()))

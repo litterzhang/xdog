@@ -493,3 +493,11 @@ async def test_close_during_batch_finalization_keeps_batch_identity_and_releases
     finally:
         settle.set()
         await asyncio.wrap_future(controller.close())
+
+
+def test_controller_exposes_batch_hooks_without_representative_input_fallback(coding_session):
+    from xdog.coding.core.sessions.controller import SessionController
+
+    controller = SessionController(coding_session,bound=True)
+    assert hasattr(controller,'before_batch') and hasattr(controller,'after_batch')
+    assert not hasattr(controller,'before_turn') and not hasattr(controller,'after_turn')

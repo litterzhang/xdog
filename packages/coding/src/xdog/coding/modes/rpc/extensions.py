@@ -84,6 +84,7 @@ class RpcExtensions:
         self.deferred_navigation: tuple[tuple[str, str, str], str, dict[str, Any]] | None = None
         self.task: asyncio.Task[None] | None = None
         self.scope: tuple[str, str, str] | None = None
+        self.batch_stream = False
         self.control: tuple[str, str] | None = None
         self.dialogs: dict[str, dict[str, Any]] = {}
         self.answered: set[str] = set()
@@ -1116,11 +1117,15 @@ class RpcExtensions:
                     return
                 # Keep control=None: tool/lifecycle callbacks may use their own
                 # dialogs but cannot borrow the completed command's mutation grant.
-                async with self.bind(prompt_id):
-                    if target.get('images') and target['image_model'] != (self.session.model, self.session.model_info):
-                        return
+                if target.get('images') and target['image_model'] != (self.session.model, self.session.model_info):
+                    return
+                if self.batch_stream:
                     await _handle_prompt(self.session, target['message'], self.emit,
-                                         images=target.get('images', ()), input_origin='extension')
+                        images=target.get('images', ()), input_origin='extension', batch_stream=True)
+                else:
+                    async with self.bind(prompt_id):
+                        await _handle_prompt(self.session, target['message'], self.emit,
+                                             images=target.get('images', ()), input_origin='extension')
             except asyncio.CancelledError:
                 canceled = True
                 raise
