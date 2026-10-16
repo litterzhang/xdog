@@ -68,7 +68,7 @@ from xdog.claw.core.runtime.display_events import (
     ToolUpdated,
 )
 from xdog.claw.core.runtime.transcript_source import SourceCapture, SourceTool
-from xdog.claw.core.types import GroupInput, SessionMeta, SystemInput, UserInput
+from xdog.claw.core.types import ExternalInput, GroupInput, SessionMeta, SystemInput, UserInput
 
 if TYPE_CHECKING:
     from xdog.claw.core.runtime.group import GroupRuntime
@@ -85,6 +85,7 @@ class TurnResult:
     error: str | None = None
     usage: dict[str, int] | None = None
     input_handled: bool = False
+    session_id: str = ""
     retain_partial: bool = False
     canceled: bool = False
 
@@ -794,6 +795,9 @@ class AgentSession:
                 from xdog.agent.supervision_transfer import settled_image_work
                 await settled_image_work(lambda: self._runtime.validate_images(context_images((history[-1],))))
                 event_stream = await self._agent.continue_()
+            elif isinstance(input, ExternalInput):
+                from xdog.agent.session_input import encode_input
+                event_stream = await self._agent.prompt(encode_input(input.canonical))
             else:
                 event_stream = await self._agent.prompt(
                     input.content, images=list(input.images) if isinstance(input, UserInput) and input.images else None,
@@ -1016,7 +1020,7 @@ class AgentSession:
 
         if channel and new_entries:
             for entry in new_entries:
-                if entry.get("role") == "user":
+                if entry.get("role") == "user" or isinstance(input, ExternalInput):
                     entry["channel"] = channel
                     break
 

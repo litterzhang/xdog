@@ -77,8 +77,11 @@ cleans the control socket/record; safe lock inodes may remain.
 The old event-handler host/capability/descriptor protocol is removed. Core local
 permissions are not an OS sandbox. No TCP/HTTP/Windows transport, installed system
 daemon, hosted broker, automatic coding startup, API/web source, script handler,
-or claw/flow-specific adapter is added. Stdio is an optional generic ACP transport;
-Unix is the documented XDOG-local transport for the coding callback.
+or harness-specific handler is added to Eyes. Claw can expose its own ACP backend
+through its gateway, without an Eyes dependency or a special router path; see
+[Claw/Eyes ACP](../../docs/claw-eyes-acp.md) for `group:<id>` addressing and setup.
+Stdio is an optional generic ACP transport; Unix is the XDOG-local transport for
+coding and Claw callbacks.
 
 ## Installation and development
 

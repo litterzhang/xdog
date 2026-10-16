@@ -114,6 +114,17 @@ Prompt construction intentionally separates a cacheable static prefix from mutab
 
 Importing `xdog.claw.core` intentionally registers claw-specific tools. Preserve these side-effect imports when reorganizing code.
 
+Claw optionally exposes a private Unix ACP endpoint via `acp_socket_path` or
+`gateway start --acp-socket`. `acp/backend.py` implements the shared Agent ACP
+backend with explicit `group:<id>` addresses and exact workspace validation.
+Prompt/enqueue first persist canonical session inputs in the leased group inbox,
+then consumers use the existing Orchestrator group queue/active AgentSession.
+No TUI, message approval, second Agent loop or Eyes-specific handler is involved.
+Pending survives receiver restart; running becomes interrupted, never replayed.
+Group scope intentionally follows active conversations, unlike coding's exact
+session/branch binding. Existing Claw tool policy remains unchanged. See
+`docs/claw-eyes-acp.md` for setup, scope, display and recovery limits.
+
 ### `xdog.eyes`: observation and ACP activation layer
 
 Like flow, eyes owns a versioned JSON definition, frozen models, whole-definition
@@ -147,7 +158,8 @@ are untrusted, not identities or permissions. New canonical input is
 Definitions persist, registrations do not. Receiver disconnect pauses collection;
 restart alone does not reconnect. No automatic harness/observer startup,
 permanent installed daemon, hosted broker, TCP/Windows transport, API/web sources,
-scripts or claw/flow-specific adapters. Eyes lifecycle controls are not agent
+scripts or harness-specific Eyes handlers. Claw's ACP backend belongs to Claw,
+not Eyes. Eyes lifecycle controls are not agent
 event delivery endpoints. Old host/capability/descriptor/env wiring is removed.
 See `docs/acp-session-routing.md` and package README for protocol/commands/limits.
 

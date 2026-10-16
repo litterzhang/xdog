@@ -353,9 +353,13 @@ def gateway() -> None:
               help=f"Path to config.yaml (default: {get_config_path()})")
 @click.option("--foreground", is_flag=True, default=False,
               help="Run in foreground (don't daemonize)")
-def start(config_path: str | None, foreground: bool) -> None:
+@click.option("--acp-socket", type=click.Path(path_type=Path), default=None,
+              help="Explicit private Unix ACP endpoint for Eyes/other ACP clients (disabled by default).")
+def start(config_path: str | None, foreground: bool, acp_socket: Path | None = None) -> None:
     """Start the gateway daemon."""
     config = _resolve_config(config_path)
+    if acp_socket is not None:
+        config = replace(config, acp_socket_path=str(acp_socket.expanduser().absolute()))
     if not config.model and (not config.groups or any(not group.model_id for group in config.groups)):
         raise click.ClickException("No primary model configured. Run `xdog-claw onboard` first.")
     pid_path = Path(config.pid_file)

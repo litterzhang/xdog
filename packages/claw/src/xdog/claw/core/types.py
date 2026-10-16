@@ -6,6 +6,7 @@ from enum import StrEnum
 from typing import Any
 
 from xdog.agent import AgentConfig
+from xdog.agent.session_input import SessionInput
 from xdog.ai.types import ImageContent
 
 # ---------------------------------------------------------------------------
@@ -125,6 +126,12 @@ class UserInput:
     timestamp: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
     images: tuple[ImageContent, ...] = ()
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExternalInput(UserInput):
+    """Source-neutral routed input; canonical provenance survives transcript replay."""
+    canonical: SessionInput
 
 
 class SystemInputKind(StrEnum):

@@ -2041,6 +2041,7 @@ name = "xdog-claw"
 version = "2.4.1"
 source = { editable = "packages/claw" }
 dependencies = [
+    { name = "agent-client-protocol", marker = "python_full_version < '3.15'" },
     { name = "aiosqlite" },
     { name = "click" },
     { name = "croniter" },
@@ -2067,6 +2068,7 @@ search = [
 
 [package.metadata]
 requires-dist = [
+    { name = "agent-client-protocol", marker = "python_full_version < '3.15'", specifier = ">=0.12.1,<0.13" },
     { name = "aiosqlite", specifier = ">=0.20.0" },
     { name = "click", specifier = ">=8.1.0" },
     { name = "croniter", specifier = ">=2.0" },

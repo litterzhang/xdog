@@ -53,6 +53,11 @@ def source_records(capture: SourceCapture, canceled: threading.Event) -> tuple[T
         if canceled.is_set():
             raise ValueError("Source request canceled")
         role, content = entry.get("role"), entry.get("content")
+        if role == "custom" and entry.get("type") == "xdog.session_input.v1":
+            from xdog.claw.core.persistence.transcript_convert import entry_text
+            records.append(TranscriptRecord(f"m{index}:external", "user", "external input",
+                                            display_result(entry_text(entry), bounded=False)))
+            continue
         if entry.get("channel") in {"goal_runner", "scheduler"}:
             continue
         parts = content if isinstance(content, list) else []
