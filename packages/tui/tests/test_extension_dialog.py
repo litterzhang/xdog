@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from xdog.tui.components.extension_dialog import ExtensionDialog
 from xdog.tui.keys import KeyEvent
 from xdog.tui.utils import visible_width
@@ -38,3 +39,17 @@ def test_input_and_selection_render_bounds_and_control_code_sanitization():
                 assert "\x1b]52" not in "\n".join(lines)
         panel.handle_input(KeyEvent("escape"))
         assert answers == [None]
+
+
+@pytest.mark.parametrize('field', ['operation', 'fields', 'parent_id', 'view_id', 'fullscreen', 'key_events',
+                                  'overlay', 'live_overlay'])
+def test_removed_custom_options_cannot_be_passed_to_basic_native_component(field):
+    with pytest.raises(ValueError):
+        ExtensionDialog('test', {'kind': 'input', 'title': 'Question', field: None}, lambda value: None)
+
+
+def test_extension_view_renders_only_simple_status_not_legacy_widget_layout():
+    from xdog.tui.components.extension_view import ExtensionView
+    view = ExtensionView(lambda: {'ui': {'old': {'kind': 'widget', 'lines': ['must not render']},
+                                        'state': {'kind': 'status', 'lines': ['safe status']}}})
+    assert view.render(80) == ['state: safe status']

@@ -1,51 +1,26 @@
-from __future__ import annotations
+"""Plugin editor read/write receipts are gone; the native editor remains user-owned."""
+import importlib.util
 
-from xdog.tui.editor_actions import EditorActions
-
-
-def test_read_replace_single_use_preserves_attachments_and_captures_cursor():
-    state = ["draft", 3, ("image-one",)]
-
-    def snapshot():
-        return state[0], state[1], state[2]
-
-    def replace(value):
-        state[0], state[1] = value, len(value)
-        return True
-
-    owner = EditorActions(snapshot, replace)
-    captured = owner.handle("command-session", {"operation": "read"})
-    assert captured["text"] == "draft" and captured["cursor"] == 3 and captured["image_count"] == 1
-    request = {"operation": "replace", "text": "new draft", "revision": captured["revision"]}
-    assert owner.handle("command-session", request)["applied"]
-    assert state == ["new draft", 9, ("image-one",)]
-    assert not owner.handle("command-session", request)["applied"]
+from xdog.tui.components.input_panel import InputPanel
+from xdog.tui.keys import KeyEvent
 
 
-def test_typing_cursor_attachments_command_owner_or_invalidated_receipt_refuses_overwrite():
-    for change in ("typing", "cursor", "images", "owner", "invalidate"):
-        state = ["draft", 5, ("image",)]
-        writes = []
-        actions = EditorActions(lambda: tuple(state), lambda text: writes.append(text) or True)
-        read = actions.handle("old-owner", {"operation": "read"})
-        if change == "typing":
-            state[0] = "user edited"
-        elif change == "cursor":
-            state[1] = 1
-        elif change == "images":
-            state[2] = ("new-image",)
-        elif change == "invalidate":
-            actions.invalidate()
-        result = actions.handle(
-            "new-owner" if change == "owner" else "old-owner",
-            {"operation": "replace", "text": "must not overwrite", "revision": read["revision"]},
-        )
-        assert not result["applied"] and not writes
+class Theme:
+    accent = bold = dim = border = staticmethod(lambda value: value)
 
 
-def test_invalid_editor_text_rejection_consumes_receipt_without_changes():
-    actions = EditorActions(lambda: ("draft", 5, ()), lambda text: False)
-    read = actions.handle("owner", {"operation": "read"})
-    assert not actions.handle("owner", {"operation": "replace", "text": "\x1b[2J", "revision": read["revision"]})[
-        "applied"
-    ]
+def test_removed_plugin_editor_actions_module():
+    assert importlib.util.find_spec('xdog.tui.editor_actions') is None
+
+
+def test_native_editor_can_edit_undo_and_paste_without_implicit_submission():
+    submitted = []
+    editor = InputPanel(Theme())
+    editor.on_submit = submitted.append
+    editor.set_text('original')
+    editor.handle_input(KeyEvent('x'))
+    assert editor.get_text() == 'originalx'
+    editor.handle_input(KeyEvent('z', alt=True))
+    assert editor.get_text() == 'original'
+    editor.handle_paste('\n/exit\ryes')
+    assert '/exit' in editor.get_text() and not submitted

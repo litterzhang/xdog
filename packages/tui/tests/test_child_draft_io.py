@@ -93,3 +93,31 @@ def test_delivery_failure_releases_worker_without_automatic_receipt_replay(tmp_p
         worker.poll(reject)
     assert not worker.busy
     assert worker.poll(lambda event: pytest.fail('Rejected receipt must not be replayed')) is False
+
+
+@pytest.mark.parametrize('error_type', [ValueError, OSError, RuntimeError])
+def test_generic_failures_still_redact_arbitrary_paths_and_draft_text(error_type):
+    class BrokenStore:
+        def list(self):
+            raise error_type('/private/path SECRET DRAFT TEXT')
+    worker, delivered = ChildDraftIO(), []
+    worker.start('list', BrokenStore(), owner='view')
+    finish(worker, delivered)
+    message = delivered[0]['error']
+    assert error_type.__name__ in message
+    assert '/private/path' not in message and 'SECRET DRAFT' not in message
+    assert 'full' not in message and worker.failures == 1
+    assert not worker.poll(delivered.append) and len(delivered) == 1
+
+
+def test_full_store_reason_is_fixed_even_if_exception_has_private_detail():
+    from xdog.tui.child_draft_store import DraftStoreFullError
+    class FullStore:
+        def list(self):
+            raise DraftStoreFullError('/private/path SECRET DRAFT TEXT')
+    worker, delivered = ChildDraftIO(), []
+    worker.start('list', FullStore(), owner='view')
+    finish(worker, delivered)
+    assert delivered[0]['error'] == ('Snapshot store full (32 snapshots); no snapshot saved, overwritten or removed; '
+                                     'unsaved source remains editable')
+    assert worker.failures == 1 and not worker.busy

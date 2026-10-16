@@ -316,7 +316,7 @@ def test_native_inbox_query_does_not_repeat_automatically_delivered_input(coding
         ui._session_events.close()
 
 
-def test_rpc_evidence_preview_reports_truncation_of_a_single_large_item(coding_session,tmp_path):
+def test_inbox_evidence_preview_reports_truncation_of_a_single_large_item(coding_session,tmp_path):
     from xdog.coding.core.sessions.inbox_views import summary
 
     store,message = pending(coding_session,tmp_path)

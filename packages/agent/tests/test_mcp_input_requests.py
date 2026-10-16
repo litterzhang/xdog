@@ -1,26 +1,21 @@
-"""Modern continuations reuse exact review owners, never unsolicited client requests."""
+"""Root-only modern continuation ownership, bounded work and no private replay."""
 from __future__ import annotations
 
 import asyncio
 import copy
+import threading
 
 import pytest
 from xdog.agent.mcp.client_capabilities import RootCapability
-from xdog.agent.mcp.elicitation import request as elicit_request
-from xdog.agent.mcp.elicitation_owner import ElicitationOwner
 from xdog.agent.mcp.input_requests import InputRequests
-from xdog.agent.mcp.reverse_requests import ReverseRequests
-from xdog.agent.mcp.sampling_owner import SamplingOwner
 from xdog.agent.mcp.stdio import McpError
 
-from packages.agent.tests.test_mcp_elicitation import form
-from packages.agent.tests.test_mcp_sampling_owner import answer, request, selection, until
+from packages.agent.tests.mcp_helpers import until
 
 
 def driver():
     roots = RootCapability((('file:///explicit', 'Explicit'),))
-    reverse = ReverseRequests()
-    inputs = InputRequests(roots, reverse)
+    inputs = InputRequests(roots)
     roots.active = inputs.active = True
     return inputs
 
@@ -28,10 +23,6 @@ def driver():
 def required(*, requests=None, state=None):
     return {'resultType': 'input_required', **({'inputRequests': requests} if requests is not None else {}),
             **({'requestState': state} if state is not None else {})}
-
-
-def embedded(value):
-    return {key: copy.deepcopy(value[key]) for key in ('method', 'params')}
 
 
 async def test_modern_roots_exact_opaque_resume_same_arguments_and_no_earlier_input_replay():
@@ -49,16 +40,13 @@ async def test_modern_roots_exact_opaque_resume_same_arguments_and_no_earlier_in
                 {'uri': 'file:///explicit', 'name': 'Explicit'}]}}, 'requestState': state}
             inputs.roots.replace((), inputs.roots.revision)
             return required(state='next')
-        assert value == {**frozen, 'requestState': 'next'}
-        return {'resultType': 'complete', 'content': []}
-    # Selection changes invalidate already captured disclosure authority; no
-    # continuation can accidentally release an old root after withdrawal.
+        raise AssertionError('Withdrawn disclosure must never resume')
     with pytest.raises(McpError, match='withdrawn'):
         await inputs.run('tools/call', original, send)
     assert len(sent) == 2 and not inputs._jobs
 
 
-async def test_request_state_only_paced_rounds_do_not_replay_previous_private_answers():
+async def test_request_state_only_round_does_not_replay_previous_root_answers():
     inputs, sent = driver(), []
     async def send(value):
         sent.append(copy.deepcopy(value))
@@ -71,7 +59,7 @@ async def test_request_state_only_paced_rounds_do_not_replay_previous_private_an
     assert sent[1]['inputResponses']['key']['roots']
     assert sent[2] == {'name': 'tool', 'requestState': ' second '}
     assert inputs.advertised() == {'roots': {}}
-    assert inputs.reverse.advertised() == {}  # Modern is not reverse-RPC activation.
+    assert not hasattr(inputs, 'reverse') and not hasattr(inputs, 'elicitation_handler')
 
 
 @pytest.mark.parametrize('bad', [
@@ -81,7 +69,7 @@ async def test_request_state_only_paced_rounds_do_not_replay_previous_private_an
     {'inputRequests': {'x': {'method': 'roots/list', 'params': {'path': '/private'}}}},
     {'inputRequests': {str(i): {'method': 'roots/list'} for i in range(5)}},
 ])
-async def test_invalid_or_unadvertised_whole_round_refuses_before_callbacks(bad):
+async def test_invalid_whole_round_refuses_before_root_disclosure(bad):
     inputs, calls = driver(), []
     async def send(value):
         calls.append(value)
@@ -91,153 +79,40 @@ async def test_invalid_or_unadvertised_whole_round_refuses_before_callbacks(bad)
     assert len(calls) == 1 and not inputs._jobs
 
 
-async def test_validate_all_siblings_before_private_sampling_or_elicitation_review():
-    inputs, callbacks = driver(), []
-    async def handle(value):
-        callbacks.append(value)
-        raise AssertionError('Malformed sibling must refuse entire round')
-    inputs.sampling_handler = inputs.elicitation_handler = handle
+@pytest.mark.parametrize('family', ['sampling/createMessage', 'elicitation/create', 'tasks/list',
+                                    'tasks/get', 'tasks/result', 'tasks/cancel'])
+@pytest.mark.parametrize('params', [{}, {'task': {}}, {'_meta': {
+    'io.modelcontextprotocol/related-task': {'taskId': 'foreign'}}}])
+async def test_removed_sibling_refuses_entire_round_without_root_callback_or_resume(family, params, monkeypatch):
+    inputs, sends, calls = driver(), [], []
+    monkeypatch.setattr(inputs.roots, 'response', lambda value: calls.append(value))
     async def send(value):
-        return required(requests={'first': embedded(request()), 'bad': {'method': 'roots/list', 'params': []}})
-    with pytest.raises(McpError):
+        sends.append(value)
+        return required(requests={'root': {'method': 'roots/list'}, 'removed': {'method': family, 'params': params}})
+    with pytest.raises(McpError, match='not declared|task augmentation'):
         await inputs.run('prompts/get', {'name': 'owned'}, send)
-    assert not callbacks
+    assert len(sends) == 1 and not calls and not inputs._jobs
 
 
-@pytest.mark.parametrize('fault', ['task', 'related', 'tools', 'context', 'execution'])
-async def test_modern_sampling_rejects_removed_vocabulary_and_unadvertised_subcapabilities(fault):
-    inputs, callbacks = driver(), []
-    async def handle(value):
-        callbacks.append(value)
-        raise AssertionError('Unsupported input must not enter review')
-    inputs.sampling_handler = handle
-    source = request()
-    if fault == 'task':
-        source['params']['task'] = {'ttl': 1000}
-    elif fault == 'related':
-        source['params']['_meta'] = {'io.modelcontextprotocol/related-task': {'taskId': 'foreign'}}
-    elif fault == 'context':
-        source['params']['includeContext'] = 'allServers'
-    else:
-        source['params']['tools'] = [{'name': 'tool', 'inputSchema': {'type': 'object'}}]
-        if fault == 'execution':
-            inputs.reverse.sampling_tools = True
-            source['params']['tools'][0]['execution'] = {'taskSupport': 'required'}
+@pytest.mark.parametrize('bad', [None, [], False, 2, 'not an object'])
+def test_root_required_validation_rejects_nonobjects_without_type_confusion(bad):
+    inputs = driver()
+    with pytest.raises(McpError, match='object'):
+        inputs._validate(bad, inputs.advertised())
+
+
+@pytest.mark.parametrize('params', [{'inputResponses': {}}, {'requestState': 'foreign'}])
+async def test_caller_cannot_inject_continuation_authority_before_first_wire_leg(params):
+    inputs, calls = driver(), []
     async def send(value):
-        return required(requests={'input': embedded(source)})
-    with pytest.raises(McpError):
-        await inputs.run('tools/call', {'name': 'owned'}, send)
-    assert not callbacks
+        calls.append(value)
+        return {}
+    with pytest.raises(McpError, match='original request ownership'):
+        await inputs.run('tools/call', {'name': 'owned', **params}, send)
+    assert not calls and not inputs._jobs
 
 
-async def test_modern_sampling_exact_input_and_output_approval_precede_resume():
-    inputs, events, calls, sent = driver(), [], [], []
-    async def execute(value, chosen, cancel):
-        calls.append(copy.deepcopy(value))
-        # Modern supports an array even without tools, unlike legacy result.
-        return {'model': chosen['model'], 'role': 'assistant', 'content': [
-            {'type': 'text', 'text': 'FIRST'}, {'type': 'text', 'text': 'PRIVATE SECOND'}]}
-    owner = SamplingOwner('view', events.append, execute, lambda: True)
-    inputs.sampling_handler = owner.handle_input
-    async def send(value):
-        sent.append(copy.deepcopy(value))
-        if len(sent) == 1:
-            return required(requests={'sample': embedded(request())}, state='preserve')
-        return {'content': []}
-    work = asyncio.create_task(inputs.run('tools/call', {'name': 'owned'}, send))
-    try:
-        await until(lambda: events)
-        assert not calls and len(sent) == 1 and events[0]['protocol'] == '2026-07-28'
-        answer(owner, events[0], selection=selection())
-        await until(lambda: len(events) == 2)
-        assert len(calls) == 1 and len(sent) == 1
-        assert events[1]['body']['content'][1]['text'] == 'PRIVATE SECOND'
-        answer(owner, events[1])
-        assert await work == {'content': []}
-        assert sent[1]['inputResponses']['sample'] == events[1]['body']
-        assert sent[1]['requestState'] == 'preserve'
-    finally:
-        await inputs.close()
-        await owner.close()
-        await asyncio.gather(work, return_exceptions=True)
-
-
-@pytest.mark.parametrize('mode', ['form', 'url'])
-async def test_modern_elicitation_uses_two_reviews_and_no_legacy_url_completion_pending(mode):
-    inputs, events, sent = driver(), [], []
-    source = form()
-    if mode == 'url':
-        source['params'] = {'mode': 'url', 'url': 'https://inert.example/flow', 'message': 'External review'}
-    assert elicit_request(source, modern=True) == source
-    owner = ElicitationOwner('view', events.append, lambda: True)
-    inputs.elicitation_handler = owner.handle_input
-    async def send(value):
-        sent.append(copy.deepcopy(value))
-        return required(requests={'elicit': embedded(source)}, state='state') if len(sent) == 1 else {'contents': []}
-    work = asyncio.create_task(inputs.run('resources/read', {'uri': 'test://owned'}, send))
-    async def approve(event, response):
-        await owner.answer(event['id'], lease='view', phase=event['phase'], receipt=event['receipt'],
-                           sha256=event['sha256'], response=response)
-    try:
-        await until(lambda: events)
-        assert events[0]['protocol'] == '2026-07-28'
-        proposed = {'action': 'accept', **({'content': {'name': 'PRIVATE'}} if mode == 'form' else {})}
-        await approve(events[0], proposed)
-        await until(lambda: len(events) == 2)
-        assert len(sent) == 1
-        await approve(events[1], {'action': 'accept'})
-        assert await work == {'contents': []}
-        assert sent[1]['inputResponses']['elicit'] == proposed
-        assert not owner._urls and not owner._url_ids
-        assert not any(event['type'].startswith('elicitation_url') for event in events)
-    finally:
-        await inputs.close()
-        await owner.close()
-        await asyncio.gather(work, return_exceptions=True)
-
-
-@pytest.mark.parametrize('failure', ['raise', 'cancel', 'close', 'withdraw'])
-async def test_input_cleanup_withholds_partial_round_and_waits_actual_handler_finally(failure):
-    inputs, sent = driver(), []
-    entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
-    async def handle(value):
-        entered.set()
-        try:
-            if failure == 'raise':
-                raise McpError('private callback failure')
-            await asyncio.Future()
-        finally:
-            cleaning.set()
-            await release.wait()
-    inputs.sampling_handler = handle
-    async def send(value):
-        sent.append(value)
-        return required(requests={'roots': {'method': 'roots/list'}, 'sample': embedded(request())})
-    work = asyncio.create_task(inputs.run('tools/call', {'name': 'owned'}, send))
-    closing = None
-    try:
-        await entered.wait()
-        if failure == 'cancel':
-            work.cancel()
-        elif failure in ('close', 'withdraw'):
-            closing = asyncio.create_task(inputs.close() if failure == 'close' else
-                                          inputs.withdraw('sampling/createMessage'))
-        await cleaning.wait()
-        assert len(sent) == 1 and not work.done() and inputs._jobs
-        if closing is not None:
-            closing.cancel()
-            await asyncio.sleep(.01)
-            assert not closing.done()
-        release.set()
-        await asyncio.gather(work, *([closing] if closing else []), return_exceptions=True)
-        assert not inputs._jobs and len(sent) == 1
-    finally:
-        release.set()
-        await inputs.close()
-        await asyncio.gather(work, *([closing] if closing else []), return_exceptions=True)
-
-
-async def test_round_ceiling_terminal_unknown_result_and_transport_failure_never_retry():
+async def test_round_ceiling_unknown_result_and_transport_failure_never_retry():
     inputs, calls = driver(), []
     inputs.max_rounds = 2
     async def send(value):
@@ -245,36 +120,57 @@ async def test_round_ceiling_terminal_unknown_result_and_transport_failure_never
         return required(requests={'roots': {'method': 'roots/list'}})
     with pytest.raises(McpError, match='round ceiling'):
         await inputs.run('tools/call', {'name': 'owned'}, send)
-    assert len(calls) == 3  # Original request plus two explicit continuations only.
-    for outcome in ('foreign-result', 'network-failed'):
+    assert len(calls) == 3
+    for outcome in ('task', 'future-unknown', 'network-failed'):
         calls.clear()
         async def fail(value):
             calls.append(value)
             if outcome == 'network-failed':
                 raise OSError('uncertain POST outcome')
-            return {'resultType': 'future-unknown', 'content': []}
+            return {'resultType': outcome, 'content': []}
         with pytest.raises((McpError, OSError)):
             await inputs.run('tools/call', {'name': 'owned'}, fail)
-        assert len(calls) == 1
+        assert len(calls) == 1 and not inputs._jobs
 
 
-@pytest.mark.parametrize('modern', [False, True])
-def test_official_normalized_form_schema_dialect_annotations_preserved_and_enforced(modern):
-    source = form()
-    source['params']['requestedSchema'].update({
-        '$schema': 'https://json-schema.org/draft/2020-12/schema',
-        '$id': 'https://never-fetch.invalid/form', '$comment': 'Inert annotation',
-        'title': 'Exact requested form', 'description': 'Full disclosure'})
-    assert elicit_request(source, modern=modern) == source
-    source['params']['requestedSchema']['$schema'] = 'https://unsupported.invalid/schema'
-    with pytest.raises(McpError, match='dialect'):
-        elicit_request(source, modern=modern)
+async def test_close_waits_actual_validation_worker_despite_repeated_cancellation(monkeypatch):
+    inputs, sent = driver(), []
+    entered, release = threading.Event(), threading.Event()
+    original = inputs._validate
+    def held(value, declared):
+        entered.set()
+        assert release.wait(5)
+        return original(value, declared)
+    monkeypatch.setattr(inputs, '_validate', held)
+    async def send(value):
+        sent.append(value)
+        return required(requests={'root': {'method': 'roots/list'}})
+    work = asyncio.create_task(inputs.run('tools/call', {'name': 'owned'}, send))
+    closing = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        closing = asyncio.create_task(inputs.close())
+        await until(lambda: not inputs.active)
+        closing.cancel()
+        await asyncio.sleep(.01)
+        assert not closing.done() and inputs._jobs and len(sent) == 1
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+        await asyncio.gather(work, return_exceptions=True)
+        assert not inputs._jobs and len(sent) == 1
+    finally:
+        release.set()
+        await inputs.close()
+        await asyncio.gather(work, *([closing] if closing else []), return_exceptions=True)
 
 
-async def test_repeated_caller_cancel_does_not_interrupt_suppressed_handler_finally_or_send_private_data():
+@pytest.mark.parametrize('failed', [False, True])
+async def test_disconnect_waits_suppressed_transport_finally_and_never_resumes(failed):
     inputs, sent = driver(), []
     entered, cleanup, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
-    async def handle(value):
+    async def send(value):
+        sent.append(value)
         entered.set()
         try:
             await asyncio.Future()
@@ -283,60 +179,29 @@ async def test_repeated_caller_cancel_does_not_interrupt_suppressed_handler_fina
         finally:
             cleanup.set()
             await release.wait()
-        return {'model': 'explicit-model', 'role': 'assistant', 'content': {'type': 'text', 'text': 'LATE PRIVATE'}}
-    inputs.sampling_handler = handle
-    async def send(value):
-        sent.append(value)
-        return required(requests={'sample': embedded(request())})
+        return required(requests={'root': {'method': 'roots/list'}})
     work = asyncio.create_task(inputs.run('tools/call', {'name': 'owned'}, send))
+    closing = None
     try:
         await entered.wait()
-        work.cancel()
+        closing = asyncio.create_task(inputs.close(failed=failed))
         await cleanup.wait()
-        work.cancel()
+        closing.cancel()
         await asyncio.sleep(.01)
-        assert not work.done() and inputs._jobs and len(sent) == 1
+        assert not closing.done() and not work.done() and inputs._jobs
         release.set()
         with pytest.raises(asyncio.CancelledError):
+            await closing
+        with pytest.raises(McpError if failed else asyncio.CancelledError):
             await work
         assert len(sent) == 1 and not inputs._jobs
     finally:
         release.set()
         await inputs.close()
-        await asyncio.gather(work, return_exceptions=True)
+        await asyncio.gather(work, *([closing] if closing else []), return_exceptions=True)
 
 
-async def test_withdrawn_completed_sibling_disclosure_not_sent_while_next_review_finishes():
-    inputs, sent, alive = driver(), [], True
-    first_done, release = asyncio.Event(), asyncio.Event()
-    async def sample(value):
-        first_done.set()
-        return {'model': 'model', 'role': 'assistant', 'content': {'type': 'text', 'text': 'PRIVATE'}}
-    async def elicit(value):
-        await release.wait()
-        return {'action': 'decline'}
-    inputs.sampling_handler, inputs.elicitation_handler = sample, elicit
-    inputs.sampling_alive = lambda: alive
-    async def send(value):
-        sent.append(value)
-        return required(requests={'sample': embedded(request()), 'elicit': embedded(form())})
-    work = asyncio.create_task(inputs.run('tools/call', {'name': 'owned'}, send))
-    try:
-        await first_done.wait()
-        await until(lambda: 'elicitation/create' in next(iter(inputs._jobs.values())))
-        alive = False  # Synchronous host withdrawal precedes asynchronous detach.
-        assert 'sampling' not in inputs.advertised()
-        release.set()
-        with pytest.raises(McpError, match='withdrawn'):
-            await work
-        assert len(sent) == 1
-    finally:
-        release.set()
-        await inputs.close()
-        await asyncio.gather(work, return_exceptions=True)
-
-
-async def test_four_owned_flows_cap_then_close_settles_every_original_worker():
+async def test_four_owned_root_flows_cap_then_close_settles_every_original_worker():
     inputs, entered = driver(), []
     async def send(value):
         entered.append(value)
@@ -351,25 +216,3 @@ async def test_four_owned_flows_cap_then_close_settles_every_original_worker():
     finally:
         await inputs.close()
         await asyncio.gather(*jobs, return_exceptions=True)
-
-
-@pytest.mark.parametrize('action', ['accept', 'decline', 'cancel'])
-def test_modern_elicitation_null_content_not_silently_treated_as_legacy_compatibility(action):
-    from xdog.agent.mcp.elicitation import result
-    source = {'params': {'mode': 'url'}}
-    value = {'action': action, 'content': None}
-    assert result(value, source) == value  # Existing legacy compatibility retained.
-    with pytest.raises(McpError, match='cannot be null'):
-        result(value, source, modern=True)
-
-
-@pytest.mark.parametrize('family', ['sampling', 'elicitation'])
-@pytest.mark.parametrize('augmentation', [{'task': {}}, {'_meta': {
-    'io.modelcontextprotocol/related-task': {'taskId': 'foreign'}}}])
-def test_direct_modern_codec_cannot_bypass_removed_task_vocabulary(family, augmentation):
-    from xdog.agent.mcp.sampling import request as sampling_request
-    source = request() if family == 'sampling' else form()
-    source['params'].update(augmentation)
-    validate = sampling_request if family == 'sampling' else elicit_request
-    with pytest.raises(McpError, match='task augmentation'):
-        validate(source, modern=True)

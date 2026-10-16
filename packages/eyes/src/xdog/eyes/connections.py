@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import os
 import stat
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeAlias
 
-MAX_UNIX_PATH_BYTES = 103 if sys.platform == 'darwin' else 107
+MAX_UNIX_PATH_BYTES = 107  # Linux sockaddr_un.sun_path, excluding the terminating NUL.
 
 
 @dataclass(frozen=True)

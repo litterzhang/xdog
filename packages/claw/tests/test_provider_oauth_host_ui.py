@@ -15,7 +15,7 @@ from xdog.claw.config import ClawConfig, GroupDef
 from xdog.claw.core.runtime.gateway import GatewayServer
 
 from packages.agent.tests.test_extension_provider_oauth import PROVIDER
-from packages.claw.tests.test_extension_message_gateway import handshake, peer
+from packages.claw.tests.gateway_helpers import handshake, peer
 
 
 @asynccontextmanager

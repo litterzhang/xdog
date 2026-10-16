@@ -7,8 +7,7 @@ import pytest
 from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
 from xdog.tui.attachments import attachment
 
-from packages.coding.tests.test_rpc_extensions import close, session
-from packages.coding.tests.test_rpc_images import PNG
+from packages.coding.tests.extension_session_helpers import PNG, close, session
 
 
 @pytest.mark.parametrize('origin', ['user', 'extension'])
@@ -47,8 +46,8 @@ async def test_unconsumed_extension_queue_reports_failure_without_automatic_draf
         ui._handle_input_event({'type': 'inputs_settled',
                                'inputs': [{'id': 'extq-owned', 'content': 'EXTENSION TEXT'}]})
         assert ui._editor.get_text() == 'PRIVATE DRAFT' and not ui._composer.items
-        assert not ui._routed_inputs and not ui._routed_images and not ui._extension_input_ids
-        assert 'not consumed' in str(ui._chat_log.render(160)) and not calls
+        assert not ui._routed_inputs and not ui._routed_images and not hasattr(ui, '_extension_input_ids')
+        assert 'EXTENSION TEXT' not in str(ui._chat_log.render(160)) and not calls
     finally:
         ui._request_exit()
         await close(owner)

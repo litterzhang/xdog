@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import httpx
+import pytest
 from xdog.agent import Agent, AgentConfig
 from xdog.agent.mcp.oauth import OAuthOwner
 from xdog.ai.types import AssistantMessage
@@ -46,14 +47,14 @@ def review_all(panel):
     raise AssertionError("OAuth review never became fully visible")
 
 
-async def complete(url, issuer):
+async def complete(url, issuer, *, expected=b"200 OK"):
     args = parse_qs(urlsplit(url).query)
     redirect = urlsplit(args["redirect_uri"][0])
     reader, writer = await asyncio.open_connection(redirect.hostname, redirect.port)
     target = "/callback?" + urlencode({"code": "fixture-code", "state": args["state"][0], "iss": issuer})
     writer.write(("GET " + target + " HTTP/1.1\r\nHost: localhost\r\n\r\n").encode())
     await writer.drain()
-    assert b"200 OK" in await reader.read()
+    assert expected in await reader.read()
     writer.close()
     await writer.wait_closed()
 
@@ -170,3 +171,69 @@ async def test_coding_explicit_saved_credentials_review_restart_restore_and_forg
             await fresh.mcp.aclose()
         ui._request_exit()
         await session.mcp.aclose()
+
+
+@pytest.mark.parametrize('outcome', ['success', 'redirect', 'uncertain', 'wrong-resource'])
+async def test_coding_actual_public_login_retains_endpoint_checks_and_never_replays_token_posts(
+        tmp_path, monkeypatch, outcome):
+    module = peer_module()
+    peer = module.Peer()
+    posts = []
+    original = peer.handle
+
+    async def handle(request):
+        if outcome == 'wrong-resource' and request.url.path == '/.well-known/oauth-protected-resource/mcp':
+            return httpx.Response(200, json={'resource': 'https://foreign.test/mcp',
+                                            'authorization_servers': [module.ISSUER]})
+        if request.url.path == '/token':
+            posts.append(request)
+            assert 'authorization' not in request.headers
+            if outcome == 'redirect':
+                return httpx.Response(307, headers={'Location': 'https://foreign.test/token'})
+            if outcome == 'uncertain':
+                raise httpx.ReadError('PRIVATE uncertain token response', request=request)
+        return await original(request)
+
+    peer.transport = httpx.MockTransport(handle)
+    patch_transport(monkeypatch, peer)
+    ui, session, calls = create(tmp_path, module)
+    try:
+        ui._handle_slash_command('mcp', 'authorize peer')
+        if outcome == 'wrong-resource':
+            await wait(ui, lambda: ui._mcp_panel is not None and not ui._mcp_panel._busy)
+            assert ui._mcp_panel.auth is None and 'identity mismatch' in ui._mcp_panel._message
+            assert not posts and not calls
+            return
+        await wait(ui, lambda: ui._mcp_panel is not None and ui._mcp_panel.auth is not None)
+        auth = ui._mcp_panel.auth
+        auth.handle_input(KeyEvent('enter'))
+        assert not posts and session.mcp._oauth['peer'].flow is None
+        review_all(auth)
+        auth.handle_input(KeyEvent('enter'))
+        await wait(ui, lambda: auth.phase == 'waiting')
+        peer.launch(auth.url)
+        params = parse_qs(urlsplit(auth.url).query)
+        assert params['client_id'] == [module.PROFILE['client_id']] and params['resource'] == [module.RESOURCE]
+        assert params['scope'] == ['tools:read'] and params['code_challenge_method'] == ['S256']
+        await complete(auth.url, 'https://foreign.test', expected=b'400 Bad Request')
+        assert not posts
+        await complete(auth.url, module.ISSUER)
+        owned = session.mcp._oauth['peer']
+        await wait(ui, lambda: owned.status()['state'] != 'waiting')
+        ui._mcp_send('auth_status', 'peer', '', {})
+        await wait(ui, lambda: auth.phase in {'authorized', 'failed'})
+        assert len(posts) == 1 and not peer.registration_posts and not calls and not session.mcp.tools()
+        if outcome == 'success':
+            assert auth.phase == 'authorized' and owned.credential() == 'FIXTURE-OAUTH-SECRET'
+        else:
+            assert auth.phase == 'failed' and owned.credential() is None
+            assert owned.flow.verifier == '' and owned.flow.code.cancelled()
+        with pytest.raises(Exception):
+            await session.mcp.manage_auth('peer', 'start', auth.review['review_id'], lease=ui._mcp_auth_lease)
+        assert len(posts) == 1
+        public = json.dumps(owned.status()) + auth.message + json.dumps(auth.review)
+        assert 'FIXTURE-OAUTH-SECRET' not in public and 'PRIVATE' not in public
+    finally:
+        ui._request_exit()
+        await session.mcp.aclose()
+        session.dispose()

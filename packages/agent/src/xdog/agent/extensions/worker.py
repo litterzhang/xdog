@@ -18,9 +18,6 @@ import yaml
 from jsonschema import Draft202012Validator
 from xdog.agent.extensions.api import ExtensionAPI, identifier, invoke
 from xdog.agent.extensions.input import decision, input_text
-from xdog.agent.extensions.terminal_input import event_decision as terminal_decision
-from xdog.agent.extensions.terminal_input import metadata as terminal_metadata
-from xdog.agent.extensions.terminal_input import text as terminal_text
 from xdog.agent.extensions.tool_result import worker_result
 from xdog.agent.extensions.transfer import ContextTransfer
 from xdog.agent.extensions.types import ExtensionHook, PostToolUseHook, PreToolUseHook, StopHook
@@ -127,7 +124,6 @@ async def dispatch(api: ExtensionAPI, method: str, params: dict[str, Any]) -> di
         return {"commands": api.command_snapshot()["commands"],
                 "events": api.hook_snapshot()["events"], "pre": bool(api.pre), "post": bool(api.post),
                 "context": bool(api.context_hooks), "input": bool(api.input_hooks),
-                "terminal_input": bool(api.terminal_hooks), "terminal_events": api.terminal_events(),
                 "shortcuts": api.shortcuts,
                 "providers": [info for info, _callback in api.providers.values()],
                 "provider_revision": api._provider_revision, "hook_revision": api._hook_revision,
@@ -205,20 +201,6 @@ async def dispatch(api: ExtensionAPI, method: str, params: dict[str, Any]) -> di
             if result.action == "transform":
                 current = result.text
         return {"decision": {"action": "transform", "text": current}}
-    if method == "xdog/terminal_input":
-        current, info = terminal_text(params.get("data")), terminal_metadata(params.get("metadata"))
-        # Changes to registration apply to the next dispatch, never alter this snapshot.
-        hooks = tuple((callback, api.terminal_events_for(callback)) for callback in api.terminal_hooks)
-        for callback, kinds in hooks:
-            if info['kind'] not in kinds:
-                continue
-            result = terminal_decision(await invoke(callback, current, dict(info), context), info['kind'])
-            if result.consume:
-                return {"decision": result.to_dict()}
-            if result.data is not None:
-                current = result.data
-        return {"decision": ({"consume": False} if info['kind'] == 'release'
-                             else {"consume": False, "data": current})}
     if method == "xdog/context":
         messages = params["messages"]
         for callback in tuple(api.context_hooks):
@@ -275,7 +257,6 @@ async def main() -> None:
                 provider_auth_calls.discard(call_id)
                 pending.pop(call_id, None)
                 api._dialog_events.pop(call_id, None)
-                api._frame_owners.pop(call_id, None)
                 api._retired_dialogs.pop(call_id, None)
                 result = task.result()
                 if call_id in context_calls:
@@ -303,18 +284,6 @@ async def main() -> None:
                 try:
                     settings = request.get("params", {}).get("extension_settings", {})
                     api, _meta = await load(path, settings)
-                    def render_notify(value: dict[str, str]) -> None:
-                        data = json.dumps({"jsonrpc": "2.0", "method": "xdog/custom_refresh",
-                                           "params": value}, ensure_ascii=True).encode() + b"\n"
-                        output.write(data)
-                        output.flush()
-                    api._render_notify = render_notify
-                    def overlay_notify(value: dict[str, Any]) -> None:
-                        data = json.dumps({"jsonrpc": "2.0", "method": "xdog/custom_control",
-                                           "params": value}, ensure_ascii=True).encode() + b"\n"
-                        output.write(data)
-                        output.flush()
-                    api._overlay_notify = overlay_notify
                 except BaseException:
                     failure = "Extension setup failed; inspect its trusted source/settings"
                     api = placeholder
@@ -322,36 +291,18 @@ async def main() -> None:
                 raise ValueError(failure)
             result: dict[str, Any]
             method, params = request["method"], request.get("params", {})
+            from xdog.agent.extensions.dialogs import REMOVED_HOST_CAPABILITIES
             from xdog.agent.extensions.inspection import envelope
-            invocation = params.get("context", {})
+            invocation = {key: value for key, value in params.get("context", {}).items()
+                          if key not in REMOVED_HOST_CAPABILITIES}
+            params = {**params, "context": invocation}
             session_id = str(invocation.get("session_id", ""))
             owner_id = str(invocation.get("child_id") or session_id)
             from xdog.agent.extensions.pending_messages import METHODS as pending_methods
             api._has_pending_messages.set(method in pending_methods and invocation.get('host_pending_messages') is True)
-            from xdog.agent.extensions.context_message import METHODS as context_methods
-            api._has_context_message.set(method in context_methods and not invocation.get('child_id')
-                and invocation.get('host_context_message') is True and invocation.get('has_ui') is True)
-            from xdog.agent.extensions.active_tools_request import available as active_tools_available
-            api._has_active_tools_request.set(active_tools_available(method, params)
-                and invocation.get('host_active_tools_request') is True and invocation.get('has_ui') is True
-                and not invocation.get('child_id'))
-            from xdog.agent.extensions.compaction_request import available as compaction_available
-            api._has_compaction_request.set(compaction_available(method, params)
-                and invocation.get("host_compaction_request") is True and invocation.get("has_ui") is True)
-            from xdog.agent.extensions.queued_input import METHODS as queue_methods
-            api._has_queued_input.set(method in queue_methods
-                and invocation.get('host_queued_input') is True and invocation.get('has_ui') is True)
-            from xdog.agent.extensions.editor_request import METHODS as editor_write_methods
-            api._has_editor_write.set(method in editor_write_methods
-                and invocation.get('host_editor_write') is True
-                and (method != 'xdog/custom_frame' or params.get('event', {}).get('kind') in {'key', 'paste'}))
-            from xdog.agent.extensions.name_request import available as name_available
-            api._has_name_request.set(name_available(method, params) and invocation.get('host_name_request') is True
-                and invocation.get('has_ui') is True and not invocation.get('child_id'))
             from xdog.agent.extensions.command_catalog import METHODS as menu_methods
             api._has_command_menu.set(method in menu_methods and invocation.get('host_command_menu') is True
-                and invocation.get('has_ui') is True
-                and (method != 'xdog/custom_frame' or params.get('event', {}).get('kind') in {'key', 'paste'}))
+                and invocation.get('has_ui') is True)
             api._command_menu_session.set(session_id)
             api._inspection.set(envelope(invocation.get("host_inspection"),
                                          session_id=session_id, owner_id=owner_id))
@@ -372,34 +323,7 @@ async def main() -> None:
                 if inventory is None:
                     inventory_miss = reference
             api._tool_inventory.set(inventory)
-            if method == "xdog/custom_frame":
-                owner, dialog_id = params.get("call_id"), params.get("dialog_id")
-                if not isinstance(owner, str) or owner not in pending or not isinstance(dialog_id, str):
-                    raise ValueError("Unknown custom frame parent")
-                depth, ancestor = 0, owner
-                while ancestor in api._frame_owners:
-                    depth += 1
-                    ancestor = api._frame_owners[ancestor][0]
-                if depth >= 4:
-                    raise ValueError("Nested custom frame depth exceeded")
-                call_id = uuid.uuid4().hex
-                api._frame_owners[call_id] = owner, dialog_id
-                api._dialog_events[call_id] = asyncio.Event()
-                api._call_id.set(call_id)
-                api._has_ui.set(params.get("context", {}).get("has_ui") is True)
-                api._has_custom.set(params.get("context", {}).get("host_custom") is True)
-                api._has_refresh.set(params.get("context", {}).get("host_custom_refresh") is True)
-                api._has_overlay_controls.set(params.get("context", {}).get("host_overlay_controls") is True)
-                # Nested input callbacks are not new commands and cannot borrow
-                # command editor/session/catalog/navigation authority.
-                api._has_editor.set(False)
-                api._has_session.set(False)
-                api._has_catalog.set(False)
-                api._has_navigation.set(False)
-                task = asyncio.create_task(api._custom_frame(owner, dialog_id, params["event"], frame_call_id=call_id))
-                pending[call_id] = task
-                result = await callback_result(call_id, task)
-            elif method == "xdog/ui_reply":
+            if method == "xdog/ui_reply":
                 call_id = params.get("call_id")
                 if not isinstance(call_id, str) or call_id not in pending:
                     raise ValueError("Unknown extension callback owner")
@@ -423,26 +347,16 @@ async def main() -> None:
                 api._dialog_events[call_id] = asyncio.Event()
                 api._call_id.set(call_id)
                 api._has_ui.set(True)
-                api._has_custom.set(False)
-                api._has_refresh.set(False)
-                api._has_overlay_controls.set(False)
-                api._has_editor.set(False)
                 api._has_session.set(False)
                 api._has_catalog.set(False)
-                api._has_navigation.set(False)
                 task = asyncio.create_task(providers.authenticate(api, params))
                 provider_auth_calls.add(call_id)
                 pending[call_id] = task
                 result = await callback_result(call_id, task)
             elif method.startswith("xdog/provider_"):
                 api._has_ui.set(False)
-                api._has_custom.set(False)
-                api._has_refresh.set(False)
-                api._has_overlay_controls.set(False)
-                api._has_editor.set(False)
                 api._has_session.set(False)
                 api._has_catalog.set(False)
-                api._has_navigation.set(False)
                 result = await providers.request(api, method, params)
             elif method == "xdog/context_begin":
                 transfer.begin(params)
@@ -459,15 +373,9 @@ async def main() -> None:
                 api._dialog_events[call_id] = asyncio.Event()
                 api._call_id.set(call_id)
                 api._has_ui.set(params.get("context", {}).get("has_ui") is True)
-                api._has_custom.set(params.get("context", {}).get("host_custom") is True)
-                api._has_refresh.set(params.get("context", {}).get("host_custom_refresh") is True)
-                api._has_overlay_controls.set(params.get("context", {}).get("host_overlay_controls") is True)
-                api._has_editor.set(method == "xdog/command" and params.get("context", {}).get("host_editor") is True)
                 api._has_session.set(method == "xdog/command" and params.get("context", {}).get("host_session") is True)
                 api._has_catalog.set(method == "xdog/command"
                                      and params.get("context", {}).get("host_catalog") is True)
-                api._has_navigation.set(method == "xdog/command"
-                                        and params.get("context", {}).get("host_navigation") is True)
                 method_name = 'xdog/context' if operation == 'context' else 'xdog/compaction'
                 field = 'messages' if operation == 'context' else 'preparation'
                 task = asyncio.create_task(dispatch(api, method_name, {**params, field: transferred}))
@@ -484,15 +392,9 @@ async def main() -> None:
                 api._dialog_events[call_id] = asyncio.Event()
                 api._call_id.set(call_id)
                 api._has_ui.set(params.get("context", {}).get("has_ui") is True)
-                api._has_custom.set(params.get("context", {}).get("host_custom") is True)
-                api._has_refresh.set(params.get("context", {}).get("host_custom_refresh") is True)
-                api._has_overlay_controls.set(params.get("context", {}).get("host_overlay_controls") is True)
-                api._has_editor.set(method == "xdog/command" and params.get("context", {}).get("host_editor") is True)
                 api._has_session.set(method == "xdog/command" and params.get("context", {}).get("host_session") is True)
                 api._has_catalog.set(method == "xdog/command"
                                      and params.get("context", {}).get("host_catalog") is True)
-                api._has_navigation.set(method == "xdog/command"
-                                        and params.get("context", {}).get("host_navigation") is True)
                 task = asyncio.create_task(dispatch(api, method, params))
                 pending[call_id] = task
                 result = await callback_result(call_id, task)
@@ -500,8 +402,6 @@ async def main() -> None:
                 result['xdog_tool_inventory_miss'] = inventory_miss
             result["xdog_entries"] = api.drain_entries()
             result["xdog_ui"] = api.drain_ui()
-            result["xdog_terminal_input_active"] = bool(api.terminal_hooks)
-            result["xdog_terminal_input_events"] = api.terminal_events()
             if api._provider_revision != sent_provider_revision:
                 result["xdog_provider_snapshot"] = {
                     "revision": api._provider_revision,

@@ -8,8 +8,8 @@ from unittest.mock import patch
 from xdog.claw.config import ClawConfig, GroupDef
 from xdog.claw.core.runtime.gateway import GatewayServer
 
-from packages.agent.tests.test_mcp_sampling_executor import Adapter
-from packages.agent.tests.test_mcp_sampling_registration import config as peer_config
+from packages.agent.tests.mcp_helpers import Adapter
+from packages.agent.tests.mcp_helpers import reverse_peer_config as peer_config
 
 
 async def setup(tmp_path, adapter=None):

@@ -56,10 +56,6 @@ class ChildStore:
     @staticmethod
     def _sync_directory(directory: Path) -> None:
         # Atomic replacement is not durable until its directory entry is flushed.
-        # Windows does not provide this POSIX directory-fd primitive; retain its
-        # existing behavior without claiming equivalent power-loss protection.
-        if os.name != 'posix':
-            return
         fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | getattr(os, 'O_NOFOLLOW', 0))
         try:
             os.fsync(fd)

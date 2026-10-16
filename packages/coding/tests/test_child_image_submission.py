@@ -94,8 +94,20 @@ def test_claw_malformed_success_receipt_unlocks_but_never_clears_child_image_dra
 
 
 @pytest.mark.parametrize('kind', ['coding', 'claw'])
-async def test_actual_app_old_context_draft_copy_and_discard_are_local_reviewed_and_no_parent_execution(tmp_path, kind):
+async def test_actual_app_recovery_rejects_old_context_and_reopens_only_current_image_input(
+    tmp_path, kind, monkeypatch,
+):
     from xdog.tui.child_drafts import ChildDraft
+    from xdog.tui.components.child_draft_panel import DraftEntry
+
+    from packages.coding.tests.test_saved_child_drafts import (
+        forbid_disk,
+        saved_child_fixture,
+        saved_files,
+    )
+    from packages.coding.tests.test_saved_child_drafts import (
+        review as recovery_review,
+    )
     adapter = HeldVision()
     if kind == 'coding':
         store = SessionManager(tmp_path / 'sessions')
@@ -105,6 +117,9 @@ async def test_actual_app_old_context_draft_copy_and_discard_are_local_reviewed_
             tool_registry=None, bash=None, permissions=PermissionManager('deny'))
         ui = InteractiveMode(session)
     else:
+        import xdog.claw.channels.tui.tui_app as module
+        monkeypatch.setattr(module, 'get_data_dir', lambda: tmp_path)
+        tmp_path.chmod(0o700)
         session = None
         ui = ChatApp(str(tmp_path / 'not-running.sock'))
         ui._connection_ready = True
@@ -114,41 +129,46 @@ async def test_actual_app_old_context_draft_copy_and_discard_are_local_reviewed_
     old = ChildDraft('CROSS-CONTEXT LOCAL TASK', 'inherit', {'model': 'old/model', 'tools': ['bash']},
                      (image,), True, 6)
     ui._child_drafts['previous-owned-context'] = {('start', 'recovered/past/input'): old}
-    ui._child_draft_labels['previous-owned-context'] = '/previous/workspace · old session'
     ui._editor.set_text('UNTOUCHED-PARENT-DRAFT')
+    store, _saved = saved_child_fixture(ui)
+    stored = saved_files(store)
     try:
         ui._open_children()
         panel = ui._child_panel
         panel.publish(())
         panel.open_drafts()
-        browser = panel.draft_panel
-        browser.render(100)
-        browser.handle_input(KeyEvent('enter'))
-        for _ in range(40):
-            browser.render(100)
-            if browser._visible:
-                browser.handle_input(KeyEvent('enter'))
-                break
-            browser.handle_input(KeyEvent('pagedown'))
-        assert panel._mode == 'form' and panel._input.get_text() == old.text
-        assert panel._access == 'read-only' and panel._config == {'inherit_context': False}
-        assert tuple(panel.composer.items.values()) == old.images
-        assert 'uncertain' in panel._error
-        assert ui._child_drafts['previous-owned-context'][('start', 'recovered/past/input')] is old
+        assert not panel.draft_panel.source()
+        assert set(ui._child_drafts) == {ui._child_context}
+        foreign = DraftEntry('previous-owned-context', ('start', 'recovered/past/input'), old, old, 'old', False)
+        with pytest.raises(ValueError):
+            panel.adopt_draft(foreign, reopen=True)
         assert ui._editor.get_text() == 'UNTOUCHED-PARENT-DRAFT' and not adapter.calls
+        panel.back()
+        panel._form('start')
+        panel._input.set_text('CURRENT UNSENT IMAGE INPUT')
+        panel._input._cursor = 5
+        panel._access, panel._config = 'inherit', {'tools': []}
+        panel.composer.restore((image,))
+        blocked = forbid_disk(monkeypatch)
         panel.open_drafts()
         browser = panel.draft_panel
-        browser.render(100)
-        browser.handle_input(KeyEvent('x'))
-        for _ in range(40):
+        value = browser.source()[0]
+        assert value.current and value.scope == panel.owner_token
+        assert value.value.images[0] is image and value.value.text != old.text
+        for key in ('s', 'x', 'delete', 'r', '/'):
             browser.render(100)
-            if browser._visible:
-                browser.handle_input(KeyEvent('enter'))
-                break
-            browser.handle_input(KeyEvent('pagedown'))
-        assert not ui._child_drafts['previous-owned-context']
-        assert ui._child_draft_bytes() == len(image.data)  # Explicit fresh copy still owns its exact immutable image.
-        assert ui._editor.get_text() == 'UNTOUCHED-PARENT-DRAFT' and not adapter.calls
+            browser.handle_input(KeyEvent(key))
+            assert browser._review is None
+        recovery_review(browser, 'enter')
+        assert panel._mode == 'form' and panel._input.get_text() == 'CURRENT UNSENT IMAGE INPUT'
+        assert panel._input._cursor == 5 and panel._access == 'inherit' and panel._config == {'tools': []}
+        assert panel.composer.items[image.id] is image
+        assert ui._child_draft_bytes() == len(image.data)
+        assert set(ui._child_drafts[ui._child_context]) == {('start', '')}
+        assert ui._editor.get_text() == 'UNTOUCHED-PARENT-DRAFT' and not adapter.calls and not blocked
+        assert saved_files(store) == stored
+        if session is not None:
+            assert not session.agent.messages and session.permissions.mode == 'deny'
     finally:
         ui._request_exit()
         if session is not None:

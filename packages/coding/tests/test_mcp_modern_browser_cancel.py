@@ -1,10 +1,10 @@
-"""Modern native browser cancellation cannot resume an unreviewed outer request."""
+"""Closing native read views cancels their owned job before an unadmitted wire leg."""
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import pytest
-from xdog.tui.keys import KeyEvent
 
 from packages.coding.tests.test_mcp_modern_browser_ui import NODE, SDK_ROOT, browser, records, wait
 
@@ -12,44 +12,42 @@ pytestmark = pytest.mark.skipif(not SDK_ROOT or not NODE, reason='Explicit pinne
 
 
 @pytest.mark.parametrize('host', ['coding', 'claw'])
-@pytest.mark.parametrize('method', ['resources/read', 'prompts/get'])
-@pytest.mark.parametrize('family', ['sampling', 'form', 'url'])
-async def test_close_native_browser_during_modern_review_cancels_outer_job_without_resume(
-    tmp_path, host, method, family,
+@pytest.mark.parametrize('transport', ['stdio', 'http'])
+async def test_close_native_browser_settles_owned_read_without_wire_replay_or_late_publication(
+    tmp_path, monkeypatch, host, transport,
 ):
-    async with browser(tmp_path, host, 'stdio') as (ui, manager, adapter, agent, log):
+    async with browser(tmp_path, host, transport) as (ui, manager, adapter, agent, log):
         ui._editor.set_text('UNSUBMITTED CANCELED BROWSER')
         ui._open_mcp()
         await wait(ui, lambda: ui._mcp_panel is not None and not ui._mcp_panel._busy, log)
-        panel = ui._mcp_panel
-        for key in ('b', 'f'):
-            panel.handle_input(KeyEvent(key))
-            await wait(ui, lambda: not panel._busy, log)
-        panel.handle_input(KeyEvent('c'))
-        await wait(ui, lambda: not panel._busy and manager.status()[0]['state'] == 'connected', log)
+        ui._mcp_send('connect', 'modern', '', {})
+        await wait(ui, lambda: manager.status()[0]['state'] == 'connected' and not ui._mcp_panel._busy, log)
         client = manager._clients['modern']
-        panel.handle_input(KeyEvent('u' if method == 'resources/read' else 'p'))
-        await wait(ui, lambda: not panel._busy and panel._mode == 'catalog', log)
-        name = 'test://' + family if method == 'resources/read' else family
-        panel._selected = next(index for index, row in enumerate(panel._visible()) if row['name'] == name)
-        panel.handle_input(KeyEvent('enter'))
-        if method == 'prompts/get':
-            panel.handle_input(KeyEvent('enter'))
-        await wait(ui, lambda: panel.sampling_review is not None or panel.elicitation_review is not None, log)
-        review = panel.sampling_review if family == 'sampling' else panel.elicitation_review
-        assert review.event['protocol'] == '2026-07-28' and not adapter.calls
-        assert len([row for row in records(log) if row['type'] == 'operation']) == 1
-        ui._close_mcp()  # Actual host closes/revokes the original view, not a mocked owner predicate.
-        await wait(ui, lambda: not manager._sampling and not manager._elicitation and not client.inputs._jobs, log)
+        entered, settled = threading.Event(), threading.Event()
+        original = client.request
+
+        async def held(method, params, **kwargs):
+            if method == 'resources/read':
+                entered.set()
+                try:
+                    await asyncio.sleep(60)
+                finally:
+                    settled.set()
+            return await original(method, params, **kwargs)
+
+        monkeypatch.setattr(client, 'request', held)
+        ui._mcp_send('read', 'modern', 'test://roots', {})
+        await wait(ui, entered.is_set, log)
+        ui._close_mcp()
+        await wait(ui, settled.is_set, log)
         assert ui._mcp_panel is None and ui._mcp_document is None
         assert not agent.messages and not adapter.calls
         assert ui._editor.get_text() == 'UNSUBMITTED CANCELED BROWSER'
-        # Same connected modern peer remains usable; a subsequent catalog reply
-        # proves that cleanup settled, rather than merely checking before a late resume.
-        result = await manager._bridge(client.request('tools/list', {}))
-        assert result['tools']
+        assert not [row for row in records(log) if row['type'] == 'operation']
+        assert not client.inputs._jobs
+        # A round-trip on the existing connection proves settlement, not just
+        # checking before an old result could arrive and resurrect the panel.
+        assert (await manager._bridge(original('tools/list', {})))['tools']
         await asyncio.sleep(.02)
         ui._poll()
-        operations = [row for row in records(log) if row['type'] == 'operation']
-        assert len(operations) == 1 and 'responses' not in operations[0]
         assert ui._mcp_panel is None and ui._mcp_document is None

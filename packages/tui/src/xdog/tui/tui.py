@@ -293,7 +293,6 @@ class TUI(Container):
         self._focused: Component | None = None
         self._input_epoch = 0
         self._input_geometry: tuple[int, int] | None = None
-        self._frame_interceptor: Callable[[KeyBytes | Paste], bool] | None = None
         self._render_requested: bool = False
         self._cursor_row: int = 0
         self._hardware_cursor_row: int = 0
@@ -405,13 +404,6 @@ class TUI(Container):
         if is_focusable(component):
             component.focused = True  # type: ignore[union-attr]
 
-    def set_frame_interceptor(self, callback: Callable[[KeyBytes | Paste], bool] | None) -> None:
-        """Host arbitration after protocol filtering; True means held/consumed.
-
-        This is not a terminal-protocol observer. Replies and rejected pastes are
-        handled before this callback; delivery bypasses interception exactly once.
-        """
-        self._frame_interceptor = callback
 
     @property
     def input_lease(self) -> str:
@@ -422,9 +414,6 @@ class TUI(Container):
             self._input_epoch += 1
         return f"{self._input_epoch}:{geometry}:{self.fullscreen}"
 
-    def deliver_frame(self, frame: KeyBytes | Paste) -> bool:
-        """Deliver host-validated held input without invoking its hook again."""
-        return self._handle_frame(frame, intercepted=True)
 
     # -- tick callbacks ------------------------------------------------------
 
@@ -451,7 +440,7 @@ class TUI(Container):
 
     def suspend(self) -> bool:
         """Request a controlled POSIX job-control suspend."""
-        if os.name == "nt" or not hasattr(signal, "SIGTSTP"):
+        if not hasattr(signal, "SIGTSTP"):
             return False
         self._input_epoch += 1
         self._suspend_requested = True
@@ -613,7 +602,7 @@ class TUI(Container):
             sys.stdout.write(output)
             sys.stdout.flush()
 
-    def _handle_frame(self, frame: InputFrame, *, intercepted: bool = False) -> bool:
+    def _handle_frame(self, frame: InputFrame) -> bool:
         if isinstance(frame, EndOfInput):
             self.stop()
             return False
@@ -625,8 +614,6 @@ class TUI(Container):
             target = self._focused
             if target is not None:
                 target.handle_input_error(frame.reason)
-            return True
-        if not intercepted and self._frame_interceptor is not None and self._frame_interceptor(frame):
             return True
         if isinstance(frame, Paste):
             return self._dispatch_paste(frame.text)

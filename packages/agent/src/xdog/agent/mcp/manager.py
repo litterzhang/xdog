@@ -16,25 +16,22 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from xdog.agent.core import AgentTool, AgentToolResult
-from xdog.agent.mcp.client_capabilities import advertised, inventory, roots_config
+from xdog.agent.mcp.client_capabilities import advertised, inventory
 from xdog.agent.mcp.completion import McpCompletion, bounded, values
 from xdog.agent.mcp.completion import arguments as completion_arguments
 from xdog.agent.mcp.config import parse_servers
 from xdog.agent.mcp.content import content as validate_content
 from xdog.agent.mcp.context import McpDocument, McpEntry, context_entry, prompt_blocks, resource_blocks
-from xdog.agent.mcp.elicitation_owner import ElicitationOwner
 from xdog.agent.mcp.http import HttpClient, HttpMcpError
 from xdog.agent.mcp.oauth import OAuthOwner
 from xdog.agent.mcp.oauth_discovery import OAuthChallenge
 from xdog.agent.mcp.oauth_native_store import NativeCredentialStore, storage_backend
 from xdog.agent.mcp.oauth_store import CredentialStore, SavedCredential, capture, restore
 from xdog.agent.mcp.protocol import argument_headers, header_value, schema_headers
-from xdog.agent.mcp.sampling_owner import ContextProvider, Executor, Publisher, SamplingOwner
 from xdog.agent.mcp.schema import Schema, compile_schema, json_value
 from xdog.agent.mcp.schema_owner import SchemaDocument, SchemaOwner
 from xdog.agent.mcp.stdio import McpError, StdioClient
 from xdog.agent.mcp.subscriptions import CATALOGS, ResourceWatch, resource_uri
-from xdog.agent.mcp.task_registry import TaskRegistry
 from xdog.ai.types import ImageContent, TextContent
 
 T = TypeVar("T")
@@ -85,11 +82,7 @@ class McpManager:
             NativeCredentialStore(credential_dir, backend=selected_backend) if selected_backend != 'file'
             else CredentialStore(credential_dir))
         self._credential_consents: dict[str, _CredentialConsent] = {}
-        self._root_consents: dict[str, tuple[str, str, object, int, float, tuple[tuple[str, str], ...]]] = {}
-        self._root_publishing: set[str] = set()
         self._clients: dict[str, StdioClient | HttpClient] = {}
-        self._sampling: dict[str, tuple[str, SamplingOwner, threading.Event]] = {}
-        self._elicitation: dict[str, tuple[str, ElicitationOwner, threading.Event]] = {}
         self._oauth: dict[str, OAuthOwner] = {}
         self._auth_challenges: dict[str, tuple[str, object, OAuthChallenge | None]] = {}
         self._auth_leases: dict[str, str] = {}
@@ -204,21 +197,11 @@ class McpManager:
                           "allow_tools": config.allow_tools, "transport": config.transport,
                           "client_capabilities": (self._clients[name].inputs.advertised()
                                                   if name in self._clients and self._clients[name].modern else
-                                                  {**self._clients[name].root_capability.advertised(),
-                                                   **self._clients[name].reverse.advertised()}
+                                                  self._clients[name].root_capability.advertised()
                                                   if name in self._clients else advertised()),
                           "client_capability_support": {**inventory(), 'roots': (
                               ('modern-configured' if name in self._clients and self._clients[name].modern
-                               else 'legacy-configured') if config.roots else 'unsupported'),
-                              'sampling': (('modern-host-registered' if name in self._clients
-                                            and self._clients[name].modern else 'legacy-host-registered')
-                                           if name in self._sampling else 'unsupported'),
-                              'elicitation': (('modern-host-registered' if name in self._clients
-                                               and self._clients[name].modern else 'legacy-host-registered')
-                                              if name in self._elicitation else 'unsupported'),
-                              'tasks': ('legacy-host-registered' if name in self._clients
-                                        and self._clients[name].reverse.advertised().get('tasks') is not None
-                                        else 'unsupported')},
+                               else 'legacy-configured') if config.roots else 'unsupported')},
                           "rejected_tools": self._rejected.get(name, ()),
                           "error": self._clients[name].error if name in self._clients else ""}
                          for name, config in self.configs.items())
@@ -228,167 +211,10 @@ class McpManager:
         with self._lock:
             return {tool.alias: (tool.server, tool.remote_name) for tool in self._tools}
 
-    async def register_elicitation(self, name: str, *, lease: str, publish: Publisher,
-                                   alive: Callable[[], bool], tasks: bool = False) -> None:
-        """Explicit host review handler before connection; no form/browser admission."""
-        async def install() -> None:
-            if (name not in self.configs or name in self._clients or name in self._elicitation
-                    or not alive() or not callable(publish) or len(self._elicitation) >= 16):
-                raise McpError('Elicitation registration requires a disconnected configured server/current host')
-            if type(tasks) is not bool:
-                raise McpError('Explicit boolean task registration required')
-            revoked = threading.Event()
-            owner = ElicitationOwner(lease,
-                lambda event: publish({**event, 'server': name, 'lease': lease}),
-                lambda: not revoked.is_set() and not self._closed and alive())
-            owner.task_enabled = tasks
-            self._elicitation[name] = lease, owner, revoked
-        await self._bridge(install())
 
-    async def answer_elicitation(self, name: str, identifier: str, *, lease: str, phase: str,
-                                receipt: str, sha256: str, response: Any) -> None:
-        async def answer() -> None:
-            binding = self._elicitation.get(name)
-            client = self._clients.get(name)
-            if (binding is None or binding[0] != lease or binding[2].is_set() or client is None
-                    or client.state != 'connected'
-                    or (client.inputs.elicitation_handler != binding[1].handle_input if client.modern
-                        else client.reverse.elicitation_handler != binding[1].handle)):
-                raise McpError('Elicitation registration/connection owner changed; no replay')
-            await binding[1].answer(identifier, lease=lease, phase=phase, receipt=receipt,
-                                    sha256=sha256, response=response)
-        await self._bridge(answer())
 
-    async def detach_elicitation(self, name: str, *, lease: str) -> None:
-        async def detach() -> None:
-            binding = self._elicitation.get(name)
-            if binding is None or binding[0] != lease:
-                return
-            binding[2].set()
-            client = self._clients.get(name)
-            if client is not None:
-                await client.inputs.withdraw('elicitation/create')
-                await client.reverse.withdraw('elicitation/create')
-            await binding[1].close()
-            if self._elicitation.get(name) is binding:
-                self._elicitation.pop(name, None)
-        await self._bridge(detach())
 
-    async def register_sampling(self, name: str, *, lease: str, publish: Publisher,
-                                execute: Executor, alive: Callable[[], bool],
-                                context: ContextProvider | None = None, tasks: bool = False) -> None:
-        """Explicit host installation BEFORE connection negotiation; never automatic."""
-        async def install() -> None:
-            if (name not in self.configs or name in self._clients or name in self._sampling or not alive()
-                    or not callable(publish) or not callable(execute) or len(self._sampling) >= 16):
-                raise McpError('Sampling registration requires a disconnected configured server/current host')
-            if type(tasks) is not bool:
-                raise McpError('Explicit boolean task registration required')
-            revoked = threading.Event()
-            def current() -> bool:
-                return not revoked.is_set() and not self._closed and alive()
-            owner = SamplingOwner(lease, lambda event: publish({**event, 'server': name, 'lease': lease}),
-                                  execute, current, context=context)
-            owner.task_enabled = tasks
-            self._sampling[name] = lease, owner, revoked
-        await self._bridge(install())
 
-    async def answer_sampling(self, name: str, identifier: str, *, lease: str, phase: str,
-                              receipt: str, sha256: str, approve: bool, selection: Any = None) -> None:
-        async def answer() -> None:
-            binding = self._sampling.get(name)
-            client = self._clients.get(name)
-            if (binding is None or binding[0] != lease or binding[2].is_set()
-                    or client is None or client.state != 'connected'
-                    or (client.inputs.sampling_handler != binding[1].handle_input if client.modern
-                        else client.reverse.handler != binding[1].handle)):
-                raise McpError('Sampling registration/connection owner changed; no replay')
-            binding[1].answer(identifier, lease=lease, phase=phase, receipt=receipt,
-                              sha256=sha256, approve=approve, selection=selection)
-        await self._bridge(answer())
-
-    async def detach_sampling(self, name: str, *, lease: str) -> None:
-        async def detach() -> None:
-            binding = self._sampling.get(name)
-            if binding is None or binding[0] != lease:
-                return  # Foreign view cannot revoke an owning registration.
-            binding[2].set()
-            client = self._clients.get(name)
-            if client is not None:
-                await client.inputs.withdraw('sampling/createMessage')
-                await client.reverse.withdraw('sampling/createMessage')
-            await binding[1].close()
-            if self._sampling.get(name) is binding:
-                self._sampling.pop(name, None)
-        await self._bridge(detach())
-
-    async def detach_roots(self, lease: str) -> None:
-        """Retire prepared disclosure receipts, not already admitted root selections."""
-        async def work() -> None:
-            for name, consent in tuple(self._root_consents.items()):
-                if consent[1] == lease:
-                    self._root_consents.pop(name, None)
-        await self._bridge(work())
-
-    async def manage_roots(self, name: str, action: str, selected: Any = None, *,
-                           receipt: str = '', lease: str,
-                           alive: Callable[[], bool]) -> dict[str, Any]:
-        """Explicit host review protocol; not callable by a remote MCP server/tool.
-
-        prepare returns the entire selected metadata for painting by the host;
-        commit must use that exact live-view single-use receipt. Native UI wiring
-        is a separate requirement, not supplied by this SDK protocol alone.
-        """
-        async def work() -> dict[str, Any]:
-            if not isinstance(lease, str) or not 0 < len(lease) <= 128 or not alive():
-                raise McpError('Root review requires current host view ownership')
-            client = self._clients.get(name)
-            if action == 'cancel':
-                previous = self._root_consents.get(name)
-                if previous is not None and previous[1] == lease:
-                    self._root_consents.pop(name, None)
-                return {'state': 'canceled', 'server': name}
-            if (client is None or client.state != 'connected'
-                    or not client.root_capability.active or not client.root_capability.ceiling):
-                raise McpError('Explicit configured root capability is unavailable')
-            capability = client.root_capability
-            if name in self._root_publishing:
-                raise McpError('Root publication still owns work; wait for settlement, no replay')
-            if action == 'prepare':
-                roots = roots_config(selected)
-                if not set(roots) <= set(capability.ceiling):
-                    raise McpError('Root selection exceeds configured disclosure consent')
-                if len(self._root_consents) >= 16 and name not in self._root_consents:
-                    raise McpError('Root review capacity reached')
-                identifier = secrets.token_hex(16)
-                self._root_consents[name] = (identifier, lease, client, capability.revision, time.monotonic(), roots)
-                return {'state': 'review', 'server': name, 'review_id': identifier,
-                        'roots': [{'uri': uri, **({'name': label} if label else {})} for uri, label in roots],
-                        'revision': capability.revision,
-                        'notice': 'Explicit root metadata disclosure to this peer only; no file/tool grant. '
-                                  'Empty selection withdraws all roots; reconnect restores configured consent.'}
-            if action != 'commit':
-                raise McpError('Unknown root review action')
-            consent = self._root_consents.pop(name, None)  # Every commit attempt consumes the review.
-            if (consent is None or consent[0] != receipt or consent[1] != lease or consent[2] is not client
-                    or consent[3] != capability.revision or time.monotonic() - consent[4] > 300 or not alive()):
-                raise McpError('Root review owner/revision changed; prepare and review again, no replay')
-            self._root_publishing.add(name)
-            try:
-                capability.replace(consent[5], consent[3])
-                # Local publication precedes notification: failures/cancellation
-                # have uncertain remote notice effects, not rollback or retry.
-                if not client.modern:
-                    await client.notify('notifications/roots/list_changed', {})
-                if (not alive() or self._clients.get(name) is not client or client.state != 'connected'
-                        or not capability.active):
-                    raise McpError('Root owner changed after publication; inspect current roots, no replay')
-                return {'state': 'updated', 'server': name, 'revision': capability.revision,
-                        'roots': [{'uri': uri, **({'name': label} if label else {})}
-                                  for uri, label in capability.roots]}
-            finally:
-                self._root_publishing.discard(name)
-        return await self._bridge(work())
 
     async def watch_notifications(self, server: str, selected: dict[str, Any], *, lease: str,
                                   on_change: Callable[[dict[str, Any]], None],
@@ -750,30 +576,6 @@ class McpManager:
             client = HttpClient(config, credential) if credential is not None else HttpClient(config)
         else:
             client = StdioClient(config, self.cwd)
-        sampling = self._sampling.get(name)
-        if sampling is not None:
-            if sampling[2].is_set() or not sampling[1]._live():
-                raise McpError('Sampling host registration revoked; detach before connecting')
-            client.reverse.handler = sampling[1].handle
-            client.inputs.sampling_handler = sampling[1].handle_input
-            client.inputs.sampling_alive = sampling[1]._live
-            client.reverse.sampling_tools = True
-            client.reverse.sampling_context = sampling[1].context is not None
-            if sampling[1].task_enabled:
-                client.reverse.tasks = TaskRegistry()
-                client.reverse.sampling_task_handler = sampling[1].handle_task
-        elicitation = self._elicitation.get(name)
-        if elicitation is not None:
-            if elicitation[2].is_set() or not elicitation[1]._live():
-                raise McpError('Elicitation host registration revoked; detach before connecting')
-            client.reverse.elicitation_handler = elicitation[1].handle
-            client.inputs.elicitation_handler = elicitation[1].handle_input
-            client.inputs.elicitation_alive = elicitation[1]._live
-            client.reverse.elicitation_completion = elicitation[1].completion
-            if elicitation[1].task_enabled:
-                if client.reverse.tasks is None:
-                    client.reverse.tasks = TaskRegistry()
-                client.reverse.elicitation_task_handler = elicitation[1].handle_task
         with self._lock:
             self._clients[name] = client
         try:
@@ -784,14 +586,6 @@ class McpManager:
             if isinstance(exc, HttpMcpError) and (exc.auth_challenge is not None or exc.challenge_invalid):
                 self._auth_challenges[name] = config.url, config.oauth, exc.auth_challenge
             await client.close()
-            if sampling is not None:
-                sampling[2].set()
-                await sampling[1].close()
-                self._sampling.pop(name, None)
-            if elicitation is not None:
-                elicitation[2].set()
-                await elicitation[1].close()
-                self._elicitation.pop(name, None)
             with self._lock:
                 self._clients.pop(name, None)
             raise
@@ -1005,31 +799,10 @@ class McpManager:
         await self._bridge(self._disconnect(name))
 
     async def _disconnect(self, name: str) -> None:
-        elicitation = self._elicitation.pop(name, None)
-        if elicitation is not None:
-            elicitation[2].set()
-            retiring = self._clients.get(name)
-            if retiring is not None:
-                retiring.reverse.elicitation_handler = None
-        sampling = self._sampling.pop(name, None)
-        if sampling is not None:
-            sampling[2].set()
-            retiring = self._clients.get(name)
-            if retiring is not None:
-                retiring.reverse.handler = None
-        self._root_consents.pop(name, None)
         client = self._clients.get(name)
         if client is None:
-            if elicitation is not None:
-                await elicitation[1].close()
-            if sampling is not None:
-                await sampling[1].close()
             return
         await client.close()
-        if elicitation is not None:
-            await elicitation[1].close()
-        if sampling is not None:
-            await sampling[1].close()
         with self._lock:
             self._resource_watches = {key: pair for key, pair in self._resource_watches.items()
                                      if pair[0] is not client}
@@ -1171,27 +944,12 @@ class McpManager:
             await asyncio.to_thread(self._thread.join, 2)
 
     async def _close_clients(self) -> None:
-        elicitation = tuple(self._elicitation.values())
-        for binding in elicitation:
-            binding[2].set()
-        for client in tuple(self._clients.values()):
-            client.reverse.elicitation_handler = None
-        await asyncio.gather(*(binding[1].close() for binding in elicitation), return_exceptions=True)
-        self._elicitation.clear()
-        sampling = tuple(self._sampling.values())
-        for sampling_binding in sampling:
-            sampling_binding[2].set()
-        for client in tuple(self._clients.values()):
-            client.reverse.handler = None
-        await asyncio.gather(*(binding[1].close() for binding in sampling), return_exceptions=True)
-        self._sampling.clear()
         if self._resource_monitor is not None:
             self._resource_monitor.cancel()
             await asyncio.gather(self._resource_monitor, return_exceptions=True)
         await self._schemas.close()
         self._auth_leases.clear()
         self._credential_consents.clear()
-        self._root_consents.clear()
         for task in tuple(self._auth_preparing.values()):
             task.cancel()
         if self._auth_preparing:

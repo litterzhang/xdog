@@ -1,5 +1,8 @@
 # xdog-tui
 
+> Platform scope: **Linux only**. Non-Linux adapters and native-platform support
+> are outside the current product scope; historical audit evidence is not a support promise.
+
 **Terminal UI library with differential rendering.**
 
 A small terminal UI toolkit that redraws owned rows in the main terminal buffer
@@ -101,21 +104,6 @@ choose application permissions. Hosts show bounded previews and own queue locks,
 worker-loop acknowledgements, transport generations and draft recovery. The live
 prompt keymap exposes `steer` (Alt+S), `follow_up` (Alt+F) and `queue` (Ctrl+Q).
 
-### Repository review
-
-`RepositoryReview` supplies immutable `ReviewSnapshot` / `ReviewFile` objects
-from one owned read-only Git worker. Patch rows are stored in a private SQLite
-cache and fetched as display-cell-clipped pages; all hunk positions remain
-available. Requests coalesce, stale results and partial document caches are
-fenced, and close cancels/reaps the child and removes private storage. No agent
-or application permission policy is imported into this standalone helper.
-
-`ReviewPanel` composes a bounded file/filter/patch surface in the main-buffer
-transient tail. Hosts poll snapshots, restore focus around higher-priority
-permissions, and close the backend on exit/workspace change. The panel owns
-keyboard/paste while focused so Enter cannot submit the underlying draft.
-Library exports are available from `xdog.tui` and `xdog.tui.components`.
-
 ### Session/branch navigation surfaces
 
 `NavigationEntry`/`NavigationSnapshot`, `NavigationWorker` and `NavigationFeed`
@@ -134,10 +122,8 @@ import agent/application policy or run model calls.
 size/dimensions; file reads use nonblocking open/regular-file checks to avoid FIFO
 hangs, not to establish a sandbox. `AttachmentReader` owns one off-thread read
 and its bounded clipboard subprocess, publishing immutable events to the host.
-Wayland/X11 image helpers and the native macOS image/text adapter (text-only
-`pbpaste` fallback only if `osascript` is absent) are explicit reads, never background
-polling. The macOS adapter is contract-tested on Linux; native desktop validation
-remains separate.
+Linux Wayland (`wl-paste`) and X11 (`xclip`) image/text helpers are explicit
+reads, never background polling. No non-Linux clipboard adapter is shipped.
 
 `AttachmentComposer` owns add/list/preview/remove/clear/take/restore on the UI
 thread. Late reads after take stay editable; explicit clear fences prior reads.
@@ -244,49 +230,6 @@ AppKit interface; they are not validation of Apple's real JXA bridge/pasteboard.
 The script-contract tests explicitly skip if Node is unavailable; Node is not a
 runtime dependency of the clipboard adapter or either client.
 
-### Inert MCP completion forms
-
-`McpCompletionPanel` composes an explicit prefix editor, advertised variable
-navigation, ranked bounded suggestions and visible selection. Ctrl+N/P selects a
-variable, Tab requests and Enter accepts into the parent's editable draft only;
-Escape cancels. Typing invalidates/cancels pending suggestions and scope/prefix/
-context checks reject late or mismatched replies. Layout/visibility changes fence
-unpainted acceptance; control/newline text is sanitized for terminal output without
-coercing the selected original value. No network client or application policy lives
-in this component. `McpPanel` hosts own request/cancel callbacks and preserve JSON/
-URI drafts on invalid/busy submissions.
-
-`scalar_template.expand()` is a bounded inert RFC 6570 string-value expander for
-all operators, prefix modifiers and scalar explode. It omits undefined variables,
-percent-encodes values appropriately and accepts no list/map values. Expansion is
-editable URI data only; neither helper resolves or fetches URLs/files.
-
-### Opaque resource completion forms
-
-`McpPanel` exposes **v** on server/resource rows for a JSON uri/argument/value/context
-form. `mcp_resource.resource_request()` validates bounded named-string data without
-interpreting/fetching URIs or guessing server schemas. Ctrl+Space opens the existing
-picker with operator-specified names; acceptance updates the JSON draft only. A
-separate Enter dispatches local resource_completion_preview, not resources/read.
-Hosts label that selected/edited data and retain normal quoted preview insertion.
-JSON argument forms use up to three editor rows within their existing budget;
-soft-wrap does not truncate or silently discard the reference/value/context.
-Existing resize, repeat-Enter, invalid/busy draft retention and stale-result fences
-remain in force. Components still perform no network or application permission work.
-
-### Typed extension form component
-
-`ExtensionDialog` delegates kind form to `ExtensionForm`, with no dependency on
-agent application policy. It edits named scalar fields, preserves invalid drafts,
-shows title/help/constraints and implements whole-form paged visible confirmation.
-Tab/Shift+Tab fields, Space/Left/Right choices, Enter/Ctrl+Enter review, PgUp/PgDn
-help/review, Ctrl+E edit and Esc/Ctrl+C cancel are contextual. Multiline Enter adds
-a line; pasted newlines/repeat Enter never submit. Budget/visibility invalidation
-propagates through the wrapper, including zero rows. Hosts independently validate
-declarations/answers and own deadlines/leases/cancellation; returning a dict is not
-permission or execution. Flat typed forms do not claim arbitrary custom rendering
-or nested-schema UI parity.
-
 ### Read-only extension command display
 
 `ExtensionCommand` displays a host-validated artifact's text and bounded image
@@ -308,25 +251,6 @@ OutputPanel exposes no-redaction/sensitive-original-byte warnings; existing
 visible-path/resize/context/cancel/private-no-overwrite rules remain. Command display
 components carry a host-assigned owner token so clients can select only current
 session/connection data for lossless export.
-
-### Policy-free editor compare-and-set receipts
-
-`EditorActions(snapshot, replace)` captures text/cursor/attachment identities and
-issues a random single-use receipt tied to a host-provided owner key. Changed state,
-wrong owner/revision or invalidated receipt refuses replacement; the host callback
-validates replacement text before mutation. Snapshot and draft handling do not send
-input, touch attachments or change application policy. Coding/Claw enforce command-
-only authority, session/connection context and dialog precedence outside the library.
-
-### Exact-target extension navigation review
-
-`ExtensionNavigation` composes ExtensionForm for default-deny, whole-page review of
-current owner and exact action/session/branch/zero-based checkpoint data. It returns
-only bool queued consent; it cannot mutate a runtime or grant tool permissions.
-All target fields/warnings must paint after layout changes, paste/repeat confirmation
-is inert and zero-row invalidation reaches the actual form. Hosts queue/validate/
-dispatch the intent only after the original command settles successfully under
-unchanged command/session/connection ownership and existing idle/navigation policy.
 
 ### Effective extension command bindings
 
@@ -360,196 +284,6 @@ input_feedback metadata and presents it as system data, never assistant prose.
 No custom renderer/model/tool/permission authority is introduced by these displays.
 
 
-### Inline custom extension component
-
-`components.extension_custom.ExtensionCustom` consumes bounded viewport-tagged data
-and forwards keys/atomic paste through a host-supplied **enqueue-only** callback.
-`render()` performs no worker/network I/O; `poll()` handles initial/resize requests.
-The component invalidates painted revisions on blur, hidden rows, geometry changes
-and view invalidation, tagging requests with a generation to reject delayed frames
-from the same-size old view. It exposes busy/refusal feedback without replay.
-
-Only vetted SGR styles/colors survive line sanitization. OSC/APC/DCS, clipboard,
-links, graphics, cursor/erase/alternate-screen controls and private cursor markers
-cannot pass through. Style resets isolate host components; optional carets are
-placed at whole-grapheme boundaries. Host cancellation/redraw/suspend/exit keys are
-reserved. `TUI.requires_current_viewport_input` fences EVERY forwarded key and paste
-during a physical resize race. Reasserting the same focus owner is idempotent;
-normal polling is not a blur/focus transition. Hosts still own permissions, leases,
-original completion futures, modal precedence and headless/older-viewer negotiation.
-
-
-`ExtensionCustomPresentation` manages a temporary fullscreen view using the host's
-visibility/policy decision. `InlineLayout` supplies the actual terminal height to
-that view; inline and fullscreen remain separate, epoch-fenced presentations.
-The component supports sanitized metadata paging (F1 view/details, page/home/end
-navigation) and explicitly requested repeat/release events, including release
-subscription at the real TUI parser. Default press-only payloads keep the v1 wire
-shape. Screen ownership, permission decisions and protocol capability negotiation
-remain host concerns. Alternate-screen resize resets/re-homes only the active
-alternate painter; it does not clear the saved main renderer or native scrollback.
-
-
-`ExtensionDialogStack` preserves FIFO among unrelated roots while selecting the
-active descendant of an owned custom parent. It caches parent components across
-child input/form/custom questions and validates supplied parent linkage/scope;
-hosts still enforce their actual runtime and transport leases. Reusing a parent
-component restores its draft/state but invalidates old focus/viewport proof. No
-worker or socket code runs in this dependency-light selection/cache layer.
-
-### Owned custom-view overlay presentation
-
-`ExtensionCustomPresentation` can attach a validated custom panel to a capturing
-`TUI` overlay handle. The existing host overlay options supply percentage/absolute
-width and height, anchors, offsets, positions and margins. The panel receives the
-actual allocated viewport and uses the same sanitized frame/cursor/input protocol.
-Only the owning handle is removed on nested questions, preemption or completion;
-other host overlays keep their focus. `has_overlay(exclude=component)` lets a host
-check competing visible overlays without treating its own panel as a blocker.
-
-Main-buffer overlay composition anchors the visible tail after a physical resize,
-including while an asynchronous custom frame has no cursor. The actual CPR row
-still drives cursor moves. No alternate-screen or whole-screen/scrollback erase
-is used, and historical rows above the visible viewport are never replayed.
-Extension hosts retain approval policy, visibility and focus decisions; component
-code does not gain a permission grant or direct terminal access.
-
-### Worker-side custom-view composition
-
-`xdog.tui.components.custom_layout` provides bounded custom-view composition:
-`CustomText`, `CustomSpacer`, `CustomChild`, `CustomRow`, `CustomColumn`,
-`CustomPadding`, `CustomBox`, `CustomViewport`, `CustomComponent`, and `custom_frame`.
-
-```python
-from xdog.tui.components.custom_layout import (
-    CustomBox, CustomChild, CustomColumn, CustomRow, CustomText, custom_frame,
-)
-
-layout = CustomColumn((
-    CustomChild(CustomText("Review"), size=1),
-    CustomChild(CustomRow((
-        CustomChild(CustomBox(CustomText("Main content", wrap=True), title="Main"), weight=2),
-        CustomChild(CustomBox(CustomText("Status"), title="Side"), size=18),
-    ), gap=1)),
-), gap=1)
-
-def render(width, height):
-    return custom_frame(layout, width, height)
-```
-
-`size` reserves fixed cells along the parent axis; `weight` distributes remaining
-space with deterministic integer largest-remainder allocation. Containers handle
-narrow/zero-size viewports, clip at whole graphemes, and isolate SGR styles between
-children. Padding uses explicit top/right/bottom/left cells. Box titles are safely
-clipped. Text supports wrapping and left/center/right alignment.
-
-`CustomViewport(content, width, height, left=0, top=0)` adds a scrollable virtual
-canvas inside any box/row/column or another viewport. The extension owns scroll
-state: rebuild the frozen viewport with new `left`/`top` offsets in its existing
-input callback. Offsets are display cells/rows, not string bytes; cropping preserves
-SGR and complete graphemes, including styled combining/ZWJ sequences. On resize,
-offsets clamp to the last full visible canvas. A cursor is translated only while
-visible; scrolling offscreen hides it without moving focus to another component.
-
-```python
-from xdog.tui.components.custom_layout import CustomViewport
-
-# In render(width, height); update left/top in your api.custom input callback.
-return custom_frame(
-    CustomViewport(CustomText(document), width=120, height=320, left=left, top=top),
-    width, height,
-)
-```
-
-Virtual dimensions are explicit and bounded: at most 8,192 columns, 4,096 rows,
-128 Ki display cells per canvas, 512 Ki cells across all viewport nodes, and
-512 KiB retained virtual-frame/component text. This is bounded canvas rendering,
-not an unbounded lazy document API; larger documents should use worker-side paging.
-Only the cropped host-sized frame crosses the existing protocol. No extra socket
-capability, host scrolling callback, direct terminal control or model call is added.
-
-`CustomComponent(component)` adapts an existing **worker-owned** TUI `Component`.
-The extension retains its state/focus and dispatches its own input; it should
-provide the component's render budget (for example an InputPanel's
-`set_render_budget`) when that component does not implement `set_height`.
-The adapter extracts one cursor coordinate and strips the private marker before
-serialization. Multiple focused cursors are rejected, not selected arbitrarily.
-
-Limits: 256 rendered nodes, depth 12, 32 children per container, 128 KiB text/frame,
-200 viewport rows, and 8,192 UTF-8 bytes per output line. Invalid/cyclic layouts or
-excessive component output fail visibly through the existing custom-view lifecycle.
-Zero-size viewports do not invoke components. Layouts are frozen; component state
-remains owned by the extension worker.
-
-Use these helpers **inside** an extension's existing `api.custom` render callback.
-Only ordinary sanitized `lines`/`cursor` frame data reaches the client; no layout
-object or callback runs on the UI thread or writes terminal commands. Agent does
-not gain a TUI dependency. Coding/Claw already install TUI; standalone extension
-environments using this optional helper must install `xdog-tui` themselves.
-Existing broker revisions, viewport generations, nested dialog leases, fullscreen
-ownership and permission gates remain authoritative.
-
-### Explicit Windows clipboard snapshots
-
-`AttachmentReader` now selects a dedicated helper on `win32`, invoked through the
-current Python interpreter rather than a shell, PowerShell, clipboard history or
-an application automation target. It reads the current Win32 clipboard only when
-the composer requests paste. The existing owned process deadline, cancellation,
-output bounds and composer epochs still apply; a read never submits a model turn.
-
-The helper prefers PNG/JPEG/WebP data, then CF_DIBV5/CF_DIB (including Windows'
-synthesized bitmap formats), then bounded CF_UNICODETEXT. Image errors do not fall
-back to text. Clipboard handles remain clipboard-owned: they are locked/copied/
-unlocked, never freed. The desktop clipboard is closed before raster conversion,
-with sequence checks before and after conversion. Encoded image framing trims
-native allocation padding rather than copying unused memory into an attachment.
-
-The dependency-free DIB codec supports CORE/INFO/V4/V5 headers, top-down/bottom-up
-RGB, palette, 16/32-bit bitfields with declared alpha, RLE4/RLE8, embedded JPEG/PNG
-and bounded embedded ICC profiles. Source raster/pixel and final image limits are
-separate: an uncompressed desktop bitmap may be larger than its encoded PNG.
-Linked profiles are not followed. Self-contained calibrated RGB now becomes a
-bounded inline ICC matrix/TRC profile, retaining channel gamma, chromatic adaptation
-and the original RGBA samples. Singular/invalid calibration fails instead of being
-silently relabeled sRGB. This is not a declaration that every Windows bitmap,
-external profile reference or native desktop is verified.
-
-Linux tests execute the helper/ABI and image conversion contracts with owned
-peers, and both real clients exercise the composer transport in private tmux.
-Native Windows clipboard/desktop/terminal validation remains **unverified**;
-this adapter is not a claim of complete Windows client or platform parity.
-
-### Reviewed Windows clipboard copy
-
-The existing response/selection/transcript copy flow now chooses an owned native
-Windows helper before looking for Unix clipboard tools. Reviewed text is passed
-as UTF-8 on stdin, never in a shell command or argv, and published as terminated
-CF_UNICODETEXT. Unsupported embedded NUL and inputs above 32 MiB fail explicitly
-before native work; they are not silently truncated. Export remains available.
-
-The helper creates an invisible message-only owner window (not a NULL clipboard
-owner), prepares movable memory and privacy-marker formats before emptying the
-clipboard, then transfers handles to the OS. It frees only handles that were not
-transferred and closes/destroys owned resources on failures. It requests exclusion
-from clipboard monitoring/history/cloud processing; these markers are not a
-confidentiality guarantee against other applications or platform behavior.
-
-Pre-canceled operations do not launch a helper. Cancellation or failure after a
-write attempt reports an uncertain outcome, reaps the helper and does not retry
-or automatically substitute a file write. Existing unavailable-helper fallback,
-review panels, session/context fencing and local export/share behavior remain.
-Linux owned-peer/private-tmux checks cover both clients' production transport;
-native Windows desktop, privacy-flag behavior and overall client parity are still
-**unverified**.
-
-Calibrated-color profile tests compare generated ICC transforms against an
-independently generated LittleCMS profile when that system library is available.
-It is an optional verification dependency, not a runtime package. A missing library
-causes an explicit skip and cannot be counted as color-conformance evidence. The
-fixed profile creation date/identity is deterministic and does not disclose the
-clipboard capture time or user. Conversion happens after releasing the clipboard;
-its sequence, pixel/profile/output budgets and owned helper cancellation still apply.
-
 ### Paged output review on narrow terminals
 
 Export/share/artifact review no longer requires an unusually wide terminal for a
@@ -566,23 +300,22 @@ A long Unicode path is reviewed without losing grapheme boundaries or replacing
 its source value. Existing private atomic writes, no-overwrite, owner/context
 fencing, no-upload and share-redaction policy remain authoritative.
 
-### In-view custom layers
+### Explicit MCP arguments
 
-`CustomStack(background, layers)` and frozen `CustomLayer(content, left=0, top=0,
-width=None, height=None)` compose opaque rectangles inside an extension's own
-custom frame. Use them for a popup/menu/tooltip without asking the host for another
-overlay or focus handle. Coordinates and sizes are display cells/rows; omitted
-sizes use the remaining viewport, and rectangles clip to actual available space.
+After explicitly connecting a server, prompt arguments are entered as a JSON
+object and resource reads use an explicitly supplied resolved URI. Submitted
+input stays editable after errors or cancellation. Catalog reads, multitype
+previews, insert/export and existing permission boundaries remain; manual named
+argument/opaque-resource completion pickers are removed. This does not remove
+the lower-level MCP completion client API or extension command argument completion.
 
-Each rectangle blanks its entire footprint, including rows with no foreground
-text. Clipping preserves SGR and full combining/ZWJ graphemes; cut background glyphs
-become overlapping blank cells rather than partial glyphs. A covered background
-cursor disappears, a layer cursor is translated, and multiple still-visible focused
-cursors are rejected. The worker owns focus/input state and must defocus its old
-editor when another visible editor should own the cursor.
 
-Invisible/zero-size layers do not render components. A stack allows at most 32
-layers and shares the existing node/depth/text/frame/virtual-canvas limits. Only
-sanitized ordinary lines and one cursor coordinate cross the current protocol;
-no layout object, callback or terminal-control command reaches a UI host. These
-helpers are distinct from the separately negotiated positioned host-overlay API.
+### Basic extension interaction scope
+
+Trusted extensions can use `api.input`, `api.confirm` and `api.select` with normal
+cancellation, plus bounded notifications and simple text status. Arbitrary custom
+renderers, typed plugin forms, nested dialogs, extension overlays/fullscreen frames
+and widget layouts are removed. Private native field-review components remain for
+host-owned editor/navigation/queued-input confirmations; these are not a plugin
+layout API or permission grant. Core TUI overlays, transcript fullscreen, Unicode,
+clipping, cursor and tool-approval behavior remain.

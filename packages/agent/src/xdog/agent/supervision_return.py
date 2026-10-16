@@ -1,4 +1,4 @@
-"""Two-phase live image return on the supervisor loop; transport owners supply their own lease.
+"""Two-phase live image return on the supervisor loop with explicit host or tool ownership.
 
 Preparation copies bytes without removing a queued input. Commitment requires the
 same owner/revision/token and the verified byte receipt, then atomically removes
@@ -17,6 +17,7 @@ from xdog.agent.agent import Agent
 from xdog.agent.input_queue import QueuedInput
 from xdog.agent.supervision_queue import snapshot
 from xdog.agent.supervision_transfer import prepare_recovery
+from xdog.ai.types import ImageContent
 
 RETURN_TIMEOUT = 30.0
 MAX_RETURN_LEASES = 4
@@ -39,6 +40,18 @@ class LiveImageReturns:
         self.leases: dict[str, ReturnLease] = {}
         self.completed: dict[str, tuple[str, str, float, dict[str, Any]]] = {}
         self.preparing = 0
+        self._preparing_rows: dict[object, QueuedInput] = {}
+
+    def retained_images(self) -> tuple[ImageContent, ...]:
+        """Include copies still owned by actual byte work, even after queue removal."""
+        self.prune()
+        return tuple(image for row in (*self._preparing_rows.values(),
+                                       *(lease.row for lease in self.leases.values())) for image in row.images)
+
+    def clear(self) -> None:
+        """Retire settled-child receipts without releasing in-flight preparation ownership."""
+        self.leases.clear()
+        self.completed.clear()
 
     def prune(self) -> None:
         now = time.monotonic()
@@ -74,6 +87,8 @@ class LiveImageReturns:
         # Reserve before yielding: concurrent requests must not all pass the
         # capacity check while validation/hash work is still in flight.
         self.preparing += 1
+        reservation = object()
+        self._preparing_rows[reservation] = row
         try:
             payload = await prepare_recovery(row)
             # Preparation can yield to queue consumption/edit/cancellation. No removal
@@ -91,6 +106,7 @@ class LiveImageReturns:
             return {'queue': {**before, 'return_prepared': public, 'return_token': token,
                               'image_receipt': json.loads(receipt_json)}, 'image_recovery': payload}
         finally:
+            self._preparing_rows.pop(reservation)
             self.preparing -= 1
 
     def planned_commit(self, agent: Agent | None, child: str, status: str, command: dict[str, Any],

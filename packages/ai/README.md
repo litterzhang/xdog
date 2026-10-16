@@ -1,5 +1,8 @@
 # xdog-ai
 
+> Platform scope: **Linux only**. Non-Linux adapters and native-platform support
+> are outside the current product scope; historical audit evidence is not a support promise.
+
 **Unified LLM provider API.**
 
 A single interface over LLM providers — chat, embeddings, web search, and local

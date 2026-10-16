@@ -1,0 +1,875 @@
+{
+  "date": "2026-10-16",
+  "base_commit": "e9f27f66f87808c8f9cd25f452f9cab3a4a3f8d5",
+  "status": "complete",
+  "counts": {
+    "top_level": 26,
+    "待实现": 0,
+    "待验证": 0,
+    "缺外部环境": 0,
+    "已完成": 26,
+    "延期": 0
+  },
+  "requirements": [
+    {
+      "id": "UI-012",
+      "original_feature": 12,
+      "action": "remove",
+      "title": "仓库差异审查UI",
+      "scope": "删除/diff、审查用Alt+D及专用浏览组件；保留Agent通过工具读取/审查Git。",
+      "acceptance": "两客户端命令/快捷键/公开组件无差异审查入口，普通工具仍可读取真实Git差异，审批及基础编辑不变。",
+      "status": "已完成",
+      "decision": "删除专用Git browser、/diff及review绑定；普通Diff渲染、基础文本编辑与Agent Git工具不删。等待最终集成门槛。 已通过本次冻结范围的完整8包回归、静态检查、产物及支持文档审查；后续剩余项实现仍须再次完整回归，整体goal尚未完成。 已再次通过最后19/28/48集成后的冻结完整门槛；最终每项验收和测试来源见completion-audit.json。",
+      "locations": [
+        "packages/tui/src/xdog/tui/repository_review.py",
+        "packages/tui/src/xdog/tui/components/review_panel.py",
+        "packages/coding/src/xdog/coding/modes/interactive/interactive_mode.py",
+        "packages/claw/src/xdog/claw/channels/tui/tui_app.py"
+      ],
+      "evidence": [
+        "/tmp/xdog-ui-simplification/diff-regression.log: 107 passed, includes absence/real Git/approval/draft/navigation/render cases",
+        "/tmp/xdog-ui-simplification/diff-ruff.log: passed",
+        "/tmp/xdog-ui-simplification/diff-mypy.log: 4 changed modules passed; not final8-package gate",
+        "/tmp/xdog-ui-simplification/workspace-postfix-regression.log:all8configured paths PASS,5719passed;7 opt-in externalCLI skips only; independent MCP SDK enabled",
+        "/tmp/xdog-ui-simplification/workspace-postfix-ruff.log:all packages clean;workspace-postfix-mypy.log:strict all8packages552sourcefiles clean",
+        "/tmp/xdog-ui-simplification/postfix-artifacts.json:9distributions18artifacts;isolated12imports/5removedimports/API matrix/Linux metadata passed;offline lock and diff whitespace clean",
+        "/tmp/xdog-ui-simplification/readme-support/report.json:current support descriptions reconciled; historical evidence explicitly superseded",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:UI-012",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/coding/tests/test_repository_review.py"
+      ]
+    },
+    {
+      "id": "UI-020",
+      "original_feature": 20,
+      "action": "remove",
+      "title": "子任务草稿RPC",
+      "scope": "删除Coding RPC子草稿访问、保存、删除协议。",
+      "acceptance": "不再接受子草稿RPC或导出其处理器；本地保留范围按19/21/23实现，不因删除协议改变本地权限。",
+      "status": "已完成",
+      "decision": "专用Coding RPC模式/CLI/模块/协议测试已移除；混合安全不变量迁移到SDK/print/native/controller测试。ACP/eyes/controller/inbox未删。等待最终集成门槛。 已通过本次冻结范围的完整8包回归、静态检查、产物及支持文档审查；后续剩余项实现仍须再次完整回归，整体goal尚未完成。 已再次通过最后19/28/48集成后的冻结完整门槛；最终每项验收和测试来源见completion-audit.json。",
+      "locations": [
+        "packages/coding/src/xdog/coding/main.py",
+        "packages/coding/src/xdog/coding/cli/args.py",
+        "packages/coding/tests/test_no_coding_rpc.py",
+        "packages/coding/tests/test_retained_history.py"
+      ],
+      "evidence": [
+        "/tmp/xdog-ui-simplification/rpc-removal-report.json:76-path removal/migration manifest; bounded336passed/2ACP deselected, retained history strengthened1passed",
+        "packages/coding/tests/test_no_coding_rpc.py",
+        "packages/coding/tests/test_retained_history.py",
+        "packages/coding/tests/extension_session_helpers.py",
+        "/tmp/xdog-ui-simplification/workspace-postfix-regression.log:all8configured paths PASS,5719passed;7 opt-in externalCLI skips only; independent MCP SDK enabled",
+        "/tmp/xdog-ui-simplification/workspace-postfix-ruff.log:all packages clean;workspace-postfix-mypy.log:strict all8packages552sourcefiles clean",
+        "/tmp/xdog-ui-simplification/postfix-artifacts.json:9distributions18artifacts;isolated12imports/5removedimports/API matrix/Linux metadata passed;offline lock and diff whitespace clean",
+        "/tmp/xdog-ui-simplification/readme-support/report.json:current support descriptions reconciled; historical evidence explicitly superseded",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:UI-020",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/coding/tests/test_no_coding_rpc.py"
+      ]
+    },
+    {
+      "id": "UI-034",
+      "original_feature": 34,
+      "action": "remove",
+      "title": "Coding复杂RPC控制",
+      "scope": "删除供外部前端驱动Coding的复杂RPC模式；与20/38/39/40/41/42共享执行任务，不重复算需求。",
+      "acceptance": "CLI不再启动复杂RPC；相关模块/导出/设置/支持声明清理；原生TUI、print和ACP均复用单控制器且可工作。",
+      "status": "已完成",
+      "decision": "专用Coding RPC模式/CLI/模块/协议测试已移除；混合安全不变量迁移到SDK/print/native/controller测试。ACP/eyes/controller/inbox未删。等待最终集成门槛。 已通过本次冻结范围的完整8包回归、静态检查、产物及支持文档审查；后续剩余项实现仍须再次完整回归，整体goal尚未完成。 已再次通过最后19/28/48集成后的冻结完整门槛；最终每项验收和测试来源见completion-audit.json。",
+      "locations": [
+        "packages/coding/src/xdog/coding/main.py",
+        "packages/coding/src/xdog/coding/cli/args.py",
+        "packages/coding/tests/test_no_coding_rpc.py",
+        "packages/coding/tests/test_retained_history.py"
+      ],
+      "evidence": [
+        "/tmp/xdog-ui-simplification/rpc-removal-report.json:76-path removal/migration manifest; bounded336passed/2ACP deselected, retained history strengthened1passed",
+        "packages/coding/tests/test_no_coding_rpc.py",
+        "packages/coding/tests/test_retained_history.py",
+        "packages/coding/tests/extension_session_helpers.py",
+        "/tmp/xdog-ui-simplification/client-eof-shutdown-fixed-final.log:18passed; firstfull failure retained, fresh full gate required",
+        "/tmp/xdog-ui-simplification/workspace-postfix-regression.log:all8configured paths PASS,5719passed;7 opt-in externalCLI skips only; independent MCP SDK enabled",
+        "/tmp/xdog-ui-simplification/workspace-postfix-ruff.log:all packages clean;workspace-postfix-mypy.log:strict all8packages552sourcefiles clean",
+        "/tmp/xdog-ui-simplification/postfix-artifacts.json:9distributions18artifacts;isolated12imports/5removedimports/API matrix/Linux metadata passed;offline lock and diff whitespace clean",
+        "/tmp/xdog-ui-simplification/readme-support/report.json:current support descriptions reconciled; historical evidence explicitly superseded",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:UI-034",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/coding/tests/test_no_coding_rpc.py",
+        "packages/coding/tests/test_inbox_auto_consume.py"
+      ]
+    },
+    {
+      "id": "UI-036",
+      "original_feature": 36,
+      "action": "remove",
+      "title": "插件终端输入拦截/观察",
+      "scope": "删除插件key/paste/release处理和观察API；保留基础输入、快捷键和审批保护。",
+      "acceptance": "插件不能注册/接收按键粘贴释放事件；本地输入、受保护审批、快捷键和光标仍正确。",
+      "status": "已完成",
+      "decision": "插件key/paste/release观察/拦截公共API、worker、TUI拦截器和Claw传输已删除；native listeners/shortcuts/approval/有界输入保留。待最终集成。 已通过本次冻结范围的完整8包回归、静态检查、产物及支持文档审查；后续剩余项实现仍须再次完整回归，整体goal尚未完成。 已再次通过最后19/28/48集成后的冻结完整门槛；最终每项验收和测试来源见completion-audit.json。",
+      "locations": [
+        "packages/agent/src/xdog/agent/extensions",
+        "packages/tui/src/xdog/tui/terminal_input.py"
+      ],
+      "evidence": [
+        "child agent terminal slice:113focusedtests passed; final evidence report pending",
+        "packages/claw/tests/test_parent_draft_gateway.py:removed terminal transport refused",
+        "/tmp/xdog-ui-simplification/removed-gateway-protocols.log:7passed",
+        "/tmp/xdog-ui-simplification/workspace-postfix-regression.log:all8configured paths PASS,5719passed;7 opt-in externalCLI skips only; independent MCP SDK enabled",
+        "/tmp/xdog-ui-simplification/workspace-postfix-ruff.log:all packages clean;workspace-postfix-mypy.log:strict all8packages552sourcefiles clean",
+        "/tmp/xdog-ui-simplification/postfix-artifacts.json:9distributions18artifacts;isolated12imports/5removedimports/API matrix/Linux metadata passed;offline lock and diff whitespace clean",
+        "/tmp/xdog-ui-simplification/readme-support/report.json:current support descriptions reconciled; historical evidence explicitly superseded",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:UI-036",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/agent/tests/test_extension_terminal_input.py",
+        "packages/tui/tests/test_prompt_terminal.py"
+      ]
+    },
+    {
+      "id": "UI-038",
+      "original_feature": 38,
+      "action": "remove",
+      "title": "RPC历史/二进制专用读取",
+      "scope": "删除RPC结构化历史和二进制读取协议；保留本地历史、普通导出及会话持久化。",
+      "acceptance": "专用RPC读取入口不可用；本地结构化历史/图片持久化和普通导出可往返，不丢工具配对或附件。",
+      "status": "已完成",
+      "decision": "专用Coding RPC模式/CLI/模块/协议测试已移除；混合安全不变量迁移到SDK/print/native/controller测试。ACP/eyes/controller/inbox未删。等待最终集成门槛。 已通过本次冻结范围的完整8包回归、静态检查、产物及支持文档审查；后续剩余项实现仍须再次完整回归，整体goal尚未完成。 已再次通过最后19/28/48集成后的冻结完整门槛；最终每项验收和测试来源见completion-audit.json。",
+      "locations": [
+        "packages/coding/src/xdog/coding/main.py",
+        "packages/coding/src/xdog/coding/cli/args.py",
+        "packages/coding/tests/test_no_coding_rpc.py",
+        "packages/coding/tests/test_retained_history.py"
+      ],
+      "evidence": [
+        "/tmp/xdog-ui-simplification/rpc-removal-report.json:76-path removal/migration manifest; bounded336passed/2ACP deselected, retained history strengthened1passed",
+        "packages/coding/tests/test_no_coding_rpc.py",
+        "packages/coding/tests/test_retained_history.py",
+        "packages/coding/tests/extension_session_helpers.py",
+        "/tmp/xdog-ui-simplification/workspace-postfix-regression.log:all8configured paths PASS,5719passed;7 opt-in externalCLI skips only; independent MCP SDK enabled",
+        "/tmp/xdog-ui-simplification/workspace-postfix-ruff.log:all packages clean;workspace-postfix-mypy.log:strict all8packages552sourcefiles clean",
+        "/tmp/xdog-ui-simplification/postfix-artifacts.json:9distributions18artifacts;isolated12imports/5removedimports/API matrix/Linux metadata passed;offline lock and diff whitespace clean",
+        "/tmp/xdog-ui-simplification/readme-support/report.json:current support descriptions reconciled; historical evidence explicitly superseded",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:UI-038",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/coding/tests/test_retained_history.py"
+      ]
+    },
+    {
+      "id": "UI-039",
+      "original_feature": 39,
+      "action": "remove",
+      "title": "RPC实时事件/进度传输",
+      "scope": "删除RPC传输层；保留内部Agent事件和原生进度。",
+      "acceptance": "无RPC进度订阅/协商/转发；Agent run/tool/usage及两原生界面进度和取消仍可用。",
+      "status": "已完成",
+      "decision": "专用Coding RPC模式/CLI/模块/协议测试已移除；混合安全不变量迁移到SDK/print/native/controller测试。ACP/eyes/controller/inbox未删。等待最终集成门槛。 已通过本次冻结范围的完整8包回归、静态检查、产物及支持文档审查；后续剩余项实现仍须再次完整回归，整体goal尚未完成。 已再次通过最后19/28/48集成后的冻结完整门槛；最终每项验收和测试来源见completion-audit.json。",
+      "locations": [
+        "packages/coding/src/xdog/coding/main.py",
+        "packages/coding/src/xdog/coding/cli/args.py",
+        "packages/coding/tests/test_no_coding_rpc.py",
+        "packages/coding/tests/test_retained_history.py"
+      ],
+      "evidence": [
+        "/tmp/xdog-ui-simplification/rpc-removal-report.json:76-path removal/migration manifest; bounded336passed/2ACP deselected, retained history strengthened1passed",
+        "packages/coding/tests/test_no_coding_rpc.py",
+        "packages/coding/tests/test_retained_history.py",
+        "packages/coding/tests/extension_session_helpers.py",
+        "/tmp/xdog-ui-simplification/client-eof-shutdown-fixed-final.log:18passed; firstfull failure retained, fresh full gate required",
+        "/tmp/xdog-ui-simplification/workspace-postfix-regression.log:all8configured paths PASS,5719passed;7 opt-in externalCLI skips only; independent MCP SDK enabled",
+        "/tmp/xdog-ui-simplification/workspace-postfix-ruff.log:all packages clean;workspace-postfix-mypy.log:strict all8packages552sourcefiles clean",
+        "/tmp/xdog-ui-simplification/postfix-artifacts.json:9distributions18artifacts;isolated12imports/5removedimports/API matrix/Linux metadata passed;offline lock and diff whitespace clean",
+        "/tmp/xdog-ui-simplification/readme-support/report.json:current support descriptions reconciled; historical evidence explicitly superseded",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:UI-039",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/coding/tests/test_terminal_acceptance.py",
+        "packages/coding/tests/test_batch_display.py"
+      ]
+    },
+    {
+      "id": "UI-040",
+      "original_feature": 40,
+      "action": "remove",
+      "title": "远端主草稿协议",
+      "scope": "删除Coding RPC和Claw gateway草稿专用协议；保留本地主草稿。",
+      "acceptance": "旧远端草稿包不产生读写/模型调用；本地保存/恢复与退出保护不变，无独立远端草稿能力声明。",
+      "status": "已完成",
+      "decision": "Coding RPC/Claw gateway remote parent read/save/delete/upload协议及Claw专用UI/receiver/remote shortcut已删除；保留local ParentDrafts/codec/store，不迁移或删除用户数据。 已通过本次冻结范围的完整8包回归、静态检查、产物及支持文档审查；后续剩余项实现仍须再次完整回归，整体goal尚未完成。 已再次通过最后19/28/48集成后的冻结完整门槛；最终每项验收和测试来源见completion-audit.json。",
+      "locations": [
+        "packages/coding/src/xdog/coding/modes/rpc/parent_drafts.py",
+        "packages/claw/src/xdog/claw/core/runtime/parent_draft_protocol.py",
+        "packages/tui/src/xdog/tui/components/remote_parent_drafts.py"
+      ],
+      "evidence": [
+        "packages/claw/tests/test_parent_draft_gateway.py:old capabilities ignored, unknown remote requests cannot access local drafts/startAgent",
+        "/tmp/xdog-ui-simplification/removed-gateway-protocols.log:7passed including removed custom/terminal requests",
+        "/tmp/xdog-ui-simplification/native-gateway-site-checkpoint.log:92passed",
+        "/tmp/xdog-ui-simplification/rpc-removal-report.json:Coding remote draft half removed",
+        "/tmp/xdog-ui-simplification/client-eof-shutdown-fixed-final.log:18passed; firstfull failure retained, fresh full gate required",
+        "/tmp/xdog-ui-simplification/workspace-postfix-regression.log:all8configured paths PASS,5719passed;7 opt-in externalCLI skips only; independent MCP SDK enabled",
+        "/tmp/xdog-ui-simplification/workspace-postfix-ruff.log:all packages clean;workspace-postfix-mypy.log:strict all8packages552sourcefiles clean",
+        "/tmp/xdog-ui-simplification/postfix-artifacts.json:9distributions18artifacts;isolated12imports/5removedimports/API matrix/Linux metadata passed;offline lock and diff whitespace clean",
+        "/tmp/xdog-ui-simplification/readme-support/report.json:current support descriptions reconciled; historical evidence explicitly superseded",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:UI-040",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/claw/tests/test_parent_draft_gateway.py",
+        "packages/coding/tests/test_saved_child_drafts.py"
+      ]
+    },
+    {
+      "id": "UI-045",
+      "original_feature": 45,
+      "action": "remove",
+      "title": "非Linux凭据适配",
+      "scope": "删除Keychain/Windows Credential Manager代码、辅助进程、测试、选项；保留Linux共享存储保护。",
+      "acceptance": "原生平台worker及入口删除；旧后端名在I/O前明确拒绝且无降级；Linux文件和Secret Service显式配置/取消/秘密保护回归通过。",
+      "status": "已完成",
+      "decision": "用户范围已确定，内部拆分以保留合同为准 已通过本次冻结范围的完整8包回归、静态检查、产物及支持文档审查；后续剩余项实现仍须再次完整回归，整体goal尚未完成。 已再次通过最后19/28/48集成后的冻结完整门槛；最终每项验收和测试来源见completion-audit.json。",
+      "locations": [
+        "packages/agent/src/xdog/agent/mcp/oauth_native_store.py",
+        "packages/agent/src/xdog/agent/extensions/provider_oauth_store.py"
+      ],
+      "evidence": [
+        "test_oauth_linux_boundary.py: red3failed/2passed -> focused32passed",
+        "/tmp/xdog-ui-simplification/credentials-green.log",
+        "/tmp/xdog-ui-simplification/credentials-ruff.log",
+        "后续需整体静态/产物检查；不声称已选择29的最终部署后端",
+        "/tmp/xdog-ui-simplification/workspace-postfix-regression.log:all8configured paths PASS,5719passed;7 opt-in externalCLI skips only; independent MCP SDK enabled",
+        "/tmp/xdog-ui-simplification/workspace-postfix-ruff.log:all packages clean;workspace-postfix-mypy.log:strict all8packages552sourcefiles clean",
+        "/tmp/xdog-ui-simplification/postfix-artifacts.json:9distributions18artifacts;isolated12imports/5removedimports/API matrix/Linux metadata passed;offline lock and diff whitespace clean",
+        "/tmp/xdog-ui-simplification/readme-support/report.json:current support descriptions reconciled; historical evidence explicitly superseded",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:UI-045",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/agent/tests/test_oauth_linux_boundary.py",
+        "packages/agent/tests/test_oauth_native_store.py"
+      ]
+    },
+    {
+      "id": "UI-041",
+      "original_feature": 41,
+      "action": "remove",
+      "title": "RPC扩展输入框/会话/宿主控制",
+      "scope": "随34删除，不另保留外部协议；先分离本地共用逻辑。",
+      "acceptance": "无相关RPC控制协商或处理器；本地允许的功能按32收窄，ACP controller/inbox不受损。",
+      "status": "已完成",
+      "decision": "专用Coding RPC模式/CLI/模块/协议测试已移除；混合安全不变量迁移到SDK/print/native/controller测试。ACP/eyes/controller/inbox未删。等待最终集成门槛。 已通过本次冻结范围的完整8包回归、静态检查、产物及支持文档审查；后续剩余项实现仍须再次完整回归，整体goal尚未完成。 已再次通过最后19/28/48集成后的冻结完整门槛；最终每项验收和测试来源见completion-audit.json。",
+      "locations": [
+        "packages/coding/src/xdog/coding/main.py",
+        "packages/coding/src/xdog/coding/cli/args.py",
+        "packages/coding/tests/test_no_coding_rpc.py",
+        "packages/coding/tests/test_retained_history.py"
+      ],
+      "evidence": [
+        "/tmp/xdog-ui-simplification/rpc-removal-report.json:76-path removal/migration manifest; bounded336passed/2ACP deselected, retained history strengthened1passed",
+        "packages/coding/tests/test_no_coding_rpc.py",
+        "packages/coding/tests/test_retained_history.py",
+        "packages/coding/tests/extension_session_helpers.py",
+        "/tmp/xdog-ui-simplification/workspace-postfix-regression.log:all8configured paths PASS,5719passed;7 opt-in externalCLI skips only; independent MCP SDK enabled",
+        "/tmp/xdog-ui-simplification/workspace-postfix-ruff.log:all packages clean;workspace-postfix-mypy.log:strict all8packages552sourcefiles clean",
+        "/tmp/xdog-ui-simplification/postfix-artifacts.json:9distributions18artifacts;isolated12imports/5removedimports/API matrix/Linux metadata passed;offline lock and diff whitespace clean",
+        "/tmp/xdog-ui-simplification/readme-support/report.json:current support descriptions reconciled; historical evidence explicitly superseded",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:UI-041",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/coding/tests/test_no_coding_rpc.py",
+        "packages/coding/tests/test_extension_readonly_ui.py"
+      ]
+    },
+    {
+      "id": "UI-042",
+      "original_feature": 42,
+      "action": "remove",
+      "title": "RPC自定义UI/子终端",
+      "scope": "随34删除；本地基础问答和审批组件单独保留。",
+      "acceptance": "无RPC自定义面板/子终端/布局传输；保留本地共享基础交互、安全焦点与取消。",
+      "status": "已完成",
+      "decision": "专用Coding RPC模式/CLI/模块/协议测试已移除；混合安全不变量迁移到SDK/print/native/controller测试。ACP/eyes/controller/inbox未删。等待最终集成门槛。 已通过本次冻结范围的完整8包回归、静态检查、产物及支持文档审查；后续剩余项实现仍须再次完整回归，整体goal尚未完成。 已再次通过最后19/28/48集成后的冻结完整门槛；最终每项验收和测试来源见completion-audit.json。",
+      "locations": [
+        "packages/coding/src/xdog/coding/main.py",
+        "packages/coding/src/xdog/coding/cli/args.py",
+        "packages/coding/tests/test_no_coding_rpc.py",
+        "packages/coding/tests/test_retained_history.py"
+      ],
+      "evidence": [
+        "/tmp/xdog-ui-simplification/rpc-removal-report.json:76-path removal/migration manifest; bounded336passed/2ACP deselected, retained history strengthened1passed",
+        "packages/coding/tests/test_no_coding_rpc.py",
+        "packages/coding/tests/test_retained_history.py",
+        "packages/coding/tests/extension_session_helpers.py",
+        "/tmp/xdog-ui-simplification/workspace-postfix-regression.log:all8configured paths PASS,5719passed;7 opt-in externalCLI skips only; independent MCP SDK enabled",
+        "/tmp/xdog-ui-simplification/workspace-postfix-ruff.log:all packages clean;workspace-postfix-mypy.log:strict all8packages552sourcefiles clean",
+        "/tmp/xdog-ui-simplification/postfix-artifacts.json:9distributions18artifacts;isolated12imports/5removedimports/API matrix/Linux metadata passed;offline lock and diff whitespace clean",
+        "/tmp/xdog-ui-simplification/readme-support/report.json:current support descriptions reconciled; historical evidence explicitly superseded",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:UI-042",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/coding/tests/test_no_coding_rpc.py",
+        "packages/tui/tests/test_extension_custom.py"
+      ]
+    },
+    {
+      "id": "UI-018",
+      "original_feature": 18,
+      "action": "simplify",
+      "title": "带图队列两阶段取回",
+      "scope": "去用户UI；保留底层两阶段能力和必要保护；核对主Agent可调用入口。",
+      "acceptance": "无取回操作面板/命令；通过主Agent受权限约束入口验证prepare/commit与旧owner拒绝、附件校验/不自动重放。",
+      "status": "已完成",
+      "decision": "两阶段带图取回仅由普通permissioned agent_control(queue)调用；supervisor进程内nonce/cancel/expiry/revision/receipt/retainedbytes保护，typed ImageContent非base64文本。移除panel交互；少量host旧transport接线收尾后最终验证。 已通过本次冻结范围的完整8包回归、静态检查、产物及支持文档审查；后续剩余项实现仍须再次完整回归，整体goal尚未完成。 已再次通过最后19/28/48集成后的冻结完整门槛；最终每项验收和测试来源见completion-audit.json。",
+      "locations": [
+        "packages/tui/src/xdog/tui/child_drafts.py",
+        "packages/agent/src/xdog/agent/supervision_transfer.py"
+      ],
+      "evidence": [
+        "/tmp/xdog-ui-simplification/ui018-report.json:7-path manifest, typed mainAgent tool ownership design",
+        "/tmp/xdog-ui-simplification/ui018-final-bounded.log:207passed",
+        "/tmp/xdog-ui-simplification/ui018-image-context.log:50passed, overlaps matrix",
+        "/tmp/xdog-ui-simplification/ui018-mypy.log:4changed production modules passed",
+        "/tmp/xdog-ui-simplification/workspace-postfix-regression.log:all8configured paths PASS,5719passed;7 opt-in externalCLI skips only; independent MCP SDK enabled",
+        "/tmp/xdog-ui-simplification/workspace-postfix-ruff.log:all packages clean;workspace-postfix-mypy.log:strict all8packages552sourcefiles clean",
+        "/tmp/xdog-ui-simplification/postfix-artifacts.json:9distributions18artifacts;isolated12imports/5removedimports/API matrix/Linux metadata passed;offline lock and diff whitespace clean",
+        "/tmp/xdog-ui-simplification/readme-support/report.json:current support descriptions reconciled; historical evidence explicitly superseded",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:UI-018",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/agent/tests/test_supervision_return.py",
+        "packages/coding/tests/test_removed_child_return_ui.py"
+      ]
+    },
+    {
+      "id": "UI-019",
+      "original_feature": 19,
+      "action": "simplify",
+      "title": "本地子任务草稿",
+      "scope": "精简手动管理；保存/恢复范围先审计后收口。",
+      "acceptance": "记录获准的最小保存/恢复合同；删去多余目录管理，保留合同内的附件/来源/owner保护且不误动用户现存草稿。",
+      "status": "已完成",
+      "decision": "完成：子草稿仅当前会话/上下文瞬时缓存与显式审查恢复，磁盘/跨上下文管理入口及子IO任务已移除；旧文件不动，主草稿、Agent日志/安全备份与权限不变。完整最终门槛已通过。",
+      "locations": [
+        "packages/tui/src/xdog/tui/components/child_draft_panel.py",
+        "packages/tui/src/xdog/tui/child_draft_store.py"
+      ],
+      "evidence": [
+        "docs/agent-ui-simplification-dependency-audit.md",
+        "docs/agent-ui-simplification-dependency-audit.md:remaining-boundary trace distinguishes shared primary primitives/Agent backups and persisted OAuth profile binding",
+        "/tmp/xdog-ui-simplification/final-integration/types-second.log:strict all8packages543sourcefiles passed; not final regression",
+        "/tmp/xdog-ui-simplification/ui019-final/report.json:51TUIchecks",
+        "/tmp/xdog-ui-simplification/ui019-final/native-test-report.json:118retained/native/primarychecks",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:UI-019",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/coding/tests/test_saved_child_drafts.py",
+        "packages/coding/tests/test_child_image_submission.py",
+        "packages/tui/tests/test_child_panel.py"
+      ]
+    },
+    {
+      "id": "UI-021",
+      "original_feature": 21,
+      "action": "simplify",
+      "title": "子任务自动保存交互",
+      "scope": "移除子任务自动保存交互；保留主草稿复用组件。",
+      "acceptance": "子任务无autosave开关/状态/UI任务；主草稿保存/崩溃保护仍正确，线程和文件owner清理。",
+      "status": "已完成",
+      "decision": "两客户端child autosave控制器/开关/poll/状态/退出专用分支移除；主ParentDrafts与共享ChildDraftAutosave/手工child磁盘IO保护保留。未擅自决定19手工持久化范围。 已通过本次冻结范围的完整8包回归、静态检查、产物及支持文档审查；后续剩余项实现仍须再次完整回归，整体goal尚未完成。 已再次通过最后19/28/48集成后的冻结完整门槛；最终每项验收和测试来源见completion-audit.json。",
+      "locations": [
+        "packages/tui/src/xdog/tui/child_draft_autosave.py",
+        "packages/tui/src/xdog/tui/parent_drafts.py"
+      ],
+      "evidence": [
+        "/tmp/xdog-ui-simplification/ui021-child-autosave/report.json:3files changed",
+        "/tmp/xdog-ui-simplification/ui021-child-autosave/final-tests.log:198passed, primary/manual/crash/fsync/preview/exit/permission guards",
+        "/tmp/xdog-ui-simplification/ui021-child-autosave/final-mypy.log:2native modules passed",
+        "/tmp/xdog-ui-simplification/workspace-postfix-regression.log:all8configured paths PASS,5719passed;7 opt-in externalCLI skips only; independent MCP SDK enabled",
+        "/tmp/xdog-ui-simplification/workspace-postfix-ruff.log:all packages clean;workspace-postfix-mypy.log:strict all8packages552sourcefiles clean",
+        "/tmp/xdog-ui-simplification/postfix-artifacts.json:9distributions18artifacts;isolated12imports/5removedimports/API matrix/Linux metadata passed;offline lock and diff whitespace clean",
+        "/tmp/xdog-ui-simplification/readme-support/report.json:current support descriptions reconciled; historical evidence explicitly superseded",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:UI-021",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/coding/tests/test_saved_child_drafts.py",
+        "packages/tui/tests/test_child_draft_autosave.py"
+      ]
+    },
+    {
+      "id": "UI-022",
+      "original_feature": 22,
+      "action": "simplify",
+      "title": "主输入框草稿",
+      "scope": "保留保存/恢复核心，减少多草稿目录和管理。",
+      "acceptance": "稳定主草稿可保存恢复含图内容；减少目录/管理UI，不静默删除现有数据或覆盖未保存输入。",
+      "status": "已完成",
+      "decision": "主草稿独立最小保存/恢复界面已实现：<=32显式ID选择、来源审查、图片预览、只恢复文本/图片；保留创建式写入/owner/CAS/失败与退出保护。子草稿手工磁盘范围仍由UI-019决定。等待最终集成门槛。 已通过本次冻结范围的完整8包回归、静态检查、产物及支持文档审查；后续剩余项实现仍须再次完整回归，整体goal尚未完成。 已再次通过最后19/28/48集成后的冻结完整门槛；最终每项验收和测试来源见completion-audit.json。",
+      "locations": [
+        "packages/tui/src/xdog/tui/parent_drafts.py",
+        "packages/tui/src/xdog/tui/components/child_draft_panel.py"
+      ],
+      "evidence": [
+        "/tmp/xdog-ui-simplification/primary-draft-minimal/report.json:274focused passed;10files Ruff;7source strict targeted types; not final workspace gates",
+        "/tmp/xdog-ui-simplification/workspace-postfix-regression.log:all8configured paths PASS,5719passed;7 opt-in externalCLI skips only; independent MCP SDK enabled",
+        "/tmp/xdog-ui-simplification/workspace-postfix-ruff.log:all packages clean;workspace-postfix-mypy.log:strict all8packages552sourcefiles clean",
+        "/tmp/xdog-ui-simplification/postfix-artifacts.json:9distributions18artifacts;isolated12imports/5removedimports/API matrix/Linux metadata passed;offline lock and diff whitespace clean",
+        "/tmp/xdog-ui-simplification/readme-support/report.json:current support descriptions reconciled; historical evidence explicitly superseded",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:UI-022",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/coding/tests/test_saved_child_drafts.py",
+        "packages/tui/tests/test_parent_draft_panel.py"
+      ]
+    },
+    {
+      "id": "UI-023",
+      "original_feature": 23,
+      "action": "simplify",
+      "title": "草稿保存入口与预览",
+      "scope": "保留主保存/快捷键/图片预览，减少子任务UI。",
+      "acceptance": "主保存快捷键/预览无需子任务管理面板，保留图片大小/类型/所有权检查。",
+      "status": "已完成",
+      "decision": "主草稿独立最小保存/恢复界面已实现：<=32显式ID选择、来源审查、图片预览、只恢复文本/图片；保留创建式写入/owner/CAS/失败与退出保护。子草稿手工磁盘范围仍由UI-019决定。等待最终集成门槛。 已通过本次冻结范围的完整8包回归、静态检查、产物及支持文档审查；后续剩余项实现仍须再次完整回归，整体goal尚未完成。 已再次通过最后19/28/48集成后的冻结完整门槛；最终每项验收和测试来源见completion-audit.json。",
+      "locations": [
+        "packages/tui/src/xdog/tui/prompt_keymap.py",
+        "packages/tui/src/xdog/tui/attachments.py"
+      ],
+      "evidence": [
+        "/tmp/xdog-ui-simplification/primary-draft-minimal/report.json:274focused passed;10files Ruff;7source strict targeted types; not final workspace gates",
+        "/tmp/xdog-ui-simplification/workspace-postfix-regression.log:all8configured paths PASS,5719passed;7 opt-in externalCLI skips only; independent MCP SDK enabled",
+        "/tmp/xdog-ui-simplification/workspace-postfix-ruff.log:all packages clean;workspace-postfix-mypy.log:strict all8packages552sourcefiles clean",
+        "/tmp/xdog-ui-simplification/postfix-artifacts.json:9distributions18artifacts;isolated12imports/5removedimports/API matrix/Linux metadata passed;offline lock and diff whitespace clean",
+        "/tmp/xdog-ui-simplification/readme-support/report.json:current support descriptions reconciled; historical evidence explicitly superseded",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:UI-023",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/tui/tests/test_parent_draft_panel.py",
+        "packages/coding/tests/test_saved_child_drafts.py"
+      ]
+    },
+    {
+      "id": "UI-024",
+      "original_feature": 24,
+      "action": "simplify",
+      "title": "草稿写入后退出",
+      "scope": "保留必要退出保护；删已删除草稿功能分支。",
+      "acceptance": "保存中退出/失败/取消不丢主草稿、不假报成功、不残留任务；清理已删除子草稿功能的退出分支，仍保留手工I/O所需的退出保护。",
+      "status": "已完成",
+      "decision": "主草稿独立最小保存/恢复界面已实现：<=32显式ID选择、来源审查、图片预览、只恢复文本/图片；保留创建式写入/owner/CAS/失败与退出保护。子草稿手工磁盘范围仍由UI-019决定。等待最终集成门槛。 已通过本次冻结范围的完整8包回归、静态检查、产物及支持文档审查；后续剩余项实现仍须再次完整回归，整体goal尚未完成。 验收措辞按用户原文“清理已删除草稿功能对应的分支”校正；不把它误解为提前删除UI-019尚未决定的手工写入安全屏障，也不增加新需求计数。 已再次通过最后19/28/48集成后的冻结完整门槛；最终每项验收和测试来源见completion-audit.json。",
+      "locations": [
+        "packages/coding/src/xdog/coding/modes/interactive/interactive_mode.py",
+        "packages/claw/src/xdog/claw/channels/tui/tui_app.py"
+      ],
+      "evidence": [
+        "/tmp/xdog-ui-simplification/primary-draft-minimal/report.json:274focused passed;10files Ruff;7source strict targeted types; not final workspace gates",
+        "/tmp/xdog-ui-simplification/workspace-postfix-regression.log:all8configured paths PASS,5719passed;7 opt-in externalCLI skips only; independent MCP SDK enabled",
+        "/tmp/xdog-ui-simplification/workspace-postfix-ruff.log:all packages clean;workspace-postfix-mypy.log:strict all8packages552sourcefiles clean",
+        "/tmp/xdog-ui-simplification/postfix-artifacts.json:9distributions18artifacts;isolated12imports/5removedimports/API matrix/Linux metadata passed;offline lock and diff whitespace clean",
+        "/tmp/xdog-ui-simplification/readme-support/report.json:current support descriptions reconciled; historical evidence explicitly superseded",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:UI-024",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/coding/tests/test_saved_child_drafts.py",
+        "packages/tui/tests/test_child_draft_io.py"
+      ]
+    },
+    {
+      "id": "UI-026",
+      "original_feature": 26,
+      "action": "simplify",
+      "title": "MCP数据与补全",
+      "scope": "保留Schema校验和多类型内容，减少手动参数补全UI。",
+      "acceptance": "Schema/参数校验及text/image/audio/resource/structured结果保持；删除选定的手动补全入口，不绕过审批。",
+      "status": "已完成",
+      "decision": "移除手工named/opaque completion picker、变量选择与模板扩展；显式JSON/已解析URI输入、schema/multitype/preview/export/watch保留；底层completion client API保留。host接线与最终门槛待验。 已通过本次冻结范围的完整8包回归、静态检查、产物及支持文档审查；后续剩余项实现仍须再次完整回归，整体goal尚未完成。 已再次通过最后19/28/48集成后的冻结完整门槛；最终每项验收和测试来源见completion-audit.json。",
+      "locations": [
+        "packages/tui/src/xdog/tui/components/mcp_panel.py",
+        "packages/agent/src/xdog/agent/mcp"
+      ],
+      "evidence": [
+        "child MCP slice:172tests passed; strictTUI mypy101files passed before host integration",
+        "packages/tui/tests/test_mcp_completion_panel.py",
+        "packages/tui/tests/test_mcp_resource_completion.py",
+        "packages/coding/tests/test_mcp_manual_picker_ui.py",
+        "/tmp/xdog-ui-simplification/mcp-manual-picker-integration/focused-tests.log:83passed beforeuvsync",
+        "/tmp/xdog-ui-simplification/mcp-manual-picker-integration/mypy.log:both clients strictmypy passed beforecustomhost cleanup",
+        "/tmp/xdog-ui-simplification/workspace-postfix-regression.log:all8configured paths PASS,5719passed;7 opt-in externalCLI skips only; independent MCP SDK enabled",
+        "/tmp/xdog-ui-simplification/workspace-postfix-ruff.log:all packages clean;workspace-postfix-mypy.log:strict all8packages552sourcefiles clean",
+        "/tmp/xdog-ui-simplification/postfix-artifacts.json:9distributions18artifacts;isolated12imports/5removedimports/API matrix/Linux metadata passed;offline lock and diff whitespace clean",
+        "/tmp/xdog-ui-simplification/readme-support/report.json:current support descriptions reconciled; historical evidence explicitly superseded",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:UI-026",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/agent/tests/test_mcp_schema.py",
+        "packages/agent/tests/test_mcp_official_sdk.py",
+        "packages/coding/tests/test_mcp_manual_picker_ui.py"
+      ]
+    },
+    {
+      "id": "UI-028",
+      "original_feature": 28,
+      "action": "simplify",
+      "title": "MCP OAuth",
+      "scope": "根据真实服务依赖收窄注册、认证、登录组合。",
+      "acceptance": "先列真实服务/方式依赖；最小保留合同有受控接入/取消/拒绝测试；无未审计的旧凭据降级或自动登录。",
+      "status": "已完成",
+      "decision": "完成：仅预注册公共客户端S256 PKCE，拒绝metadata-client-ID/DCR/共享秘密/privateJWT组合；保留资源/issuer发现、TLS、授权范围、取消、显式存储/刷新及不重发POST。快照保存前复核，Linux存储不降级。完整最终门槛已通过。",
+      "locations": [
+        "packages/agent/src/xdog/agent/mcp/oauth.py",
+        "packages/agent/src/xdog/agent/mcp/oauth_tokens.py"
+      ],
+      "evidence": [
+        "docs/agent-ui-simplification-dependency-audit.md",
+        "docs/agent-ui-simplification-dependency-audit.md:remaining-boundary trace distinguishes shared primary primitives/Agent backups and persisted OAuth profile binding",
+        "/tmp/xdog-ui-simplification/final-integration/types-second.log:strict all8packages543sourcefiles passed; not final regression",
+        "/tmp/xdog-ui-simplification/ui028-final/combined-final-pytest.log:228core/publicPKCE/native/credential/refusal checks passed",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:UI-028",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/agent/tests/test_mcp_oauth.py",
+        "packages/agent/tests/test_oauth_registration.py",
+        "packages/coding/tests/test_oauth_ui.py",
+        "packages/claw/tests/test_oauth_ui.py"
+      ]
+    },
+    {
+      "id": "UI-029",
+      "original_feature": 29,
+      "action": "simplify",
+      "title": "Linux凭据存储",
+      "scope": "按部署在文件/Secret Service中取舍；必要显式管理；不静默降级。",
+      "acceptance": "记录部署选择与迁移边界；无无效配置回退，秘密不进日志/argv，原用户存储未经授权不改动。",
+      "status": "已完成",
+      "decision": "完成并按用户最新决定保留：Linux显式file/SecretService两种MCP后端及provider原生凭据操作；默认file，native显式配置；不迁移/不静默降级。测试覆盖真实私有文件与模拟native辅助进程安全合同，未声称真实SecretService互通。完整最终门槛已通过。",
+      "locations": [
+        "packages/agent/src/xdog/agent/mcp/oauth_store.py",
+        "packages/agent/src/xdog/agent/mcp/oauth_native_store.py",
+        "packages/coding/src/xdog/coding/core/settings_manager.py"
+      ],
+      "evidence": [
+        "docs/agent-ui-simplification-dependency-audit.md",
+        "docs/agent-ui-simplification-dependency-audit.md:NativeCredentialStore also used by extensions/provider_oauth_store.py and reviewed ProviderAuthHost save/restore/forget",
+        "/tmp/xdog-ui-simplification/ui028-final/combined-final-pytest.log:228bounded passed includes preserved Linux credential safety",
+        "/tmp/xdog-ui-simplification/ui028-final/ui029-native-retained-pytest.log:18unchanged provider/native/config tests passed; file+SecretService explicitly retained by user",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:UI-029",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/agent/tests/test_oauth_store.py",
+        "packages/agent/tests/test_oauth_native_store.py",
+        "packages/agent/tests/test_extension_provider_oauth_store.py"
+      ]
+    },
+    {
+      "id": "UI-031",
+      "original_feature": 31,
+      "action": "simplify",
+      "title": "扩展自定义UI",
+      "scope": "保留基础问答/确认/选择；精简嵌套、浮层、自定义面板。",
+      "acceptance": "基础ask/confirm/select可执行并安全取消；移除复杂UI注册/传输/布局路径，不破坏审批焦点。",
+      "status": "已完成",
+      "decision": "SDK及原生host custom/form/nested/frame/overlay/widget插件入口移除；仅input/confirm/select/notify/simple status。内部native审查字段分离保留false-default/visibility/validation保护；通用TUI overlay/fullscreen/Unicode/cursor不删。最终集成待验。 UI032随后移除其唯一旧写控制消费者，临时private ReviewFields也删除；一般问答/原生审批/主草稿保护独立保留。 已通过本次冻结范围的完整8包回归、静态检查、产物及支持文档审查；后续剩余项实现仍须再次完整回归，整体goal尚未完成。 已再次通过最后19/28/48集成后的冻结完整门槛；最终每项验收和测试来源见completion-audit.json。",
+      "locations": [
+        "packages/agent/src/xdog/agent/extensions",
+        "packages/tui/src/xdog/tui/custom_broker.py"
+      ],
+      "evidence": [
+        "child SDK/host simplification:469retained extension/child tests passed before final codec deletion",
+        "child private native review/renderer/approval/removedAPI focused54passed including retained7field-security cases",
+        "/tmp/xdog-ui-simplification/retired-protocols-native-gateway.log:56passed before latest SamplingSDK changes",
+        "/tmp/xdog-ui-simplification/workspace-postfix-regression.log:all8configured paths PASS,5719passed;7 opt-in externalCLI skips only; independent MCP SDK enabled",
+        "/tmp/xdog-ui-simplification/workspace-postfix-ruff.log:all packages clean;workspace-postfix-mypy.log:strict all8packages552sourcefiles clean",
+        "/tmp/xdog-ui-simplification/postfix-artifacts.json:9distributions18artifacts;isolated12imports/5removedimports/API matrix/Linux metadata passed;offline lock and diff whitespace clean",
+        "/tmp/xdog-ui-simplification/readme-support/report.json:current support descriptions reconciled; historical evidence explicitly superseded",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:UI-031",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/agent/tests/test_extension_dialogs.py",
+        "packages/tui/tests/test_extension_dialog.py"
+      ]
+    },
+    {
+      "id": "UI-032",
+      "original_feature": 32,
+      "action": "simplify",
+      "title": "扩展宿主访问",
+      "scope": "保留模型/用量/工具只读；按需收窄输入框修改/会话控制/补全。",
+      "acceptance": "确定的最小只读API有测试；被移除写控制不再可调用，保留操作仍受单controller/权限约束。",
+      "status": "已完成",
+      "decision": "SDK11宿主写/控制方法与worker grant/dispatch移除，保留10只读查询/业务工具注册/基本问答/补全；native UI及Clawcommand/turn桥接改只读，原生USER /model /compact /name /sessions /tools保持。少量SDK/core binding收尾后冻结全门槛。 已通过本次冻结范围的完整8包回归、静态检查、产物及支持文档审查；后续剩余项实现仍须再次完整回归，整体goal尚未完成。 已再次通过最后19/28/48集成后的冻结完整门槛；最终每项验收和测试来源见completion-audit.json。",
+      "locations": [
+        "packages/agent/src/xdog/agent/extensions/api.py",
+        "packages/coding/src/xdog/coding/core/agent_session.py"
+      ],
+      "evidence": [
+        "/tmp/xdog-ui-simplification/ui032-report.json:SDK4source+12tests+12fixtures manifest",
+        "/tmp/xdog-ui-simplification/ui032-final-bounded.log:349passed",
+        "/tmp/xdog-ui-simplification/ui032-host/report.json:823offline/19socket/77followup checkpoints, strict93source passed",
+        "/tmp/xdog-ui-simplification/ui032-core-combined.log:34passed retained core/child/compaction/provider/retiredcontrols",
+        "/tmp/xdog-ui-simplification/ui032-core-mypy.log:3core modules passed",
+        "/tmp/xdog-ui-simplification/ui032-gateway-shutdown-fixed.log:46passed including reproduced Linux idle-client shutdown fix",
+        "/tmp/xdog-ui-simplification/client-eof-shutdown-fixed-final.log:18passed; firstfull failure retained, fresh full gate required",
+        "/tmp/xdog-ui-simplification/workspace-postfix-regression.log:all8configured paths PASS,5719passed;7 opt-in externalCLI skips only; independent MCP SDK enabled",
+        "/tmp/xdog-ui-simplification/workspace-postfix-ruff.log:all packages clean;workspace-postfix-mypy.log:strict all8packages552sourcefiles clean",
+        "/tmp/xdog-ui-simplification/postfix-artifacts.json:9distributions18artifacts;isolated12imports/5removedimports/API matrix/Linux metadata passed;offline lock and diff whitespace clean",
+        "/tmp/xdog-ui-simplification/readme-support/report.json:current support descriptions reconciled; historical evidence explicitly superseded",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:UI-032",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/agent/tests/test_extension_control_removal.py",
+        "packages/agent/tests/test_extension_host_readonly.py",
+        "packages/coding/tests/test_extension_readonly_ui.py"
+      ]
+    },
+    {
+      "id": "UI-035",
+      "original_feature": 35,
+      "action": "simplify",
+      "title": "扩展参数补全细节",
+      "scope": "与26/32统一取舍；保留时必须正确处理引号、光标、替换。",
+      "acceptance": "不能只移除边界保护；保留补全时有literal/cursor/stale-response用例；整体删时不留API/配置。",
+      "status": "已完成",
+      "decision": "与26统一：删除MCP手工补全UI，保留extension command argument completion及其quote/cursor/replacement/stale/cancel安全合同，不以删边界保护换精简。 已通过本次冻结范围的完整8包回归、静态检查、产物及支持文档审查；后续剩余项实现仍须再次完整回归，整体goal尚未完成。 已再次通过最后19/28/48集成后的冻结完整门槛；最终每项验收和测试来源见completion-audit.json。",
+      "locations": [
+        "packages/tui/src/xdog/tui/argument_completion.py",
+        "packages/tui/src/xdog/tui/components/input_panel.py"
+      ],
+      "evidence": [
+        "child MCP slice:retained extension argument completion tested within172passed",
+        "packages/tui/src/xdog/tui/argument_completion.py",
+        "/tmp/xdog-ui-simplification/client-eof-shutdown-fixed-final.log:18passed; firstfull failure retained, fresh full gate required",
+        "/tmp/xdog-ui-simplification/workspace-postfix-regression.log:all8configured paths PASS,5719passed;7 opt-in externalCLI skips only; independent MCP SDK enabled",
+        "/tmp/xdog-ui-simplification/workspace-postfix-ruff.log:all packages clean;workspace-postfix-mypy.log:strict all8packages552sourcefiles clean",
+        "/tmp/xdog-ui-simplification/postfix-artifacts.json:9distributions18artifacts;isolated12imports/5removedimports/API matrix/Linux metadata passed;offline lock and diff whitespace clean",
+        "/tmp/xdog-ui-simplification/readme-support/report.json:current support descriptions reconciled; historical evidence explicitly superseded",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:UI-035",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/agent/tests/test_argument_completion.py",
+        "packages/claw/tests/test_argument_completion_ui.py"
+      ]
+    },
+    {
+      "id": "UI-037",
+      "original_feature": 37,
+      "action": "simplify",
+      "title": "扩展布局与渲染",
+      "scope": "减少复杂插件布局；保留基础TUI/Unicode/裁切/光标修复。",
+      "acceptance": "旧复杂布局入口清理；宽字符、emoji、ANSI裁切、缩放、光标和基础审批/进度仍正确。",
+      "status": "已完成",
+      "decision": "SDK及原生host custom/form/nested/frame/overlay/widget插件入口移除；仅input/confirm/select/notify/simple status。内部native审查字段分离保留false-default/visibility/validation保护；通用TUI overlay/fullscreen/Unicode/cursor不删。最终集成待验。 已通过本次冻结范围的完整8包回归、静态检查、产物及支持文档审查；后续剩余项实现仍须再次完整回归，整体goal尚未完成。 已再次通过最后19/28/48集成后的冻结完整门槛；最终每项验收和测试来源见completion-audit.json。",
+      "locations": [
+        "packages/tui/src/xdog/tui",
+        "packages/agent/src/xdog/agent/extensions"
+      ],
+      "evidence": [
+        "child SDK/host simplification:469retained extension/child tests passed before final codec deletion",
+        "child private native review/renderer/approval/removedAPI focused54passed including retained7field-security cases",
+        "packages/tui/src/xdog/tui/components/review_fields.py:private native review, not plugin UI",
+        "/tmp/xdog-ui-simplification/retired-protocols-native-gateway.log:56passed before latest SamplingSDK changes",
+        "/tmp/xdog-ui-simplification/workspace-postfix-regression.log:all8configured paths PASS,5719passed;7 opt-in externalCLI skips only; independent MCP SDK enabled",
+        "/tmp/xdog-ui-simplification/workspace-postfix-ruff.log:all packages clean;workspace-postfix-mypy.log:strict all8packages552sourcefiles clean",
+        "/tmp/xdog-ui-simplification/postfix-artifacts.json:9distributions18artifacts;isolated12imports/5removedimports/API matrix/Linux metadata passed;offline lock and diff whitespace clean",
+        "/tmp/xdog-ui-simplification/readme-support/report.json:current support descriptions reconciled; historical evidence explicitly superseded",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:UI-037",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/tui/tests/test_renderer_contracts.py",
+        "packages/tui/tests/test_terminal_lifecycle.py",
+        "packages/tui/tests/test_tui_rendering.py"
+      ]
+    },
+    {
+      "id": "UI-047",
+      "original_feature": 47,
+      "action": "simplify",
+      "title": "主草稿状态/崩溃保护",
+      "scope": "保留主保护、精简子侧和状态显示。",
+      "acceptance": "主草稿写失败/重启恢复/幂等与退出保护通过；不再启动仅供删除功能使用的自动任务。",
+      "status": "已完成",
+      "decision": "主草稿独立最小保存/恢复界面已实现：<=32显式ID选择、来源审查、图片预览、只恢复文本/图片；保留创建式写入/owner/CAS/失败与退出保护。子草稿手工磁盘范围仍由UI-019决定。等待最终集成门槛。 已通过本次冻结范围的完整8包回归、静态检查、产物及支持文档审查；后续剩余项实现仍须再次完整回归，整体goal尚未完成。 已再次通过最后19/28/48集成后的冻结完整门槛；最终每项验收和测试来源见completion-audit.json。",
+      "locations": [
+        "packages/tui/src/xdog/tui/child_draft_autosave.py",
+        "packages/tui/src/xdog/tui/parent_drafts.py"
+      ],
+      "evidence": [
+        "/tmp/xdog-ui-simplification/primary-draft-minimal/report.json:274focused passed;10files Ruff;7source strict targeted types; not final workspace gates",
+        "/tmp/xdog-ui-simplification/workspace-postfix-regression.log:all8configured paths PASS,5719passed;7 opt-in externalCLI skips only; independent MCP SDK enabled",
+        "/tmp/xdog-ui-simplification/workspace-postfix-ruff.log:all packages clean;workspace-postfix-mypy.log:strict all8packages552sourcefiles clean",
+        "/tmp/xdog-ui-simplification/postfix-artifacts.json:9distributions18artifacts;isolated12imports/5removedimports/API matrix/Linux metadata passed;offline lock and diff whitespace clean",
+        "/tmp/xdog-ui-simplification/readme-support/report.json:current support descriptions reconciled; historical evidence explicitly superseded",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:UI-047",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/coding/tests/test_saved_child_drafts.py",
+        "packages/tui/tests/test_draft_crash_windows.py"
+      ]
+    },
+    {
+      "id": "UI-048",
+      "original_feature": 48,
+      "action": "conditional-simplify",
+      "title": "MCP额外客户端能力",
+      "scope": "保留简单显式Roots；先查依赖，再减Sampling/Elicitation/续接/Tasks。",
+      "acceptance": "服务依赖清单及保留理由可审计；无真实依赖才移除Sampling；保留能力有权限/取消/不自动模型或工具调用测试。",
+      "status": "已完成",
+      "decision": "完成：经依赖审计删除Sampling/Elicitation/Tasks及动态Roots管理UI；保留显式配置Roots、现代精确续接、普通MCP内容/订阅/SSE游标GET恢复/取消/不重发POST。移除协议明确拒绝且不改变后续owner状态。完整最终门槛已通过。",
+      "locations": [
+        "packages/agent/src/xdog/agent/mcp/client_capabilities.py",
+        "packages/agent/src/xdog/agent/mcp/manager.py",
+        "packages/claw/src/xdog/claw/core/runtime/sampling_protocol.py"
+      ],
+      "evidence": [
+        "docs/agent-ui-simplification-dependency-audit.md",
+        "packages/agent/tests/test_mcp_roots_only_baseline.py + mcp-roots-only-baseline-fixed.log:35passed combined; roots-only declared/undeclared JSON/SSE three-operation continuations work without optional handlers. No runtime narrowing yet.",
+        "/tmp/xdog-ui-simplification/final-integration/types-second.log:strict all8packages543sourcefiles passed; not final regression",
+        "/tmp/xdog-ui-simplification/ui048-final/summary.json:443Python core plus24independentSDK cases passed; explicitRoots only",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:UI-048",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/agent/tests/test_mcp_roots_only_baseline.py",
+        "packages/agent/tests/test_mcp_input_official.py",
+        "packages/coding/tests/test_mcp_retired_gateway.py",
+        "packages/coding/tests/test_mcp_task_terminal.py"
+      ]
+    },
+    {
+      "id": "PLATFORM-LINUX",
+      "original_feature": "LINUX",
+      "action": "remove",
+      "title": "Linux-only平台追加",
+      "scope": "移除所有其他非Linux专用代码/测试/配置/支持声明，保留Linux共享代码。",
+      "acceptance": "运行/构建入口无非Linux适配选择；剪贴板/图片/终端Linux行为保持；历史审计清晰标识为旧记录，不当当前支持。",
+      "status": "已完成",
+      "decision": "剪贴板/DIB/色彩配置非Linux适配及专属测试已删除，Wayland/X11保留；移除无锁/无目录fsync的可移植降级、macOS socket长度分支和旧终端fixture。包元数据及当前README明确Linux-only。仍需后续RPC清理、最终完整集成与文档核对。 已通过本次冻结范围的完整8包回归、静态检查、产物及支持文档审查；后续剩余项实现仍须再次完整回归，整体goal尚未完成。 已再次通过最后19/28/48集成后的冻结完整门槛；最终每项验收和测试来源见completion-audit.json。",
+      "locations": [
+        "packages/tui/src/xdog/tui/attachments.py",
+        "packages/tui/src/xdog/tui/transcript_transfer.py",
+        "packages/agent/src/xdog/agent/context_messages.py",
+        "packages/agent/src/xdog/agent/supervision_store.py",
+        "packages/agent/src/xdog/agent/mcp/stdio.py",
+        "packages/claw/src/xdog/claw/core/persistence/navigation_journal.py",
+        "packages/eyes/src/xdog/eyes/connections.py",
+        "packages/coding/tests/fixtures/terminal_client.py",
+        "packages/tui/tests/test_linux_clipboard_boundary.py",
+        "packages/eyes/tests/test_loader.py",
+        "packages/*/pyproject.toml"
+      ],
+      "evidence": [
+        "/tmp/xdog-ui-simplification/clipboard-regression.log: 23 passed, controlled Linux Wayland/X11 and cancellation; not live desktop proof",
+        "/tmp/xdog-ui-simplification/platform-regression-source.log: 144 passed; repository and eyes source on PYTHONPATH, no install",
+        "/tmp/xdog-ui-simplification/platform-lock.log: uv lock --check --offline passed",
+        "/tmp/xdog-ui-simplification/platform-mypy.log:8 changed modules passed; not final8-package gate",
+        "/tmp/xdog-ui-simplification/current-ruff.log: whole packages passed",
+        "/tmp/xdog-ui-simplification/workspace-postfix-regression.log:all8configured paths PASS,5719passed;7 opt-in externalCLI skips only; independent MCP SDK enabled",
+        "/tmp/xdog-ui-simplification/workspace-postfix-ruff.log:all packages clean;workspace-postfix-mypy.log:strict all8packages552sourcefiles clean",
+        "/tmp/xdog-ui-simplification/postfix-artifacts.json:9distributions18artifacts;isolated12imports/5removedimports/API matrix/Linux metadata passed;offline lock and diff whitespace clean",
+        "/tmp/xdog-ui-simplification/readme-support/report.json:current support descriptions reconciled; historical evidence explicitly superseded",
+        "/tmp/xdog-ui-simplification/final-integration/completion-audit.json:PLATFORM-LINUX",
+        "/tmp/xdog-ui-simplification/final-integration/workspace-tests-after-schema.log:5782passed/7existingopt-inCLI skips;all8configured paths passed",
+        "/tmp/xdog-ui-simplification/final-integration/artifacts-after-schema.json:18freshartifacts/current814source-members+8configuredREADMEs/isolatedSDKhelper/API matrix verified"
+      ],
+      "final_focused_test_sources": [
+        "packages/tui/tests/test_linux_clipboard_boundary.py",
+        "packages/agent/tests/test_oauth_linux_boundary.py",
+        "packages/tui/tests/test_terminal_lifecycle.py"
+      ]
+    }
+  ],
+  "invariants": [
+    "移除RPC不移除ACP/eyes/单controller/自动durable inbox",
+    "保留Agent事件、权限、快照、工具loop、Linux TUI与主草稿",
+    "Sampling有条件收窄，不把测试fixture当真实服务依赖",
+    "不变更现有用户凭据/草稿数据；无重启、发布、未经授权的依赖安装"
+  ],
+  "gates": [
+    "uv run python scripts/test.py",
+    "uv run ruff check packages",
+    "uv run mypy --strict -p xdog.ai -p xdog.agent -p xdog.tui -p xdog.flow -p xdog.site -p xdog.claw -p xdog.coding -p xdog.eyes",
+    "uv run xdog-flow test packages/flow/examples/ --allow-script-stub",
+    "适用构建/安装资源检查"
+  ],
+  "unrelated_initial_dirty": [
+    "docs/agent-ui-features.md",
+    "workflows/"
+  ],
+  "gate_status": {
+    "credential_tests": "32 passed",
+    "credential_ruff": "passed",
+    "credential_targeted_mypy": "passed,2 changed source modules; not the full gate",
+    "broad_agent_mypy": "not passed: optional ACP SDK missing; 11 errors in unchanged ACP modules",
+    "full_suite": "not yet run",
+    "eight_package_mypy": "not yet passed",
+    "artifacts": "not yet run",
+    "current_whole_packages_ruff": "passed",
+    "linux_clipboard_tests": "23 passed; controlled peers, no live desktop claim",
+    "linux_persistence_transport_terminal_and_eyes_loader_tests": "144 passed with repository/eyes source on PYTHONPATH; no install",
+    "metadata_lock_check": "uv lock --check --offline passed",
+    "environment": "earlier missingACP/eyes condition resolved by user-approveduvsync; final source/build/full-suite gates not yet passed",
+    "tui_suite_source_checkpoint": "786passed (before concurrent RPC/terminal/MCP/custom simplification); not final frozen gate",
+    "combined_checkpoint": "234passed before concurrent slices; not final gate",
+    "native_gateway_site": "92passed after remote-draft and SDK custom changes; not full workspace",
+    "dependency_environment_permission": "user approved; uv sync --dev exit0, ACP0.12.1 and eyes installed; source/build/test gates still must rerun",
+    "retained_acp_eyes": "280passed postuvsync, all eyes tests and Coding ACP suites; no skips/deselections",
+    "flow_suite_checkpoint": "813passed; later extension changes still require final coordinated gate",
+    "examples_checkpoint": "17passed, xdog-flow examples --allow-script-stub; final gate will rerun after remaining implementation",
+    "current_ledger_check": "exact26 uniqueIDs/table/counts and4invalid-ledger refusal cases passed",
+    "retired_mcp_callback_regression": "red1failed/25passed -> fixed26passed; retired Sampling control cannot unlock newer request",
+    "direct_pytest_repository_fixtures": "31passed after rootpytest pythonpath=[\".\"]; fixes direct-console cross-package helper discovery, no runtime source injection",
+    "ui032_core": "3source strictmypy/Ruff passed; combined34tests and prior66native passed, overlapping checks",
+    "linux_gateway_shutdown": "new idle-unanswered-peer regression red1failed -> code order fix; complete shutdown+gateway/input/images46passed; late accepts rejected during shutdown",
+    "owned_stalled_test": "targeted pytest813323 confirmed stalled after missing dispatcher and teardown deadlock; gracefulSIGINT did not settle, scopedSIGTERM; no other tests/services terminated; evidence ui032-owned-hang-evidence.json"
+  }
+}

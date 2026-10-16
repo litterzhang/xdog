@@ -16,7 +16,6 @@ from xdog.coding.core.permissions import PermissionManager
 from xdog.coding.core.session_manager import SessionManager
 from xdog.coding.core.settings_manager import SettingsManager
 from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
-from xdog.coding.modes.rpc.rpc_mode import _handle_prompt
 from xdog.tui.attachments import attachment
 
 PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j5ioAAAAASUVORK5CYII='
@@ -38,7 +37,7 @@ class Adapter:
         return EventStream.empty(AssistantMessage(content=(TextContent(text='SHOULD-NOT-BE-CALLED'),)))
 
 
-@pytest.mark.parametrize('mode', ['rpc', 'coding-ui', 'claw'])
+@pytest.mark.parametrize('mode', ['sdk', 'print', 'coding-ui', 'claw'])
 async def test_retained_plus_new_image_exceeds_actual_model_context_without_pruning_or_request(tmp_path, mode):
     adapter = Adapter()
     server = ui = None
@@ -64,10 +63,12 @@ async def test_retained_plus_new_image_exceeds_actual_model_context_without_prun
     owner.agent.replace_messages([UserMessage(content=(IMAGE,)),
                                   AssistantMessage(content=(TextContent(text='Previous answer'),))])
     try:
-        if mode == 'rpc':
-            events = []
-            await _handle_prompt(owner, 'New image', events.append, images=(IMAGE,))
-            assert events[-1]['type'] == 'error' and 'image-count' in events[-1]['message']
+        if mode == 'sdk':
+            with pytest.raises(RuntimeError, match='image-count'):
+                await owner.send_message('New image', images=(IMAGE,))
+        elif mode == 'print':
+            from xdog.coding.modes.print_mode import run_print_mode
+            assert await run_print_mode(owner, 'New image', images=(IMAGE,)) == 1
         elif mode == 'coding-ui':
             ui = InteractiveMode(owner)
             await ui._async_agent_turn('New image', images=(attachment(base64.b64decode(PNG), 'image.png'),))

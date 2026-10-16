@@ -1,5 +1,9 @@
 # Active goal — resume here
 
+> **Superseded checkpoint (2026-10-16).** This is historical, not the active goal.
+> Resume `agent-ui-simplification-plan.md` and its26-ID JSON ledger. The new
+> persistent cleanup goal is active; old blocked status/counts are not current.
+
 Updated: **2026-10-11 22:48 Asia/Shanghai**. This checkpoint supersedes earlier
 progress counts and running-job notices, not historical failure evidence.
 

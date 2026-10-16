@@ -195,3 +195,15 @@ def test_unknown_delivery_mode_is_rejected(tmp_path, observer_data, delivery):
     observer_data['handlers'][0]['delivery'] = delivery
     with pytest.raises(ObserverValidationError):
         parse(observer_data, base_dir=tmp_path)
+
+
+def test_linux_unix_endpoint_capacity_is_bytes_not_characters():
+    from xdog.eyes.connections import MAX_UNIX_PATH_BYTES, UnixConnection
+
+    assert MAX_UNIX_PATH_BYTES == 107
+    assert len(str(UnixConnection(Path('/' + 'a' * 106)).path).encode()) == 107
+    with pytest.raises(ValueError, match='capacity'):
+        UnixConnection(Path('/' + 'a' * 107))
+    assert len(str(UnixConnection(Path('/' + '界' * 35 + 'a')).path).encode()) == 107
+    with pytest.raises(ValueError, match='capacity'):
+        UnixConnection(Path('/' + '界' * 36))

@@ -20,8 +20,8 @@ def setup(api):
                                   for part in message.get('content', []) if part.get('type') == 'image')
         state['has_tool_result'] = any(message['role'] == 'toolResult' for message in preparation['messages'])
         state['no_borrowed_authority'] = (not api.has_ui and await api.input('must not open') is None
-            and await api.get_editor() is None and await api.get_session() is None
-            and await api.open_sessions() is False)
+            and not hasattr(api, 'get_editor') and await api.get_session() is None
+            and not hasattr(api, 'open_sessions'))
         if mode == 'hold':
             Path(api.settings['marker']).write_text('owned callback entered')
             await asyncio.Event().wait()

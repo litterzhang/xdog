@@ -1,5 +1,10 @@
 # Coding and Claw UI/capability gap closure
 
+> **2026-10-16: historical audit, superseded where scope conflicts.**
+> Current removals, simplifications and exact counts are in
+> `agent-ui-simplification-plan.md` / `agent-ui-simplification-requirements.json`.
+> Removed features and non-Linux adapters are not current OPEN requirements.
+
 > **2026-10-10 用户范围更新 / 当前计数权威入口**
 > 当前范围、完成条件、稳定需求编号及分类数量以
 > `agent-ui-requirements.json` / `agent-ui-requirements.md` 为准。

@@ -349,12 +349,8 @@ async def test_stopping_intake_prevents_new_claims_before_owner_resource_shutdow
         await asyncio.wrap_future(runtime.close())
 
 
-async def test_direct_rpc_prompt_activates_the_borrowed_sdk_owner(coding_session):
-    from xdog.coding.modes.rpc.rpc_mode import _handle_prompt
-
-    events = []
-    await asyncio.wait_for(_handle_prompt(coding_session, 'human', events.append), 1)
-    assert any(event['type'] == 'message_end' and not event.get('is_error') for event in events)
+async def test_direct_sdk_prompt_activates_the_borrowed_owner(coding_session):
+    assert await asyncio.wait_for(coding_session.send_message('human'), 1) is not None
     assert coding_session._sdk_controller is None
 
 

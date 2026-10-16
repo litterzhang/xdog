@@ -1567,21 +1567,6 @@ class AgentSession:
             finally:
                 self._auth_changing = False
 
-    async def manage_mcp_roots(self, server: str, action: str, selected: Any, receipt: str, lease: str,
-                               alive: Callable[[], bool]) -> dict[str, Any]:
-        if self.mcp is None:
-            raise ValueError('MCP manager unavailable')
-        if action == 'cancel':
-            return await self.mcp.manage_roots(server, action, lease=lease, alive=alive)
-        if self._auth_changing or self.agent.is_streaming:
-            raise RuntimeError('Root disclosure changes require an idle session')
-        self._children_idle()
-        with self.children.supervisor.idle_scope():
-            self._auth_changing = True
-            try:
-                return await self.mcp.manage_roots(server, action, selected, receipt=receipt, lease=lease, alive=alive)
-            finally:
-                self._auth_changing = False
 
     async def manage_mcp(self, action: str, server: str = "") -> str:
         """Explicit idle-only process trust and tool-set management, not a second loop."""

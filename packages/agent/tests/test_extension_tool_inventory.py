@@ -119,7 +119,7 @@ async def test_api_is_headless_read_only_and_copies_every_page():
     first = await api.get_tool_inventory()
     first['tools'][0]['parameters'].clear()
     assert (await api.get_tool_inventory())['tools'][0]['parameters']
-    assert await api.get_session() is None and await api.open_sessions() is False
+    assert await api.get_session() is None and not hasattr(api, 'open_sessions')
 
 
 @pytest.mark.parametrize('selection', [None, [], ['native_1'], ['native_0', 'native_1']])

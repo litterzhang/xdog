@@ -759,11 +759,6 @@ class AgentSession:
                 display_loop.call_soon_threadsafe(on_display_event, ExtensionNotice(event))
         self.extensions.publish = publish_extension
         self.extension_dialogs.publish = publish_extension
-        self.extensions.custom_handler = self.extension_dialogs.ask_custom if on_display_event is not None else None
-        self.extensions.custom_refresh_handler = (self.extension_dialogs.refresh_custom
-                                                  if on_display_event is not None else None)
-        self.extensions.custom_control_handler = (self.extension_dialogs.control_custom
-                                                  if on_display_event is not None else None)
         self.extensions.dialog_handler = self.extension_dialogs.ask if on_display_event is not None else None
         self.extensions.dialog_cancel = self.extension_dialogs.cancel_extension
         try:

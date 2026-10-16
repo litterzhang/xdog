@@ -282,7 +282,7 @@ async def test_cancellation_after_replace_reports_uncertain_and_never_rolls_back
 def test_custom_typed_images_are_content_not_metadata_and_review_exposes_descriptors():
     from dataclasses import asdict
 
-    from packages.agent.tests.test_extension_queued_input import IMAGE
+    from packages.agent.tests.test_extension_history_images import IMAGE
     value = proposal('image-note', (IMAGE,), details={'image': 'OPAQUE-NOT-IMAGE'})
     canonical = CustomAgentMessage(TYPE, row(content=value['content'], details=value['details']))
     assert value['content'] == [asdict(IMAGE)]

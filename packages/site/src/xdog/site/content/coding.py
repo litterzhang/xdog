@@ -3,7 +3,7 @@
 coding's static pages (Overview / Design / Reference) are markdown under
 ``content/pages/coding/``; its Features and Roadmap stay in Python here. Accurate
 against packages/coding/src/coding: agent+tui composition, session management, the
-three run modes (interactive TUI / print / RPC), layered settings, and the single
+native run modes (interactive TUI / print) and explicit ACP ingress, layered settings, and the single
 xdog-coding command with its slash commands.
 """
 
@@ -16,7 +16,7 @@ _FEATURES = (
             "the tui engine.", "Modes"),
     Feature("Print mode", "Non-interactive --print with text / json / markdown output for scripts and "
             "pipelines.", "Modes"),
-    Feature("RPC mode", "A JSON-RPC front-end for IDE integration.", "Modes"),
+    Feature("ACP ingress", "Explicit local Unix ACP ingress routes to the single session controller.", "Modes"),
     Feature("Piped + file input", "The initial message is assembled from --prompt, piped stdin, and "
             "file arguments.", "Modes"),
     Feature("Session persistence", "JSON-persisted sessions, resumable by most-recent or explicit id.",
@@ -53,7 +53,7 @@ _ROADMAP = (
     Phase("Shipped", "Sessions & integration", (
         "JSON-persisted sessions; resume by recent or id",
         "Branching and history compaction",
-        "Print mode (text / json / markdown) and RPC mode for IDEs",
+        "Print mode (text / json / markdown) and explicit local ACP intake",
         "Layered session > project > global settings",
     ), done=True),
     Phase("Shipped", "Skills", (
@@ -65,10 +65,10 @@ _ROADMAP = (
     Phase("2026", "Deeper repo awareness", (
         "Project indexing / retrieval for large codebases",
         "Test- and build-aware tool loops",
-        "Richer diff review and multi-file edit flows",
+        "Agent tool-based repository review and multi-file edit flows",
     )),
     Phase("2026", "Ecosystem", (
-        "Editor plugins over the RPC mode",
+        "Explicit ACP session integration",
         "Sub-agent delegation for parallel tasks (via agent)",
     )),
 )

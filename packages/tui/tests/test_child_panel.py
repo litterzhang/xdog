@@ -386,3 +386,186 @@ def test_stopped_copy_uses_a_separate_read_only_draft_and_successful_roster_does
         assert cache['start', ''] is saved
     finally:
         panel.close()
+
+
+def test_child_panel_cannot_wire_a_live_image_return_ui_but_keeps_text_queue():
+    panel, actions, *_ = make()
+    panel.queue_enabled = True
+    panel.queue_image_return_enabled = True  # An obsolete host flag must be inert.
+    panel.open_queue()
+    assert panel.queue is not None and actions[-1][0] == 'queue'
+    value = {'child_id': panel._selected_id, 'revision': 'a' * 64, 'stopped': False,
+             'inputs': [{'id': 'photo', 'content': 'KEEP PHOTO', 'delivery': 'steer',
+                         'selected': False, 'image_count': 1}]}
+    try:
+        panel.queue.publish(value)
+        panel.set_render_budget(10)
+        assert 'u return' not in '\n'.join(panel.render(120))
+        before = list(actions)
+        panel.handle_input(KeyEvent('u'))
+        panel.handle_input(KeyEvent('enter'))
+        assert actions == before and not panel._drafts
+        assert not hasattr(panel, '_retain_return_images')
+        panel.queue.publish({**value, 'inputs': [{**value['inputs'][0], 'image_count': 0}]})
+        assert 'u return text' in '\n'.join(panel.render(120))
+    finally:
+        panel.close()
+
+
+def recover_review(panel):
+    browser = panel.draft_panel
+    browser.handle_input(KeyEvent('home'))
+    for _ in range(80):
+        panel.render(100)
+        if browser._visible:
+            return browser
+        panel.handle_input(KeyEvent('pagedown'))
+    raise AssertionError('Transient recovery review was not fully painted')
+
+
+def test_text_only_current_session_recovery_retains_exact_cursor_settings_and_never_submits(tmp_path):
+    panel, actions, *_ = make()
+    snapshot_file = tmp_path / 'untouched-saved-snapshot.json'
+    snapshot_file.write_bytes(b'EXISTING DISK SNAPSHOT MUST NOT CHANGE')
+    try:
+        panel._form('start')
+        panel._input.set_text('未发送 /quit\nCURRENT TASK')
+        panel._input._cursor = 3
+        panel._access = 'inherit'
+        panel._config = {'instructions': 'local editing settings', 'tools': []}
+        panel.back()
+        before = panel._drafts['start', '']
+        panel.open_drafts()
+        browser = panel.draft_panel
+        assert len(browser.source()) == 1 and browser.source()[0].current
+        assert browser.source()[0].scope == panel.owner_token
+        for key in ('s', 'x', 'delete', 'r', '/'):
+            panel.render(100)
+            panel.handle_input(KeyEvent(key))
+            assert browser._review is None and not actions
+        panel.render(100)
+        panel.handle_input(KeyEvent('enter'))
+        panel.handle_input(KeyEvent('enter'))
+        panel.handle_paste('\n/quit')
+        panel.handle_input(KeyEvent('enter', event_type=KeyEventType.REPEAT))
+        panel.handle_input(KeyEvent('enter', event_type=KeyEventType.RELEASE))
+        assert not actions and panel._mode == 'drafts'
+        recover_review(panel)
+        panel.handle_input(KeyEvent('enter'))
+        assert panel._mode == 'form' and panel.draft_panel is None
+        assert panel._input.get_text() == before.text and panel._input._cursor == before.cursor
+        assert panel._access == before.access and panel._config == before.config
+        assert set(panel._drafts) == {('start', '')} and not actions
+        assert snapshot_file.read_bytes() == b'EXISTING DISK SNAPSHOT MUST NOT CHANGE'
+        # Reopening editing state is not a cached approval for execution.
+        panel.handle_input(KeyEvent('enter'))
+        assert not actions
+    finally:
+        panel.close()
+
+
+@pytest.mark.parametrize('transition', ['back', 'new-form', 'blur-roundtrip', 'close'])
+def test_transient_recovery_callback_is_owned_by_exact_current_panel_view(transition):
+    panel, actions, *_ = make()
+    panel._form('start')
+    panel._input.set_text('KEEP CURRENT UNSENT')
+    panel.open_drafts()
+    browser = panel.draft_panel
+    value = browser.source()[0]
+    if transition == 'back':
+        panel.back()
+    elif transition == 'new-form':
+        panel._form('start')
+        panel._input.set_text('NEW EDITOR MUST SURVIVE')
+    elif transition == 'blur-roundtrip':
+        panel.focused = False
+        panel.focused = True
+    else:
+        panel.close()
+    try:
+        with pytest.raises(ValueError, match='owner/view changed'):
+            browser.act('reopen', value)
+        assert not actions
+        if transition == 'new-form':
+            assert panel._input.get_text() == 'NEW EDITOR MUST SURVIVE'
+        for action in ('copy', 'save', 'discard'):
+            with pytest.raises(ValueError):
+                browser.act(action, value)
+    finally:
+        panel.close()
+
+
+def test_same_session_cache_can_reopen_under_new_view_but_old_scope_and_copy_are_refused():
+    panel, actions, *_ = make()
+    panel._form('start')
+    panel._input.set_text('TRANSIENT SAME SESSION')
+    panel.open_drafts()
+    old = panel.draft_panel.source()[0]
+    cache = panel._drafts
+    panel.close()
+    new = ChildPanel(lambda *args: actions.append(args), lambda _: None, lambda: None,
+                     lambda *_: None, lambda: None, drafts=cache)
+    new.focused = True
+    try:
+        new.open_drafts()
+        current = new.draft_panel.source()[0]
+        assert current.scope != old.scope
+        for value, reopen in ((old, True), (current, False)):
+            with pytest.raises(ValueError, match='current-session transient'):
+                new.adopt_draft(value, reopen=reopen)
+        new.draft_panel.render(100)
+        new.handle_input(KeyEvent('enter'))
+        recover_review(new)
+        new.handle_input(KeyEvent('enter'))
+        assert new._input.get_text() == 'TRANSIENT SAME SESSION' and not actions
+        assert set(cache) == {('start', '')}
+    finally:
+        new.close()
+
+
+@pytest.mark.parametrize('status', ['running', 'completed'])
+def test_existing_child_input_recovery_requires_original_child_still_running(status):
+    from xdog.tui.child_drafts import ChildDraft
+    panel, actions, *_ = make()
+    identifier = '0123456789ab'
+    original = ChildDraft('UNSENT STEERING', cursor=5)
+    panel._drafts['steer', identifier] = original
+    panel.publish(child_entries({'children': [{**entry(), 'status': status}]}))
+    try:
+        panel.open_drafts()
+        browser = panel.draft_panel
+        panel.render(100)
+        panel.handle_input(KeyEvent('enter'))
+        recover_review(panel)
+        panel.handle_input(KeyEvent('enter'))
+        if status == 'running':
+            assert panel._mode == 'form' and panel._form_child == identifier
+            assert panel._input.get_text() == original.text and panel._input._cursor == 5
+        else:
+            assert 'no longer running' in browser._error and panel._mode == 'drafts'
+            assert panel._drafts['steer', identifier] is original
+        assert not actions
+    finally:
+        panel.close()
+
+
+def test_child_recovery_cannot_accept_saved_or_foreign_entries_and_has_no_catalog_callbacks():
+    import inspect
+    from dataclasses import replace
+
+    from xdog.tui.child_drafts import ChildDraft
+    panel, actions, *_ = make()
+    original = ChildDraft('CURRENT PRIVATE INPUT')
+    panel._drafts['start', ''] = original
+    try:
+        panel.open_drafts()
+        own = panel.draft_panel.source()[0]
+        for value in (replace(own, scope='saved-draft:disk'), replace(own, current=False),
+                      replace(own, scope='another-session'), replace(own, original=replace(original))):
+            with pytest.raises(ValueError):
+                panel.adopt_draft(value, reopen=True)
+        assert 'draft_source' not in inspect.signature(ChildPanel).parameters
+        assert 'draft_action' not in inspect.signature(ChildPanel).parameters
+        assert panel._drafts['start', ''] is original and not actions
+    finally:
+        panel.close()

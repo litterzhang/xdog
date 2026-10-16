@@ -8,6 +8,7 @@ version = "2.4.1"
 description = "Agent runtime with tool calling and state management"
 requires-python = ">=3.12"
 classifiers = [
+    "Operating System :: POSIX :: Linux",
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
@@ -49,5 +50,7 @@ ignore_missing_imports = true
 packages = ["src/xdog"]
 
 [tool.pytest.ini_options]
+# Repository-level test helpers; no runtime source-path injection.
+pythonpath = ["../.."]
 testpaths = ["tests"]
 asyncio_mode = "auto"

@@ -1,9 +1,13 @@
-"""Owned dialog selection/cache; hosts still validate runtime and transport leases."""
+"""FIFO basic dialog cache; host leases still own admission and answers."""
 from __future__ import annotations
 
 from typing import Any
 
 from xdog.tui.tui import Component
+
+_READ_ONLY_OPERATIONS = frozenset({
+    'snapshot', 'name', 'model', 'usage', 'active_tools', 'commands', 'catalog', 'pending_messages',
+})
 
 
 class ExtensionDialogStack:
@@ -12,34 +16,19 @@ class ExtensionDialogStack:
 
     @staticmethod
     def accepts(dialog: dict[str, Any], dialogs: list[dict[str, Any]]) -> bool:
-        parent = dialog.get('parent_id')
-        if parent is None:
-            return True
-        if not isinstance(parent, str) or not parent or parent == dialog.get('id'):
-            return False
-        owned = next((item for item in dialogs if item['id'] == parent), None)
-        return (owned is not None and owned['kind'] == 'custom'
-                and all(owned.get(key) == dialog.get(key) for key in
-                        ('extension', 'child_id', 'child_owner', 'session_id')))
+        kind, operation = dialog.get('kind'), dialog.get('operation')
+        return (isinstance(kind, str)
+                and not {'fields', 'parent_id', 'view_id', 'fullscreen', 'key_events', 'overlay', 'live_overlay'}
+                & dialog.keys()
+                and (kind in {'input', 'select', 'confirm'} and 'operation' not in dialog
+                     or kind == 'session' and isinstance(operation, str) and operation in _READ_ONLY_OPERATIONS))
+
 
     def choose(self, dialogs: list[dict[str, Any]]) -> dict[str, Any] | None:
-        live = {item['id'] for item in dialogs}
-        self.panels = {key: panel for key, panel in self.panels.items() if key in live}
-        roots = [item for item in dialogs if not item.get('parent_id')]
-        if not roots:
-            return None
-        current = roots[0]  # Preserve FIFO among unrelated root questions.
-        visited = {current['id']}
-        for _ in range(3):
-            children = [item for item in dialogs if item.get('parent_id') == current['id']]
-            if not children:
-                return current
-            child = children[0]
-            if child['id'] in visited or not self.accepts(child, dialogs):
-                return current
-            current = child
-            visited.add(current['id'])
-        return current
+        live = [item for item in dialogs if self.accepts(item, dialogs)]
+        identifiers = {item['id'] for item in live}
+        self.panels = {key: panel for key, panel in self.panels.items() if key in identifiers}
+        return live[0] if live else None
 
     def clear(self) -> None:
         self.panels.clear()

@@ -16,14 +16,12 @@ import stat
 import threading
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 from xdog.agent import AgentConfig
-from xdog.agent.extensions.custom import rich as custom_rich
-from xdog.agent.extensions.forms import multi_choice_form
 from xdog.agent.mcp.completion import McpCompletion
 from xdog.agent.mcp.context import McpDocument, McpEntry
 from xdog.agent.mcp.manager import McpManager
@@ -32,14 +30,9 @@ from xdog.agent.supervision_config import ChildConfig
 from xdog.ai.types import ImageContent, StreamOptions, ThinkingLevel
 from xdog.claw.channels.tui.image_upload import ImageUploads
 from xdog.claw.config import ClawConfig
-from xdog.claw.core.runtime.elicitation_protocol import ElicitationConnection
 from xdog.claw.core.runtime.mcp_protocol import McpSender
-from xdog.claw.core.runtime.orchestrator import Orchestrator, QueuedInputHost
-from xdog.claw.core.runtime.parent_draft_protocol import ParentDraftConnection
-from xdog.claw.core.runtime.sampling_protocol import SamplingConnection
-from xdog.claw.core.runtime.session import AgentSession
+from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.runtime.source_protocol import SourceSender
-from xdog.claw.core.runtime.terminal_protocol import TerminalInputJobs, TerminalTarget
 from xdog.claw.core.runtime.transcript_source import SourceCapture
 from xdog.claw.core.types import Group, UserInput
 
@@ -227,6 +220,9 @@ class GatewayServer:
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         """Wrap client handler in a tracked task for clean shutdown."""
+        if self._shutdown_event.is_set():
+            writer.close()  # An already accepted callback cannot create a new owner during shutdown.
+            return
         self._client_counter += 1
         client_id = self._client_counter
         task = asyncio.create_task(self._handle_client(reader, writer, client_id))
@@ -261,7 +257,6 @@ class GatewayServer:
         compact_jobs: dict[str, tuple[asyncio.Task[None], str, str]] = {}
         compact_ids: set[str] = set()
         compact_started: set[str] = set()
-        extension_compact_ids: set[str] = set()
         compaction_supported = False
         compact_canceled: set[str] = set()
         def cancel_compaction(identifier: str, *, repeat: bool = False) -> None:
@@ -278,10 +273,6 @@ class GatewayServer:
         saved_timeline_supported = False
         child_jobs: set[asyncio.Task[None]] = set()
         auth_jobs: set[asyncio.Task[None]] = set()
-        roots_supported = False
-        root_jobs: dict[str, asyncio.Task[None]] = {}
-        root_views: dict[str, tuple[str, tuple[str, int], McpManager, str, threading.Event]] = {}
-        root_ids: set[str] = set()
         watch_jobs: set[asyncio.Task[None]] = set()
         watch_views: dict[str, tuple[str, str, McpManager, str]] = {}
         auth_closing: set[str] = set()
@@ -289,42 +280,18 @@ class GatewayServer:
         child_receipts: dict[str, tuple[str, dict[str, Any] | None]] = {}
         dialog_owners: dict[str, tuple[str, str]] = {}
         child_dialog_owners: dict[str, tuple[str, str, str, str]] = {}
-        custom_dialog_ids: set[str] = set()
-        custom_child_ids: set[str] = set()
-        rich_dialog_ids: set[str] = set()
-        nested_dialog_ids: set[str] = set()
         child_ui_token = uuid.uuid4().hex
         child_ui_connected = True
         return_supported = False
         return_token = uuid.uuid4().hex
         return_revoked = threading.Event()
-        navigation_supported = False
         session_supported = False
         inspection_supported = False
-        name_supported = False
-        active_tools_supported = False
-        extension_compaction_supported = False
-        extension_compaction_generation = 0
         provider_auth_supported = False
         provider_auth_generation = 0
         provider_auth_ids: set[str] = set()
-        extension_message_supported = False
-        context_message_supported = False
-        context_delivery_supported = False
-        context_message_generation = 0
-        context_grants: dict[str, tuple[str, str, str, int, tuple[str, int]]] = {}
-        extension_message_generation = 0
-        message_images_supported = False
-        message_images_generation = 0
-        queued_input_supported = False
-        queued_input_generation = 0
-        child_queued_input_supported = False
-        child_queued_input_generation = 0
         # Only extension additions on this connection/run are eligible for withdrawal.
-        extension_queue: dict[str, tuple[str, str, str, str, str]] = {}
         # One-shot grants contain only host-produced text and the original command owner.
-        message_grants: dict[str, tuple[str, str, int, str, Callable[[], bool], float, tuple[ImageContent, ...]]] = {}
-        active_tools_generation = 0
         command_catalog_supported = False
         command_catalog_generation = 0
         command_menu_dialogs: dict[str, tuple[str, str, int]] = {}
@@ -333,25 +300,9 @@ class GatewayServer:
         combined_watch_jobs: set[asyncio.Task[Any]] = set()
         catalog_watch_supported = False
         catalog_watch_jobs: set[asyncio.Task[Any]] = set()
-        editor_supported = False
-        editor_write_supported = False
-        editor_write_generation = 0
-        editor_write_reviews: dict[str, tuple[dict[str, Any], str, str, str, str, int]] = {}
-        custom_nested_supported = False
-        custom_rich_supported = False
         skills_supported = False
-        private_jwt_supported = False
-        private_auth_views: set[str] = set()
         tool_inventory_supported = False
         tool_inventory_jobs: dict[str, asyncio.Task[None]] = {}
-        custom_live_overlay_supported = False
-        live_overlay_dialog_ids: set[str] = set()
-        custom_overlay_supported = False
-        overlay_dialog_ids: set[str] = set()
-        custom_supported = False
-        forms_supported = False
-        multi_forms_supported = False
-        multi_form_ids: set[str] = set()
         command_results_supported = False
         reasoning_supported = False
         child_ui_loop = asyncio.get_running_loop()
@@ -359,11 +310,6 @@ class GatewayServer:
         uploads = ImageUploads()
 
         async def write(data: dict[str, Any], *, strict: bool = False) -> None:
-            if data.get('type') in {'input_consumed', 'input_returned', 'input_handled', 'input_rejected'}:
-                queue_id = data.get('id')
-                queued = extension_queue.get(queue_id) if isinstance(queue_id, str) else None
-                if queued is not None and queued[1] == data.get('run_id'):
-                    extension_queue.pop(str(queue_id), None)
             if (data.get('type') in {'extension_dialog', 'child_extension_dialog'}
                     and ('provider_auth_host' in data.get('dialog', {})
                          or 'provider_auth_menu' in data.get('dialog', {}))):
@@ -380,62 +326,34 @@ class GatewayServer:
                             self._orchestrator.answer_extension_dialog(gid,
                                 self._orchestrator.get_new_session_id(gid) or '', data['dialog']['id'], None)
                     return
-            if data.get("type") == "child_terminal_registry":
-                if (not terminal_jobs.child_supported or not terminal_jobs.supported
-                        or data.get("child_owner") != child_ui_token or self._orchestrator is None
-                        or self._orchestrator.get_new_session_id(str(data.get("group_id", "")))
-                        != data.get("session_id")):
-                    return
-                data = {**data, "terminal_owner": terminal_jobs.owner}
             if data.get("type") == "extension_result" and "command_content" in data and not command_results_supported:
                 data = {key: value for key, value in data.items() if key != "command_content"}
                 data["output"] = str(data.get("output", "")) + "; updated rich-command viewer required"
-            if (data.get("type") in {"extension_dialog", "child_extension_dialog"}
-                    and (data.get("dialog", {}).get("kind") == "form" and (not forms_supported
-                             or multi_choice_form(data["dialog"]) and not multi_forms_supported)
-                         or data.get("dialog", {}).get("kind") == "custom" and (not custom_supported
-                             or custom_rich(data["dialog"]) and not custom_rich_supported
-                             or data["dialog"].get("overlay") is not None and not custom_overlay_supported
-                             or data["dialog"].get("live_overlay") and not custom_live_overlay_supported)
-                         or data.get("dialog", {}).get("kind") == "editor" and (
-                             data['dialog'].get('operation') == 'propose' and not editor_write_supported
-                             or data['dialog'].get('operation') != 'propose' and not editor_supported)
-                         or data.get("dialog", {}).get("kind") == "session" and (
-                             not session_supported and data["dialog"].get("operation") != "commands"
-                             and data["dialog"].get("name_after_run") is not True
-                             and not (data['dialog'].get('operation') == 'select_tools'
-                                      and data['dialog'].get('after_run') is True and after_run_tools.enabled)
-                             or data["dialog"].get("operation") in ("model", "usage") and not inspection_supported
-                             or data['dialog'].get('operation') in ('name', 'rename') and (
-                                 not after_run_name.enabled if data['dialog'].get('name_after_run') is True
-                                 else not name_supported)
-                             or data['dialog'].get('operation') == 'commands' and not command_catalog_supported
-                             or data['dialog'].get('operation') == 'compact' and (
-                                 not after_run_compaction.enabled if data['dialog'].get('after_run') is True
-                                 else not extension_compaction_supported)
-                             or data['dialog'].get('operation') == 'message' and (not extension_message_supported
-                                 or bool(data['dialog'].get('image_summaries')) and not message_images_supported)
-                             or data['dialog'].get('operation') == 'context_message' and (
-                                 not context_message_supported or data['dialog'].get('delivery') != 'next_turn'
-                                 and not context_delivery_supported)
-                             or data['dialog'].get('operation') == 'queue_input' and (
-                                 not child_queued_input_supported if data.get('type') == 'child_extension_dialog'
-                                 else not queued_input_supported)
-                             or data['dialog'].get('operation') in {'active_tools', 'select_tools'}
-                             and (not after_run_tools.enabled if data['dialog'].get('after_run') is True
-                                  else not active_tools_supported))
-                         or data.get("dialog", {}).get("operation") == "navigate" and not navigation_supported
-                         or data.get("dialog", {}).get("parent_id") and not custom_nested_supported)
-                    and self._orchestrator is not None):
-                key = str(data["dialog"]["id"])
-                group = str(data.get("group_id", ""))
-                if data["type"] == "child_extension_dialog":
-                    self._orchestrator.answer_child_dialog(group, str(data.get("session_id", "")),
-                        str(data.get("child_id", "")), key, child_ui_token, None)
-                else:
-                    self._orchestrator.answer_extension_dialog(group,
-                        self._orchestrator.get_new_session_id(group) or "", key, None)
-                return  # Older viewers must not receive a form they cannot render/validate.
+            if data.get("type") in {"extension_dialog", "child_extension_dialog"}:
+                from xdog.agent.extensions.dialogs import validate_sdk_dialog
+                dialog = data.get("dialog", {})
+                rejected = False
+                if not ("provider_auth_host" in dialog or "provider_auth_menu" in dialog):
+                    try:
+                        validate_sdk_dialog(dialog)
+                        if dialog.get("kind") == "session":
+                            operation = dialog.get("operation")
+                            rejected = (not session_supported
+                                or operation in {"model", "usage", "name", "active_tools"}
+                                and not inspection_supported
+                                or operation == "commands" and not command_catalog_supported)
+                    except (ValueError, TypeError):
+                        rejected = True
+                if rejected:
+                    if self._orchestrator is not None:
+                        key, group = str(dialog.get("id", "")), str(data.get("group_id", ""))
+                        if data["type"] == "child_extension_dialog":
+                            self._orchestrator.answer_child_dialog(group, str(data.get("session_id", "")),
+                                str(data.get("child_id", "")), key, child_ui_token, None)
+                        else:
+                            self._orchestrator.answer_extension_dialog(group,
+                                self._orchestrator.get_new_session_id(group) or "", key, None)
+                    return
             if (data.get("type") == "extension_dialog" and data.get("dialog", {}).get("kind") == "session"
                     and data["dialog"].get("operation") in ("model", "usage", "name")
                     and self._orchestrator is not None):
@@ -448,65 +366,6 @@ class GatewayServer:
                     group, session_id, key, data["dialog"]["operation"])
                 self._orchestrator.answer_extension_dialog(group, session_id, key, inspected)
                 return
-            if (data.get('type') == 'child_extension_dialog'
-                    and data.get('dialog', {}).get('operation') == 'queue_input'
-                    or data.get('type') == 'child_extension_input_queued'):
-                runtime = (self._orchestrator._runtimes.get(str(data.get('group_id', '')))
-                           if self._orchestrator is not None else None)
-                child_session = runtime._active_session if runtime is not None else None
-                if (not child_queued_input_supported or child_session is None
-                        or data.get('child_owner') != child_ui_token
-                        or data.get('session_id') != child_session.meta.session_id
-                        or type(data.get('queued_input_generation')) is not int
-                        or data['queued_input_generation'] !=
-                            child_session.children.extensions.queued_input_generation(child_ui_token)):
-                    if data.get('type') == 'child_extension_input_queued':
-                        raise ValueError('Original child queued-input grant changed')
-                    if self._orchestrator is not None:
-                        self._orchestrator.answer_child_dialog(str(data.get('group_id', '')),
-                            str(data.get('session_id', '')), str(data.get('child_id', '')),
-                            data['dialog']['id'], child_ui_token, False)
-                    return
-                data = {**data, 'child_queued_input_generation': child_queued_input_generation}
-            if (data.get('type') == 'extension_dialog'
-                    and data.get('dialog', {}).get('operation') == 'queue_input'):
-                data = {**data, 'queued_input_generation': queued_input_generation}
-            if (data.get('type') in {'extension_dialog', 'child_extension_dialog'}
-                    and data.get('dialog', {}).get('operation') == 'propose'):
-                identity = data['dialog'].get('editor_write', {})
-                key = identity.get('id')
-                if (not editor_write_supported or not isinstance(key, str) or key in editor_write_reviews
-                        or len(editor_write_reviews) >= 8 or self._orchestrator is None):
-                    if self._orchestrator is not None:
-                        if data['type'] == 'child_extension_dialog':
-                            self._orchestrator.answer_child_dialog(str(data.get('group_id', '')),
-                                str(data.get('session_id', '')), str(data.get('child_id', '')),
-                                data['dialog']['id'], child_ui_token, None)
-                        else:
-                            self._orchestrator.answer_extension_dialog(str(data.get('group_id', '')),
-                                str(identity.get('session_id', '')), data['dialog']['id'], None)
-                    return
-                editor_write_reviews[key] = (dict(identity), str(data.get('group_id', '')),
-                    str(identity.get('session_id', '')), str(data.get('child_id', '')),
-                    str(data.get('child_owner', '')), editor_write_generation)
-                data = {**data, 'dialog': {**data['dialog'], 'editor_write_generation': editor_write_generation}}
-            if (data.get('type') == 'extension_dialog'
-                    and data.get('dialog', {}).get('operation') == 'context_message'):
-                data = {**data, 'context_message_generation': context_message_generation}
-            if data.get('type') in {'extension_editor_write_commit', 'extension_editor_write_discard',
-                                   'child_extension_editor_write_commit', 'child_extension_editor_write_discard'}:
-                identity = data.get('editor_write', {})
-                write_key = identity.get('id') if isinstance(identity, dict) else None
-                review = editor_write_reviews.get(write_key) if isinstance(write_key, str) else None
-                if (review is None or review[:5] != (identity, str(data.get('group_id', '')),
-                        str(identity.get('session_id', '')), str(data.get('child_id', '')),
-                        str(data.get('child_owner', '')))):
-                    return
-                editor_write_reviews.pop(str(write_key), None)
-                if not editor_write_supported or review[5] != editor_write_generation:
-                    return
-                data = {**data, 'editor_write_generation': review[5], 'session_id': review[2]}
-                strict = True
             if (data.get('type') == 'extension_dialog' and data.get('dialog', {}).get('operation') == 'commands'
                     and 'command_menu_generation' in data['dialog']):
                 dialog = data['dialog']
@@ -522,78 +381,23 @@ class GatewayServer:
                 group = str(data.get("group_id", ""))
                 if isinstance(key, str):
                     dialog_owners[key] = group, self._orchestrator.get_new_session_id(group) or ""
-                    if multi_choice_form(data["dialog"]):
-                        multi_form_ids.add(key)
-                    if data["dialog"].get("parent_id"):
-                        nested_dialog_ids.add(key)
                     data["session_id"] = dialog_owners[key][1]
-                    if data["dialog"]["kind"] == "custom":
-                        if data["dialog"].get("overlay") is not None:
-                            overlay_dialog_ids.add(key)
-                        if data["dialog"].get("live_overlay"):
-                            live_overlay_dialog_ids.add(key)
-                        custom_dialog_ids.add(key)
-                        if custom_rich(data["dialog"]):
-                            rich_dialog_ids.add(key)
             elif data.get("type") == "extension_dialog_closed":
                 command_menu_dialogs.pop(str(data.get("id", "")), None)
-                custom_dialog_ids.discard(str(data.get("id", "")))
-                rich_dialog_ids.discard(str(data.get("id", "")))
-                overlay_dialog_ids.discard(str(data.get("id", "")))
-                live_overlay_dialog_ids.discard(str(data.get("id", "")))
-                nested_dialog_ids.discard(str(data.get("id", "")))
-                multi_form_ids.discard(str(data.get("id", "")))
                 dialog_owners.pop(str(data.get("id", "")), None)
             if data.get("type") == "child_extension_dialog":
                 key = data.get("dialog", {}).get("id")
                 if isinstance(key, str):
-                    if multi_choice_form(data["dialog"]):
-                        multi_form_ids.add(key)
-                    if data["dialog"].get("parent_id"):
-                        nested_dialog_ids.add(key)
                     child_dialog_owners[key] = (str(data.get("group_id", "")), str(data.get("session_id", "")),
                                                 str(data.get("child_id", "")), child_ui_token)
-                    if data["dialog"]["kind"] == "custom":
-                        if data["dialog"].get("overlay") is not None:
-                            overlay_dialog_ids.add(key)
-                        if data["dialog"].get("live_overlay"):
-                            live_overlay_dialog_ids.add(key)
-                        custom_child_ids.add(key)
-                        if custom_rich(data["dialog"]):
-                            rich_dialog_ids.add(key)
             elif data.get("type") == "child_extension_dialog_closed":
-                custom_child_ids.discard(str(data.get("id", "")))
-                rich_dialog_ids.discard(str(data.get("id", "")))
-                overlay_dialog_ids.discard(str(data.get("id", "")))
-                live_overlay_dialog_ids.discard(str(data.get("id", "")))
-                nested_dialog_ids.discard(str(data.get("id", "")))
-                multi_form_ids.discard(str(data.get("id", "")))
                 child_dialog_owners.pop(str(data.get("id", "")), None)
             async with write_lock:
                 kind = str(data.get("type", ""))
-                if kind in {"extension_custom_frame", "extension_custom_error", "extension_custom_control"}:
-                    owner = dialog_owners.get(str(data.get("id", "")))
-                    if (owner is None or not custom_supported
-                            or str(data.get("id", "")) in rich_dialog_ids and not custom_rich_supported
-                            or str(data.get("id", "")) in overlay_dialog_ids and not custom_overlay_supported
-                            or str(data.get("id", "")) in live_overlay_dialog_ids and not custom_live_overlay_supported
-                            or data.get("group_id") != owner[0]
-                            or self._orchestrator is None
-                            or self._orchestrator.get_new_session_id(owner[0]) != owner[1]):
-                        return
-                    data = {**data, "session_id": owner[1]}
-                elif kind in {"child_extension_custom_frame", "child_extension_custom_error",
-                              "child_extension_custom_control"}:
-                    child = child_dialog_owners.get(str(data.get("id", "")))
-                    if (child is None or not custom_supported
-                            or str(data.get("id", "")) in rich_dialog_ids and not custom_rich_supported
-                            or str(data.get("id", "")) in overlay_dialog_ids and not custom_overlay_supported
-                            or str(data.get("id", "")) in live_overlay_dialog_ids and not custom_live_overlay_supported
-                            or data.get("group_id") != child[0]
-                            or data.get("session_id") != child[1] or data.get("child_id") != child[2]
-                            or data.get("child_owner") != child[3] or self._orchestrator is None
-                            or self._orchestrator.get_new_session_id(child[0]) != child[1]):
-                        return
+                if kind in {'extension_custom_frame', 'extension_custom_error', 'extension_custom_control',
+                            'child_extension_custom_frame', 'child_extension_custom_error',
+                            'child_extension_custom_control'}:
+                    return
                 if data.get("type") in {"source_begin", "source_chunk", "source_end",
                                        "mcp_data_begin", "mcp_data_chunk", "mcp_data_end"}:
                     if (self._orchestrator is None or self._orchestrator.source_lease(str(data["group_id"]))
@@ -609,32 +413,9 @@ class GatewayServer:
                 else:
                     await self._write_response(writer, data)
 
-        def terminal_capture(group: str, session: str, generation: int) -> TerminalTarget:
-            if self._orchestrator is None or extension_jobs:
-                raise ValueError("Terminal runtime owner unavailable")
-            return self._orchestrator.capture_terminal_input(group, session, generation)
 
-        def child_terminal_capture(group: str, session: str, generation: int,
-                                   child: str, token: str) -> TerminalTarget:
-            if self._orchestrator is None or token != child_ui_token or not child_ui_connected:
-                raise ValueError("Foreign child terminal connection")
-            return self._orchestrator.capture_child_terminal(group, session, generation, child, token)
 
-        terminal_jobs = TerminalInputJobs(terminal_capture, write, capture_child=child_terminal_capture)
         assert self._orchestrator is not None
-        parent_draft_connection = ParentDraftConnection(self._orchestrator,
-            Path(self._config.data_dir) / 'saved-parent-drafts', write)
-        sampling_connection = SamplingConnection(self._orchestrator, write)
-        elicitation_connection = ElicitationConnection(self._orchestrator, write)
-        from xdog.claw.core.runtime.after_run_tools import AfterRunToolSelectionConnection
-        after_run_tools = AfterRunToolSelectionConnection(self, write,
-            lambda: child_ui_connected and not writer.is_closing())
-        from xdog.claw.core.runtime.after_run_compaction import AfterRunCompactionConnection
-        after_run_compaction = AfterRunCompactionConnection(self, write,
-            lambda: child_ui_connected and not writer.is_closing())
-        from xdog.claw.core.runtime.after_run_name import AfterRunNameConnection
-        after_run_name = AfterRunNameConnection(self, write,
-            lambda: child_ui_connected and not writer.is_closing())
 
         def child_ui_done(task: asyncio.Task[None]) -> None:
             child_ui_writes.discard(task)
@@ -654,87 +435,8 @@ class GatewayServer:
                     child_ui_loop.call_soon_threadsafe(send)
             return child_ui_token, publish
 
-        child_queue_senders: dict[str, Callable[[dict[str, Any]], Awaitable[bool | None]]] = {}
-        def child_queue_host(group: str) -> Callable[[AgentSession], None] | None:
-            if not child_queued_input_supported:
-                return None
-            if group not in child_queue_senders:
-                async def send(event: dict[str, Any]) -> bool | None:
-                    async def deliver() -> bool:
-                        generation = child_queued_input_generation
-                        if not child_ui_connected or not child_queued_input_supported or writer.is_closing():
-                            return False
-                        try:
-                            await write({**event, 'group_id': group}, strict=True)
-                            return (child_ui_connected and child_queued_input_supported
-                                    and child_queued_input_generation == generation and not writer.is_closing())
-                        except (ValueError, RuntimeError, OSError):
-                            return False
-                    from xdog.agent.supervision import settle_on
-                    return await settle_on(child_ui_loop, deliver())
-                child_queue_senders[group] = send
-            def attach(session: AgentSession) -> None:
-                session.children.extensions.set_queued_input_sender(child_ui_token, child_queue_senders[group])
-                session.children.extensions.enable_queued_input(child_ui_token, child_queued_input_supported)
-            return attach
 
-        def context_message_host(group: str, run_id: str) -> Callable[[], bool] | None:
-            if not context_message_supported:
-                return None
-            generation = context_message_generation
-            def alive() -> bool:
-                run = runs.get(run_id)
-                return (child_ui_connected and context_message_supported and generation == context_message_generation
-                        and not writer.is_closing() and run is not None and run.group_id == group
-                        and not run.task.done() and self._group_runs.get(group) == run_id)
-            return alive
 
-        def queued_input_host(group: str, run_id: str, prefix: str) -> QueuedInputHost | None:
-            if not queued_input_supported:
-                return None
-            generation = queued_input_generation
-            def alive() -> bool:
-                run = runs.get(run_id)
-                return (child_ui_connected and queued_input_supported and generation == queued_input_generation
-                        and not writer.is_closing() and run is not None and run.group_id == group
-                        and not run.task.done() and self._group_runs.get(group) == run_id)
-            async def apply(identifier: str, content: str, delivery: str, images: tuple[ImageContent, ...],
-                            current: Callable[[], bool]) -> None:
-                async def admit() -> None:
-                    if self._orchestrator is None or not current():
-                        return
-                    session_id = self._orchestrator.get_new_session_id(group) or ''
-                    reply = {'type': 'extension_input_queued', 'group_id': group, 'run_id': run_id,
-                        'session_id': session_id, 'id': identifier, 'content': content, 'delivery': delivery,
-                        'image_count': len(images), 'queued_input_generation': generation, 'success': False}
-                    added = False
-                    try:
-                        await asyncio.to_thread(self._orchestrator.validate_images, group, images)
-                        if not current():
-                            raise ValueError('Original queue owner changed during image validation')
-                        added = self._orchestrator.control_input(group, 'add', prefix + identifier, content,
-                            delivery, images=images, images_validated=True)
-                        if not added:
-                            raise ValueError('Original active queue refused the proposal')
-                        extension_queue[identifier] = group, run_id, session_id, prefix, content
-                        await write({**reply, 'success': True}, strict=True)
-                        if not current():
-                            raise ValueError('Queue grant withdrawn before admission receipt settled')
-                    except asyncio.CancelledError:
-                        if added:
-                            self._orchestrator.control_input(group, 'remove', prefix + identifier)
-                        extension_queue.pop(identifier, None)
-                        raise
-                    except (ValueError, RuntimeError, OSError):
-                        # The original callback is still settling: remove only its own
-                        # unconsumed addition, never cancel the run or another queued input.
-                        if added:
-                            self._orchestrator.control_input(group, 'remove', prefix + identifier)
-                        extension_queue.pop(identifier, None)
-                        await write({**reply, 'error': 'Extension queue admission failed/withdrawn; no replay'})
-                from xdog.agent.supervision import settle_on
-                await settle_on(child_ui_loop, admit())
-            return alive, apply
 
         def command_menu_host() -> tuple[Callable[[], bool], int] | None:
             if not command_catalog_supported:
@@ -743,22 +445,6 @@ class GatewayServer:
             return (lambda: child_ui_connected and command_catalog_supported
                     and command_catalog_generation == generation and not writer.is_closing()), generation
 
-        def editor_write_host(group: str, run_id: str
-                              ) -> tuple[Callable[[], bool], Callable[[dict[str, Any]], None]] | None:
-            if not editor_write_supported:
-                return None
-            generation = editor_write_generation
-            def alive() -> bool:
-                return (child_ui_connected and editor_write_supported and generation == editor_write_generation
-                        and not writer.is_closing())
-            def publish(event: dict[str, Any]) -> None:
-                def send() -> None:
-                    if child_ui_connected:
-                        task = asyncio.create_task(write({**event, 'group_id': group, 'run_id': run_id}))
-                        child_ui_writes.add(task)
-                        task.add_done_callback(child_ui_done)
-                child_ui_loop.call_soon_threadsafe(send)
-            return alive, publish
 
         def capture_source(group: str, session: str) -> SourceCapture:
             if self._orchestrator is None:
@@ -866,18 +552,6 @@ class GatewayServer:
                         return_token = uuid.uuid4().hex
                         return_revoked = threading.Event()
                     return_supported = value == 1
-                if msg_type == "ping" and "terminal_child_input" in request:
-                    terminal_jobs.negotiate_child(request["terminal_child_input"])
-                if msg_type == "ping" and "terminal_input" in request:
-                    terminal_jobs.negotiate(request["terminal_input"])
-                if msg_type == "ping" and "terminal_release_input" in request:
-                    terminal_jobs.negotiate_release(request["terminal_release_input"])
-                if msg_type == "terminal_input_cancel":
-                    terminal_jobs.cancel(request)
-                    continue
-                if msg_type == "terminal_input":
-                    await terminal_jobs.request(request)
-                    continue
                 if msg_type == 'ping' and 'saved_source' in request:
                     saved_source_supported = type(request['saved_source']) is int and request['saved_source'] == 1
                     if not saved_source_supported:
@@ -917,23 +591,7 @@ class GatewayServer:
                     if not compaction_supported:
                         for compact_id in tuple(compact_jobs):
                             cancel_compaction(compact_id)
-                if msg_type == 'ping' and 'extension_name_after_run' in request:
-                    after_run_name.negotiate(type(request['extension_name_after_run']) is int
-                                            and request['extension_name_after_run'] == 1)
-                if msg_type == 'extension_name_cancel':
-                    accepted_name_cancel = after_run_name.cancel(request)
-                    await write({'type': 'extension_name_cancel_ack', 'request_id': request.get('request_id'),
-                                 'accepted': accepted_name_cancel})
-                    continue
-                if msg_type == 'ping' and 'extension_active_tools_after_run' in request:
-                    after_run_tools.negotiate(type(request['extension_active_tools_after_run']) is int
-                                              and request['extension_active_tools_after_run'] == 1)
-                if msg_type == 'ping' and 'extension_compaction_after_run' in request:
-                    after_run_compaction.negotiate(type(request['extension_compaction_after_run']) is int
-                        and request['extension_compaction_after_run'] == 1)
                 if msg_type == 'session_compact_cancel':
-                    if after_run_compaction.cancel(request):
-                        continue
                     identifier = request.get('request_id')
                     compact_binding = compact_jobs.get(identifier) if isinstance(identifier, str) else None
                     if (compact_binding is not None and isinstance(identifier, str)
@@ -953,11 +611,8 @@ class GatewayServer:
                                 or self._orchestrator is None or len(extension_jobs) >= 8):
                             raise ValueError('Updated compaction gateway and valid fresh owner/request required')
                         focus = summary_instructions(focus)
-                        generation = request.get('extension_compaction_generation')
-                        if 'extension_compaction_generation' in request and (
-                                type(generation) is not int or generation != extension_compaction_generation
-                                or not extension_compaction_supported):
-                            raise ValueError('Reviewed extension compaction capability changed; no replay')
+                        if 'extension_compaction_generation' in request:
+                            raise ValueError('Extension compaction control has been removed; no replay')
                         if not self._orchestrator.try_reserve_group(group):
                             raise ValueError('Compaction requires an idle group')
                     except (ValueError, RuntimeError) as exc:
@@ -965,8 +620,7 @@ class GatewayServer:
                                      'success': False, 'error': str(exc)})
                         continue
                     compact_ids.add(rid)
-                    async def compact_job(identifier: str, gid: str, expected: str, instructions: str,
-                                          generation: int | None) -> None:
+                    async def compact_job(identifier: str, gid: str, expected: str, instructions: str) -> None:
                         compact_started.add(identifier)
                         result: dict[str, Any] = {'type': 'session_compact_result', 'request_id': identifier,
                                                   'group_id': gid, 'session_id': expected, 'success': False}
@@ -975,9 +629,7 @@ class GatewayServer:
                                 raise asyncio.CancelledError
                             assert self._orchestrator is not None
                             result.update(success=True, **await self._orchestrator.compact_session(
-                                gid, expected, instructions, lambda: compaction_supported and child_ui_connected
-                                and (generation is None or extension_compaction_supported
-                                     and generation == extension_compaction_generation)))
+                                gid, expected, instructions, lambda: compaction_supported and child_ui_connected))
                         except asyncio.CancelledError:
                             result.update(canceled=True,
                                 error=('Compaction canceled before summary started; original history retained'
@@ -990,16 +642,13 @@ class GatewayServer:
                             # Provider errors may contain credentials or submitted content.
                             result['error'] = 'Compaction failed; original history retained unless commit was admitted'
                         await write(result)
-                    job = asyncio.create_task(compact_job(rid, group, sid, focus, generation))
+                    job = asyncio.create_task(compact_job(rid, group, sid, focus))
                     extension_jobs.add(job)
                     compact_jobs[rid] = job, group, sid
-                    if generation is not None:
-                        extension_compact_ids.add(rid)
                     def compact_done(completed: asyncio.Task[None], identifier: str = str(rid),
                                      gid: str = str(group)) -> None:
                         extension_jobs.discard(completed)
                         compact_jobs.pop(identifier, None)
-                        extension_compact_ids.discard(identifier)
                         compact_started.discard(identifier)
                         compact_canceled.discard(identifier)
                         if self._orchestrator is not None:
@@ -1053,29 +702,6 @@ class GatewayServer:
                             completed.exception()
                     job.add_done_callback(skills_done)
                     continue
-                if msg_type == 'ping' and 'mcp_private_key_jwt' in request:
-                    private_jwt_supported = (type(request['mcp_private_key_jwt']) is int
-                                             and request['mcp_private_key_jwt'] == 1)
-                    if not private_jwt_supported and self._orchestrator is not None:
-                        for private_view in tuple(private_auth_views):
-                            binding = auth_views.get(private_view)
-                            if binding is None or private_view in auth_closing:
-                                continue
-                            binding[3].set()  # Revoke token admission before asynchronous signer/POST settlement.
-                            auth_closing.add(private_view)
-                            async def close_private(key: str, owner: Any) -> None:
-                                try:
-                                    assert self._orchestrator is not None
-                                    runtime_owner = self._orchestrator._runtimes.get(owner[0])
-                                    if runtime_owner is not None:
-                                        await runtime_owner.mcp.detach_auth(owner[2])
-                                finally:
-                                    auth_views.pop(key, None)
-                                    auth_closing.discard(key)
-                                    private_auth_views.discard(key)
-                            private_closing = asyncio.create_task(close_private(private_view, binding))
-                            auth_jobs.add(private_closing)
-                            private_closing.add_done_callback(auth_jobs.discard)
                 if msg_type == 'ping' and 'tool_inventory' in request:
                     tool_inventory_supported = type(request['tool_inventory']) is int and request['tool_inventory'] == 1
                     if not tool_inventory_supported:
@@ -1140,34 +766,6 @@ class GatewayServer:
                     extension_jobs.add(job)
                     job.add_done_callback(extension_jobs.discard)
                     continue
-                if msg_type == 'ping' and any(key in request for key in
-                        ('parent_saved_drafts', 'parent_saved_images', 'parent_saved_save', 'parent_saved_discard',
-                         'parent_saved_uploads')):
-                    parent_draft_connection.negotiate(request)
-                if msg_type == 'parent_draft_control':
-                    await parent_draft_connection.request(request)
-                    continue
-                if msg_type == 'ping' and 'mcp_elicitation' in request:
-                    elicitation_connection.negotiate(request['mcp_elicitation'])
-                if msg_type == 'mcp_elicitation_control':
-                    await elicitation_connection.request(request)
-                    continue
-                if msg_type == 'ping' and 'mcp_sampling' in request:
-                    sampling_connection.negotiate(request['mcp_sampling'])
-                if msg_type == 'mcp_sampling_control':
-                    await sampling_connection.request(request)
-                    continue
-                if msg_type == 'ping' and 'mcp_roots' in request:
-                    roots_supported = type(request['mcp_roots']) is int and request['mcp_roots'] == 1
-                    if not roots_supported:
-                        for root_binding in tuple(root_views.values()):
-                            root_binding[4].set()
-                        for root_job in tuple(root_jobs.values()):
-                            root_job.cancel()
-                        for root_key, root_binding in tuple(root_views.items()):
-                            if root_key not in root_jobs:
-                                await root_binding[2].detach_roots(root_binding[3])
-                                root_views.pop(root_key, None)
                 if msg_type == "ping" and "mcp_combined_watch" in request:
                     combined_watch_supported = (type(request["mcp_combined_watch"]) is int
                                                 and request["mcp_combined_watch"] == 1)
@@ -1197,56 +795,6 @@ class GatewayServer:
                 if msg_type == "ping" and "mcp_content_types" in request:
                     mcp_content_types_supported = (type(request["mcp_content_types"]) is int
                                                    and request["mcp_content_types"] == 1)
-                if msg_type == "ping" and "extension_navigation" in request:
-                    navigation_supported = (type(request["extension_navigation"]) is int
-                                            and request["extension_navigation"] == 1)
-                if msg_type == 'ping' and 'child_extension_queued_inputs' in request:
-                    child_queued_input_generation += 1
-                    child_queued_input_supported = (type(request['child_extension_queued_inputs']) is int
-                                                    and request['child_extension_queued_inputs'] == 1)
-                    if self._orchestrator is not None:
-                        for queued_group, runtime in self._orchestrator._runtimes.items():
-                            child_session = runtime._active_session
-                            if child_session is not None:
-                                child_session.children.extensions.enable_queued_input(child_ui_token, False)
-                                attach_child_queue = child_queue_host(queued_group)
-                                if attach_child_queue is not None:
-                                    attach_child_queue(child_session)
-                if msg_type == 'ping' and 'extension_context_delivery_modes' in request:
-                    context_delivery_supported = (type(request['extension_context_delivery_modes']) is int
-                                                   and request['extension_context_delivery_modes'] == 1)
-                    context_message_generation += 1
-                if msg_type == 'ping' and 'extension_context_messages' in request:
-                    context_message_generation += 1
-                    context_message_supported = (type(request['extension_context_messages']) is int
-                                                  and request['extension_context_messages'] == 1)
-                    if self._orchestrator is not None:
-                        for dialog_id, (dialog_group, _sid) in tuple(dialog_owners.items()):
-                            runtime = self._orchestrator._runtimes.get(dialog_group)
-                            if runtime is not None and runtime._active_session is not None:
-                                def owned_context(dialog: dict[str, Any], key: str = dialog_id) -> bool:
-                                    return dialog.get('id') == key and dialog.get('operation') == 'context_message'
-                                runtime._active_session.extension_dialogs.cancel_where(owned_context)
-                if msg_type == 'ping' and 'extension_queued_inputs' in request:
-                    queued_input_generation += 1
-                    queued_input_supported = (type(request['extension_queued_inputs']) is int
-                                              and request['extension_queued_inputs'] == 1)
-                    if self._orchestrator is not None:
-                        for queue_id, queued_owner in tuple(extension_queue.items()):
-                            queue_group, queue_run, queue_session, queue_prefix, queue_content = queued_owner
-                            if self._orchestrator.get_new_session_id(queue_group) == queue_session:
-                                removed = self._orchestrator.control_input(
-                                    queue_group, 'remove', queue_prefix + queue_id)
-                                if removed:
-                                    await write({'type': 'input_returned', 'run_id': queue_run, 'group_id': queue_group,
-                                                 'id': queue_id, 'content': queue_content})
-                            extension_queue.pop(queue_id, None)
-                        for dialog_id, (dialog_group, _sid) in tuple(dialog_owners.items()):
-                            runtime = self._orchestrator._runtimes.get(dialog_group)
-                            if runtime is not None and runtime._active_session is not None:
-                                def owned_queue(dialog: dict[str, Any], key: str = dialog_id) -> bool:
-                                    return dialog.get('id') == key and dialog.get('operation') == 'queue_input'
-                                runtime._active_session.extension_dialogs.cancel_where(owned_queue)
                 if msg_type == 'ping' and 'extension_provider_auth' in request:
                     provider_auth_generation += 1
                     provider_auth_supported = (type(request['extension_provider_auth']) is int
@@ -1259,62 +807,6 @@ class GatewayServer:
                                 await write({'type': 'extension_result', 'request_id': auth_id,
                                     'group_id': auth_control[1], 'success': False, 'canceled': True,
                                     'error': 'Provider authentication canceled before worker admission'})
-                if msg_type == 'ping' and 'extension_message_images' in request:
-                    message_images_generation += 1
-                    message_images_supported = (type(request['extension_message_images']) is int
-                                                and request['extension_message_images'] == 1)
-                    for message_token, message_grant in tuple(message_grants.items()):
-                        if message_grant[6]:
-                            message_grants.pop(message_token, None)
-                    if self._orchestrator is not None:
-                        for dialog_id, (dialog_group, _sid) in tuple(dialog_owners.items()):
-                            runtime = self._orchestrator._runtimes.get(dialog_group)
-                            if runtime is not None and runtime._active_session is not None:
-                                def owned_images(dialog: dict[str, Any], key: str = dialog_id) -> bool:
-                                    return (dialog.get('id') == key and dialog.get('operation') == 'message'
-                                            and bool(dialog.get('image_summaries')))
-                                runtime._active_session.extension_dialogs.cancel_where(owned_images)
-                if msg_type == 'ping' and 'extension_message' in request:
-                    extension_message_generation += 1
-                    extension_message_supported = (type(request['extension_message']) is int
-                                                   and request['extension_message'] == 1)
-                    message_grants.clear()
-                    # Revoke only this connection's pending message reviews, never a run.
-                    if self._orchestrator is not None:
-                        for dialog_id, (dialog_group, _sid) in tuple(dialog_owners.items()):
-                            runtime = self._orchestrator._runtimes.get(dialog_group)
-                            if runtime is not None and runtime._active_session is not None:
-                                def owned_message(dialog: dict[str, Any], key: str = dialog_id) -> bool:
-                                    return dialog.get('id') == key and dialog.get('operation') == 'message'
-                                runtime._active_session.extension_dialogs.cancel_where(owned_message)
-                if msg_type == 'ping' and 'extension_compaction' in request:
-                    extension_compaction_generation += 1
-                    extension_compaction_supported = (type(request['extension_compaction']) is int
-                                                      and request['extension_compaction'] == 1)
-                    for compact_id in tuple(extension_compact_ids):
-                        cancel_compaction(compact_id)
-                    if self._orchestrator is not None:
-                        for dialog_id, (dialog_group, _sid) in tuple(dialog_owners.items()):
-                            runtime = self._orchestrator._runtimes.get(dialog_group)
-                            if runtime is not None and runtime._active_session is not None:
-                                def owned_compaction(dialog: dict[str, Any], key: str = dialog_id) -> bool:
-                                    return dialog.get('id') == key and dialog.get('operation') == 'compact'
-                                runtime._active_session.extension_dialogs.cancel_where(owned_compaction)
-                if msg_type == 'ping' and 'extension_active_tools' in request:
-                    active_tools_generation += 1
-                    active_tools_supported = (type(request['extension_active_tools']) is int
-                                              and request['extension_active_tools'] == 1)
-                    if not active_tools_supported and self._orchestrator is not None:
-                        for tool_dialog_id, (tool_group, _tool_session) in tuple(dialog_owners.items()):
-                            runtime = self._orchestrator._runtimes.get(tool_group)
-                            if runtime is not None and runtime._active_session is not None:
-                                broker = runtime._active_session.extension_dialogs
-                                def own_selection(dialog: dict[str, Any], owned: str = tool_dialog_id) -> bool:
-                                    return dialog.get('id') == owned and dialog.get('operation') == 'select_tools'
-                                broker.cancel_where(own_selection)
-                if msg_type == 'ping' and 'extension_session_name' in request:
-                    name_supported = (type(request['extension_session_name']) is int
-                                      and request['extension_session_name'] == 1)
                 if msg_type == 'ping' and 'session_name_read' in request:
                     name_read_supported = (type(request['session_name_read']) is int
                                            and request['session_name_read'] == 1)
@@ -1351,99 +843,9 @@ class GatewayServer:
                                             and request["extension_session_inspection"] == 1)
                 if msg_type == "ping" and "extension_session" in request:
                     session_supported = type(request["extension_session"]) is int and request["extension_session"] == 1
-                if msg_type == 'ping' and 'extension_editor_write' in request:
-                    editor_write_generation += 1
-                    editor_write_supported = (type(request['extension_editor_write']) is int
-                                              and request['extension_editor_write'] == 1)
-                    editor_write_reviews.clear()
-                    if self._orchestrator is not None:
-                        for runtime in self._orchestrator._runtimes.values():
-                            session = runtime._active_session
-                            if session is not None:
-                                # Off/on cancels only this connection's proposals, not its tools/turns.
-                                session.children.extensions.enable_editor_write(child_ui_token, False)
-                                session.children.extensions.enable_editor_write(child_ui_token, editor_write_supported)
-                        for dialog_id, (dialog_group, _sid) in tuple(dialog_owners.items()):
-                            runtime = self._orchestrator._runtimes.get(dialog_group)
-                            if runtime is not None and runtime._active_session is not None:
-                                def owned_proposal(dialog: dict[str, Any], key: str = dialog_id) -> bool:
-                                    return dialog.get('id') == key and dialog.get('operation') == 'propose'
-                                runtime._active_session.extension_dialogs.cancel_where(owned_proposal)
-                if msg_type == "ping" and "extension_editor" in request:
-                    editor_supported = type(request["extension_editor"]) is int and request["extension_editor"] == 1
-                if msg_type == "ping" and "extension_custom" in request:
-                    custom_supported = type(request["extension_custom"]) is int and request["extension_custom"] == 1
-                    if not custom_supported and self._orchestrator is not None:
-                        for custom_id in tuple(custom_dialog_ids):
-                            owner = dialog_owners.get(custom_id)
-                            if owner is not None:
-                                self._orchestrator.answer_extension_dialog(*owner, custom_id, None)
-                        for custom_id in tuple(custom_child_ids):
-                            child = child_dialog_owners.get(custom_id)
-                            if child is not None:
-                                self._orchestrator.answer_child_dialog(*child[:3], custom_id, child[3], None)
-                if msg_type == "ping" and "extension_custom_rich" in request:
-                    custom_rich_supported = (type(request["extension_custom_rich"]) is int
-                                             and request["extension_custom_rich"] == 1)
-                    if not custom_rich_supported and self._orchestrator is not None:
-                        for rich_id in tuple(rich_dialog_ids):
-                            rich_parent = dialog_owners.get(rich_id)
-                            rich_child = child_dialog_owners.get(rich_id)
-                            if rich_parent is not None:
-                                self._orchestrator.answer_extension_dialog(*rich_parent, rich_id, None)
-                            if rich_child is not None:
-                                self._orchestrator.answer_child_dialog(*rich_child[:3], rich_id, rich_child[3], None)
-                if msg_type == "ping" and "extension_custom_live_overlay" in request:
-                    custom_live_overlay_supported = (type(request["extension_custom_live_overlay"]) is int
-                                                     and request["extension_custom_live_overlay"] == 1)
-                    if not custom_live_overlay_supported and self._orchestrator is not None:
-                        for live_id in tuple(live_overlay_dialog_ids):
-                            live_parent = dialog_owners.get(live_id)
-                            live_child = child_dialog_owners.get(live_id)
-                            if live_parent is not None:
-                                self._orchestrator.answer_extension_dialog(*live_parent, live_id, None)
-                            if live_child is not None:
-                                self._orchestrator.answer_child_dialog(*live_child[:3], live_id, live_child[3], None)
-                if msg_type == "ping" and "extension_custom_overlay" in request:
-                    custom_overlay_supported = (type(request["extension_custom_overlay"]) is int
-                                                and request["extension_custom_overlay"] == 1)
-                    if not custom_overlay_supported and self._orchestrator is not None:
-                        for overlay_id in tuple(overlay_dialog_ids):
-                            overlay_parent = dialog_owners.get(overlay_id)
-                            overlay_child = child_dialog_owners.get(overlay_id)
-                            if overlay_parent is not None:
-                                self._orchestrator.answer_extension_dialog(*overlay_parent, overlay_id, None)
-                            if overlay_child is not None:
-                                self._orchestrator.answer_child_dialog(
-                                    *overlay_child[:3], overlay_id, overlay_child[3], None)
-                if msg_type == "ping" and "extension_custom_nested" in request:
-                    custom_nested_supported = (type(request["extension_custom_nested"]) is int
-                                               and request["extension_custom_nested"] == 1)
-                    if not custom_nested_supported and self._orchestrator is not None:
-                        for nested_id in tuple(nested_dialog_ids):
-                            nested_parent = dialog_owners.get(nested_id)
-                            nested_child = child_dialog_owners.get(nested_id)
-                            if nested_parent is not None:
-                                self._orchestrator.answer_extension_dialog(*nested_parent, nested_id, None)
-                            if nested_child is not None:
-                                self._orchestrator.answer_child_dialog(
-                                    *nested_child[:3], nested_id, nested_child[3], None)
                 if msg_type == "ping" and "reasoning_controls" in request:
                     reasoning_supported = (type(request["reasoning_controls"]) is int
                                            and request["reasoning_controls"] == 1)
-                if msg_type == "ping" and "extension_multi_forms" in request:
-                    multi_forms_supported = (type(request["extension_multi_forms"]) is int
-                                             and request["extension_multi_forms"] == 1)
-                    if not multi_forms_supported and self._orchestrator is not None:
-                        for form_id in tuple(multi_form_ids):
-                            parent_form = dialog_owners.get(form_id)
-                            child_form = child_dialog_owners.get(form_id)
-                            if parent_form is not None:
-                                self._orchestrator.answer_extension_dialog(*parent_form, form_id, None)
-                            if child_form is not None:
-                                self._orchestrator.answer_child_dialog(*child_form[:3], form_id, child_form[3], None)
-                if msg_type == "ping" and "extension_forms" in request:
-                    forms_supported = type(request["extension_forms"]) is int and request["extension_forms"] == 1
                 if msg_type == "ping" and "extension_command_results" in request:
                     command_results_supported = (type(request["extension_command_results"]) is int
                                                  and request["extension_command_results"] == 1)
@@ -1577,44 +979,6 @@ class GatewayServer:
                     except (ValueError, RuntimeError, OSError, TimeoutError) as exc:
                         await write({"type": "mcp_data_error", "request_id": identifier, "group_id": group,
                                      "session_id": session, "error": str(exc)})
-                    continue
-                if msg_type in {"extension_custom_request", "child_extension_custom_request"}:
-                    key = request.get("id")
-                    accepted = False
-                    ack_generation: int | None = None
-                    if (custom_supported and isinstance(key, str) and self._orchestrator is not None
-                            and (key not in rich_dialog_ids or custom_rich_supported)
-                            and (key not in overlay_dialog_ids or custom_overlay_supported)
-                            and (key not in live_overlay_dialog_ids or custom_live_overlay_supported)):
-                        try:
-                            from xdog.agent.extensions.custom import event as validate_custom_event
-                            custom_event = validate_custom_event(request.get("event"))
-                            ack_generation = custom_event.get('generation')
-                            if msg_type.startswith("child_"):
-                                child = child_dialog_owners.get(key)
-                                if (child is not None and request.get("group_id") == child[0]
-                                        and request.get("session_id") == child[1]
-                                        and request.get("child_id") == child[2]
-                                        and request.get("child_owner") == child[3]):
-                                    accepted = self._orchestrator.request_child_custom(
-                                        *child[:3], key, child[3], custom_event)
-                            else:
-                                owner = dialog_owners.get(key)
-                                if (owner is not None and request.get("group_id") == owner[0]
-                                        and request.get("session_id") == owner[1]):
-                                    accepted = self._orchestrator.request_extension_custom(
-                                        *owner, key, custom_event)
-                        except (ValueError, TypeError):
-                            pass
-                    ack = {"type": msg_type.replace("_request", "_ack"), "id": key, "accepted": accepted,
-                           "group_id": request.get("group_id"), "session_id": request.get("session_id")}
-                    if ack_generation is not None:
-                        # A refused old viewport must not revoke a newer request in
-                        # the frontend. Only the fully validated event may be echoed.
-                        ack['generation'] = ack_generation
-                    if msg_type.startswith("child_"):
-                        ack.update(child_id=request.get("child_id"), child_owner=request.get("child_owner"))
-                    await write(ack)
                     continue
                 if msg_type == "child_extension_dialog_answer":
                     key = request.get("id")
@@ -1837,62 +1201,15 @@ class GatewayServer:
                         extension_started.add(rid)
                         reply = {"type": "extension_result", "request_id": rid, "group_id": gid, "success": False}
                         writes: list[asyncio.Task[None]] = []
-                        tools_generation = active_tools_generation
-                        compact_generation = extension_compaction_generation
-                        message_generation = extension_message_generation
-                        image_generation = message_images_generation
-                        context_generation = context_message_generation
-                        context_commits: list[Callable[[], Awaitable[None]]] = []
-                        context_started: list[str] = []
-                        async def context_schedule(commit: Callable[[], Awaitable[None]]) -> None:
-                            if len(context_commits) >= 8:
-                                raise ValueError('Context command proposal capacity exceeded')
-                            context_commits.append(commit)
-                        async def context_trigger(value: dict[str, Any]) -> None:
-                            context_started.append(value['id'])
-                        def context_alive() -> bool:
-                            return (child_ui_connected and context_message_supported and session_supported
-                                    and context_message_generation == context_generation and not writer.is_closing())
-                        write_generation = editor_write_generation
                         auth_generation = provider_auth_generation
                         def auth_alive() -> bool:
                             return (op == "auth" and child_ui_connected and provider_auth_supported
                                     and provider_auth_generation == auth_generation and not writer.is_closing())
-                        def editor_alive() -> bool:
-                            return (child_ui_connected and editor_write_supported
-                                    and write_generation == editor_write_generation and not writer.is_closing())
-                        delivery: list[tuple[str, Callable[[], bool], tuple[ImageContent, ...]]] = []
-                        def message_alive() -> bool:
-                            return (child_ui_connected and extension_message_supported and session_supported
-                                    and extension_message_generation == message_generation and not writer.is_closing())
-                        def image_alive() -> bool:
-                            return (child_ui_connected and message_images_supported
-                                    and message_images_generation == image_generation and not writer.is_closing())
-                        def message_ready(content: str, images: tuple[ImageContent, ...],
-                                          alive: Callable[[], bool]) -> None:
-                            delivery.append((content, alive, images))
-                        def compact_alive() -> bool:
-                            return (child_ui_connected and compaction_supported and extension_compaction_supported
-                                    and extension_compaction_generation == compact_generation
-                                    and not writer.is_closing())
-                        def tools_alive() -> bool:
-                            return (child_ui_connected and active_tools_supported
-                                    and active_tools_generation == tools_generation and not writer.is_closing())
                         def publish(event: dict[str, Any]) -> None:
                             if op == 'auth' and event.get('type') == 'extension_dialog':
                                 event = {**event, 'dialog': {**event['dialog'],
                                                             'provider_auth_generation': auth_generation}}
-                            if (event.get('type') == 'extension_dialog'
-                                    and event['dialog'].get('operation') == 'compact'):
-                                event = {**event, 'dialog': {**event['dialog'],
-                                                            'compaction_generation': compact_generation}}
-                            if (event.get('type') == 'extension_dialog'
-                                    and event['dialog'].get('operation') == 'message'):
-                                event = {**event, 'dialog': {**event['dialog'],
-                                                            'message_generation': message_generation,
-                                                            **({'message_images_generation': image_generation}
-                                                               if event['dialog'].get('image_summaries') else {})}}
-                            async def auth_write(payload: dict[str, Any]) -> None:
+                            async def deliver(payload: dict[str, Any]) -> None:
                                 try:
                                     await write(payload, strict=True)
                                 except (OSError, ValueError, RuntimeError):
@@ -1903,20 +1220,12 @@ class GatewayServer:
                                     raise
                             def send() -> None:
                                 payload = {**event, "group_id": gid, "request_id": rid}
-                                writes.append(asyncio.create_task(auth_write(payload) if op == 'auth' else
-                                    write(payload, strict=bool(delivery) or event.get('operation') == 'message'
-                                          or event.get('dialog', {}).get('operation') == 'message')))
+                                writes.append(asyncio.create_task(deliver(payload)))
                             control_loop.call_soon_threadsafe(send)
                         try:
                             assert self._orchestrator is not None
                             result = await self._orchestrator.manage_extensions(gid, op, key, text, sid, publish,
-                                tool_selection_alive=tools_alive, compaction_alive=compact_alive,
-                                message_alive=message_alive, message_ready=message_ready,
-                                message_images_alive=image_alive,
-                                context_message_alive=context_alive,
-                                context_schedule=context_schedule, context_trigger=context_trigger,
-                                editor_write_alive=editor_alive, command_menu=command_menu_host(),
-                                provider_auth_alive=auth_alive)
+                                command_menu=command_menu_host(), provider_auth_alive=auth_alive)
                             reply.update(success=True, **result)
                         except asyncio.CancelledError:
                             reply.update(canceled=True,
@@ -1933,60 +1242,9 @@ class GatewayServer:
                         if writes:
                             try:
                                 await asyncio.gather(*writes)
-                            except (ConnectionError, OSError):
-                                # Lost native review/commit publication cannot leave an apparent
-                                # successful command or authorize a later message dispatch.
+                            except (ConnectionError, OSError, ValueError, RuntimeError):
                                 reply.update(success=False, error='Extension UI delivery failed; no replay')
-                                delivery.clear()
-                        grant = None
-                        if (reply.get('success') is True and reply.get('message_queued') is True
-                                and len(delivery) == 1 and delivery[0][1]()):
-                            token = uuid.uuid4().hex
-                            grant = (gid, sid, message_generation, delivery[0][0], delivery[0][1],
-                                     time.monotonic() + 300, delivery[0][2])
-                            reply['message_delivery'] = {'token': token, 'generation': message_generation}
-                        else:
-                            reply['message_queued'] = False
-                        context_source = self._orchestrator.source_lease(gid) if self._orchestrator else ('', -1)
-                        reply['context_pending'] = bool(context_commits)
-                        await write(reply, strict=grant is not None or bool(context_commits))
-                        if reply.get('success') is True and context_alive():
-                            context_reserved = False
-                            try:
-                                if context_commits:
-                                    assert self._orchestrator is not None
-                                    context_reserved = self._orchestrator.try_reserve_group(gid)
-                                    if not context_reserved or self._orchestrator.source_lease(gid) != context_source:
-                                        raise ValueError('Canonical idle owner changed after command delivery')
-                                for commit in context_commits:
-                                    await commit()  # Never persist before complete command-result delivery.
-                            except BaseException:
-                                await write({'type': 'extension_context_delivery_result', 'request_id': rid,
-                                    'group_id': gid, 'session_id': sid, 'success': False,
-                                    'error': 'Canonical context delivery failed/uncertain; no replay'}, strict=True)
-                                raise
-                            finally:
-                                if context_reserved and self._orchestrator is not None:
-                                    self._orchestrator.release_group_reservation(gid)
-                            if context_commits:
-                                await write({'type': 'extension_context_delivery_result', 'request_id': rid,
-                                    'group_id': gid, 'session_id': sid, 'success': True,
-                                    'continuation': len(context_started) == 1}, strict=True)
-                            if len(context_started) == 1 and self._orchestrator is not None and context_alive():
-                                context_token = uuid.uuid4().hex
-                                source = self._orchestrator.source_lease(gid)
-                                context_grants[context_token] = (
-                                    gid, source[0], context_started[0], context_generation, source)
-                                if len(context_grants) > 8:
-                                    context_grants.pop(next(iter(context_grants)))
-                                await write({'type': 'extension_context_continuation', 'request_id': rid,
-                                    'group_id': gid, 'session_id': source[0], 'generation': context_generation,
-                                    'token': context_token, 'id': context_started[0]}, strict=True)
-                        if grant is not None and grant[4]():
-                            # No suspension between successful result delivery and grant publication.
-                            if len(message_grants) >= 8:
-                                message_grants.pop(next(iter(message_grants)))
-                            message_grants[token] = grant
+                        await write(reply)
                     task = asyncio.create_task(extension_job(identifier, group, action, session, name, args))
                     extension_jobs.add(task)
                     extension_controls[identifier] = task, group, session
@@ -2089,7 +1347,6 @@ class GatewayServer:
                             result = await self._orchestrator.manage_children(
                                 gid, op, key, content, policy, sid,
                                 child_ui(gid, request_id=rid) if op == "start" else None,
-                                editor_write_enabled=editor_write_supported, child_queue=child_queue_host(gid),
                                 config=configuration,
                                 images=input_images, return_owner=host_lease if returning else '',
                                 return_alive=return_alive)
@@ -2169,10 +1426,6 @@ class GatewayServer:
                             child_receipts.pop(rid, None)  # Reads are safe to repeat; avoid caching large transcripts.
                         else:
                             child_receipts[rid] = fingerprint, reply
-                        if terminal_jobs.child_supported and self._orchestrator is not None:
-                            reply.update(terminal_children=self._orchestrator.child_terminal_metadata(
-                                gid, str(reply.get("session_id", "")), child_ui_token),
-                                         child_terminal_owner=child_ui_token)
                         await write(reply)
                     task = asyncio.create_task(child_job(identifier, group, action, session, child, text, access,
                                                          reserved, signature, selected_config, images,
@@ -2210,106 +1463,6 @@ class GatewayServer:
                             self._orchestrator.release_group_reservation(group)
                     await write(plan_reply)
                     continue
-                if msg_type == 'mcp_roots_control':
-                    rid, group, view, sid = (request.get(key) for key in
-                                             ('request_id', 'group_id', 'view', 'session_id'))
-                    operation, server = request.get('action'), request.get('server', '')
-                    receipt = request.get('review_id', '')
-                    reserved = False
-                    try:
-                        if (not isinstance(rid, str) or not 0 < len(rid) <= 128
-                                or not isinstance(group, str) or not isinstance(sid, str)
-                                or not isinstance(view, str) or not re.fullmatch(r'[a-f0-9]{32}', view)
-                                or not isinstance(server, str) or not isinstance(receipt, str) or len(receipt) > 128
-                                or operation not in {'prepare', 'commit', 'cancel', 'detach'}
-                                or self._orchestrator is None or group not in self._orchestrator.get_group_ids()
-                                or operation not in {'cancel', 'detach'} and (rid in root_ids or len(root_ids) >= 256)):
-                            raise ValueError('Invalid/used root control identity')
-                        if operation not in {'cancel', 'detach'}:
-                            root_ids.add(rid)
-                        control_root_binding = root_views.get(view)
-                        if operation in {'detach', 'cancel'}:
-                            if control_root_binding is None or control_root_binding[0] != group:
-                                raise ValueError('Root view is not attached to this connection')
-                            # Immediate revocation before asynchronous cleanup.
-                            control_root_binding[4].set()
-                            if view in root_jobs:
-                                root_jobs[view].cancel()
-                                await write({'type': 'mcp_roots_result', 'request_id': rid, 'view': view,
-                                             'group_id': group, 'success': True, 'data': {'state': 'detaching'}})
-                                continue
-                        else:
-                            if (not roots_supported or len(root_jobs) >= 8
-                                    or self._orchestrator.source_lease(group)[0] != sid):
-                                raise ValueError('Current negotiated root view/session required')
-                            root_scope = self._orchestrator.source_lease(group)
-                            if control_root_binding is None:
-                                if operation != 'prepare' or len(root_views) >= 8:
-                                    raise ValueError('Prepare this connection root view first')
-                                control_root_binding = (group, root_scope, self._orchestrator._runtimes[group].mcp,
-                                           uuid.uuid4().hex, threading.Event())
-                                root_views[view] = control_root_binding
-                            if (control_root_binding[0] != group or control_root_binding[1] != root_scope
-                                    or control_root_binding[4].is_set()):
-                                raise ValueError('Root view ownership changed')
-                            if view in root_jobs:
-                                raise ValueError('Root view still owns work')
-                            async with self._group_runs_lock:
-                                reserved = group not in self._group_runs and self._orchestrator.try_reserve_group(group)
-                            if not reserved:
-                                raise ValueError('Root disclosure changes require an idle group')
-                        assert control_root_binding is not None
-                    except (ValueError, RuntimeError, OSError) as exc:
-                        await write({'type': 'mcp_roots_result', 'request_id': rid, 'view': view,
-                                     'group_id': group, 'success': False, 'error': str(exc)})
-                        continue
-                    async def roots_job(identifier: str, key: str, gid: str, expected: str, op: str,
-                                        srv: str, proof: str, selected: Any,
-                                        owner: tuple[str, tuple[str, int], McpManager, str, threading.Event],
-                                        owns: bool) -> None:
-                        reply = {'type': 'mcp_roots_result', 'request_id': identifier, 'view': key,
-                                 'group_id': gid, 'session_id': expected, 'success': False}
-                        def alive() -> bool:
-                            if (not child_ui_connected or not roots_supported or owner[4].is_set()
-                                    or self._orchestrator is None
-                                    or self._orchestrator.source_lease(gid) != owner[1]):
-                                return False
-                            runtime = self._orchestrator._runtimes[gid]
-                            active = runtime._active_session
-                            return (runtime.mcp is owner[2] and (owns or not self._orchestrator.is_group_running(gid))
-                                    and (active is None or not active.agent.is_streaming
-                                         and not active.children.supervisor.active))
-                        try:
-                            if op in {'cancel', 'detach'}:
-                                await owner[2].detach_roots(owner[3])
-                                root_views.pop(key, None)
-                                reply.update(success=True, data={'state': 'canceled'})
-                            else:
-                                result = await owner[2].manage_roots(srv, op, selected, receipt=proof,
-                                                                    lease=owner[3], alive=alive)
-                                if alive():
-                                    reply.update(success=True, data=result)
-                        except (ValueError, RuntimeError, OSError, TimeoutError) as exc:
-                            reply['error'] = str(exc)
-                        finally:
-                            if owner[4].is_set():
-                                await owner[2].detach_roots(owner[3])
-                                root_views.pop(key, None)
-                            root_jobs.pop(key, None)
-                        await write(reply)
-                    job = asyncio.create_task(roots_job(rid, view, group, sid, operation, server, receipt,
-                        request.get('roots'), control_root_binding, reserved))
-                    root_jobs[view] = job
-                    def root_done(completed: asyncio.Task[None], key: str = str(view), gid: str = str(group),
-                                  owns: bool = reserved) -> None:
-                        if root_jobs.get(key) is completed:
-                            root_jobs.pop(key, None)
-                        if owns and self._orchestrator is not None:
-                            self._orchestrator.release_group_reservation(gid)
-                        if not completed.cancelled():
-                            completed.exception()
-                    job.add_done_callback(root_done)
-                    continue
                 if msg_type == "mcp_auth_control":
                     rid, group, view = request.get("request_id"), request.get("group_id"), request.get("lease_id")
                     action, server = request.get("action"), request.get("server", "")
@@ -2329,17 +1482,11 @@ class GatewayServer:
                                 or self._orchestrator is None or group not in self._orchestrator.get_group_ids()
                                 or len(auth_jobs) >= 8 and action not in {"detach", "cancel"}):
                             raise ValueError("Invalid/busy authorization control")
-                        if action not in {"detach", "cancel"}:
-                            configured = self._orchestrator._runtimes[group].mcp.configs.get(server)
-                            profile = configured.oauth if configured is not None else None
-                            if profile is not None and profile.token_auth_method == 'private_key_jwt':
-                                if not private_jwt_supported:
-                                    raise ValueError('Updated private-key JWT viewer capability required')
-                            if (action in {'start', 'refresh'} and profile is not None
-                                    and profile.token_auth_method != "none"):
-                                if (request.get("token_auth_method") != profile.token_auth_method
-                                        or request.get("client_secret_env") != profile.client_secret_env):
-                                    raise ValueError("Explicit client-auth method/source review required before start")
+                        if (request.get('token_auth_method', 'none') != 'none'
+                                or request.get('client_secret_env', '')
+                                or request.get('client_private_key_env', '')
+                                or request.get('registration', 'pre-registered') != 'pre-registered'):
+                            raise ValueError('Only pre-registered public PKCE authorization is supported')
                         auth_scope = self._orchestrator.source_lease(group)
                         existing = auth_views.get(view)
                         if action == "detach":
@@ -2362,9 +1509,6 @@ class GatewayServer:
                             if action == "cancel":
                                 existing[3].set()  # Stops commit on receipt, before asynchronous cancel settlement.
                         assert existing is not None
-                        if (action not in {'detach', 'cancel'} and profile is not None
-                                and profile.token_auth_method == 'private_key_jwt'):
-                            private_auth_views.add(view)
                         if action in {"detach", "cancel"}:
                             if view in auth_closing:
                                 await write({"type": "mcp_auth_result", "request_id": rid, "lease_id": view,
@@ -2403,7 +1547,6 @@ class GatewayServer:
                             if op == "detach":
                                 await runtime.mcp.detach_auth(binding[2])
                                 auth_views.pop(key, None)
-                                private_auth_views.discard(key)
                                 result: dict[str, Any] = {"state": "detached"}
                             else:
                                 result = await self._orchestrator.manage_mcp_auth(
@@ -2740,70 +1883,20 @@ class GatewayServer:
                     await write(response)
                     continue
                 if msg_type == "message":
-                    requested_alive: Callable[[], bool] | None = None
-                    requested_images: tuple[ImageContent, ...] = ()
-                    context_record = ''
-                    if 'extension_context_token' in request:
-                        context_token = request.get('extension_context_token')
-                        context_grant = (context_grants.pop(context_token, None)
-                                         if isinstance(context_token, str) else None)
-                        if (context_grant is None or not context_message_supported or self._orchestrator is None
-                                or context_grant[0] != request.get('group_id')
-                                or context_grant[1] != request.get('session_id')
-                                or type(request.get('extension_context_generation')) is not int
-                                or request['extension_context_generation'] != context_grant[3]
-                                or context_message_generation != context_grant[3]
-                                or self._orchestrator.source_lease(context_grant[0]) != context_grant[4]
-                                or any(key in request for key in (
-                                    'content', 'images', 'image_refs', 'origin', 'delivery'))):
-                            await write({'type': 'error', 'run_id': request.get('run_id'),
-                                         'message': 'Canonical context grant stale or unavailable; no replay'})
-                            continue
-                        context_record = context_grant[2]
-                        assert context_grant is not None
-                        def continuation_alive(
-                            grant: tuple[str, str, str, int, tuple[str, int]] | None = context_grant,
-                        ) -> bool:
-                            return (grant is not None and child_ui_connected
-                                and context_message_supported and not writer.is_closing()
-                                and context_message_generation == grant[3] and self._orchestrator is not None
-                                and self._orchestrator.source_lease(grant[0]) == grant[4])
-                        requested_alive = continuation_alive
-                        request = {**request, 'content': '', '_context_record': context_record}
-                    elif 'extension_message_token' in request:
-                        token = request.get('extension_message_token')
-                        grant = message_grants.pop(token, None) if isinstance(token, str) else None
-                        if (grant is None or not extension_message_supported
-                                or grant[0] != request.get('group_id') or grant[1] != request.get('session_id')
-                                or type(request.get('extension_message_generation')) is not int
-                                or request['extension_message_generation'] != grant[2]
-                                or grant[2] != extension_message_generation or time.monotonic() >= grant[5]
-                                or not grant[4]() or any(key in request for key in (
-                                    'content', 'image_refs', 'images', 'origin', 'delivery', 'scope'))):
-                            await write({'type': 'error', 'run_id': request.get('run_id'),
-                                         'message': 'Reviewed message grant unavailable/changed; no replay'})
-                            continue
-                        requested_alive, requested_images = grant[4], grant[6]
-                        request = {**request, 'content': grant[3], '_message_alive': requested_alive}
-                    elif 'extension_message_generation' in request:
-                        await write({'type': 'error', 'run_id': request.get('run_id'),
-                                     'message': 'Reviewed message requires an owned delivery token'})
+                    if any(key in request for key in ('extension_context_token', 'extension_context_generation',
+                            'extension_message_token', 'extension_message_generation')):
+                        await write({'type': 'protocol_error' if runs else 'error',
+                                     'message': 'Extension host mutation transport has been removed; no replay'})
                         continue
                     run_id = str(request.get("run_id") or f"run-{time.time_ns()}")
                     prefix = hashlib.sha256(f"{client_id}:{run_id}".encode()).hexdigest()[:16] + ":"
-                    request = {**request, "run_id": run_id, "_input_scope": prefix, "_message_alive": requested_alive,
-                               "_context_record": context_record,
+                    request = {**request, "run_id": run_id, "_input_scope": prefix,
+                               "_message_alive": None, "_context_record": "",
                                "_child_ui": child_ui(str(request.get("group_id", "main")), run_id=run_id),
-                               "_editor_write": editor_write_host(str(request.get("group_id", "main")), run_id),
-                               "_context_message_alive": context_message_host(
-                                   str(request.get("group_id", "main")), run_id),
-                               "_command_menu": command_menu_host(),
-                               "_queued_input": queued_input_host(str(request.get("group_id", "main")), run_id, prefix),
-                               "_child_queue": child_queue_host(str(request.get("group_id", "main")))}
+                               "_command_menu": command_menu_host()}
                     group_id = str(request.get("group_id", "main"))
                     try:
-                        images = (requested_images if requested_alive is not None
-                                  else uploads.resolve(request.get("image_refs")))
+                        images = uploads.resolve(request.get("image_refs"))
                     except ValueError as exc:
                         uploads.discard_refs(request.get("image_refs"))
                         await write({"type": "error", "run_id": run_id, "message": str(exc)})
@@ -2829,7 +1922,7 @@ class GatewayServer:
                     except ValueError as exc:
                         await write({"type": "error", "run_id": run_id, "message": str(exc)})
                         continue
-                    if not isinstance(content, str) or not (content.strip() or images or context_record):
+                    if not isinstance(content, str) or not (content.strip() or images):
                         await write({
                             "type": "error",
                             "message": "Empty message content",
@@ -2858,8 +1951,7 @@ class GatewayServer:
                         if not busy:
                             assert self._orchestrator is not None
                             current_session = self._orchestrator.get_new_session_id(group_id) or ""
-                            stale_session = ("session_id" in request and request["session_id"] != current_session
-                                             or requested_alive is not None and not requested_alive())
+                            stale_session = ("session_id" in request and request["session_id"] != current_session)
                             if stale_session:
                                 self._orchestrator.release_group_reservation(group_id)
                             else:
@@ -2877,11 +1969,6 @@ class GatewayServer:
                         continue
                     assert self._orchestrator is not None
                     started = asyncio.Event()
-                    compact_run = after_run_compaction.create(group_id, run_id)
-                    name_run = after_run_name.create(group_id, run_id, compact_run)
-                    tools_run = after_run_tools.create(group_id, run_id, compact_run)
-                    request = {**request, "_after_run_compaction": compact_run, "_after_run_name": name_run,
-                               "_after_run_tools": tools_run}
                     task = asyncio.create_task(
                         self._handle_chat_message(
                             request,
@@ -2917,9 +2004,6 @@ class GatewayServer:
                         asyncio.create_task(_release())
 
                     task.add_done_callback(_remove_run)
-                    after_run_compaction.attach(compact_run, task)
-                    after_run_name.attach(name_run, task)
-                    after_run_tools.attach(tools_run, task)
                     continue
                 if msg_type == "reset":
                     reset_group = str(request.get("group_id", "main"))
@@ -2951,157 +2035,123 @@ class GatewayServer:
                         "status": "requested" if requested else "not_active",
                     })
                     continue
-                await self._dispatch(request, writer, terminal_owner=terminal_jobs.owner
-                                     if terminal_jobs.supported else "", child_terminal_owner=child_ui_token
-                                     if terminal_jobs.child_supported else "", private_jwt_active=private_jwt_supported,
-                                     skill_controls_active=skills_supported, compaction_active=compaction_supported,
-                                     saved_source_active=saved_source_supported,
-                                     saved_timeline_active=saved_timeline_supported,
-                                     name_read_active=name_read_supported, roots_active=roots_supported,
-                                     sampling_active=sampling_connection.supported,
-                                     active_tools_active=active_tools_supported,
-                                     active_tools_after_run=after_run_tools.enabled,
-                                     active_tools_after_run_generation=after_run_tools.generation,
-                                     extension_name_after_run=after_run_name.enabled,
-                                     name_after_run_generation=after_run_name.generation,
-                                     extension_compaction_after_run=after_run_compaction.enabled,
-                                     compaction_after_run_generation=after_run_compaction.generation,
-                                     extension_compaction_active=(extension_compaction_supported
-                                                                  and compaction_supported),
-                                     compaction_generation=extension_compaction_generation,
-                                     message_images_active=message_images_supported,
-                                     message_images_generation=message_images_generation,
-                                     extension_message_active=extension_message_supported,
-                                     message_generation=extension_message_generation,
-                                     terminal_release_active=terminal_jobs.release_supported,
-                                     child_queued_input_active=child_queued_input_supported,
-                                     child_queued_input_generation=child_queued_input_generation,
-                                     child_queued_input_owner=child_ui_token if child_queued_input_supported else "",
-                                     queued_input_active=queued_input_supported,
-                                     queued_input_generation=queued_input_generation,
-                                     context_message_active=context_message_supported,
-                                     context_delivery_active=context_delivery_supported,
-                                     context_message_generation=context_message_generation,
-                                     provider_auth_active=provider_auth_supported,
-                                     provider_auth_generation=provider_auth_generation,
-                                     editor_write_active=editor_write_supported,
-                                     editor_write_generation=editor_write_generation,
-                                     editor_write_owner=child_ui_token if editor_write_supported else "",
-                                     command_menu_generation=command_catalog_generation,
-                                     elicitation_active=elicitation_connection.supported,
-                                     parent_draft_capabilities=parent_draft_connection.capabilities(),
-                                     child_return_owner=return_token if return_supported else '')
+
+                await self._dispatch(request, writer,
+                    skill_controls_active=skills_supported,
+                    compaction_active=compaction_supported, saved_source_active=saved_source_supported,
+                    saved_timeline_active=saved_timeline_supported, name_read_active=name_read_supported,
+                    command_menu_generation=command_catalog_generation,
+                    provider_auth_active=provider_auth_supported, provider_auth_generation=provider_auth_generation,
+                    child_return_owner=return_token if return_supported else '')
 
         except (ConnectionResetError, BrokenPipeError):
             logger.info("Client disconnected: %s", peer)
         except Exception:
             logger.exception("Error handling client %s", peer)
         finally:
-            child_ui_connected = False
-            await parent_draft_connection.close()
-            await elicitation_connection.close()
-            await sampling_connection.close()
-            await after_run_tools.close()
-            await after_run_compaction.close()
-            await after_run_name.close()
-            for root_binding in tuple(root_views.values()):
-                root_binding[4].set()
-            for root_job in tuple(root_jobs.values()):
-                root_job.cancel()
-            await asyncio.gather(*tuple(root_jobs.values()), return_exceptions=True)
-            await asyncio.gather(*(owner[2].detach_roots(owner[3]) for owner in tuple(root_views.values())),
-                                 return_exceptions=True)
-            root_views.clear()
-            return_revoked.set()
-            child_ui_connected = False
-            for argument_task, _, _ in tuple(argument_jobs.values()):
-                argument_task.cancel()
-            await asyncio.gather(*(row[0] for row in tuple(argument_jobs.values())), return_exceptions=True)
-            for read_task, _, _ in tuple(name_read_jobs.values()):
-                read_task.cancel()
-            for session_task, _, _ in tuple(session_jobs.values()):
-                session_task.cancel()
-            # Cancel model/tool ownership before settling an uninterruptible
-            # source filesystem read; source cleanup must not postpone abort.
-            for run in tuple(runs.values()):
-                if self._orchestrator:
-                    self._orchestrator.abort_group(run.group_id)
-            await asyncio.gather(*(binding[0] for binding in tuple(session_jobs.values())), return_exceptions=True)
-            await asyncio.gather(*(binding[0] for binding in tuple(name_read_jobs.values())), return_exceptions=True)
-            for key, owner in tuple(dialog_owners.items()):
-                if self._orchestrator is not None:
-                    self._orchestrator.answer_extension_dialog(owner[0], owner[1], key, None)
-            for binding in tuple(auth_views.values()):
-                binding[3].set()
-            for job in tuple(auth_jobs):
-                job.cancel()
-            await asyncio.gather(*auth_jobs, return_exceptions=True)
-            if self._orchestrator is not None:
-                await asyncio.gather(*(self._orchestrator._runtimes[binding[0]].mcp.detach_auth(binding[2])
-                                       for binding in auth_views.values()), return_exceptions=True)
-            child_ui_connected = False
-            for job in tuple(watch_jobs):
-                job.cancel()
-            await asyncio.gather(*watch_jobs, return_exceptions=True)
-            await asyncio.gather(*(record[2].detach_resource_watches(record[3]) for record in watch_views.values()),
-                                 return_exceptions=True)
-            watch_views.clear()
-            if self._orchestrator is not None:
-                self._orchestrator.detach_child_ui(child_ui_token)
-            for task in tuple(child_ui_writes):
-                task.cancel()
-            await asyncio.gather(*child_ui_writes, return_exceptions=True)
-            for job in tuple(child_jobs):
-                job.cancel()
-            await asyncio.gather(*child_jobs, return_exceptions=True)
-            for job in tuple(extension_jobs):
-                job.cancel()
-            await asyncio.gather(*extension_jobs, return_exceptions=True)
-            await terminal_jobs.close()
-            await mcp_sender.close()
-            await child_sender.close()
-            await source_sender.close()
-            if self._orchestrator:
-                await asyncio.gather(
-                    *(self._orchestrator.wait_group_idle(run.group_id) for run in runs.values()),
-                    return_exceptions=True,
-                )
-            for run in tuple(runs.values()):
-                run.task.cancel()
-            if runs:
-                await asyncio.gather(
-                    *(run.task for run in runs.values()),
-                    return_exceptions=True,
-                )
-            try:
-                writer.close()
-                await writer.wait_closed()
-            except Exception:
-                pass
-            logger.info("Client session ended: %s", peer)
+            async def cleanup_client() -> None:
+                nonlocal child_ui_connected
+                try:
+                    child_ui_connected = False
+                    return_revoked.set()
+                    child_ui_connected = False
+                    for argument_task, _, _ in tuple(argument_jobs.values()):
+                        argument_task.cancel()
+                    await asyncio.gather(*(row[0] for row in tuple(argument_jobs.values())), return_exceptions=True)
+                    for read_task, _, _ in tuple(name_read_jobs.values()):
+                        read_task.cancel()
+                    for session_task, _, _ in tuple(session_jobs.values()):
+                        session_task.cancel()
+                    # Cancel model/tool ownership before settling an uninterruptible
+                    # source filesystem read; source cleanup must not postpone abort.
+                    for run in tuple(runs.values()):
+                        if self._orchestrator:
+                            self._orchestrator.abort_group(run.group_id)
+                    await asyncio.gather(
+                        *(binding[0] for binding in tuple(session_jobs.values())), return_exceptions=True)
+                    await asyncio.gather(
+                        *(binding[0] for binding in tuple(name_read_jobs.values())), return_exceptions=True)
+                    for key, owner in tuple(dialog_owners.items()):
+                        if self._orchestrator is not None:
+                            self._orchestrator.answer_extension_dialog(owner[0], owner[1], key, None)
+                    for binding in tuple(auth_views.values()):
+                        binding[3].set()
+                    for job in tuple(auth_jobs):
+                        job.cancel()
+                    await asyncio.gather(*auth_jobs, return_exceptions=True)
+                    if self._orchestrator is not None:
+                        await asyncio.gather(*(self._orchestrator._runtimes[binding[0]].mcp.detach_auth(binding[2])
+                                               for binding in auth_views.values()), return_exceptions=True)
+                    child_ui_connected = False
+                    for job in tuple(watch_jobs):
+                        job.cancel()
+                    await asyncio.gather(*watch_jobs, return_exceptions=True)
+                    await asyncio.gather(
+                        *(record[2].detach_resource_watches(record[3]) for record in watch_views.values()),
+                        return_exceptions=True)
+                    watch_views.clear()
+                    if self._orchestrator is not None:
+                        self._orchestrator.detach_child_ui(child_ui_token)
+                    for task in tuple(child_ui_writes):
+                        task.cancel()
+                    await asyncio.gather(*child_ui_writes, return_exceptions=True)
+                    for job in tuple(child_jobs):
+                        job.cancel()
+                    await asyncio.gather(*child_jobs, return_exceptions=True)
+                    for job in tuple(extension_jobs):
+                        job.cancel()
+                    await asyncio.gather(*extension_jobs, return_exceptions=True)
+                    await mcp_sender.close()
+                    await child_sender.close()
+                    await source_sender.close()
+                    if self._orchestrator:
+                        await asyncio.gather(
+                            *(self._orchestrator.wait_group_idle(run.group_id) for run in runs.values()),
+                            return_exceptions=True,
+                        )
+                    for run in tuple(runs.values()):
+                        run.task.cancel()
+                    if runs:
+                        await asyncio.gather(
+                            *(run.task for run in runs.values()),
+                            return_exceptions=True,
+                        )
+                finally:
+                    # Even a failed cleanup step must release the accepted
+                    # transport before the server's wait_closed() can settle.
+                    writer.close()
+                    try:
+                        await writer.wait_closed()
+                    except (ConnectionError, OSError):
+                        pass
+                logger.info("Client session ended: %s", peer)
+
+            # EOF can admit cleanup before stop() cancels this handler. Keep one
+            # cleanup owner and join it even when cancellation lands in finally;
+            # otherwise an interrupted detach skips writer.close() and deadlocks
+            # server.wait_closed(). Never detach resource cleanup in the background.
+            cleanup = asyncio.create_task(cleanup_client(), name=f"claw-client-{client_id}-cleanup")
+            cancelled = False
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    cancelled = True
+            cleanup.result()
+            if cancelled:
+                raise asyncio.CancelledError
 
     async def _dispatch(
-        self, request: dict[str, Any], writer: asyncio.StreamWriter, *, terminal_owner: str = "",
-        child_terminal_owner: str = "", private_jwt_active: bool = False, skill_controls_active: bool = False,
-        compaction_active: bool = False, saved_source_active: bool = False, saved_timeline_active: bool = False,
-        name_read_active: bool = False, roots_active: bool = False, sampling_active: bool = False,
-        active_tools_active: bool = False, extension_compaction_active: bool = False,
-        active_tools_after_run: bool = False, active_tools_after_run_generation: int = 0,
-        extension_compaction_after_run: bool = False, compaction_after_run_generation: int = 0,
-        extension_name_after_run: bool = False, name_after_run_generation: int = 0,
-        compaction_generation: int = 0, extension_message_active: bool = False, message_generation: int = 0,
-        elicitation_active: bool = False, terminal_release_active: bool = False,
-        editor_write_active: bool = False, editor_write_generation: int = 0, editor_write_owner: str = "",
+        self, request: dict[str, Any], writer: asyncio.StreamWriter, *,
+        skill_controls_active: bool = False,
+        compaction_active: bool = False,
+        saved_source_active: bool = False,
+        saved_timeline_active: bool = False,
+        name_read_active: bool = False,
         command_menu_generation: int = 0,
-        queued_input_active: bool = False, queued_input_generation: int = 0,
-        context_message_active: bool = False, context_message_generation: int = 0,
-        context_delivery_active: bool = False,
-        child_queued_input_active: bool = False, child_queued_input_generation: int = 0,
-        child_queued_input_owner: str = "",
-        provider_auth_active: bool = False, provider_auth_generation: int = 0,
-        message_images_active: bool = False, message_images_generation: int = 0,
-        parent_draft_capabilities: dict[str, Any] | None = None,
-        child_return_owner: str = ''
+        provider_auth_active: bool = False,
+        provider_auth_generation: int = 0,
+        child_return_owner: str = '',
     ) -> None:
         """Route a client request to the appropriate handler."""
         msg_type = request.get("type", "")
@@ -3115,61 +2165,27 @@ class GatewayServer:
         elif msg_type == "ping":
             group_id = request.get("group_id", "main")
             session_info: dict[str, Any] = {
-                **(parent_draft_capabilities or {}),
                 "type": "pong", "input_controls": 1, "session_controls": 1, "session_rename": 1,
                 "session_name_read": int(name_read_active),
                 "session_navigation_cancel": 1, "attachment_transport": 1,
                 "transcript_source": 1, "mcp_controls": 1, "mcp_browser_owner": 1,
                 "mcp_context": 1, "mcp_completion": 1,
-                "mcp_elicitation": int(elicitation_active), "mcp_sampling": int(sampling_active),
-                "mcp_roots": int(roots_active),
                 "mcp_content_types": 1, "mcp_catalog_watch": 1,
                 "mcp_combined_watch": 1, "tool_inventory": 1, "tool_inventory_selection": 1,
-                "mcp_resource_completion": 1, "mcp_resource_watch": 1, "extension_custom": 1,
-                "extension_custom_rich": 1,
-                "extension_custom_overlay": 1, "extension_custom_live_overlay": 1,
-                "extension_forms": 1, "extension_multi_forms": 1, "extension_custom_nested": 1,
+                "mcp_resource_completion": 1, "mcp_resource_watch": 1,
                 "extension_command_results": 1,
-                "extension_editor": 1, "extension_session": 1, "extension_navigation": 1,
-                "extension_editor_write": int(editor_write_active),
-                "extension_editor_write_generation": editor_write_generation,
-                "extension_editor_write_owner": editor_write_owner,
-                "extension_active_tools": int(active_tools_active),
-                "extension_active_tools_after_run": int(active_tools_after_run),
-                "active_tools_after_run_generation": active_tools_after_run_generation,
-                "extension_compaction": int(extension_compaction_active),
-                "extension_name_after_run": int(extension_name_after_run),
-                "name_after_run_generation": name_after_run_generation,
-                "extension_compaction_after_run": int(extension_compaction_after_run),
-                "compaction_after_run_generation": compaction_after_run_generation,
-                "extension_compaction_generation": compaction_generation,
-                "extension_message": int(extension_message_active),
-                "extension_message_generation": message_generation,
-                "extension_message_images": int(message_images_active),
-                "extension_message_images_generation": message_images_generation,
+                "extension_session": 1,
                 "extension_provider_auth": int(provider_auth_active),
                 "extension_provider_auth_generation": provider_auth_generation,
-                "extension_queued_inputs": int(queued_input_active),
-                "extension_context_messages": int(context_message_active),
-                "extension_context_delivery_modes": int(context_delivery_active),
-                "extension_context_messages_generation": context_message_generation,
-                "extension_queued_inputs_generation": queued_input_generation,
-                "child_extension_queued_inputs": int(child_queued_input_active),
-                "child_extension_queued_inputs_generation": child_queued_input_generation,
-                "child_extension_queued_inputs_owner": child_queued_input_owner,
-                "extension_session_inspection": 1, "extension_session_name": 1, "extension_command_cancel": 1,
+                "extension_session_inspection": 1, "extension_command_cancel": 1,
                 "extension_command_catalog": 1, "extension_command_catalog_generation": command_menu_generation,
                 "extension_argument_completion": 1,
                 "extension_argument_cancel": 1, "extension_argument_context": 1,
                 "extension_shortcuts": 1, "extension_models": 1, "native_models": 1, "reasoning_controls": 1,
-                "terminal_child_input": 1, "terminal_input": 1,
-                "terminal_release_input": int(terminal_release_active),
-                "terminal_owner": terminal_owner, "child_terminal_owner": child_terminal_owner, "mcp_auth": 1,
+                "mcp_auth": 1,
                 "saved_timeline": int(saved_timeline_active), "saved_source": int(saved_source_active),
                 "session_compaction": int(compaction_active),
                 "skill_controls": int(skill_controls_active),
-                "mcp_registration": 1, "mcp_client_auth": 1,
-                "mcp_private_key_jwt": int(private_jwt_active),
                 "mcp_refresh": 1, "mcp_credentials": 1,
                 "plan_controls": 1, "extension_controls": 1, "child_controls": 1, "child_source": 1, "child_queues": 1,
                 "child_dialogs": 1, "child_config": 3, "child_images": 1, "child_image_recovery": 1,
@@ -3295,14 +2311,7 @@ class GatewayServer:
                 child_ui=request.get("_child_ui"),
                 reserved=True,
                 input_alive=request.get("_message_alive"),
-                editor_write=request.get("_editor_write"),
                 command_menu=request.get("_command_menu"),
-                queued_input=request.get("_queued_input"),
-                context_message_alive=request.get("_context_message_alive"),
-                child_queue=request.get("_child_queue"),
-                compaction_request=request.get("_after_run_compaction"),
-                name_request=request.get("_after_run_name"),
-                active_tools_request=request.get("_after_run_tools"),
             )
         except ValueError as exc:
             if request.get('_message_alive') is None:
@@ -3318,9 +2327,6 @@ class GatewayServer:
                                           "id": item.id[len(scope):], "content": item.content})
         if pending_writes:
             await asyncio.gather(*pending_writes)
-        compact_run = request.get("_after_run_compaction")
-        if compact_run is not None:
-            compact_run.success = result is not None and not result.error
 
         if result is None:
             await write_response({
@@ -3527,17 +2533,22 @@ class GatewayServer:
             except asyncio.CancelledError:
                 pass
 
-        # Stop accepting new connections
-        if self._server:
-            self._server.close()
-            await self._server.wait_closed()
+        # Stop accepting first, but do not await server closure before retiring
+        # peers: server.wait_closed() can wait for their live transports too.
+        server = self._server
+        if server is not None:
+            server.close()
 
-        # Cancel all active client handler tasks
-        for task in list(self._client_tasks):
-            task.cancel()
-        if self._client_tasks:
-            await asyncio.gather(*self._client_tasks, return_exceptions=True)
-            self._client_tasks.clear()
+        # Cancel handlers while their cleanup still owns and can close writers.
+        # Late accept callbacks see _shutdown_event and close without spawning work.
+        while self._client_tasks:
+            clients = tuple(self._client_tasks)
+            for task in clients:
+                task.cancel()
+            await asyncio.gather(*clients, return_exceptions=True)
+            self._client_tasks.difference_update(clients)
+        if server is not None:
+            await server.wait_closed()
 
         if self._orchestrator:
             await self._orchestrator.stop()

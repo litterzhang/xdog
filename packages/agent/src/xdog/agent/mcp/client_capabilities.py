@@ -1,8 +1,7 @@
 """Explicit MCP client capability contract; declarations are not permission grants.
 
-Server discovery/tools/content/subscriptions are client-initiated features, not
-sampling/elicitation/roots support. Do not advertise reverse APIs without an owned
-host handler, consent, cancellation and version-appropriate transport.
+Only explicit configured Roots metadata is supported. Sampling, Elicitation and
+Tasks are refused, never advertised or delegated to callbacks/model/tool work.
 """
 from __future__ import annotations
 
@@ -43,8 +42,8 @@ class RootCapability:
     """Connection-local configured ceiling; versioned transports own admission.
 
     Explicit config plus explicit connect admits disclosure to that peer only.
-    Disconnect withdraws it; reviewed selection can narrow/re-enable the configured
-    ceiling, never add filesystem authority or escalate a permission mode.
+    Disconnect withdraws it. The internal revision fence can only narrow/re-enable
+    the configured ceiling, never add filesystem authority or a permission grant.
     """
     def __init__(self, roots: tuple[tuple[str, str], ...]) -> None:
         self.roots = roots_config([{'uri': uri, 'name': name} for uri, name in roots])
@@ -53,10 +52,10 @@ class RootCapability:
         self.active = False
 
     def advertised(self) -> dict[str, Any]:
-        return {'roots': {'listChanged': True}} if self.active and self.ceiling else {}
+        return {'roots': {}} if self.active and self.ceiling else {}
 
     def replace(self, roots: tuple[tuple[str, str], ...], revision: int) -> None:
-        """Publish only reviewed selection within immutable configured disclosure ceiling."""
+        """Internal revision fence within the immutable configured disclosure ceiling."""
         checked = roots_config([{'uri': uri, 'name': name} for uri, name in roots])
         if not self.active or not self.ceiling or revision != self.revision:
             raise ValueError('Root disclosure owner/revision changed')
@@ -71,7 +70,8 @@ class RootCapability:
                 or answer.get('error', {}).get('code') != -32601):
             return answer
         params = message.get('params', {})
-        if set(params) - {'_meta'} or '_meta' in params and not isinstance(params['_meta'], dict):
+        if (set(params) - {'_meta'} or '_meta' in params and (not isinstance(params['_meta'], dict)
+                or 'io.modelcontextprotocol/related-task' in params['_meta'])):
             return {'error': {'code': -32602, 'message': 'Invalid roots parameters'}}
         return {'result': {'roots': [{'uri': uri, **({'name': name} if name else {})}
                                      for uri, name in self.roots]}}
@@ -88,7 +88,7 @@ def inventory() -> dict[str, str]:
             'tasks': 'unsupported', 'experimental': 'unsupported', 'extensions': 'unsupported'}
 
 
-def reverse_response(message: dict[str, Any], *, task_creation: bool = False) -> dict[str, Any]:
+def reverse_response(message: dict[str, Any]) -> dict[str, Any]:
     """Legacy reverse requests: bounded exact identity, no host capability borrowing.
 
     Modern unrelated server requests are refused by transport before this helper.
@@ -99,24 +99,20 @@ def reverse_response(message: dict[str, Any], *, task_creation: bool = False) ->
             or isinstance(identifier, str) and (not identifier or len(identifier.encode('utf-8')) > 128)
             or type(identifier) is int and not -(2**53 - 1) <= identifier <= 2**53 - 1):
         raise ValueError('Invalid MCP reverse request identity')
-    if (set(message) - {'jsonrpc', 'id', 'method', 'params'} or 'result' in message or 'error' in message
+    if (message.get('jsonrpc') != '2.0' or set(message) - {'jsonrpc', 'id', 'method', 'params'}
             or not isinstance(message.get('method'), str) or not message['method']
             or len(message['method'].encode('utf-8')) > 256
             or not isinstance(message.get('params', {}), dict)):
         return {'error': {'code': -32600, 'message': 'Invalid client request'}}
-    if task_augmented(message) and not task_creation:
-        # A task envelope needs task lifecycle/receipt support, not ordinary execution.
-        return {'error': {'code': -32602, 'message': 'Client task capability not supported'}}
+    if message['method'] == 'sampling/createMessage':
+        return {'error': {'code': -32601, 'message': 'Sampling is not supported'}}
+    if message['method'] == 'elicitation/create':
+        return {'error': {'code': -32601, 'message': 'Elicitation is not supported'}}
+    if message['method'].startswith('tasks/'):
+        return {'error': {'code': -32601, 'message': 'Client tasks are not supported'}}
     if message['method'] == 'ping':
         params = message.get('params', {})
         if set(params) - {'_meta'} or '_meta' in params and not isinstance(params['_meta'], dict):
             return {'error': {'code': -32602, 'message': 'Invalid ping parameters'}}
         return {'result': {}}
     return {'error': {'code': -32601, 'message': 'Client capability not supported'}}
-
-
-def task_augmented(message: dict[str, Any]) -> bool:
-    params = message.get('params', {})
-    return (message.get('method') in {'sampling/createMessage', 'elicitation/create'}
-            and isinstance(params, dict) and ('task' in params or isinstance(params.get('_meta'), dict)
-            and 'io.modelcontextprotocol/related-task' in params['_meta']))

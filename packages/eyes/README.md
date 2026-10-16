@@ -1,5 +1,8 @@
 # xdog-eyes
 
+> Platform scope: **Linux only**. Non-Linux adapters and native-platform support
+> are outside the current product scope; historical audit evidence is not a support promise.
+
 A local-first, declarative observation layer, shaped like flow: versioned JSON,
 frozen models, whole-definition validation, async execution, CLI and a packaged
 **eyes-observers** skill. Sources collect evidence, detectors emit events, explicit

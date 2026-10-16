@@ -1,5 +1,8 @@
 # xdog
 
+> Platform scope: **Linux only**. Non-Linux adapters and native-platform support
+> are outside the current product scope; historical audit evidence is not a support promise.
+
 [![CI](https://github.com/litterzhang/xdog/actions/workflows/ci.yml/badge.svg)](https://github.com/litterzhang/xdog/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/xdog-flow?label=xdog-flow&amp;cacheSeconds=3600)](https://pypi.org/project/xdog-flow/)
 [![Release](https://img.shields.io/github/v/release/litterzhang/xdog?label=release)](https://github.com/litterzhang/xdog/releases)

@@ -11,6 +11,7 @@ license = "AGPL-3.0-or-later"
 license-files = ["LICENSE", "LICENSE-EXCEPTION.md"]
 requires-python = ">=3.12"
 classifiers = [
+    "Operating System :: POSIX :: Linux",
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
@@ -89,6 +90,8 @@ xdog-coding = { workspace = true }
 xdog-eyes = { workspace = true }
 
 [tool.pytest.ini_options]
+# Cross-package test fixtures import the repository namespace, not runtime source paths.
+pythonpath = ["."]
 testpaths = [
     "packages/ai/tests",
     "packages/agent/tests",

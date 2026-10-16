@@ -1,4 +1,4 @@
-"""Read-only, bounded JSON projections shared by terminal, RPC and CLI clients."""
+"""Read-only, bounded JSON projections shared by terminal and CLI clients."""
 
 from __future__ import annotations
 

@@ -37,6 +37,9 @@ class SavedCredential:
     access: str = field(repr=False)
     refresh: str = field(repr=False)
 
+    def __post_init__(self) -> None:
+        validate_review(self.review)
+
     def public(self, operation: str) -> dict[str, Any]:
         return cast(dict[str, Any], json.loads(json.dumps({**self.review, 'operation': operation,
                 'saved_at': self.saved_at,
@@ -46,6 +49,7 @@ class SavedCredential:
 
 
 def profile_binding(resource: str, config: OAuthConfig) -> str:
+    config.validate_public()
     value = {'resource': endpoint(resource, https=False), 'config': asdict(config)}
     if config.ca_file:
         path = Path(config.ca_file).expanduser()
@@ -60,6 +64,8 @@ def profile_binding(resource: str, config: OAuthConfig) -> str:
 def capture(owner: OAuthOwner) -> SavedCredential:
     if owner._closed or owner._grant is None or not (owner._token or owner._refresh):
         raise OAuthError('No completed resource-bound credential grant to save')
+    owner.config.validate_public()
+    validate_review(owner._grant.to_dict())
     now = time.time()
     return SavedCredential(owner.resource, profile_binding(owner.resource, owner.config), owner._grant.to_dict(),
                            now, now + max(0, owner._expires - time.monotonic()),
@@ -68,16 +74,17 @@ def capture(owner: OAuthOwner) -> SavedCredential:
 
 
 def restore(owner: OAuthOwner, value: SavedCredential) -> None:
+    review = validate_review(value.review)
+    owner.config.validate_public()
     if (owner._closed or value.resource != owner.resource
             or value.profile != profile_binding(owner.resource, owner.config)):
         raise OAuthError('Saved credential resource/profile binding changed')
-    review = validate_review(value.review)
     if (review['issuer'] != owner.config.issuer or review['resource'] != owner.resource
             or not set(review['scopes']) <= set(owner.config.scopes)
             or review.get('registration', 'pre-registered') != owner.config.registration
             or review.get('token_auth_method', 'none') != owner.config.token_auth_method
             or review.get('client_secret_env', '') != owner.config.client_secret_env
-            or owner.config.registration != 'dynamic' and review['client_id'] != owner.config.client_id):
+            or review['client_id'] != owner.config.client_id):
         raise OAuthError('Saved credential grant no longer matches configured consent')
     remaining = min(3600, max(0, value.expires_at - time.time()))
     if not remaining and not value.refresh:
@@ -159,6 +166,7 @@ class CredentialStore:
             raise OAuthError('Credential file owner/mode/type/size is unsafe')
 
     def save(self, value: SavedCredential, alive: Callable[[], bool]) -> None:
+        validate_review(value.review)
         fd = self._open(create=True)
         name, temporary = self._name(value.resource), secrets.token_hex(16) + '.tmp'
         try:

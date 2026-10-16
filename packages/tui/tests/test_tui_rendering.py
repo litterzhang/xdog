@@ -102,11 +102,11 @@ def test_shrinking_transient_panel_does_not_replay_input_box(monkeypatch) -> Non
     assert "\x1b[2J" not in rendered
 
 
-def test_suspend_reports_platform_support(monkeypatch) -> None:
+def test_suspend_without_job_control_signal_fails_closed(monkeypatch) -> None:
     from xdog.tui.tui import TUI
 
     tui = TUI()
-    monkeypatch.setattr("xdog.tui.tui.os.name", "nt")
+    monkeypatch.delattr("xdog.tui.tui.signal.SIGTSTP")
     assert tui.suspend() is False
     assert tui._suspend_requested is False
 

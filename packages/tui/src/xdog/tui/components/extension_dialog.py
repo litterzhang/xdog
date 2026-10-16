@@ -4,7 +4,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from xdog.tui.components.extension_form import ExtensionForm
 from xdog.tui.components.input_panel import InputPanel
 from xdog.tui.keys import KeyEvent, KeyEventType
 from xdog.tui.tui import Component
@@ -20,7 +19,11 @@ class ExtensionDialog(Component):
 
     def __init__(self, extension: str, dialog: dict[str, Any], answer: Callable[[Any], None]) -> None:
         self.extension, self.dialog, self.answer = extension, dialog, answer
-        self._form = ExtensionForm(extension, dialog, answer) if dialog["kind"] == "form" else None
+        if (dialog.get("kind") not in {"input", "select", "confirm"}
+                or {"operation", "fields", "parent_id", "view_id", "fullscreen",
+                    "key_events", "overlay", "live_overlay"}
+                & dialog.keys()):
+            raise ValueError("Only basic extension dialogs are supported")
         self._focused = False
         self._budget = 8
         self._selected = 0
@@ -40,18 +43,12 @@ class ExtensionDialog(Component):
     def focused(self, value: bool) -> None:
         self._focused = value
         self._input.focused = value and self.dialog["kind"] == "input"
-        if self._form is not None:
-            self._form.focused = value
 
     def set_render_budget(self, rows: int) -> None:
         self._budget = max(0, min(12, rows))
-        if self._form is not None:
-            self._form.set_render_budget(self._budget)
 
     def invalidate(self) -> None:
         self._visible = False
-        if self._form is not None:
-            self._form.invalidate()
 
     def _finish(self, value: Any) -> None:
         if self._resolved:
@@ -64,15 +61,11 @@ class ExtensionDialog(Component):
             self._finish(value)
 
     def handle_paste(self, text: str) -> bool:
-        if self._form is not None:
-            return self._form.handle_paste(text)
         if self.dialog["kind"] == "input":
             self._input.handle_paste(text)
         return True  # Select/confirm pastes never confirm.
 
     def handle_input(self, event: KeyEvent) -> bool:
-        if self._form is not None:
-            return self._form.handle_input(event)
         if event.event_type is not KeyEventType.PRESS:
             return True
         if event.matches("escape") or event.matches("ctrl+c"):
@@ -94,8 +87,6 @@ class ExtensionDialog(Component):
         return True
 
     def render(self, width: int) -> list[str]:
-        if self._form is not None:
-            return self._form.render(width)
         self._visible = False
         if self._budget == 0:
             return []

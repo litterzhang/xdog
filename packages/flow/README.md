@@ -1,5 +1,8 @@
 # Flow — Typed Workflows for Humans and Coding Agents
 
+> Platform scope: **Linux only**. Non-Linux adapters and native-platform support
+> are outside the current product scope; historical audit evidence is not a support promise.
+
 **Flow is a local-first, typed workflow format and compiler for developers and
 Coding Agents. Design repeatable agent workflows visually or generate them with
 AI, validate the JSON artifact, then run, compile, or schedule it as standalone

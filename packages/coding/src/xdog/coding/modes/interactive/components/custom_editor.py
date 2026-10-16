@@ -20,7 +20,7 @@ class CustomEditorComponent(InputPanel):
             "share": "Review local shareable HTML (no upload)", "details": "Open details panel: /details [close]",
             "status": "Show full session and runtime status",
             "attach": "Attach an image file", "attachments": "Inspect/remove/preview images",
-            "paste": "Read clipboard", "diff": "Read-only repository-wide change review",
+            "paste": "Read clipboard",
             "queue": "Inspect/edit/remove/reorder queued inputs", "steer": "Send at next checkpoint",
             "follow-up": "Send after active tool continuation",
             "keys": "Show active keybindings", "editor": "Open external prompt editor",

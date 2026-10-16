@@ -51,7 +51,6 @@ from xdog.tui.keys import (
 from xdog.tui.kill_ring import KillRing
 from xdog.tui.navigation import NavigationEntry, NavigationFeed, NavigationSnapshot, NavigationWorker
 from xdog.tui.prompt_keymap import PromptKeymap
-from xdog.tui.repository_review import RepositoryReview, ReviewFile, ReviewSnapshot
 from xdog.tui.terminal import Cell, Color, ScreenBuffer, Style, Terminal
 from xdog.tui.terminal_image import (
     CellDimensions,
@@ -147,9 +146,6 @@ __all__ = [
     "NavigationFeed",
     "NavigationSnapshot",
     "NavigationWorker",
-    "RepositoryReview",
-    "ReviewFile",
-    "ReviewSnapshot",
     "ExternalEditorResult",
     "edit_draft",
     # fuzzy

@@ -11,7 +11,7 @@ from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.config import ClawConfig, GroupDef
 from xdog.claw.core.runtime.gateway import GatewayServer
 
-from packages.coding.tests.test_rpc_compaction import history
+from packages.coding.tests.extension_session_helpers import history
 
 
 @pytest.mark.parametrize('ending', ['extension', 'extension-reset', 'native', 'native-reset', 'explicit'])
@@ -41,9 +41,11 @@ async def test_same_batch_extension_revocation_before_compaction_admission_has_r
                                   'extension_compaction': 1}) + '\n').encode())
         await writer.drain()
         capabilities = await receive('pong')
-        generation = capabilities['extension_compaction_generation']
+        assert 'extension_compaction_generation' not in capabilities
+        assert 'extension_compaction' not in capabilities
         requests = [{'type': 'session_compact', 'request_id': 'queued', 'group_id': 'main',
-                     'session_id': owner.meta.session_id, 'extension_compaction_generation': generation}]
+                     'session_id': owner.meta.session_id,
+                     **({'extension_compaction_generation': 0} if ending.startswith('extension') else {})}]
         if ending == 'explicit':
             requests.append({'type': 'session_compact_cancel', 'request_id': 'queued', 'group_id': 'main',
                              'session_id': owner.meta.session_id})
@@ -55,7 +57,11 @@ async def test_same_batch_extension_revocation_before_compaction_admission_has_r
         writer.write(('\n'.join(json.dumps(row) for row in requests) + '\n').encode())
         await writer.drain()
         result = await receive('session_compact_result')
-        assert result['request_id'] == 'queued' and result['canceled'] and not result['success']
+        assert result['request_id'] == 'queued' and not result['success']
+        if ending.startswith('extension'):
+            assert 'removed' in result['error'] and not result.get('canceled')
+        else:
+            assert result['canceled']
         assert not calls and not owner._compacting and owner._compaction_metadata is None
         async with asyncio.timeout(3):
             while server._orchestrator.is_group_running('main'):

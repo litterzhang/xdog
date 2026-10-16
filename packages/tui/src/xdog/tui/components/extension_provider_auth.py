@@ -8,7 +8,7 @@ from collections.abc import Callable
 from typing import Any
 
 from xdog.tui.components.extension_dialog import ExtensionDialog
-from xdog.tui.components.mcp_sampling_panel import McpSamplingPanel, _json
+from xdog.tui.components.json_review import _json, _JsonReview
 from xdog.tui.keys import KeyEvent, KeyEventType
 from xdog.tui.utils import truncate_to_width
 
@@ -37,12 +37,12 @@ class ExtensionProviderAuth(ExtensionDialog):
         encoded = _json(body)
         if hashlib.sha256(encoded.encode()).hexdigest() != snapshot.get('provider_auth_digest'):
             raise ValueError('Provider authentication review digest mismatch')
-        event = {'type': 'sampling_review', 'phase': 'output', 'id': secrets.token_hex(16),
+        event = {'type': 'json_review', 'phase': 'review', 'id': secrets.token_hex(16),
                  'receipt': secrets.token_hex(16), 'sha256': hashlib.sha256(encoded.encode()).hexdigest(),
                  'body': body, 'notice': 'Explicit extension provider authentication only. '
                  'Read every page before continuing. Login/refresh is not a model/tool permission. '
                  'URL acknowledgment does not open a browser. Sensitive input is not shown or saved.'}
-        self._review = McpSamplingPanel(event, (), self._reviewed, lambda: self._finish(None))
+        self._review = _JsonReview(event, self._reviewed, lambda: self._finish(None))
 
     @property
     def focused(self) -> bool:

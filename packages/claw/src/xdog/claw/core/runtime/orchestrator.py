@@ -22,7 +22,6 @@ from xdog.claw.core.planning.task_scheduler import TaskScheduler
 from xdog.claw.core.queue import MessageQueue
 from xdog.claw.core.runtime.group import GroupRuntime
 from xdog.claw.core.runtime.session import AgentSession, TurnResult
-from xdog.claw.core.runtime.terminal_protocol import TerminalTarget
 from xdog.claw.core.runtime.transcript_source import SourceCapture
 from xdog.claw.core.types import (
     Group,
@@ -36,12 +35,9 @@ from xdog.claw.core.types import (
 
 logger = logging.getLogger(__name__)
 
-MessageReady = Callable[[str, tuple[ImageContent, ...], Callable[[], bool]], None]
 
 CommandMenuHost = tuple[Callable[[], bool], int]
 
-QueuedInputHost = tuple[Callable[[], bool], Callable[
-    [str, str, str, tuple[ImageContent, ...], Callable[[], bool]], Awaitable[None]]]
 
 
 class Orchestrator:
@@ -138,14 +134,7 @@ class Orchestrator:
         child_ui: tuple[str, Callable[[dict[str, Any]], None]] | None = None,
         reserved: bool = False,
         input_alive: Callable[[], bool] | None = None,
-        editor_write: tuple[Callable[[], bool], Callable[[dict[str, Any]], None]] | None = None,
         command_menu: CommandMenuHost | None = None,
-        queued_input: QueuedInputHost | None = None,
-        child_queue: Callable[[AgentSession], None] | None = None,
-        context_message_alive: Callable[[], bool] | None = None,
-        compaction_request: Any = None,
-        name_request: Any = None,
-        active_tools_request: Any = None,
     ) -> TurnResult | None:
         """Single entry point for all messages."""
         group_id = message.group_id
@@ -188,14 +177,7 @@ class Orchestrator:
             on_assistant_message=on_assistant_message,
             child_ui=child_ui,
             input_alive=input_alive,
-            editor_write=editor_write,
             command_menu=command_menu,
-            queued_input=queued_input,
-            child_queue=child_queue,
-            context_message_alive=context_message_alive,
-            compaction_request=compaction_request,
-            name_request=name_request,
-            active_tools_request=active_tools_request,
         )
 
         queued = await self._queue.collect_with_debounce(group_id, debounce_ms)
@@ -218,14 +200,7 @@ class Orchestrator:
         on_assistant_message: Callable[[str], Awaitable[None]] | None = None,
         child_ui: tuple[str, Callable[[dict[str, Any]], None]] | None = None,
         input_alive: Callable[[], bool] | None = None,
-        editor_write: tuple[Callable[[], bool], Callable[[dict[str, Any]], None]] | None = None,
         command_menu: CommandMenuHost | None = None,
-        queued_input: QueuedInputHost | None = None,
-        child_queue: Callable[[AgentSession], None] | None = None,
-        context_message_alive: Callable[[], bool] | None = None,
-        compaction_request: Any = None,
-        name_request: Any = None,
-        active_tools_request: Any = None,
     ) -> TurnResult | None:
         """Execute a message with concurrency control."""
         group_id = message.group_id
@@ -244,36 +219,11 @@ class Orchestrator:
             if input_alive is not None and not input_alive():
                 raise ValueError("Reviewed message owner changed before turn admission; no replay")
             session = runtime.get_or_create_session(allow_reset=input_alive is None)
-            if child_queue is not None:
-                child_queue(session)
-            if child_ui is not None:
-                session.children.extensions.enable_editor_write(child_ui[0], editor_write is not None
-                                                                and editor_write[0]())
             previous_menu = session.extensions.command_menu_handler
             menu_handler = self._command_menu_handler(session, command_menu) if command_menu is not None else None
-            session.extensions.command_menu_handler = menu_handler
-            from xdog.claw.core.runtime.context_messages import handler as context_handler_for
-            previous_context = session.extensions.context_message_handler
-            context_handler = (context_handler_for(session, context_message_alive)
-                               if context_message_alive is not None else None)
-            session.extensions.context_message_handler = context_handler
             previous_pending = session.extensions.pending_messages
+            session.extensions.command_menu_handler = menu_handler
             session.extensions.pending_messages = self._pending_messages_reader(session)
-            previous_queue = session.extensions.queued_input_handler
-            queue_handler = self._queued_input_handler(session, queued_input) if queued_input is not None else None
-            session.extensions.queued_input_handler = queue_handler
-            previous_name = session.extensions.name_request_handler
-            name_handler = name_request.bind(session) if name_request is not None else None
-            session.extensions.name_request_handler = name_handler
-            previous_active_tools = session.extensions.active_tools_request_handler
-            active_tools_handler = active_tools_request.bind(session) if active_tools_request is not None else None
-            session.extensions.active_tools_request_handler = active_tools_handler
-            previous_compaction = session.extensions.compaction_request_handler
-            compact_handler = compaction_request.bind(session) if compaction_request is not None else None
-            session.extensions.compaction_request_handler = compact_handler
-            previous = session.extensions.editor_write_handler
-            handler = self._editor_write_handler(session, editor_write) if editor_write is not None else None
-            session.extensions.editor_write_handler = handler
             try:
                 result: TurnResult | None = await session.run_turn(
                     message,
@@ -284,21 +234,9 @@ class Orchestrator:
                 )
                 return result
             finally:
-                if session.extensions.active_tools_request_handler is active_tools_handler:
-                    session.extensions.active_tools_request_handler = previous_active_tools
-                if session.extensions.name_request_handler is name_handler:
-                    session.extensions.name_request_handler = previous_name
-                if session.extensions.compaction_request_handler is compact_handler:
-                    session.extensions.compaction_request_handler = previous_compaction
                 session.extensions.pending_messages = previous_pending
-                if session.extensions.context_message_handler is context_handler:
-                    session.extensions.context_message_handler = previous_context
                 if session.extensions.command_menu_handler is menu_handler:
                     session.extensions.command_menu_handler = previous_menu
-                if session.extensions.queued_input_handler is queue_handler:
-                    session.extensions.queued_input_handler = previous_queue
-                if session.extensions.editor_write_handler is handler:
-                    session.extensions.editor_write_handler = previous
 
     def _command_menu_handler(self, session: AgentSession, binding: CommandMenuHost
                               ) -> Callable[[str, dict[str, Any]], Awaitable[Any]]:
@@ -330,50 +268,7 @@ class Orchestrator:
             return await settle_on(loop, inspect())
         return read
 
-    def _queued_input_handler(self, session: AgentSession, binding: QueuedInputHost
-                              ) -> Callable[[str, dict[str, Any]], Awaitable[Any]]:
-        runtime, agent, session_id = session._runtime, session.agent, session.meta.session_id
-        async def handler(extension: str, dialog: dict[str, Any]) -> bool:
-            from xdog.agent.extensions.invocation import current_invocation
-            from xdog.agent.extensions.queued_input import reviewed
-            invocation = current_invocation()
-            if invocation is None or invocation.child_id or invocation.session_id != session_id:
-                return False
-            revision = runtime._source_revision
-            def alive() -> bool:
-                return (binding[0]() and runtime._active_session is session and session.agent is agent
-                        and runtime.get_new_session_id() == session_id and runtime._source_revision == revision
-                        and agent.is_streaming and not agent.cancellation_requested
-                        and not session.children.supervisor.active and not session._compacting
-                        and runtime.group.id not in self._navigation_groups)
-            async def ask(name: str, projected: dict[str, Any]) -> Any:
-                return await session.extension_dialogs.ask(name, projected) if alive() else False
-            async def apply(identifier: str, content: str, delivery: str, images: tuple[ImageContent, ...]) -> None:
-                await binding[1](identifier, content, delivery, images, alive)
-            return await reviewed(extension, dialog, ask=ask, apply=apply, alive=alive)
-        return handler
 
-    def _editor_write_handler(self, session: AgentSession,
-                              binding: tuple[Callable[[], bool], Callable[[dict[str, Any]], None]],
-                              ) -> Callable[[str, dict[str, Any]], Awaitable[Any]]:
-        """Write-only proposals bind the real invocation to its original native viewer."""
-        runtime, agent, session_id = session._runtime, session.agent, session.meta.session_id
-        async def handler(extension: str, dialog: dict[str, Any]) -> Any:
-            from xdog.agent.extensions.editor_request import reviewed
-            revision = runtime._source_revision
-            def alive() -> bool:
-                return (binding[0]() and runtime._active_session is session and session.agent is agent
-                        and runtime.get_new_session_id() == session_id and runtime._source_revision == revision
-                        and runtime.group.id not in self._navigation_groups)
-            async def ask(name: str, projected: dict[str, Any]) -> Any:
-                return await session.extension_dialogs.ask(name, projected) if alive() else None
-            async def commit(event: dict[str, Any]) -> None:
-                if alive():
-                    binding[1](event)
-                else:
-                    binding[1]({**event, 'type': 'extension_editor_write_discard'})
-            return await reviewed(extension, dialog, ask=ask, commit=commit, discard=binding[1])
-        return handler
 
     # -- Channel delivery ------------------------------------------------------
 
@@ -428,8 +323,6 @@ class Orchestrator:
     async def manage_children(self, group_id: str, action: str, identifier: str, text: str, access: str,
                               expected_session: str,
                               child_ui: tuple[str, Callable[[dict[str, Any]], None]] | None = None,
-                              editor_write_enabled: bool = False,
-                              child_queue: Callable[[AgentSession], None] | None = None,
                               config: dict[str, Any] | None = None, *,
                               images: tuple[ImageContent, ...] = (), return_owner: str = '',
                               return_alive: Callable[[], bool] = lambda: True) -> dict[str, Any]:
@@ -449,10 +342,6 @@ class Orchestrator:
             async with self._queue.acquire(group_id, is_user=True):
                 session = runtime.get_or_create_session(allow_reset=False)
                 session.children.extensions.default_ui = child_ui
-                if child_queue is not None:
-                    child_queue(session)
-                if child_ui is not None:
-                    session.children.extensions.enable_editor_write(child_ui[0], editor_write_enabled)
                 owner = session.children
                 result = await session.manage_children(action, identifier, text, access, config=config, images=images,
                                                        return_owner=return_owner, return_alive=return_alive)
@@ -475,13 +364,6 @@ class Orchestrator:
             return False
         return runtime._active_session.children.extensions.answer(child, identifier, token, value)
 
-    def request_child_custom(self, group_id: str, session_id: str, child: str, identifier: str,
-                             token: str, event: dict[str, Any]) -> bool:
-        runtime = self._runtimes.get(group_id)
-        if (runtime is None or runtime._active_session is None or group_id in self._navigation_groups
-                or (runtime.get_new_session_id() or "") != session_id):
-            return False
-        return runtime._active_session.children.extensions.request_custom(child, identifier, token, event)
 
     def detach_child_ui(self, token: str) -> None:
         for runtime in self._runtimes.values():
@@ -512,43 +394,8 @@ class Orchestrator:
                 runtime._source_revision += 1
         return {"session_id": runtime.get_new_session_id() or "", "plan": state.to_dict()}
 
-    def child_terminal_metadata(self, group_id: str, session_id: str, token: str) -> dict[str, dict[str, Any]]:
-        runtime = self._runtimes.get(group_id)
-        if (runtime is None or runtime._active_session is None or group_id in self._navigation_groups
-                or (runtime.get_new_session_id() or "") != session_id):
-            return {}
-        return runtime._active_session.children.extensions.terminal_metadata(token)
 
-    def capture_child_terminal(self, group_id: str, session_id: str, generation: int,
-                               child: str, token: str) -> TerminalTarget:
-        runtime = self._runtimes.get(group_id)
-        if runtime is None or runtime._active_session is None or group_id in self._navigation_groups:
-            raise ValueError("Child terminal session unavailable")
-        session, revision = runtime._active_session, runtime._source_revision
-        extensions, child_alive = session.children.extensions.capture_terminal(child, token, generation)
-        def alive() -> bool:
-            return (runtime._active_session is session and runtime._source_revision == revision
-                    and (runtime.get_new_session_id() or "") == session_id
-                    and group_id not in self._navigation_groups and child_alive())
-        if not alive() or not extensions.terminal_input_available:
-            raise ValueError("Child terminal owner changed")
-        return TerminalTarget(extensions, alive)
 
-    def capture_terminal_input(self, group_id: str, expected_session: str, expected_generation: int) -> TerminalTarget:
-        runtime = self._runtimes.get(group_id)
-        if runtime is None or not expected_session or group_id in self._navigation_groups:
-            raise ValueError("Terminal group/session unavailable")
-        session = runtime._active_session
-        revision = runtime._source_revision
-        def alive() -> bool:
-            return (runtime._active_session is session and session is not None
-                    and (runtime.get_new_session_id() or "") == expected_session
-                    and runtime._source_revision == revision and group_id not in self._navigation_groups
-                    and session.extensions.generation == expected_generation
-                    and not session.extension_dialogs.has_pending)
-        if (session is None or not alive() or not session.extensions.terminal_input_available):
-            raise ValueError("Terminal extension runtime is not active")
-        return TerminalTarget(session.extensions, alive)
 
     async def compact_session(self, group_id: str, expected_session: str, instructions: str,
                               alive: Callable[[], bool]) -> dict[str, Any]:
@@ -744,17 +591,10 @@ class Orchestrator:
     async def manage_extensions(self, group_id: str, action: str, name: str, args: str,
                                 expected_session: str,
                                 on_dialog: Callable[[dict[str, Any]], None] | None = None, *,
-                                tool_selection_alive: Callable[[], bool] | None = None,
-                                compaction_alive: Callable[[], bool] | None = None,
-                                message_alive: Callable[[], bool] | None = None,
-                                message_ready: MessageReady | None = None,
-                                message_images_alive: Callable[[], bool] | None = None,
-                                editor_write_alive: Callable[[], bool] | None = None,
                                 provider_auth_alive: Callable[[], bool] | None = None,
                                 command_menu: CommandMenuHost | None = None,
-                                context_message_alive: Callable[[], bool] | None = None,
-                                context_schedule: Any = None, context_trigger: Any = None,
                                 ) -> dict[str, Any]:
+        """Execute trusted extension commands with basic dialogs and read-only host queries."""
         runtime = self._runtimes.get(group_id)
         if runtime is None or (runtime.get_new_session_id() or "") != expected_session:
             raise ValueError("Extension session/group changed; refresh before retrying")
@@ -764,194 +604,69 @@ class Orchestrator:
             if action == "auth":
                 return await self._manage_provider_auth(session, args, on_dialog, provider_auth_alive)
             notices: list[str] = []
+            owner_session = session.meta.session_id
+            original_agent, source_revision = session.agent, runtime._source_revision
+            host_loop = asyncio.get_running_loop()
+            def owned() -> bool:
+                current = runtime._active_session
+                return (current is not None and current is session and current.agent is original_agent
+                    and (runtime.get_new_session_id() or "") == owner_session
+                    and runtime._source_revision == source_revision and group_id not in self._navigation_groups)
             def publish(event: dict[str, Any]) -> None:
-                if event.get("type") == "extension_notice" and len(notices) < 8:
+                if event.get("type") == "extension_notice" and len(notices) < 8 and owned():
                     notices.append(str(event.get("text", ""))[:4000])
-            session.extensions.publish = publish
-            session.extension_dialogs.publish = on_dialog or (lambda event: None)
-            session.extensions.custom_handler = session.extension_dialogs.ask_custom if on_dialog is not None else None
-            session.extensions.custom_refresh_handler = session.extension_dialogs.refresh_custom if on_dialog else None
-            session.extensions.custom_control_handler = session.extension_dialogs.control_custom if on_dialog else None
-            session.extensions.dialog_handler = session.extension_dialogs.ask if on_dialog is not None else None
-            session.extensions.dialog_cancel = session.extension_dialogs.cancel_extension
             async def catalog(extension: str, request: dict[str, Any]) -> dict[str, Any] | None:
                 from xdog.agent.extensions.catalog import page
                 from xdog.agent.extensions.runtime import _owned_disk
-                owner = runtime.get_new_session_id() or ""
                 if (action != "command" or not name.lower().startswith("ext-" + extension.lower() + "-")
-                        or not owner or runtime._active_session is not session):
+                        or not owner_session or not owned()):
                     return None
                 scope = ("sessions" if request["scope"] == "sessions" else
-                         "tree|" + (request["session_id"] or owner) + "|" + request["branch_id"])
+                         "tree|" + (request["session_id"] or owner_session) + "|" + request["branch_id"])
                 rows = await _owned_disk(runtime.navigation_entries, scope)
-                result = await _owned_disk(page, rows, request, owner)
-                if (runtime.get_new_session_id() or "") != owner or runtime._active_session is not session:
-                    return None
-                return cast(dict[str, Any], result)
-            session.extensions.catalog_handler = catalog if action == "command" and on_dialog is not None else None
-            selected_tools: tuple[int, tuple[str, ...] | None] | None = None
-            host_transition = False
-            compaction_queued = False
-            requested_message: str | None = None
-            requested_images: tuple[ImageContent, ...] = ()
-            message_generation: int | None = None
-            host_loop = asyncio.get_running_loop()
-            source_revision = runtime._source_revision
-            original_agent = session.agent
-            original_model = session.agent.state.model
-            message_source_generation = session._source_generation
-            def tools_current() -> bool:
-                return (session is not None and tool_selection_alive is not None
-                    and tool_selection_alive() and on_dialog is not None
-                    and action == 'command' and session.agent is original_agent
-                    and (runtime.get_new_session_id() or '') == expected_session
-                    and runtime._source_revision == source_revision and not session.agent.is_streaming
-                    and not session.children.supervisor.active and not session._compacting
-                    and runtime._active_session is session)
-            def compaction_current() -> bool:
-                return (compaction_alive is not None and compaction_alive() and on_dialog is not None
-                    and action == 'command' and session.agent is original_agent
-                    and runtime.get_new_session_id() == expected_session and runtime._source_revision == source_revision
-                    and not session.agent.is_streaming and not session.children.supervisor.active
-                    and not session._compacting and runtime._active_session is session)
-            def message_current() -> bool:
-                return (session is not None and message_alive is not None and message_ready is not None
-                    and message_alive()
-                    and on_dialog is not None and action == 'command' and session.agent is original_agent
-                    and runtime.get_new_session_id() == expected_session and runtime._source_revision == source_revision
-                    and not session.agent.is_streaming and not session.children.supervisor.active
-                    and not session._compacting and group_id not in self._navigation_groups
-                    and session._source_generation == message_source_generation
-                    and session.agent.state.model == original_model
-                    and (not requested_images or message_images_alive is not None and message_images_alive())
-                    and (message_generation is None or session.extensions.generation == message_generation)
-                    and runtime._active_session is session)
+                result = await _owned_disk(page, rows, request, owner_session)
+                return cast(dict[str, Any], result) if owned() else None
             async def host_dialog(extension: str, dialog: dict[str, Any]) -> Any:
-                nonlocal selected_tools, host_transition, compaction_queued
-                nonlocal requested_message, requested_images, message_generation
-                from xdog.agent.extensions.active_tools import names, snapshot
+                from xdog.agent.extensions.dialogs import validate_sdk_dialog
                 from xdog.agent.supervision import settle_on
-                operation = dialog.get('operation') if dialog['kind'] == 'session' else ''
-                if operation == 'message':
-                    from xdog.agent.extensions.message_request import prepare
-                    prepared = await asyncio.to_thread(prepare, extension, dialog)
-                    async def can_message() -> bool:
-                        return (message_current() and selected_tools is None and not host_transition
-                                and name.lower().startswith('ext-' + extension.lower() + '-')
-                                and (not prepared.images or message_images_alive is not None
-                                     and message_images_alive()))
-                    if not await settle_on(host_loop, can_message()):
-                        return False
-                    if prepared.images:
-                        try:
-                            await asyncio.to_thread(runtime.validate_images, prepared.images)
-                        except (ValueError, RuntimeError):
-                            return False
-                    if not await settle_on(host_loop, can_message()):
-                        return False
-                    message_generation = session.extensions.generation
-                    reviewed = await session.extension_dialogs.ask(extension, prepared.review)
-                    async def admit_message() -> bool:
-                        nonlocal host_transition, requested_message, requested_images
-                        if reviewed is not True or not prepared.matches(prepared.review) or not await can_message():
-                            return False
-                        requested_message, requested_images, host_transition = prepared.content, prepared.images, True
-                        return True
-                    return await settle_on(host_loop, admit_message())
-                if operation == 'compact':
-                    async def can_compact() -> bool:
-                        return (compaction_current() and selected_tools is None and not host_transition
-                                and name.lower().startswith('ext-' + extension.lower() + '-'))
-                    if not await settle_on(host_loop, can_compact()):
-                        return False
-                    reviewed = await session.extension_dialogs.ask(extension, dialog)
-                    async def admit_compaction() -> bool:
-                        nonlocal host_transition, compaction_queued
-                        if reviewed is not True or not await can_compact():
-                            return False
-                        host_transition = compaction_queued = True
-                        return True
-                    return await settle_on(host_loop, admit_compaction())
-                if operation not in {'active_tools', 'select_tools'}:
-                    if (operation in {'navigate', 'rename', 'browse'}
-                            and (selected_tools is not None or compaction_queued or requested_message is not None)):
-                        return False  # No deferred session transition can borrow this selection's owner.
-                    answer = await session.extension_dialogs.ask(extension, dialog)
-                    if operation in {'navigate', 'rename', 'browse'} and answer is True:
-                        host_transition = True
-                    return answer
-                async def inspect() -> dict[str, Any] | None:
-                    return snapshot(session.agent, expected_session) if (tools_current()
-                        and name.lower().startswith('ext-' + extension.lower() + '-')) else None
-                current = await settle_on(host_loop, inspect())
-                if current is None or operation == 'active_tools':
-                    return current
-                selected = names(dialog['names'])
-                if (host_transition or selected_tools is not None or dialog['revision'] != current['revision']
-                        or selected is not None and not set(selected) <= set(current['configured'])):
-                    return False
-                answer = await session.extension_dialogs.ask(extension, {**dialog, 'current_tools': current})
-                async def admit() -> bool:
-                    nonlocal selected_tools
-                    if (answer is not True or not tools_current()
-                            or session.agent.tool_selection_revision != current['revision']):
-                        return False
-                    selected_tools = current['revision'], selected
-                    return True
-                return await settle_on(host_loop, admit())
-            if on_dialog is not None:
-                session.extensions.dialog_handler = host_dialog
-            await session.initialize_extensions()
+                validate_sdk_dialog(dialog)  # Retired writes cannot borrow this read-only bridge.
+                if not owned() or not name.lower().startswith("ext-" + extension.lower() + "-"):
+                    return None
+                if dialog.get('kind') == 'session' and dialog.get('operation') == 'active_tools':
+                    from xdog.agent.extensions.active_tools import snapshot
+                    async def inspect() -> dict[str, Any] | None:
+                        return snapshot(session.agent, owner_session) if owned() else None
+                    return await settle_on(host_loop, inspect())
+                result = await session.extension_dialogs.ask(extension, dialog)
+                return result if owned() else None
+            previous_publish, previous_dialog_publish = session.extensions.publish, session.extension_dialogs.publish
+            previous_dialog = session.extensions.dialog_handler
+            previous_catalog = session.extensions.catalog_handler
             previous_menu = session.extensions.command_menu_handler
+            previous_pending = session.extensions.pending_messages
             menu_handler = (self._command_menu_handler(session, command_menu)
                             if command_menu is not None and on_dialog is not None else None)
+            session.extensions.publish = publish
+            session.extension_dialogs.publish = on_dialog or (lambda event: None)
+            session.extensions.dialog_handler = host_dialog if on_dialog is not None else None
+            session.extensions.dialog_cancel = session.extension_dialogs.cancel_extension
+            session.extensions.catalog_handler = catalog if action == "command" and on_dialog is not None else None
             session.extensions.command_menu_handler = menu_handler
-            previous_pending = session.extensions.pending_messages
             session.extensions.pending_messages = self._pending_messages_reader(session)
-            from xdog.claw.core.runtime.context_messages import handler as context_handler_for
-            previous_context = session.extensions.context_message_handler
-            context_handler = (context_handler_for(session, context_message_alive,
-                                                  schedule=context_schedule, trigger=context_trigger)
-                               if context_message_alive is not None and on_dialog is not None else None)
-            session.extensions.context_message_handler = context_handler
-            previous_editor_write = session.extensions.editor_write_handler
-            editor_handler = (self._editor_write_handler(session, (editor_write_alive, on_dialog))
-                              if editor_write_alive is not None and on_dialog is not None else None)
-            session.extensions.editor_write_handler = editor_handler
             try:
+                await session.initialize_extensions()
                 if action == "command":
                     output = await session.extensions.command(name, args)
                 else:
                     await session.extensions.manage(action, name)
                     output = ""
                 await session.initialize_extensions()
-                tools_result: dict[str, Any] | None = None
-                if selected_tools is not None:
-                    applied = False
-                    if tools_current():
-                        session._children_idle()
-                        try:
-                            await session.select_active_tools(selected_tools[1], expected_revision=selected_tools[0],
-                                                              alive=tools_current)
-                            applied = True
-                        except (ValueError, RuntimeError, OSError):
-                            pass
-                    tools_result = {'applied': applied,
-                        'active': [tool.name for tool in session.agent.active_tools],
-                        'revision': session.agent.tool_selection_revision}
                 active_model = session.extensions.provider_model(session.agent.state.model)
                 context_window = (active_model.context_window if active_model is not None else
                                   0 if session.agent.state.model.startswith("ext-") else session.agent.context_window)
-                message_queued = requested_message is not None and message_current()
-                if message_queued and message_ready is not None and requested_message is not None:
-                    message_ready(requested_message, requested_images, message_current)
                 payload: dict[str, Any] = {"session_id": runtime.get_new_session_id() or "",
                     "snapshot": session.extensions.snapshot(), "output": output, "notices": notices,
-                    "model": session.agent.state.model, "model_context_window": context_window,
-                    "compaction_queued": compaction_queued and compaction_current(),
-                    "message_queued": message_queued}
-                if tools_result is not None:
-                    payload['active_tool_selection'] = tools_result
+                    "model": session.agent.state.model, "model_context_window": context_window}
                 if isinstance(output, ExtensionCommandResult):
                     payload["output"] = output.summary
                     payload["command_content"] = output.to_dict()
@@ -960,12 +675,13 @@ class Orchestrator:
                 session.extensions.pending_messages = previous_pending
                 if session.extensions.command_menu_handler is menu_handler:
                     session.extensions.command_menu_handler = previous_menu
-                if session.extensions.context_message_handler is context_handler:
-                    session.extensions.context_message_handler = previous_context
-                if session.extensions.editor_write_handler is editor_handler:
-                    session.extensions.editor_write_handler = previous_editor_write
-                if session.extensions.dialog_handler is host_dialog:
-                    session.extensions.dialog_handler = None
+                if session.extensions.catalog_handler is catalog:
+                    session.extensions.catalog_handler = previous_catalog
+                if session.extensions.dialog_handler is host_dialog or on_dialog is None:
+                    session.extensions.dialog_handler = previous_dialog
+                if session.extensions.publish is publish:
+                    session.extensions.publish = previous_publish
+                session.extension_dialogs.publish = previous_dialog_publish
                 await session._sync_extension_tools()
 
     async def complete_extension_argument(self, group_id: str, expected_session: str,
@@ -1027,12 +743,6 @@ class Orchestrator:
             return False
         return runtime._active_session.extension_dialogs.resolve(identifier, value)
 
-    def request_extension_custom(self, group_id: str, session_id: str, identifier: str, event: dict[str, Any]) -> bool:
-        runtime = self._runtimes.get(group_id)
-        if (runtime is None or (runtime.get_new_session_id() or "") != session_id
-                or runtime._active_session is None or group_id in self._navigation_groups):
-            return False
-        return runtime._active_session.extension_dialogs.request_custom(identifier, event)
 
     async def manage_mcp(self, group_id: str, action: str, server: str) -> tuple[dict[str, Any], ...]:
         runtime = self._runtimes.get(group_id)

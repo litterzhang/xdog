@@ -109,29 +109,6 @@ if os.environ.get('XDOG_FIXTURE_ARGUMENT_STATE'):
         return changed
     InteractiveMode._poll = _observed_coding_argument_poll
 
-# Exercise the production macOS helper protocol on Linux/private tmux; this is
-# not native AppKit/desktop validation. Replace only this module's sys reference.
-if os.environ.get("XDOG_FIXTURE_MAC_CLIPBOARD") == "1":
-    from types import SimpleNamespace
-
-    import xdog.tui.attachments as clipboard_attachments
-    clipboard_attachments.sys = SimpleNamespace(platform="darwin")
-
-# Offline Win32 helper transport only; native Windows desktop/terminal validation
-# remains separate. Do not replace process-global sys.platform on this Linux peer.
-if os.environ.get("XDOG_FIXTURE_WIN_CLIPBOARD"):
-    from types import SimpleNamespace
-
-    import xdog.tui.attachments as clipboard_attachments
-    clipboard_attachments.sys = SimpleNamespace(platform="win32",
-        executable=os.environ["XDOG_FIXTURE_WIN_CLIPBOARD"])
-
-# Exercise only the owned Windows copy protocol on Linux/private tmux.
-if os.environ.get("XDOG_FIXTURE_WIN_COPY"):
-    from types import SimpleNamespace
-
-    import xdog.tui.transcript_transfer as clipboard_transfer
-    clipboard_transfer.sys = SimpleNamespace(platform="win32", executable=os.environ["XDOG_FIXTURE_WIN_COPY"])
 
 
 class FixtureProvider:
@@ -324,26 +301,14 @@ if __name__ == "__main__":
         spec.loader.exec_module(module)
         peer = module.Peer()
         peer.issue_refresh = os.environ.get("XDOG_FIXTURE_REFRESH") == "1"
-        if os.environ.get("XDOG_FIXTURE_CLIENT_AUTH"):
-            peer.method = os.environ["XDOG_FIXTURE_CLIENT_AUTH"]
-            peer.secret = Path("oauth-client-secret.txt").read_text()
-            os.environ["XDOG_TERMINAL_OAUTH_SECRET"] = peer.secret
-            if peer.method == 'private_key_jwt':
-                import re
-                import subprocess
-                public = subprocess.run(['openssl', 'pkey', '-text_pub', '-noout'], input=peer.secret.encode(),
-                                        capture_output=True, check=True).stdout.decode()
-                modulus = int(re.search(r'Modulus:\s*([0-9a-f:\s]+)Exponent:', public)[1].replace(':', '')
-                              .replace('\n', '').replace(' ', ''), 16)
-                peer.public_rsa = modulus, int(re.search(r'Exponent: ([0-9]+)', public)[1])
         handler = peer.handle
-        async def record_registration(request):
+        async def record_oauth(request):
             if request.url.path == "/register":
-                Path("oauth-registration.json").write_text(json.dumps({"effect": "registration POST"}))
+                raise AssertionError("Pre-registered public OAuth must not issue registration POSTs")
             if request.url.path == "/token" and b"grant_type=refresh_token" in request.content:
                 Path("oauth-refresh.json").write_text(json.dumps({"effect": "refresh POST"}))
             return await handler(request)
-        peer.transport = httpx.MockTransport(record_registration)
+        peer.transport = httpx.MockTransport(record_oauth)
         factory = httpx.AsyncClient
         OAuthOwner.client = lambda self: factory(transport=peer.transport, trust_env=False, follow_redirects=False)
         original_start = OAuthOwner.start

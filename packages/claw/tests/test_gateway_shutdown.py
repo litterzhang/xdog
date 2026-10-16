@@ -206,3 +206,86 @@ async def test_channel_workers_settle_before_resources_and_mcp_failure_still_clo
     with pytest.raises(ValueError, match="mcp cleanup failed"):
         await server.stop()
     assert order == ["channel", "mcp", "memory"]
+
+
+async def test_stop_settles_idle_client_even_when_dispatch_does_not_reply(tmp_path, monkeypatch):
+    """A failed control reply must not strand test/host shutdown on an open peer."""
+    server = make_server(tmp_path, monkeypatch)
+    dispatch = AsyncMock(return_value=None)
+    monkeypatch.setattr(server, '_dispatch', dispatch)
+    await server.start()
+    reader, writer = await asyncio.open_unix_connection(str(tmp_path / 'gateway.sock'))
+    stopping = None
+    try:
+        writer.write(b'{"type":"ping"}\n')
+        await writer.drain()
+        async with asyncio.timeout(2):
+            while not dispatch.await_count:
+                await asyncio.sleep(.005)
+        stopping = asyncio.create_task(server.stop())
+        # Shield only the cleanup owner; the assertion itself is bounded. Closing
+        # the test peer in finally releases it even if a regression violates this.
+        await asyncio.wait_for(asyncio.shield(stopping), 3)
+        assert not server._client_tasks
+        assert await asyncio.wait_for(reader.readline(), 1) == b''
+    finally:
+        writer.close()
+        await writer.wait_closed()
+        if stopping is not None:
+            await asyncio.wait_for(asyncio.shield(stopping), 3)
+        else:
+            await asyncio.wait_for(server.stop(), 3)
+
+
+@pytest.mark.parametrize("extra_cancel", [False, True])
+async def test_stop_joins_client_already_cleaning_up_after_eof(tmp_path, monkeypatch, extra_cancel):
+    """Shutdown cancellation must not interrupt a peer's admitted resource cleanup."""
+    from xdog.claw.core.runtime.mcp_protocol import McpSender
+
+    server = make_server(tmp_path, monkeypatch)
+    entered, release, settled = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    original_close = McpSender.close
+    original_handle = server._handle_client
+    owned_writers = []
+
+    async def held_close(connection):
+        entered.set()
+        await release.wait()
+        await original_close(connection)
+        settled.set()
+
+    async def capture_writer(reader, writer, client_id=0):
+        owned_writers.append(writer)
+        await original_handle(reader, writer, client_id)
+
+    monkeypatch.setattr(McpSender, 'close', held_close)
+    monkeypatch.setattr(server, '_handle_client', capture_writer)
+    await server.start()
+    _, writer = await asyncio.open_unix_connection(str(tmp_path / 'gateway.sock'))
+    stopping = None
+    try:
+        writer.close()
+        await writer.wait_closed()
+        await asyncio.wait_for(entered.wait(), 2)
+        stopping = asyncio.create_task(server.stop())
+        # Give _stop its cancellation opportunity while the client is in finally.
+        await asyncio.sleep(.02)
+        if extra_cancel:
+            for _ in range(2):
+                for task in tuple(server._client_tasks):
+                    task.cancel()
+                await asyncio.sleep(0)
+        release.set()
+        await asyncio.wait_for(asyncio.shield(stopping), 2)
+        assert settled.is_set(), 'admitted client cleanup was abandoned by stop cancellation'
+        assert not server._client_tasks
+    finally:
+        release.set()
+        # This test owns both socket ends: bound red-test cleanup even if the
+        # production regression skips writer.close() and strands wait_closed().
+        for owned in owned_writers:
+            owned.close()
+        if stopping is not None:
+            await asyncio.wait_for(asyncio.shield(stopping), 3)
+        else:
+            await asyncio.wait_for(server.stop(), 3)

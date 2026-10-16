@@ -134,5 +134,5 @@ async def test_read_only_snapshot_getter_returns_a_fresh_copy_without_command_au
     first['name'] = 'mutated'
     assert (await api.get_model())['name'] == 'private/model'
     assert (await api.get_context_usage())['source'] == 'unavailable'
-    assert await api.get_session() is None and await api.open_sessions() is False
+    assert await api.get_session() is None and not hasattr(api, 'open_sessions')
     assert not api._dialogs

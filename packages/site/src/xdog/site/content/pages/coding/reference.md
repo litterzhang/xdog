@@ -18,7 +18,8 @@ message.
 | `--working-dir · --config` | Set the working directory / config file. |
 | `--thinking-level` | none / normal / deep / ultrathink. |
 | `--list-models · --pick-session` | List models / pick a session interactively. |
-| `--rpc · --verbose` | Start the RPC front-end / verbose logging. |
+| `--acp · --session ID` | Explicit ACP ingress / send to an exact live session. |
+| `--verbose` | Verbose logging. |
 
 ## Slash commands
 

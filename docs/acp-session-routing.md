@@ -21,12 +21,12 @@ Evidence → Detector → Event → EventRouter → selected EventHandler
                                                    │
                                       same durable Session Inbox
                                                    │ automatic pending intake
-TUI / RPC human inputs ──────────────────→ sole SessionController
+TUI human inputs ──────────────────→ sole SessionController
                                                    │ fixed batch of independent inputs
                                            AgentSession → Agent
                                                    │ tool calls only
                                            existing permission hook
-TUI / RPC observe per-input facts and one shared batch stream; neither is a callback host
+TUI observes per-input facts and one shared batch stream; it is not a callback host
 ```
 
 Three independent lifetimes matter: persisted session identity/history, a live
@@ -177,7 +177,7 @@ permission, owner generation, storage path or branch override is accepted.
 Status pages contain at most 64 summaries; full evidence is available through
 explicit inbox inspection. All JSON/frame/capacity errors fail closed.
 
-## Automatic intake, execution attempts and TUI/RPC
+## Automatic intake, execution attempts and native owners
 
 ```text
 pending → claimed(owner generation + attempt/request IDs) → running(batch ID) → terminal
@@ -186,8 +186,8 @@ pending → claimed(owner generation + attempt/request IDs) → running(batch ID
 ```
 
 Every coding external prompt/callback uses the same durable Inbox, online and
-offline. A running receiver can accept without a TUI or owner. Opening a native,
-RPC or SDK owner installs its normal permission/UI hooks and then automatically
+offline. A running receiver can accept without a TUI or owner. Opening a native
+TUI or SDK owner installs its normal permission/UI hooks and then automatically
 consumes eligible pending messages. The setup barrier is machine initialization,
 not user approval. Loading a skill or inspecting history never starts an owner.
 
@@ -225,12 +225,11 @@ attachments remain associated with their individual inputs.
 
 Each member retains its own acceptance/result/state; members share assistant/tool
 output and a batch ID. TUI live/replay displays each input once and the shared
-output once. RPC emits independent `session_event` receipts and one correlated
-`message_start`/`message_end` stream with `batch_id` and `request_ids`; negotiated
-extension dialogs belong to the actual batch, not an arbitrary first member or
-caller waiting task. Clients echo the supplied scope rather than guessing it from
-one input ID. Ready precedes initial Inbox snapshots. The reader remains active
-for real tool `permission_response`, inspection and scoped controls.
+output once. Native views observe controller per-input facts and the shared
+batch stream; extension dialogs belong to the actual batch, not an arbitrary
+first member or caller waiting task. Input and execution identities remain
+independent. Tool approval, inspection and scoped cancellation use their existing
+native ownership rules, not the removed Coding RPC transport.
 
 Only participating ACP prompt peers receive that batch's live response; explicit
 load replays history to its own peer. A member's cancel/disconnect does not abort
@@ -238,7 +237,7 @@ other members, and `execution_continues` distinguishes detached waiters from
 withdrawn execution. A singleton batch can be canceled normally; trusted local
 abort/owner shutdown can stop the whole batch and must settle real producers/tools
 before releasing ownership. A terminal persistence failure is an error to SDK,
-print, RPC and ACP, never a successful empty answer. Handled inputs produce system
+print and ACP, never a successful empty answer. Handled inputs produce system
 feedback rather than an invented assistant response.
 
 An optional human CLI data-write path exists:
@@ -253,8 +252,8 @@ model/permission/resume overrides or silently convert a failed live prompt.
 
 TUI real-time/history views label source and evidence as untrusted, retain full
 details, and join durable records to canonical attempts without duplicate payloads.
-RPC `type: inbox` supports list/show/cancel/retry; `inbox_cancel` cancels only its
-own administrative operation, not another peer's accepted execution. New canonical
+Native inbox list/show/cancel/retry retains administrative-operation ownership;
+canceling inspection does not cancel another peer's accepted execution. Canonical
 external inputs use `xdog.session_input.v1`.
 
 ## Ownership, limits and security

@@ -14,7 +14,6 @@ from xdog.agent.mcp.config import McpServerConfig
 from xdog.agent.mcp.input_requests import INPUT_METHODS, InputRequests
 from xdog.agent.mcp.oauth_discovery import OAuthChallenge, challenge
 from xdog.agent.mcp.protocol import header_value, modern_discovery
-from xdog.agent.mcp.reverse_requests import ReverseRequests
 from xdog.agent.mcp.stdio import CURRENT_VERSION, LEGACY_VERSIONS, MAX_FRAME, McpError
 from xdog.agent.mcp.subscriptions import (
     CATALOGS,
@@ -116,8 +115,7 @@ class HttpClient:
     def __init__(self, config: McpServerConfig, credential: Callable[[], str | None] | None = None) -> None:
         self.config = config
         self.root_capability = RootCapability(config.roots)
-        self.reverse = ReverseRequests()
-        self.inputs = InputRequests(self.root_capability, self.reverse)
+        self.inputs = InputRequests(self.root_capability)
         self._credential = credential
         self.authorization_challenge: OAuthChallenge | None = None
         self.challenge_invalid = False
@@ -142,7 +140,6 @@ class HttpClient:
             raise McpError("HTTP connection already exists; disconnect before reconnecting")
         self.modern, self.version = False, ""
         self.root_capability.active = False
-        self.reverse.active = False
         self.inputs.active = False
         self.inputs._failed = False
         self.state = "connecting"
@@ -166,17 +163,15 @@ class HttpClient:
                 if recognized or not legacy:
                     raise
                 self.root_capability.active = True
-                self.reverse.active = True
                 response = await self.request("initialize", {
                     "protocolVersion": LEGACY_VERSIONS[0],
-                    "capabilities": {**self.root_capability.advertised(), **self.reverse.advertised()},
+                    "capabilities": self.root_capability.advertised(),
                     "clientInfo": {"name": "xdog", "version": "2.4.1"},
                 })
                 version = response.get("protocolVersion")
                 if version not in LEGACY_VERSIONS:
                     raise McpError("Unsupported legacy MCP HTTP protocol version")
                 self.version = version
-                await self.reverse.negotiated(version)
                 self.capabilities = response.get("capabilities", {})
                 self.server_info = response.get("serverInfo", {})
                 if not isinstance(self.capabilities, dict) or not isinstance(self.server_info, dict):
@@ -186,7 +181,6 @@ class HttpClient:
             else:
                 self.version, self.capabilities, self.server_info = modern_discovery(response)
                 self.modern = True
-                await self.reverse.negotiated(self.version)
                 self.root_capability.active = True
                 self.inputs.active = True
             if not ({"tools", "resources", "prompts"} & self.capabilities.keys()
@@ -324,11 +318,7 @@ class HttpClient:
                         and isinstance(message.get("params"), dict)):
                     return None  # Request-scoped telemetry is not model/tool content.
                 raise McpError("Current MCP HTTP streams cannot send unrelated requests/notifications")
-            if self.reverse.notification(message) or self.reverse.cancel(message):
-                return None
             if "id" in message:
-                if self.reverse.admit(message, self._post, timeout=self.config.timeout):
-                    return None
                 answer = self.root_capability.response(message)
                 await self._post({"jsonrpc": "2.0", "id": message["id"], **answer})
             elif message.get("method") in {"notifications/" + kind + "/list_changed" for kind in CATALOGS}:
@@ -568,14 +558,12 @@ class HttpClient:
         except Exception:
             self.root_capability.active = False
             await self.inputs.close(failed=True)
-            await self.reverse.close()
             self.error = "Legacy notification stream closed; resumption unavailable/exhausted, reconnect explicitly"
             self.resources.close()
 
     async def close(self) -> None:
         self.root_capability.active = False
         await self.inputs.close()
-        await self.reverse.close()
         self.state = "disconnected"
         self.resources.close()
         resource_tasks = tuple(self._resource_streams.values())

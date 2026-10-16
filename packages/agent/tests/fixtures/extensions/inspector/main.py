@@ -9,8 +9,8 @@ def setup(api):
         # Read-only snapshots do not acquire command/editor/navigation authority.
         if scope != 'command':
             assert await api.get_session() is None
-            assert await api.open_sessions() is False
-            assert await api.navigate_session('new') is False
+            assert not hasattr(api, 'open_sessions')
+            assert not hasattr(api, 'navigate_session')
         api.append_entry('inspection', value)
         return value
 

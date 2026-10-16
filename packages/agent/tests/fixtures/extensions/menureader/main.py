@@ -12,7 +12,7 @@ def setup(api):
 
     async def probe(scope, context):
         if scope != 'command':
-            assert await api.get_editor() is None and not await api.open_sessions()
+            assert not hasattr(api, 'get_editor') and not hasattr(api, 'open_sessions')
         first = await api.get_command_catalog(timeout=5)
         rows = [] if first is None else list(first['commands'])
         if first is not None:
@@ -61,21 +61,6 @@ def setup(api):
             await probe('context', context)
         return messages
 
-    async def terminal(data, metadata, context):
-        assert await api.get_command_catalog() is None
-        return {'consume': False}
-
-    async def custom(args, context):
-        inspected = None
-        async def render(width, height):
-            assert await api.get_command_catalog() is None
-            return {'lines': ['Owned read-only menu probe']}
-        async def on_input(event):
-            nonlocal inspected
-            if inspected is None:
-                inspected = await probe('custom-input', context)
-            return {'done': True, 'value': inspected}
-        return str(await api.custom('Read original menu', render, on_input))
 
     async def provider(model, context, options):
         assert await api.get_command_catalog() is None
@@ -83,12 +68,10 @@ def setup(api):
         yield {'type': 'done'}
 
     api.command('inspect', 'Read original host menu metadata', command)
-    api.command('custom', 'Read menu from original custom input', custom)
     api.tool('inspect', 'Read actual host menu, never execute or borrow a composer', {'type': 'object'}, tool)
     api.on('turn_start', event)
     api.before_tool(pre)
     api.after_tool(post)
     api.on_input(input_hook)
     api.context(transform)
-    api.on_terminal_input(terminal)
     api.register_provider('offline', [{'id': 'scope', 'context_window': 32000, 'max_tokens': 2048}], provider)

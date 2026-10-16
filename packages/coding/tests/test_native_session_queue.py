@@ -83,45 +83,19 @@ def test_native_external_turn_uses_same_streaming_presenter(coding_session):
         ui._session_events.close()
 
 
-def test_terminal_callback_holds_automatic_work_until_its_cleanup(coding_session):
-    from xdog.tui.terminal_interception import HeldTerminalInput
+def test_native_input_has_no_terminal_callback_worker_or_producer(coding_session):
+    from xdog.tui.stdin_buffer import KeyBytes, Paste
+
     ui = InteractiveMode(coding_session)
-    ui._session_events.start()
-    controller = coding_session.runtime.controller
-    entered, release, started = threading.Event(), threading.Event(), threading.Event()
-
-    async def terminal(data, **kwargs):
-        entered.set()
-        try:
-            await asyncio.to_thread(release.wait)
-        finally:
-            await asyncio.sleep(.01)
-        return {'action': 'pass'}
-
-    async def execute(value):
-        started.set()
-        return TurnResult('succeeded', None)
-
-    coding_session.extensions.terminal_input = terminal
-    controller.max_messages_per_turn = 1
-    controller._execute_batch = single_input_execute(execute)
-    ticket = None
-    try:
-        controller.human_input()
-        assert ui._send_terminal_hook(HeldTerminalInput(1, 'owner', 'text', 'prompt', 'key'))
-        assert entered.wait(3)
-        ticket = controller.submit(SessionInput('external', 'acp', 'watcher', 'review', (), {}), peer_id='acp')
-        ticket.accepted.result(timeout=3)
-        async def probe():
-            return None
-        controller._async(probe).result(timeout=3)
-        assert not started.is_set()
-        release.set()
-        assert ticket.result.result(timeout=3).status == 'succeeded'
-    finally:
-        release.set()
-        ui._request_exit()
-        ui._session_events.close()
+    submitted = []
+    ui._editor.on_submit = submitted.append
+    assert not hasattr(ui, '_terminal_worker')
+    assert not hasattr(ui, '_send_terminal_hook')
+    assert not hasattr(ui, '_terminal_input')
+    ui._tui._handle_frame(KeyBytes(b'native'))
+    ui._tui._handle_frame(Paste('\n/exit\r'))
+    assert 'native' in ui._editor.get_text() and '/exit' in ui._editor.get_text()
+    assert not submitted and coding_session.runtime is None
 
 
 @pytest.mark.parametrize('kind', ['control', 'image'])

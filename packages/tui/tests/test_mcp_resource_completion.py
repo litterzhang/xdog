@@ -1,139 +1,86 @@
+"""No opaque completion form; resources still require explicit selection/read."""
 from __future__ import annotations
 
-import json
+import importlib.util
 
 import pytest
 from xdog.tui.components.mcp_panel import McpPanel
 from xdog.tui.keys import KeyEvent, KeyEventType
-from xdog.tui.mcp_resource import resource_request
 
 
-def envelope(uri='opaque://known/ref', argument='opaque-field', value='pre', context=None):
-    return json.dumps({'uri': uri, 'argument': argument, 'value': value, 'context': context or {}})
-
-
-def form(catalog=False):
-    sent = []
-    panel = McpPanel(lambda *args: sent.append(args), lambda: None, lambda: None, lambda: None)
+@pytest.fixture
+def resource_panel():
+    sent, inserted, exported = [], [], []
+    panel = McpPanel(lambda *args: sent.append(args), lambda: None,
+                     lambda: inserted.append(True), lambda: exported.append(True))
     panel.focused = True
-    panel.publish('list', rows=({'server': 'peer', 'state': 'connected'},))
+    panel.publish("list", rows=({"server": "peer", "state": "connected"},))
+    try:
+        yield panel, sent, inserted, exported
+    finally:
+        panel.close()
+
+
+@pytest.mark.parametrize("catalog", [False, True])
+def test_opaque_resource_form_and_variable_chooser_are_absent(resource_panel, catalog):
+    panel, sent, _, _ = resource_panel
     if catalog:
-        panel.handle_input(KeyEvent('u'))
-        panel.publish('resources', rows=({'name': 'opaque://known/ref', 'title': 'Opaque resource'},))
-    panel.handle_input(KeyEvent('v'))
-    return panel, sent
+        panel.handle_input(KeyEvent("u"))
+        panel.publish("resources", rows=({"name": "opaque://known/ref", "title": "Resource"},))
+    mode, count = panel._mode, len(sent)
+    panel.handle_input(KeyEvent("v"))
+    panel.handle_input(KeyEvent("space", ctrl=True))
+    assert panel._mode == mode and len(sent) == count
+    assert not hasattr(panel, "_resource_form") and not hasattr(panel, "completion")
+    assert importlib.util.find_spec("xdog.tui.mcp_resource") is None
+    assert "completion" not in "\n".join(panel.render(120)).lower()
 
 
-def reply(argument='opaque-field', value='pre', context=()):
-    return {'server': 'peer', 'kind': 'resource', 'name': 'opaque://known/ref', 'argument': argument,
-            'value': value, 'context': context, 'values': ('not-a-uri value', '第二项'), 'total': 2, 'has_more': False}
+def test_catalog_selection_reads_only_on_distinct_press_and_never_inserts(resource_panel):
+    panel, sent, inserted, exported = resource_panel
+    panel.handle_input(KeyEvent("u"))
+    panel.publish("resources", rows=({"name": "opaque://known/ref", "title": "Resource"},))
+    count = len(sent)
+    for event_type in (KeyEventType.RELEASE, KeyEventType.REPEAT):
+        panel.handle_input(KeyEvent("enter", event_type=event_type))
+    assert len(sent) == count
+    panel.handle_input(KeyEvent("enter"))
+    assert sent[-1] == ("read", "peer", "opaque://known/ref", {})
+    assert not inserted and not exported
 
 
-@pytest.mark.parametrize('catalog', [False, True])
-def test_operator_must_supply_opaque_argument_and_selection_is_not_uri_read(catalog):
-    panel, sent = form(catalog)
-    try:
-        assert panel._mode == 'resource_arguments'
-        original = panel._arguments.get_text()
-        assert json.loads(original)['argument'] == ''  # No guessed/schema-invented name.
-        panel.handle_input(KeyEvent('space', ctrl=True))
-        assert panel.completion is None and panel._arguments.get_text() == original
-        panel._arguments.set_text(envelope())
-        panel.handle_input(KeyEvent('space', ctrl=True))
-        assert panel.completion.kind == 'resource'
-        panel.handle_input(KeyEvent('tab'))
-        assert sent[-1] == ('complete_resource', 'peer', 'opaque://known/ref',
-                            {'argument': 'opaque-field', 'value': 'pre', 'context': '{}'})
-        panel.publish('complete_resource', rows=(reply(),))
-        panel.handle_input(KeyEvent('enter'))
-        assert panel.completion is not None  # Not painted, no acceptance.
-        panel.render(80)
-        panel.handle_input(KeyEvent('enter'))
-        assert json.loads(panel._arguments.get_text()) == json.loads(envelope(value='not-a-uri value'))
-        panel.handle_input(KeyEvent('enter', event_type=KeyEventType.REPEAT))
-        assert sent[-1][0] == 'complete_resource'
-        panel.handle_input(KeyEvent('enter'))
-        assert sent[-1] == ('resource_completion_preview', 'peer', 'opaque://known/ref',
-                            {'argument': 'opaque-field', 'value': 'not-a-uri value', 'context': '{}'})
-        assert not any(item[0] in ('read', 'prompt', 'connect') for item in sent)
-    finally:
-        panel.close()
+@pytest.mark.parametrize("draft", ["", "  ", "opaque://{unresolved}/ref", "opaque://unbalanced}", "x" * 8193])
+def test_invalid_explicit_uri_preserves_input_without_resource_read(resource_panel, draft):
+    panel, sent, inserted, exported = resource_panel
+    panel.handle_input(KeyEvent("t"))
+    panel.publish("templates", rows=({"name": "opaque://{name}/ref", "arguments": (("name", "", False),)},))
+    panel.handle_input(KeyEvent("enter"))
+    count = len(sent)
+    panel._arguments.set_text(draft)
+    panel.handle_input(KeyEvent("enter"))
+    assert panel._arguments.get_text() == draft and panel._mode == "uri"
+    assert len(sent) == count and not inserted and not exported
 
 
-def test_context_variable_edits_scope_cancellation_and_parent_json_are_preserved():
-    panel, sent = form()
-    try:
-        panel._arguments.set_text(envelope(context={'language': 'python'}))
-        original = panel._arguments.get_text()
-        panel.handle_input(KeyEvent('space', ctrl=True))
-        panel.handle_input(KeyEvent('tab'))
-        panel.handle_paste('different')
-        assert sent[-1][0] == 'completion_cancel'
-        panel.publish('complete_resource', rows=(reply(context=(('language', 'python'),)),))
-        assert not panel.completion._values
-        panel.handle_input(KeyEvent('escape'))
-        assert panel._arguments.get_text() == original
-        panel.handle_input(KeyEvent('space', ctrl=True))
-        panel._arguments.set_text(envelope(uri='opaque://changed/ref'))
-        panel.render(80)
-        panel.handle_input(KeyEvent('enter'))
-        assert json.loads(panel._arguments.get_text())['uri'] == 'opaque://changed/ref'
-    finally:
-        panel.close()
-
-
-def test_invalid_manual_resource_envelope_preserves_input_without_network() -> None:
-
-    def _check_case(data):
-        panel, sent = form()
-        try:
-            draft = json.dumps(data)
-            panel._arguments.set_text(draft)
-            panel.handle_input(KeyEvent("enter"))
-            assert panel._arguments.get_text() == draft
-            panel.handle_input(KeyEvent("space", ctrl=True))
-            assert panel.completion is None and sent == [("list", "", "", {})]
-            with pytest.raises(ValueError):
-                resource_request(draft)
-        finally:
-            panel.close()
-
-    for data in [
-        [],
-        {},
-        {"uri": "", "argument": "x", "value": "", "context": {}},
-        {"uri": "opaque:ref", "argument": "", "value": "", "context": {}},
-        {"uri": "opaque:ref", "argument": "x", "value": "", "context": {"x": "duplicate"}},
-        {"uri": "opaque:ref", "argument": "x", "value": False, "context": {}},
-        {"uri": "opaque:ref", "argument": "x", "value": "", "context": []},
-        {"uri": "opaque:ref", "argument": "x", "value": "", "context": {"y": True}},
-        {"uri": "opaque:ref", "argument": "x", "value": "", "context": {}, "extra": "bad"},
-        {"uri": "opaque:ref", "argument": "x", "value": "x" * 8193, "context": {}},
-    ]:
-        _check_case(data)
-
-
-def test_manual_unicode_context_and_opaque_uri_are_data_not_templates_or_paths():
-    uri, argument, value, context = resource_request(envelope(uri='opaque://{not-expanded}/ref',
-                                                           value='../../文件', context={'language': '中文'}))
-    assert uri == 'opaque://{not-expanded}/ref' and argument == 'opaque-field'
-    assert value == '../../文件' and context == {'language': '中文'}
-
-
-def test_long_opaque_argument_json_is_visible_in_multiline_bounded_editor():
-    from xdog.tui.utils import visible_width
-    panel, sent = form()
-    try:
-        panel._arguments.set_text(envelope(value='OPAQUE-ARGUMENT-VALUE', context={'language': 'python'}))
-        panel.set_render_budget(12)
-        rows = panel.render(80)
-        editor = ''.join(row[2:] for row in rows if row.startswith(('> ', '  ')))
-        assert 'OPAQUE-ARGUMENT-VALUE' in editor
-        assert 'opaque-field' in '\n'.join(rows) and 'opaque://known/ref' in '\n'.join(rows)
-        for height in (0, 1, 3, 5, 8, 12):
-            panel.set_render_budget(height)
-            rows = panel.render(32)
-            assert len(rows) <= height and all(visible_width(row) <= 32 for row in rows)
-        assert sent == [('list', '', '', {})]
-    finally:
-        panel.close()
+def test_template_input_is_literal_without_expansion_and_requires_separate_read(resource_panel):
+    panel, sent, inserted, exported = resource_panel
+    assert importlib.util.find_spec("xdog.tui.scalar_template") is None
+    panel.handle_input(KeyEvent("t"))
+    template = "opaque://{name}{?format}"
+    panel.publish("templates", rows=({"name": template, "arguments": (("name", "", False),)},))
+    panel.handle_input(KeyEvent("enter"))
+    count = len(sent)
+    for event in (KeyEvent("space", ctrl=True), KeyEvent("tab"), KeyEvent("n", ctrl=True)):
+        panel.handle_input(event)
+    assert panel._arguments.get_text() == template and panel._mode == "uri" and len(sent) == count
+    panel._arguments.set_text("")
+    panel.handle_paste("opaque://explicit/中文?format=literal%20value")
+    assert len(sent) == count
+    panel.handle_input(KeyEvent("enter"))
+    assert sent[-1] == ("read", "peer", "opaque://explicit/中文?format=literal%20value", {})
+    assert not inserted and not exported
+    panel.publish("read", error="Resource request canceled")
+    assert not panel._busy and panel._arguments.get_text() == "opaque://explicit/中文?format=literal%20value"
+    count = len(sent)
+    panel.handle_input(KeyEvent("escape"))
+    assert sent[count:] == [("list", "", "", {})]  # No automatic retry/read on cancel.

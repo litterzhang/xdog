@@ -24,8 +24,6 @@ class NavigationRecoveryError(RuntimeError):
 
 
 def sync_directory(directory: Path) -> None:
-    if os.name != 'posix':
-        return  # Windows process-recovery semantics only; no native power-loss durability claim.
     descriptor = os.open(directory, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
     try:
         os.fsync(descriptor)
@@ -40,12 +38,11 @@ def ownership(directory: Path) -> Iterator[None]:
         raise NavigationRecoveryError('Navigation recovery lock is not owned')
     descriptor = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
     try:
-        if os.name == 'posix':
-            import fcntl
-            try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                raise NavigationRecoveryError('Another process owns navigation persistence') from None
+        import fcntl
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise NavigationRecoveryError('Another process owns navigation persistence') from None
         yield
     finally:
         os.close(descriptor)
@@ -157,7 +154,7 @@ def recover_locked(directory: Path) -> bool:
             try:
                 with os.fdopen(descriptor, 'wb') as output, (directory / row['backup']).open('rb') as source:
                     shutil.copyfileobj(source, output, 1024 * 1024)
-                    os.fchmod(output.fileno(), row['mode']) if os.name == 'posix' else None
+                    os.fchmod(output.fileno(), row['mode'])
                     output.flush()
                     os.fsync(output.fileno())
                 os.replace(temporary, destination)

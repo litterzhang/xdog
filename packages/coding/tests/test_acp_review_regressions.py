@@ -1,7 +1,5 @@
 """Confirmed independent-review defects: public adapters must respect final owner state."""
 import asyncio
-import io
-import json
 
 import pytest
 from xdog.ai.types import AssistantMessage, TextContent, UserMessage
@@ -45,23 +43,6 @@ async def test_print_returns_nonzero_and_does_not_print_a_false_final_answer(cod
     assert 'NEW ANSWER' not in output.out
 
 
-async def test_rpc_final_message_reports_terminal_persistence_failure(coding_session,monkeypatch):
-    from xdog.coding.core.sessions.runtime import SessionRuntime
-    from xdog.coding.modes.rpc.rpc_mode import _handle_prompt
-
-    answer(coding_session)
-    fail_terminal(monkeypatch)
-    runtime=SessionRuntime(coding_session,bound=False)
-    runtime.start()
-    events=[]
-    try:
-        await _handle_prompt(coding_session,'work',events.append)
-        assert any(e['type']=='error' and 'terminal fsync failed' in e['message'] for e in events)
-        assert not any(e['type']=='message_end' and not e.get('is_error') for e in events)
-    finally:
-        await asyncio.wrap_future(runtime.close())
-
-
 async def test_attach_answer_excludes_load_history_user_and_thought_chunks(coding_session,monkeypatch):
     from xdog.coding.acp.client import send_prompt
     from xdog.coding.core.sessions.runtime import SessionRuntime
@@ -96,17 +77,21 @@ async def test_attach_answer_excludes_load_history_user_and_thought_chunks(codin
 
 
 @pytest.mark.parametrize('level',['minimal','low','medium','high','xhigh','off'])
-async def test_real_rpc_thinking_levels_all_use_the_owner(coding_session,monkeypatch,level):
-    import xdog.coding.modes.rpc.rpc_mode as rpc
+async def test_sdk_thinking_levels_all_use_the_owner(coding_session,level):
+    from xdog.coding.core.sessions.runtime import SessionRuntime
 
-    incoming=io.StringIO(json.dumps({'type':'set_thinking','level':level})+'\n{"type":"quit"}\n')
-    outgoing=io.StringIO()
-    monkeypatch.setattr(rpc.sys,'stdin',incoming)
-    monkeypatch.setattr(rpc.sys,'stdout',outgoing)
-    assert await rpc.run_rpc_mode(coding_session)==0
-    events=[json.loads(line) for line in outgoing.getvalue().splitlines()]
-    assert any(e['type']=='ok' and e.get('action')=='set_thinking' and e['level']==level for e in events),events
-    assert not any(e['type']=='error' for e in events)
+    runtime=SessionRuntime(coding_session,bound=False)
+    runtime.start(setup_pending=True)
+    owned=[]
+    async def configure():
+        owned.append(runtime.controller.owns_current_task)
+        coding_session.set_thinking_level(level)
+    try:
+        await asyncio.wrap_future(runtime.controller.control(configure,name='set_thinking'))
+        assert owned == [True]
+        assert coding_session.agent.options.thinking == level
+    finally:
+        await asyncio.wrap_future(runtime.close())
 
 
 async def test_sdk_failed_status_without_exception_cause_is_not_success(coding_session):

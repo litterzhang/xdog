@@ -75,72 +75,51 @@ async def test_obsolete_command_never_grants_execution_and_delivery_is_automatic
         await asyncio.wrap_future(runtime.close())
 
 
-async def test_rpc_inspection_keeps_reader_available_for_actual_tool_permission(coding_session,pending,monkeypatch):
-    import threading
-
-    import xdog.coding.modes.rpc.rpc_mode as rpc
+async def test_native_inspection_remains_available_during_actual_tool_permission(coding_session,pending):
     from xdog.agent import AgentTool, AgentToolResult
     from xdog.ai.types import AssistantMessage, TextContent, ToolCall
     from xdog.ai.utils.event_stream import EventStream
+    from xdog.coding.core.inbox_commands import inbox_action
+    from xdog.coding.core.sessions.runtime import SessionRuntime
 
     store,message = pending
-    permission,listed,finished = threading.Event(),threading.Event(),threading.Event()
-    request_id,calls,effects,events = [''],[],[],[]
+    permission = asyncio.Event()
+    requests,calls,effects = [],[],[]
 
     async def execute(*args,**kwargs):
         effects.append(True)
         return AgentToolResult(content=(TextContent(text='written'),))
 
-    coding_session.agent.set_tools([AgentTool(name='batch_write',description='write',parameters={},execute=execute)])
+    def request(value):
+        requests.append(value)
+        permission.set()
 
     def stream(*args):
         calls.append(True)
         content = ((ToolCall(id='write',name='batch_write',arguments={}),) if len(calls)==1
                    else (TextContent(text='finished'),))
         return EventStream.empty(AssistantMessage(content=content))
+
+    coding_session.agent.set_tools([AgentTool(name='batch_write',description='write',parameters={},execute=execute)])
     coding_session.agent.set_stream_fn(stream)
-
-    class Output:
-        def write(self,value):
-            for line in value.splitlines():
-                if not line:
-                    continue
-                event = json.loads(line)
-                events.append(event)
-                if event.get('type')=='permission_request':
-                    assert event['tool']=='batch_write' and not effects
-                    request_id[0] = event['id']
-                    permission.set()
-                elif event.get('type')=='inbox_result' and event.get('success'):
-                    listed.set()
-                elif event.get('type')=='inbox_snapshot':
-                    if any(r['status']=='succeeded' for r in event.get('messages',[])):
-                        finished.set()
-            return len(value)
-        def flush(self):
-            pass
-
-    class Input:
-        index = 0
-        def readline(self,size=-1):
-            self.index+=1
-            if self.index==1:
-                return json.dumps({'type':'inbox','action':'list','session_id':coding_session.session_id,
-                                   'request_id':'inspect'})+'\n'
-            if self.index==2:
-                assert permission.wait(5)
-                return json.dumps({'type':'permission_response','id':request_id[0],'decision':'allow_once'})+'\n'
-            if self.index==3:
-                assert listed.wait(5) and finished.wait(5)
-                return '{"type":"quit"}\n'
-            return ''
-
-    monkeypatch.setattr(rpc.sys,'stdin',Input())
-    monkeypatch.setattr(rpc.sys,'stdout',Output())
-    assert await rpc.run_rpc_mode(coding_session)==0
-    assert events[0]['type']=='ready' and events[0]['capabilities']['session_inbox']==1
-    assert effects==[True] and len(calls)==2
-    assert store.records(message.session_id,message.cwd)[0].status=='succeeded'
+    coding_session.permissions.set_mode('ask')
+    coding_session.permissions.set_request_handler(request)
+    runtime = SessionRuntime(coding_session,bound=True,inbox_store=store)
+    runtime.start(setup_pending=True)
+    try:
+        await runtime.activate_inputs()
+        await asyncio.wait_for(permission.wait(),3)
+        assert requests[0].tool_name=='batch_write' and not effects
+        listed = await asyncio.wait_for(inbox_action(coding_session,'list'),1)
+        assert listed['messages'][0]['status']=='running'
+        assert coding_session.permissions.resolve(requests[0].id,'allow_once')
+        async with asyncio.timeout(3):
+            while store.records(message.session_id,message.cwd)[0].status!='succeeded':
+                await asyncio.sleep(0.01)
+        assert effects==[True] and len(calls)==2
+        assert not coding_session.permissions.has_pending_requests
+    finally:
+        await asyncio.wrap_future(runtime.close())
 
 
 async def test_opaque_ids_are_quoted_data_not_shell_commands(coding_session,pending,tmp_path):
@@ -157,43 +136,40 @@ async def test_opaque_ids_are_quoted_data_not_shell_commands(coding_session,pend
     assert not (tmp_path/'escaped').exists()
 
 
-@pytest.mark.parametrize('change',[
-    {'session_id':'other'}, {'generation':'old'}, {'origin':'human'}, {'permission':'allow-all'},
-    {'action':'approve','message_ids':'m1'}, {'action':'approve','message_ids':['m1','m1']},
-    {'action':'list','cursor':True}, {'action':'list','message_ids':['m1']},
+@pytest.mark.parametrize('action,ids,cursor',[
+    ('approve',('m1',),0), ('approve',('m1','m1'),0), ('list',(),True),
+    ('list',('m1',),0), ('show',('m1','m1'),0), ('cancel',(),0),
+    ('retry',('--all',),0), ('show',('m1',),1),
 ])
-async def test_rpc_inbox_rejects_stale_or_privilege_fields_before_work(coding_session,pending,change):
+async def test_native_inbox_rejects_invalid_controls_before_work(coding_session,pending,action,ids,cursor):
+    from xdog.coding.core.inbox_commands import inbox_action
     from xdog.coding.core.sessions.runtime import SessionRuntime
-    from xdog.coding.modes.rpc.inbox import RpcInbox
-    from xdog.coding.modes.rpc.navigation import RpcNavigation
 
     store,message = pending
     runtime = SessionRuntime(coding_session,bound=True,inbox_store=store)
     runtime.start(setup_pending=True)
-    events = []
-    helper = RpcInbox(coding_session,RpcNavigation(coding_session,events.append),events.append)
-    packet = {'type':'inbox','session_id':coding_session.session_id,'request_id':'review',**change}
     try:
         with pytest.raises(ValueError):
-            helper.start(packet)
-        assert not helper.tasks and not coding_session.messages
+            await inbox_action(coding_session,action,ids,cursor=cursor)
+        assert not coding_session.messages
         assert store.records(message.session_id,message.cwd)[0].status=='pending'
+        assert not runtime.controller.store.records()
     finally:
-        await helper.aclose()
         await asyncio.wrap_future(runtime.close())
 
 
-async def test_rpc_inspection_cancel_does_not_abort_another_peer_execution(coding_session,pending,monkeypatch):
-    import xdog.coding.modes.rpc.inbox as inbox_module
+async def test_native_inspection_cancel_does_not_abort_another_peer_execution(coding_session,pending,monkeypatch):
     from xdog.ai.types import AssistantMessage, DoneEvent
     from xdog.ai.utils.event_stream import EventStream
+    from xdog.coding.core.inbox_commands import inbox_action
     from xdog.coding.core.sessions.runtime import SessionRuntime
-    from xdog.coding.modes.rpc.inbox import RpcInbox
-    from xdog.coding.modes.rpc.navigation import RpcNavigation
 
     store,message = pending
-    started,release,inspecting = asyncio.Event(),asyncio.Event(),asyncio.Event()
-    events,requests = [],[]
+    import threading
+
+    started,release = asyncio.Event(),asyncio.Event()
+    inspecting,inspection_release,inspection_settled = threading.Event(),threading.Event(),threading.Event()
+    requests = []
 
     def stream(*args):
         result = asyncio.get_running_loop().create_future()
@@ -204,25 +180,31 @@ async def test_rpc_inspection_cancel_does_not_abort_another_peer_execution(codin
             yield DoneEvent(message=AssistantMessage())
         return EventStream(generate(),result)
 
-    async def slow_inspection(*args,**kwargs):
+    original = store.records
+    def slow_inspection(*args,**kwargs):
         inspecting.set()
-        await asyncio.Event().wait()
+        try:
+            assert inspection_release.wait(3)
+            return original(*args,**kwargs)
+        finally:
+            inspection_settled.set()
 
     coding_session.agent.set_stream_fn(stream)
     coding_session.permissions.set_request_handler(requests.append)
     runtime = SessionRuntime(coding_session,bound=True,inbox_store=store)
     runtime.start()
-    helper = RpcInbox(coding_session,RpcNavigation(coding_session,events.append),events.append)
-    monkeypatch.setattr(inbox_module,'inbox_action',slow_inspection)
+    inspection = None
     try:
         await asyncio.wait_for(started.wait(),2)
-        helper.start({'type':'inbox','session_id':coding_session.session_id,'request_id':'inspect','action':'list'})
-        await asyncio.wait_for(inspecting.wait(),2)
-        helper.cancel({'type':'inbox_cancel','session_id':coding_session.session_id,'request_id':'inspect'})
-        async with asyncio.timeout(2):
-            while helper.tasks:
-                await asyncio.sleep(0.01)
-        assert any(e.get('cancelled') is True for e in events)
+        with monkeypatch.context() as scoped:
+            scoped.setattr(store,'records',slow_inspection)
+            inspection = asyncio.create_task(inbox_action(coding_session,'list'))
+            assert await asyncio.to_thread(inspecting.wait,2)
+            inspection.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await inspection
+        inspection_release.set()
+        assert await asyncio.to_thread(inspection_settled.wait,2)
         assert store.records(message.session_id,message.cwd)[0].status=='running'
         assert coding_session.agent.is_streaming and not requests
         release.set()
@@ -231,33 +213,27 @@ async def test_rpc_inspection_cancel_does_not_abort_another_peer_execution(codin
                 await asyncio.sleep(0.01)
     finally:
         release.set()
-        await helper.aclose()
+        inspection_release.set()
+        if inspection is not None:
+            await asyncio.gather(inspection,return_exceptions=True)
         await asyncio.wrap_future(runtime.close())
 
 
-async def test_rpc_cancel_targets_pending_message_without_requesting_permission(coding_session,pending):
+async def test_native_cancel_targets_pending_message_without_requesting_permission(coding_session,pending):
+    from xdog.coding.core.inbox_commands import inbox_action
     from xdog.coding.core.sessions.runtime import SessionRuntime
-    from xdog.coding.modes.rpc.inbox import RpcInbox
-    from xdog.coding.modes.rpc.navigation import RpcNavigation
 
     store,message = pending
     runtime = SessionRuntime(coding_session,bound=True,inbox_store=store)
     runtime.start(setup_pending=True)
-    events,requests = [],[]
+    requests = []
     coding_session.permissions.set_request_handler(requests.append)
-    helper = RpcInbox(coding_session,RpcNavigation(coding_session,events.append),events.append)
     try:
-        helper.start({'type':'inbox','session_id':coding_session.session_id,'request_id':'cancel',
-                      'action':'cancel','message_id':'m1'})
-        async with asyncio.timeout(2):
-            while helper.tasks:
-                await asyncio.sleep(0.01)
-        result, = events
-        assert result['success'] and result['result']['status']=='cancelled'
+        result = await inbox_action(coding_session,'cancel',('m1',))
+        assert result['status']=='cancelled'
         assert store.records(message.session_id,message.cwd)[0].status=='cancelled'
         assert not requests and not coding_session.messages and not runtime.controller.store.records()
     finally:
-        await helper.aclose()
         await asyncio.wrap_future(runtime.close())
 
 
@@ -269,46 +245,43 @@ async def test_obsolete_approval_reports_automatic_delivery_without_starting_own
     assert coding_session.runtime is None and not coding_session.permissions.has_pending_requests
 
 
-@pytest.mark.parametrize('change',['generation','revision'])
-async def test_rpc_inbox_does_not_deliver_read_results_after_owner_context_changes(
+@pytest.mark.parametrize('change',['session','branch'])
+async def test_native_inbox_does_not_deliver_read_results_after_owner_context_changes(
     coding_session,pending,monkeypatch,change,
 ):
-    import xdog.coding.modes.rpc.inbox as module
+    import threading
+
+    from xdog.coding.core.inbox_commands import inbox_action
     from xdog.coding.core.sessions.runtime import SessionRuntime
-    from xdog.coding.modes.rpc.inbox import RpcInbox
-    from xdog.coding.modes.rpc.navigation import RpcNavigation
 
     store,_ = pending
     runtime = SessionRuntime(coding_session,bound=True,inbox_store=store)
     runtime.start(setup_pending=True)
-    events = []
-    navigation = RpcNavigation(coding_session,events.append)
-    helper = RpcInbox(coding_session,navigation,events.append)
-    entered,release = asyncio.Event(),asyncio.Event()
-    action = module.inbox_action
-
-    async def held(*args,**kwargs):
-        result = await action(*args,**kwargs)
+    entered,release = threading.Event(),threading.Event()
+    records = store.records
+    def held(*args,**kwargs):
+        result = records(*args,**kwargs)
         entered.set()
-        await release.wait()
+        assert release.wait(3)
         return result
 
-    monkeypatch.setattr(module,'inbox_action',held)
+    monkeypatch.setattr(store,'records',held)
+    original_id = coding_session.session_data.session_id
+    original_branch = coding_session.session_data.active_branch
+    task = asyncio.create_task(inbox_action(coding_session,'list'))
     try:
-        helper.start({'type':'inbox','session_id':coding_session.session_id,'request_id':'held','action':'list'})
-        await asyncio.wait_for(entered.wait(),2)
-        if change=='generation':
-            await asyncio.wrap_future(runtime.controller.rotate(runtime.controller.branch))
+        assert await asyncio.to_thread(entered.wait,2)
+        if change=='session':
+            coding_session.session_data.session_id='replacement-session'
         else:
-            navigation.refresh_revision()
+            coding_session.session_data.active_branch='replacement-branch'
         release.set()
-        async with asyncio.timeout(2):
-            while helper.tasks:
-                await asyncio.sleep(0.01)
-        result, = events
-        assert not result['success'] and 'context changed' in result['message'].lower()
-        assert 'result' not in result and not coding_session.messages
+        with pytest.raises(RuntimeError,match='context changed'):
+            await task
+        assert not coding_session.messages
     finally:
         release.set()
-        await helper.aclose()
+        await asyncio.gather(task,return_exceptions=True)
+        coding_session.session_data.session_id = original_id
+        coding_session.session_data.active_branch = original_branch
         await asyncio.wrap_future(runtime.close())

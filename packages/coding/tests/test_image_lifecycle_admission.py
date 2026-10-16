@@ -19,14 +19,13 @@ from xdog.coding.core.permissions import PermissionManager
 from xdog.coding.core.session_manager import SessionManager
 from xdog.coding.core.settings_manager import SettingsManager
 from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
-from xdog.coding.modes.rpc.rpc_mode import _handle_prompt
 from xdog.tui.attachments import attachment
 
 PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j5ioAAAAASUVORK5CYII='
 ALIAS = 'ext-visionchange-local/vision'
 
 
-@pytest.mark.parametrize('mode', ['rpc', 'coding-ui', 'claw'])
+@pytest.mark.parametrize('mode', ['sdk', 'print', 'coding-ui', 'claw'])
 async def test_actual_turn_start_provider_withdrawal_refuses_image_before_model_history_and_compaction(tmp_path, mode):
     root = tmp_path / 'extensions'
     shutil.copytree(Path(__file__).parents[2] / 'agent/tests/fixtures/extensions/visionchange', root / 'visionchange')
@@ -66,10 +65,12 @@ async def test_actual_turn_start_provider_withdrawal_refuses_image_before_model_
     try:
         assert owner.extensions.provider_model(ALIAS).supports_image_input
         image = ImageContent(data=PNG, mime_type='image/png')
-        if mode == 'rpc':
-            events = []
-            await _handle_prompt(owner, 'Refuse stale vision', events.append, images=(image,))
-            assert events[-1]['type'] == 'error' and 'image input' in events[-1]['message']
+        if mode == 'sdk':
+            with pytest.raises(ValueError, match='image input'):
+                await owner.send_message('Refuse stale vision', images=(image,))
+        elif mode == 'print':
+            from xdog.coding.modes.print_mode import run_print_mode
+            assert await run_print_mode(owner, 'Refuse stale vision', images=(image,)) == 1
         elif mode == 'coding-ui':
             ui = InteractiveMode(owner)
             with pytest.raises(ValueError, match='image input'):

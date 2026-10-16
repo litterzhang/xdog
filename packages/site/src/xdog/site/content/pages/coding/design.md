@@ -20,12 +20,12 @@ history when it approaches the model window (`core/compaction`), and supports
 branching — fork a conversation and restore a branch — so exploratory work does
 not clobber the main thread.
 
-## Three run modes, one core
+## Native run modes and explicit ACP ingress
 
-The same session core drives three front-ends: an interactive TUI (header / chat
+The same session core drives the native front-ends: an interactive TUI (header / chat
 log / status / editor) that streams tokens and visualises tool runs; a
-non-interactive print mode with `text` / `json` / `markdown` output for scripting;
-and an RPC mode for IDE integration.
+non-interactive print mode with `text` / `json` / `markdown` output for scripting. Explicit ACP intake routes to the same sole session
+controller; it is not a replacement complex frontend-control protocol.
 
 ## Layered settings
 

@@ -185,3 +185,71 @@ async def test_canceled_child_creation_retains_and_reaps_the_actual_spawn_owner(
     finally:
         release.set()
         await owner.close()
+
+
+async def test_cold_helper_import_does_not_consume_the_schema_execution_budget(monkeypatch):
+    from xdog.agent.mcp import schema_owner
+
+    monkeypatch.setattr(schema_owner, '_BOOTSTRAP', 'import time;time.sleep(.2);' + schema_owner._BOOTSTRAP)
+    owner = SchemaOwner(timeout=.1)
+    try:
+        document = await owner.compile(True)
+        await owner.validate(document, {'normal': ['JSON', 1]}, label='output')
+        assert owner._process is not None and owner._process.returncode is None
+    finally:
+        await owner.close()
+    assert owner._process is None
+
+
+@pytest.mark.parametrize('phase', ['startup', 'validation', 'malformed-readiness'])
+async def test_schema_startup_and_validation_remain_separately_bounded_and_reap_exact_child(monkeypatch, phase):
+    from xdog.agent.mcp import schema_owner
+
+    script = ('import time;time.sleep(60)' if phase == 'startup' else
+        'import sys,time;print(\'{"schema_helper_ready":1}\',flush=True);sys.stdin.readline();time.sleep(60)'
+        if phase == 'validation' else 'import time;print(\'{"schema_helper_ready":true}\',flush=True);time.sleep(60)')
+    monkeypatch.setattr(schema_owner, '_BOOTSTRAP', script)
+    original = asyncio.create_subprocess_exec
+    processes = []
+
+    async def capture(*args, **kwargs):
+        process = await original(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', capture)
+    owner = SchemaOwner(timeout=.05, startup_timeout=.05 if phase == 'startup' else 10)
+    try:
+        message = 'readiness' if phase == 'malformed-readiness' else phase + ' timed out'
+        with pytest.raises(McpError, match=message):
+            await owner.compile(True)
+        assert len(processes) == 1 and processes[0].returncode is not None
+        assert owner._process is None and owner._active is None
+    finally:
+        await owner.close()
+
+
+async def test_cancel_after_schema_process_spawn_before_ready_reaps_without_processing(monkeypatch):
+    from xdog.agent.mcp import schema_owner
+
+    monkeypatch.setattr(schema_owner, '_BOOTSTRAP', 'import time;time.sleep(60)')
+    original = asyncio.create_subprocess_exec
+    entered, processes = asyncio.Event(), []
+
+    async def capture(*args, **kwargs):
+        process = await original(*args, **kwargs)
+        processes.append(process)
+        entered.set()
+        return process
+
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', capture)
+    owner = SchemaOwner(timeout=.1)
+    work = asyncio.create_task(owner.compile(True))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        work.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(work, 2)
+        assert processes[0].returncode is not None and owner._process is None
+    finally:
+        await owner.close()

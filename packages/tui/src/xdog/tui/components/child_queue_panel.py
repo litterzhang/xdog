@@ -22,14 +22,9 @@ class ChildQueuePanel(Component):
     requires_visible_confirmation = True
 
     def __init__(self, child: str, send: Callable[[dict[str, Any]], None], back: Callable[[], None],
-                 returned: Callable[[dict[str, Any]], None], *,
-                 retain_images: Callable[[dict[str, Any], tuple[Attachment, ...]], None] | None = None) -> None:
+                 returned: Callable[[dict[str, Any]], None]) -> None:
         self.owner_token = uuid.uuid4().hex
         self.child, self.send, self.back, self.returned = child, send, back, returned
-        self.retain_images = retain_images
-        self.image_return_enabled = False
-        self._prepared_images: tuple[Attachment, ...] = ()
-        self._return_command: dict[str, Any] | None = None
         self._focused = False
         self.enabled = True
         self.image_recovery_enabled = False
@@ -99,52 +94,8 @@ class ChildQueuePanel(Component):
             raise ValueError('Duplicate child input identity')
         if 'stopped' in value and type(value['stopped']) is not bool:
             raise ValueError('Invalid child queue stopped/recovery marker')
-        prepared = value.get('return_prepared')
-        if prepared is not None:
-            if (self._sent_action != 'return_prepare' or prepared != self._pending_return
-                    or prepared not in rows or value.get('stopped') is not False
-                    or not self.image_return_enabled or self.retain_images is None
-                    or not images or len(images) != prepared['image_count']
-                    or draft_receipt(prepared['content'], images) != value.get('image_receipt')
-                    or not isinstance(value.get('return_token'), str) or len(value['return_token']) != 32):
-                raise ValueError('Live image preparation missing exact verified bytes/owner receipt; no removal')
-            # Retain an accessible conservative backup BEFORE removal review/commit.
-            # Closing/lost receipts cannot make the transfer the only unowned copy.
-            self.retain_images(prepared, images)
-            self._prepared_images = images
-            self._return_command = {'action': 'return_commit', 'id': prepared['id'],
-                                    'revision': value['revision'], 'token': value['return_token'],
-                                    'receipt': value['image_receipt']}
-            self._rows, self._revision = [dict(row) for row in rows], value['revision']
-            self._sent_action = ''
-            self._busy = False
-            self._confirm = dict(self._return_command)
-            self._mode = 'review'
-            self._scroll, self._layout = 0, (0, 0)
-            self._reviewed.clear()
-            self._visible = False
-            return
-        if self._sent_action == 'return_prepare':
-            raise ValueError('Live image preparation receipt missing; original remains queued')
-        if self._sent_action == 'return_commit':
-            command = self._return_command
-            if (command is None or value.get('returned') != self._pending_return
-                    or value.get('return_token') != command['token']
-                    or value.get('image_receipt') != command['receipt']
-                    or draft_receipt(command['receipt']['content'], self._prepared_images) != command['receipt']
-                    or any(row['id'] == command['id'] for row in rows)):
-                raise ValueError('Live removal receipt missing/mismatched; verified backup retained, inspect queue')
-            image_returned = dict(value['returned'])
-            image_returned['images'] = self._prepared_images
-            self._return_command = None
-            self._prepared_images = ()
-            self._pending_return = None
-            self._sent_action = ''
-            self._busy = False
-            self._rows, self._revision = [dict(row) for row in rows], value['revision']
-            self._visible = False
-            self.returned(image_returned)
-            return
+        if any(key in value for key in ('return_prepared', 'return_token')):
+            raise ValueError('Live image return is not a queue UI operation')
         recovered = value.get('recovered')
         if recovered is not None:
             if (value.get('stopped') is not True
@@ -202,20 +153,9 @@ class ChildQueuePanel(Component):
         self._pending_return = None
 
     def close(self) -> None:
-        command = self._return_command
-        if command is not None and self._sent_action != 'return_commit':
-            self.send({key: value for key, value in {**command, 'action': 'return_cancel'}.items() if key != 'receipt'})
-        self._return_command = None
-        self._prepared_images = ()
+        """No live image-return lease or automatic queue mutation is owned by this UI."""
 
     def _cancel_edit(self) -> None:
-        if self._return_command is not None and self._mode == 'review':
-            self.close()
-            self._confirm = None
-            self._pending_return = None
-            self._mode = 'list'
-            self._visible = False
-            return
         if self._mode == 'review' and self._confirm is not None and self._confirm['action'] == 'edit':
             self._mode = 'edit'
             self._input.set_text(self._confirm['content'])
@@ -239,11 +179,11 @@ class ChildQueuePanel(Component):
         if not self.enabled or self._busy or not self._rows:
             return
         row = self._rows[self._selected]
+        if action not in {'edit', 'remove', 'move', 'return', 'recover', 'recover_images',
+                          'recover_task', 'remove_task'}:
+            raise ValueError('Unsupported queue UI action')
         if action == 'return' and row['image_count']:
-            if not self.image_return_enabled or self.retain_images is None:
-                self._error = 'Updated live image-return owner required; no lossy text removal'
-                return
-            action = 'return_prepare'
+            return  # Live image return is Agent-tool-only; never remove or copy via a user panel.
         if row.get('source') == 'initial-task' and action in {'recover', 'remove'}:
             if not self.task_recovery_enabled:
                 self._error = 'Updated initial-task recovery owner required; no ambiguous queue fallback'
@@ -290,13 +230,11 @@ class ChildQueuePanel(Component):
                 command, self._confirm = self._confirm, None
                 self._busy, self._mode = True, 'list'
                 self._sent_action = command['action']
-                if command['action'] in {'return', 'recover', 'recover_images', 'recover_task', 'return_prepare'}:
+                if command['action'] in {'return', 'recover', 'recover_images', 'recover_task'}:
                     self._pending_return = dict(self._rows[self._selected])
                 self.send(command)
             return True
         if event.matches('escape') or event.matches('ctrl+c'):
-            if self._busy and self._sent_action == 'return_commit':
-                return True  # Do not detach the draft owner while actual removal settles.
             self.close()
             self.back()
         elif event.matches('r'):
@@ -334,9 +272,7 @@ class ChildQueuePanel(Component):
         elif self._mode == 'review' and self._confirm is not None:
             row = next((item for item in self._rows if item['id'] == self._confirm['id']), None)
             body = wrap_text_with_ansi(sanitize_terminal_text(json.dumps(
-                {'child': self.child, 'input': row, 'request': self._confirm,
-                 **({'effect': 'SECOND REVIEW: remove still-queued image input; verified local backup already kept'}
-                    if self._confirm['action'] == 'return_commit' else {})}, ensure_ascii=False, indent=2)),
+                {'child': self.child, 'input': row, 'request': self._confirm}, ensure_ascii=False, indent=2)),
                 max(1, width))
             count = max(0, self._budget - 3)
             if self._layout != (width, count):
@@ -346,7 +282,7 @@ class ChildQueuePanel(Component):
             end = min(len(body), self._scroll + count)
             if width >= 24 and count:
                 self._reviewed.update(range(self._scroll, end))
-            rows = [title + (' · SECOND removal review' if self._confirm['action'] == 'return_commit' else ''),
+            rows = [title,
                     f'Review {self._scroll + 1}-{end}/{len(body)} · NOT tool approval',
                     *body[self._scroll:end], 'Enter applies reviewed queue change · PgDn reviews · Esc back']
             self._visible = self.enabled and bool(count) and width >= 24 and len(self._reviewed) == len(body)
@@ -365,6 +301,9 @@ class ChildQueuePanel(Component):
                 rows.append(self._error)
             rows.append('u copy to fresh task draft · x discard saved input · r refresh · Esc back'
                         if self._stopped else
-                        'e edit · x remove · k/j move · u return to child draft · r refresh · Esc back')
+                        'e edit · x remove · k/j move · '
+                        + ('u return text to child draft · ' if self._rows
+                           and not self._rows[self._selected]['image_count'] else '')
+                        + 'r refresh · Esc back')
             self._visible = self.enabled and self._budget >= 4 and width >= 24
         return [truncate_to_width(row, max(0, width), '') for row in rows[:self._budget]]

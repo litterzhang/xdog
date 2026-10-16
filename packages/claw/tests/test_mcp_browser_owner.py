@@ -11,7 +11,7 @@ from xdog.claw.channels.tui.tui_app import ChatApp
 from xdog.claw.config import ClawConfig, GroupDef
 from xdog.claw.core.runtime.gateway import GatewayServer
 
-from packages.agent.tests.test_mcp_sampling_executor import Adapter
+from packages.agent.tests.mcp_helpers import Adapter
 
 
 @asynccontextmanager
@@ -37,7 +37,7 @@ async def cold_gateway(tmp_path):
         await gateway.stop()
 
 
-@pytest.mark.parametrize('kind', ['sampling', 'elicitation'])
+@pytest.mark.parametrize('kind', ['elicitation'])
 @pytest.mark.parametrize('invalid', ['empty-owner', 'wrong-view', 'wrong-action'])
 async def test_rejected_review_control_echoes_valid_correlation_without_granting_empty_owner(tmp_path, kind, invalid):
     async with cold_gateway(tmp_path) as (gateway, send, adapter):
@@ -46,11 +46,11 @@ async def test_rejected_review_control_echoes_valid_correlation_without_granting
                  'view': 'wrong' if invalid == 'wrong-view' else 'a' * 32,
                  'server': 'modern', 'action': 'wrong' if invalid == 'wrong-action' else 'enable'}
         response = await send(value)
-        assert response['type'] == f'mcp_{kind}_result' and response['success'] is False
-        assert all(response[key] == value[key] for key in
-                   ('request_id', 'group_id', 'session_id', 'view', 'server', 'action'))
+        assert response['type'] == 'error'
+        assert 'Unknown message type' in response['message']
         runtime = gateway._orchestrator._runtimes['main']
-        assert runtime._active_session is None and not runtime.mcp._sampling and not runtime.mcp._elicitation
+        assert (runtime._active_session is None
+                and not hasattr(runtime.mcp, '_sampling') and not hasattr(runtime.mcp, '_elicitation'))
         assert not adapter.calls
 
 
@@ -82,7 +82,8 @@ async def test_explicit_browser_owner_requires_idle_exact_cold_source_and_never_
             else:
                 assert response['success'] is False and 'session_id' not in response
                 assert runtime._active_session is original
-            assert not adapter.calls and not runtime.mcp._sampling and not runtime.mcp._elicitation
+            assert not adapter.calls
+            assert not hasattr(runtime.mcp, '_sampling') and not hasattr(runtime.mcp, '_elicitation')
         finally:
             if condition == 'busy':
                 orchestrator.release_group_reservation('main')
@@ -117,14 +118,14 @@ def test_native_owner_reply_requires_same_view_context_and_does_not_auto_arm(mon
         ui._request_exit()
 
 
-@pytest.mark.parametrize('action', ['sampling_on', 'elicitation_on'])
+@pytest.mark.parametrize('action', ['elicitation_on'])
 def test_old_gateway_never_receives_empty_owner_arm_and_local_request_settles(monkeypatch, action):
     ui, sent = native_browser(monkeypatch, supported=False)
     try:
         assert not any(row.get('action') == 'owner' for row in sent)
         ui._mcp_panel._busy = True
         ui._mcp_send(action, 'modern', '', {})
-        assert not ui._mcp_panel._busy and 'authoritative idle session' in ui._mcp_panel._message
+        assert ui._mcp_panel._busy  # A retired operation cannot unlock this pending owner request.
         assert not any(row['type'] in {'mcp_sampling_control', 'mcp_elicitation_control'} for row in sent)
     finally:
         ui._request_exit()
@@ -158,5 +159,21 @@ def test_native_owner_failure_settles_without_adoption_or_review_arm(monkeypatch
         assert not ui._mcp_panel._busy
         assert 'unavailable' in ui._mcp_panel._message
         assert not any(row['type'] in {'mcp_sampling_control', 'mcp_elicitation_control'} for row in sent)
+    finally:
+        ui._request_exit()
+
+
+def test_retired_sampling_cannot_unlock_an_unrelated_native_request(monkeypatch):
+    ui, sent = native_browser(monkeypatch, supported=False)
+    try:
+        panel = ui._mcp_panel
+        panel._busy = True
+        panel._message = 'A newer resource read owns this panel'
+        original_sent = list(sent)
+        owner_request = ui._mcp_owner_request
+        ui._mcp_send('sampling_on', 'modern', '', {})
+        assert panel._busy is True
+        assert panel._message == 'A newer resource read owns this panel'
+        assert sent == original_sent and ui._mcp_owner_request == owner_request
     finally:
         ui._request_exit()

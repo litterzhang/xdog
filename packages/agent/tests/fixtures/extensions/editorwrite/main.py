@@ -6,8 +6,8 @@ def setup(api):
     async def propose(scope, mode='ok'):
         # New proposals must never unlock old command-composer access.
         if scope != 'command':
-            assert await api.get_editor() is None
-            assert await api.set_editor('FORBIDDEN', '0' * 64) is False
+            assert not hasattr(api, 'get_editor')
+            assert not hasattr(api, 'set_editor')
         try:
             accepted = await api.request_editor_text('PROPOSED 界\nunsent', timeout=10)
             if api.settings.get('marker'):
@@ -53,29 +53,13 @@ def setup(api):
             await propose('context')
         return messages
 
-    async def terminal(data, metadata, context):
-        assert not await api.request_editor_text('DENIED TERMINAL')
-        return {'consume': False}
-
-    async def custom(args, context):
-        async def render(width, height):
-            assert not await api.request_editor_text('DENIED RENDER')
-            return {'lines': ['Owned custom input']}
-        async def on_input(event):
-            return {'done': True, 'value': await propose('custom-input')}
-        result = await api.custom('Editor proposal fixture', render, on_input)
-        if args == 'fail':
-            raise ValueError('suspended callback failed after nested input')
-        return str(result)
 
     api.command('write', 'Propose editor text without reading/submitting', command)
-    api.command('custom', 'Nested proposal', custom)
     api.tool('write', 'Propose original owner draft under explicit review', {'type': 'object'}, tool)
     api.on('turn_start', event)
     api.before_tool(pre)
     api.after_tool(post)
     api.on_input(input_hook)
-    api.on_terminal_input(terminal)
     api.context(transform)
 
     async def provider(model, context, options):

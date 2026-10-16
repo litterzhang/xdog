@@ -87,12 +87,6 @@ from xdog.coding.cli.session_picker import pick_session_command
 @click.option("--acp", is_flag=True, help="Run standard stdio Agent Client Protocol.")
 @click.option("--session", "session_id", default=None, help="Send to an exact live session ID.")
 @click.option(
-    "--rpc",
-    is_flag=True,
-    default=False,
-    help="Run in RPC mode for IDE integration.",
-)
-@click.option(
     "--verbose",
     is_flag=True,
     default=False,
@@ -112,7 +106,6 @@ def cli(
     permission_mode: str | None,
     list_models: bool,
     pick_session: bool,
-    rpc: bool,
     acp: bool,
     session_id: str | None,
     enqueue: bool,
@@ -129,15 +122,15 @@ def cli(
     if enqueue:
         if not session_id or not prompt or not message_id:
             raise click.UsageError("--enqueue requires --session, --message-id and --prompt")
-        if any((acp, rpc, print_mode, resume, resume_id, pick_session, list_models, model, thinking_level,
+        if any((acp, print_mode, resume, resume_id, pick_session, list_models, model, thinking_level,
                 permission_mode, working_dir, config_path, files)):
             raise click.UsageError("--enqueue cannot combine with other modes or target configuration overrides")
     if session_id and resume_id:
         raise click.UsageError("--session cannot be combined with --resume-id")
-    if acp and (rpc or print_mode or prompt or files or resume or resume_id or pick_session):
-        raise click.UsageError("--acp cannot be combined with RPC/print/prompt/resume/file inputs")
+    if acp and (print_mode or prompt or files or resume or resume_id or pick_session):
+        raise click.UsageError("--acp cannot be combined with print/prompt/resume/file inputs")
     if session_id:
-        if any((resume, pick_session, model, thinking_level, permission_mode, working_dir, config_path, rpc, files)):
+        if any((resume, pick_session, model, thinking_level, permission_mode, working_dir, config_path, files)):
             raise click.UsageError("--session cannot override the target session configuration")
         if not acp and not prompt:
             raise click.UsageError("--session requires --prompt or --acp")
@@ -152,8 +145,8 @@ def cli(
     if (resume or pick_session) and resume_id:
         raise click.UsageError("--resume/--pick-session cannot be combined with --resume-id.")
     if resume or pick_session:
-        if rpc or print_mode:
-            raise click.UsageError("Use --resume-id with --rpc or --print.")
+        if print_mode:
+            raise click.UsageError("Use --resume-id with --print.")
         resume_id = pick_session_command(working_dir=working_dir)
         if resume_id is None:
             return
@@ -181,7 +174,6 @@ def cli(
         output_format=output_format,
         working_dir=working_dir,
         config_path=config_path,
-        rpc=rpc,
         acp=acp,
         session_id=session_id,
         **enqueue_options,

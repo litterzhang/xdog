@@ -1,197 +1,113 @@
+"""Manual completion is absent; explicit prompt input remains editable and inert."""
 from __future__ import annotations
 
+import importlib.util
 import json
 
+import pytest
 from xdog.tui.components.mcp_panel import McpPanel
 from xdog.tui.keys import KeyEvent, KeyEventType
 from xdog.tui.utils import visible_width
 
 
-def form(kind="prompt"):
-    sent = []
-    panel = McpPanel(lambda *args: sent.append(args), lambda: None, lambda: None, lambda: None)
+@pytest.fixture
+def prompt_form():
+    sent, inserted, exported = [], [], []
+    panel = McpPanel(lambda *args: sent.append(args), lambda: None,
+                     lambda: inserted.append(True), lambda: exported.append(True))
     panel.focused = True
     panel.publish("list", rows=({"server": "peer", "state": "connected"},))
-    panel.handle_input(KeyEvent("p" if kind == "prompt" else "t"))
-    name = "review" if kind == "prompt" else "fixture://{name}{?format}"
-    args = (
-        (("topic", "", True), ("language", "", False))
-        if kind == "prompt"
-        else (("name", "", False), ("format", "", False))
-    )
-    panel.publish("prompts" if kind == "prompt" else "templates", rows=({"name": name, "arguments": args},))
+    panel.handle_input(KeyEvent("p"))
+    panel.publish("prompts", rows=({"name": "review", "arguments": (("topic", "", True),)},))
     panel.handle_input(KeyEvent("enter"))
-    panel.handle_input(KeyEvent("space", ctrl=True))
-    return panel, sent
-
-
-def reply(kind="prompt", argument="topic", value="", context=()):
-    return {
-        "server": "peer",
-        "kind": kind,
-        "name": "review" if kind == "prompt" else "fixture://{name}{?format}",
-        "argument": argument,
-        "value": value,
-        "context": context,
-        "values": ("completed value", "alternative"),
-        "total": 5,
-        "has_more": True,
-    }
-
-
-def test_prompt_completion_explicit_tab_selection_updates_json_only_after_visible_enter():
-    panel, sent = form()
     try:
-        assert panel._mode == "completion" and sent[-1][0] == "prompts"
-        panel.handle_input(KeyEvent("tab"))
-        assert sent[-1] == ("complete_prompt", "peer", "review", {"argument": "topic", "value": "", "context": "{}"})
-        panel.publish("complete_prompt", rows=(reply(),))
-        panel.handle_input(KeyEvent("enter"))
-        assert panel._mode == "completion"  # Not painted, no implicit acceptance.
-        panel.render(80)
-        panel.handle_input(KeyEvent("down"))
-        panel.handle_input(KeyEvent("enter", event_type=KeyEventType.REPEAT))
-        assert panel._mode == "completion"
-        panel.render(80)
-        panel.handle_input(KeyEvent("enter"))
-        assert panel._mode == "arguments"
-        assert json.loads(panel._arguments.get_text()) == {"topic": "alternative"}
-        assert sent[-1][0] == "complete_prompt"  # Does not retrieve or execute.
-        panel.handle_input(KeyEvent("enter", event_type=KeyEventType.REPEAT))
-        assert sent[-1][0] == "complete_prompt"  # Held Enter cannot retrieve after accepting a suggestion.
-        panel.handle_input(KeyEvent("enter"))
-        assert sent[-1] == ("prompt", "peer", "review", {"topic": "alternative"})
+        yield panel, sent, inserted, exported
     finally:
         panel.close()
 
 
-def test_edit_cancel_and_scope_mismatch_cannot_insert_late_values_or_erase_parent_draft():
-    panel, sent = form()
-    try:
-        panel.handle_input(KeyEvent("tab"))
-        panel.handle_paste("new prefix")
-        assert sent[-1][0] == "completion_cancel" and not panel._busy
-        panel.publish("complete_prompt", rows=(reply(),))
-        assert not panel.completion._values
-        panel.handle_input(KeyEvent("tab"))
-        panel.publish("complete_prompt", rows=(reply(value="wrong prefix"),))
-        assert not panel.completion._values
-        panel._arguments.set_text('{"topic":"changed elsewhere"}')
-        panel.render(80)
-        panel.handle_input(KeyEvent("enter"))
-        assert panel._mode == "arguments" and json.loads(panel._arguments.get_text()) == {"topic": "changed elsewhere"}
-    finally:
-        panel.close()
+def test_dedicated_picker_and_parent_completion_api_are_removed(prompt_form):
+    panel, sent, _, _ = prompt_form
+    assert importlib.util.find_spec("xdog.tui.components.mcp_completion") is None
+    for attribute in ("completion", "_completion_names", "_completion_origin", "_open_completion",
+                      "_insert_completion", "_cancel_completion", "_close_completion"):
+        assert not hasattr(panel, attribute)
+    panel._arguments.set_text('{"topic":"literal quoted \\\" value 中文"}')
+    draft = panel._arguments.get_text()
+    count = len(sent)
+    for event in (KeyEvent("space", ctrl=True), KeyEvent("tab"), KeyEvent("n", ctrl=True),
+                  KeyEvent("p", ctrl=True)):
+        panel.handle_input(event)
+        assert panel._mode == "arguments" and panel._arguments.get_text() == draft
+    assert len(sent) == count
+    assert "Ctrl+Space" not in "\n".join(panel.render(120))
+    panel.handle_input(KeyEvent("enter"))
+    assert sent[-1] == ("prompt", "peer", "review", json.loads(draft))
 
 
-def test_template_completion_context_variables_and_scalar_expansion_require_separate_read():
-    panel, sent = form("template")
-    try:
-        panel.handle_input(KeyEvent("tab"))
-        panel.publish("complete_template", rows=(reply(kind="template", argument="name"),))
-        panel.render(80)
-        panel.handle_input(KeyEvent("enter"))
-        assert panel._arguments.get_text() == "fixture://completed%20value"
-        assert sent[-1][0] == "complete_template"
-        panel.handle_input(KeyEvent("space", ctrl=True))
-        assert panel.completion.argument == "format"
-        panel.handle_paste("js")
-        panel.handle_input(KeyEvent("tab"))
-        assert json.loads(sent[-1][3]["context"]) == {"name": "completed value"}
-        panel.publish(
-            "complete_template",
-            rows=(reply(kind="template", argument="format", value="js", context=(("name", "completed value"),)),),
-        )
-        for budget in (0, 1, 3, 5, 8, 12):
-            panel.set_render_budget(budget)
-            rows = panel.render(32)
-            assert len(rows) <= budget and all(visible_width(row) <= 32 and "\n" not in row for row in rows)
-        panel.render(80)
-        panel.handle_input(KeyEvent("enter"))
-        assert panel._arguments.get_text() == "fixture://completed%20value?format=completed%20value"
-        panel.handle_input(KeyEvent("enter"))
-        assert sent[-1] == ("read", "peer", "fixture://completed%20value?format=completed%20value", {})
-    finally:
-        panel.close()
+@pytest.mark.parametrize("draft", ["bad json", "[]", "null", '{"topic":false}', '{"topic":1}',
+                                   '{"topic":[]}', '{"topic":{}}'])
+def test_invalid_argument_input_preserved_without_request_or_model_insertion(prompt_form, draft):
+    panel, sent, inserted, exported = prompt_form
+    count = len(sent)
+    panel._arguments.set_text(draft)
+    panel.handle_input(KeyEvent("enter"))
+    assert panel._arguments.get_text() == draft and panel._mode == "arguments"
+    assert len(sent) == count and not inserted and not exported
+    assert panel._message
 
 
-def test_empty_or_invalid_argument_draft_is_preserved_and_cancel_never_submits():
-    panel, sent = form()
-    try:
-        panel.handle_input(KeyEvent("escape"))
-        assert panel._arguments.get_text() == "{}"
-        panel._arguments.set_text("bad json")
-        panel.handle_input(KeyEvent("enter"))
-        assert panel._arguments.get_text() == "bad json"
-        panel.handle_input(KeyEvent("space", ctrl=True))
-        assert panel.completion is None and panel._arguments.get_text() == "bad json"
-        assert sent[-1][0] == "prompts"
-    finally:
-        panel.close()
+def test_literal_json_values_survive_without_completion_or_implicit_execution(prompt_form):
+    panel, sent, inserted, exported = prompt_form
+    arguments = {"topic": 'quotes " /path/../../file \\ newline\n中文\x1b[2J', "optional": ""}
+    panel._arguments.set_text("")
+    panel.handle_paste(json.dumps(arguments, ensure_ascii=False))
+    assert sent[-1][0] == "prompts"
+    panel.handle_input(KeyEvent("enter", event_type=KeyEventType.REPEAT))
+    panel.handle_input(KeyEvent("enter", event_type=KeyEventType.RELEASE))
+    assert sent[-1][0] == "prompts" and not inserted and not exported
+    panel.handle_input(KeyEvent("enter"))
+    assert sent[-1] == ("prompt", "peer", "review", arguments)
+    count = len(sent)
+    panel.handle_input(KeyEvent("enter"))
+    assert len(sent) == count  # In-flight requests are not repeated.
 
 
-def test_control_text_in_suggestions_is_sanitized_and_not_multiline_terminal_output():
-    panel, sent = form()
-    try:
-        panel.handle_input(KeyEvent("tab"))
-        panel.publish("complete_prompt", rows=({**reply(), "values": ["\x1b[2Jbad\nvalue\tmore"]},))
-        rows = panel.render(80)
-        assert all("\n" not in row and "\x1b[2J" not in row for row in rows)
-        panel.handle_input(KeyEvent("enter"))
-        assert json.loads(panel._arguments.get_text()) == {"topic": "\x1b[2Jbad\nvalue\tmore"}
-    finally:
-        panel.close()
+@pytest.mark.parametrize("action", ["complete_prompt", "complete_template", "complete_resource",
+                                    "resource_completion_preview"])
+def test_retired_picker_reply_cannot_replace_draft_or_unlock_new_request(prompt_form, action):
+    panel, sent, _, _ = prompt_form
+    panel._arguments.set_text('{"topic":"new request"}')
+    panel.handle_input(KeyEvent("enter"))
+    count = len(sent)
+    panel.publish(action, rows=({"values": ("stale",)},), text="stale untrusted preview", error="late error")
+    assert panel._busy and panel._mode == "arguments" and panel._preview is None
+    assert panel._arguments.get_text() == '{"topic":"new request"}'
+    panel.handle_input(KeyEvent("enter"))
+    assert len(sent) == count
 
 
-def test_variable_edits_used_as_context_are_retained_on_insert_and_hidden_budget_cannot_accept():
-    panel, sent = form()
-    try:
-        panel.handle_paste("typed topic")
-        panel.handle_input(KeyEvent("n", ctrl=True))
-        panel.handle_paste("python")
-        panel.handle_input(KeyEvent("tab"))
-        response = {
-            **reply(argument="language", value="python", context=(("topic", "typed topic"),)),
-            "values": ("python3",),
-        }
-        panel.publish("complete_prompt", rows=(response,))
-        panel.render(80)
-        panel.set_render_budget(0)
-        assert panel.render(80) == []
-        panel.handle_input(KeyEvent("enter"))
-        assert panel.completion is not None
-        panel.set_render_budget(8)
-        panel.render(80)
-        panel.handle_input(KeyEvent("enter"))
-        assert json.loads(panel._arguments.get_text()) == {"topic": "typed topic", "language": "python3"}
-        assert sent[-1][0] == "complete_prompt"
-    finally:
-        panel.close()
+def test_error_timeout_remains_editable_and_cancel_does_not_submit(prompt_form):
+    panel, sent, inserted, exported = prompt_form
+    panel._arguments.set_text('{"topic":"retry manually"}')
+    panel.handle_input(KeyEvent("enter"))
+    panel.publish("prompt", error="MCP request timed out")
+    assert not panel._busy and "timed out" in "\n".join(panel.render(120))
+    assert panel._arguments.get_text() == '{"topic":"retry manually"}'
+    count = len(sent)
+    panel.handle_input(KeyEvent("escape"))
+    assert sent[count:] == [("list", "", "", {})]
+    assert not inserted and not exported
 
 
-def test_blurred_completion_cannot_request_capture_edit_or_insert_and_regain_needs_repaint():
-    panel, sent = form()
-    try:
-        panel.handle_input(KeyEvent('tab'))
-        completion = panel.completion
-        panel.focused = False
-        assert not completion.focused and not completion._input.focused
-        count = len(sent)
-        panel.handle_paste('not the argument editor')
-        panel.handle_input(KeyEvent('tab'))
-        panel.handle_input(KeyEvent('enter'))
-        assert len(sent) == count and completion._input.get_text() == '' and panel._mode == 'completion'
-        # Original scoped response may be retained as inert data while background.
-        panel.publish('complete_prompt', rows=(reply(),))
-        panel.render(80)
-        panel.handle_input(KeyEvent('enter'))
-        assert not completion._visible and panel._mode == 'completion' and panel._arguments.get_text() == '{}'
-        panel.focused = True
-        panel.handle_input(KeyEvent('enter'))
-        assert panel._mode == 'completion'  # New focus has no painted insertion proof yet.
-        panel.render(80)
-        panel.handle_input(KeyEvent('enter'))
-        assert panel._mode == 'arguments' and json.loads(panel._arguments.get_text()) == {'topic': 'completed value'}
-        assert len(sent) == count and panel._arguments.focused
-    finally:
-        panel.close()
+def test_argument_editor_remains_bounded_without_rendering_literal_controls(prompt_form):
+    panel, sent, _, _ = prompt_form
+    panel._arguments.set_text(json.dumps({"topic": "USER-INPUT 中文 " * 12 + "\x1b[2J\n"}, ensure_ascii=False))
+    count = len(sent)
+    for height in (0, 1, 3, 5, 8, 12):
+        panel.set_render_budget(height)
+        for width in (24, 32, 80):
+            rows = panel.render(width)
+            assert len(rows) <= height
+            assert all(visible_width(row) <= width and "\n" not in row and "\x1b[2J" not in row for row in rows)
+    assert len(sent) == count

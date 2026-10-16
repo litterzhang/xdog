@@ -13,11 +13,10 @@ from xdog.agent.events import AgentEvent, MessageEndEvent, ToolExecutionEndEvent
 from xdog.agent.extensions.dialogs import DialogBroker, validate_answer
 from xdog.agent.extensions.runtime import ExtensionRuntime, silent_extension_ui
 from xdog.agent.extensions.state import ExtensionEntries
-from xdog.agent.supervision import ChildSpec
-from xdog.agent.supervision_queued_input import Admit, Discard
+from xdog.agent.supervision import ChildSpec, settle_on
 from xdog.agent.supervision_store import ChildStore
 from xdog.agent.types import AfterToolCallContext, AfterToolCallResult, BeforeToolCallContext, BeforeToolCallResult
-from xdog.ai.types import ImageContent, TextContent
+from xdog.ai.types import TextContent
 from xdog.ai.utils.validation import validate_tool_arguments
 
 
@@ -29,11 +28,7 @@ class ChildExtensions:
         self.default_ui: tuple[str, Callable[[dict[str, Any]], None]] | None = None
         self._bindings: dict[str, tuple[str, Callable[[dict[str, Any]], None]]] = {}
         self._dialogs: dict[str, DialogBroker] = {}
-        self._editor_write_tokens: set[str] = set()
-        self._editor_write_generations: dict[str, int] = {}
-        self._editor_write_handlers: dict[str, Any] = {}
-        from xdog.agent.supervision_queued_input import ChildQueuedInputs
-        self._queued_inputs = ChildQueuedInputs(self)
+        self._pending_readers: dict[str, Callable[[], Awaitable[bool | None]]] = {}
 
     @property
     def has_pending_dialogs(self) -> bool:
@@ -47,43 +42,6 @@ class ChildExtensions:
             if binding is not None:
                 self._bindings[child] = binding
 
-    def _publish_terminal(self, child: str, *, closing: bool = False) -> None:
-        with self._ui_lock:
-            binding, owner = self._bindings.get(child), self.owners.get(child)
-            if binding is None or owner is None:
-                return
-            token, sink = binding
-            info = {"active": owner.terminal_input_available and not closing,
-                    "generation": owner.generation + int(closing),
-                    "events": list(owner.terminal_events) if not closing else []}
-        sink({"type": "child_terminal_registry", "child_id": child, "child_owner": token,
-              "session_id": str(self.parent.context().get("session_id", "")), "terminal": info, "closing": closing})
-
-    def terminal_metadata(self, token: str) -> dict[str, dict[str, Any]]:
-        with self._ui_lock:
-            return {child: {"active": owner.terminal_input_available, "generation": owner.generation,
-                            "events": list(owner.terminal_events)}
-                    for child, owner in self.owners.items()
-                    if self._bindings.get(child) is not None and self._bindings[child][0] == token}
-
-    def capture_terminal(self, child: str, token: str, generation: int
-                         ) -> tuple[ExtensionRuntime, Callable[[], bool]]:
-        if type(generation) is not int or not 0 <= generation <= 2**53:
-            raise ValueError("Invalid child terminal generation")
-        self.check_parent()
-        with self._ui_lock:
-            owner = self.owners.get(child)
-            binding = self._bindings.get(child)
-        def alive() -> bool:
-            with self._ui_lock:
-                broker = self._dialogs.get(child)
-                return (owner is not None and self.owners.get(child) is owner
-                        and self._bindings.get(child) == binding and binding is not None and binding[0] == token
-                        and owner.generation == generation and not owner._closed
-                        and (broker is None or not broker.has_pending))
-        if owner is None or not alive():
-            raise ValueError("Child terminal worker/UI owner changed")
-        return owner, alive
 
     def contains(self, child: str, identifier: str, token: str) -> bool:
         with self._ui_lock:
@@ -102,17 +60,6 @@ class ChildExtensions:
             return (binding is not None and binding[0] == token and broker is not None
                     and broker.input_owner(identifier))
 
-    def custom_input_owner(self, child: str, identifier: str, token: str) -> bool:
-        with self._ui_lock:
-            binding, broker = self._bindings.get(child), self._dialogs.get(child)
-            return (binding is not None and binding[0] == token and broker is not None
-                    and broker.custom_input_owner(identifier))
-
-    def request_custom(self, child: str, identifier: str, token: str, event: dict[str, Any]) -> bool:
-        with self._ui_lock:
-            if not self.contains(child, identifier, token):
-                return False
-            return self._dialogs[child].request_custom(identifier, event)
 
     def cancel_dialogs(self, token: str, supported: Callable[[dict[str, Any]], bool]) -> None:
         """Revoke unsupported pending dialogs even before their UI event was delivered."""
@@ -122,50 +69,33 @@ class ChildExtensions:
         for broker in brokers:
             broker.cancel_where(lambda dialog: not supported(dialog))
 
-    def editor_write_enabled(self, token: str) -> bool:
-        with self._ui_lock:
-            return token in self._editor_write_tokens
+    def bind_pending_messages(self, child: str, agent: Agent) -> None:
+        """Read only this original Agent's live boolean on its owning loop."""
+        runtime = self.owners.get(child)
+        if runtime is None or child in self._pending_readers:
+            raise ValueError('Unknown or already bound child pending-message owner')
+        loop = asyncio.get_running_loop()
+        session_id = str(runtime.context().get('session_id', ''))
 
-    def editor_write_generation(self, token: str) -> int:
-        with self._ui_lock:
-            return self._editor_write_generations.get(token, 0)
+        async def pending() -> bool | None:
+            async def read() -> bool | None:
+                with self._ui_lock:
+                    if (self._pending_readers.get(child) is not pending or self.owners.get(child) is not runtime
+                            or runtime._closed or self.parent._closed
+                            or str(runtime.context().get('session_id', '')) != session_id):
+                        return None
+                return bool(agent.pending_inputs()) or agent.has_queued_messages()
+            if loop.is_closed() or not loop.is_running():
+                return None
+            try:
+                return await settle_on(loop, read())
+            except (ValueError, RuntimeError):
+                return None
 
-    def enable_editor_write(self, token: str, enabled: bool) -> None:
-        with self._ui_lock:
-            if enabled != (token in self._editor_write_tokens):
-                self._editor_write_generations[token] = self._editor_write_generations.get(token, 0) + 1
-            if enabled:
-                self._editor_write_tokens.add(token)
-            else:
-                self._editor_write_tokens.discard(token)
-            for child, binding in self._bindings.items():
-                if binding[0] == token and child in self.owners:
-                    self.owners[child].editor_write_handler = (
-                        self._editor_write_handlers.get(child) if enabled else None)
-                    if not enabled and child in self._dialogs:
-                        self._dialogs[child].cancel_where(lambda dialog: dialog.get('operation') == 'propose')
-
-    def enable_queued_input(self, token: str, enabled: bool) -> None:
-        self._queued_inputs.enable(token, enabled)
-
-    def set_queued_input_sender(self, token: str,
-                                sender: Callable[[dict[str, Any]], Awaitable[bool | None]] | None) -> None:
-        self._queued_inputs.set_sender(token, sender)
-
-    def queued_input_generation(self, token: str) -> int:
-        return self._queued_inputs.generation(token)
-
-    def bind_queued_input(self, child: str, agent: Agent, *,
-                          validate_images: Callable[[tuple[ImageContent, ...]], Awaitable[None]] | None = None,
-                          queue_alive: Callable[[], bool] | None = None,
-                          admit: Admit | None = None, discard: Discard | None = None) -> None:
-        self._queued_inputs.bind(child, agent, validate_images=validate_images, queue_alive=queue_alive,
-                                 admit=admit, discard=discard)
+        self._pending_readers[child] = pending
+        runtime.pending_messages = pending
 
     def detach(self, token: str) -> None:
-        self.enable_queued_input(token, False)
-        self.set_queued_input_sender(token, None)
-        self.enable_editor_write(token, False)
         with self._ui_lock:
             if self.default_ui is not None and self.default_ui[0] == token:
                 self.default_ui = None
@@ -177,11 +107,7 @@ class ChildExtensions:
                         broker.close()
                     owner = self.owners.get(child)
                     if owner is not None:
-                        owner.editor_write_handler = None
                         owner.dialog_handler = None
-                        owner.custom_handler = None
-                        owner.custom_refresh_handler = None
-                        owner.custom_control_handler = None
 
 
     def check_parent(self) -> None:
@@ -201,11 +127,7 @@ class ChildExtensions:
             entries=entries)
         with self._ui_lock:
             self.owners[spec.id] = runtime
-            def owned_publish(event: dict[str, Any]) -> None:
-                publish(event)
-                if event.get("type") in {"extension_ui", "extension_notice"}:
-                    self._publish_terminal(spec.id)
-            runtime.publish = owned_publish
+            runtime.publish = publish
             binding = self._bindings.get(spec.id)
             if binding is not None:
                 token, sink = binding
@@ -214,51 +136,15 @@ class ChildExtensions:
                 session_id = str(self.parent.context().get("session_id", ""))
                 broker.publish = lambda event: sink({**event,
                     "type": ("child_" + event["type"]
-                            if event["type"].startswith(("extension_dialog", "extension_custom"))
+                            if event["type"].startswith(("extension_dialog",))
                             else event["type"]),
-                    "child_id": spec.id, "child_owner": token, "session_id": session_id,
-                    **({'queued_input_generation': self.queued_input_generation(token)}
-                       if event.get('dialog', {}).get('operation') == 'queue_input' else {})})
+                    "child_id": spec.id, "child_owner": token, "session_id": session_id})
                 async def ask(extension: str, value: dict[str, Any]) -> Any:
                     with self._ui_lock:
                         attached = self._bindings.get(spec.id) == binding
                     if not attached:
                         return validate_answer(value, None)
                     return await broker.ask(extension, value)
-                async def custom(extension: str, value: dict[str, Any], render: Any) -> Any:
-                    with self._ui_lock:
-                        attached = self._bindings.get(spec.id) == binding
-                    if not attached:
-                        return None
-                    return await broker.ask_custom(extension, value, render)
-                runtime.custom_handler = custom
-                runtime.custom_refresh_handler = broker.refresh_custom
-                runtime.custom_control_handler = broker.control_custom
-                async def editor_write(extension: str, value: dict[str, Any]) -> Any:
-                    from xdog.agent.extensions.editor_request import reviewed
-                    generation = self.editor_write_generation(token)
-                    def live() -> bool:
-                        with self._ui_lock:
-                            return (self._bindings.get(spec.id) == binding and self.owners.get(spec.id) is runtime
-                                and token in self._editor_write_tokens
-                                and self.editor_write_generation(token) == generation
-                                and not runtime._closed)
-                    async def review(name: str, dialog: dict[str, Any]) -> Any:
-                        return await ask(name, {**dialog, 'editor_write_generation': generation}) if live() else None
-                    def send(event: dict[str, Any]) -> None:
-                        if live() or event['type'].endswith('_discard'):
-                            sink({**event, 'type': 'child_' + event['type'], 'child_id': spec.id,
-                                  'child_owner': token, 'session_id': session_id,
-                                  'editor_write_generation': generation})
-                    async def commit(event: dict[str, Any]) -> None:
-                        if live():
-                            send(event)
-                        else:
-                            send({**event, 'type': 'extension_editor_write_discard'})
-                    return await reviewed(extension, value, ask=review, commit=commit, discard=send)
-                self._editor_write_handlers[spec.id] = editor_write
-                if token in self._editor_write_tokens:
-                    runtime.editor_write_handler = editor_write
                 runtime.dialog_handler = ask
                 runtime.dialog_cancel = broker.cancel_extension
         if initialize:
@@ -270,7 +156,6 @@ class ChildExtensions:
             raise ValueError("Child extension invocation owner changed")
         await runtime.initialize()
         await runtime.event("turn_start", {"user_input": spec.task})
-        self._publish_terminal(spec.id)
 
     async def context(self, owner: ExtensionRuntime, messages: list[AgentMessage]) -> list[AgentMessage]:
         self.check_parent()
@@ -328,20 +213,15 @@ class ChildExtensions:
             await owner.event("tool_end", {"tool_name": event.tool_name, "is_error": event.is_error})
 
     async def close(self, spec: ChildSpec) -> None:
-        await self._queued_inputs.close(spec.id)
-        self._publish_terminal(spec.id, closing=True)
         with self._ui_lock:
-            self._editor_write_handlers.pop(spec.id, None)
+            self._pending_readers.pop(spec.id, None)
             owner = self.owners.pop(spec.id, None)
             broker = self._dialogs.pop(spec.id, None)
             self._bindings.pop(spec.id, None)
         if broker is not None:
             broker.close()
         if owner is not None:
-            owner.custom_handler = None
-            owner.custom_refresh_handler = None
-            owner.custom_control_handler = None
-            owner.editor_write_handler = None
+            owner.pending_messages = None
             owner.dialog_handler = None  # Cleanup cannot create a new question after releasing its UI owner.
             try:
                 await owner.event("turn_end")

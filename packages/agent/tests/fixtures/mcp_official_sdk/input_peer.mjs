@@ -3,13 +3,11 @@ import {readFileSync, appendFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {createServer} from 'node:http';
-import {createRequire} from 'node:module';
 const root = join(process.env.XDOG_MCP_OFFICIAL_SDK_ROOT, 'node_modules/@modelcontextprotocol/server');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 if (pkg.version !== '2.3.1') throw new Error('Pinned independent SDK 2.3.1 required');
 const sdk = await import(pathToFileURL(join(root, pkg.exports['.'].import.default)));
 const stdio = await import(pathToFileURL(join(root, pkg.exports['./stdio'].import.default)));
-const {z} = createRequire(join(process.env.XDOG_MCP_OFFICIAL_SDK_ROOT, 'package.json'))('zod');
 const [mode, log] = process.argv.slice(2);
 const record = (type, details = {}) => appendFileSync(log, JSON.stringify({type, ...details}) + '\n');
 const STATE = '  opaque\u0000state/汉字\n  ';
@@ -21,18 +19,12 @@ function requestInput(family, ctx, finish) {
     if (state !== STATE) throw new Error('Opaque state was not echoed exactly');
     return finish('APPROVED-' + family);
   }
-  let input;
-  if (family === 'roots') input = sdk.inputRequired.listRoots();
-  else if (family === 'sampling') input = sdk.inputRequired.createMessage({
-    messages: [{role: 'user', content: {type: 'text', text: 'EXACT MODERN SAMPLING INPUT'}}], maxTokens: 20});
-  else if (family === 'url') input = sdk.inputRequired.elicitUrl({
-    message: 'Review external interaction; no completion notice', url: 'https://inert.example/modern'});
-  else input = sdk.inputRequired.elicit({message: 'Review exact modern form', requestedSchema: z.object({name: z.string()})});
+  const input = sdk.inputRequired.listRoots();
   return sdk.inputRequired({inputRequests: {review: input}, requestState: STATE});
 }
 function factory() {
   const server = new sdk.McpServer({name: 'official-input-peer', version: '1.0.0'});
-  for (const family of ['roots', 'sampling', 'form', 'url']) {
+  for (const family of ['roots']) {
     server.registerTool(family, {inputSchema: {}}, async (_args, ctx) =>
       requestInput(family, ctx, text => ({content: [{type: 'text', text}]})));
     server.registerResource(family, 'test://' + family, {mimeType: 'text/plain'}, async (uri, ctx) =>

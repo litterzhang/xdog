@@ -16,6 +16,9 @@ class OAuthPanel(Component):
 
     def __init__(self, review: dict[str, Any], action: Callable[[str, str], None], close: Callable[[], None],
                  copy: Callable[[str], None] | None = None) -> None:
+        if (review.get('registration', 'pre-registered') != 'pre-registered'
+                or review.get('token_auth_method', 'none') != 'none' or review.get('client_secret_env', '')):
+            raise ValueError('Only pre-registered public PKCE consent is supported')
         self.review, self.action, self.on_close, self.copy = json.loads(json.dumps(review)), action, close, copy
         operation = review.get("operation")
         self.phase = (operation if operation in {"credentials_save", "credentials_restore", "credentials_forget"}
@@ -74,8 +77,6 @@ class OAuthPanel(Component):
             return
         if action == "auth_start":
             self.url = str(data["authorization_url"])
-            if self.review.get("registration") == "dynamic":
-                self.review["client_id"] = data["client_id"]
             self.phase = "waiting"
             self._seen.clear()
             self._scroll = 0
@@ -151,18 +152,8 @@ class OAuthPanel(Component):
                           "credentials_forget"}:
             content = ("Issuer: " + str(self.review["issuer"]) + "\nResource: " + str(self.review["resource"])
                        + "\nTLS trust: " + str(self.review.get("tls_trust", "system"))
-                       + "\nRegistration: " + str(self.review.get("registration", "pre-registered"))
-                       + "\nClient name: " + str(self.review.get("client_name", "XDOG"))
-                       + "\nToken authentication: " + str(self.review.get("token_auth_method", "none"))
-                       + (" (HS256; fresh assertion valid at most 60 seconds)"
-                          if self.review.get("token_auth_method") == "client_secret_jwt" else "")
-                       + (" (RS256; PEM only on signer stdin; fresh assertion at most 60 seconds)"
-                          if self.review.get('token_auth_method') == 'private_key_jwt' else "")
-                       + ("\nAssertion audience: " + str(self.review.get("token_endpoint", ""))
-                          if self.review.get("token_auth_method") in {"client_secret_jwt", "private_key_jwt"} else "")
-                       + ("\nPrivate-key source: " if self.review.get('token_auth_method') == 'private_key_jwt'
-                          else "\nSecret source: ") + (str(self.review.get("client_secret_env")) or "none (public)")
-                       + "\nClient ID: " + (str(self.review["client_id"]) or "assigned by issuer AFTER consent")
+                       + "\nClient type: pre-registered public (PKCE S256)"
+                       + "\nClient ID: " + str(self.review["client_id"])
                        + "\nCallback: " + (f"http://127.0.0.1:{self.review['callback_port']}/callback"
                                               if self.review.get("callback_port") else
                                               "127.0.0.1 /callback; ephemeral port allocated after consent")
@@ -170,12 +161,6 @@ class OAuthPanel(Component):
                        + "\nAuthorization endpoint: " + str(self.review["authorization_endpoint"])
                        + "\nToken endpoint: " + str(self.review["token_endpoint"])
                        + "\nNo tool approval, automatic connection or browser launch. Credentials stay in memory.")
-            if self.phase != "refresh" and self.review.get("registration") == "dynamic":
-                content += ("\nRegistration endpoint: " + str(self.review["registration_endpoint"])
-                            + "\nCreates a remote native public-client record; cancel cannot undo it; no POST replay.")
-            if self.review.get("registration") == "metadata":
-                content += ("\nClient metadata must permit the exact configured callback; "
-                            "no document hosting/imports here.")
             if self.phase == "refresh":
                 content = ("Refresh only this resource's existing grant; no MCP call replay/client registration.\n"
                            + content)

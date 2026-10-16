@@ -176,7 +176,7 @@ async def test_extension_active_tools_api_is_unavailable_without_command_host_co
     from xdog.agent.extensions.runtime import ExtensionRuntime
     api = ExtensionAPI({})
     assert await api.get_active_tools() is None
-    assert not await api.set_active_tools([], 0)
+    assert not hasattr(api, 'set_active_tools')
     root = tmp_path / 'extensions'
     shutil.copytree(Path(__file__).parent / 'fixtures/extensions/toolselector', root / 'toolselector')
     runtime = ExtensionRuntime(['toolselector'], root, tmp_path)
@@ -184,7 +184,7 @@ async def test_extension_active_tools_api_is_unavailable_without_command_host_co
         await runtime.initialize()
         response = await runtime.tools()[0].execute('call', {})
         assert response.content[0].text == 'NO-HOST-TOOL-AUTHORITY'
-        assert await runtime.command('ext-toolselector-select', '{"names":[]}') == 'ACTIVE-TOOLS-UNAVAILABLE'
+        assert 'ext-toolselector-select' not in runtime.commands()
     finally:
         await runtime.aclose()
 

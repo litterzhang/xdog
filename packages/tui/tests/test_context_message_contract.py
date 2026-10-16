@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 from xdog.tui.child_browser import message_records
-from xdog.tui.components.extension_context_message import ExtensionContextMessage
-from xdog.tui.keys import KeyEvent
 
 
 def test_context_source_is_custom_labeled_content_only_and_hidden_is_absent():
@@ -17,21 +15,9 @@ def test_context_source_is_custom_labeled_content_only_and_hidden_is_absent():
     assert message_records([source]) == ()
 
 
-def test_context_review_false_default_full_paint_and_no_immediate_user_turn_claim():
-    answers = []
-    panel = ExtensionContextMessage('fixture', {'id': 'dialog', 'kind': 'session', 'operation': 'context_message',
-        'title': 'Review context', 'custom_type': 'note', 'content': [{'type': 'text', 'text': 'REVIEW CONTENT'}],
-        'display': False, 'details': {'opaque': 'ONLY REVIEW METADATA'}, 'delivery': 'next_turn',
-        'image_summaries': []}, answers.append, 'original-session')
-    panel.focused = True
-    panel.handle_input(KeyEvent('enter'))
-    panel.handle_input(KeyEvent('enter'))
-    assert not answers
-    for _ in range(200):
-        panel.render(40)
-        if panel.form._visible:
-            break
-        panel.handle_input(KeyEvent('pagedown'))
-    assert panel.form._visible
-    panel.handle_input(KeyEvent('enter'))
-    assert answers == [False]
+def test_live_extension_context_control_renderer_is_removed_but_stored_history_codec_remains():
+    import importlib.util
+
+    from xdog.tui.components.extension_stack import ExtensionDialogStack
+    assert importlib.util.find_spec('xdog.tui.components.extension_context_message') is None
+    assert not ExtensionDialogStack.accepts({'id': 'old', 'kind': 'session', 'operation': 'context_message'}, [])

@@ -1,5 +1,8 @@
 # xdog-claw
 
+> Platform scope: **Linux only**. Non-Linux adapters and native-platform support
+> are outside the current product scope; historical audit evidence is not a support promise.
+
 **Agent orchestration runtime.**
 
 Runs and supervises long-lived agent sessions: scheduling, a gateway, tool
@@ -31,6 +34,12 @@ EOF, terminal errors and exit cancel socket work, including blocked reads/drains
 and reconnect waits.
 
 See [terminal verification](../../docs/tui-pi-parity.md) for tests and limitations.
+
+The native Unix-socket gateway remains, but remote parent-draft negotiation/control
+and extension custom/form/frame/terminal-hook transports are removed. Primary
+snapshots are local client save/recovery operations, not gateway requests. Coding's
+former `--rpc` JSON-lines frontend is removed too; this does not remove the private
+extension-worker protocol, MCP JSON-RPC or Coding's separate ACP session ingress.
 
 ## Messaging replies
 
@@ -208,8 +217,8 @@ even if a failing editor leaves raw mode enabled. Prompt focus is required.
 Gateway work and connection events continue in the background while UI polling is
 paused. The usual connection fencing and uncertain-request no-replay policy still
 apply after return. Interrupting the editor is not an agent abort or rollback.
-Linux/private-tmux tests cover the workflow; Windows and desktop editor/IME behavior
-remain unverified.
+Linux/private-tmux tests cover the workflow; other Linux desktop editor/IME behavior
+remains unverified.
 
 ### Steering and queue controls
 
@@ -238,30 +247,6 @@ prior tool effects before explicitly resending. Local and runtime queues each
 allow 50 pending messages; runtime text is limited to 64 KiB. SDK receipts are
 bounded individual frames, not one huge text snapshot. Rejected oversized or
 malformed protocol frames do not cancel an unrelated owned run.
-
-### Read-only repository review
-
-**Alt+D / `/diff`** opens the Git repository containing the **gateway group's
-workspace**, never a guessed launch directory. This is local inspection through
-the authenticated Unix-socket workspace metadata; it does not start an agent
-turn or send a stage/revert operation to the gateway. Older gateways without
-workspace metadata cannot open it. A workspace change closes/fences the old view.
-
-Up/Down or Left/Right selects files; `/` filters filenames. `s`/`w` selects the
-staged/working patch, `n`/`p` navigates hunks, PgUp/PgDn and Home/End page, and
-Shift+Left/Right pans long lines. `r` refreshes; `d`/`b` enters an initialized
-nested repository/submodule and returns. Escape closes (or first exits filter
-mode), restoring the live draft and cursor; it does not abort the active run.
-
-The file list covers staged, unstaged, renamed, deleted, conflicted and untracked
-entries. Untracked text is a working preview; binaries, symlinks and non-regular
-entries are explicit summaries, not unsafe reads. Patches are disk-paged and
-terminal controls sanitized. Git external diff/textconv, pager, fsmonitor and
-hooks are disabled. There are no apply/stage/revert/commit APIs, no model calls,
-and no index/worktree modifications. Repository snapshots can change during
-agent work; refresh explicitly. Temporary patch storage and Git children are
-owned/cleaned on close/exit. Linux/tmux evidence and platform limits are recorded
-in `docs/agent-ui-gap-plan.md`.
 
 ### Gateway-owned session browsing and branch trees
 
@@ -316,7 +301,7 @@ changes require explicit refresh/resume; version-1 sends carry a session lease s
 a stale view cannot silently address another conversation. Uncertain operations
 are not replayed on reconnect: inspect gateway state before retrying. Navigation
 uses no model calls; metadata I/O is off the event loop. Linux/tmux is tested;
-Windows and desktop/IME behavior remain unverified.
+Other Linux desktop/IME behavior remains unverified.
 
 ### Image drafts and clipboard inputs
 
@@ -328,8 +313,7 @@ owns keyboard/paste and Escape returns to the draft; it never submits an image.
 Enter also supports image-only input.
 
 **Ctrl+V / `/paste`** explicitly invokes local clipboard helpers off-thread:
-Wayland `wl-paste`, X11 `xclip`, or the macOS `osascript`/AppKit image/text adapter
-below (`pbpaste` is text-only fallback if the native helper is absent). No implicit
+Linux Wayland `wl-paste` or X11 `xclip`. No implicit
 clipboard polling occurs. Missing helpers/errors/timeouts preserve the draft; ordinary
 terminal text paste still works. Late results remain editable and are not sent;
 `/attachments clear` also discards pending results.
@@ -352,7 +336,7 @@ restore the client's owned bytes/text for inspection without replay on reconnect
 Recovery may exceed ordinary input caps to avoid losing data; remove excess before
 sending, and inspect prior effects/context before retrying. Linux/private-tmux and
 real Unix-socket runtime tests use controlled helpers/providers. Actual desktop
-clipboard/Kitty/iTerm, macOS image paste and Windows are not claimed verified.
+clipboard and terminal-specific behavior outside these Linux fixtures are not claimed verified.
 
 ### Transcript search and fullscreen inspection
 
@@ -390,7 +374,7 @@ The source is the retained visible context (including gateway history replay), n
 hidden runtime prompts, foreign sessions, or image base64 bodies; use `/sessions`
 for archives. Native terminal selection remains available; application selection
 is whole-line/entry based. Copy/export/share is tracked separately. Linux tmux is
-verified; desktop terminals, Windows and IME remain unverified.
+verified; other Linux desktop terminals and IME remain unverified.
 
 
 Full source is an immutable snapshot of the accepted current conversation, including
@@ -417,7 +401,7 @@ Temporary spools are private/local, not workspace files or a hosted control plan
 Disk/parse/checksum failures are visible. Kernel-blocked filesystem calls cannot be
 forcibly interrupted; cleanup retains ownership until they settle. Disconnect
 aborts owned SDK work before waiting for source cleanup. Linux Unix-socket/tmux
-behavior is verified; desktop/macOS/Windows validation remains separate.
+behavior is verified; other Linux desktop terminal validation remains separate.
 
 
 ### Copy, private export and explicit local sharing
@@ -428,7 +412,7 @@ selection is used by Alt+C when present. In the transcript browser, **y** copies
 selected lines or the current entry; **e** chooses a local export destination and
 **s** reviews a local share artifact (selection if marked, otherwise conversation).
 These gestures never submit a prompt or execute a tool. Clipboard helpers are
-`wl-copy` on Wayland, `xclip` on X11, and `pbcopy` on macOS. No helper means an
+`wl-copy` on Linux Wayland or `xclip` on X11. No helper means an
 explicitly reported private temporary text file fallback, not silent OSC52 output.
 Helper errors/timeouts are not retried because clipboard outcome may be uncertain.
 The OS clipboard can expose text to other applications.
@@ -466,7 +450,7 @@ before output; failed/stale/disconnected reads never copy/export a clipped or ol
 fallback. Selection/entry actions use only a settled verified browser snapshot.
 Draft/cursor, queue/attachment ownership, native scrollback and terminal modes are
 preserved. Linux tmux and controlled real clipboard helpers are verified; desktop
-clipboard ownership, macOS and Windows manual validation remain open. Private
+clipboard ownership outside these Linux fixtures remains unverified. Private
 fallback files persist until you delete them. Kernel-blocked filesystem operations
 cannot be forcibly interrupted; helper success may transfer clipboard ownership
 to the platform's normal persistent clipboard process.
@@ -489,9 +473,9 @@ External execution defaults to **blocked** even after discovery; explicitly set
 permit filesystem/network effects outside built-in tools; permission gates are not
 an OS sandbox. Server read-only annotations do not override host policy. Command
 trust and tool-use authorization are separate, and configured env values are not
-printed in status. OAuth and further interactive capabilities remain unfinished
-in the goal tracker. Stdio negotiation/validation/cancellation limits are documented
-in the Agent README.
+printed in status. Explicit public-PKCE OAuth is documented below; removed optional
+client input/task capabilities are not a future dispatch surface. Stdio negotiation,
+validation and cancellation limits are documented in the Agent README.
 
 Group MCP configuration also accepts `transport: http`, an explicit HTTPS `url`,
 and optional `headers`/`headers_env` credential mappings. `/mcp connect SERVER`
@@ -499,7 +483,8 @@ uses the same group owner and idle reservation as stdio, with unchanged explicit
 `allow_tools` policy. Current stateless and legacy Streamable HTTP JSON/SSE, header
 mirrors/session lifecycle and bounded no-replay behavior are shared with Coding.
 Authorization failures and redirects never trigger automatic credentials, downgrade
-or forwarding. See the Agent README for limits. OAuth, richer schemas and further negotiated MCP capabilities remain unfinished.
+or forwarding. See the Agent README for the public-PKCE profile, configured Roots,
+retained continuations/subscriptions and explicit no-POST-replay limits.
 
 
 ### MCP browser and inert context previews
@@ -524,10 +509,12 @@ reads do not block ping/cancel controls. Preview/catalog IPC is checksummed and
 chunked, with group/session/revision fencing and owned temporary-file cleanup.
 Browser close cancels the active read; late responses cannot update a successor.
 
-Remaining MCP scope includes interactive authorization/OAuth, negotiated
-completion, subscriptions and richer server/tool schema
-inspection. Binary/image resources are exportable, not directly attached to model
-input. Real third-party endpoints and additional platforms remain unverified.
+The retained MCP surface includes explicit public-PKCE authorization, selected
+credential storage, inert previews and explicit subscription filters below. Native
+manual completion and optional Sampling/Elicitation/Tasks/Roots-management controls
+are removed, not pending browser features. Binary/image resources are exportable,
+not directly attached to model input. Broader third-party interoperability is not
+inferred from these local controls.
 
 
 Legacy HTTP MCP tools now support bounded cursor-based response recovery: an
@@ -536,6 +523,39 @@ original request identity and timeout. No second tool POST, automatic approval o
 connection replay occurs. Concurrent calls keep separate cursors; cancellation,
 auth/redirect/session errors and reset/exhausted cursors fail without replay.
 Current stateless HTTP never sends recovery GETs. See the Agent README for limits.
+
+
+### Configured MCP Roots and retained transport continuations
+
+Roots are **configured disclosure metadata only**. A server config may include
+`"roots": [{"uri":"file:///absolute/workspace","name":"Workspace"}]`, at most
+16 validated local absolute file URIs. Nothing enumerates the filesystem, infers
+Roots from cwd, grants tool access or creates an OS sandbox. Explicit connect
+admits that configured disclosure to the selected peer; disconnect withdraws it.
+There is no mutable Roots picker, enable/replace review or Roots-change UI.
+
+Legacy `roots/list` answers stay within the configured connection ceiling. Modern
+2026-07-28 `input_required` responses remain supported for owned `tools/call`,
+`prompts/get` and `resources/read`: only configured Roots and bounded opaque
+`requestState` continuations are accepted. Original request arguments and identity
+remain fenced; continuation rounds, embedded inputs, bytes and deadlines are
+bounded. An unsupported sibling input rejects the round before any partial Roots
+disclosure. Disconnect/cancel settles the original owner, not a successor.
+
+**Sampling, Elicitation and MCP Tasks are removed** from SDK/native/gateway
+registration, capability advertisement and review/control surfaces. Legacy
+requests are refused; modern embedded unsupported families/task augmentation fail
+closed, with no callback, model/tool work or partial completion. The former
+Sampling/Elicitation/Tasks/Roots-management keys are not replacement controls.
+Basic extension input/select/confirm and provider OAuth callbacks are separate
+retained interfaces, not MCP Elicitation.
+
+Ordinary modern Roots/request-state continuations do not authorize retrying an
+uncertain operation. Existing explicit resource/catalog/log subscription filters
+and response-scoped SSE remain. Legacy cursor-based **GET** recovery retains the
+original identity/deadline and never repeats a tool **POST**; current stateless
+HTTP does not acquire legacy GET resumption. No disconnect, failed response or
+continuation silently reconnects, replays POSTs or expands configured disclosure.
 
 
 ### Session planning workflow
@@ -625,7 +645,7 @@ def setup(api: ExtensionAPI):
         "text": {"type": "string"}}}, echo)
     api.command("hello", "Say hello", hello)
     api.status("ready", "Extension ready")
-    api.widget("summary", ["Declarative widget text"])
+    api.status("summary", "Bounded status text")
 ```
 
 Tools get collision-safe `ext_...` aliases; slash commands are namespaced as
@@ -633,8 +653,8 @@ Tools get collision-safe `ext_...` aliases; slash commands are namespaced as
 `/extensions [list|reload NAME|unload NAME]` manages ONLY globally trusted IDs and
 requires idle ownership. Commands do not silently submit an agent prompt. API v1
 supports sync/async callbacks, session/turn/message/tool lifecycle events, pre-tool
-veto/parameter transforms, post-tool text transforms and bounded notices/status/
-widgets. Legacy Python pre/post/stop hook types remain compatible.
+veto/parameter transforms, post-tool text transforms, bounded notifications and
+simple text status. Legacy Python pre/post/stop hook types remain compatible.
 
 Rewritten tool arguments are schema-validated and checked by the host's ORIGINAL
 permission and planning gates AFTER transformation. A plugin cannot use the API
@@ -645,11 +665,12 @@ replay. An unavailable selected extension makes pre-tool validation fail closed
 until explicit unload/reload. Shutdown runs bounded stop hooks and reaps normal
 owned process groups; cancellation cannot roll back already completed effects.
 
-This is a first runtime slice, NOT full Pi API compatibility: rich custom dialogs/
-renderers, shortcuts/input interception, provider registration remain on the goal tracker; durable entries/context hooks
-are described below. Binary tool return
-values and tools called through extension command context are not yet supported.
-Code can deliberately escape normal process ownership; do not load untrusted code.
+The supported extension surface is intentionally bounded, not full Pi API
+compatibility. Durable entries/context hooks, typed tool/command results, registered
+shortcuts and session-owned providers are documented below. Arbitrary custom
+rendering/forms/layouts, raw terminal interception/observation and host editor/session
+mutation APIs are removed. Code can deliberately escape normal process ownership;
+do not load untrusted code.
 
 Claw additionally requires `extension_allow_tools: [sample]` in its trusted config
 to let the agent call a plugin tool. Default tool use remains blocked after loading.
@@ -694,7 +715,8 @@ def setup(api):
 Unknown/system roles, unsupported parts, invalid images/signatures and incomplete/
 invented tool-result batches fail explicitly, not by silently dropping content.
 No-op transforms preserve original typed messages. Images and signed thinking/tool
-parts survive chunked full-context transfers beyond the individual RPC frame limit.
+parts survive chunked full-context transfers beyond the individual extension-worker
+RPC frame limit.
 Transfers are checksummed, order/identity fenced and spooled off-loop, with a 128 MiB
 explicit context limit, 64 KiB blocks and an absolute whole-transfer deadline.
 
@@ -705,10 +727,10 @@ metadata/file ownership before the host releases its lifecycle reservation; it
 cannot roll back an already completed write. Context-hook failures disable the
 extension and do not trigger another model call or automatic replay.
 
-This closes the basic durable-entry/pre-model-context gap, not the whole extension
-API row: custom renderers/dialogs, shortcuts/input interception, provider registration,
-richer command context and binary tool results remain unfinished. Extension code
-is still trusted code with the user's privileges, not an OS sandbox.
+Durable entries and context hooks do not grant editor/session mutation, raw terminal
+interception or custom-layout authority. Registered shortcuts, basic dialogs, rich
+results and session-owned providers have their separate contracts below. Extension
+code is still trusted code with the user's privileges, not an OS sandbox.
 
 Claw caches independent atomic extension-entry session/branch sidecars at startup;
 transcript-catalog recovery cannot discard them. Branching from a selected branch
@@ -726,13 +748,13 @@ this dialog only—it is not tool approval, permission revocation or automatic t
 submission. Trusted extension code decides what to do with the answer.
 
 The worker suspends the callback and returns an owned pending-callback/dialog
-receipt. The host displays a focused bounded form, then resumes that SAME callback
+receipt. The host displays a focused basic dialog, then resumes that SAME callback
 with the validated answer; it does not rerun a command/tool to obtain the answer.
 Multiple sequential dialogs work. Without an interactive host, canceled values are
 returned immediately rather than hanging unattended execution.
 
-Forms sanitize control codes, scroll long details, preserve the main editor draft
-and input cursor, and require a rendered visible question/action before Enter can
+Basic dialogs sanitize control codes, scroll long details, preserve the main editor
+draft and input cursor, and require a rendered visible question/action before Enter can
 answer. Select/confirm pastes do not submit; tiny/resize/release/repeat/unpainted
 selection input cannot confirm. Escape/Ctrl+C cancel the dialog. Tool approval and
 output review retain higher focus priority. An affirmative extension confirmation
@@ -746,9 +768,10 @@ other controls while the group remains reserved. Context-hook dialogs still shar
 the context transfer's absolute deadline; the UI does not renew model/transport
 budgets. Callback effects remain trusted code, not OS-enforced isolation.
 
-Arbitrary custom renderers/overlays, richer forms, input/shortcut interception,
-provider registration and further extension command/binary capabilities remain
-unfinished; these dialogs do not declare full Pi API compatibility.
+These are basic input/select/confirm dialogs, not plugin forms or a layout API.
+Custom renderers, nested dialogs, extension overlays and terminal interception are
+removed. Registered command shortcuts and submitted-input hooks remain separate;
+none of these interfaces grants tool permission or full Pi API compatibility.
 
 
 ### Supervised child agents
@@ -783,8 +806,9 @@ loop; shared parent validation stays serial and cannot borrow a parent dialog le
 with visible child-specific control forms, opt-in fullscreen and scoped reviewed
 copy/export/share. Child source has its own checksummed/coalescing 64 KiB transport
 and a 2 MiB display-source limit; controls remain socket-responsive during reads.
-Escape restores the roster and parent draft/caret. Richer child dialogs,
-platform validation remains pending. Child extension dialogs now use independently owned select/input/confirm continuations when the origin UI is attached.
+Escape restores the roster and parent draft/caret. Child extension dialogs use
+independently owned select/input/confirm continuations when the origin UI is attached;
+complex extension forms/renderers are removed.
 This is host policy/resource ownership, not OS-enforced sandboxing or rollback of
 remote/trusted callback effects.
 
@@ -804,7 +828,7 @@ confirm cancel returns False. Detaching/exiting the origin UI settles pending
 questions and subsequent child questions use canceled values; callbacks/work are
 not replayed or automatically adopted after reconnect. Parent inherited validation
 still uses silent no-UI answers to avoid borrowing its separate dialog reservation.
-Arbitrary richer extension forms and platform validation remain open.
+Complex extension forms are removed; basic child dialogs retain these ownership and cancellation checks.
 
 
 ### Child specialization and limits
@@ -900,10 +924,14 @@ URI review; no browser or model opens automatically. `c` cancels a pending callb
 `s` reads state, and Escape leaves the view and cancels pending ownership.
 
 Authorization alone does not connect/register tools or approve execution. Return to
-servers and `c` to connect explicitly. Server-list `s` inspects the authorization;
-`f` reviews local forget/disconnect (not remote revocation). Existing tool approvals,
+servers and `c` to connect explicitly. Server-list `s` inspects authorization,
+`l` reviews saved restore and `x` reviews saved-credential erase. Inside authorization
+status (not the server list), `f` reviews memory/saved forget and disconnect, never
+remote revocation. Existing tool approvals,
 Claw allow_tools/planning and child/model rules remain active. Parent drafts/caret and
-terminal modes survive. Tokens remain memory-only with no automatic refresh/replay.
+terminal modes survive. Tokens remain private in memory until a separate explicit
+save to the selected Linux credential backend. Refresh/restore are explicit, with
+no automatic retry or replay.
 
 Consent is scoped to view/session/context and, in Claw, its original socket/group.
 Another connection cannot use a known receipt. Leaving, canceling, disconnecting or
@@ -911,9 +939,9 @@ changing the scope rejects late credential commitment and settles pending listen
 reconnect does not adopt a waiting flow. Already completed resource credentials may
 survive closing the success view. Claw requires advertised `mcp_auth` controls; schema
 changes/forget still require idle ownership. Pending HTTP jobs do not block socket
-reads. The constrained pre-registered profile from pass 27 remains: broader metadata/
-registration, persistence/refresh and full external-provider/platform verification
-are not claimed complete.
+reads. Only pre-registered public-PKCE profiles are supported; client-metadata/DCR,
+confidential methods and private-key JWT are removed. Explicit refresh and both
+Linux storage choices below remain supported without method/store fallback.
 
 
 ### Authorization metadata discovery
@@ -935,212 +963,60 @@ priority without assuming they are listed in `scopes_supported`; the configured
 scopes remain an operator ceiling. Scope-less listings are displayed as no request,
 and over-ceiling requirements fail rather than silently expanding access. Actual
 review data carries discovery URLs and scope-source provenance. Consent/permissions/
-leases/explicit connect remain separate. Registration and persistence/refresh are
-still pending; successful offline discovery is not proof of every external provider.
+leases/explicit connect remain separate. Client-metadata and dynamic registration
+are removed; explicit public refresh and both retained Linux stores do not imply
+universal external-provider interoperability.
 
 
-### Client registration alternatives
+### Pre-registered public-client boundary
 
-OAuth profiles accept `registration` with an explicit strategy:
+MCP OAuth accepts only an existing **pre-registered public client ID**, S256 PKCE
+and token authentication **`none`**. `registration: "pre-registered"` and
+`token_auth_method: "none"` are the defaults and the only supported values.
+Metadata-client-ID/hosted-client-document registration, dynamic registration,
+confidential client-secret methods and private-key JWT/signing are removed.
+Unsupported profiles fail closed before authentication/network work; no secret
+source is read, signer started, registration POST sent or method/store fallback
+attempted. There is no remote client-registration management API.
 
-- `pre-registered` (default): existing public client_id behavior.
-- `metadata`: client_id is the operator's hosted HTTPS JSON document URL (with a
-  path), and callback_port is fixed/nonzero. The issuer must advertise metadata
-  support; the document's client_id/name/public method/code types and exact
-  `http://127.0.0.1:PORT/callback` registration are validated without linked-asset
-  fetching, redirects or implicit document hosting. No hidden DCR fallback occurs.
-- `dynamic`: omit client_id. The issuer must advertise a pinned-origin HTTPS
-  registration endpoint. The full review explicitly describes creating a remote
-  native public-client record. Only AFTER consent does one JSON POST register the
-  exact allocated callback/code/public method/scopes; a validated issued ID is used
-  for the normal resource-bound PKCE flow. No secret/management token is stored/sent.
+Pinned **resource/issuer metadata discovery** remains part of explicit public-PKCE
+authorization; it is not client metadata registration. Resource, issuer, scopes,
+TLS trust, loopback callback and actual endpoint review still apply. Authorization
+never connects tools or grants their permission. Explicit reviewed refresh and
+credential save/restore below remain independent operations, not automatic login
+or recovery of an unsupported profile. Old records bound to removed authentication/
+registration methods are not silently migrated or downgraded to public grants.
 
-Example dynamic profile (legacy/deprecated registration is explicitly selected):
-
-```json
-{
-  "issuer": "https://issuer.example",
-  "registration": "dynamic",
-  "client_name": "My XDOG CLI",
-  "scopes": ["tools:read"]
-}
-```
-
-Cancel cannot undo a remote record. Unknown outcome/invalid response consumes the
-receipt, closes the listener and never replays registration; fresh review is required.
-Client metadata requires operator-hosted reachable data and the supported fixed
-callback, not automatic hosting or general port-variance compatibility. Same Coding/
-Claw consent, lease, status/local forget, explicit connection and tool-policy gates
-apply. Claw negotiates mcp_registration capability. Credential/registration persistence,
-refresh, confidential client methods and remote management remain pending; offline
-peer tests are not a claim that every issuer supports these profiles.
-
-
-### Pre-registered confidential token methods
-
-An OAuth profile can explicitly choose `token_auth_method: client_secret_basic` or
-`client_secret_post` and `client_secret_env: MY_MCP_CLIENT_SECRET`. Default none
-remains public. These methods require pre-registered client_id; metadata/DCR profiles
-cannot silently adopt secrets. Literal client_secret/config-file credentials and
-unimplemented methods fail rather than downgrade. Issuer method metadata must match.
-
-The full consent shows method and environment variable NAME only. Secret values are
-resolved solely from the configured source, checked before discovery/start and anew
-at exchange; they are not stored on profiles/reviews/status/browser URLs or in files.
-Basic correctly form-encodes both credential components before base64; POST uses its
-form body, never both. Credential-bearing data is restricted to the exact reviewed
-pinned HTTPS token endpoint—not resource/metadata/registration hosts. Errors remain
-secret-safe. Missing/unsafe/removed sources fail closed, with no code/request replay.
-
-Existing PKCE/resource/scope, Coding approvals, Claw allow_tools/planning and view/
-connection leases remain authoritative. Claw negotiates mcp_client_auth and verifies
-reviewed method/source fields before confidential start. Authorization is not tool
-approval or implicit connection. Persistence/refresh, private-key/mTLS methods and
-full service/platform interoperability remain future work.
 
 ### Explicit in-memory OAuth refresh
 
-Refresh is an operator action, never a background token retry. After an issuer
-actually supplies a refresh token, open the server's authorization status and press
-**r**. Review every page of the resource, actual granted scopes, pinned endpoints,
-client ID and authentication method/source, then press **Enter**. This sends one
-resource-bound refresh POST, not a new browser login or client registration. Claw
-requires gateway capability `mcp_refresh: 1`; unsupported gateways cannot submit it.
+Refresh is an operator action, never a background token retry. If the issuer
+supplied a refresh token, open authorization status and press **r**, review the
+resource, actual grant scopes, pinned endpoints, client ID and public method
+`none`, then confirm with a fresh physical Enter. This sends one resource-bound
+refresh POST, not a new browser login or client registration. Claw requires
+`mcp_refresh:1`; unsupported gateways cannot submit it.
 
-The SDK equivalents are `manage_auth("remote", "refresh_prepare")`, followed by
+SDK hosts use `manage_auth("remote", "refresh_prepare")` followed by
 `manage_auth("remote", "refresh", review_id)` under the same live consent lease.
-Receipts are single-use and expire after five minutes. The request uses the actual
-prior grant's scopes, not the broader original configuration. Valid replies may
-narrow scopes but cannot widen them. Issued refresh tokens rotate; if a valid reply
-omits rotation, the prior token is retained only after that reply is validated.
+Receipts are single-use and expire after five minutes. Refresh uses the previous
+grant's scopes, not the broader configured ceiling. Valid replies may narrow,
+never widen, scopes. A new refresh token replaces the prior one only after reply
+validation; omission retains the old token only after a valid response.
 
-The old refresh capability is consumed before exchange. Cancellation, a lost
-response, invalid response or revoked owner discards it: uncertain rotation must
-not replay the old token. **c** cancels a pending refresh; closing/disconnecting the
-view settles its task and fences late commits. A still-valid old access token can
-remain usable on refresh failure; authorize again to restore refresh capability.
-Failed refresh preparation without an existing lease does not reserve the server
-against another view. Local forget erases both access and refresh credentials.
+The refresh capability is consumed before exchange. Cancellation, lost/invalid
+responses or revoked ownership discard it rather than replay an uncertain token.
+**c** cancels a pending refresh; leaving/disconnecting settles owned work and
+fences late commits. A still-valid old access token may remain usable after
+refresh failure; authorize again if needed. An existing saved snapshot is removed
+before rotating refresh, so restart cannot replay stale credentials. A completed
+replacement grant is saved only by another explicit reviewed save.
 
-Refresh never replays MCP requests, automatically connects tools, changes approvals,
-registers a client or widens permissions. Credentials remain memory-only: durable
-credential/registration storage and reload, further client methods and remote
-revocation/management remain open. Issuers may not issue refresh tokens (the dynamic
-registration request still declares the code grant only). Offline peer/terminal
-coverage is not evidence of live identity-provider compatibility. This section
-supersedes earlier descriptions of explicit refresh as entirely unimplemented;
-automatic refresh and persistence are still not supported.
+Refresh never replays MCP requests, connects tools, changes approvals or falls
+back to another client/authentication/storage method. The two retained Linux
+credential backends are documented separately; neither implies startup restore,
+automatic refresh, remote revocation or universal issuer interoperability.
 
-### macOS image/text clipboard adapter
-
-Explicit **Ctrl+V** or `/paste` on macOS now selects one owned `osascript` JavaScript
-for Automation helper using AppKit/Foundation. It reads PNG, JPEG or WebP binary
-pasteboard types before text. TIFF-only image data is converted to PNG through
-`NSBitmapImageRep`; clipboard file URLs are not opened and no application is
-controlled. Unicode text and an empty clipboard use the same snapshot protocol.
-
-The helper checks the pasteboard change count before/after the read and refuses a
-changed snapshot. Source/converted images remain capped at 10 MiB, TIFF conversion
-at 100 megapixels, and text at 1 MiB. Python bounds the encoded response, validates
-its JSON/base64 protocol, then reuses the usual image-header/dimension and composer
-admission checks. Existing off-thread timeout/cancel/reap and draft/epoch fencing
-remain in force. A native error is not retried as text or silently switched to a
-different clipboard backend; it never automatically sends input or grants approval.
-When `osascript` is absent, `pbpaste` remains explicitly text-only fallback.
-
-Evidence here is independent scripted AppKit-contract execution and real owned
-helper subprocesses on Linux, plus both production terminal clients' Ctrl+V,
-preview, image send/recovery and terminal restoration with that helper protocol.
-The actual Apple JXA bridge, a real Mac pasteboard/desktop (including pasteboard
-access denial), Kitty/iTerm and Windows still require platform validation. This is
-an implemented adapter, not a claim that those native-platform gaps are verified.
-
-### Explicit MCP named-argument completion
-
-After explicitly connecting a server, open its prompt or resource-template catalog
-and select an entry. In the JSON-argument/resolved-URI form, **Ctrl+Space** opens
-named completion. **Ctrl+N/P** selects an advertised variable, **Tab** explicitly
-requests suggestions for its current prefix, and **Up/Down** selects a returned
-value. **Enter** inserts the visible selection (or typed value) into the editable
-argument/URI draft only. A separate Enter in the parent form retrieves a preview;
-preview insertion into the main prompt remains another explicit action. Escape
-returns without retrieval or agent input. No completion runs on ordinary typing.
-
-Requests require the server's negotiated `completions` capability, an advertised
-prompt/template and named variables. They carry other edited arguments as context,
-not as reserved top-level fields. Responses retain server ranking, at most 100
-bounded strings, optional total count and hasMore; additional results are indicated
-rather than silently truncated or automatically paginated. Narrow the prefix and
-request again. Editing/changing variables cancels stale work and discards old
-suggestions; scope/context/prefix echoes and existing session/view/connection leases
-fence late replies. Claw requires `mcp_completion: 1` from the gateway.
-
-Accepted variable edits used as context are retained with the selected value.
-Template insertion expands RFC 6570 **scalar strings** (all operators, prefix and
-scalar explode modifiers); other undefined variables are omitted as specified and
-the resolved URI stays editable. Arrays/associative expansion are not accepted by
-this named-string form. It never opens a returned URI or clipboard/local path:
-resource preview uses the already connected MCP server only. Invalid JSON/URI
-input and busy submission preserve the draft instead of consuming it on failure.
-
-Completion is read-only data, not authorization or a tool call. No automatic
-connection, token refresh, MCP call retry, model turn, permission widening or
-resource subscription is introduced. Repeat Enter cannot implicitly retrieve a
-preview after a suggestion is accepted. One active and one queued explicit intent per
-server are allowed; excess concurrency fails visibly. A short cancellable interval
-limits requests without losing fast explicit edits or retrying a POST. Results use
-Claw's existing bounded checksummed source transport, not oversized control frames.
-
-Offline current/legacy stdio and loopback HTTP peers, both live app paths and both
-private-tmux terminal forms are covered. This does not establish third-party server
-or non-Linux platform interoperability. Resource subscriptions, richer negotiated
-client/schema capabilities, credential persistence and remaining extension/platform
-work stay open; earlier notes listing completion as entirely absent are superseded.
-The configured completion timeout includes queue wait, catalog and POST.
-Opaque/plain-resource completion references outside advertised named templates
-remain open rather than being inferred from the named-template implementation.
-
-### Opaque resource-reference completion
-
-Use **v** on a configured server or a resource-catalog entry to open the opaque
-completion form. The selected URI is prefilled only when there is an actual catalog
-entry; otherwise enter it explicitly. Supply the server-documented argument name,
-current value and context as JSON, for example:
-
-```json
-{"uri":"opaque://known/ref","argument":"documented-name","value":"pre","context":{"language":"python"}}
-```
-
-No argument name is guessed from a URI, description or local file path. **Ctrl+Space**
-opens the named-value picker; **Tab** explicitly requests `ref/resource` completion.
-The same bounded ranking, context, cancellation, timeout and late-result fencing
-apply as for prompt/template completion. Unlisted/dynamic resource references can
-be completed, and completion-only servers can connect without pretending to expose
-tools, prompt catalogs or resource catalogs. The server decides the meaning of the
-explicit reference/name/context; this client never follows the URI.
-
-**Enter** accepts into the JSON argument draft only. A separate Enter reviews the
-selected/edited data **locally**, labelled "Operator-selected/edited" and "NOT a
-resource read or resolved URI". **i** in that preview explicitly inserts the quoted
-untrusted data into the preserved main draft; it still does not send a model turn.
-An opaque suggestion is an argument value, not an inferred replacement URI:
-there is no `resources/read`, template expansion, local path opening or implicit
-connection/authorization. JSON forms now use up to three bounded editor rows so
-wrapped reference/value/context fields remain inspectable; invalid forms preserve
-their text rather than consuming it.
-
-Claw additionally negotiates `mcp_resource_completion: 1`; missing support fails
-before a remote request and leaves the prefix editable. This separate capability
-preserves existing `mcp_completion: 1` prompt/template behavior. The selected-data
-review is local in both clients, not a new gateway resource-read operation.
-
-Independent current/legacy stdio and HTTP peers (including completion-only profiles),
-both real app paths and private-tmux terminal forms verify this behavior. Invalid
-completion-only capability metadata fails closed. No live third-party server,
-identity-provider or non-Linux platform compatibility is inferred. This section
-supersedes earlier notes that opaque/plain-resource completion was unimplemented;
-subscriptions, richer schemas/client capabilities, persistence and the other
-original gaps remain open.
 
 ### MCP JSON Schema and typed structured output
 
@@ -1197,55 +1073,6 @@ helper test covers this; generated-output/vendored-package licence boundaries ar
 unchanged. Lock updates only declare the already-resolved dependency, not unrelated
 version upgrades.
 
-### Reviewed typed extension forms
-
-Trusted Python extensions can now use `await api.form(title, fields, message="...",
-timeout=300)` in their owned command/tool callbacks. It returns a typed named
-object, or **None** on cancel, timeout, headless/unattended execution or unsupported
-viewer. Defaults are offered to a live user, never silently submitted headlessly.
-Example:
-
-```python
-answer = await api.form("Configure task", [
-    {"name": "name", "kind": "text", "required": True, "min_length": 1},
-    {"name": "count", "kind": "integer", "default": 0, "minimum": 0, "maximum": 10},
-    {"name": "enabled", "kind": "boolean", "default": False},
-    {"name": "mode", "kind": "choice", "default": None,
-     "choices": [{"label": "None", "value": None}, {"label": "Zero", "value": 0}]},
-    {"name": "notes", "kind": "text", "multiline": True},
-])
-```
-
-Fields support text, integer, finite number, boolean and labelled typed scalar
-choices; required/default, descriptions, text length and numeric ranges are
-validated independently by the host. Unknown constraints/field names, duplicate
-names/typed choices and coercions fail. **False**, **0**, empty text, explicit null
-choices and omitted optional fields remain distinct. Required means a field must
-be present; use min_length to require nonempty text. Forms are flat/bounded (1–32
-fields, 128 KiB declaration and 64 KiB answer), not arbitrary code/custom rendering
-or nested JSON Schema UI. Integers are limited to the interoperable ±(2^53−1) range.
-
-**Tab/Shift+Tab** commits/navigates fields. Text/numbers edit normally; **Space or
-Left/Right** cycles boolean/choice values and unset. **Enter** adds a line in a
-multiline field, otherwise opens full-form review; **Ctrl+Enter** reviews from any
-field. **PgUp/PgDn** pages help/review. Every review page must paint before Enter
-submits; **Ctrl+E** returns to editing and **Esc/Ctrl+C** cancels. Invalid drafts stay
-editable, and resize/visibility changes invalidate prior review. Field help, limits,
-requiredness and selected/omitted values remain inspectable in bounded rows.
-
-Forms are extension input data, never host tool approval, planning/permission-mode
-changes or automatic agent submissions. Coding approvals retain priority. Parent
-and child callbacks use their existing session/connection/UI leases and independent
-brokers; malformed/foreign answers cannot resolve a form. Cancel, disconnect and
-unattended paths do not replay the callback or invent defaults.
-
-Claw negotiates `extension_forms: 1` in the client handshake and server pong. Older
-viewers receive cancellation rather than an unrenderable form; basic select/input/
-confirm compatibility is unchanged. Both live parent/child paths and Linux/private-
-tmux command forms are tested. Arbitrary renderers/nested layouts, interception,
-provider registration, richer extension commands and native-platform validation
-remain open; this pass does not waive them. No OS sandbox is added.
-
 ### Rich extension tool results
 
 Trusted extension tools are no longer text-only. Existing string callbacks are
@@ -1289,10 +1116,10 @@ oversized socket line. The new rich-extension envelope fits that transport budge
 
 Independent real workers, denied/allowed live app paths, typed persistence, inherited
 child output, malformed/unsupported results, large-preview notices and both private-
-tmux image/JSON inspectors are verified. Rich command contexts/returns, arbitrary
-renderers, input interception/provider registration, audio/resource/error-image
-interop, remaining MCP/credential and native-platform gaps stay open. This section
-supersedes earlier text-only TOOL limits; it does not waive the remaining goal.
+tmux image/JSON inspectors are verified. These typed tool results do not grant
+extension editor/session mutations, custom rendering or terminal interception.
+Audio/resource/error-image interoperability, remaining MCP/credential and native-
+platform gaps remain separate from the retained tool-result contract.
 
 ### Rich extension command artifacts
 
@@ -1336,10 +1163,10 @@ responses below the receiving transport budget.
 Independent real command workers, both production UI paths, permission/draft/history
 non-mutation, system-source inspection, stale-owner rejection, older-viewer behavior,
 cancellation and malformed returns are tested, plus both private-tmux image/JSON
-inspectors and parent terminal restoration. Rich command HOST ACTION CONTEXT (safe
-session/navigation/editor callbacks), arbitrary rendering/layouts, interception,
-provider registration, binary artifact export/persistence and remaining MCP/platform
-gaps stay open. Returning an artifact does not waive those requirements.
+inspectors and parent terminal restoration. Returning an artifact does not grant
+editor/session/navigation mutations, custom rendering/layouts or raw terminal access;
+those extension interfaces are removed. Read-only command inspection, provider
+registration and explicit artifact export/reload have their own contracts below.
 
 ### Lossless command artifact export and read-only reload
 
@@ -1376,53 +1203,13 @@ Loaded artifacts become owned display data and can be re-exported after a new re
 Both actual clients and private-tmux workflows verify binary save/reload, explicit
 review, private mode/no overwrite, owner fencing and no-model/draft non-mutation.
 SDK artifact_bytes/artifact_from_bytes/read_artifact expose the same validated codec.
-Remaining custom rendering/command host actions/interception/providers, further
-MCP/credential and native-platform requirements remain open.
+Artifact export/reload does not restore removed extension custom rendering, host
+mutations or terminal interception. Further MCP/credential and native-platform
+interoperability remains separate work.
 
-### Command-only editor host context
+### Command session metadata
 
-Trusted command callbacks can now use `snapshot = await api.get_editor()` and
-`await api.set_editor(new_text, snapshot["revision"])`. The captured object contains
-text, character cursor, image count and an opaque revision receipt. A replacement
-returns bool; conflict/unavailable contexts return False/None without overwriting
-the user's draft. Example:
-
-```python
-snapshot = await api.get_editor()
-if snapshot is not None:
-    applied = await api.set_editor(snapshot["text"] + "\nPrepared by command", snapshot["revision"])
-```
-
-This capability exists only during an actual interactive extension COMMAND, under
-that extension's current command/session/connection owner. It is unavailable to
-ordinary tool/lifecycle/context/pre-/post-hook callbacks, inherited child tools,
-unattended/headless callers and unsupported viewers. A forged worker flag cannot
-borrow another operation's editor context; the host checks the original RPC action
-and current UI command/extension ownership independently.
-
-Revision receipts are random, single-use and bound to the original text, cursor and
-attachment identities. User edits/caret moves/attachment changes, new commands or
-changed session/connection/history epoch invalidate replacement. Invalid/terminal-
-control/oversized text is rejected rather than silently sanitized into a different
-draft. Text replacement preserves typed attachments and normal undo behavior; it
-never sends a model turn, changes permissions/planning or executes draft text/URIs.
-Limit: 64 KiB UTF-8 editor snapshot/replacement and explicit bounded request timeout.
-
-Coding's approval/output/overlay priority defers host editor service rather than
-changing the draft behind another dialog. The existing owned pending callback and
-validated UI-reply path carries editor requests/receipts; it is not a second agent
-loop. Cancel/exit/owner changes settle or refuse requests, and callbacks are not
-replayed. Claw independently negotiates `extension_editor: 1` in hello/pong; older
-viewers cancel the request and leave command/editor behavior unchanged.
-
-Both real command workers, UI CAS-success/conflict cases (including retained Coding
-attachments), wrong owner/receipt/cursor/image changes, invalid control data,
-headless/tool/older-viewer refusal and private-tmux typed draft transforms are tested.
-Session/navigation/model host-action APIs, broader command context, custom rendering,
-interception/provider registration and remaining MCP/native-platform goals stay open.
-Editor access alone does not redefine or complete that larger scope.
-
-### Command session metadata and native browser context
+Read-only command metadata never opens or activates a session browser.
 
 ### Failed extension inventory and cancellation
 
@@ -1552,135 +1339,48 @@ page = await api.get_command_catalog(query="", offset=0, revision="")
 # Continue using page["next_offset"] and page["revision"].
 ```
 
-Interactive parent COMMAND callbacks may read all entries in the same current
-terminal menu used by `/help` and completion, in 32-entry pages. Entries contain
-only normalized command name and sanitized description, with a terminal-menu
-source label, session identity, revision and explicit pagination. This is NOT
-execution approval, activation, model input or a claim that every remote command
-is available. Tools/headless/independent-child callbacks return `None` instead of
-borrowing the parent editor's command context.
+A live native host may bind read-only menu inspection to an eligible owned command,
+tool, lifecycle/pre/post-tool, submitted-input or context callback. It reads the
+same sanitized terminal menu used by `/help` and completion, in 32-entry pages:
+normalized name/description, source label, session identity, revision and explicit
+pagination only. Host availability and exact invocation/session/child admission
+remain authoritative; a detached/headless or unsupported callback gets `None`,
+not another owner's menu. Independent child callbacks cannot borrow the parent's
+menu/editor. Provider/setup callbacks receive no menu control authority.
 
-Each response is scoped to its invoking session/command/context. Caller-selected
-session/branch/action fields are refused; copied pages cannot mutate the host.
-Changed menu metadata or another callback invalidates an old revision and returns
+Worker-supplied routing/host identity is refused. The host's trusted invocation
+identity is separate from plugin request fields and carries no mutation grant.
+Changed menu/session/registration invalidates a former revision and returns
 `status="stale"`, no entries and no next page. Restart at offset zero explicitly;
-there is no silent partial merge, command callback execution or automatic replay.
-Claw separately negotiates `extension_command_catalog: 1`; previous session/tree/
-model/name/inspection capability does not substitute for that viewer support.
+there is no silent merge, command execution, model input or automatic replay.
+Claw separately negotiates `extension_command_catalog:1` and its generation;
+old session/inspection support does not substitute for that exact bridge.
+Session/tree catalogs below retain their separately scoped read-only contract.
 
-### Extension session names
 
-```python
-name = await api.get_session_name()        # str (including "") or None if unavailable
-queued = await api.set_session_name("Release review")
-queued_clear = await api.set_session_name("")
-```
+### Read-only extension session metadata
 
-Interactive parent COMMAND callbacks inspect the actual session owner; Claw reads
-through its reserved gateway/broker, not the viewer's cached footer. Outside an
-interactive command, reads use an invocation-owned, copied metadata snapshot when
-available. Tools, hooks and headless callbacks cannot borrow rename authority.
-Independent children and unadmitted/stale workers never borrow a parent name;
-without separately supplied owning metadata they receive `None`, not an empty name.
+`await api.get_session_name()` returns the actual owning session's name, or
+`None` when unavailable; an empty name is not a borrowed parent value.
+`get_session`, `get_model`, `get_context_usage`, `get_active_tools` and
+`get_tool_inventory` retain bounded, owner-projected read-only data. Session/tree
+and command catalogs remain read-only; `has_pending_messages` is a boolean query,
+not a queue control API. Callback admission, role and session/child provenance
+remain checked; queries neither start a model nor grant permissions.
 
-Setting a name opens a focus-owned, paginated host review showing the exact current
-owner, expected old name and proposed new name. `True` means **queued after callback
-success**, not saved. Failed/canceled callbacks discard it. The existing native
-metadata owner applies the change only if the name still matches the reviewed old
-name, preserving history/model/tools/permissions and the current persistence owner.
-Names are plain Unicode text with the native 256-byte/control bounds. The API uses
-`""` to clear; `"-"` is a literal name (unlike the native `/name -` clear shortcut).
+Extensions cannot read/replace the unsent editor, rename/navigate sessions,
+select tools, request compaction or enqueue prompt/context/follow-up input through
+host control APIs. Native USER `/name`, `/model`, `/compact`, `/sessions` and
+`/tools` remain independent. Business tool/provider/command/hook registration and
+basic input/confirm/select/status remain supported.
 
-Claw independently negotiates `extension_session_name: 1`; older/withdrawn viewers
-cannot substitute model-inspection or navigation support. Missing name data/optional
-frame-budget exhaustion is unavailable, never a cached parent name or a replay.
-This metadata feature does not add extension history mutation or model execution.
-
-Interactive extension COMMAND callbacks can use `await api.get_session()` for a
-bounded snapshot of session_id, workspace and group_id (Coding uses an empty group).
-No hidden system prompt, full conversation or foreign-session data is included.
-`await api.open_sessions(tree=False)` queues the native session browser; tree=True
-queues the current session's branch/checkpoint tree. A True receipt means **queued**,
-not that a session was activated or that the callback has finished.
-
-The host opens that browser only AFTER the same command callback settles successfully
-under the same session/connection/history owner. Failure, cancel, stale command IDs,
-owner/epoch changes and unavailable viewers discard the deferred request. Existing
-Coding/Claw session providers, group/session control protocol, idle exclusion,
-branch/checkpoint validation and persistence remain authoritative. The operator
-must separately select/activate/create a session through the ordinary browser;
-opening it never switches session, launches a model turn or changes the draft.
-
-These APIs use the existing owned/validated pending host-request path. They are
-unavailable to tool/hooks/context/child callbacks, headless execution and older
-viewers. Original RPC action and active extension/command ownership are checked at
-the host, independently of a worker's capability claims. Claw negotiates
-`extension_session: 1` in hello/pong separately from editor/form/rich-result controls.
-Unsupported viewers cancel the request rather than render an unknown session dialog.
-
-The parent draft/focus, typed attachments and permission/planning policy remain
-unchanged; closing the browser restores the editor. Both real workers, successful/
-failed live commands, existing navigation regressions, stale-owner checks, tool/
-headless/older-viewer refusal and private-tmux browser entry/return are tested.
-This is session inspection plus explicit native browsing, NOT direct session mutation
-or a paginated extension catalog API. Those host-action/context gaps, model control,
-custom renderers/interception/providers and remaining MCP/platform requirements stay
-open and are not waived by this increment.
-
-### Reviewed direct command navigation
-
-Interactive command callbacks can now request:
-
-```python
-queued = await api.navigate_session("resume", session_id=target_id)
-# Also: "new", "branch" (branch_id), "goto" (zero-based index), or "fork".
-```
-
-The API queues at most one reviewed intent per command. Its bool receipt means
-**queued after review**, NOT activated/committed. New requires no target fields;
-resume requires an explicit session; branch requires an explicit branch; goto
-requires a zero-based checkpoint index. Empty session for branch/goto means the
-captured current owner. Fork is limited to the current session/head, with optional
-zero-based index. IDs/field combinations and checkpoint types/ranges are validated;
-returned strings/paths cannot substitute a host command.
-
-The UI defaults to denial. Right/Space selects approval, Enter opens whole-target
-review, PgUp/PgDn reviews every page and another Enter confirms. Current owner and
-the exact action/session/branch/index are displayed, with a queued-not-activated
-warning. Paste/repeat Enter, hidden/tiny/changed-layout review and default denial do
-not approve a mutation. Normal host approval retains priority. No tool/model/
-permission change is authorized by this form.
-
-Only AFTER the original callback completes successfully under the same command/
-extension/session/connection/history owner does the host dispatch the existing
-native navigation control. Failure, cancel or owner change discards the intent.
-Existing idle/child gates, target/group ownership, safe checkpoint/tool-boundary
-checks and persisted plan/extension state remain authoritative; invalid or vanished
-targets fail without a substitute selection. Claw uses its group-owned session
-protocol; Coding uses its normal serialized commands. Fork saves a checkpoint
-branch; branch/goto activate context according to existing client semantics.
-
-The main draft/attachments are not submitted or discarded, permission/planning
-policy is not overridden, and no provider request is launched. Claw separately
-negotiates `extension_navigation: 1`; viewers supporting only metadata/browser
-requests cancel direct navigation before receiving unfamiliar review semantics.
-Tool/hooks/context/child/headless callers cannot borrow command authority.
-
-Navigation and rename reviews now require a host `extension_dialog_accepted`
-receipt emitted only when the broker actually delivers `True` to the callback.
-A sent answer or transport ACK is not a navigation grant. Canceled/expired futures
-cannot authorize a later successful callback; receipt ownership and current
-session/history context are rechecked before queueing the native operation.
-The TUI and gateway must both support these receipts; an older gateway without
-one cannot authorize navigation/rename. Local command cancellation revokes reviewed
-navigation immediately, and withdrawn navigation support also prevents dispatch.
-
-Real current-host dispatch for all five actions, denial/failed callbacks, missing
-targets, stale owners, exact-review bounds and older-viewer behavior are covered,
-plus private-tmux reviewed new-session synchronization in both clients. Direct
-navigation is now implemented; paginated extension session/tree catalog APIs,
-model/other host context, custom rendering/interception/providers and remaining
-MCP/credential/native-platform requirements stay open. No subset waives them.
+Claw's read-only session bridge uses `extension_session:1` and
+`extension_session_inspection:1`; terminal command-menu inspection separately uses
+`extension_command_catalog:1` and its generation. No editor/navigation/mutation
+capability or separate extension name/active-tools flag is needed. Native
+`session_name_read` and `tool_inventory_selection` controls remain independent.
+Session/tree catalogs read the bound backend directly; listing them does not grant
+plugin navigation authority.
 
 ### Command session/tree catalogs
 
@@ -1718,38 +1418,38 @@ Host catalog operations preserve their actual filesystem owner until creation/re
 settles on cancellation, then refuse late adoption. An OS-blocked thread cannot be
 forcibly killed; these limits/ownership checks are not an OS sandbox.
 
-Only actual interactive command RPCs receive catalog authority. Tools/hooks/context/
-child/unattended callbacks return None; original RPC and host extension/command/group/
-session ownership are independently checked. Missing/foreign/unreadable targets or
-membership changes yield unavailable without disabling the extension or replaying
-reads. Invalid plugin request/response codecs still fail closed. No model turn,
-permission/planning mutation or session activation is introduced.
+Only actual interactive extension-worker command invocations receive catalog
+authority. Tools/hooks/context/child/unattended callbacks return None; original worker
+invocation and host extension/command/group/session ownership are independently
+checked. Missing/foreign/unreadable targets or membership changes yield unavailable
+without disabling the extension or replaying reads. Invalid plugin request/response
+codecs still fail closed. No model turn, permission/planning mutation or session activation is introduced.
 
 Real workers, both live hosts' 61-entry multi-page catalogs, search/tree/branch
 previews, revision ordering/changed membership, foreign-group refusal, cancellation
-settlement and production terminal catalog commands are verified. This supersedes
-catalog APIs being listed absent; other model/host-action APIs, custom rendering/
-interception/providers and remaining MCP/credential/native-platform gaps stay open.
+settlement and production terminal catalog commands are verified. These catalogs
+are read-only: they do not expose the removed navigation/editor/session mutation,
+custom-rendering or terminal-interception APIs. MCP/credential/native-platform
+interoperability remains subject to its own limits.
 
 ### Runtime-registered extension shortcuts
 
 Trusted extensions can register a shortcut and its actual command callback:
 
 ```python
-async def compose(args, context):
-    snapshot = await api.get_editor()
-    if snapshot is not None:
-        await api.set_editor(snapshot["text"] + " prepared", snapshot["revision"])
-    return "Draft prepared; not submitted"
-api.shortcut("compose", "alt+k", "Prepare the command draft", compose)
+async def inspect_model(args, context):
+    model = await api.get_model()
+    return model["id"] if model is not None else "Model metadata unavailable"
+api.shortcut("inspect", "alt+k", "Inspect the current model", inspect_model)
 ```
 
 Registration contributes the namespaced `/ext-EXTENSION-NAME` command plus a
 canonical default key; pressing it uses the EXISTING interactive command owner,
 not another tool loop or arbitrary input interception. Plugins must already be
 explicitly trusted/activated; a key does not discover/load an extension. Callbacks
-retain normal idle/child/tool-policy/session/connection checks and any command host
-APIs. No model turn or tool approval is implicitly created by a shortcut itself.
+retain normal idle/child/tool-policy/session/connection checks and only the retained
+read-only command host queries and basic dialogs. No model turn or tool approval
+is implicitly created by a shortcut itself.
 
 **`/keys`** lists effective extension keys and disabled conflicts. Built-in and USER
 editor bindings always win. When different extensions claim one effective key,
@@ -1777,14 +1477,15 @@ viewers, completion pickers, child/MCP/plan panels, overlays, output reviews,
 active commands/model work and closing/disconnected owners retain priority. Unload/
 failure/reload updates registrations; stale keys cannot adopt a new callback. Coding
 now refreshes actual registration snapshots after extension commands even if a plugin
-has no widget/notices. Claw separately advertises `extension_shortcuts: 1`; missing
-support is both dispatch-disabled and reported in effective help.
+publishes no status or notices. Claw separately advertises `extension_shortcuts: 1`;
+missing support is both dispatch-disabled and reported in effective help.
 
 Real workers, both UI command/editor paths, user remap/unbind/inactive overrides,
 reserved/default/user/inter-extension conflicts, contextual suppression, repeat,
 load/reload/unload and both private-tmux default/remapped key paths are verified.
-Arbitrary input interception and custom renderers remain separate OPEN requirements,
-as do provider registration, other host APIs and remaining MCP/platform work.
+Arbitrary terminal interception and custom renderers are removed, not pending
+shortcut features. Provider registration and read-only host queries retain their
+separate contracts; MCP/platform interoperability is not implied by a shortcut.
 
 ### Submitted-input extension hooks
 
@@ -1826,7 +1527,7 @@ base64. Its output cannot silently remove/replace images: transformed messages k
 original typed attachments/timestamps. All later model capability, tool argument,
 approval, planning and child permission gates remain authoritative. A transformed
 string resembling `/quit`/a URI stays model input data, not a reparsed host command.
-Hook callbacks cannot borrow editor/session/navigation command authority.
+Editor/session/navigation mutation authority is absent from both hook and command APIs.
 
 Both interactive clients show the actual transformed user text/queued consumption,
 with visible notices. Initial refusal restores original draft/attachments without
@@ -1841,16 +1542,18 @@ active turn channel, not a claim of a separate queued sender's identity.
 Real workers, generic initial/steer/follow-up/continuation/abort receipts, both live
 clients' typed attachments/canonical history/refusal/recovery, actual queued follow-up
 images/consumption, child isolation/system exclusion and private-tmux transform/
-refusal recovery are tested. Arbitrary raw-key interception, handled-input dispatch,
-custom renderers/providers and remaining MCP/credential/native-platform gaps stay
-open; submitted text transforms do not waive those distinct requirements.
+refusal recovery are tested. Submitted-input transformation and the handled outcomes
+below remain supported; neither exposes raw-key observation/interception, custom
+rendering or host mutations. MCP/credential/native-platform interoperability remains
+subject to its own limits.
 
 Pre-turn compaction of PREVIOUS history retains its existing lifecycle; the input
 hook is a pre-admission/user-response check, not a veto of independent maintenance
 work. Failed reload of a previously registered input filter remains failed/required,
 not an implicit unload: only successful reload or explicit unload changes that
-policy. Print mode reports a refused input as a nonzero error; RPC emits an error,
-not an empty successful message_end. No synthetic assistant answer is fabricated.
+policy. Coding print mode reports a refused input as a nonzero error, not a
+fabricated successful model answer. The removed Coding frontend RPC has no error
+or completion-receipt interface.
 
 Terminal verification also caught a generic resize race during output review:
 painting after dimensions changed during tick callbacks could skip the next loop's
@@ -1892,10 +1595,9 @@ not fabricated assistant prose or tool approval. Permissions/planning/tool/model
 capability gates are unchanged; returned command-looking feedback is never executed.
 
 Print mode outputs explicit feedback and returns success for handled-only input;
-JSON mode emits a valid system/input_handled envelope (optional real assistant output
-is separate). RPC emits input_handled receipts and an explicit completion marker,
-not a counterfeit model message. Claw sends a content-free final signal after actual
-handled feedback, releasing run ownership without synthesizing a response. Other
+Coding JSON output emits a valid system/input_handled envelope (optional real
+assistant output is separate), not a counterfeit model message. Claw sends a
+content-free final signal after actual handled feedback, releasing run ownership without synthesizing a response. Other
 non-TUI channels receive extension feedback as channel output, not model generation.
 
 Child supervision retains labelled input feedback as separate bounded metadata
@@ -1906,201 +1608,11 @@ are jointly verified; older-viewer handled-outcome interoperability remains unpr
 rather than being inferred from JSON accepting extra event types.
 
 Generic initial/queued/old-history/queue-mode receipts, both live initial and queued
-image paths, child result/source metadata, text/JSON/RPC completion and production
-terminal model-call counters are tested. Raw-key interception, arbitrary custom
-renderers/providers/other host capabilities and remaining MCP/credential/platform
-gaps stay open. Handled outcomes no longer stay listed absent, but do not waive them.
-
-
-### Custom extension views
-
-Trusted extensions' `api.custom(title, render, on_input, ...)` now uses the shared
-viewport-aware custom component, including independent child workers; inline
-remains the default.
-Python callbacks stay in the owned extension worker; painting only consumes bounded,
-sanitized frame data. Vetted SGR styles/colors are supported, never OSC clipboard,
-cursor/erase/graphics/alternate-screen commands or extension-supplied host cursor
-markers. Optional carets are host-clamped to whole grapheme boundaries. Escape or
-Ctrl+C cancels; redraw, suspend and exit remain host controls.
-
-Keys/paste require a current visible frame. Hide/show, modal focus, row-budget and
-geometry changes fence old revisions with view generations, including same-size
-restoration. Queue/owner refusals are visible and never automatically replay input.
-Completion returns bounded JSON data, not tool approval; existing permissions and
-parent/child tool gates remain unchanged. No socket/worker I/O runs during painting.
-Claw additionally negotiates the capability and checks original connection/group/
-session/child leases; older viewers or withdrawn capabilities cancel the question.
-
-The shared codec, broker, real workers/clients and parent/child terminal paths are
-covered by offline tests. Richer custom containers and raw-key interception outside a custom view and native platform checks remain open;
-supported presentations do not waive
-those gaps or introduce an OS sandbox.
-
-
-Custom declarations can now request `fullscreen=True`, `message="..."` and
-`key_events=("press", "repeat", "release")`. Inline/press-only remains the default.
-The host owns temporary alternate-screen entry/exit, approval/output/overlay
-preemption, suspend/resume and native-buffer restoration. Resize re-homes only the
-alternate painter; saved main rows and scrollback remain untouched. F1 switches
-between sanitized paginated metadata and the custom body; metadata navigation and
-paste cannot complete or feed the custom callback. Opted-in Kitty repeat/release
-keys use normalized event types, but reserved host controls stay outside callbacks.
-Claw requires the separately negotiated `extension_custom_rich:1`; unsupported or
-withdrawn richer requests are canceled rather than silently downgraded.
-
-
-Custom input callbacks can await nested `api.input/select/confirm/form/custom`
-questions. The same parent component/state is cached while its child owns focus;
-fresh frames are required on restoration, including fullscreen exit/re-entry.
-Escape cancels the visible child. Rendering cannot create dialogs, and nested input
-callbacks cannot borrow command editor/session/navigation authority. Parent IDs
-come from an owned host renderer lease, never extension-supplied identifiers.
-The stack is bounded to four displayed levels and eight broker questions; closing
-a parent or disposing its context cascades to descendants. Claw requires separately
-negotiated `extension_custom_nested:1` and the original connection/session/child
-leases. Unsupported children are canceled, not silently treated as standalone roots.
-Aborted uncertain callback chains are reaped rather than replayed.
-
-### Prompt terminal-input hooks
-
-Claw now wires trusted `api.on_terminal_input(callback)` registrations into its
-actual prompt through the gateway. As in Coding, callbacks may return `None`/`{}`
-to continue, `{"consume": True}` to consume, or `{"data": "..."}` to transform.
-Hooks become available after trusted-worker activation, e.g. `/extensions`; lazy
-startup is preserved. This supersedes the earlier missing-gateway boundary.
-
-The viewer opts into **`terminal_input:1`**. The gateway supplies a connection-owned
-opaque token and advertises strictly typed declared hook availability/worker generation in
-extension snapshots. Every request/reply/cancel preserves its original group,
-session, worker generation, UI input lease and monotonic input sequence. UI lease
-strings are hashed to a bounded wire identity; physical focus/geometry remain in
-the local lease. Foreign sockets, withdrawn capabilities, stale generations and
-reused sequences cannot adopt or replay input, even after receipt eviction.
-
-One owned callback job per connection runs independently of the socket reader.
-The gateway has a four-second deadline inside the five-second host queue deadline.
-Cancelled/uncertain callbacks settle/reap their original worker. Session/navigation,
-connection, focus/physical-size and worker reload/unload changes reject held input
-rather than applying it to a successor. Original runtime selection is captured
-before scheduling, and retiring an old MCP/extension client cannot remove a newly
-loaded connection or its tools. Invalid registration snapshots disable prompt
-hooks and cancel held input; they cannot keep an old active-hook cache alive.
-
-Only editable parent-prompt input visits these hooks. Terminal negotiation,
-cursor/clipboard replies, approval/modal/custom/child/output surfaces, host
-shortcuts and reserved cancellation controls remain host-owned. Original submits
-stay FIFO behind held text without visiting hooks. Transformed keys are validated
-against the current keymap and cannot synthesize submission, approval, exit or a
-host handoff. Atomic paste never becomes raw key/protocol input. Hook callbacks
-cannot borrow dialog/command authority or a second model loop.
-
-**Alt+I** (`terminal_input` in `keybindings.json`) pauses/resumes hooks and shows
-recovery. `/terminal-input list|restore ID|discard ID|clear|pause|resume` manages
-bounded originals; explicit restore inserts text into the editable draft without
-replaying controls, importing attachments, granting tools or submitting a turn.
-Failures/interruption pause hooks so recovery remains accessible. Queue/recovery
-limits are 32 inputs/128 KiB, with 16,000 UTF-8 bytes per intercepted item; pause
-before using the editor's normal larger-paste path. Older gateways are explicitly
-reported as unsupported and retain host input, not a claimed fallback parity mode.
-
-Owned worker/socket/app tests and production Linux/private-tmux typing, atomic
-paste, model/callback counts, pause, physical resize, recovery and native terminal
-restoration cover this path. Independent child supervision-editor interception,
-broader render/provider/host APIs and native-platform validation remain OPEN; child
-forms and dialogs are protected from parent hooks, not silently intercepted by them.
-
-
-### Buffered input and live hook registration
-
-Adjacent editable key tokens from one filtered terminal frame now travel as a
-bounded span, rather than one worker/socket RPC per character. Spans are split
-only at whole UTF-8/enhanced-key tokens and the 16,000-byte limit; submit/handoff
-controls and atomic paste keep separate FIFO boundaries. A callback's `data` may
-therefore contain several characters or encoded keys. Callback counts depend on
-terminal framing, **not** character count. This prevents an ordinary buffered
-sentence from exhausting the 32-item queue. Oversized encoded key tokens are
-refused explicitly, never silently dropped or replayed.
-
-Workers now report live terminal-hook registration after callbacks, including
-commands and nested custom-view completion. Removing the last hook with its
-unsubscribe function updates runtime availability immediately. Already-held
-same-owner input drains exactly once without another hook; fresh input goes
-straight to the host editor. This is a normal registry change, **not** an error
-fallback: lifecycle changes, malformed replies, callback failure and cancellation
-still fence/reject held input. Re-registering from an extension command updates
-the same worker and re-enables interception without reload/reconnect; a user's
-manual pause remains respected.
-
-Claw's matching terminal result carries an exact boolean live-registry field so
-an idle viewer does not depend on a previous model-run UI subscription. The field
-is validated only after original request/connection/session/sequence ownership.
-Updated workers/daemon are required for live registry refresh; older senders that
-omit this additive metadata retain their existing behavior and do not establish
-this newer guarantee. Independent child-editor and broader raw/host APIs remain
-on the open audit rows.
-
-
-### Independent child steering-editor hooks
-
-In `/agents`, **s** opens the selected child's steering draft and **t** opens its
-follow-up draft (the transcript preview also offers Ctrl+S/Ctrl+T). While that
-child's independent extension worker is live and attached to this UI, its own
-`api.on_terminal_input` callbacks can consume/transform those editable drafts.
-The surface is `child-prompt`; parent and sibling hooks do not receive this input.
-No worker/model is created merely by opening the editor, and completed or
-unattached children do not borrow the parent's hooks.
-
-New-child task/settings, access selection, preset/catalog views, confirmation,
-child extension dialogs and tool approvals remain host-owned. Transformed keys
-cannot synthesize review, execution, approval, configuration or exit. Original
-Enter opens the existing visible review; only a fresh explicit confirmation can
-execute a child control. Escape from review restores the child draft rather than
-discarding it, and re-entry advances the edit lease.
-
-Held input is bound to the specific child worker, UI attachment, editing action,
-form generation, focus and physical geometry. Switching siblings, leaving/reopening
-the form, closing/completing a worker, overlays and resize reject stale results,
-not replay them elsewhere. Alt+I remains a host pause/recovery route. Last-hook
-unsubscribe and later registration update the same child worker's live state;
-ordinary queued same-owner text drains once without invoking a parent hook.
-
-Claw additionally requires **`terminal_child_input:1`** and the connection's
-negotiated child UI token. Requests/results/cancellation preserve child ID/token,
-parent group/session, worker generation and the existing terminal input leases.
-Owned bounded registry notifications update live registration and retire completed
-children without relying on the last model-run UI subscription. Foreign sockets
-cannot invoke or cancel a captured child worker, and capability withdrawal fences
-pending child input without disabling parent hooks.
-
-Real child workers, both actual clients and Linux/private-tmux tests cover isolated
-callback streams, unchanged parent draft/model counts, cancel/review restoration,
-source ownership and native terminal recovery. This supersedes earlier statements
-that all child-editor interception was missing; richer containers/host/provider APIs,
-older-sender interoperability and native-platform validation remain on their open
-rows. These UI/permission leases are not an OS sandbox.
-
-
-### Structured custom-view containers
-
-Trusted custom-view callbacks can now use the standalone worker-side
-`xdog.tui.components.custom_layout` helpers: fixed/weighted `CustomRow` and
-`CustomColumn`, `CustomPadding`, titled `CustomBox`, safe/wrapped/aligned
-`CustomText`, `CustomSpacer`, and `CustomComponent` adapters for existing editable
-TUI components. Return `custom_frame(layout, width, height)` from `api.custom`'s
-render callback. Component state and input stay in the original extension worker;
-only bounded sanitized lines and a single cursor coordinate cross the existing
-frame protocol. No new model loop, host callback execution, tool approval or
-terminal owner is introduced.
-
-Whole-grapheme clipping, deterministic cell allocation, style isolation, zero-size
-viewports, cycle/depth/node/byte bounds and multiple-cursor rejection are tested.
-Both clients and independent children exercise an editable two-column layout,
-Unicode caret, nested question/resumption and resized completion. Production
-Linux/private-tmux inline AND fullscreen paths verify nested editable state,
-native-buffer/termios restoration, once-only command invocation and zero model
-calls. These helpers extend the previous line-array API rather than replacing it
-or requiring a new gateway wire dialect. Richer arbitrary render/provider/host APIs,
-interoperability and native-platform validation retain their open scope.
+image paths, child result/source metadata, text/JSON completion and production
+terminal model-call counters are tested. Plugin terminal key/paste/release
+interception and observation APIs are removed, as are custom renderers and extension
+host mutations. Handled outcomes preserve the ordinary permission and ownership
+boundaries; remaining MCP/credential/platform interoperability is separate.
 
 
 ### Explicit MCP resource watches
@@ -2163,10 +1675,11 @@ claiming equivalent protection. Credential filenames are resource hashes; writes
 are bounded, fsynced and atomically replaced through pinned directory-relative I/O.
 
 Nothing loads at startup. Explicit restore validates exact resource, configured
-issuer/client strategy/authentication method/environment-source name/scopes,
+issuer/pre-registered client/public method/scopes,
 certificate-file content binding and expiry, then admits the credential to memory.
 It performs no metadata lookup, token POST, connection, model turn or tool grant.
-Client-secret environment VALUES are never stored. Access/refresh credentials have
+MCP client-secret methods are not supported; provider credentials remain a
+separate worker/vault contract. Access/refresh credentials have
 no public diagnostic representation and never enter transcripts or review payloads.
 
 Saved access expiry uses bounded wall-clock values and is converted back to an
@@ -2177,7 +1690,8 @@ old refresh token after uncertain rotation. Rotated credentials are **not** save
 implicitly; explicitly review/save the new grant if desired.
 
 **x** erases the saved credential only (not a live token or remote grant). The existing
-**f** forget/disconnect review erases both memory and saved state; neither action
+authorization-status **f** forget/disconnect review erases both memory and saved
+state; neither action
 claims remote revocation. Save/erase cancellation revokes storage admission and waits
 for the actual writer to settle; if an operation committed before cancellation,
 inspect local state rather than automatically retrying it.
@@ -2217,9 +1731,11 @@ never automatically replays an uncertain mutation.
 Tests cover actual encrypted save/read/forget, locked-vault refusal, manager
 restart/consent and both application UI owners against an isolated owned GNOME
 keyring service, plus helper timeout/cancellation. This is not a native-backend
-tmux test or proof of every Secret Service implementation. macOS/Windows native
-credential backends, broader service interoperability and native desktop validation
-remain OPEN. Neither backend is an OS sandbox.
+tmux test or proof of every Secret Service implementation. Credential storage is
+Linux-only: `file` and `secret-service` are the supported choices. Removed native
+backend names are rejected without reading credentials or silently selecting file
+storage. Neither Linux backend is an OS sandbox; broader service interoperability
+is not implied by the isolated service tests.
 
 
 ### Session-owned extension providers
@@ -2241,9 +1757,9 @@ Activate the extension explicitly, inspect `/model`, then select its full alias
 `ext-EXTENSION-PROVIDER/MODEL`. Registrations belong to that session's owned worker,
 not the global AI provider registry; aliases cannot replace built-in names. Context,
 input modalities, reasoning/tool flags, output bounds and optional pricing are
-validated cached metadata. Catalog inspection starts no model request. Current
-startup/config-only alias activation and additional provider/host APIs remain open;
-this slice supports explicit activation and interactive selection, not implicit login.
+validated cached metadata. Catalog inspection starts no model request. Explicit
+configured/saved alias activation and provider authentication are documented below;
+neither permits implicit login or another provider's fallback.
 
 The callback receives lossless JSON context/options through a bounded checksummed
 transfer. It returns an async iterator of typed `text`, `thinking`, `tool_call`,
@@ -2268,8 +1784,36 @@ restrictions; selecting a child provider does not switch the parent's model.
 Existing primary routing and native/global provider registration are unchanged.
 Owned worker/client/child and production Linux/private-tmux model-selection paths
 verify this behavior without paid model calls. Additional native/embedding/search/
-provider-auth APIs, initial startup/persisted alias activation, external interop and
-native-platform validation remain OPEN.
+provider interoperability and native-platform validation remain separately bounded;
+explicit callback authentication and vault storage are described below.
+
+
+### Explicit extension provider OAuth and retained vault storage
+
+Trusted provider declarations can retain a private `ProviderOAuth` binding through
+`api.register_provider(..., oauth=...)`. Login/refresh/key/model callbacks execute
+inside the owned extension worker; credentials and callback objects are not public
+catalog/UI data. Generic `ProviderAuth` bindings remain separate. These provider
+callbacks are not MCP registration methods or an Elicitation capability.
+
+Both native hosts expose `/extensions auth list` or `menu`, explicit `login ID`,
+`refresh ID` and `logout ID`, plus `/login [EXTENSION_PROVIDER_ID]` as a thin
+selection/login alias. Every operation requires its original idle session/provider
+registration and a separate owned review; URL opening is a distinct reviewed user
+gesture, never automatic. Sensitive replies go only to the original worker, not
+model history or a replacement question. Cancellation/reload/disconnect retires
+that owner without automatic callback replay. Login/refresh does not grant tools,
+select a model or change permissions. Logout clears worker memory, not saved data.
+
+Provider credential persistence is retained through explicit
+`/extensions auth save ID secret-service /ABSOLUTE/NAMESPACE`, with equivalent
+`restore` and `forget` actions. This is **Linux Secret Service vault only**, with
+an explicit backend/absolute namespace and provider source/profile binding. It
+shares the owned helper's no-start/no-unlock, cancellation/receipt and no-replay
+protections. No automatic save/restore/login occurs; missing/locked/unsafe vaults
+refuse. There is **no plaintext file fallback** for provider credentials. MCP's
+separately selected `file` or `secret-service` credential backend does not change
+this provider-vault contract.
 
 
 ### Configured and saved extension-model activation
@@ -2398,7 +1942,7 @@ Full definitions remain bounded by the existing 2,048-tool/512-KiB inventory lim
 Unavailable/invalid/changing owners are reported explicitly rather than displayed
 as an empty or approved tool set. Definitions are public model-facing data; authors
 must not place credentials in schemas. This is Linux/private-tmux evidence, not
-native Windows/macOS or complete CLI capability parity.
+complete CLI capability parity or every Linux desktop terminal.
 
 ### Native skill selection
 
@@ -2568,8 +2112,8 @@ for recovery; never delete the journal merely to make the error disappear.
 Recovery was verified with abrupt offline process termination at managed-write and
 recovery boundaries. This improves the previous multi-file interruption limitation;
 it is not a claim about failing hardware, filesystems that ignore durability requests,
-or native Windows power-loss behavior. Directory fsync and advisory-lock guarantees
-are POSIX-specific. Trusted extension external side effects remain outside this journal.
+or untested Linux storage power-loss behavior. Directory fsync and advisory-lock guarantees
+require the documented Linux filesystem semantics. Trusted extension external side effects remain outside this journal.
 
 ### Exact slash-command submission
 
@@ -2648,25 +2192,26 @@ Hosts read/change the existing Agent queue on the child owner loop, not a mirror
 UI FIFO. The captured revision covers identity/order/content/delivery/checkpoint
 selection and image identity. Changed/stopped queues and selected/consumed inputs
 refuse mutation without automatic replay. Explicit refresh is required. Image parts
-stay attached during an edit; return refuses image-bearing input because the child
-form is text-only, rather than silently losing attachments. These are live input
+stay attached during an edit; native live return deliberately refuses image-bearing
+input rather than losing attachments. Live queued-image return is Agent-tool-only;
+stopped image/task recovery remains available as described below. These are live input
 controls, not permission approval or conversation/model-context replacement.
 
 Claw advertises exact `child_queues:1`; older/unready/withdrawn peers cannot dispatch
-queue controls. Coding RPC negotiates `child_queues:1` separately, then uses
-`child_control` action `queue` with a typed `queue` object: `{"action":"list"}` or
-`{"action":"edit","id":"INPUT","revision":"CAPTURED_SHA256","content":"TEXT"}`;
-remove/return omit content, move instead has exact integer direction -1/+1. Keep
-all original parent/revision/UI-owner/native-epoch fields. Native socket hosts use
-that same JSON request in the child_control text field. Responses contain a `queue`
-with child_id/revision/inputs and optional exact `returned` removal receipt. Metadata
-is bounded to 32 inputs/16KiB text per input, with explicit refusal rather than
-truncation. It is exact queued draft text, not heuristic-redacted display source.
+queue controls. Its native Unix-socket `child_control` action `queue` carries the
+typed JSON request in `text`, for example `{"action":"list"}` or
+`{"action":"edit","id":"INPUT","revision":"CAPTURED_SHA256","content":"TEXT"}`.
+Remove/return omit content; move uses exact integer direction -1/+1. Existing
+parent/revision/UI-owner fences remain. Responses contain a `queue` with
+child_id/revision/inputs and an optional exact `returned` removal receipt. Metadata
+is bounded to 32 inputs/16 KiB text each, refusing rather than truncating. Coding's
+native client uses its local session owner, not a frontend RPC transport.
 
-Gracefully completed/canceled-child undelivered input recovery is described below;
-image-capable child drafts, unclean-process crash durability, richer terminal/custom
-APIs and the broader platform/interoperability goal remain separate open requirements. No automatic mutation/model call, OS sandbox or full
-child-surface parity is implied by these queue controls.
+Gracefully completed/canceled-child undelivered input recovery and reviewed image
+drafts are described below. Queue controls imply no automatic mutation/model call,
+OS sandbox or full child-surface parity. Removed raw-terminal/custom extension APIs
+are not prerequisites for native queue controls; platform/crash guarantees retain
+their separately documented limits.
 
 
 ### Saved stopped-child input recovery
@@ -2699,11 +2244,11 @@ child scope. The response has `stopped:true`, unchanged `inputs`, and an exact
 input and yields `returned`. Explicit consent to child queue data remains required.
 
 Typed image parts are retained privately in saved recovery, omitted from queue
-metadata except image_count. Copy to the current text-only child task draft refuses
-image-bearing input rather than lose attachments. Native image-capable child drafts
-and unclean SIGKILL/power-loss durability during active runs remain open; settlement
-persistence and canceled-owner tests are not proof of those broader guarantees.
-No auto-replay, paid provider call or OS sandbox is implied.
+metadata except image_count. The text-only `recover` action refuses image-bearing
+input rather than losing attachments; native `recover_images` and `recover_task`
+provide the separate reviewed copies described below. Settlement persistence is
+not proof of every active-run SIGKILL/power-loss boundary. No auto-replay, paid
+provider call or OS sandbox is implied.
 
 
 ### Child rendered-image admission
@@ -2768,29 +2313,27 @@ use the separately owned child-source reader for complete **display** history,
 not raw binary/canonical data. Successful image refs are released; an exact replay
 of a cached request returns its old receipt without rerunning or requiring those refs.
 
-Coding RPC independently negotiates `child_images:1` via `rpc_hello`. Scoped
-`child_control` start/steer/follow-up accepts either inline `images` or completed
-`image_refs`, never both. Larger images use existing session/connection-owned
-`image_chunk` uploads; successful admission consumes those references. Replies
-include `accepted_input` with exact content/digests/MIME types, not image bodies.
-Revocation cancels pending image jobs; it is not a rollback of already admitted work.
-No image capability grants tool, approval or parent-editor authority.
+Coding's native client uses its local typed child API; there is no Coding frontend
+RPC image negotiation/upload path. Claw's existing gateway image refs and exact
+admission receipts remain separately owned. Capability withdrawal cancels pending
+image jobs, not already admitted effects. No image capability grants tool approval
+or parent-editor authority.
 
 Offline evidence includes both actual app/UI owners with file reads and 10 MiB
-payloads, the real Claw socket upload path, an actual Coding RPC subprocess with
-2 MiB chunk uploads, queue settlement/reload, mismatched-receipt draft retention,
+payloads, the real Claw socket upload path with 2 MiB chunk uploads,
+queue settlement/reload, mismatched-receipt draft retention,
 and both private-tmux file/preview/review-cancel/terminal-recovery paths. Large test
 payloads exercise bounded byte transport with a valid PNG header, not a hosted
 pixel decoder or general model-provider interoperability.
 
-**Still open:** live image-bearing queue return requires its verified removal/
-receipt protocol. Stopped-input image copy is implemented in the following section;
-legacy text-only recovery still refuses image inputs rather than dropping bytes. Saved
-initial-task images from failed setup use the explicit recovery editor below. Local
-child drafts survive hide/reopen in the same view context, but cross-reconnect or
-cross-context draft browsing/recovery and unclean-crash durability are not complete.
-Those retained caches are bounded and never automatically adopted into a different
-owner. Native desktop clipboard/provider/decoder interoperability also remains open.
+Live queued-image return has no native UI preparation/commit controls; it is an
+Agent-tool-only operation. Stopped-input image copy, saved initial-task recovery
+and current-session transient input recovery remain explicit native controls below.
+Memory caches are bounded and never automatically adopted by another owner;
+only primary drafts have the separate reviewed local snapshot flow. Child editor
+inputs remain same-session transient, not cross-process disk recovery. Native desktop
+clipboard/provider/decoder interoperability and uncommitted edits retain their
+existing limitations.
 
 
 ### Non-destructive stopped-child image recovery
@@ -2802,20 +2345,20 @@ owner receipt are required before the UI creates a **separate read-only child
 start draft**, with `inherit_context: false`. Images, text and MIME types are kept;
 no agent is constructed, model/compaction request sent, original input erased or
 parent draft altered. Existing local child drafts are not overwritten. Each copy
-has its own local draft slot; the local/cross-context draft browser below makes retained slots accessible,
-but its memory caches are not cross-process crash recovery.
+has its own local editing slot; current-session recovery makes unsent slots
+accessible, but these memory caches are not cross-process editor recovery.
 
 The SDK queue action is `recover_images`, with the exact input `id` and queue
 `revision`. Its Python result contains the non-destructive `image_recovery` payload
 and `queue.image_receipt`. The legacy text-only `recover` action still refuses
 image inputs instead of dropping bytes. Running children are not recovered by this
-action; **live image return still requires its own verified removal/admission
-protocol** and remains unavailable.
+action. The retained live queued-image prepare/commit/cancel protocol belongs to
+the main Agent's permissioned tool, not these native recovery controls.
 
 Claw advertises exact `child_image_recovery: 1`; older gateways do not silently
-receive a text fallback. Coding RPC requires independently negotiated
+receive a text fallback. The native gateway requires
 `child_image_recovery:1` **and** `child_queues:1`. This read/copy capability is
-separate from sending new image prompts. Socket/RPC replies stream
+separate from sending new image prompts. Claw socket replies stream
 `child_recovery_begin`, ordered `child_recovery_chunk` frames (at most 64 KiB raw),
 then `child_recovery_end`; final control metadata contains no base64 image bodies.
 The manifest binds content, image sizes, digests and MIME types to the requested
@@ -2823,55 +2366,48 @@ session/connection child lease, child ID, input ID and queue revision. Receivers
 reject foreign/out-of-order/oversized/truncated/checksum/MIME mismatches, close
 private spools on failure/cancel, and never manufacture a draft from partial data.
 Transfers are bounded to four images, 10 MiB each / 40 MiB total, and a ten-second
-sender deadline. Owner/revision changes or RPC capability withdrawal stop the copy.
+sender deadline. Owner/revision changes or gateway capability withdrawal stop the copy.
 The original durable input remains available for explicit fresh review/retry.
 
 Evidence includes both actual native client owners with 10 MiB stopped-image copies,
-real Claw socket framing, an actual Coding RPC subprocess with multi-MiB outbound
-copies, revocation and malformed-frame checks, and both private-tmux review,
+real Claw socket framing, multi-MiB copies, revocation and malformed-frame checks,
+and both private-tmux review,
 preview, no-execution and native terminal/cursor recovery paths. This is offline
 Linux evidence, not general hosted image-provider or native desktop conformance.
-Live image return, durable draft recovery and remaining host APIs,
-active-run unclean-crash durability and remaining platform/API gaps stay OPEN.
+Live queued-image return is Agent-tool-only; native stopped recovery and same-session
+transient child recovery retain separate contracts. This evidence does not establish every active-run crash boundary or platform/API interoperability.
 
 
-### Local child draft browser
+### Same-session transient child input recovery
 
-Use **d** in the child roster, or `/agents drafts`, to browse retained local child
-start/steering/follow-up drafts and image recovery copies. The catalog includes
-older session/branch/view/connection contexts, with workspace/session provenance,
-CURRENT/OLD CONTEXT labels, image counts and uncertain-receipt disclosure. **/**
-searches task text and provenance. This catalog lives in the current application
-process; it is not on-disk draft persistence or active-run crash recovery.
+**d** in the child roster or `/agents drafts` opens only the current session/
+context's unsent child inputs. Enter opens a complete text/settings/provenance/
+image-digest review, then a fresh physical Enter reopens the **same editing slot**.
+Current text/images, editing settings and cursor survive a view close/reopen;
+this is not a prior execution/approval receipt. Existing-child steering/follow-up
+reopens only while that exact child is running. No recovery submits work, changes
+the parent composer or bypasses the normal final task/access/tool review.
 
-**Enter** prepares a non-destructive copy into a new **read-only** start draft with
-`inherit_context: false`. Old access, tool selection, instructions, model/thinking
-and preset settings are disclosed but **not imported**. Text/images remain exact,
-old caches stay intact, and no model/tool/session navigation is executed. A copy
-gets its own draft slot; it does not overwrite an existing default task or another
-edited recovery copy. Source uncertainty stays visible in the copied draft.
+There is no cross-session catalog, duplicate-copy management, search, cache-delete,
+disk save/load/delete or child-autosave UI. The former **s**, **x**, **r**, **/**
+and **Delete** recovery-management keys are inert. `/agents saved` (including list/ID
+variants) refuses immediately without a disk job, command/socket request or background persistence. Existing
+`saved-child-drafts` files are neither inspected, migrated nor deleted.
 
-**r** prepares reopening only a CURRENT-context draft. Start drafts retain their
-settings and saved cursor; existing-child steering/follow-up drafts require that
-child to still be running. An old-context or stopped-child draft cannot resume;
-explicitly copy it fresh/read-only instead. The normal model, tool, permission and
-full start/input confirmation rules still apply when submitting the reopened form.
+The panel derives entries only from its exact current cache. Opening recovery in
+a new session/branch/connection context keeps only that current cache and drops
+old references rather than guessing/adopting another scope. A new application owner does not restore transient edits. Preview,
+focus/geometry changes, stale source identity and replaced/closed views cannot
+reuse old review proof. **p** opens the retained read-only image preview; returning
+requires fresh full review. Paste, repeat/release or unpainted Enter cannot confirm.
+Text/images stay within existing retention limits; closing a view does not invent
+durability or silently truncate data.
 
-**x** prepares discarding only the selected LOCAL draft. It does not cancel an
-agent, mutate a live queue, erase the durable stopped-input record or revoke tools.
-Copy/reopen/discard each require all provenance/task/config/image digest pages to
-be painted before physical Enter. Pasted or repeated/unpainted Enter cannot commit.
-Source identity/content changes or a changed browser owner reject the action,
-without replay. Discarding the local cache releases its retention accounting; a
-separate fresh copy continues owning any shared immutable image data.
-
-Both native clients wire this browser to their actual context-owned caches, so
-closing auxiliary panels/reconnecting does not silently strand bytes forever in
-an inaccessible old view. Old-context entries remain inspectable/copyable but do
-not regain their previous execution or approval authority. Final pixel/provider/
-native-desktop interoperability and durable cross-process draft recovery remain
-on their existing open requirements. RPC remote draft browsing is not implemented
-by this local native UI browser.
+This removes only child editor disk/management controls. Actual Agent child input
+journals, initial-task records, stopped `recover_images`/`recover_task` and durable
+returned-image backups remain separate explicit recovery paths described above.
+Primary `/draft save`/restore, primary autosave, disk receipts and quit safeguards
+remain separate and are described below.
 
 
 ### Initial child task recovery after setup failure
@@ -2901,133 +2437,38 @@ persisted state change settles; failed writes leave it available, and cancellati
 waits for the writer before reporting an uncertain committed outcome. Image bytes
 are released from the retained initial field after explicit committed discard.
 
-Claw advertises exact `child_task_recovery:1`; Coding RPC negotiates it independently
-alongside `child_queues:1`. Initial-image copy additionally needs
-`child_image_recovery:1`. Final RPC/socket control frames omit binary bodies and
+Claw advertises exact `child_task_recovery:1`, alongside `child_queues:1`.
+Initial-image copy additionally needs `child_image_recovery:1`. Final socket
+control frames omit binary bodies and
 use the existing manifest/chunk/end receiver plus exact task receipt. Capability
 withdrawal or owner/revision change stops copy work, not the original durable task.
 
 Offline tests cover real setup failures with/without images in both native owners,
 legacy interrupted records, admitted-provider failure, failed/canceled discard,
-RPC capability isolation, and both private-tmux image recovery/review/preview/draft
-browse/native-terminal restoration paths. The full goal remains active: live
-image return, durable local drafts, broader raw/custom/RPC APIs and native platform/
-provider/credential interoperability still require implementation/evidence.
+gateway capability isolation, and both private-tmux image recovery/review/preview/draft
+browse/native-terminal restoration paths. Live queued-image return remains
+Agent-tool-only; same-session transient child recovery is documented below. Removed Coding
+frontend RPC/raw-terminal/custom extension APIs are not pending native features;
+platform/provider/credential interoperability has its own scope and limits.
 
 
-### Live image-return runtime contract (client integration pending)
+### Agent-tool-only live queued-image return
 
-The shared supervisor now provides a two-phase SDK contract for returning a live
-child image input. The native and Coding RPC integrations are described below. Legacy one-step
-image return still refuses lossy text conversion; use the two-phase protocol. This section
-records the implemented foundation, not a claim that the UI gap is closed.
+The native user interface no longer offers two-phase live queued-image return.
+Text queue edit/remove/move/return and stopped image/task recovery remain.
+The main Agent can use its ordinary permissioned `agent_control` tool with
+`action="queue"` and a JSON `text` request containing `return_prepare`,
+`return_commit` or `return_cancel` plus the required input/revision/receipt fields.
+Preparation returns typed image content and bounded token/receipt metadata; it
+never dequeues and does not embed raw base64 into model-visible prose.
 
-Call `ChildSupervisor.control("queue", child_id, json_request,
-return_owner="explicit-host-lease")` with `return_prepare`, the input `id` and
-exact queue `revision`. Preparation copies/validates bytes off the owner loop but
-leaves the original queued. The result contains `image_recovery`, a matching
-`queue.image_receipt`, `return_prepared` metadata and a random `return_token`.
-Before removal, a host must fully receive/verify those bytes, preserve their
-ownership and separately review the removal. Preparation alone grants none of
-that consent and is not a dequeue operation.
-
-`return_commit` requires the same owner, input, revision, token and exact verified
-`receipt`. On the supervisor loop it removes only the same still-unselected input,
-then returns `queue.returned` metadata and the matching receipt/token. Selected,
-consumed, edited, stopped, foreign-owner, expired or malformed inputs refuse
-without removal. `return_cancel` releases only that owner's prepared token and
-leaves the original input queued. Leases expire after 30 seconds; each child has
-four combined prepared/completed slots. Exact same-owner/content commit retries
-within the lease return the original copied receipt, never remove another input.
-
-Runtime tests use actual held child Agents, including 10 MiB payloads, concurrent
-queue edits during byte preparation, cancelled preparation, selected/edited/stopped/
-expired/foreign receipt rejection, bounded leases and immutable retry receipts.
-They do **not** verify client-owned binary transport/consent/persistence, connection
-revocation or terminal image return. That integration remains required; crash/power-
-loss durability is not supplied by a process-local return token/cache.
-
-
-### Coding RPC live image return
-
-Coding RPC now independently negotiates `child_image_return:1` together with
-`child_controls:1` and `child_queues:1`. The returned child-capability envelope
-includes `child_return_owner`, separate from child/session/connection identity.
-Return requests must use that current lease; withdrawing/re-enabling controls,
-queues or return capability changes it, so old tokens cannot regain authority.
-Other pre-existing child commands do not require this additional return-only field.
-
-Send scoped `child_control` with action `queue`, containing `return_prepare`, the
-input `id` and captured queue `revision`. The existing binary manifest/chunk/end
-stream provides exact images to a verified receiver, followed by a final result
-with `return_prepared`, `return_token` and `image_receipt`. The input remains queued;
-stream completion is NOT removal consent. No separate stopped-image-recovery
-capability or new image-prompt capability is required for this return operation.
-
-After actually receiving/verifying and taking ownership of those bytes, the client
-must separately review removal before sending `return_commit` with the same input,
-revision, token, current return-owner envelope and verified `receipt`. The reply
-contains `returned` metadata, not base64 bodies; exact commit retries with fresh
-request IDs return the prior receipt and cannot dequeue another input. Explicit
-`return_cancel` releases a prepared lease without removing its original. All original
-selected/stopped/edited/expired/foreign checks apply on the actual supervisor loop.
-
-Closed peers, revoked capabilities, cancellation or changed queue ownership stop
-preparation and settle token cleanup. An operation already committed before a
-transport failure is not rolled back: inspect its exact receipt/current queue;
-never automatically replay work or replace parent history. An explicit live host
-revocation guard is checked again at the owning-loop removal boundary.
-
-Evidence includes an actual offline Coding CLI subprocess returning 2 MiB through
-bounded native output, verified byte receipts and separate commit/retry, plus
-withdrawal, closed-peer, foreign-owner and disable/re-enable tests. The RPC contract alone does NOT supply native queue buttons or cross-process
-durable draft ownership. Native Coding/Claw integrations are documented below;
-durable cross-process ownership remains open. Those UI/
-platform/durability requirements remain OPEN; remote clients own their review and
-byte-retention implementation rather than borrowing approval authority from XDOG.
-
-
-Both clients now implement native live image return with a second painted removal
-review and retained local backup. Claw additionally uses its negotiated socket
-connection/view lease; see the following section and completion audit for limits.
-
-
-### Claw socket/native live image return
-
-Claw now supports the same **two-review live image return** as Coding: **u** in a
-live child's queue prepares and verifies the byte copy without removal, then the
-**SECOND removal review** requires fresh physically painted consent. A separate
-read-only uncertain local backup is retained in `/agents drafts` before commit.
-Successful exact removal receipts open a child-only draft with the original
-text/images; cancellation leaves the queued input and parent draft untouched.
-Backups are process-local memory, not crash/power-loss persistence.
-
-The TUI explicitly negotiates `child_image_return:1` in its socket ping. Gateway
-responses supply a random `child_return_owner`; return requests also carry the
-exact `queue_view` token. The gateway forwards their combined lease through the
-existing orchestrator/session path into the actual supervisor removal guard.
-Disabling/re-enabling the capability rotates/revokes its connection lease, and
-socket teardown revokes it before cleanup. A different view or old/reconnected
-lease cannot commit a prepared token. Native results/verified copies are checked
-against the original queue view, not adopted into a replacement panel.
-
-Preparation uses the bounded checksummed binary recovery stream with additional
-connection/view scope; image bodies never enter the final control frame. A failed
-or cancelled preparation settles its token cleanup without dequeuing/restarting.
-The normal selected/edited/stopped/expired checks apply again before removal.
-A committed operation whose response is lost is not rolled back: inspect the
-retained local backup/current queue and never automatically resubmit work.
-
-Actual Coding/Claw native tests cover 10 MiB commit and cancellation, two reviews,
-precommit backup, exact child draft and untouched parent/history/model-call count.
-Claw socket tests cover foreign views, capability disable/re-enable and disconnect
-with the original unremoved image preserved through stopped-input persistence.
-Both private-tmux paths physically exercise live image preparation, second removal
-review, returned image editor and native cursor/termios recovery. This is Linux/
-offline evidence, not general provider/decoder/native-desktop interoperability.
-Durable drafts/active-crash journaling, richer RPC/custom/raw host APIs and remaining
-platform/credential/MCP interoperability stay on the open goal requirements.
-
+The tool supplies its private nonserialized supervisor owner; models cannot pick
+one. Cancellation/abort/close revoke that owner. The existing token expiry,
+selection/revision/receipt checks and retained-byte limits remain. Durable removal
+and return-backup writes keep their existing owned settlement/no-automatic-replay
+rules. A generic SDK embedder still owns typed-history retention, persistence and
+ordinary tool permission hooks. A process-local token is not a promise of
+exactly-once side effects across crashes.
 
 ### Concurrent return capacity and malformed queue transport
 
@@ -3035,7 +2476,8 @@ The four-slot live-return budget now includes **in-flight image preparations** a
 well as prepared leases/completed receipts. Slots are reserved before asynchronous
 validation yields and released on cancellation/failure. Simultaneous requests
 cannot each pass the limit and create unbounded image copies. This does not add
-crash durability or change the two-review consent workflow.
+crash durability or restore the removed native two-review return workflow.
+Preparation/commit ownership remains in the permissioned Agent tool/backend.
 
 Claw validates typed queue request shape before examining return-specific fields.
 Malformed arrays/null/scalars/missing fields or invalid JSON produce a failed
@@ -3067,9 +2509,9 @@ A directory-flush failure after replacement is an **uncertain committed outcome*
 XDOG propagates the failure without rolling back or automatically rewriting. Inspect
 actual persisted state before retrying. Owned directory descriptors close even on
 failure. Non-POSIX platforms retain their existing behavior without an equivalent
-directory-fsync claim. These flush-order tests are not physical power-loss testing,
-and this change does not implement active-run write-ahead input journaling or
-cross-process local draft persistence; those goal requirements remain OPEN.
+directory-fsync claim. These flush-order tests are not physical power-loss testing.
+Backend input journals and primary draft snapshots are separate layers,
+described below; flushing a child record does not persist a child editor.
 
 
 ### Write-ahead child input snapshots
@@ -3094,9 +2536,10 @@ flushed before journal cleanup, so a crash between those steps cannot revive old
 accepted inputs. An actual owned SIGKILL test verifies a previously acknowledged
 2 MiB image input survives and is explicitly recoverable without agent creation;
 both native clients also verify their actual acceptance writes the sidecar.
-Physical power-loss/native filesystem conformance, exact edit/remove/consumption
-journaling and durable local editor drafts remain OPEN. No automatic replay or
-permission escalation is introduced.
+Backend journals do not persist child editor keystrokes; primary manual snapshots
+and optional primary autosave are separate. Physical-power-loss and
+uncertain admission/consumption boundaries retain their limits. No automatic
+replay or permission escalation is introduced.
 
 
 ### Write-ahead live queue changes
@@ -3114,14 +2557,15 @@ process, and verifies recovery retains the edited image but not the removed inpu
 This covers acknowledged changes, not every ambiguous boundary: if the process dies
 after the prospective write but before live mutation/acknowledgment, the saved state
 is explicitly uncertain. Consumption during disk work rejects the stale mutation;
-there is no automatic replay. Two-phase live **image** return commits and exact
-consumption/handled-input journaling are not updated by this change. Those boundaries,
-physical power-loss proof and durable local editor drafts remain OPEN.
+there is no automatic replay. Agent-tool-owned image commits and settled
+input-consumption persistence are separate stages below, not native live-return UI.
+Primary draft snapshots do not remove ambiguous admission or physical-power-loss
+boundaries; child editor recovery remains transient.
 
 
 ### Write-ahead image-return commits
 
-Two-phase live image-return commits now persist the prospective removal snapshot
+The retained backend's two-phase image-return commits persist the removal snapshot
 before acknowledgment. Exact owner/token/input/revision/byte-receipt validation
 runs before writing and again before actual live removal. Failed writes, cancelled
 writers, checkpoint selection or host revocation cannot remove the input through
@@ -3130,16 +2574,18 @@ commit retries return the original receipt without rewriting the journal.
 
 An owned SIGKILL test acknowledges an image-return commit, kills the process, and
 verifies the returned input is absent from the restarted queue snapshot. This does
-not persist the native editor backup: that remains memory-only. A crash between a
-prospective disk write and live mutation/acknowledgment is still an uncertain
-boundary, and exact consumed/handled-input journaling is not supplied here. Recovery
-never automatically replays work or restores old execution permissions.
+not make native editor drafts durable; the backend's separate return backup is
+described below. A crash between a prospective disk write and live mutation/
+acknowledgment is still an uncertain boundary. The separate consumption hook below
+is not an atomic history-plus-queue transaction. Recovery never automatically
+replays work or restores old execution permissions.
 
 
 ### Durable returned-image handoff
 
-Both native clients now persist an exact conservative image/text backup **before**
-a live image-return commit can remove the queued input. A bounded `.returns.json`
+The child host/backend persists an exact conservative image/text backup **before**
+an Agent-tool-owned live image-return commit can remove the queued input. Neither
+native client prepares or commits this live return. A bounded `.returns.json`
 sidecar is flushed through the child store, then the prospective queue-removal
 snapshot is saved, and only then can the same live lease commit removal. Failed
 backup or queue writes refuse removal; uncertain write outcomes retain a conservative
@@ -3163,11 +2609,10 @@ reinserted into a live queue on startup.
 
 Evidence includes actual owned SIGKILL after acknowledged image removal, exact
 returned-byte recovery without Agent construction, backup/queue failure tests,
-both native 10 MiB return owners and both private-tmux durable-row recovery flows.
-This closes the returned-image handoff loss window, **not** general durable editor
-drafts, exact consumed/handled-input journaling or physical power-loss/native
-filesystem conformance. Local edited copies still live in memory until a supported
-explicit persistence operation; those remaining goal requirements stay OPEN.
+backend return ownership and native durable-row recovery. This retained backend
+protection is not a live image-return UI. Edited native child copies remain
+same-session transient with no child disk-save command. Physical-power-loss/
+filesystem and uncertain admission boundaries do not become exactly-once guarantees.
 
 
 ### Return retry after partial write failure
@@ -3192,362 +2637,118 @@ An owned SIGKILL test reaches the next model boundary, verifies the consumed inp
 has been flushed out of the queue snapshot, kills the process, and confirms it is
 not offered as queued recovery data. A crash between admission and flush remains
 uncertain; this is not an atomic history-plus-queue transaction or exact-once effect
-guarantee. General durable editor drafts, physical power-loss/native conformance
-and remaining host/platform interoperability requirements remain open.
-
-
-### Durable local child-draft storage foundation (UI integration pending)
-
-The shared TUI package now provides a `ChildDraftStore` codec/storage foundation for
-explicit private snapshots. It preserves task text, image bytes and provenance,
-uses create-only publication with file/directory fsync on POSIX, and requires
-owned 0700 directories / 0600 regular single-link files. Symlinks, hardlinks,
-unsafe modes, oversized/invalid records, duplicate JSON fields and mismatched image
-receipts refuse without partial text recovery. Exact digest checks guard discard;
-cooperating writers lock the pinned directory so simultaneous saves cannot bypass
-the 32-record catalog limit. Each record supports four images / 10 MiB each and
-40 MiB aggregate image data with bounded metadata.
-
-A loaded snapshot becomes an uncertain read-only fresh task with context inheritance
-false. Former model/tools/access/preset/instructions are NOT applied; provenance
-remains available for review. Nothing submits text, starts a child or authenticates
-on save/load. Existing data is never overwritten by save. A post-publication fsync
-failure can have an uncertain committed outcome; do not automatically retry/discard.
-The host must run filesystem/codec work off the UI loop and separately review it.
-
-This storage layer is **not yet wired into native application save/load/discard
-controls or automatic draft persistence**. The existing `/agents drafts` catalog
-still describes its in-process caches. A process roundtrip test verifies storage
-and conservative recovery, but not an application restart/terminal save workflow
-or physical power-loss/native-platform conformance. Those integration requirements
-remain OPEN; storage code alone does not make current editor drafts durable.
-
-
-### Explicit durable child-draft save/load/discard
-
-In `/agents drafts`, **s** prepares a full reviewed save of the selected local
-child draft. The disclosure includes task, provenance, old settings and image
-digests; only physical Enter after all pages are painted admits the save. It
-creates a private plaintext snapshot, never overwrites the source or executes work.
-Coding stores these under its session directory's `saved-child-drafts`; Claw uses
-its local user data directory's `saved-child-drafts`. The application parent
-directory must exist; unsafe paths or unsupported private-storage primitives
-refuse instead of silently falling back.
-
-`/agents saved` explicitly reads saved snapshots off the UI loop. The draft
-browser shows **SAVED PRIVATE** rows separately from CURRENT/OLD memory caches.
-Saved rows cannot resume old child execution: reviewed Enter copies exact text
-and images into a separate read-only start draft with context inheritance false.
-No old model/tool/access configuration or permissions are adopted. **x** on a saved
-row reviews deletion of that DISK snapshot only; independent local copies stay
-editable. Deletion requires the exact saved digest and actual completion receipt.
-
-One owned disk operation runs at a time; repeated actions refuse until settlement.
-Graceful quit waits for its receipt rather than abandoning admitted work. A delayed
-read cannot populate a replacement panel/context. Save failure keeps the local
-source, while errors are redacted and uncertain post-publication effects require
-explicit inspection rather than automatic replay. Disk operations/codec work run
-outside UI/event loops. Loaded catalog images have a cumulative 40 MiB bound;
-over-capacity reads refuse without partial recovery.
-
-Both actual native owners are tested for reviewed save, NEW owner reload, exact
-10 MiB image recovery, read-only copy, disk-only discard, unchanged parent draft,
-failed save and stale-view refusal. Private-tmux workflows physically save/load
-recovered image drafts and restore native cursor/termios. Separate storage tests
-exercise process restart; these UI tests do not prove every platform filesystem.
-**Autosave and general parent-editor persistence are not implemented by this explicit
-child-snapshot feature.** Unreviewed edits remain memory-only until explicitly
-saved; broader durability/platform/RPC requirements remain open.
-
-
-### Saved-draft capacity recovery
-
-`/agents saved list` now lists validated metadata (snapshot ID, provenance, image
-count/bytes) without adopting drafts or retaining catalog image bodies. Records
-are validated one at a time on the owned disk worker. This listing stays available
-when loading all saved images would exceed the cumulative 40 MiB UI limit.
-
-`/agents saved SNAPSHOT_ID` explicitly loads one complete snapshot for the existing
-full-reviewed read-only recovery/discard browser. Invalid IDs refuse before disk
-work; no URI/path is interpreted and other saved records remain unchanged. Bare
-`/agents saved` retains the bounded all-snapshot load behavior. Neither catalog
-listing nor single-ID loading executes agents, changes the parent draft or imports
-old permissions; no oversized image is silently truncated. Autosave/general editor
-persistence and broader remote/native-platform requirements remain OPEN.
-
-
-### Nonblocking saved-draft worker settlement
-
-Durable draft polling no longer joins a live worker on the UI thread. A queued
-receipt remains owned until its worker actually exits, keeping the single-operation
-capacity without stalling terminal frames. Failed thread startup releases ownership
-and admits no disk operation; rejected delivery is not automatically replayed.
-Explicit save/load/discard semantics and graceful-quit settlement remain unchanged.
-
-
-### Bounded saved-draft lock contention
-
-Saved-draft directory locking now uses nonblocking attempts with a three-second
-deadline. If another cooperating process holds the lock, the operation refuses
-without modifying snapshots instead of leaving save/load/discard and graceful
-quit waiting indefinitely. The owned worker then reports its failure receipt;
-retry is explicit after the lock is released. This bounds lock acquisition, not
-arbitrary filesystem stalls or physical power-loss behavior.
-
-
-### Coding RPC saved child snapshot discovery/read
-
-Coding RPC independently negotiates `child_saved_drafts:1` alongside child controls.
-Scoped `child_control` actions `saved_catalog` and `saved_read` expose the same
-local private saved child snapshots as native `/agents saved`. Catalog responses
-contain bounded metadata only. Reads require the exact `snapshot_id` and
-`snapshot_sha256` captured from that catalog; stale/missing IDs or changed content
-refuse without selecting a different snapshot or reading a supplied path/URI.
-
-Image-bearing reads additionally negotiate `child_saved_images:1`. Exact bytes
-travel through the existing checksummed binary begin/chunk/end stream, scoped to
-session/revision/connection owner, snapshot ID/digest and a `saved-draft` source.
-The final result contains conservative read-only/context-fresh draft metadata and
-an exact image receipt, never large base64 bodies. Text-only reads need no image
-capability. All filesystem/codec work runs off the RPC event loop and actual owned
-workers settle on cancellation. Capability withdrawal/re-enable cancels in-flight
-saved reads; stale owner generations cannot revive them.
-
-Reading returns a copy only: it does not install parent/child history, enqueue or
-submit work, invoke a model, remove snapshots or import prior access/model/tools.
-Clients own review before any later submission. Tests include an actual offline
-RPC subprocess reading 2 MiB, digest changes, missing image negotiation, revocation
-and closed peers. Remote saved-draft save/discard, autosave/general editor durability
-and remaining native-platform/host API gaps are still OPEN.
-
-
-### Coding RPC two-phase saved snapshot deletion
-
-RPC independently negotiates `child_saved_discard:1` alongside saved-draft access.
-`saved_discard_prepare` requires the catalog snapshot ID/digest and returns a
-30-second, connection/generation-bound `review_id` and exact metadata disclosure.
-Preparation never deletes files. Clients must actually review that disclosure
-before `saved_discard_confirm` echoes the exact `review`, `review_id` and boolean
-`confirmed: true`. Truthy strings/numbers are not consent. `saved_discard_cancel`
-revokes an unused review without changing the snapshot.
-
-Confirmation is single-use; changed files, expired/foreign/cancelled reviews and
-capability withdrawal/re-enable refuse. The actual disk removal rechecks the host
-owner after acquiring its lock and validating the digest. Cancellation settles the
-worker, not an automatic rollback of admitted deletion. Inspect uncertain outcomes
-before explicitly preparing a fresh action. Only the saved disk file is deleted;
-local editable drafts, queues and agent history are untouched. No model calls or
-permission grants occur. Review capacity includes in-flight preparations and is
-bounded to four. Remote save/autosave and broader platform/API gaps remain open.
-
-
-### Coding RPC two-phase saved snapshot creation
-
-RPC independently negotiates `child_saved_save:1` alongside `child_saved_drafts:1`.
-`saved_save_prepare` accepts bounded `text` and an optional provenance `label`.
-Images additionally require `child_saved_images:1`, supplied either as inline typed
-`images` or completed session-owned `image_refs`, never both. No file/URI destination
-or caller tool/model/access settings become execution authority.
-
-Preparation owns an exact conservative read-only snapshot and returns its text,
-image digests/MIME types, byte counts, SHA256 and PRIVATE PLAINTEXT disclosure with
-a 30-second connection/generation-bound review ID. It publishes no file. Once
-preparation succeeds, uploaded image references are consumed; the review retains
-its own exact bytes. The client must separately review the receipt before sending
-`saved_save_confirm` with that `review_id`, the exact echoed `review`, and actual
-boolean `confirmed: true`. `saved_save_cancel` releases an unused review without
-writing. Expired, cancelled, foreign or revoked reviews cannot publish snapshots.
-
-Confirmation uses create-only private storage and rechecks live consent immediately
-before publication. The review is single-use; failed/uncertain writes are not
-silently retried. A post-publication flush failure may have committed: explicitly
-inspect the catalog before preparing another save. No parent/child history is
-changed, agent/model invoked or original upload turned into live queued input.
-Review count is bounded to four, with a separate prepared-byte limit; native
-save/load controls and their original private-path guards remain unchanged.
-
-Tests include an actual RPC subprocess preparing and confirming a 2 MiB chunk-uploaded
-image snapshot with zero model/history changes, exact-once review use, consent/
-expiry/cancel/withdrawal checks and revocation at the publication boundary. This is
-explicit RPC snapshot creation, not autosave, durable general parent-editor state,
-physical client-review proof or remaining native-platform/API conformance.
-
-
-### Opt-in native child-draft autosave
-
-`/agents autosave on` enables session-local debounced child-draft snapshots in both
-native clients. It is **OFF by default** and resets to off on application restart.
-The command discloses PRIVATE PLAINTEXT local storage. `/agents autosave off`
-stops future scheduling; an already admitted write still settles. This is not a
-project-controlled setting, automatic submission or an execution permission grant.
-
-After a 0.5-second debounce, unsent local child text/images are saved on the owned
-worker. Later edits update only that owner's exact previous snapshot using a digest
-check and private atomic replacement; externally changed files are not overwritten.
-Failure disables autosave rather than automatically retrying uncertain writes.
-Saved-catalog entries are not automatically resaved. General parent-composer text
-is not included. Existing snapshot size/catalog bounds and private-path checks apply.
-
-Recovery is explicit through `/agents saved` or `/agents saved ID` and its full
-reviewed read-only/context-fresh copy workflow. Old access/model/tool configuration
-never becomes recovered execution authority. Graceful quit requests a pending draft
-flush and refuses exit while its worker is settling. An actual owned SIGKILL test
-verifies a COMPLETED autosave survives, but edits during debounce/in-flight work
-are not guaranteed durable. Clearing or submitting a draft does not automatically
-delete its prior saved recovery copy; inspect/discard snapshots explicitly.
-
-Tests cover both actual native owners, exact image/text persistence and same-record
-updates, disable behavior, external mutation refusal, debounce/explicit flush,
-independent-process restart and native terminal on/off controls. This implements
-opt-in CHILD autosave, not general parent-editor durability, physical power-loss/
-native filesystem conformance or remote autosave APIs. Those remain open.
-
-
-### Autosave retained-memory accounting
-
-Completed autosaves retain only the ID/digest update receipt, not a second decoded
-text/image copy outside the editable-draft retention budget. Tracking for removed
-local slots is released without deleting their saved recovery snapshots. A later
-reappearing slot creates a new snapshot rather than overwriting an old recovery
-copy. Existing explicit disk discard and autosave opt-in semantics are unchanged.
-
-
-### Deferred quit preserves live UI services
-
-A quit request deferred by an admitted durable draft write now leaves argument
-completion and custom presentation/input services intact. Claw also retains its
-owned name read. Teardown begins only when actual exit is admitted after write
-settlement; repeated exit requests do not rerun cleanup. This keeps the still-live
-UI usable instead of partially closing it while waiting for storage.
-
-
-### Saved reload preserves editable-image ownership
-
-Reload capacity now releases only the old catalog's exclusive image ownership.
-Images still held by reviewed editable copies or an active child composer remain
-counted when new catalog bytes are decoded. Reloads that would exceed local
-retention refuse without replacing the existing catalog or losing editable copies;
-exclusive old catalog bytes can still be replaced without false double-counting.
-
-
-### Opt-in parent composer recovery
-
-`/draft autosave on` enables session-local parent-composer snapshots; `off` stops
-future saves. It is OFF by default and discloses PRIVATE PLAINTEXT local storage.
-Debounced snapshots keep unsent text and image attachments separately from child
-state, with the same owned off-thread writes, digest-bound updates, storage limits
-and failure-stop behavior. Parent text supports up to 64 KiB; image limits remain
-four per snapshot, 10 MiB each / 40 MiB total. The stored record capacity also
-accounts for JSON-escaped Unicode text rather than truncating it.
-
-`/draft saved [list|SNAPSHOT_ID]` explicitly discovers/loads parent snapshots.
-Recovery has its own **Saved parent drafts** review: physical Enter after every
-text/provenance/image page copies into an unchanged **empty** parent composer.
-An existing or changed draft is preserved and recovery refused. Nothing sends the
-prompt, invokes a model, changes history or imports former permissions. Parent
-attachment ownership and all unrelated local image bytes remain counted; recovery
-releases the temporary saved catalog after moving bytes into the composer.
-
-**x** reviews deleting only the saved DISK snapshot; it does not clear current
-composer text or attachments. A delayed read or changed review owner cannot adopt
-old data into a replacement context. Graceful exit flushes pending snapshots and
-holds while their actual workers settle. Snapshots remain available after submit/
-clear until explicitly discarded; recovered text is never automatically replayed.
-
-Both native owners are tested for text/image autosave, long Unicode saved recovery
-with a NEW UI owner, changed-composer rejection, disk-only discard and zero model/
-permission/history changes. Both private-tmux workflows perform full physical
-parent-image recovery review and cursor/termios restoration. This is opt-in snapshot
-recovery, not exact persistence of every keystroke: debounce/in-flight crash windows,
-physical power-loss/native filesystem conformance, remote parent-draft APIs and
-other host/platform interoperability requirements remain OPEN.
-
-
-### Parent recovery view ownership
-
-Parent snapshot reads are tied to the requesting auxiliary view. Closing that view
-revokes delivery: a delayed disk result cannot reopen it or populate a replacement
-view. Back/close and completed recovery release temporary read snapshots and saved
-image catalogs without deleting disk files. Admitted disk operations still settle;
-view cancellation is not a rollback or automatic retry.
-
-
-### Parent recovery fences same-panel navigation
-
-Saved-parent reads also bind to the requesting panel's view lease and child-view
-identities. Switching to a child form, queue, preview or another draft browser
-revokes late delivery even if the outer panel stays the same. Returning to the
-roster does not revive the old read. Successful reads transfer their existing
-composer/context receipt to the exact parent-recovery browser; stale callbacks
-cannot copy or delete after navigation. Saved files and current drafts remain
-unchanged, with no automatic read retry or focus takeover.
-
-
-### Explicit parent draft save
-
-Press **Ctrl+Alt+S** while the parent composer is focused to prepare a private
-snapshot save without consuming its text or attachments. The native `/draft save`
-control opens the same review for the current composer. The shortcut is preferable
-when preserving an existing typed prompt: submitting a slash command normally
-consumes that command's editor text. No autosave opt-in is required.
-
-Every task/provenance/image digest page must be physically painted before Enter
-admits the save. Changed composer text/images/cursor or a replaced view reject
-old consent; pasted/repeated/unpainted Enter cannot confirm. Successful save
-leaves the parent composer intact and creates one private snapshot with no model,
-history or permission change. Confirmation is single-use; saved recovery still
-uses `/draft saved` and the full reviewed empty-composer copy workflow. A failed
-or uncertain write is not automatically retried. Existing autosave and native
-private-storage limits remain unchanged.
-
-
-### Parent save respects modal input ownership
-
-The parent-save shortcut and explicit save review cannot take focus from an
-active extension dialog, queued question, output review or pending output operation.
-Coding also refuses while approval prompts/waiters own input. These guards apply
-to stale review confirmation as well as initial shortcut admission; existing
-composer text/images and permission decisions remain unchanged.
-
-
-### Configurable parent-save shortcut
-
-Parent save is now the `save_draft` action in `keybindings.json`, defaulting to
-`ctrl+alt+s`. For example, `{"save_draft": "f8"}` rebinds it;
-`{"save_draft": []}` disables the shortcut without a hard-coded fallback. `/keys`
-shows the current binding. The action remains host-only, not editor submission,
-and respects existing modal ownership and physical press/review guards.
-
-
-### Read-only image preview in draft reviews
-
-Press **p** in a saved/local draft list or full review to preview its images before
-copying, saving or deleting. **Left/Right** selects attachments; **Escape** returns
-to the same review. Preview performs no draft action, file deletion or agent call.
-Returning resets review painting, so preview cannot count as consent or skip full
-physical confirmation. A changed source invalidates preview/review rather than
-applying an action against stale bytes. Both parent and child draft reviews use
-this shared behavior. Linux/private-terminal evidence does not establish every
-native desktop image protocol or provider/decoder interoperability.
-
-
-### Parent recovery respects modal input ownership
-
-Saved-parent read admission, delayed-result presentation and stale recovery copy/
-delete callbacks now respect extension dialogs, queued questions, output reviews
-and Coding approval owners. A read that completes under a new modal cannot take
-focus or adopt a saved catalog. Reload explicitly after that owner settles;
-composer text/images, permission decisions and disk snapshots remain unchanged.
-
-
-### Save-and-quit completes after storage settlement
-
-An explicit quit request deferred by draft storage now completes automatically
-after all pending child/parent snapshots settle. The UI stays responsive and
-input services remain live while waiting; edits made during that wait are flushed
-before exit. A new storage failure cancels the deferred exit and keeps the UI
-open for inspection instead of silently exiting with unsaved data. This fulfills
-an explicit quit intent, not background submission, replay or a crash guarantee.
+guarantee. Primary manual snapshots and opted-in primary autosave do not promise
+that in-flight edits survive or prove physical-power-loss/native-filesystem
+conformance; host/platform interoperability retains its own limits.
+
+
+### Retained primary snapshot storage and quit settlement
+
+The shared snapshot codec/store/I/O/autosave primitives remain for primary drafts.
+Private no-follow ownership/mode checks, atomic publication, fsync, create-only
+manual saves, exact-owner autosave updates and conservative recovery are unchanged.
+A queued receipt remains owned until its worker exits; the terminal never joins a
+live disk worker. Lock contention has a bounded three-second acquisition deadline,
+not a promise about arbitrary filesystem stalls. Storage failures retain editable
+source, redact diagnostics and do not automatically retry uncertain effects.
+
+Graceful quit waits for admitted **primary** writes and pending opted-in primary
+autosave. Argument completion, basic dialogs, native rendering/input and Claw's
+owned name read remain usable until exit is admitted. A new storage failure cancels
+deferred quit. Repeated exit requests do not duplicate teardown. Transient child
+edits create no disk/background job or fictitious receipt barrier; no files are
+deleted when their current-context cache references are released.
+
+
+### Primary draft save and explicit recovery
+
+Press **Ctrl+Alt+S** while the primary composer is focused to review a private,
+create-only snapshot without consuming its text or attachments. `/draft save`
+opens the same exact-composer review; submitting a slash command normally consumes
+that command's editor text, so prefer the shortcut for an existing typed prompt.
+No autosave opt-in is required. The `save_draft` action is configurable in
+`keybindings.json`: `{"save_draft":"f8"}` remaps it and `{"save_draft":[]}` disables
+it without a hard-coded fallback. `/keys` shows the current binding.
+
+Save and recovery use a **standalone primary-draft surface**, never the child
+browser. `/draft restore [SNAPSHOT_ID]` opens an explicit selector of at most **32**
+snapshots or loads one exact ID. `/draft saved [SNAPSHOT_ID]` remains an alias;
+`/draft saved list` opens the same bounded selector, not a management catalog.
+Each entry discloses its ID and stored action/slot, scope and label; Enter opens
+full text/provenance/image-digest review before any restore can be confirmed.
+There is no primary catalog/delete/search management UI or automatic latest-slot
+selection, pruning or migration. A full store reports an explicit error and keeps
+the unsaved composer and existing snapshots unchanged.
+
+Coding uses its session-manager directory's `saved-parent-drafts`; Claw uses its
+local data directory's `saved-parent-drafts`. These existing stores can contain
+multiple recorded scopes. Stored context strings are provenance, not a durable
+workspace/group identity or an instruction to select a snapshot. IDs are not
+timestamps; recovery never infers a latest snapshot from ID order or file mtime,
+guesses another scope, or silently moves/deletes existing records.
+
+Restoration copies **text/images only** into an unchanged **empty** composer.
+Text, attachments, cursor, context and view ownership are checked against the
+captured admission state; a nonempty or changed composer is preserved. Old
+model/tools/access/configuration are not adopted, and the stored cursor is not
+restored: native `set_text` places the editing cursor at the end. Nothing submits
+a prompt, invokes a model or changes history/permissions. Primary text supports
+64 KiB; snapshots permit four images, 10 MiB each / 40 MiB total. Existing validated
+image and combined retained-byte limits remain, with no truncation or partial
+recovery. Saved snapshots remain after submit/clear; this UI never deletes them.
+
+### Optional primary autosave
+
+`/draft autosave on` enables session-local primary-composer snapshots. It is **OFF
+by default**, resets on restart and discloses PRIVATE PLAINTEXT local storage.
+`off` stops future scheduling, not an already admitted write. After the existing
+0.5-second debounce, exact-owner updates use only that owner's prior ID/digest;
+manual saves stay create-only and externally changed snapshots are not overwritten.
+A changed context creates a separate snapshot rather than adopting another owner's
+update receipt. Failure stops autosave until explicit re-enable, with no automatic
+retry of uncertain effects. Child drafts are not included; child autosave is removed.
+
+Completed autosaves retain only their ID/digest receipt, not another decoded
+image/text copy outside retention accounting. Native status distinguishes pending,
+writing, committed and uncertain. Committed means a **polled disk receipt**, not
+per-keystroke or physical-power-loss durability. Debounce and in-flight crash
+windows remain; recovery after restart always requires explicit selection/review.
+
+### Primary review, preview and quit ownership
+
+Every task/provenance/image page must be painted at the current review width before
+a fresh physical Enter can admit save/restore. Paste, repeat/release and unpainted
+Enter cannot confirm. **p** previews images; **Left/Right** selects an attachment
+and **Escape** returns to review. Preview performs no draft action and returning
+requires fresh full review. Narrow/zero-budget or changed geometry/focus cannot
+reuse earlier consent. Native USER input, shortcuts and approval safety remain.
+
+Reads and confirmations bind the exact primary surface, context and composer.
+Closing/replacing it or a focus/owner change revokes late delivery and old callbacks;
+returning focus does not revive a former actor. Extension questions, output reviews,
+native overlays and Coding approval prompts/waiters retain input priority. A delayed
+read cannot reopen a dismissed view or steal modal focus. Escape/cancel releases
+transient preview/review images without deleting files or abandoning admitted I/O.
+All unrelated composer/queue/editable-image owners remain counted.
+
+Graceful quit waits for admitted primary disk operations and flushes pending
+opted-in primary autosave. Child editor recovery creates no disk operation.
+Input services stay live while waiting; primary edits during the wait are flushed
+when autosave is enabled. A new storage
+failure cancels deferred quit and leaves the UI open for inspection. Single-use save
+admission, redacted generic errors, private-path/fsync protections and no automatic
+replay remain. These are bounded local snapshot/recovery guarantees, not proof of
+every filesystem/power-loss behavior. Remote parent-draft control is removed; no
+Coding frontend RPC or Claw gateway draft negotiation is used.
+
+
+### Read-only image preview in child draft reviews
+
+Press **p** in current-session child recovery or its full review to preview images
+before a separate reviewed current-session reopen. **Left/Right** chooses attachments;
+**Escape** returns to review, with fresh full painting required before confirmation.
+Preview performs no draft action, file deletion or agent call. Changed sources
+invalidate preview/review rather than applying an action against stale bytes.
 
 ### Literal argument suffix, quotes and escapes (UI-035)
 
@@ -3567,3 +2768,23 @@ inserts only; undo restores the original token and surrounding arguments. Existi
 registration/owner/draft/cursor/cancellation fences still apply. Actual Coding and
 Claw worker/socket checks and Linux private-terminal suffix/quote/escape/undo and
 worker-cancellation recovery have passed; no non-Linux native validation is claimed.
+
+### Explicit MCP arguments
+
+After explicitly connecting a server, prompt arguments are entered as a JSON
+object and resource reads use an explicitly supplied resolved URI. Submitted
+input stays editable after errors or cancellation. Catalog reads, multitype
+previews, insert/export and existing permission boundaries remain; manual named
+argument/opaque-resource completion pickers are removed. This does not remove
+the lower-level MCP completion client API or extension command argument completion.
+
+
+### Basic extension interaction scope
+
+Trusted extensions can use `api.input`, `api.confirm` and `api.select` with normal
+cancellation, plus bounded notifications and simple text status. Arbitrary custom
+renderers, typed plugin forms, nested dialogs, extension overlays/fullscreen frames
+and widget layouts are removed. Native approval and recovery reviews remain host-
+owned; they expose no plugin layout or editor/session-mutation authority. Core TUI
+overlays, transcript fullscreen, Unicode, clipping, cursor and tool-approval behavior
+remain.

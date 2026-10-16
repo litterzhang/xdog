@@ -219,44 +219,48 @@ def test_combined_watch_form_validates_and_toggles_exact_canonical_filters():
         panel.close()
 
 
-def test_task_family_arm_is_separate_from_ordinary_arm_and_uses_existing_off():
+def test_retired_task_form_and_root_shortcuts_are_inert_and_review_apis_are_absent():
     from xdog.tui.keys import KeyEventType
     requests = []
     panel = McpPanel(lambda *args: requests.append(args), lambda: None, lambda: None, lambda: None)
     try:
         panel.publish('list', rows=({'server': 'owned', 'state': 'disconnected'},))
-        for key, action in [('b', 'sampling_on'), ('f', 'elicitation_on'),
-                            ('j', 'sampling_tasks_on'), ('k', 'elicitation_tasks_on')]:
-            panel._busy = False
-            panel.handle_input(KeyEvent(key))
-            assert requests[-1] == (action, 'owned', '', {})
-        count = len(requests)
-        panel.handle_input(KeyEvent('j'))  # Busy gate, not duplicate enable.
-        assert len(requests) == count
-        panel._busy = False
-        panel.handle_input(KeyEvent('j', event_type=KeyEventType.RELEASE))
-        panel.handle_input(KeyEvent('k', event_type=KeyEventType.REPEAT))
-        assert len(requests) == count
-        panel.handle_input(KeyEvent('b', alt=True))
-        assert requests[-1][0] == 'sampling_off'
-        panel._busy = False
-        panel.handle_input(KeyEvent('f', alt=True))
-        assert requests[-1][0] == 'elicitation_off'
-        assert 'j sampling tasks/k form tasks' in '\n'.join(panel.render(160))
+        for attribute in ('publish_elicitation', 'elicitation_closed', 'elicitation_review', 'publish_roots',
+                          'roots_review', '_root_form', 'publish_sampling', 'sampling_closed'):
+            assert not hasattr(panel, attribute)
+        for event_type in KeyEventType:
+            for event in (KeyEvent('f', event_type=event_type), KeyEvent('k', event_type=event_type),
+                          KeyEvent('o', event_type=event_type), KeyEvent('f', alt=True, event_type=event_type)):
+                panel.handle_input(event)
+                assert not panel._busy and panel._mode == 'servers' and panel._preview is None
+        assert requests == [('list', '', '', {})]
+        rendered = '\n'.join(panel.render(160))
+        assert 'elicitation' not in rendered.lower() and 'tasks' not in rendered.lower()
+        panel.handle_input(KeyEvent('p'))
+        assert requests[-1] == ('prompts', 'owned', '', {})
     finally:
         panel.close()
 
 
-def test_late_connection_catalog_cannot_erase_early_peer_cancel_notice():
-    panel = McpPanel(lambda *args: None, lambda: None, lambda: None, lambda: None)
+def test_retired_results_cannot_unlock_or_replace_successor_mcp_operation():
+    requests = []
+    panel = McpPanel(lambda *args: requests.append(args), lambda: None, lambda: None, lambda: None)
     try:
-        panel.elicitation_closed('early-cancel')
-        panel.publish('connect', rows=({'server': 'owned', 'state': 'connected'},))
-        assert 'Elicitation ended' in '\n'.join(panel.render(160)) and not panel._busy
-        panel.sampling_closed('early-sampling')
         panel.publish('list', rows=({'server': 'owned', 'state': 'connected'},))
-        assert 'Sampling request ended' in '\n'.join(panel.render(160))
-        panel.handle_input(KeyEvent('u'))
-        assert not panel._review_ended_notice  # New explicit user operation supersedes notice.
+        panel.handle_input(KeyEvent('p'))
+        assert panel._busy and panel._mode == 'servers'
+        panel._message = 'successor prompt catalog pending'
+        for action in ('elicitation_answer', 'elicitation_on', 'elicitation_tasks_on', 'sampling_answer',
+                       'roots_prepare', 'roots_commit'):
+            panel.publish(action, text='stale untrusted preview', error='retired capability unsupported')
+            assert panel._busy and panel._mode == 'servers' and panel._preview is None
+            assert panel._message == 'successor prompt catalog pending'
+        assert requests == [('list', '', '', {}), ('prompts', 'owned', '', {})]
+        panel.publish('prompts', rows=({'name': 'review', 'arguments': (('topic', '', True),)},))
+        assert not panel._busy and panel._mode == 'catalog'
+        panel.handle_input(KeyEvent('enter'))
+        panel._arguments.set_text('{"topic":"explicit successor"}')
+        panel.handle_input(KeyEvent('enter'))
+        assert requests[-1] == ('prompt', 'owned', 'review', {'topic': 'explicit successor'})
     finally:
         panel.close()

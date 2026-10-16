@@ -1,121 +1,72 @@
+"""UI036 removes terminal observation and editing authority, not submitted-input hooks."""
 from __future__ import annotations
+
+import importlib.util
+import shutil
+from pathlib import Path
 
 import pytest
 from xdog.agent.extensions.api import ExtensionAPI
-from xdog.agent.extensions.terminal_input import decision, metadata, text
+from xdog.agent.extensions.runtime import ExtensionRuntime, validate_snapshot
+from xdog.agent.extensions.worker import dispatch
+from xdog.agent.supervision_extensions import ChildExtensions
 
 
-def test_terminal_decisions_consume_transform_empty_and_false_are_distinct():
-    assert decision(None).to_dict() == {'consume': False}
-    assert decision({}).to_dict() == {'consume': False}
-    assert decision({'consume': False}).to_dict() == {'consume': False}
-    assert decision({'data': ''}).to_dict() == {'consume': False, 'data': ''}
-    assert decision({'data': '\x1b[A', 'consume': True}).to_dict() == {'consume': True, 'data': '\x1b[A'}
-    assert metadata({'kind': 'paste', 'surface': 'editor'}) == {'kind': 'paste', 'surface': 'editor'}
-    assert text('界' * 5333) == '界' * 5333
+@pytest.mark.parametrize('name', ['on_terminal_input', 'terminal_hooks', 'terminal_events', 'terminal_events_for'])
+def test_terminal_registration_and_observation_apis_are_absent(name):
+    assert not hasattr(ExtensionAPI({}), name)
 
 
-def test_invalid_terminal_decisions_cannot_be_coerced_or_forwarded() -> None:
-
-    def _check_case(value):
-        with pytest.raises(ValueError):
-            decision(value)
-
-    for value in [
-        True,
-        "x",
-        [],
-        {"consume": 1},
-        {"consume": None},
-        {"data": None},
-        {"data": "x" * 16001},
-        {"data": "\ud800"},
-        {"unknown": "field"},
-    ]:
-        _check_case(value)
+def test_terminal_runtime_and_child_capture_apis_are_absent():
+    assert importlib.util.find_spec('xdog.agent.extensions.terminal_input') is None
+    for name in ('terminal_input', 'terminal_input_available', 'terminal_events', 'accept_terminal_registration'):
+        assert not hasattr(ExtensionRuntime, name)
+    for name in ('terminal_metadata', 'capture_terminal', '_publish_terminal'):
+        assert not hasattr(ChildExtensions, name)
 
 
-def test_terminal_metadata_bounds() -> None:
-
-    def _check_case(value):
-        with pytest.raises(ValueError):
-            metadata(value)
-
-    for value in [
-        None,
-        {},
-        {"kind": "key"},
-        {"kind": "other", "surface": "editor"},
-        {"kind": "key", "surface": ""},
-        {"kind": "key", "surface": "x" * 129},
-        {"kind": "key", "surface": "editor", "unknown": "field"},
-    ]:
-        _check_case(value)
-
-
-def test_registration_unsubscribe_is_idempotent_bounded_and_requires_distinct_callables():
+@pytest.mark.parametrize('kind', ['key', 'paste', 'release'])
+async def test_worker_refuses_old_terminal_protocol_without_calling_submitted_input_hooks(kind):
     api = ExtensionAPI({})
-    def callback(*args):
-        return None
-    unsubscribe = api.on_terminal_input(callback)
-    with pytest.raises(ValueError):
-        api.on_terminal_input(callback)
-    unsubscribe()
-    unsubscribe()
-    assert not api.terminal_hooks
-    for _ in range(32):
-        api.on_terminal_input(lambda *args: None)
-    with pytest.raises(ValueError):
-        api.on_terminal_input(lambda *args: None)
-    with pytest.raises(ValueError):
-        ExtensionAPI({}).on_terminal_input(None)
+    calls = []
+    api.on_input(lambda *args: calls.append(args))
+    with pytest.raises(ValueError, match='Unknown extension method'):
+        await dispatch(api, 'xdog/terminal_input', {'data': 'secret draft',
+                                                 'metadata': {'kind': kind, 'surface': 'prompt'}})
+    assert not calls
+    info = await dispatch(api, 'xdog/info', {})
+    assert not {'terminal_input', 'terminal_events', 'terminal_generation'} & info.keys()
 
 
-@pytest.mark.parametrize('value', [{'terminal_input': 1}, {'terminal_generation': True},
-                                  {'terminal_generation': -1}, {'terminal_generation': 2**54}])
-def test_terminal_snapshot_types_cannot_be_coerced(value):
-    from xdog.agent.extensions.runtime import validate_snapshot
-    with pytest.raises(ValueError):
-        validate_snapshot({'extensions': [], 'commands': {}, 'ui': {}, **value})
+@pytest.mark.parametrize('field', ['terminal_input', 'terminal_generation', 'terminal_events'])
+def test_removed_terminal_snapshot_fields_are_refused_even_when_well_typed(field):
+    value = {'terminal_input': False, 'terminal_generation': 0, 'terminal_events': []}[field]
+    with pytest.raises(ValueError, match='removed'):
+        validate_snapshot({'extensions': [], 'commands': {}, 'ui': {}, field: value})
 
 
-def add_release_observer(source, log, *, behavior='continue'):
-    """Install a real opt-in observer next to the fixture's unchanged legacy hook."""
-    source.write_text(source.read_text() + f'''
-    async def observe_release(data, metadata, context):
-        import json
-        from pathlib import Path
-        with Path({str(log)!r}).open('a') as output:
-            output.write(json.dumps({{'data': data, **metadata}}) + '\\n')
-        if {behavior!r} == 'hang':
-            await asyncio.Event().wait()
-        if {behavior!r} == 'transform':
-            return {{'data': 'forged press', 'consume': True}}
-        return {{'consume': False}}
-    api.on_terminal_input(observe_release, events=('release',))
-''')
+async def test_real_worker_keeps_commands_and_input_hooks_without_terminal_capabilities(tmp_path):
+    root = tmp_path / 'extensions'
+    shutil.copytree(Path(__file__).parent / 'fixtures/extensions/inputter', root / 'inputter')
+    runtime = ExtensionRuntime(['inputter'], root, tmp_path)
+    try:
+        await runtime.initialize()
+        snapshot = runtime.snapshot()
+        assert snapshot['extensions'] == [{'name': 'inputter', 'state': 'active'}]
+        assert not {'terminal_input', 'terminal_generation', 'terminal_events'} & snapshot.keys()
+        assert validate_snapshot(snapshot) == snapshot
+    finally:
+        await runtime.aclose()
 
 
-def test_terminal_event_registration_is_explicit_strict_and_nonempty() -> None:
-
-    def _check_case(events):
-        api = ExtensionAPI({})
-        with pytest.raises(ValueError):
-            api.on_terminal_input(lambda *args: None, events=events)
-        assert not api.terminal_hooks and api.terminal_events() == []
-
-    for events in [(), ("release", "release"), ("resize",), ("key", True), "release", None]:
-        _check_case(events)
-
-
-def test_stale_terminal_disposer_cannot_remove_reregistered_release_observer():
-    api = ExtensionAPI({})
-    def callback(*args):
-        return None
-    old = api.on_terminal_input(callback)
-    old()
-    current = api.on_terminal_input(callback, events=('release',))
-    old()
-    assert api.terminal_hooks == [callback] and api.terminal_events() == ['release']
-    current()
-    assert not api.terminal_hooks and not api.terminal_events()
+async def test_legacy_terminal_registration_fails_activation_without_publishing_commands(tmp_path):
+    root = tmp_path / 'extensions'
+    shutil.copytree(Path(__file__).parent / 'fixtures/extensions/terminal', root / 'terminal')
+    runtime = ExtensionRuntime(['terminal'], root, tmp_path)
+    try:
+        await runtime.initialize()
+        assert runtime.snapshot()['extensions'] == [{'name': 'terminal', 'state': 'failed'}]
+        assert runtime.commands() == {}
+        assert not hasattr(runtime, 'terminal_input')
+    finally:
+        await runtime.aclose()

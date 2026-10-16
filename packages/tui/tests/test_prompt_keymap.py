@@ -124,13 +124,8 @@ def test_parent_save_is_configurable_host_action_not_editor_or_send_event():
             PromptKeymap.from_overrides(overrides)
 
 
-def test_remote_parent_save_is_separate_configurable_host_control():
-    from xdog.tui.prompt_keymap import EDITOR_EVENTS
-    default = PromptKeymap()
-    assert default.resolve(KeyEvent('s', ctrl=True, alt=True, shift=True)) == 'remote_save_draft'
-    assert 'remote_save_draft' not in EDITOR_EVENTS
-    remapped = PromptKeymap.from_overrides({'remote_save_draft': 'f8'})
-    assert remapped.resolve(KeyEvent('f8')) == 'remote_save_draft'
-    assert remapped.resolve(KeyEvent('s', ctrl=True, alt=True, shift=True)) is None
-    disabled = PromptKeymap.from_overrides({'remote_save_draft': []})
-    assert disabled.resolve(KeyEvent('s', ctrl=True, alt=True, shift=True)) is None
+def test_remote_parent_save_binding_is_removed():
+    assert PromptKeymap().resolve(KeyEvent('s', ctrl=True, alt=True, shift=True)) is None
+    assert 'remote_save_draft' not in dict(PromptKeymap().bindings)
+    with pytest.raises(ValueError, match='unknown action'):
+        PromptKeymap.from_overrides({'remote_save_draft': 'f8'})

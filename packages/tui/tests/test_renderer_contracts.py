@@ -4,14 +4,6 @@ from __future__ import annotations
 import pytest
 from xdog.tui import Component, Container
 from xdog.tui.components.container import Container as ComponentContainer
-from xdog.tui.components.custom_layout import (
-    CustomBox,
-    CustomComponent,
-    CustomPadding,
-    CustomText,
-    CustomViewport,
-    custom_frame,
-)
 from xdog.tui.tui import CURSOR_MARKER
 from xdog.tui.utils import slice_by_column, string_width, strip_ansi, truncate_to_width, wrap_text_with_ansi
 
@@ -21,18 +13,17 @@ from xdog.tui.utils import slice_by_column, string_width, strip_ansi, truncate_t
 def test_wrapped_long_words_preserve_whole_graphemes(glyph, styled):
     width = string_width(glyph)
     decorated = glyph[0] + '\x1b[31m' + glyph[1:] if styled else glyph
-    value = custom_frame(CustomText(decorated * 3, wrap=True), width, 10)
-    assert [strip_ansi(line) for line in value['lines']] == [glyph] * 3
-    assert all(string_width(line) == width for line in value['lines'])
-    assert all(line.endswith('\x1b[0m') for line in value['lines'])
+    lines = wrap_text_with_ansi(decorated * 3, width)
+    assert [strip_ansi(line) for line in lines] == [glyph] * 3
+    assert all(string_width(line) == width for line in lines)
 
 
 @pytest.mark.parametrize('glyph', ['👩\u200d💻', '🇺🇸', '1️⃣', '界'])
 def test_glyph_wider_than_wrapped_viewport_is_one_blank_cell_not_partial_output(glyph):
     # A too-wide glyph cannot be displayed, but still occupies one bounded row.
-    value = custom_frame(CustomText(glyph * 2, wrap=True), 1, 10)
-    assert len(value['lines']) == 2
-    assert all(not strip_ansi(line).strip() for line in value['lines'])
+    lines = wrap_text_with_ansi(glyph * 2, 1)
+    assert len(lines) == 2
+    assert all(not strip_ansi(line).strip() for line in lines)
 
 
 def test_word_wrap_and_explicit_newline_keep_active_styles_without_changing_ascii_word_boundaries():
@@ -81,23 +72,7 @@ class CachedComponent(Component):
         return self.cache.setdefault(width, [self.text])
 
 
-@pytest.mark.parametrize('marked', ['👩' + CURSOR_MARKER + '\x1b[31m\u200d💻',
-                                   'e' + CURSOR_MARKER + '\x1b[1m\u0301',
-                                   '1' + CURSOR_MARKER + '️⃣',
-                                   '🇺' + CURSOR_MARKER + '🇸'])
-def test_adapted_cursor_inside_grapheme_rounds_left_before_container_translation(marked):
-    component = CachedComponent('x' + marked + 'tail')
-    layout = CustomBox(CustomComponent(component))
-    value = custom_frame(layout, 12, 3)
-    assert value['cursor'] == [1, 2]
-    assert not any(CURSOR_MARKER in line for line in value['lines'])
-    # After horizontal scrolling, the glyph boundary is offscreen: no phantom
-    # cursor on its trailing half or on the following glyph.
-    scrolled = custom_frame(CustomViewport(CustomComponent(component), 20, 1, left=2), 8, 1)
-    assert scrolled['cursor'] is None
-
-
-def test_container_public_alias_nested_invalidation_and_worker_adapter_height_contract():
+def test_container_public_alias_and_nested_native_invalidation():
     assert ComponentContainer is Container
     leaf = CachedComponent()
     inner, outer = Container(), Container()
@@ -108,23 +83,12 @@ def test_container_public_alias_nested_invalidation_and_worker_adapter_height_co
     assert outer.render(20) == ['old']
     outer.invalidate()
     assert leaf.invalidations == 1 and outer.render(20) == ['new']
-    # Container is an unbounded vertical concatenator, not a height allocator.
-    # Bounded CustomComponent supplies the leaf's height and strips frame controls.
-    assert custom_frame(CustomComponent(leaf), 20, 3)['lines']
-    assert leaf.heights == [3]
-    assert custom_frame(CustomComponent(leaf), 20, 0) == {'lines': [], 'cursor': None}
-    assert leaf.heights == [3]
     inner.remove_child(leaf)
     inner.remove_child(leaf)
     assert outer.render(20) == []
     outer.clear()
     outer.invalidate()
     assert leaf.invalidations == 1
-
-
-def test_padding_emits_its_right_cells_as_well_as_left_top_and_bottom():
-    value = custom_frame(CustomPadding(CustomText('x'), top=1, right=2, bottom=1, left=1), 10, 3)
-    assert [strip_ansi(line) for line in value['lines']] == [' ' * 10, ' x' + ' ' * 8, ' ' * 10]
 
 
 def test_slicing_carries_style_changes_from_inside_a_fully_cropped_glyph():

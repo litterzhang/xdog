@@ -1,5 +1,8 @@
 # xdog-agent
 
+> Platform scope: **Linux only**. Non-Linux adapters and native-platform support
+> are outside the current product scope; historical audit evidence is not a support promise.
+
 **Agent runtime: tool calling, structured output, steering.**
 
 The agent loop that sits on top of [`xdog-ai`](https://pypi.org/project/xdog-ai/):
@@ -55,8 +58,9 @@ transports fail visibly. `allow_tools` is host policy, not a protocol annotation
 The current discovery probe uses MCP 2026-07-28 request metadata and
 `server/discover`; recognized version rejection is not treated as a legacy peer.
 Only method-not-found triggers legacy initialize/initialized for supported
-2025-11-25/2025-06-18/2025-03-26/2024-11-05 versions. No sampling, roots, elicitation,
-interactive-input or autonomous client capability is advertised.
+2025-11-25/2025-06-18/2025-03-26/2024-11-05 versions. Sampling and autonomous
+model execution are not supported. Elicitation and MCP Tasks are also removed;
+only explicitly configured Roots disclosure is retained for owned requests.
 
 Paginated tool discovery validates identities and object JSON Schemas (Draft
 2020-12), rejects external schema references instead of fetching them, and produces
@@ -73,8 +77,8 @@ current stdio never sends forbidden unsolicited cancellation notifications.
 Neither calls nor connections automatically replay/reconnect. Owned child/process
 groups are terminated/escalated/reaped at disconnect/shutdown. Connection/schema
 mutation must occur while the host's agent is idle. HTTP and inert context previews
-are described below; OAuth and further negotiated capabilities remain open in
-`docs/agent-ui-gap-plan.md`.
+and explicitly reviewed public-PKCE OAuth are described below. Removed input/task
+capabilities are not a promise of future model/callback delegation.
 
 ### Explicit HTTP MCP connections (current and legacy)
 
@@ -108,7 +112,40 @@ maps header names to environment-variable names read at connect. Credential valu
 are absent from status/errors. No redirects, ambient proxy inheritance, resource
 fetches, token refresh or OAuth/browser activity occurs automatically. 401/403 and
 redirects are explicit failures without downgrade/credential forwarding. Interactive
-OAuth and further negotiated client capabilities remain OPEN.
+OAuth uses the explicit public-PKCE surface below, never an automatic auth retry.
+
+
+### Configured MCP Roots and retained transport continuations
+
+Roots are **configured disclosure metadata only**. A server config may include
+`"roots": [{"uri":"file:///absolute/workspace","name":"Workspace"}]`, at most
+16 validated local absolute file URIs. Nothing enumerates the filesystem, infers
+Roots from cwd, grants tool access or creates an OS sandbox. Explicit connect
+admits that configured disclosure to the selected peer; disconnect withdraws it.
+There is no mutable Roots picker, enable/replace review or Roots-change UI.
+
+Legacy `roots/list` answers stay within the configured connection ceiling. Modern
+2026-07-28 `input_required` responses remain supported for owned `tools/call`,
+`prompts/get` and `resources/read`: only configured Roots and bounded opaque
+`requestState` continuations are accepted. Original request arguments and identity
+remain fenced; continuation rounds, embedded inputs, bytes and deadlines are
+bounded. An unsupported sibling input rejects the round before any partial Roots
+disclosure. Disconnect/cancel settles the original owner, not a successor.
+
+**Sampling, Elicitation and MCP Tasks are removed** from SDK/native/gateway
+registration, capability advertisement and review/control surfaces. Legacy
+requests are refused; modern embedded unsupported families/task augmentation fail
+closed, with no callback, model/tool work or partial completion. The former
+Sampling/Elicitation/Tasks/Roots-management keys are not replacement controls.
+Basic extension input/select/confirm and provider OAuth callbacks are separate
+retained interfaces, not MCP Elicitation.
+
+Ordinary modern Roots/request-state continuations do not authorize retrying an
+uncertain operation. Existing explicit resource/catalog/log subscription filters
+and response-scoped SSE remain. Legacy cursor-based **GET** recovery retains the
+original identity/deadline and never repeats a tool **POST**; current stateless
+HTTP does not acquire legacy GET resumption. No disconnect, failed response or
+continuation silently reconnects, replays POSTs or expands configured disclosure.
 
 
 ### Inert MCP resources and prompt previews
@@ -185,6 +222,15 @@ arguments, and route structured UI to their own event loop instead of letting an
 extension write raw terminal control sequences. See client READMEs for the v1 scope
 and the remaining broader extension API gap.
 
+Plugin terminal key/paste/release interception and observation are not supported.
+There is no `on_terminal_input` registration, terminal callback worker protocol or
+terminal event capability. Native input, shortcuts and approval focus stay owned by
+the clients; submitted-input hooks remain separate and do not receive raw keystrokes.
+
+The private extension-worker RPC protocol, MCP JSON-RPC and ACP transport are
+retained. They are distinct from Coding's removed `--rpc` JSON-lines frontend;
+there is no Coding frontend draft/editor/custom-UI or progress-receipt API.
+
 
 ### Durable extension entries and context hooks
 
@@ -221,7 +267,8 @@ def setup(api):
 Unknown/system roles, unsupported parts, invalid images/signatures and incomplete/
 invented tool-result batches fail explicitly, not by silently dropping content.
 No-op transforms preserve original typed messages. Images and signed thinking/tool
-parts survive chunked full-context transfers beyond the individual RPC frame limit.
+parts survive chunked full-context transfers beyond the individual extension-worker
+RPC frame limit.
 Transfers are checksummed, order/identity fenced and spooled off-loop, with a 128 MiB
 explicit context limit, 64 KiB blocks and an absolute whole-transfer deadline.
 
@@ -232,10 +279,10 @@ metadata/file ownership before the host releases its lifecycle reservation; it
 cannot roll back an already completed write. Context-hook failures disable the
 extension and do not trigger another model call or automatic replay.
 
-This closes the basic durable-entry/pre-model-context gap, not the whole extension
-API row: custom renderers/dialogs, shortcuts/input interception, provider registration,
-richer command context and binary tool results remain unfinished. Extension code
-is still trusted code with the user's privileges, not an OS sandbox.
+Durable entries and context hooks do not grant editor/session mutation, raw terminal
+interception or custom-layout authority. Registered shortcuts, basic dialogs, rich
+results and session-owned providers have their separate contracts below. Extension
+code is still trusted code with the user's privileges, not an OS sandbox.
 
 
 ### Interactive extension dialogs
@@ -248,13 +295,13 @@ this dialog only—it is not tool approval, permission revocation or automatic t
 submission. Trusted extension code decides what to do with the answer.
 
 The worker suspends the callback and returns an owned pending-callback/dialog
-receipt. The host displays a focused bounded form, then resumes that SAME callback
+receipt. The host displays a focused basic dialog, then resumes that SAME callback
 with the validated answer; it does not rerun a command/tool to obtain the answer.
 Multiple sequential dialogs work. Without an interactive host, canceled values are
 returned immediately rather than hanging unattended execution.
 
-Forms sanitize control codes, scroll long details, preserve the main editor draft
-and input cursor, and require a rendered visible question/action before Enter can
+Basic dialogs sanitize control codes, scroll long details, preserve the main editor
+draft and input cursor, and require a rendered visible question/action before Enter can
 answer. Select/confirm pastes do not submit; tiny/resize/release/repeat/unpainted
 selection input cannot confirm. Escape/Ctrl+C cancel the dialog. Tool approval and
 output review retain higher focus priority. An affirmative extension confirmation
@@ -268,9 +315,10 @@ other controls while the group remains reserved. Context-hook dialogs still shar
 the context transfer's absolute deadline; the UI does not renew model/transport
 budgets. Callback effects remain trusted code, not OS-enforced isolation.
 
-Arbitrary custom renderers/overlays, richer forms, input/shortcut interception,
-provider registration and further extension command/binary capabilities remain
-unfinished; these dialogs do not declare full Pi API compatibility.
+These are basic input/select/confirm dialogs, not plugin forms or a layout API.
+Custom renderers, nested dialogs, extension overlays and terminal interception are
+removed. Registered command shortcuts and submitted-input hooks remain separate;
+none of these interfaces grants tool permission or full Pi API compatibility.
 
 
 ### Child-supervision runtime
@@ -309,7 +357,7 @@ Both clients retain parent validation/context authority while independently owni
 child extension workers/tool executors/entries. Focused child UIs and independently owned select/input/confirm child dialogs are
 now wired in both applications. Task-specific labels/instructions, tool subsets, fresh context and downward budgets
 are now applied through validated `ChildConfig`. Per-child model/reasoning is now wired through the actual request adapter; named
-specialist presets are now wired too; arbitrary richer forms/renderers remain incomplete.
+specialist presets are now wired too; complex extension forms/renderers are removed.
 
 
 `ChildExtensions` captures the origin UI binding at admission, creates an independent
@@ -349,6 +397,22 @@ templates fail before admission. Persisted records contain expanded settings and
 provenance, not live template pointers or automatic replay instructions.
 
 
+### Native child editor recovery is transient
+
+Coding and Claw expose only reviewed same-session child input reopen and image
+preview. They have no child editor disk save/load/delete, cross-session catalog
+or autosave controls; `/agents saved` refuses without disk/background work. Existing
+child snapshot files are not inspected, migrated or deleted. Reopening preserves
+current editing text/images/settings/cursor, never a prior execution approval.
+Native primary `/draft` persistence remains separate.
+
+This does not remove actual Agent child journals, initial-task records, stopped
+image/task recovery or Agent-tool-owned queued-image return/backups. Those durable
+records are execution/recovery data, not child editor autosave or a resurrected
+cross-session draft UI. Generic worker/provider OAuth callbacks and read-only
+extension menus also remain distinct from the removed MCP input/task families.
+
+
 ### Explicit MCP OAuth profile and SDK
 
 HTTP server configuration may include an explicit pre-registered public-client
@@ -382,18 +446,17 @@ Actual S256/code exchange, state/issuer/resource/scope checks, bounded callback
 ownership and memory-only exact-resource credentials are implemented. A subsequent
 explicit connect still registers tools; authorization does not change tool approvals
 or `allow_tools`. Forget erases local credentials/disconnects proxies, not remote
-revocation. Tokens are neither logged nor persisted, locally expire within one hour,
-and are never automatically refreshed/replayed. OAuth cannot mix Authorization
-header credentials or remote plaintext resource URLs. HTTPS verification remains on;
-optional `ca_file` is an explicit absolute trust-file path.
+revocation. Tokens stay private in memory unless separately reviewed for an explicit
+supported store; they locally expire within one hour and are never automatically
+refreshed/replayed. OAuth cannot mix Authorization header credentials or remote
+plaintext resource URLs. HTTPS verification remains on; optional `ca_file` is an explicit absolute trust-file path.
 
-Current limits: resource/issuer well-known paths only, issuer-origin endpoints,
-query-free URLs, explicit scopes/public-client metadata and uncompressed JSON. WWW-Authenticate/path/root/OAuth/OIDC discovery is implemented in pass 29;
-Hosted public-client metadata and explicit legacy DCR are implemented in pass 30;
-Pre-registered Basic/POST confidential methods are implemented in pass 31;
-other methods and credential persistence/refresh remain open. Coding/Claw consent UI is wired in pass 28.
-Primary documentation is now retrievable; full interoperability remains open. The broader
-MCP parity goal stays active; these SDK primitives are not an OS sandbox.
+The MCP client is pre-registered/public-PKCE only. Resource/issuer discovery uses
+bounded credential-free GETs, exact resource/issuer matching, operator scope ceilings,
+issuer-origin endpoints, TLS verification and uncompressed JSON. This is not hosted
+client-metadata registration or DCR. Unsupported registration/authentication modes
+are refused, not silently downgraded. Explicit refresh and both Linux credential
+stores are retained separately; no operation implies automatic login or tool trust.
 
 
 UI hosts use `manage_auth(..., lease=..., alive=...)` and `detach_auth(lease)` to fence
@@ -401,8 +464,13 @@ consent and late credential commitment. A foreign lease cannot prepare/start/can
 forget another view's transaction. Metadata cancellations settle actual coroutine
 ownership; terminal/client close may be awaited idempotently after synchronous close.
 Host guards are not tool approvals. Completed safe status can include a consumed
-review for local forget; waiting status exposes no reusable live URI/receipt. Broader
-OAuth registration/discovery/persistence/refresh remains on the original audit.
+review for local forget; waiting status exposes no reusable live URI/receipt.
+Public-client consent, explicit refresh and storage keep distinct receipts. Full
+external-provider interoperability is not inferred from this bounded profile.
+
+Whole-page consent proof belongs to the actually focused review. Blur/preemption,
+resize or changed endpoints/scopes clears confirmability and requires fresh full
+review; background painting does not grant authorization or tool permission.
 
 
 ### Authorization metadata discovery
@@ -424,113 +492,98 @@ priority without assuming they are listed in `scopes_supported`; the configured
 scopes remain an operator ceiling. Scope-less listings are displayed as no request,
 and over-ceiling requirements fail rather than silently expanding access. Actual
 review data carries discovery URLs and scope-source provenance. Consent/permissions/
-leases/explicit connect remain separate. Registration and persistence/refresh are
-still pending; successful offline discovery is not proof of every external provider.
+leases/explicit connect remain separate. Client-metadata and dynamic registration
+are removed; explicit public refresh and both retained Linux stores do not imply
+universal external-provider interoperability.
 
 
-### Client registration alternatives
+### Pre-registered public-client boundary
 
-OAuth profiles accept `registration` with an explicit strategy:
+MCP OAuth accepts only an existing **pre-registered public client ID**, S256 PKCE
+and token authentication **`none`**. `registration: "pre-registered"` and
+`token_auth_method: "none"` are the defaults and the only supported values.
+Metadata-client-ID/hosted-client-document registration, dynamic registration,
+confidential client-secret methods and private-key JWT/signing are removed.
+Unsupported profiles fail closed before authentication/network work; no secret
+source is read, signer started, registration POST sent or method/store fallback
+attempted. There is no remote client-registration management API.
 
-- `pre-registered` (default): existing public client_id behavior.
-- `metadata`: client_id is the operator's hosted HTTPS JSON document URL (with a
-  path), and callback_port is fixed/nonzero. The issuer must advertise metadata
-  support; the document's client_id/name/public method/code types and exact
-  `http://127.0.0.1:PORT/callback` registration are validated without linked-asset
-  fetching, redirects or implicit document hosting. No hidden DCR fallback occurs.
-- `dynamic`: omit client_id. The issuer must advertise a pinned-origin HTTPS
-  registration endpoint. The full review explicitly describes creating a remote
-  native public-client record. Only AFTER consent does one JSON POST register the
-  exact allocated callback/code/public method/scopes; a validated issued ID is used
-  for the normal resource-bound PKCE flow. No secret/management token is stored/sent.
+Pinned **resource/issuer metadata discovery** remains part of explicit public-PKCE
+authorization; it is not client metadata registration. Resource, issuer, scopes,
+TLS trust, loopback callback and actual endpoint review still apply. Authorization
+never connects tools or grants their permission. Explicit reviewed refresh and
+credential save/restore below remain independent operations, not automatic login
+or recovery of an unsupported profile. Old records bound to removed authentication/
+registration methods are not silently migrated or downgraded to public grants.
 
-Example dynamic profile (legacy/deprecated registration is explicitly selected):
-
-```json
-{
-  "issuer": "https://issuer.example",
-  "registration": "dynamic",
-  "client_name": "My XDOG CLI",
-  "scopes": ["tools:read"]
-}
-```
-
-Cancel cannot undo a remote record. Unknown outcome/invalid response consumes the
-receipt, closes the listener and never replays registration; fresh review is required.
-Client metadata requires operator-hosted reachable data and the supported fixed
-callback, not automatic hosting or general port-variance compatibility. Same Coding/
-Claw consent, lease, status/local forget, explicit connection and tool-policy gates
-apply. Claw negotiates mcp_registration capability. Credential/registration persistence,
-refresh, confidential client methods and remote management remain pending; offline
-peer tests are not a claim that every issuer supports these profiles.
-
-
-### Pre-registered confidential token methods
-
-An OAuth profile can explicitly choose `token_auth_method: client_secret_basic`,
-`client_secret_post`, or `client_secret_jwt` and
-`client_secret_env: MY_MCP_CLIENT_SECRET`. Default none
-remains public. These methods require pre-registered client_id; metadata/DCR profiles
-cannot silently adopt secrets. Literal client_secret/config-file credentials and
-unimplemented methods fail rather than downgrade. Issuer method metadata must match.
-
-The full consent shows method and environment variable NAME only. Secret values are
-resolved solely from the configured source, checked before discovery/start and anew
-at exchange; they are not stored on profiles/reviews/status/browser URLs or in files.
-Basic correctly form-encodes both credential components before base64; POST uses its
-form body, never both. Credential-bearing data is restricted to the exact reviewed
-pinned HTTPS token endpoint—not resource/metadata/registration hosts. Errors remain
-secret-safe. Missing/unsafe/removed sources fail closed, with no code/request replay.
-
-JWT authentication uses HS256 only, with an environment secret of at least 32
-bytes. The issuer must advertise both `client_secret_jwt` and HS256 signing support;
-there is no algorithm/method fallback. Each code exchange or explicit refresh signs
-a fresh assertion: client ID as issuer/subject, the exact reviewed token endpoint
-as audience, a random JTI, and a 60-second lifetime. Neither the raw secret nor the
-assertion is retained in public reviews/status or saved credential snapshots. The
-consent panel shows the algorithm, lifetime, audience and source variable name.
-Redirects and uncertain token responses never trigger replay. Private-key JWT, mTLS,
-native encrypted credential stores and broader issuer interoperability remain open.
-
-Existing PKCE/resource/scope, Coding approvals, Claw allow_tools/planning and view/
-connection leases remain authoritative. Claw negotiates mcp_client_auth and verifies
-reviewed method/source fields before confidential start. Authorization is not tool
-approval or implicit connection. Explicit refresh and reviewed local plaintext
-snapshots are documented below; private-key/mTLS methods and full service/platform
-interoperability remain future work.
 
 ### Explicit in-memory OAuth refresh
 
-Refresh is an operator action, never a background token retry. After an issuer
-actually supplies a refresh token, open the server's authorization status and press
-**r**. Review every page of the resource, actual granted scopes, pinned endpoints,
-client ID and authentication method/source, then press **Enter**. This sends one
-resource-bound refresh POST, not a new browser login or client registration. Claw
-requires gateway capability `mcp_refresh: 1`; unsupported gateways cannot submit it.
+Refresh is an operator action, never a background token retry. If the issuer
+supplied a refresh token, open authorization status and press **r**, review the
+resource, actual grant scopes, pinned endpoints, client ID and public method
+`none`, then confirm with a fresh physical Enter. This sends one resource-bound
+refresh POST, not a new browser login or client registration. Claw requires
+`mcp_refresh:1`; unsupported gateways cannot submit it.
 
-The SDK equivalents are `manage_auth("remote", "refresh_prepare")`, followed by
+SDK hosts use `manage_auth("remote", "refresh_prepare")` followed by
 `manage_auth("remote", "refresh", review_id)` under the same live consent lease.
-Receipts are single-use and expire after five minutes. The request uses the actual
-prior grant's scopes, not the broader original configuration. Valid replies may
-narrow scopes but cannot widen them. Issued refresh tokens rotate; if a valid reply
-omits rotation, the prior token is retained only after that reply is validated.
+Receipts are single-use and expire after five minutes. Refresh uses the previous
+grant's scopes, not the broader configured ceiling. Valid replies may narrow,
+never widen, scopes. A new refresh token replaces the prior one only after reply
+validation; omission retains the old token only after a valid response.
 
-The old refresh capability is consumed before exchange. Cancellation, a lost
-response, invalid response or revoked owner discards it: uncertain rotation must
-not replay the old token. **c** cancels a pending refresh; closing/disconnecting the
-view settles its task and fences late commits. A still-valid old access token can
-remain usable on refresh failure; authorize again to restore refresh capability.
-Failed refresh preparation without an existing lease does not reserve the server
-against another view. Local forget erases both access and refresh credentials.
+The refresh capability is consumed before exchange. Cancellation, lost/invalid
+responses or revoked ownership discard it rather than replay an uncertain token.
+**c** cancels a pending refresh; leaving/disconnecting settles owned work and
+fences late commits. A still-valid old access token may remain usable after
+refresh failure; authorize again if needed. An existing saved snapshot is removed
+before rotating refresh, so restart cannot replay stale credentials. A completed
+replacement grant is saved only by another explicit reviewed save.
 
-Refresh never replays MCP requests, automatically connects tools, changes approvals,
-registers a client or widens permissions. Credentials remain memory-only: durable
-credential/registration storage and reload, further client methods and remote
-revocation/management remain open. Issuers may not issue refresh tokens (the dynamic
-registration request still declares the code grant only). Offline peer/terminal
-coverage is not evidence of live identity-provider compatibility. This section
-supersedes earlier descriptions of explicit refresh as entirely unimplemented;
-automatic refresh and persistence are still not supported.
+Refresh never replays MCP requests, connects tools, changes approvals or falls
+back to another client/authentication/storage method. The two retained Linux
+credential backends are documented separately; neither implies startup restore,
+automatic refresh, remote revocation or universal issuer interoperability.
+
+
+### Explicit Linux MCP credential storage
+
+MCP credentials retain two explicitly selected Linux backends:
+`McpManager(..., credential_dir=..., credential_backend="file")` (the default
+backend) or `credential_backend="secret-service"`. Without a credential directory,
+the manager remains memory-only. Neither backend silently substitutes for another;
+unknown/unsupported/unavailable choices fail closed.
+
+For a completed resource-bound grant, use `manage_auth(...,
+"credentials_save_prepare")`, review the returned resource/profile/scopes/TLS/
+backend disclosure, then confirm `"credentials_save"` with that exact `review_id`.
+`credentials_restore_prepare`/`credentials_restore` and
+`credentials_forget_prepare`/`credentials_forget` use separate owned receipts.
+Restore checks exact resource, pre-registered public profile, trust-file content,
+expiry and scope binding; it performs no discovery, token request, connection,
+model call or tool approval. Nothing automatically saves or restores at startup.
+
+**file** is private local **plaintext**, not encrypted/keychain storage. It requires
+owned no-follow 0700 directories/0600 regular files, bounded records and atomic
+fsynced writes. Unsafe links, ownership/mode/type violations or uncertain writes
+refuse without an alternate storage path. File permissions are not an OS sandbox.
+
+**secret-service** uses an already running Linux Secret Service and unlocked
+default collection, existing session D-Bus address, `/usr/bin/python3` GI bindings
+and libsecret typelib. The directory is a namespace, not a plaintext token path.
+XDOG does not install/start/unlock a vault, create a collection or initiate login.
+The helper uses an encrypted Secret Service session and owned timeout/cancellation
+cleanup. At-rest protection is the vault's responsibility. Locked, missing, unsafe
+or ambiguous storage refuses with **no plaintext fallback**.
+
+Save/erase/restore are explicit reviewed actions. An admitted storage mutation may
+have committed even when cancellation loses its receipt: inspect the selected
+store rather than replay. Public diagnostics/history never contain token values.
+Saved snapshots are invalidated before rotating refresh; a replacement grant is
+not saved implicitly. Forget is local erasure, not remote revocation. Provider
+OAuth uses its separate explicit Secret Service vault contract below.
+
 
 ### Explicit MCP completions
 
@@ -545,20 +598,19 @@ The request uses `completion/complete`, ref/prompt or ref/resource and optional
 context.arguments on the existing current/legacy stdio/HTTP connection. Bounded
 responses retain ranking, up to 100 strings, optional total and hasMore; invalid,
 oversized or deferred results fail rather than silently truncate/coerce. Catalog
-URI-template entries expose named-variable metadata for the hosts' completion UI.
+URI-template entries expose named-variable metadata to explicit SDK callers.
 One active/one queued explicit intent per server and a cancellable 200 ms interval
 bound traffic; canceled/disconnected intents settle without retry or successor
 replay. The configured timeout bounds queue wait, catalog and POST together.
 No prompt/resource retrieval, tool execution or URL following occurs.
 
-Coding and Claw wire this API into explicit Ctrl+Space/Tab/Enter named-variable
-forms; Claw negotiates mcp_completion and carries frozen results via its existing
-bounded checksummed session-fenced data transport. Suggestions are inert input,
-never tool permission or authorization. These changes supersede earlier notes that
-completion is entirely unimplemented; subscriptions, further negotiated/schema
-features, durable credentials, extensions and native-platform evidence remain open.
-Opaque/plain-resource completion references outside advertised named templates
-are still open; prompt/template support does not waive that remaining scope.
+This lower-level MCP completion API remains available to explicit SDK callers;
+Coding and Claw no longer expose the manual named-argument completion picker or
+negotiate its native UI transport. Native prompt arguments use an explicit JSON
+object, and resource reads use an explicitly supplied resolved URI. Extension
+command argument completion is separate and retained. Suggestions never grant
+tool permission or authorization. Opaque resource completion support is described
+below; these SDK APIs do not imply native completion controls.
 
 ### Opaque resource-reference completions
 
@@ -572,16 +624,15 @@ fences remain authoritative. Prompt/template catalog validation is unchanged.
 
 Both stdio and HTTP negotiation now admit a completion-only server when its
 completions capability is an object, without inventing tools/resource/prompt support.
-The frozen result and bounded IPC codec include kind resource. The shared
-`resource_completion_document()` formatter produces only local operator-selected/
-edited untrusted data, explicitly NOT a resource read/resolved URI; both hosts use
-it for separately requested preview/insertion without remote retrieval/model input.
-Claw negotiates mcp_resource_completion independently of earlier named completion.
+The frozen result and bounded codec include kind resource. The shared
+`resource_completion_document()` formatter remains available to SDK callers as
+untrusted inert data, explicitly NOT a resource read or resolved URI. Native opaque-
+resource completion pickers and their Claw UI negotiation are removed; ordinary
+explicit resource reads, previews and insert/export controls remain separate.
 
-Earlier opaque-completion exclusions are superseded, not used to shrink the goal.
-Subscriptions, richer server/client/schema negotiation, credentials/persistence,
-extension APIs and native-platform evidence remain open. Tests are independent
-owned offline peers and production app/terminal paths, not live interoperability.
+Opaque references are supported by the explicit SDK API, not by a native picker.
+Negotiation, ownership, bounds and cancellation retain their SDK-level checks;
+offline peer evidence does not establish all third-party interoperability.
 
 ### Validated inert MCP content and retained annotations
 
@@ -694,55 +745,6 @@ helper test covers this; generated-output/vendored-package licence boundaries ar
 unchanged. Lock updates only declare the already-resolved dependency, not unrelated
 version upgrades.
 
-### Reviewed typed extension forms
-
-Trusted Python extensions can now use `await api.form(title, fields, message="...",
-timeout=300)` in their owned command/tool callbacks. It returns a typed named
-object, or **None** on cancel, timeout, headless/unattended execution or unsupported
-viewer. Defaults are offered to a live user, never silently submitted headlessly.
-Example:
-
-```python
-answer = await api.form("Configure task", [
-    {"name": "name", "kind": "text", "required": True, "min_length": 1},
-    {"name": "count", "kind": "integer", "default": 0, "minimum": 0, "maximum": 10},
-    {"name": "enabled", "kind": "boolean", "default": False},
-    {"name": "mode", "kind": "choice", "default": None,
-     "choices": [{"label": "None", "value": None}, {"label": "Zero", "value": 0}]},
-    {"name": "notes", "kind": "text", "multiline": True},
-])
-```
-
-Fields support text, integer, finite number, boolean and labelled typed scalar
-choices; required/default, descriptions, text length and numeric ranges are
-validated independently by the host. Unknown constraints/field names, duplicate
-names/typed choices and coercions fail. **False**, **0**, empty text, explicit null
-choices and omitted optional fields remain distinct. Required means a field must
-be present; use min_length to require nonempty text. Forms are flat/bounded (1–32
-fields, 128 KiB declaration and 64 KiB answer), not arbitrary code/custom rendering
-or nested JSON Schema UI. Integers are limited to the interoperable ±(2^53−1) range.
-
-**Tab/Shift+Tab** commits/navigates fields. Text/numbers edit normally; **Space or
-Left/Right** cycles boolean/choice values and unset. **Enter** adds a line in a
-multiline field, otherwise opens full-form review; **Ctrl+Enter** reviews from any
-field. **PgUp/PgDn** pages help/review. Every review page must paint before Enter
-submits; **Ctrl+E** returns to editing and **Esc/Ctrl+C** cancels. Invalid drafts stay
-editable, and resize/visibility changes invalidate prior review. Field help, limits,
-requiredness and selected/omitted values remain inspectable in bounded rows.
-
-Forms are extension input data, never host tool approval, planning/permission-mode
-changes or automatic agent submissions. Coding approvals retain priority. Parent
-and child callbacks use their existing session/connection/UI leases and independent
-brokers; malformed/foreign answers cannot resolve a form. Cancel, disconnect and
-unattended paths do not replay the callback or invent defaults.
-
-Claw negotiates `extension_forms: 1` in the client handshake and server pong. Older
-viewers receive cancellation rather than an unrenderable form; basic select/input/
-confirm compatibility is unchanged. Both live parent/child paths and Linux/private-
-tmux command forms are tested. Arbitrary renderers/nested layouts, interception,
-provider registration, richer extension commands and native-platform validation
-remain open; this pass does not waive them. No OS sandbox is added.
-
 ### Rich extension tool results
 
 Trusted extension tools are no longer text-only. Existing string callbacks are
@@ -786,10 +788,10 @@ oversized socket line. The new rich-extension envelope fits that transport budge
 
 Independent real workers, denied/allowed live app paths, typed persistence, inherited
 child output, malformed/unsupported results, large-preview notices and both private-
-tmux image/JSON inspectors are verified. Rich command contexts/returns, arbitrary
-renderers, input interception/provider registration, audio/resource/error-image
-interop, remaining MCP/credential and native-platform gaps stay open. This section
-supersedes earlier text-only TOOL limits; it does not waive the remaining goal.
+tmux image/JSON inspectors are verified. These typed tool results do not grant
+extension editor/session mutations, custom rendering or terminal interception.
+Audio/resource/error-image interoperability, remaining MCP/credential and native-
+platform gaps remain separate from the retained tool-result contract.
 
 ### Rich extension command artifacts
 
@@ -833,10 +835,10 @@ responses below the receiving transport budget.
 Independent real command workers, both production UI paths, permission/draft/history
 non-mutation, system-source inspection, stale-owner rejection, older-viewer behavior,
 cancellation and malformed returns are tested, plus both private-tmux image/JSON
-inspectors and parent terminal restoration. Rich command HOST ACTION CONTEXT (safe
-session/navigation/editor callbacks), arbitrary rendering/layouts, interception,
-provider registration, binary artifact export/persistence and remaining MCP/platform
-gaps stay open. Returning an artifact does not waive those requirements.
+inspectors and parent terminal restoration. Returning an artifact does not grant
+editor/session/navigation mutations, custom rendering/layouts or raw terminal access;
+those extension interfaces are removed. Read-only command inspection, provider
+registration and explicit artifact export/reload have their own contracts below.
 
 ### Lossless command artifact export and read-only reload
 
@@ -873,53 +875,13 @@ Loaded artifacts become owned display data and can be re-exported after a new re
 Both actual clients and private-tmux workflows verify binary save/reload, explicit
 review, private mode/no overwrite, owner fencing and no-model/draft non-mutation.
 SDK artifact_bytes/artifact_from_bytes/read_artifact expose the same validated codec.
-Remaining custom rendering/command host actions/interception/providers, further
-MCP/credential and native-platform requirements remain open.
+Artifact export/reload does not restore removed extension custom rendering, host
+mutations or terminal interception. Further MCP/credential and native-platform
+interoperability remains separate work.
 
-### Command-only editor host context
+### Command session metadata
 
-Trusted command callbacks can now use `snapshot = await api.get_editor()` and
-`await api.set_editor(new_text, snapshot["revision"])`. The captured object contains
-text, character cursor, image count and an opaque revision receipt. A replacement
-returns bool; conflict/unavailable contexts return False/None without overwriting
-the user's draft. Example:
-
-```python
-snapshot = await api.get_editor()
-if snapshot is not None:
-    applied = await api.set_editor(snapshot["text"] + "\nPrepared by command", snapshot["revision"])
-```
-
-This capability exists only during an actual interactive extension COMMAND, under
-that extension's current command/session/connection owner. It is unavailable to
-ordinary tool/lifecycle/context/pre-/post-hook callbacks, inherited child tools,
-unattended/headless callers and unsupported viewers. A forged worker flag cannot
-borrow another operation's editor context; the host checks the original RPC action
-and current UI command/extension ownership independently.
-
-Revision receipts are random, single-use and bound to the original text, cursor and
-attachment identities. User edits/caret moves/attachment changes, new commands or
-changed session/connection/history epoch invalidate replacement. Invalid/terminal-
-control/oversized text is rejected rather than silently sanitized into a different
-draft. Text replacement preserves typed attachments and normal undo behavior; it
-never sends a model turn, changes permissions/planning or executes draft text/URIs.
-Limit: 64 KiB UTF-8 editor snapshot/replacement and explicit bounded request timeout.
-
-Coding's approval/output/overlay priority defers host editor service rather than
-changing the draft behind another dialog. The existing owned pending callback and
-validated UI-reply path carries editor requests/receipts; it is not a second agent
-loop. Cancel/exit/owner changes settle or refuse requests, and callbacks are not
-replayed. Claw independently negotiates `extension_editor: 1` in hello/pong; older
-viewers cancel the request and leave command/editor behavior unchanged.
-
-Both real command workers, UI CAS-success/conflict cases (including retained Coding
-attachments), wrong owner/receipt/cursor/image changes, invalid control data,
-headless/tool/older-viewer refusal and private-tmux typed draft transforms are tested.
-Session/navigation/model host-action APIs, broader command context, custom rendering,
-interception/provider registration and remaining MCP/native-platform goals stay open.
-Editor access alone does not redefine or complete that larger scope.
-
-### Command session metadata and native browser context
+Read-only command metadata never opens or activates a session browser.
 
 ### Failed extension inventory and cancellation
 
@@ -1024,80 +986,48 @@ page = await api.get_command_catalog(query="", offset=0, revision="")
 # Continue using page["next_offset"] and page["revision"].
 ```
 
-Interactive parent COMMAND callbacks may read all entries in the same current
-terminal menu used by `/help` and completion, in 32-entry pages. Entries contain
-only normalized command name and sanitized description, with a terminal-menu
-source label, session identity, revision and explicit pagination. This is NOT
-execution approval, activation, model input or a claim that every remote command
-is available. Tools/headless/independent-child callbacks return `None` instead of
-borrowing the parent editor's command context.
+A live native host may bind read-only menu inspection to an eligible owned command,
+tool, lifecycle/pre/post-tool, submitted-input or context callback. It reads the
+same sanitized terminal menu used by `/help` and completion, in 32-entry pages:
+normalized name/description, source label, session identity, revision and explicit
+pagination only. Host availability and exact invocation/session/child admission
+remain authoritative; a detached/headless or unsupported callback gets `None`,
+not another owner's menu. Independent child callbacks cannot borrow the parent's
+menu/editor. Provider/setup callbacks receive no menu control authority.
 
-Each response is scoped to its invoking session/command/context. Caller-selected
-session/branch/action fields are refused; copied pages cannot mutate the host.
-Changed menu metadata or another callback invalidates an old revision and returns
+Worker-supplied routing/host identity is refused. The host's trusted invocation
+identity is separate from plugin request fields and carries no mutation grant.
+Changed menu/session/registration invalidates a former revision and returns
 `status="stale"`, no entries and no next page. Restart at offset zero explicitly;
-there is no silent partial merge, command callback execution or automatic replay.
-Claw separately negotiates `extension_command_catalog: 1`; previous session/tree/
-model/name/inspection capability does not substitute for that viewer support.
+there is no silent merge, command execution, model input or automatic replay.
+Claw separately negotiates `extension_command_catalog:1` and its generation;
+old session/inspection support does not substitute for that exact bridge.
+Session/tree catalogs below retain their separately scoped read-only contract.
 
-### Extension session names
 
-```python
-name = await api.get_session_name()        # str (including "") or None if unavailable
-queued = await api.set_session_name("Release review")
-queued_clear = await api.set_session_name("")
-```
+### Read-only extension session metadata
 
-Interactive parent COMMAND callbacks inspect the actual session owner; Claw reads
-through its reserved gateway/broker, not the viewer's cached footer. Outside an
-interactive command, reads use an invocation-owned, copied metadata snapshot when
-available. Tools, hooks and headless callbacks cannot borrow rename authority.
-Independent children and unadmitted/stale workers never borrow a parent name;
-without separately supplied owning metadata they receive `None`, not an empty name.
+`await api.get_session_name()` returns the actual owning session's name, or
+`None` when unavailable; an empty name is not a borrowed parent value.
+`get_session`, `get_model`, `get_context_usage`, `get_active_tools` and
+`get_tool_inventory` retain bounded, owner-projected read-only data. Session/tree
+and command catalogs remain read-only; `has_pending_messages` is a boolean query,
+not a queue control API. Callback admission, role and session/child provenance
+remain checked; queries neither start a model nor grant permissions.
 
-Setting a name opens a focus-owned, paginated host review showing the exact current
-owner, expected old name and proposed new name. `True` means **queued after callback
-success**, not saved. Failed/canceled callbacks discard it. The existing native
-metadata owner applies the change only if the name still matches the reviewed old
-name, preserving history/model/tools/permissions and the current persistence owner.
-Names are plain Unicode text with the native 256-byte/control bounds. The API uses
-`""` to clear; `"-"` is a literal name (unlike the native `/name -` clear shortcut).
+Extensions cannot read/replace the unsent editor, rename/navigate sessions,
+select tools, request compaction or enqueue prompt/context/follow-up input through
+host control APIs. Native USER `/name`, `/model`, `/compact`, `/sessions` and
+`/tools` remain independent. Business tool/provider/command/hook registration and
+basic input/confirm/select/status remain supported.
 
-Claw independently negotiates `extension_session_name: 1`; older/withdrawn viewers
-cannot substitute model-inspection or navigation support. Missing name data/optional
-frame-budget exhaustion is unavailable, never a cached parent name or a replay.
-This metadata feature does not add extension history mutation or model execution.
-
-Interactive extension COMMAND callbacks can use `await api.get_session()` for a
-bounded snapshot of session_id, workspace and group_id (Coding uses an empty group).
-No hidden system prompt, full conversation or foreign-session data is included.
-`await api.open_sessions(tree=False)` queues the native session browser; tree=True
-queues the current session's branch/checkpoint tree. A True receipt means **queued**,
-not that a session was activated or that the callback has finished.
-
-The host opens that browser only AFTER the same command callback settles successfully
-under the same session/connection/history owner. Failure, cancel, stale command IDs,
-owner/epoch changes and unavailable viewers discard the deferred request. Existing
-Coding/Claw session providers, group/session control protocol, idle exclusion,
-branch/checkpoint validation and persistence remain authoritative. The operator
-must separately select/activate/create a session through the ordinary browser;
-opening it never switches session, launches a model turn or changes the draft.
-
-These APIs use the existing owned/validated pending host-request path. They are
-unavailable to tool/hooks/context/child callbacks, headless execution and older
-viewers. Original RPC action and active extension/command ownership are checked at
-the host, independently of a worker's capability claims. Claw negotiates
-`extension_session: 1` in hello/pong separately from editor/form/rich-result controls.
-Unsupported viewers cancel the request rather than render an unknown session dialog.
-
-The parent draft/focus, typed attachments and permission/planning policy remain
-unchanged; closing the browser restores the editor. Both real workers, successful/
-failed live commands, existing navigation regressions, stale-owner checks, tool/
-headless/older-viewer refusal and private-tmux browser entry/return are tested.
-This is session inspection plus explicit native browsing, NOT direct session mutation
-or a paginated extension catalog API. Those host-action/context gaps, model control,
-custom renderers/interception/providers and remaining MCP/platform requirements stay
-open and are not waived by this increment.
+Claw's read-only session bridge uses `extension_session:1` and
+`extension_session_inspection:1`; terminal command-menu inspection separately uses
+`extension_command_catalog:1` and its generation. No editor/navigation/mutation
+capability or separate extension name/active-tools flag is needed. Native
+`session_name_read` and `tool_inventory_selection` controls remain independent.
+Session/tree catalogs read the bound backend directly; listing them does not grant
+plugin navigation authority.
 
 ### Read-only command model and context inspection
 
@@ -1137,12 +1067,12 @@ Claw separately requires `extension_session_inspection:1` in addition to
 not unknown dialogs, borrowed authority or a silently fabricated snapshot. This
 command bridge still uses its original negotiated ownership. The invocation
 snapshot support below extends read-only inspection to other callback scopes;
-model mutations/provider authentication and other host APIs remain separate work.
+these reads cannot mutate models, and provider authentication has a separate contract.
 
 ### Invocation-owned inspection in tools, hooks, children and headless runs
 
 `get_model()` and `get_context_usage()` also work in tool, lifecycle, pre/post-tool,
-context/input/custom/provider callbacks and headless commands when their actual
+context/input/provider callbacks and headless commands when their actual
 runtime supplies an inspection producer. Coding and Claw bind their own Agent
 sessions automatically. Standalone `ExtensionRuntime` users may explicitly pass
 an `inspection=` callback producing an owner-validated envelope; a runtime without
@@ -1156,9 +1086,10 @@ prompts/history, credentials/endpoints and model/provider work are not introduce
 Caller-supplied context cannot override the protected inspection/session/child
 identity. Inconsistent or foreign producer snapshots become unavailable.
 
-This is independent of command authority: tools/hooks/children still cannot borrow
-`get_session`, native browsing/navigation or editor mutation. Interactive parent
-commands retain the existing fresh host bridge and Claw inspection capability gate;
+This is independent of command authority: tools/hooks/children cannot borrow another
+invocation's `get_session` or catalog authority. Editor/session/navigation mutations
+are removed for all extension callbacks. Interactive parent commands retain the
+fresh read-only host bridge and Claw inspection capability gate;
 non-UI read-only callbacks do not send new dialogs to older viewers.
 
 Child factories now bind the actual independent child Agent before initialization
@@ -1174,52 +1105,6 @@ copies, model changes and spoofed caller identity. Both real clients exercise UI
 headless parent/child callbacks with independent model selection, explicit tool-policy
 allow/deny and persisted snapshots. This closes the earlier command-only inspection
 limitation, not every native/provider/auth/host API or native-platform requirement.
-
-### Reviewed direct command navigation
-
-Interactive command callbacks can now request:
-
-```python
-queued = await api.navigate_session("resume", session_id=target_id)
-# Also: "new", "branch" (branch_id), "goto" (zero-based index), or "fork".
-```
-
-The API queues at most one reviewed intent per command. Its bool receipt means
-**queued after review**, NOT activated/committed. New requires no target fields;
-resume requires an explicit session; branch requires an explicit branch; goto
-requires a zero-based checkpoint index. Empty session for branch/goto means the
-captured current owner. Fork is limited to the current session/head, with optional
-zero-based index. IDs/field combinations and checkpoint types/ranges are validated;
-returned strings/paths cannot substitute a host command.
-
-The UI defaults to denial. Right/Space selects approval, Enter opens whole-target
-review, PgUp/PgDn reviews every page and another Enter confirms. Current owner and
-the exact action/session/branch/index are displayed, with a queued-not-activated
-warning. Paste/repeat Enter, hidden/tiny/changed-layout review and default denial do
-not approve a mutation. Normal host approval retains priority. No tool/model/
-permission change is authorized by this form.
-
-Only AFTER the original callback completes successfully under the same command/
-extension/session/connection/history owner does the host dispatch the existing
-native navigation control. Failure, cancel or owner change discards the intent.
-Existing idle/child gates, target/group ownership, safe checkpoint/tool-boundary
-checks and persisted plan/extension state remain authoritative; invalid or vanished
-targets fail without a substitute selection. Claw uses its group-owned session
-protocol; Coding uses its normal serialized commands. Fork saves a checkpoint
-branch; branch/goto activate context according to existing client semantics.
-
-The main draft/attachments are not submitted or discarded, permission/planning
-policy is not overridden, and no provider request is launched. Claw separately
-negotiates `extension_navigation: 1`; viewers supporting only metadata/browser
-requests cancel direct navigation before receiving unfamiliar review semantics.
-Tool/hooks/context/child/headless callers cannot borrow command authority.
-
-Real current-host dispatch for all five actions, denial/failed callbacks, missing
-targets, stale owners, exact-review bounds and older-viewer behavior are covered,
-plus private-tmux reviewed new-session synchronization in both clients. Direct
-navigation is now implemented; paginated extension session/tree catalog APIs,
-model/other host context, custom rendering/interception/providers and remaining
-MCP/credential/native-platform requirements stay open. No subset waives them.
 
 ### Command session/tree catalogs
 
@@ -1257,38 +1142,38 @@ Host catalog operations preserve their actual filesystem owner until creation/re
 settles on cancellation, then refuse late adoption. An OS-blocked thread cannot be
 forcibly killed; these limits/ownership checks are not an OS sandbox.
 
-Only actual interactive command RPCs receive catalog authority. Tools/hooks/context/
-child/unattended callbacks return None; original RPC and host extension/command/group/
-session ownership are independently checked. Missing/foreign/unreadable targets or
-membership changes yield unavailable without disabling the extension or replaying
-reads. Invalid plugin request/response codecs still fail closed. No model turn,
-permission/planning mutation or session activation is introduced.
+Only actual interactive extension-worker command invocations receive catalog
+authority. Tools/hooks/context/child/unattended callbacks return None; original worker
+invocation and host extension/command/group/session ownership are independently
+checked. Missing/foreign/unreadable targets or membership changes yield unavailable
+without disabling the extension or replaying reads. Invalid plugin request/response
+codecs still fail closed. No model turn, permission/planning mutation or session activation is introduced.
 
 Real workers, both live hosts' 61-entry multi-page catalogs, search/tree/branch
 previews, revision ordering/changed membership, foreign-group refusal, cancellation
-settlement and production terminal catalog commands are verified. This supersedes
-catalog APIs being listed absent; other model/host-action APIs, custom rendering/
-interception/providers and remaining MCP/credential/native-platform gaps stay open.
+settlement and production terminal catalog commands are verified. These catalogs
+are read-only: they do not expose the removed navigation/editor/session mutation,
+custom-rendering or terminal-interception APIs. MCP/credential/native-platform
+interoperability remains subject to its own limits.
 
 ### Runtime-registered extension shortcuts
 
 Trusted extensions can register a shortcut and its actual command callback:
 
 ```python
-async def compose(args, context):
-    snapshot = await api.get_editor()
-    if snapshot is not None:
-        await api.set_editor(snapshot["text"] + " prepared", snapshot["revision"])
-    return "Draft prepared; not submitted"
-api.shortcut("compose", "alt+k", "Prepare the command draft", compose)
+async def inspect_model(args, context):
+    model = await api.get_model()
+    return model["id"] if model is not None else "Model metadata unavailable"
+api.shortcut("inspect", "alt+k", "Inspect the current model", inspect_model)
 ```
 
 Registration contributes the namespaced `/ext-EXTENSION-NAME` command plus a
 canonical default key; pressing it uses the EXISTING interactive command owner,
 not another tool loop or arbitrary input interception. Plugins must already be
 explicitly trusted/activated; a key does not discover/load an extension. Callbacks
-retain normal idle/child/tool-policy/session/connection checks and any command host
-APIs. No model turn or tool approval is implicitly created by a shortcut itself.
+retain normal idle/child/tool-policy/session/connection checks and only the retained
+read-only command host queries and basic dialogs. No model turn or tool approval
+is implicitly created by a shortcut itself.
 
 **`/keys`** lists effective extension keys and disabled conflicts. Built-in and USER
 editor bindings always win. When different extensions claim one effective key,
@@ -1316,14 +1201,15 @@ viewers, completion pickers, child/MCP/plan panels, overlays, output reviews,
 active commands/model work and closing/disconnected owners retain priority. Unload/
 failure/reload updates registrations; stale keys cannot adopt a new callback. Coding
 now refreshes actual registration snapshots after extension commands even if a plugin
-has no widget/notices. Claw separately advertises `extension_shortcuts: 1`; missing
-support is both dispatch-disabled and reported in effective help.
+publishes no status or notices. Claw separately advertises `extension_shortcuts: 1`;
+missing support is both dispatch-disabled and reported in effective help.
 
 Real workers, both UI command/editor paths, user remap/unbind/inactive overrides,
 reserved/default/user/inter-extension conflicts, contextual suppression, repeat,
 load/reload/unload and both private-tmux default/remapped key paths are verified.
-Arbitrary input interception and custom renderers remain separate OPEN requirements,
-as do provider registration, other host APIs and remaining MCP/platform work.
+Arbitrary terminal interception and custom renderers are removed, not pending
+shortcut features. Provider registration and read-only host queries retain their
+separate contracts; MCP/platform interoperability is not implied by a shortcut.
 
 ### Submitted-input extension hooks
 
@@ -1365,7 +1251,7 @@ base64. Its output cannot silently remove/replace images: transformed messages k
 original typed attachments/timestamps. All later model capability, tool argument,
 approval, planning and child permission gates remain authoritative. A transformed
 string resembling `/quit`/a URI stays model input data, not a reparsed host command.
-Hook callbacks cannot borrow editor/session/navigation command authority.
+Editor/session/navigation mutation authority is absent from both hook and command APIs.
 
 Both interactive clients show the actual transformed user text/queued consumption,
 with visible notices. Initial refusal restores original draft/attachments without
@@ -1380,16 +1266,18 @@ active turn channel, not a claim of a separate queued sender's identity.
 Real workers, generic initial/steer/follow-up/continuation/abort receipts, both live
 clients' typed attachments/canonical history/refusal/recovery, actual queued follow-up
 images/consumption, child isolation/system exclusion and private-tmux transform/
-refusal recovery are tested. Arbitrary raw-key interception, handled-input dispatch,
-custom renderers/providers and remaining MCP/credential/native-platform gaps stay
-open; submitted text transforms do not waive those distinct requirements.
+refusal recovery are tested. Submitted-input transformation and the handled outcomes
+below remain supported; neither exposes raw-key observation/interception, custom
+rendering or host mutations. MCP/credential/native-platform interoperability remains
+subject to its own limits.
 
 Pre-turn compaction of PREVIOUS history retains its existing lifecycle; the input
 hook is a pre-admission/user-response check, not a veto of independent maintenance
 work. Failed reload of a previously registered input filter remains failed/required,
 not an implicit unload: only successful reload or explicit unload changes that
-policy. Print mode reports a refused input as a nonzero error; RPC emits an error,
-not an empty successful message_end. No synthetic assistant answer is fabricated.
+policy. Coding print mode reports a refused input as a nonzero error, not a
+fabricated successful model answer. The removed Coding frontend RPC has no error
+or completion-receipt interface.
 
 Terminal verification also caught a generic resize race during output review:
 painting after dimensions changed during tick callbacks could skip the next loop's
@@ -1431,10 +1319,9 @@ not fabricated assistant prose or tool approval. Permissions/planning/tool/model
 capability gates are unchanged; returned command-looking feedback is never executed.
 
 Print mode outputs explicit feedback and returns success for handled-only input;
-JSON mode emits a valid system/input_handled envelope (optional real assistant output
-is separate). RPC emits input_handled receipts and an explicit completion marker,
-not a counterfeit model message. Claw sends a content-free final signal after actual
-handled feedback, releasing run ownership without synthesizing a response. Other
+Coding JSON output emits a valid system/input_handled envelope (optional real
+assistant output is separate), not a counterfeit model message. Claw sends a
+content-free final signal after actual handled feedback, releasing run ownership without synthesizing a response. Other
 non-TUI channels receive extension feedback as channel output, not model generation.
 
 Child supervision retains labelled input feedback as separate bounded metadata
@@ -1445,191 +1332,12 @@ are jointly verified; older-viewer handled-outcome interoperability remains unpr
 rather than being inferred from JSON accepting extra event types.
 
 Generic initial/queued/old-history/queue-mode receipts, both live initial and queued
-image paths, child result/source metadata, text/JSON/RPC completion and production
-terminal model-call counters are tested. Raw-key interception, arbitrary custom
-renderers/providers/other host capabilities and remaining MCP/credential/platform
-gaps stay open. Handled outcomes no longer stay listed absent, but do not waive them.
+image paths, child result/source metadata, text/JSON completion and production
+terminal model-call counters are tested. Plugin terminal key/paste/release
+interception and observation APIs are removed, as are custom renderers and extension
+host mutations. Handled outcomes preserve the ordinary permission and ownership
+boundaries; remaining MCP/credential/platform interoperability is separate.
 
-
-### Owned custom extension views
-
-Trusted extensions can use `await api.custom(title, render, on_input, ...)` in both
-interactive clients, including independently owned child workers. Headless and
-ordinary-dialog-only hosts return `None`. A host advertises the separate custom
-capability only when it has an owned `ExtensionRuntime.custom_handler`;
-`DialogBroker.ask_custom` keeps the original callback/future authoritative.
-
-```python
-async def render(width, height):
-    return ["Choose an option"[:width], "Enter selects; Escape cancels"[:width]][:height]
-
-async def on_input(event):
-    if event["kind"] == "key" and event["key"] == "enter":
-        return {"done": True, "value": {"selected": False, "count": 0}}
-    return None
-
-result = await api.custom("Choose", render, on_input)
-```
-
-The Python callbacks stay in the trusted owned worker: `render(width, height)`
-returns a list of single-line strings or `{"lines": [...], "cursor": [row, column]}`.
-Input returns `None` or an explicit `{"done": True, "value": JSON}` proposal. Resize
-never invokes input or completes a view. The original command/tool remains suspended
-and resumes once through its validated original UI reply. Renderers cannot propose
-completion, replay a command or create nested dialog ownership. Callback effects
-are not rolled back, and answers do not authorize any tools or change permissions.
-
-Background custom-view state can now call `api.request_render()` on the worker's
-asyncio loop. It returns `False` outside an available, live owning custom invocation
-(including headless/retired views), and otherwise coalesces a repaint request. Tasks
-created by the invoking command/tool retain that view's owner; cancel/reap those tasks
-in the invocation's `finally` block. Calling it from `render` itself is rejected to
-avoid a self-triggering render loop. No key/paste event, tool call, or completion is
-fabricated. Hosts retain one coalesced repaint alongside the existing bounded FIFO
-and cap background repaint admission at 30 FPS. Hidden/zero-height/suspended views
-retain a dirty flag and repaint when their original view becomes visible again.
-
-Background changes immediately revoke both queued and in-flight completion proof.
-The user must act against a newly painted frame; a repaint cannot return a custom
-answer or authorize a tool. These updates use existing bounded custom-frame events
-in Coding and Claw, including child workers; no new viewer input capability or
-unadvertised generic MCP client capability is inferred. SDK hosts wiring custom UI
-should wire both `runtime.custom_handler = broker.ask_custom` and
-`runtime.custom_refresh_handler = broker.refresh_custom`. The private trusted worker
-notification is not accepted by ordinary MCP transports.
-
-Host-generated dialog IDs and a 32-request pending/in-flight FIFO remain authoritative.
-Events include kind, viewport dimensions, the latest painted revision and a view
-generation. Blur, hidden/zero row budgets, invalidation and geometry changes fence
-old frames even at the same dimensions; completion checks both revision and epoch.
-Keys have exact boolean modifiers, paste is at most 16,000 UTF-8 bytes, and
-Escape/Ctrl+C cancel the view while redraw, suspend and exit remain host-owned.
-Malformed key encodings and queue/owner refusals cannot fall back to raw terminal
-input or automatically replay. Busy/refusal feedback stays visible.
-
-Frames have at most 200 lines, 8 KiB per line and 128 KiB total. Both clients sanitize
-lines: vetted SGR styles/colors are supported, but OSC links/clipboard, cursor/erase
-commands, graphics, alternate-screen controls and private host cursor markers are
-removed. Styles reset per line. Optional cursors must fit the viewport and are
-placed by the host at whole-grapheme boundaries. Answers are finite JSON snapshots
-bounded to 64 KiB; ordinary dialog answers may cancel but cannot submit custom data.
-No worker or socket I/O runs inside the terminal component's render method.
-
-Claw negotiates `extension_custom: 1` and binds requests/frames to the original
-connection/group/session and child UI lease. Older viewers and explicit capability
-withdrawal cancel unsupported custom questions rather than receiving unknown UI.
-Disconnect cannot transfer an existing view to a new client. Dialogs, approvals,
-output panels and overlays retain their ownership/focus precedence, and the physical
-resize guard covers every forwarded key and atomic paste, not just Enter/Space.
-Cancellation/deadline/error cleanup settles frame tasks before releasing the lease.
-
-This is a bounded custom-view API, verified on the owned Linux terminal path.
-Inline remains the default. `fullscreen=True` requests a temporary host-owned
-alternate presentation, with approval/output/overlay preemption, suspend/resume
-and native main-buffer restoration. Callbacks still cannot emit alternate-screen
-commands themselves. The host re-homes alternate painters on resize without
-clearing or modifying saved main-buffer rows.
-
-`overlay={...}` requests a capturing, positioned **host overlay** in the native
-main buffer, rather than replacing the whole view or rendering a pretend popup
-inside the extension's own frame. It is mutually exclusive with `fullscreen=True`.
-For example:
-
-```python
-result = await api.custom("Inspect", render, on_input,
-                          overlay={"width": "75%", "max_height": 12,
-                                   "anchor": "top-right", "margin": 1})
-```
-
-Placement accepts `width`, `min_width`, `max_height`, `anchor`, `offset_x`,
-`offset_y`, `row`, `col`, and `margin`. Sizes/row/column positions accept bounded
-integers or whole percentages from 0–100% (sizes must be positive); offsets may
-be negative. Anchors are center, top/bottom-left/right/center, or left/right-center.
-Margins are a nonnegative integer or a dictionary of top/right/bottom/left cells.
-The host clamps placement to the actual terminal and supplies the allocated
-viewport, not the underlying editor's dimensions. No callable visibility predicate
-or plugin-supplied focus callback crosses this protocol. The separately negotiated
-live-overlay mode below supports a boolean non-capturing preference.
-
-The original owning panel retains its draft/state across nested questions, but
-its overlay handle is released while hidden/preempted. Resuming creates fresh
-viewport proof; cancellation/completion/disconnect releases only that handle,
-never another host overlay. Closing restores the actual parent/host focus, not
-a retired nested input. Screen-relative overlays re-anchor the visible owned tail
-on resize without clearing the terminal or replaying native scrollback.
-
-Claw requires **both** `extension_custom_rich:1` and the independently negotiated
-`extension_custom_overlay:1`. Older rich-capable viewers still cannot accidentally
-render an overlay inline; missing/withdrawn capability cancels the owned question.
-The same connection/group/session/child leases and tool-permission gates apply.
-Additional host
-render APIs remain separate open requirements; this is not full rendering parity.
-
-`message=` opens a sanitized, paginated introduction. F1 switches between host
-metadata and the actual view; PgUp/PgDn/Home/End navigate details. These keys and
-pasted text do not reach the custom input callback while metadata is displayed.
-The view requires a fresh frame after each transition.
-
-`key_events=("press", "repeat", "release")` explicitly enables enhanced delivery;
-the default is only `("press",)`. The callback receives a normalized `event_type`
-for keys, with exact ctrl/alt/shift booleans. Both host and worker enforce opt-in.
-Reserved cancellation/redraw/suspend/exit controls never reach custom callbacks,
-and their repeat/releases cannot accidentally repeat a host exit/cancellation.
-Basic press-only requests retain the original v1 wire fields for older servers.
-Claw negotiates `extension_custom_rich:1` for fullscreen, metadata and enhanced
-input declarations; unsupported/withdrawn capabilities cancel the request, not
-silently downgrade it to inline or omit key kinds.
-
-Owned nested questions and custom views are supported from a custom input
-callback. The parent view is suspended, then the SAME component/state is restored
-with fresh viewport evidence after the child closes. An input callback may await
-`api.input/select/confirm/form/custom`; rendering cannot open questions. Frame
-callbacks use separate owned IDs and do not acquire command editor/session/
-catalog/navigation authority. The host derives parent IDs from its live renderer
-lease; plugin-supplied parent identifiers are never authority.
-
-Nesting is bounded to four displayed levels and the existing eight-question broker
-quota. Escape cancels the visible child, not the hidden parent. Parent cancellation,
-deadline or disposal cascades to descendants and settles owned tasks. Aborting an
-uncertain nested callback chain reaps/quarantines its worker rather than replaying
-it. A recognized expired question's late answer never answers a subsequent question
-under the same callback; retired IDs are bounded and dropped on callback completion.
-
-Claw additionally negotiates `extension_custom_nested:1` and preserves original
-connection/group/session/child UI leases. Unsupported/withdrawn nested UI is canceled
-as a child question, never adopted as an unrelated root or given another lease.
-Parent input/completion proof is invalidated across child suspension; update your
-view state from the nested result, render it, then complete on a fresh parent input.
-A completion proposal from the pre-question frame cannot silently commit afterward.
-
-Richer custom containers, raw-key interception outside custom views, providers/other
-host APIs and native Mac/desktop/Windows validation remain separate open requirements. Trusted extension execution is not OS isolation
-or a tool-permission grant.
-
-Example richer declaration:
-
-```python
-result = await api.custom("Choose", render, on_input, message="Read the introduction first",
-                          fullscreen=True, key_events=("press", "repeat", "release"))
-```
-
-Render callbacks must honor zero height during host metadata/hidden presentation
-and omit an out-of-viewport cursor. Enhanced event delivery is still data, never
-a second model loop or a permission decision.
-
-
-Example nested edit (state is retained; the initiating key is never replayed):
-
-```python
-state = {"name": "seed"}
-async def on_input(event):
-    if event["kind"] == "key" and event["key"] == "n":
-        value = await api.input("Name", default=state["name"])
-        if value is not None:
-            state["name"] = value
-    elif event["kind"] == "key" and event["key"] == "enter":
-        return {"done": True, "value": dict(state)}
-```
 
 ### Session-owned extension provider terminal events
 
@@ -1669,6 +1377,34 @@ termination cannot promise that extension cleanup code ran or undo its effects.
 The existing agent tool loop and host permission hooks remain authoritative;
 trusted extension workers and permission checks are not OS sandboxes.
 
+### Explicit extension provider OAuth and retained vault storage
+
+Trusted provider declarations can retain a private `ProviderOAuth` binding through
+`api.register_provider(..., oauth=...)`. Login/refresh/key/model callbacks execute
+inside the owned extension worker; credentials and callback objects are not public
+catalog/UI data. Generic `ProviderAuth` bindings remain separate. These provider
+callbacks are not MCP registration methods or an Elicitation capability.
+
+Both native hosts expose `/extensions auth list` or `menu`, explicit `login ID`,
+`refresh ID` and `logout ID`, plus `/login [EXTENSION_PROVIDER_ID]` as a thin
+selection/login alias. Every operation requires its original idle session/provider
+registration and a separate owned review; URL opening is a distinct reviewed user
+gesture, never automatic. Sensitive replies go only to the original worker, not
+model history or a replacement question. Cancellation/reload/disconnect retires
+that owner without automatic callback replay. Login/refresh does not grant tools,
+select a model or change permissions. Logout clears worker memory, not saved data.
+
+Provider credential persistence is retained through explicit
+`/extensions auth save ID secret-service /ABSOLUTE/NAMESPACE`, with equivalent
+`restore` and `forget` actions. This is **Linux Secret Service vault only**, with
+an explicit backend/absolute namespace and provider source/profile binding. It
+shares the owned helper's no-start/no-unlock, cancellation/receipt and no-replay
+protections. No automatic save/restore/login occurs; missing/locked/unsafe vaults
+refuse. There is **no plaintext file fallback** for provider credentials. MCP's
+separately selected `file` or `secret-service` credential backend does not change
+this provider-vault contract.
+
+
 #### Live provider declarations
 
 Provider declarations may also change during an owned command or lifecycle hook:
@@ -1685,7 +1421,7 @@ are sent only when their bounded revision changes, validated atomically by the
 current worker owner, and reflected in both clients' `/model` controls without
 restarting the session. Initial declarations and live changes share the same
 limits: four providers per extension, 32 models per provider, 64 models per session.
-Invalid snapshots cannot publish a partial catalog, even from a custom-view reply.
+Invalid snapshots cannot publish a partial catalog, even from a callback reply.
 Provider-only updates do not enqueue unchanged terminal/UI snapshots.
 
 Each stream pins its registration identity independently of unrelated provider
@@ -1713,7 +1449,7 @@ introduced. An absent SDK causes explicit skips, not a conformance success claim
 
 Watch acknowledgements may include omitted/default-false list-change filters;
 those do not subscribe the host to new notification types. Unrequested true or
-malformed filters remain errors. Schema-empty completion payloads use their RPC
+malformed filters remain errors. Schema-empty completion payloads use their MCP JSON-RPC
 identity and do not require resource contents. A completion before acknowledgement
 refuses that watch without disconnecting a valid sibling or retrying the operation.
 Bare completion compatibility is not proof that every malformed server conforms.
@@ -1757,7 +1493,8 @@ standards-valid `isError` response. Invalid responses/transport errors still rai
 Trusted extension tools can use `api.result(..., is_error=True)` or a typed
 `AgentToolResult` with that flag. Both worker/host boundaries validate it. This is
 an execution-result flag, not a successful command-artifact/navigation receipt;
-command artifacts reject it so failed callbacks cannot release queued host actions.
+command artifacts reject it rather than turning a failed callback into a successful
+artifact.
 Coding/Claw keep their existing denial/error post-hook protections and permission
 policy: retaining diagnostics neither executes a denied call nor turns it into
 success. No automatic retry, second tool loop, file/image read or model turn is
@@ -1794,30 +1531,6 @@ models—never another runtime, catalog sync, login or provider activation.
 adapters compose it with their independent declarations. Non-catalog adapters keep
 working; they do not gain an ambient catalog or hidden fallback.
 
-### Reviewed typed multi-selection form fields
-
-`api.form()` accepts `kind: "multi_choice"` with the same typed scalar `choices`
-used by single-choice fields, plus optional `min_items`/`max_items`. Values are
-arrays of distinct offered scalars: `False`, `0`, `None`, strings and floats are
-not coerced into one another. Count bounds and defaults are validated on both
-worker and host boundaries. Explicit `[]` differs from omitting an optional field;
-a required field must be present and meet its declared count limits.
-
-In the field editor, Up/Down selects an offered item and Space toggles it. Delete
-sets an explicit empty array; Backspace unsets the field. UI output uses declaration
-order, while programmatic valid answers retain their exact supplied order. Paste
-cannot select choices or confirm. Tab changes fields and Enter opens the existing
-whole-form review; every value/constraint still requires visible review before
-submission. Blur revokes review proof and hidden rendering cannot restore it.
-These answers remain extension data, never tool approval or model/session mutation.
-
-Claw additionally negotiates `extension_multi_forms:1`; ordinary form support alone
-is insufficient. Missing/zero/boolean or withdrawn capability cancels unsupported
-parent/child forms rather than flattening arrays or rendering unknown field kinds.
-The original command, connection/group/session, child and nested-dialog leases apply.
-Real printable Space is matched as the named descriptor without changing editor key
-data or modifier checks, fixing existing boolean/single-choice controls too.
-
 ### Owned event/hook listener cleanup
 
 `api.on(event, callback)`, `before_tool`, `after_tool`, `context` and `on_input`
@@ -1839,25 +1552,12 @@ same caches. Removing an input hook is an owned action, not a failed-validator e
 failed/unloaded/retired workers cannot clear another owner's required validation.
 Tool permissions, session/child/UI leases and no-replay cancellation remain unchanged.
 
-### Explicit status/widget removal and UI owner fencing
+### Simple extension status
 
-`api.status(key, None)` / `api.clear_status(key)` and `api.widget(key, None)` /
-`api.clear_widget(key)` explicitly remove the named contribution. Empty widget
-lines remain an ordinary empty widget, not an implicit delete. Supplied line lists
-are copied; later caller mutation cannot alter the pending contribution.
-
-The host validates/prepares each whole UI batch before committing or publishing it.
-An invalid later row cannot partially clear earlier UI, and clear operations remove
-only that extension's matching kind/key. A status clear cannot delete a widget that
-replaced its legacy shared slot. Repeating a clear is harmless and frees UI capacity
-rather than accumulating invisible placeholder rows.
-
-Setup contributions are buffered until the actual worker is validated/admitted.
-Normal and nested/custom result paths verify current process ownership before UI
-updates; retired, failed/unloaded or closed workers cannot rewrite a replacement's
-snapshot. Host viewers receive the same complete snapshot format as before, so
-removal does not require a new TUI socket capability or run a model turn. The same
-session/child ownership, policy gates and native terminal focus remain authoritative.
+`api.status(key, text)` / `api.clear_status(key)` publish or remove bounded,
+owner-scoped text status. Failed/unloaded/retired workers cannot change another
+extension's contribution. Widget layout, custom frames and nested/overlay control
+APIs are removed; normal progress and host permission focus remain authoritative.
 
 ### Live owned command and shortcut catalogs
 
@@ -1998,58 +1698,11 @@ catalog flags plus multiple URIs on one stream over both stdio and HTTP, includi
 unrequested URI suppression and owned unwatch; these are not full MCP conformance.
 
 
-### Live and non-capturing custom overlays
-
-Custom overlays can set `overlay={..., "non_capturing": True}` to render a live
-background panel while the parent retains ordinary keyboard/paste editing and its
-cursor. This automatically opts into live-overlay semantics; a capturing overlay
-can opt in explicitly with `live_overlay=True`. Both clients and independent child
-workers support the same owned path. No cursor marker is emitted by an unfocused
-custom view, and visible background frames are independent of input capture.
-
-From the owning invocation/input callback or its asyncio background task,
-`api.request_overlay("hide" | "show" | "focus" | "unfocus")` queues a live
-presentation request. **True means admitted, not a focus/visibility receipt.**
-Unavailable, closed, quota-exhausted or non-live views return False; invalid actions
-and calls from render callbacks are rejected. At most 32 controls queue per view
-before host admission. Early requests wait for the first actual owned host frame
-request, rather than disappearing before the host dialog exists. Cancel/reap
-background tasks in the invocation's `finally` block.
-
-Controls have monotonic sequence IDs and full host-owned hidden/capture snapshots.
-Hide/show retains capture preference; focus requests showing/capturing; unfocus
-releases capture without hiding. Requests affect only the current owned overlay,
-not another view, command, worker or session. The host defers presentation beneath
-approvals, output reviews, nested questions and other protected owners; a focus
-request cannot preempt them or reorder unrelated dialogs. Cached parent controls
-survive a nested question and restore the correct base editor afterward.
-
-Every control invalidates queued/in-flight completion proof. Completion must use a
-new painted viewport generation; hiding/unfocusing never proposes a custom answer.
-Escape/Ctrl+C from the base editor cancels its owned background view without
-canceling unrelated work or submitting the draft. Existing host suspend/exit and
-terminal restoration behavior remain. Hidden/non-capturing presentation does not
-finish the command, authorize tools, or bypass existing busy/submission policy.
-
-Repaint/control task identities are weakly bound on first request. A surviving old
-background task cannot adopt a sequential replacement view; nested callbacks use
-the nearest actual custom owner rather than borrowing the root. Host SDK wiring
-adds `runtime.custom_control_handler = broker.control_custom` alongside the
-existing custom/refresh handlers. Claw independently negotiates
-`extension_custom_live_overlay:1`; older viewers with only capturing-overlay support
-cannot silently downgrade this mode, and disconnect/capability withdrawal cancels
-its original owned future. Basic capturing overlays remain supported separately.
-
-Both actual clients/child workers, nested restoration, approval/host-overlay
-preemption, stale/reloaded identities, old viewers and Linux/private-tmux ordinary
-keyboard editing/control/resize/recovery are tested. This does not establish native
-Windows/macOS verification or parity with every extension/host rendering API.
-
 ### Read-only invocation tool inventory
 
 `await api.get_tool_inventory(query="", offset=0, revision="")` returns a paged
 snapshot of the actual owning Agent's configured model-facing tool definitions.
-This works in commands, tools, hooks, context/custom/provider callbacks and headless
+This works in commands, tools, hooks, context/provider callbacks and headless
 invocations where the host supplies an inventory. Parent and child runtimes project
 independent owners; explicit child tool profiles are applied before startup hooks
 and retained during final startup inventory projection.
@@ -2107,9 +1760,9 @@ current command/tool/hook. Reload starts a new worker/cache; stale references ca
 resolve to a successor's snapshot.
 
 Optional inventory metadata is omitted for an invocation when it would exceed the
-existing 8-MiB RPC frame budget. That invocation reports inventory unavailable, not
-empty/approved, and a smaller later invocation can inspect it normally. The generic
-transport still rejects genuinely oversized requests; no frame limit, tool argument,
+existing 8-MiB extension-worker RPC frame budget. That invocation reports inventory
+unavailable, not empty/approved, and a smaller later invocation can inspect it
+normally. The generic transport still rejects genuinely oversized requests; no frame limit, tool argument,
 registration proof or approval gate is relaxed. Caller-supplied inline/ref fields
 remain overwritten by the host's actual projection.
 
@@ -2119,72 +1772,6 @@ exported under another scope or replaced with canonical conversation records.
 Reconnect clears old view admission; after handshake, explicit refresh reads the
 actual current owner. A valid zero-tool snapshot remains distinguishable from an
 unavailable snapshot. This does not automatically replay tool calls or agent input.
-
-### Explicit pre-registered private-key JWT token authentication
-
-MCP OAuth profiles can choose `token_auth_method: "private_key_jwt"` with an explicit
-`client_private_key_env` containing an unencrypted RSA PEM. This is pre-registered
-client authentication only—not dynamic registration, a provider login shortcut,
-MCP tool approval or OS sandboxing. The issuer must advertise both private_key_jwt
-and **RS256**; there is no method, algorithm or shared-secret fallback.
-
-The current signer requires **POSIX, OpenSSL and /dev/stdin + /dev/fd**. RSA keys
-must be 2,048–8,192 bits and PEM is bounded to 64 KiB. Unsupported platforms/missing
-signers, encrypted/malformed/weak keys or absent sources fail before discovery/start.
-The private PEM is passed on the owned helper's stdin, never argv, a key file, review,
-transcript, credential record or public error. Helper environment is minimal, so the
-key environment variable is not inherited. Only unsigned public assertion claims
-use a private unnamed temporary descriptor; it is closed on success/failure/cancel.
-Owned signer processes are timed out, killed/reaped and cannot silently continue
-into a retired token operation.
-
-Assertions use issuer/subject client ID, the exact pinned HTTPS token endpoint as
-audience, a fresh random ID, issued-at and at most 60-second expiry. Code exchange
-and explicitly reviewed refresh each create a new assertion. Only the token POST
-receives it; existing origin/resource/TLS/cookie/redirect/no-replay and scope-ceiling
-guards remain. A retired consent owner is rechecked after signing and cannot POST.
-No plaintext shared secret is included alongside the assertion.
-
-Both clients' existing whole-view OAuth review shows private_key_jwt, RS256, assertion
-lifetime/audience and the key-source variable NAME. Internally the existing review
-`client_secret_env` field carries this normalized authentication-source name (never
-its value), preserving stored-review/profile binding. Configuration must use the
-separate `client_private_key_env`, not `client_secret_env`, for this method.
-Claw separately negotiates `mcp_private_key_jwt:1`; older viewers cannot silently
-reinterpret it, and withdrawal revokes/detaches the private authentication view.
-
-Actual both-client consent/exchange/refresh, real RSA signatures independently
-verified by the offline peer, weak/invalid key rejection, method/algorithm negotiation,
-retired-owner/owned-process cancellation and Linux/private-tmux paths are tested.
-Windows signing/storage, native macOS validation, hardware/external key providers,
-additional signing algorithms and broader OAuth/MCP interoperability remain open.
-No extra Python dependency or live login is required for these offline checks.
-
-Signer cleanup also retains ownership through repeated cancellation during process
-startup or unsigned-claim descriptor creation. A later close request cannot interrupt
-cleanup and orphan the original helper/handle; the original operation still returns
-canceled and no callback/token POST is replayed. Reaping/draining occurs only for
-that owned helper, never a user daemon or unrelated process.
-
-Private-key signing capability withdrawal is also reflected in the existing consent
-UI: the affected view clears its pending URL/receipts, stops polling and signing
-controls, and cannot be revived by a late status/launch reply. Completed resource
-credentials are not remotely revoked, and unrelated public-client consent remains
-available. A new enabled capability requires freshly opened consent. Liveness is
-rechecked after async key validation before a callback listener can be allocated.
-
-Whole-page OAuth review proof is now tied to the actual focused MCP consent surface,
-not merely background painting. Blur/preemption clears seen rows and confirmability;
-returning focus requires a fresh complete endpoint/source/algorithm/scope review.
-Both client hosts propagate their existing TUI focus to the nested OAuth component.
-Painting a hidden/background view never counts as consent and does not grant tools.
-
-Nested MCP argument-completion insertion also follows the actual parent view's focus.
-Blur invalidates painted insertion proof without discarding valid inert suggestions
-or rewriting the original argument draft. Blurred completion cannot request, edit,
-capture paste or insert; after focus returns it must paint the current viewport anew.
-Insertion still only edits a draft—the operator separately retrieves prompt/resource
-data, with existing scope/draft/cancellation and no model/tool admission semantics.
 
 ### Owned compaction extension hooks
 
@@ -2307,3 +1894,14 @@ coding's bounded SessionController batches use that path without another tool
 loop. Coding's automatic durable Inbox, batch IDs and message-cancellation policy
 are harness policy, not forced into the generic ACP backend.
 See [ACP session routing](../../docs/acp-session-routing.md).
+
+
+### Basic extension interaction scope
+
+Trusted extensions can use `api.input`, `api.confirm` and `api.select` with normal
+cancellation, plus bounded notifications and simple text status. Arbitrary custom
+renderers, typed plugin forms, nested dialogs, extension overlays/fullscreen frames
+and widget layouts are removed. Native approval and recovery reviews remain host-
+owned; they expose no plugin layout or editor/session-mutation authority. Core TUI
+overlays, transcript fullscreen, Unicode, clipping, cursor and tool-approval behavior
+remain.

@@ -1,4 +1,4 @@
-"""UI-048: pinned modern SDK continuations inside actual native browser jobs."""
+"""Configured Roots-only modern continuations inside actual native browser jobs."""
 from __future__ import annotations
 
 import asyncio
@@ -21,7 +21,7 @@ from xdog.coding.core.settings_manager import SettingsManager
 from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
 from xdog.tui.keys import KeyEvent
 
-from packages.agent.tests.test_mcp_sampling_executor import Adapter
+from packages.agent.tests.mcp_helpers import Adapter
 
 SDK_ROOT = os.environ.get('XDOG_MCP_OFFICIAL_SDK_ROOT')
 NODE = shutil.which('node')
@@ -93,8 +93,7 @@ async def browser(tmp_path, host, transport):
             ui = ChatApp(config.socket_path)
             reader, writer = await asyncio.open_unix_connection(config.socket_path)
             task = asyncio.create_task(ui._run_connection(reader, writer))
-            await wait(ui, lambda: ui._connection_ready and ui._mcp_sampling_supported
-                       and ui._mcp_elicitation_supported, log)
+            await wait(ui, lambda: ui._connection_ready and ui._mcp_supported, log)
         yield ui, manager, adapter, agent, log
     finally:
         if ui is not None:
@@ -116,3 +115,35 @@ async def browser(tmp_path, host, transport):
             if process.returncode is None:
                 process.terminate()
             await asyncio.wait_for(process.wait(), 5)
+
+
+@pytest.mark.parametrize('host', ['coding', 'claw'])
+@pytest.mark.parametrize('transport', ['stdio', 'http'])
+@pytest.mark.parametrize('method', ['read', 'prompt'])
+async def test_native_roots_only_browser_exact_continuation_never_calls_model_or_adopts_input(
+    tmp_path, host, transport, method,
+):
+    async with browser(tmp_path, host, transport) as (ui, manager, adapter, agent, log):
+        ui._editor.set_text('UNSUBMITTED PARENT DRAFT')
+        ui._open_mcp()
+        await wait(ui, lambda: ui._mcp_panel is not None and not ui._mcp_panel._busy, log)
+        ui._mcp_send('connect', 'modern', '', {})
+        await wait(ui, lambda: manager.status()[0]['state'] == 'connected' and not ui._mcp_panel._busy, log)
+        assert manager.status()[0]['client_capabilities'] == {'roots': {}}
+        assert not hasattr(manager, 'register_elicitation') and not hasattr(manager, 'manage_roots')
+        ui._mcp_send(method, 'modern', 'test://roots' if method == 'read' else 'roots', {})
+        await wait(ui, lambda: ui._mcp_document is not None and not ui._mcp_panel._busy, log)
+        assert 'APPROVED-roots' in ui._mcp_document.text
+        operations = [row for row in records(log) if row['type'] == 'operation']
+        assert len(operations) == 2
+        assert 'responses' not in operations[0]
+        assert operations[1]['responses'] == {'review': {'roots': [{'uri': 'file:///explicit', 'name': 'Explicit'}]}}
+        assert operations[1]['state'] == '  opaque\x00state/汉字\n  '
+        assert not adapter.calls and not agent.messages
+        assert ui._editor.get_text() == 'UNSUBMITTED PARENT DRAFT'
+        assert not manager._clients['modern'].inputs._jobs
+        for row in records(log):
+            if row['type'] == 'inbound':
+                capabilities = row['message'].get('params', {}).get('_meta', {}).get(
+                    'io.modelcontextprotocol/clientCapabilities', {})
+                assert not {'sampling', 'elicitation', 'tasks'} & capabilities.keys()

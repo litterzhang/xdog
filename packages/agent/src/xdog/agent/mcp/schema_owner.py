@@ -28,8 +28,9 @@ class SchemaDocument:
 
 
 class SchemaOwner:
-    def __init__(self, *, timeout: float = 3) -> None:
+    def __init__(self, *, timeout: float = 3, startup_timeout: float = 10) -> None:
         self.timeout = timeout
+        self.startup_timeout = startup_timeout
         self._process: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()
         self._closed = False
@@ -66,14 +67,20 @@ class SchemaOwner:
             "value": value,
         }
         process: asyncio.subprocess.Process | None = None
+        phase = 'validation'
         try:
-            async with asyncio.timeout(self.timeout), self._lock:
+            async with asyncio.timeout(self.timeout) as deadline, self._lock:
                 if self._closed:
                     raise McpError("MCP schema owner is closed")
                 self._active = asyncio.current_task()
                 if self._process is not None and self._process.returncode is not None:
                     await self._stop(self._process)
                 if self._process is None:
+                    # Cold interpreter/package imports are not schema execution.
+                    # Admit them under a separate bounded startup deadline; do
+                    # not lengthen the budget for an expensive hostile schema.
+                    phase = 'startup'
+                    deadline.reschedule(asyncio.get_running_loop().time() + self.startup_timeout)
                     creation = asyncio.create_task(
                         asyncio.create_subprocess_exec(
                             sys.executable,
@@ -95,6 +102,14 @@ class SchemaOwner:
                         created = await asyncio.shield(creation)
                         await self._stop(created)
                         raise
+                    process = self._process
+                    assert process.stdout is not None
+                    ready = await process.stdout.readline()
+                    if ready != b'{"schema_helper_ready":1}\n':
+                        await self._stop(process)
+                        raise McpError('Invalid MCP schema helper readiness; no tool call replay')
+                    phase = 'validation'
+                    deadline.reschedule(asyncio.get_running_loop().time() + self.timeout)
                 process = self._process
                 assert process.stdin is not None and process.stdout is not None
                 self._sequence += 1
@@ -120,7 +135,7 @@ class SchemaOwner:
         except TimeoutError:
             if process is not None:
                 await self._stop(process)
-            raise McpError("MCP schema validation timed out; helper reaped, no tool call replay") from None
+            raise McpError(f"MCP schema {phase} timed out; helper reaped, no tool call replay") from None
         except asyncio.CancelledError:
             if process is not None:
                 await self._stop(process)

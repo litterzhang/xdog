@@ -66,12 +66,11 @@ class ContextMessages:
             self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
             descriptor = os.open(path.with_suffix('.lock'),
                                  os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
-            if os.name == 'posix':
-                import fcntl
-                try:
-                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    raise RuntimeError('Another process owns context message persistence') from None
+            import fcntl
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise RuntimeError('Another process owns context message persistence') from None
             yield
         finally:
             if descriptor is not None:
@@ -139,12 +138,11 @@ class ContextMessages:
                 raise ValueError('Context message canceled/owner changed before atomic replacement')
             os.replace(name, path)
             replaced.set()
-            if os.name == 'posix':
-                directory = os.open(self.root, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
-                try:
-                    os.fsync(directory)
-                finally:
-                    os.close(directory)
+            directory = os.open(self.root, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
         finally:
             if os.path.exists(name):
                 os.unlink(name)

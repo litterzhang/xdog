@@ -9,8 +9,8 @@ PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j5
 def setup(api):
     async def propose(scope, mode='ok'):
         if scope != 'command':
-            assert await api.get_editor() is None
-            assert await api.set_editor('FORBIDDEN', '0' * 64) is False
+            assert not hasattr(api, 'get_editor')
+            assert not hasattr(api, 'set_editor')
         try:
             images = (ImageContent(data=PNG, mime_type='image/png'),) if api.settings.get('image') else ()
             accepted = await api.request_queued_input(' QUEUED 界\n/quit ',
@@ -62,26 +62,13 @@ def setup(api):
             assert await propose('context') == 'QUEUE-False'
         return messages
 
-    async def terminal(data, metadata, context):
-        assert not await api.request_queued_input('DENIED TERMINAL')
-        return {'consume': False}
-
-    async def custom(args, context):
-        async def render(width, height):
-            assert not await api.request_queued_input('DENIED RENDER')
-            return {'lines': ['Owned custom input']}
-        async def on_input(event):
-            return {'done': True, 'value': await propose('custom-input')}
-        return str(await api.custom('Queue scope fixture', render, on_input))
 
     api.command('request', 'Idle command does not gain active-run queue authority', command)
-    api.command('custom', 'Custom callback does not gain queue authority', custom)
     api.tool('request', 'Request reviewed input to the current active run only', {'type': 'object'}, tool)
     api.on('turn_start', event)
     api.before_tool(pre)
     api.after_tool(post)
     api.on_input(input_hook)
-    api.on_terminal_input(terminal)
     api.context(transform)
 
     async def provider(model, context, options):

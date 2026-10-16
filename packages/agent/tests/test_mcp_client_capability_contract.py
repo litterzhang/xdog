@@ -24,7 +24,10 @@ def test_reverse_request_invalid_identity_never_reflected() -> None:
                                   'tasks/list', 'custom/extension'])
 def test_unimplemented_reverse_family_explicit_refusal_not_borrowed_host_capability(method):
     assert reverse_response({'jsonrpc': '2.0', 'id': 'owned', 'method': method, 'params': {}}) == {
-        'error': {'code': -32601, 'message': 'Client capability not supported'}}
+        'error': {'code': -32601, 'message': ('Sampling is not supported' if method == 'sampling/createMessage'
+                                            else 'Elicitation is not supported' if method == 'elicitation/create'
+                                            else 'Client tasks are not supported' if method.startswith('tasks/')
+                                            else 'Client capability not supported')}}
     assert advertised() == {} and set(inventory()) == {
         'roots', 'sampling', 'elicitation', 'tasks', 'experimental', 'extensions'}
     copied = advertised()

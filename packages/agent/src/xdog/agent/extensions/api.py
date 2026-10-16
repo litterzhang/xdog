@@ -6,19 +6,17 @@ import contextvars
 import inspect
 import re
 import uuid
-import weakref
 from collections import deque
 from collections.abc import Callable
-from typing import Any, Literal
+from typing import Any
 
-from xdog.agent.extensions.dialogs import validate_answer, validate_dialog
+from xdog.agent.extensions.dialogs import validate_answer, validate_sdk_dialog
 from xdog.agent.extensions.hooks import EVENTS
 from xdog.agent.extensions.provider_auth import ProviderAuth, bind_callback
 from xdog.agent.extensions.provider_oauth import OAuthBinding, ProviderOAuth
 from xdog.agent.extensions.shortcuts import shortcut_key
 from xdog.agent.extensions.tool_result import _UNSET, make_result
 from xdog.agent.mcp.manager import _schema
-from xdog.ai.types import ImageContent
 
 
 def identifier(value: object) -> str:
@@ -57,12 +55,9 @@ class ExtensionAPI:
         self.input_hooks: list[Callable[..., Any]] = []
         self.providers: dict[str, tuple[dict[str, Any], Callable[..., Any]]] = {}
         self._provider_revision = 0
-        self.terminal_hooks: list[Callable[..., Any]] = []
         self._call_id: contextvars.ContextVar[str] = contextvars.ContextVar("extension_call", default="")
-        self._has_name_request = contextvars.ContextVar("extension_name_request", default=False)
         self._has_command_menu = contextvars.ContextVar("extension_command_menu", default=False)
         self._has_catalog = contextvars.ContextVar("extension_command_catalog", default=False)
-        self._has_navigation = contextvars.ContextVar("extension_command_navigation", default=False)
         self._has_session = contextvars.ContextVar("extension_command_session", default=False)
         self._command_menu_session = contextvars.ContextVar("extension_command_menu_session", default="")
         self._session_name: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
@@ -71,30 +66,11 @@ class ExtensionAPI:
             "extension_invocation_inspection", default=None)
         self._tool_inventory: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
             "extension_invocation_tools", default=None)
-        self._has_editor_write = contextvars.ContextVar("extension_editor_write", default=False)
-        self._has_queued_input = contextvars.ContextVar("extension_queued_input", default=False)
-        self._has_compaction_request = contextvars.ContextVar("extension_compaction_request", default=False)
-        self._has_active_tools_request = contextvars.ContextVar("extension_active_tools_request", default=False)
         self._has_pending_messages = contextvars.ContextVar("extension_pending_messages", default=False)
-        self._has_context_message = contextvars.ContextVar("extension_context_message", default=False)
-        self._has_editor = contextvars.ContextVar("extension_command_editor", default=False)
-        self._has_custom = contextvars.ContextVar("extension_custom_view", default=False)
-        self._has_overlay_controls = contextvars.ContextVar("extension_overlay_controls", default=False)
-        self._has_refresh = contextvars.ContextVar("extension_custom_refresh", default=False)
         self._has_ui: contextvars.ContextVar[bool] = contextvars.ContextVar("extension_has_ui", default=False)
-        self._custom_callbacks: dict[str, tuple[Callable[..., Any], Callable[..., Any], str]] = {}
         self._dialog_events: dict[str, asyncio.Event] = {}
         self._dialogs: dict[str, tuple[dict[str, Any], asyncio.Future[Any]]] = {}
-        self._frame_owners: dict[str, tuple[str, str]] = {}
         self._retired_dialogs: dict[str, deque[str]] = {}
-        self._render_notify: Callable[[dict[str, str]], None] | None = None
-        self._render_scheduled: set[str] = set()
-        self._overlay_notify: Callable[[dict[str, Any]], None] | None = None
-        self._overlay_sequence = 0
-        self._overlay_pending: dict[str, list[dict[str, Any]]] = {}
-        self._custom_admitted: set[str] = set()
-        self._view_bindings: weakref.WeakKeyDictionary[asyncio.Task[Any], tuple[str, str]] = weakref.WeakKeyDictionary()
-        self._custom_phase = contextvars.ContextVar("extension_custom_phase", default="")
 
     @property
     def has_ui(self) -> bool:
@@ -112,43 +88,6 @@ class ExtensionAPI:
     async def confirm(self, title: str, message: str = "", *, timeout: float = 300) -> bool:
         return bool(await self._ask("confirm", title, message, timeout=timeout))
 
-    async def form(self, title: str, fields: list[dict[str, Any]], *, message: str = "",
-                   timeout: float = 300) -> dict[str, Any] | None:
-        """Reviewed typed fields; None on cancellation/headless, never implicit defaults."""
-        value = await self._ask("form", title, message, fields=fields, timeout=timeout)
-        return value if isinstance(value, dict) else None
-
-    async def request_editor_text(self, text: str, *, timeout: float = 300) -> bool:
-        """Propose exact unsent text under original host review; True means queued only.
-
-        No composer read/attachments/turn admission. Callback failure/cancellation
-        discards the proposal; application still needs the host's original CAS lease.
-        """
-        from xdog.agent.extensions.editor_request import proposal
-        text = proposal(text)
-        if not self._has_editor_write.get() or self._custom_phase.get() == 'render':
-            return False
-        value = await self._ask('editor', 'Review extension draft proposal',
-            'Replace only this owner’s unsent text after callback success and unchanged draft review. '
-            'Attachments stay owned; nothing is sent and no tool permission changes.',
-            operation='propose', text=text, timeout=timeout)
-        return isinstance(value, dict) and value.get('approved') is True
-
-    async def get_editor(self, *, timeout: float = 30) -> dict[str, Any] | None:
-        """Captured command draft; unavailable to tools/hooks/headless contexts."""
-        if not self._has_editor.get():
-            return None
-        value = await self._ask("editor", "Read current command editor", "No agent input or permission changes",
-                                operation="read", timeout=timeout)
-        return value if isinstance(value, dict) else None
-
-    async def set_editor(self, text: str, revision: str, *, timeout: float = 30) -> bool:
-        """CAS text replacement under the same command lease; never submit a turn."""
-        if not self._has_editor.get():
-            return False
-        value = await self._ask("editor", "Replace captured command editor", "Attachments stay owned by the composer",
-                                operation="replace", text=text, revision=revision, timeout=timeout)
-        return bool(value.get("applied")) if isinstance(value, dict) else False
 
     async def get_session(self, *, timeout: float = 30) -> dict[str, Any] | None:
         """Current host metadata only; no transcript or session mutation."""
@@ -167,24 +106,6 @@ class ExtensionAPI:
                                 operation='name', timeout=timeout)
         return value['name'] if isinstance(value, dict) else None
 
-    async def set_session_name(self, name: str, *, timeout: float = 300) -> bool:
-        """Queue reviewed metadata CAS after callback success; True is not a persistence receipt."""
-        from xdog.agent.session_name import session_name
-        selected = session_name(name)
-        if not self._has_session.get():
-            captured = self._session_name.get()
-            if not self._has_name_request.get() or captured is None:
-                return False
-            return await self._ask('session', 'Review original parent session name',
-                'Queue metadata CAS only after this callback and its original producer successfully settle. '
-                'No history, composer, model or tool permission changes.', operation='rename', name=selected,
-                expected_name=captured['name'], name_after_run=True, timeout=timeout) is True
-        current = await self.get_session_name(timeout=timeout)
-        if current is None:
-            return False
-        return await self._ask('session', 'Review extension session name',
-            'Only metadata changes after callback success. No history/model/tool/permission change.',
-            operation='rename', name=selected, expected_name=current, timeout=timeout) is True
 
     async def get_command_catalog(self, *, query: str = '', offset: int = 0, revision: str = '',
                                   timeout: float = 30) -> dict[str, Any] | None:
@@ -192,7 +113,7 @@ class ExtensionAPI:
         from xdog.agent.extensions.command_catalog import request
         options = {'query': query, 'offset': offset, 'revision': revision}
         request(options)
-        if (not self._has_command_menu.get() and not self._has_session.get()) or self._custom_phase.get() == 'render':
+        if (not self._has_command_menu.get() and not self._has_session.get()):
             return None
         result = await self._ask('session', 'Inspect terminal command menu',
             'Read-only discovery, not execution approval or remote availability', operation='commands',
@@ -236,20 +157,6 @@ class ExtensionAPI:
                                 operation='active_tools', timeout=timeout)
         return value if isinstance(value, dict) else None
 
-    async def set_active_tools(self, names: list[str] | None, revision: int, *, timeout: float = 300) -> bool:
-        """Stage reviewed selection; non-command hosts also wait for the entire producer.
-
-        True is staged, never applied. The owning host retains its idle durable
-        CAS, permissions, inventory revision, and child profile ceilings.
-        """
-        from xdog.agent.extensions.active_tools import request
-        request({'operation': 'select_tools', 'names': names, 'revision': revision})
-        if not self._has_session.get() and not self._has_active_tools_request.get():
-            return False
-        return await self._ask('session', 'Review active tool selection',
-            'Request deferred selection only; existing permissions and child ceilings remain.',
-            operation='select_tools', names=names, revision=revision, timeout=timeout,
-            **({'after_run': True} if not self._has_session.get() else {})) is True
 
     async def _inspect_session(self, operation: str, timeout: float) -> dict[str, Any] | None:
         if not self._has_session.get():
@@ -263,40 +170,6 @@ class ExtensionAPI:
                                 operation=operation, timeout=timeout)
         return value if isinstance(value, dict) else None
 
-    async def request_context_message(self, custom_type: str, content: Any, *, display: bool = True,
-                                      details: Any = None, deliver_as: str = 'next_turn', trigger_turn: bool = False,
-                                      timeout: float = 300) -> bool:
-        """Review canonical custom context for the next explicit user prompt, never trigger a turn.
-
-        Content is text or a tuple of typed text/image parts. Details stay opaque
-        metadata. Child owners, render callbacks and unsupported hosts are refused.
-        """
-        from xdog.agent.extensions.context_message import proposal
-        value = proposal(custom_type, content, display=display, details=details,
-                         delivery=deliver_as, trigger_turn=trigger_turn)
-        if not self._has_context_message.get():
-            return False
-        return await self._ask('session', 'Review extension context delivery',
-            'Apply only the reviewed delivery/trigger policy after successful original callback. '
-            'next_turn never triggers a turn; steer/follow_up use canonical custom context, not user input. '
-            'Metadata is not model input or tool permission.',
-            operation='context_message', timeout=timeout, **value) is True
-
-    async def request_message(self, text: str = "", *, images: tuple[ImageContent, ...] = (),
-                              timeout: float = 300) -> bool:
-        """Queue an explicitly reviewed text/image new turn after command success.
-
-        True is request acceptance, not model execution or completion. The host
-        labels extension provenance and retains normal input hooks/permissions.
-        """
-        from xdog.agent.extensions.message_request import proposal
-        value = proposal(text, images)
-        if not self._has_session.get():
-            return False
-        return await self._ask('session', 'Review extension message',
-            'After this callback succeeds, start a new model turn with this extension-origin text and explicit images. '
-            'Existing tool approvals still apply. Unsent drafts and attachments are not included.',
-            operation='message', timeout=timeout, **value) is True
 
     async def has_pending_messages(self, *, timeout: float = 30) -> bool | None:
         """Read the original Agent's live pending boolean; None means unavailable.
@@ -304,62 +177,12 @@ class ExtensionAPI:
         No queued text, images, IDs, ordering, another host's queue or write grant
         is returned. This is a host read at call time, not an invocation snapshot.
         """
-        if not self._has_pending_messages.get() or self._custom_phase.get() == 'render':
+        if not self._has_pending_messages.get():
             return None
         value = await self._ask('session', 'Inspect pending input', 'Owning Agent boolean only',
                                 operation='pending_messages', timeout=timeout, _host_read=True)
         return value if type(value) is bool else None
 
-    async def request_queued_input(self, text: str, *, delivery: Literal['steer', 'follow_up'] = 'steer',
-                                   images: tuple[ImageContent, ...] = (), timeout: float = 300) -> bool:
-        """Request reviewed active-run input after callback success, never start a new turn.
-
-        True means staged, not admitted/consumed. Images are explicit inline values,
-        never borrowed drafts, paths or references. Host model/permission policy remains.
-        """
-        from xdog.agent.extensions.queued_input import proposal
-        value = proposal(text, delivery, images)
-        if not self._has_queued_input.get() or self._custom_phase.get() == 'render':
-            return False
-        return await self._ask('session', 'Review extension queued input',
-            'Queue only to the original active run after callback success and explicit review. '
-            'This does not start a new turn or include unsent drafts. Existing permissions still apply.',
-            operation='queue_input', **value, timeout=timeout) is True
-
-    async def request_compaction(self, instructions: str = '', *, timeout: float = 300) -> bool:
-        """Queue reviewed host compaction after command success; True is not completion.
-
-        Tool/hooks require a separately supported original parent-run review owner.
-        The host, not the extension worker, runs the canonical compaction lifecycle.
-        """
-        from xdog.agent.summarization import summary_instructions
-        instructions = summary_instructions(instructions)
-        if not self._has_session.get() and not self._has_compaction_request.get():
-            return False
-        return await self._ask('session', 'Review extension compaction',
-            'After callback success, the host may call the selected model, replace older context, '
-            'and run permitted memory-flush tools. Existing permissions remain.',
-            operation='compact', instructions=instructions, timeout=timeout,
-            **({'after_run': True} if not self._has_session.get() else {})) is True
-
-    async def open_sessions(self, *, tree: bool = False, timeout: float = 30) -> bool:
-        """Queue the native browser after successful command completion; user selects activation."""
-        if not self._has_session.get():
-            return False
-        value = await self._ask("session", "Open native session browser", "No automatic activation or agent input",
-                                operation="browse", scope="tree" if tree else "sessions", timeout=timeout)
-        return value is True
-
-    async def navigate_session(self, action: str, *, session_id: str = "", branch_id: str = "",
-                               index: int = -1, timeout: float = 300) -> bool:
-        """Queue reviewed navigation after callback success, not a completion/activation receipt."""
-        if not self._has_navigation.get():
-            return False
-        result = await self._ask("session", "Review extension session navigation",
-            "This changes the active conversation only after callback success. Existing permissions remain.",
-            operation="navigate", target={"action": action, "session_id": session_id,
-                                          "branch_id": branch_id, "index": index}, timeout=timeout)
-        return result is True
 
     async def list_sessions(self, *, query: str = "", offset: int = 0, revision: str = "",
                             timeout: float = 30) -> dict[str, Any] | None:
@@ -378,170 +201,10 @@ class ExtensionAPI:
             query=query, offset=offset, revision=revision, timeout=timeout)
         return result if isinstance(result, dict) else None
 
-    async def custom(self, title: str, render: Callable[..., Any], on_input: Callable[..., Any], *,
-                     message: str = "", timeout: float = 300, fullscreen: bool = False,
-                     key_events: tuple[str, ...] = ("press",), overlay: dict[str, Any] | None = None,
-                     live_overlay: bool = False) -> Any:
-        """Viewport-aware owned view; callbacks produce data only, never terminal commands or host approval."""
-        if not callable(render) or not callable(on_input):
-            raise ValueError("Custom views require render/input callbacks")
-        if not self._has_ui.get() or not self._has_custom.get():
-            return None
-        from xdog.agent.extensions.custom import options as custom_options
-        presentation = custom_options({'fullscreen': fullscreen, 'key_events': key_events,
-                                       'overlay': overlay, 'live_overlay': live_overlay})
-        if presentation.get('live_overlay') and not self._has_overlay_controls.get():
-            return None
-        call_id = self._call_id.get()
-        if not call_id or call_id in self._dialogs or call_id in self._custom_callbacks:
-            raise ValueError("Custom view does not have an available callback owner")
-        view_id = uuid.uuid4().hex
-        task = asyncio.current_task()
-        if task is not None:
-            self._view_bindings.pop(task, None)  # This task explicitly starts a new view invocation.
-        self._custom_callbacks[call_id] = render, on_input, view_id
-        try:
-            return await self._ask("custom", title, message, view_id=view_id, timeout=timeout,
-                                   fullscreen=fullscreen, key_events=key_events, overlay=overlay,
-                                   live_overlay=live_overlay)
-        finally:
-            self._custom_callbacks.pop(call_id, None)
-            self._custom_admitted.discard(call_id)
-            self._overlay_pending.pop(call_id, None)
-
-    def _custom_request_owner(self) -> str:
-        owner = self._call_id.get()
-        while owner not in self._custom_callbacks and owner in self._frame_owners:
-            owner = self._frame_owners[owner][0]
-        callbacks = self._custom_callbacks.get(owner)
-        task = asyncio.current_task()
-        if callbacks is None or task is None:
-            return ''
-        identity = owner, callbacks[2]
-        bound = self._view_bindings.get(task)
-        if bound is not None and bound != identity:
-            return ''  # An old background task cannot adopt a sequential/nested replacement view.
-        self._view_bindings[task] = identity
-        return owner
-
-    def request_render(self) -> bool:
-        """Coalesce a repaint of this invocation's live custom view; never propose completion.
-
-        Call on the worker event loop after changing background view state. A task
-        created by the custom-view invocation retains its owner until that view closes.
-        """
-        if self._custom_phase.get() == "render":
-            raise ValueError("Custom rendering cannot request another render")
-        if not self._has_refresh.get():
-            return False
-        owner = self._custom_request_owner()
-        callbacks, dialog = self._custom_callbacks.get(owner), self._dialogs.get(owner)
-        if (callbacks is None or dialog is None or dialog[1].done()
-                or dialog[0]["kind"] != "custom" or self._render_notify is None):
-            return False
-        if owner in self._render_scheduled:
-            return True
-        self._render_scheduled.add(owner)
-        identifier, view_id = dialog[0]["id"], callbacks[2]
-        def send() -> None:
-            self._render_scheduled.discard(owner)
-            current = self._dialogs.get(owner)
-            if (current is not None and not current[1].done() and current[0]["id"] == identifier
-                    and self._custom_callbacks.get(owner) == callbacks and self._render_notify is not None):
-                self._render_notify({"call_id": owner, "dialog_id": identifier, "view_id": view_id})
-        asyncio.get_running_loop().call_soon(send)
-        return True
-
-    def request_overlay(self, action: str) -> bool:
-        """Request hide/show/focus/unfocus for this live overlay; admission is not a focus receipt.
-
-        The host preserves approvals, nested questions and other protected owners.
-        """
-        if action not in ('hide', 'show', 'focus', 'unfocus'):
-            raise ValueError('Unknown custom overlay action')
-        if self._custom_phase.get() == 'render':
-            raise ValueError('Custom rendering cannot control overlay presentation')
-        if not self._has_overlay_controls.get() or self._overlay_notify is None:
-            return False
-        owner = self._custom_request_owner()
-        callbacks, item = self._custom_callbacks.get(owner), self._dialogs.get(owner)
-        if (callbacks is None or item is None or item[1].done() or not item[0].get('live_overlay')
-                or item[0].get('overlay') is None or self._overlay_sequence >= 2**53 - 1):
-            return False
-        queue = self._overlay_pending.get(owner)
-        if queue is not None and len(queue) >= 32:
-            return False
-        self._overlay_sequence += 1
-        value = {'call_id': owner, 'dialog_id': item[0]['id'], 'view_id': callbacks[2],
-                 'sequence': self._overlay_sequence, 'action': action}
-        if queue is not None:
-            queue.append(value)
-            return True
-        self._overlay_pending[owner] = [value]
-        asyncio.get_running_loop().call_soon(self._flush_overlay, owner)
-        return True
-
-    def _flush_overlay(self, owner: str) -> None:
-        if owner not in self._custom_admitted:
-            return  # Keep bounded desired controls until the first owned host frame request.
-        queued = self._overlay_pending.pop(owner, [])
-        if not queued:
-            return
-        current, callbacks = self._dialogs.get(owner), self._custom_callbacks.get(owner)
-        if (current is None or current[1].done() or current[0]['id'] != queued[0]['dialog_id']
-                or callbacks is None or callbacks[2] != queued[0]['view_id'] or self._overlay_notify is None):
-            return
-        for update in queued:
-            self._overlay_notify(update)
-
-    async def _custom_frame(self, call_id: str, dialog_id: str, value: Any, *,
-                            frame_call_id: str = "") -> dict[str, Any]:
-        from xdog.agent.extensions.custom import event, frame
-        owned = self._dialogs.get(call_id)
-        callbacks = self._custom_callbacks.get(call_id)
-        if (owned is None or callbacks is None or owned[0]["id"] != dialog_id or owned[1].done()
-                or owned[0]["kind"] != "custom" or owned[0]["view_id"] != callbacks[2]):
-            raise ValueError("Custom-view owner changed/closed")
-        # A worker-owned frame callback can ask nested questions without lending
-        # another command's ID/capabilities or overwriting its suspended parent.
-        if frame_call_id and self._frame_owners.get(frame_call_id) != (call_id, dialog_id):
-            raise ValueError("Custom frame callback owner changed")
-        self._custom_admitted.add(call_id)
-        if call_id in self._overlay_pending:
-            asyncio.get_running_loop().call_soon(self._flush_overlay, call_id)
-        token = self._call_id.set(frame_call_id or call_id)
-        phase = self._custom_phase.set("input")
-        try:
-            request = event(value)
-            done = None
-            if request["kind"] == "key":
-                request.setdefault("event_type", "press")
-            if request["kind"] == "key" and request["event_type"] not in owned[0]["key_events"]:
-                raise ValueError("Custom key event was not opted in")
-            if request["kind"] != "resize":
-                done = await invoke(callbacks[1], request)
-                if done is not None and (not isinstance(done, dict) or set(done) != {"done", "value"}
-                                         or done["done"] is not True):
-                    raise ValueError("Custom input must return None or an explicit done/value proposal")
-            self._custom_phase.set("render")
-            rendered = await invoke(callbacks[0], request["width"], request["height"])
-            if not isinstance(rendered, (list, dict)):
-                raise ValueError("Custom render must return lines or a lines/cursor frame")
-            content = {"lines": rendered} if isinstance(rendered, list) else dict(rendered)
-            if set(content) - {"lines", "cursor"}:
-                raise ValueError("Only custom input callbacks can propose completion")
-            if done is not None:
-                content.update(done)
-            return frame(content, request)
-        finally:
-            self._custom_phase.reset(phase)
-            self._call_id.reset(token)
 
     async def _ask(self, kind: str, title: str, message: str, **options: Any) -> Any:
         _host_read = options.pop("_host_read", False) is True
-        if self._custom_phase.get() == "render":
-            raise ValueError("Custom rendering cannot open dialogs")
-        dialog = validate_dialog({"kind": kind, "title": title, "message": message,
+        dialog = validate_sdk_dialog({"kind": kind, "title": title, "message": message,
                                   "id": uuid.uuid4().hex, **options})
         if not self._has_ui.get() and not (_host_read and self._has_pending_messages.get()
                                           and kind == "session" and options.get("operation") == "pending_messages"):
@@ -657,38 +320,6 @@ class ExtensionAPI:
             raise ValueError('Provider registration revision capacity reached')
         self._provider_revision += 1
 
-    def on_terminal_input(self, callback: Callable[..., Any], *,
-                          events: tuple[str, ...] = ('key', 'paste')) -> Callable[[], None]:
-        """Register bounded input events; release is opt-in observation, never editing authority."""
-        from xdog.agent.extensions.terminal_input import event_kinds
-        kinds = event_kinds(events)
-        if not kinds:
-            raise ValueError("Terminal input hooks require at least one event kind")
-        if not callable(callback) or len(self.terminal_hooks) >= 32 or callback in self.terminal_hooks:
-            raise ValueError("Terminal input hooks require distinct callables, at most 32 per extension")
-        if not hasattr(self, '_terminal_event_kinds'):
-            self._terminal_event_kinds: dict[int, tuple[str, ...]] = {}
-        self._terminal_event_kinds[id(callback)] = kinds
-        self.terminal_hooks.append(callback)
-        registered = True
-        def unsubscribe() -> None:
-            nonlocal registered
-            if not registered:
-                return
-            registered = False
-            if callback in self.terminal_hooks:
-                self.terminal_hooks.remove(callback)
-                self._terminal_event_kinds.pop(id(callback), None)
-        return unsubscribe
-
-    def terminal_events_for(self, callback: Callable[..., Any]) -> tuple[str, ...]:
-        if not hasattr(self, '_terminal_event_kinds'):
-            return ('key', 'paste')
-        return self._terminal_event_kinds.get(id(callback), ('key', 'paste'))
-
-    def terminal_events(self) -> list[str]:
-        return [kind for kind in ('key', 'paste', 'release')
-                if any(kind in self.terminal_events_for(callback) for callback in self.terminal_hooks)]
 
     def append_entry(self, kind: str, data: Any) -> None:
         from xdog.agent.extensions.state import validate_entries
@@ -804,18 +435,10 @@ class ExtensionAPI:
         else:
             self._ui("status", key, [text])
 
-    def widget(self, key: str, lines: list[str] | None) -> None:
-        key = identifier(key)
-        if lines is None:
-            self._ui("widget", key, [], clear=True)
-        else:
-            self._ui("widget", key, lines)
 
     def clear_status(self, key: str) -> None:
         self.status(key, None)
 
-    def clear_widget(self, key: str) -> None:
-        self.widget(key, None)
 
     def _ui(self, kind: str, key: str, lines: list[str], *, clear: bool = False) -> None:
         if (len(self.ui) >= 32 or not isinstance(lines, list) or len(lines) > 8

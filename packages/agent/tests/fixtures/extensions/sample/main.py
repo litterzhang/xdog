@@ -8,7 +8,7 @@ def setup(api):
     if marker:
         Path(marker).write_text("started\n")
     api.status("mode", "EXTENSION-READY")
-    api.widget("checks", ["EXTENSION-WIDGET", "Safe declarative text"])
+    api.status("checks", "Safe declarative status")
 
     async def tool(params, context):
         if params.get("value") == "hang":

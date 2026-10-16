@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from xdog.tui.components.oauth_panel import OAuthPanel
 from xdog.tui.keys import KeyEvent, KeyEventType
 
@@ -92,35 +93,23 @@ def test_refresh_consent_shows_paging_and_confirmation_then_cancel_while_busy():
     assert actions[-1] == ("auth_cancel", "")
 
 
-def test_jwt_consent_pages_algorithm_lifetime_audience_and_source_without_secret():
+@pytest.mark.parametrize('options', [
+    {'token_auth_method': 'client_secret_jwt', 'client_secret_env': 'XDOG_JWT_SECRET'},
+    {'token_auth_method': 'private_key_jwt', 'client_secret_env': 'XDOG_PRIVATE_KEY'},
+    {'registration': 'dynamic'}, {'registration': 'metadata'},
+])
+def test_retired_auth_combinations_refused_before_any_consent_or_action(options):
     actions = []
-    panel = OAuthPanel({**REVIEW, 'token_auth_method': 'client_secret_jwt',
-                        'client_secret_env': 'XDOG_JWT_SECRET'},
-                       lambda *args: actions.append(args), lambda: None)
-    panel.focused = True
-    panel.set_render_budget(8)
-    painted = []
-    for _ in range(30):
-        painted.extend(panel.render(100))
-        if panel._visible:
-            break
-        panel.handle_input(KeyEvent('enter'))
-        assert not actions
-        panel.handle_input(KeyEvent('pagedown'))
-    text = '\n'.join(painted)
-    assert panel._visible
-    assert 'HS256; fresh assertion valid at most 60 seconds' in text
-    assert 'Assertion audience: https://issuer.test/token' in text
-    assert 'Secret source: XDOG_JWT_SECRET' in text
-    panel.handle_input(KeyEvent('enter'))
-    assert actions == [('auth_start', 'a' * 32)]
+    with pytest.raises(ValueError, match='pre-registered public PKCE'):
+        OAuthPanel({**REVIEW, **options}, lambda *args: actions.append(args), lambda: None)
+    assert not actions
 
 
 def test_host_disabled_auth_view_cannot_poll_launch_copy_or_reactivate_from_late_receipts():
     calls, closed = [], []
     panel = OAuthPanel({'review_id': 'a' * 32, 'issuer': 'issuer', 'resource': 'resource', 'client_id': 'client',
         'scopes': [], 'authorization_endpoint': 'authorize', 'token_endpoint': 'token',
-        'token_auth_method': 'private_key_jwt'}, lambda *args: calls.append(args), lambda: closed.append(True))
+        'token_auth_method': 'none'}, lambda *args: calls.append(args), lambda: closed.append(True))
     panel.phase = 'waiting'
     panel.url = 'private-pending-url'
     panel.disable('Support withdrawn; completed tokens not remotely revoked')

@@ -21,7 +21,7 @@ from xdog.agent.core import AgentMessage, AgentTool, AgentToolResult
 from xdog.agent.extensions.command_result import ExtensionCommandResult
 from xdog.agent.extensions.commands import declaration as command_declaration
 from xdog.agent.extensions.context import decode_context
-from xdog.agent.extensions.dialogs import validate_answer, validate_dialog
+from xdog.agent.extensions.dialogs import REMOVED_HOST_CAPABILITIES, validate_answer, validate_sdk_dialog
 from xdog.agent.extensions.hooks import FLAGS
 from xdog.agent.extensions.hooks import declaration as hook_declaration
 from xdog.agent.extensions.input import InputRejected, decision, input_text
@@ -93,44 +93,9 @@ class _Client(StdioClient):
         self._discovering_tools = False
         self._bootstrap_ui: list[dict[str, Any]] = []
         self._ui_admitted = False
-        self._custom_views: dict[tuple[str, str], str] = {}
-        self._custom_controls: dict[tuple[str, str], int] = {}
         self._inventory_cache_supported = False
         self._inventories: dict[str, None] = {}
 
-    def _internal_notification(self, message: dict[str, Any]) -> bool:
-        if message.get('method') == 'xdog/custom_control' and 'id' not in message:
-            value = message.get('params')
-            if (not isinstance(value, dict) or set(value) != {'call_id', 'dialog_id', 'view_id', 'sequence', 'action'}
-                    or any(not isinstance(value[key], str) or not 0 < len(value[key]) <= 128
-                           for key in ('call_id', 'dialog_id', 'view_id'))
-                    or type(value['sequence']) is not int or not 0 < value['sequence'] < 2**53
-                    or value['action'] not in ('hide', 'show', 'focus', 'unfocus')):
-                raise McpError('Invalid owned custom overlay control')
-            key = value['call_id'], value['dialog_id']
-            if (self._ui_admitted and self.owner._manager._clients.get(self.config.name) is self
-                    and not self.owner._closed and self.config.name not in self.owner._failed
-                    and self.config.name not in self.owner._unloaded
-                    and self._custom_views.get(key) == value['view_id']
-                    and value['sequence'] > self._custom_controls.get(key, 0)
-                    and self.owner.custom_control_handler is not None):
-                self._custom_controls[key] = value['sequence']
-                self.owner.custom_control_handler(self.config.name, value['view_id'],
-                                                  value['sequence'], value['action'])
-            return True
-        if message.get("method") != "xdog/custom_refresh" or "id" in message:
-            return False
-        value = message.get("params")
-        if (not isinstance(value, dict) or set(value) != {"call_id", "dialog_id", "view_id"}
-                or any(not isinstance(item, str) or not 0 < len(item) <= 128 for item in value.values())):
-            raise McpError("Invalid owned custom repaint request")
-        if (self._ui_admitted and self.owner._manager._clients.get(self.config.name) is self
-                and not self.owner._closed and self.config.name not in self.owner._failed
-                and self.config.name not in self.owner._unloaded
-                and self._custom_views.get((value["call_id"], value["dialog_id"])) == value["view_id"]
-                and self.owner.custom_refresh_handler is not None):
-            self.owner.custom_refresh_handler(self.config.name, value["view_id"])
-        return True  # Retired identities are consumed, never adopted by a successor.
 
     def _accept_ui(self, rows: Any) -> None:
         current = self.owner._manager._clients.get(self.config.name)
@@ -177,90 +142,39 @@ class _Client(StdioClient):
                 _current.reset(token)
 
     async def _request(self, method: str, params: dict[str, Any], *, version: str = "") -> dict[str, Any]:
-        pending_ui = False
-        provider_metadata_error = False
         inventory_key = ""
         value: Any = None  # Session controls return distinct scalar/dict shapes, each validated below.
         try:
             payload = dict(params)
-            from xdog.agent.extensions.name_request import available as name_available
-            name_handler = self.owner.name_request_handler
-            name_allowed = (name_available(method, params) and _dialogs_allowed.get()
-                and name_handler is not None and not self.owner._closed and not self.owner.context().get('child_id'))
-            from xdog.agent.extensions.active_tools_request import available as active_tools_available
-            active_tools_handler = self.owner.active_tools_request_handler
-            active_tools_allowed = (active_tools_available(method, params) and _dialogs_allowed.get()
-                and not self.owner.context().get('child_id') and active_tools_handler is not None
-                and not self.owner._closed)
-            from xdog.agent.extensions.compaction_request import available as compaction_available
-            compaction_allowed = (compaction_available(method, params) and _dialogs_allowed.get()
-                and self.owner.compaction_request_handler is not None and not self.owner._closed)
             from xdog.agent.extensions.command_catalog import METHODS as menu_methods
             menu_handler = self.owner.command_menu_handler
             menu_allowed = (method in menu_methods and _dialogs_allowed.get() and menu_handler is not None
-                and not self.owner._closed and (method != 'xdog/custom_frame'
-                    or params.get('event', {}).get('kind') in {'key', 'paste'}))
+                and not self.owner._closed)
             from xdog.agent.extensions.provider_oauth_runtime import AUTH_REVIEW
             provider_auth_review = AUTH_REVIEW.get() if method == 'xdog/provider_auth' else None
-            from xdog.agent.extensions.context_message import METHODS as context_methods
             from xdog.agent.extensions.pending_messages import METHODS as pending_methods
-            context_handler = self.owner.context_message_handler
-            context_allowed = (method in context_methods and not self.owner.context().get('child_id')
-                and _dialogs_allowed.get() and context_handler is not None and not self.owner._closed)
-            from xdog.agent.extensions.queued_input import METHODS as queue_methods
             pending_reader = self.owner.pending_messages
             pending_allowed = method in pending_methods and pending_reader is not None and not self.owner._closed
-            queue_handler = self.owner.queued_input_handler
-            queue_allowed = (method in queue_methods and _dialogs_allowed.get()
-                and queue_handler is not None and not self.owner._closed)
-            from xdog.agent.extensions.editor_request import METHODS as editor_write_methods
-            write_allowed = (method in editor_write_methods and _dialogs_allowed.get()
-                and self.owner.editor_write_handler is not None and not self.owner._closed
-                and (method != 'xdog/custom_frame' or params.get('event', {}).get('kind') in {'key', 'paste'}))
             if method not in {"xdog/context_begin", "xdog/context_chunk", "xdog/context_read", "xdog/context_close"}:
                 owner_context = self.owner.context()
-                payload["context"] = {**owner_context, **params.get("context", {}),
+                projected_context = {key: item for key, item in {**owner_context, **params.get("context", {})}.items()
+                                     if key not in REMOVED_HOST_CAPABILITIES}
+                payload["context"] = {**projected_context,
                                       "entries": self.owner.entries.for_extension(self.config.name),
                                       "has_ui": (provider_auth_review is not None or _dialogs_allowed.get()
                                                  and (self.owner.dialog_handler is not None
-                                                 or self.owner.custom_handler is not None
-                                                 or self.owner.editor_write_handler is not None
-                                                 or self.owner.queued_input_handler is not None
-                                                 or self.owner.command_menu_handler is not None
-                                                 or self.owner.compaction_request_handler is not None
-                                                 or self.owner.active_tools_request_handler is not None)
+                                                      or self.owner.command_menu_handler is not None
+                                                      or self.owner.catalog_handler is not None)
                                                  and not self.owner._closed),
                                       "host_provider_auth": provider_auth_review is not None,
-                                      "host_editor_write": write_allowed,
-                                      "host_queued_input": queue_allowed,
-                                      "host_compaction_request": compaction_allowed,
-                                      "host_active_tools_request": active_tools_allowed,
-                                      "host_context_message": context_allowed,
                                       "host_pending_messages": pending_allowed,
-                                      "host_custom": (_dialogs_allowed.get() and self.owner.custom_handler is not None
-                                                      and not self.owner._closed),
-                                      "host_overlay_controls": (_dialogs_allowed.get()
-                                          and self.owner.custom_handler is not None
-                                          and self.owner.custom_control_handler is not None and not self.owner._closed),
-                                      "host_custom_refresh": (_dialogs_allowed.get()
-                                          and self.owner.custom_handler is not None
-                                          and self.owner.custom_refresh_handler is not None and not self.owner._closed),
-                                      "host_name_request": name_allowed,
                                       "host_command_menu": menu_allowed,
                                       "host_catalog": (method == "xdog/command" and _dialogs_allowed.get()
                                                        and self.owner.catalog_handler is not None
                                                        and not self.owner._closed),
-                                      "host_navigation": (method == "xdog/command" and _dialogs_allowed.get()
-                                                          and self.owner.dialog_handler is not None
-                                                          and not self.owner._closed),
                                       "host_session": (method == "xdog/command" and _dialogs_allowed.get()
                                                        and self.owner.dialog_handler is not None
-                                                       and not self.owner._closed),
-                                      "host_editor": (method == "xdog/command" and _dialogs_allowed.get()
-                                                      and self.owner.dialog_handler is not None
-                                                      and not self.owner._closed)}
-                if name_allowed:
-                    payload['context']['has_ui'] = True  # This exact independent review binding, not another UI grant.
+                                                       and not self.owner._closed)}
                 # Read-only host projection is distinct from command mutation/UI
                 # authority. Caller context can never impersonate this envelope.
                 from xdog.agent.extensions.inspection import envelope
@@ -330,22 +244,14 @@ class _Client(StdioClient):
                 self._inventories[inventory_key] = None  # Only after this worker acknowledged the invocation.
             while "xdog_pending" in result or "xdog_auth_pending" in result:
                 if "xdog_tool_snapshot" in result:
-                    provider_metadata_error = True
                     await self.owner.accept_tool_registration(self.config.name, self, result.pop("xdog_tool_snapshot"))
-                    provider_metadata_error = False
                 if "xdog_command_snapshot" in result:
-                    provider_metadata_error = True
                     self.owner.accept_command_registration(self.config.name, self, result.pop("xdog_command_snapshot"))
-                    provider_metadata_error = False
                 if "xdog_hook_snapshot" in result:
-                    provider_metadata_error = True
                     self.owner.accept_hook_registration(self.config.name, self, result.pop("xdog_hook_snapshot"))
-                    provider_metadata_error = False
                 if "xdog_provider_snapshot" in result:
-                    provider_metadata_error = True
                     self.owner.accept_provider_registration(
                         self.config.name, self, result.pop("xdog_provider_snapshot"))
-                    provider_metadata_error = False
                 if 'xdog_auth_pending' in result:
                     call_id = result.get('xdog_auth_pending')
                     if (method != 'xdog/provider_auth' or provider_auth_review is None
@@ -353,15 +259,10 @@ class _Client(StdioClient):
                         raise ValueError('Invalid pending provider authentication owner')
                     result = await super().request('xdog/provider_auth_poll', {'call_id': call_id})
                     continue
-                pending_ui = True
                 call_id = result.get("xdog_pending")
                 if not isinstance(call_id, str) or not 0 < len(call_id) <= 128:
                     raise ValueError("Invalid pending extension callback")
-                prompt = validate_dialog(result.get("xdog_prompt"))
-                if "xdog_terminal_input_active" in result:
-                    self.owner.accept_terminal_registration(
-                        self.config.name, self, result.pop("xdog_terminal_input_active"),
-                        result.pop("xdog_terminal_input_events", None))
+                prompt = validate_sdk_dialog(result.get("xdog_prompt"))
                 contributions = result.pop("xdog_entries", [])
                 if contributions and method != 'xdog/provider_auth':
                     await self.owner.commit_entries(self.config.name, contributions)
@@ -371,26 +272,8 @@ class _Client(StdioClient):
                 handler = self.owner.dialog_handler if _dialogs_allowed.get() else None
                 if method == 'xdog/provider_auth':
                     handler = provider_auth_review
-                elif prompt['kind'] == 'editor' and prompt.get('operation') == 'propose':
-                    handler = self.owner.editor_write_handler if write_allowed else None
-                elif prompt['kind'] == 'session' and prompt.get('operation') == 'context_message':
-                    handler = (context_handler if context_allowed
-                               and self.owner.context_message_handler is context_handler else None)
-                elif (prompt['kind'] == 'session' and prompt.get('operation') == 'select_tools'
-                        and prompt.get('after_run') is True):
-                    handler = (active_tools_handler if active_tools_allowed
-                               and self.owner.active_tools_request_handler is active_tools_handler else None)
-                elif (prompt['kind'] == 'session' and prompt.get('operation') == 'compact'
-                        and prompt.get('after_run') is True):
-                    handler = self.owner.compaction_request_handler if compaction_allowed else None
-                elif (prompt['kind'] == 'session' and prompt.get('operation') == 'rename'
-                        and prompt.get('name_after_run') is True):
-                    handler = name_handler if name_allowed and self.owner.name_request_handler is name_handler else None
-                elif prompt['kind'] == 'session' and prompt.get('operation') == 'queue_input':
-                    handler = (queue_handler if queue_allowed
-                               and self.owner.queued_input_handler is queue_handler else None)
-                elif prompt["kind"] in {"editor", "session"} and method != "xdog/command":
-                    handler = None  # A forged worker flag cannot borrow a tool/hook/child host context.
+                elif prompt["kind"] == "session" and method != "xdog/command":
+                    handler = None  # Non-command read snapshots cannot borrow a live session dialog owner.
                 if prompt['kind'] == 'session' and prompt.get('operation') == 'commands' and menu_allowed:
                     from xdog.agent.extensions.command_catalog import answer as menu_answer
                     from xdog.agent.extensions.invocation import current_invocation
@@ -435,54 +318,20 @@ class _Client(StdioClient):
                         # Missing/foreign targets or changed membership are read
                         # refusals, not broken plugin callbacks. No retry/adoption.
                         value = None
-                elif prompt["kind"] == "custom":
-                    custom = self.owner.custom_handler if _dialogs_allowed.get() else None
-                    async def render(event: dict[str, Any]) -> dict[str, Any]:
-                        data = await self.request("xdog/custom_frame", {
-                            "call_id": call_id, "dialog_id": prompt["id"], "event": event})
-                        if "xdog_terminal_input_active" in data:
-                            self.owner.accept_terminal_registration(
-                                self.config.name, self, data.pop("xdog_terminal_input_active"),
-                                data.pop("xdog_terminal_input_events", None))
-                        entries = data.pop("xdog_entries", [])
-                        if entries:
-                            await self.owner.commit_entries(self.config.name, entries)
-                        self._accept_ui(data.pop("xdog_ui", []))
-                        return data
-                    key = call_id, prompt["id"]
-                    if custom is not None:
-                        self._custom_views[key] = prompt["view_id"]
-                    try:
-                        value = await custom(self.config.name, prompt, render) if custom is not None else None
-                    finally:
-                        self._custom_views.pop(key, None)
-                        self._custom_controls.pop(key, None)
                 else:
                     value = await handler(self.config.name, prompt) if handler is not None else None
                 value = validate_answer(prompt, value)
                 result = await super().request("xdog/ui_reply", {
                     "call_id": call_id, "dialog_id": prompt["id"], "value": value})
             if "xdog_tool_snapshot" in result:
-                provider_metadata_error = True
                 await self.owner.accept_tool_registration(self.config.name, self, result.pop("xdog_tool_snapshot"))
-                provider_metadata_error = False
             if "xdog_command_snapshot" in result:
-                provider_metadata_error = True
                 self.owner.accept_command_registration(self.config.name, self, result.pop("xdog_command_snapshot"))
-                provider_metadata_error = False
             if "xdog_hook_snapshot" in result:
-                provider_metadata_error = True
                 self.owner.accept_hook_registration(self.config.name, self, result.pop("xdog_hook_snapshot"))
-                provider_metadata_error = False
             if "xdog_provider_snapshot" in result:
-                provider_metadata_error = True
                 self.owner.accept_provider_registration(
                     self.config.name, self, result.pop("xdog_provider_snapshot"))
-                provider_metadata_error = False
-            if "xdog_terminal_input_active" in result:
-                self.owner.accept_terminal_registration(
-                    self.config.name, self, result.pop("xdog_terminal_input_active"),
-                        result.pop("xdog_terminal_input_events", None))
             contributions = result.pop("xdog_entries", [])
             if contributions and method != 'xdog/provider_auth':
                 await self.owner.commit_entries(self.config.name, contributions)
@@ -493,11 +342,6 @@ class _Client(StdioClient):
                 result = host_result(result)
             return result
         except BaseException:
-            if method == "xdog/custom_frame" and not pending_ui and not provider_metadata_error:
-                # Plain render/input failures keep the old cancellation contract;
-                # the broker cancels that view. Once nested UI is suspended, an
-                # abort must reap the entire uncertain callback chain instead.
-                raise
             self.owner.fail(self.config.name)
             await self.close()  # A timed-out/canceled callback is never replayed or left running.
             raise
@@ -647,19 +491,10 @@ class ExtensionRuntime:
         self.inspection = inspection
         self.tool_inventory: Callable[[], dict[str, Any] | None] | None = None
         self.session_name: Callable[[], dict[str, str] | None] | None = None
-        self.custom_handler: Callable[..., Awaitable[Any]] | None = None
-        self.custom_refresh_handler: Callable[[str, str], bool] | None = None
-        self.custom_control_handler: Callable[[str, str, int, str], bool] | None = None
-        self.name_request_handler: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None
         self.command_menu_handler: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None
         self.catalog_handler: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None
         self.dialog_cancel: Callable[[str], None] | None = None
-        self.editor_write_handler: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None
-        self.queued_input_handler: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None
-        self.active_tools_request_handler: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None
-        self.compaction_request_handler: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None
         self.pending_messages: Callable[[], bool | None | Awaitable[bool | None]] | None = None
-        self.context_message_handler: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None
         self.dialog_handler: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None
         self.publish: Callable[[dict[str, Any]], None] = lambda event: None
         self._closed = False
@@ -668,7 +503,6 @@ class ExtensionRuntime:
         self._activation_lock = asyncio.Lock()
         self._infos: dict[str, dict[str, Any]] = {}
         self._input_required: set[str] = set()
-        self._terminal_lock = asyncio.Lock()
         self._provider_lock = asyncio.Lock()
         self._failed: set[str] = set()
         self._unloaded: set[str] = set()
@@ -786,7 +620,7 @@ class ExtensionRuntime:
         changes: list[tuple[dict[str, Any], str, bool]] = []
         for row in rows:
             if (not isinstance(row, dict) or row.keys() - {"kind", "key", "lines", "clear"}
-                    or row.get("kind") not in ("notice", "status", "widget")
+                    or row.get("kind") not in ("notice", "status")
                     or not isinstance(row.get("key"), str) or not isinstance(row.get("lines"), list)
                     or len(row["lines"]) > 8 or any(not isinstance(line, str) or len(line.encode("utf-8")) > 1000
                                                   for line in row["lines"])
@@ -801,13 +635,13 @@ class ExtensionRuntime:
                 current = pending.get(key)
                 if current is not None and current["kind"] == row["kind"]:
                     pending.pop(key)
-                    changed = True  # A status clear cannot remove a widget that replaced its slot.
+                    changed = True
             elif row["kind"] != "notice":
                 normalized = {"kind": row["kind"], "key": row["key"], "lines": list(row["lines"])}
                 changed = pending.get(key) != normalized
                 pending[key] = normalized
             if len(pending) > 32:
-                raise ValueError("Extension widget/status capacity exceeded")
+                raise ValueError("Extension status capacity exceeded")
             changes.append((row, "\n".join(row["lines"]), changed))
         self._ui = pending
         for row, text, changed in changes:
@@ -926,11 +760,6 @@ class ExtensionRuntime:
         if count + len(shortcut_rows) > 64:
             raise ValueError("Extension shortcut capacity exceeded")
         info["shortcuts"] = shortcut_rows
-        if type(info.get("terminal_input", False)) is not bool:
-            raise ValueError("Invalid terminal input-hook registration")
-        from xdog.agent.extensions.terminal_input import event_kinds
-        info["terminal_events"] = list(event_kinds(info.get("terminal_events",
-            ['key', 'paste'] if info.get("terminal_input") else [])))
         if type(info.get("input", False)) is not bool:
             raise ValueError("Invalid extension input-hook registration")
         if info.get("input", False):
@@ -960,10 +789,7 @@ class ExtensionRuntime:
                                  "active" if name in self._infos else "not loaded"}
                                 for name in self.enabled],
                 "commands": self.commands(), "command_completions": self.command_completions(),
-                "ui": dict(self._ui), "shortcuts": self.shortcuts(),
-                "terminal_input": self.terminal_input_available, "terminal_generation": self.generation,
-                **({"terminal_events": list(self.terminal_events)}
-                   if self.terminal_events not in ((), ('key', 'paste')) else {})}
+                "ui": dict(self._ui), "shortcuts": self.shortcuts()}
 
     def commands(self) -> dict[str, str]:
         return {f"ext-{name}-{row['name']}".lower(): row["description"]
@@ -1056,79 +882,12 @@ class ExtensionRuntime:
             else:
                 self._input_required.discard(name)  # Explicit owned disposal, not a failed-worker bypass.
 
-    def accept_terminal_registration(self, name: str, client: _Client, active: Any, events: Any = None) -> None:
-        # Late metadata from a retired connection cannot rewrite its successor.
-        if self._manager._clients.get(name) is not client:
-            return
-        if type(active) is not bool:
-            raise ValueError("Invalid live terminal-hook registration")
-        from xdog.agent.extensions.terminal_input import event_kinds
-        kinds = list(event_kinds(events if events is not None else ['key', 'paste'] if active else []))
-        if bool(kinds) != active:
-            raise ValueError("Inconsistent terminal input event registration")
-        info = self._infos.get(name)
-        if info is not None and (info.get("terminal_input", False) != active or info.get("terminal_events") != kinds):
-            self._infos[name] = {**info, "terminal_input": active, "terminal_events": kinds}
-            if not self._closed:
-                self.publish({"type": "extension_ui", "snapshot": self.snapshot()})
 
     @property
     def generation(self) -> int:
         """Monotonic worker-selection lease, including failure/reload/unload/close."""
         return self._generation
 
-    @property
-    def terminal_input_available(self) -> bool:
-        return (not self._closed and any(info.get("terminal_input") is True
-                for name, info in self._infos.items() if name not in self._failed | self._unloaded))
-
-    @property
-    def terminal_events(self) -> tuple[str, ...]:
-        if self._closed:
-            return ()
-        return tuple(kind for kind in ('key', 'paste', 'release') if any(
-            kind in info.get('terminal_events', ['key', 'paste'])
-            for name, info in self._infos.items()
-            if name not in self._failed | self._unloaded and info.get('terminal_input')))
-
-    async def terminal_input(self, data: str, *, kind: str, surface: str) -> dict[str, Any]:
-        """Data transformation only; no dialogs/commands/models and no automatic raw fallback."""
-        from xdog.agent.extensions.terminal_input import event_decision, metadata, text
-        current, info = text(data), metadata({"kind": kind, "surface": surface})
-        await self.initialize()
-        if self._closed:
-            raise ValueError("Terminal extension owner is closed")
-        generation = self.generation
-        async def run() -> dict[str, Any]:
-            nonlocal current
-            async with self._terminal_lock:
-                if self._closed or self.generation != generation:
-                    raise ValueError("Terminal extension owner changed")
-                with silent_extension_ui():
-                    for name, declared in tuple(self._infos.items()):
-                        if (name in self._failed | self._unloaded or not declared.get("terminal_input")
-                                or kind not in declared.get("terminal_events", ['key', 'paste'])):
-                            continue
-                        client = self._manager._clients.get(name)
-                        try:
-                            raw = await self._rpc(name, "xdog/terminal_input", {"data": current, "metadata": info})
-                            result = event_decision(raw.get("decision"), kind)
-                        except asyncio.CancelledError:
-                            raise
-                        except Exception:
-                            if self._manager._clients.get(name) is client:
-                                if name not in self._failed:
-                                    self.fail(name)
-                                await self._manager._disconnect(name)
-                            raise ValueError("Terminal hook failed; input not replayed") from None
-                        if self.generation != generation:
-                            raise ValueError("Terminal extension worker selection changed")
-                        if result.consume:
-                            return result.to_dict()
-                        if result.data is not None:
-                            current = result.data
-                return {"consume": True} if kind == "release" else {"consume": False, "data": current}
-        return await self._manager._bridge(run())
 
     def provider_auth_catalog(self) -> tuple[dict[str, Any], ...]:
         from xdog.agent.extensions.provider_oauth_runtime import catalog
@@ -1524,19 +1283,16 @@ def validate_snapshot(value: Any) -> dict[str, Any]:
     """Validate bounded host snapshots before UI/completion consumes socket data."""
     if not isinstance(value, dict):
         raise ValueError("Invalid extension snapshot")
-    generation = value.get("terminal_generation", 0)
-    if type(generation) is not int or not 0 <= generation <= 2**53:
-        raise ValueError("Invalid terminal input generation")
-    if type(value.get("terminal_input", False)) is not bool:
-        raise ValueError("Invalid terminal input registration")
-    from xdog.agent.extensions.terminal_input import event_kinds
-    event_kinds(value.get('terminal_events', ['key', 'paste'] if value.get('terminal_input') else []))
+    if {"terminal_input", "terminal_generation", "terminal_events"} & value.keys():
+        raise ValueError("Extension terminal input APIs have been removed")
+    if set(value) - {'extensions', 'commands', 'ui', 'shortcuts', 'command_completions'}:
+        raise ValueError('Extension snapshots cannot restore pending dialogs or host controls')
     rows, commands, ui = value.get("extensions"), value.get("commands"), value.get("ui")
     if (not isinstance(rows, list) or len(rows) > 16 or not isinstance(commands, dict) or len(commands) > 64
             or not isinstance(ui, dict) or len(ui) > 32):
         raise ValueError("Invalid extension snapshot capacity")
     for row in rows:
-        if (not isinstance(row, dict) or not isinstance(row.get("name"), str)
+        if (not isinstance(row, dict) or set(row) != {'name', 'state'} or not isinstance(row.get("name"), str)
                 or not isinstance(row.get("state"), str)
                 or row["state"] not in {"not loaded", "active", "failed", "unloaded"}):
             raise ValueError("Invalid extension status")
@@ -1554,8 +1310,11 @@ def validate_snapshot(value: Any) -> dict[str, Any]:
     snapshot_rows(value.get("shortcuts", []), commands, active)
     for key, row in ui.items():
         if (not isinstance(key, str) or len(key) > 80 or not isinstance(row, dict)
-                or row.get("kind") not in {"status", "widget"} or not isinstance(row.get("lines"), list)
+                or set(row) - {'kind', 'key', 'lines'} or row.get("kind") not in {"status"}
+                or 'key' in row and (not isinstance(row['key'], str)
+                                    or re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,31}', row['key']) is None)
+                or not isinstance(row.get("lines"), list)
                 or len(row["lines"]) > 8 or any(not isinstance(line, str) or len(line.encode("utf-8")) > 1000
                                                for line in row["lines"])):
-            raise ValueError("Invalid extension widget snapshot")
+            raise ValueError("Invalid extension status snapshot")
     return value

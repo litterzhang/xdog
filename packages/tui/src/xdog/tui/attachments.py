@@ -133,23 +133,8 @@ class AttachmentReader:
                         process.wait(timeout=0.5)
 
     def clipboard(self) -> ClipboardResult:
-        if sys.platform == "win32":
-            from xdog.tui.clipboard_windows import read_windows_clipboard
-            kind, data = read_windows_clipboard(self._command, sys.executable, image_limit=MAX_IMAGE_BYTES)
-            if kind == "image":
-                return ClipboardResult(image=attachment(data, "clipboard"))
-            return ClipboardResult(text=data.decode("utf-8"))
-        if sys.platform == "darwin":
-            helper = shutil.which("osascript")
-            if helper:
-                from xdog.tui.clipboard_macos import read_macos_clipboard
-                kind, data = read_macos_clipboard(self._command, helper, image_limit=MAX_IMAGE_BYTES)
-                if kind == "image":
-                    return ClipboardResult(image=attachment(data, "clipboard"))
-                return ClipboardResult(text=data.decode("utf-8"))
-            if shutil.which("pbpaste"):
-                return ClipboardResult(text=self._command(["pbpaste"], maximum=1024 * 1024).decode("utf-8"))
-            raise ValueError("macOS clipboard helpers unavailable; use /attach or terminal paste")
+        if sys.platform != "linux":
+            raise ValueError("Clipboard integration requires Linux; use /attach or terminal paste")
         if os.environ.get("WAYLAND_DISPLAY") and shutil.which("wl-paste"):
             types = self._command(["wl-paste", "--list-types"], maximum=64 * 1024).decode(errors="replace").splitlines()
             for mime in ("image/png", "image/jpeg", "image/webp"):
@@ -167,9 +152,7 @@ class AttachmentReader:
                     return ClipboardResult(image=attachment(self._command([*base, "-target", mime]), "clipboard"))
             return ClipboardResult(text=self._command([*base, "-target", "UTF8_STRING"],
                                                      maximum=1024 * 1024).decode("utf-8"))
-        if shutil.which("pbpaste"):
-            return ClipboardResult(text=self._command(["pbpaste"], maximum=1024 * 1024).decode("utf-8"))
-        raise ValueError("No supported clipboard helper (wl-paste, xclip, pbpaste); use /attach or terminal paste")
+        raise ValueError("No supported clipboard helper (wl-paste, xclip); use /attach or terminal paste")
 
     def _work(self, path: Path | None, epoch: int) -> None:
         try:

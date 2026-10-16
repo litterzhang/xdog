@@ -42,11 +42,6 @@ def create(session: AgentSession) -> ContextMessages:
         history=lambda: session.agent.messages, persist=persist,
         publish=lambda event: session.extensions.publish(event))
 
-    from xdog.agent.core import CustomAgentMessage
-    from xdog.agent.custom_delivery import bind
-    async def validate(message: CustomAgentMessage) -> None:
-        from xdog.agent.extensions.context_message import images
-        from xdog.ai.utils.image_files import validate_references
-        await settled_image_work(lambda: validate_references(images((message,)), session.model_info))
-    bind(store_owner, session.agent, validate)
+    # Retain historical next-prompt capture/admission and typed-image persistence.
+    # Extension-triggered steer/follow-up/continuation has no remaining request caller.
     return store_owner

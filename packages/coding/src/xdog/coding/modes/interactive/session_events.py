@@ -74,8 +74,6 @@ class NativeSessionEvents:
         self.ui = ui
         self.runtime: Any = None
         self.local: dict[str, _NativeInput] = {}
-        self.receipts: dict[str, Any] = {}
-        self.holds: set[str] = set()
         self.lock = threading.RLock()
         self.unsubscribe: Any = None
         self.cancelled: set[str] = set()
@@ -113,7 +111,7 @@ class NativeSessionEvents:
         """Reserve non-turn callbacks before launching a worker; return its settlement receipt."""
         if self.runtime is None:
             return lambda: None
-        cancel = self.ui._terminal_worker.cancel if name == 'terminal' else self.ui._session.children.abort
+        cancel = self.ui._session.children.abort
         release: Callable[[], None] = self.runtime.controller.reserve_producer(name, cancel=cancel)
         return release
 
@@ -128,17 +126,11 @@ class NativeSessionEvents:
         ui._bind_extension_dialogs()
         captured = ui._session.session_id
         ui._session.extensions.publish = lambda event: ui._event_queue.put({**event, 'extension_session': captured})
-        self.receipts[batch.id] = ui._after_run_compaction.begin()
         ui._session.permissions.set_request_handler(lambda request: self.receive(SessionEvent(
             batch.session_id, batch.generation, '', 'permission_request', request, batch.id, batch.request_ids)))
 
     async def finished(self, batch: TurnBatch, result: TurnResult) -> None:
         ui = self.ui
-        producer = self.receipts.pop(batch.id, None)
-        if producer is not None:
-            success = result.status == 'succeeded'
-            ui._after_run_compaction.finish(producer, success)
-            ui._after_run_compaction.worker_finished(producer.generation, success)
         undelivered = [dict(id=item.id, content=item.content) for item in ui._session.agent.drain_inputs()]
         if undelivered:
             ui._event_queue.put({'type': 'inputs_settled', 'inputs': undelivered})
@@ -146,14 +138,6 @@ class NativeSessionEvents:
         ui._session._expire_turn_scoped_skills()
         ui._worker_loop_ref = None
         ui._worker_task = None
-        # Only an actual reviewed follow-up holds automatic work. Rendering a
-        # completed turn must never be a scheduling acknowledgement.
-        if any(getattr(helper.queue, '_pending', None) is not None for helper in
-               (ui._after_run_compaction, ui._after_run_tools, ui._after_run_name)):
-            token = 'native-' + batch.id
-            self.runtime.controller.hold_producer(token)
-            with self.lock:
-                self.holds.add(token)
 
     def receive(self, event: SessionEvent) -> None:
         if event.kind == 'agent_event':
@@ -246,18 +230,6 @@ class NativeSessionEvents:
         ui = self.ui
         draft = bool(ui._editor.get_text().strip() or ui._composer.items)
         self.runtime.controller.set_human_pending(draft)
-        producer_busy = (self.runtime.controller.current_request is not None or ui._command is not None
-            or ui._child_image_starting or ui._session.children.supervisor.active
-            or ui._session.permissions.has_pending_requests or ui._session._compacting
-            or ui._session._auth_changing or ui._session._context_changes
-            or bool(getattr(ui._terminal_worker, 'busy', False)))
-        reviewed = any(getattr(helper.queue, '_pending', None) is not None for helper in
-                       (ui._after_run_compaction, ui._after_run_tools, ui._after_run_name))
-        if not producer_busy and not reviewed:
-            with self.lock:
-                tokens, self.holds = self.holds, set()
-            for token in tokens:
-                self.runtime.controller.release_producer(token)
         return False
 
     def display(self, event: SessionEvent) -> None:

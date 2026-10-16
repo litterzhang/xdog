@@ -22,11 +22,6 @@ def test_tui_does_not_own_a_second_agent_prompt_loop():
     assert 'NativeExternalEvents' not in source
 
 
-def test_rpc_does_not_start_old_event_dispatcher():
-    from xdog.coding.modes.rpc import rpc_mode
-    assert 'RpcExternalEvents' not in inspect.getsource(rpc_mode)
-
-
 async def test_new_sdk_input_does_not_reuse_a_controller_whose_last_user_is_closing(coding_session, monkeypatch):
     from concurrent.futures import Future
 

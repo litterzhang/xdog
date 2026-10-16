@@ -1,4 +1,8 @@
-"""Local child editor snapshots and exact accepted-input receipts, never parent drafts."""
+"""Shared immutable input snapshots/receipts; child UI recovery is session-local and transient.
+
+The record shape also backs primary persistence and Agent recovery codecs. Keeping
+this value type does not expose child disk management or cross-session UI authority.
+"""
 from __future__ import annotations
 
 import hashlib

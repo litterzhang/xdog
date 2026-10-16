@@ -29,10 +29,7 @@ _DEFAULTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("suspend", ("ctrl+z",)), ("details", ("ctrl+o",)),
     ("external_editor", ("ctrl+g",)), ("bindings", ("f1",)),
     ("save_draft", ("ctrl+alt+s",)),
-    ("remote_save_draft", ("ctrl+alt+shift+s",)),
     ("paste_clipboard", ("ctrl+v",)), ("copy", ("alt+c",)),
-    ("terminal_input", ("alt+i",)),
-    ("review", ("alt+d",)),
     ("sessions", ("alt+r",)), ("tree", ()),
     ("transcript", ("alt+h",)), ("fullscreen", ()),
     ("steer", ("alt+s",)), ("follow_up", ("alt+f",)), ("queue", ("ctrl+q",)),
@@ -156,7 +153,7 @@ EDITOR_EVENTS: dict[str, KeyEvent] = {
         alt="alt" in keys[0].split("+"), shift="shift" in keys[0].split("+"),
     ) for action, keys in _DEFAULTS if action not in {
         "redraw", "suspend", "details", "external_editor", "bindings", "steer", "follow_up", "queue",
-        "save_draft", "remote_save_draft",
-        "review", "sessions", "tree", "paste_clipboard", "transcript", "fullscreen", "copy", "terminal_input",
+        "save_draft",
+        "sessions", "tree", "paste_clipboard", "transcript", "fullscreen", "copy",
     }
 }

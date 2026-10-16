@@ -16,7 +16,7 @@ from xdog.tui.attachments import Attachment, AttachmentComposer
 from xdog.tui.child_browser import ChildEntry
 from xdog.tui.child_drafts import ChildDraft, draft_receipt
 from xdog.tui.components.attachment_panel import AttachmentPanel
-from xdog.tui.components.child_draft_panel import ChildDraftPanel, DraftEntry
+from xdog.tui.components.child_draft_panel import ChildDraftPanel, DraftEntry, draft_entries
 from xdog.tui.components.child_queue_panel import ChildQueuePanel
 from xdog.tui.components.input_panel import InputPanel
 from xdog.tui.components.transcript_panel import TranscriptPanel
@@ -40,16 +40,13 @@ class ChildPanel(Component):
                  configured_start: Callable[[str, str, dict[str, Any]], None] | None = None,
                  image_send: Callable[[str, str, str, str, dict[str, Any], tuple[Attachment, ...]], None] | None = None,
                  root: Path = Path('.'), drafts: dict[tuple[str, str], ChildDraft] | None = None,
-                 retained_bytes: Callable[[], int] | None = None,
-                 draft_source: Callable[[], tuple[DraftEntry, ...]] | None = None,
-                 draft_action: Callable[[str, DraftEntry], None] | None = None) -> None:
+                 retained_bytes: Callable[[], int] | None = None) -> None:
         self.owner_token = uuid.uuid4().hex
         self.send, self.read, self.on_close = send, read, close
         self.output, self.fullscreen = output, fullscreen
         self.configure, self.configured_start = configure, configured_start
         self.image_send, self._root = image_send, root
         self._retained_bytes = retained_bytes
-        self._draft_source, self._draft_action = draft_source, draft_action
         self.draft_panel: ChildDraftPanel | None = None
         self._drafts = drafts if drafts is not None else {}
         self._attachment_events: queue.SimpleQueue[tuple[int, dict[str, object]]] = queue.SimpleQueue()
@@ -89,7 +86,6 @@ class ChildPanel(Component):
         self.queue_enabled = False
         self.queue_image_recovery_enabled = False
         self.queue_task_recovery_enabled = False
-        self.queue_image_return_enabled = False
         self.queue: ChildQueuePanel | None = None
         self._input = InputPanel(_Theme(), max_rows=3)
         self._input.on_submit = self._submit
@@ -261,6 +257,7 @@ class ChildPanel(Component):
         self.read(identifier)
 
     def close(self) -> None:
+        self._close_draft_recovery()
         if self.queue is not None:
             self.queue.close()
         self._save_draft()
@@ -270,6 +267,7 @@ class ChildPanel(Component):
             self.preview.close()
 
     def back(self) -> None:
+        self._close_draft_recovery()
         if self.queue is not None:
             self.queue.close()
         self._save_draft()
@@ -290,15 +288,21 @@ class ChildPanel(Component):
         self._visible = False
         self._input.focused = False
 
+    def _close_draft_recovery(self) -> None:
+        if self.draft_panel is not None:
+            self.draft_panel.close()
+            self.draft_panel = None
+
+    def _transient_entries(self) -> tuple[DraftEntry, ...]:
+        return draft_entries({self.owner_token: self._drafts}, {self.owner_token: 'Current session'}, self.owner_token)
+
     def open_drafts(self) -> None:
         self._poll_attachments()
-        if (self._image_pending is not None or self.composer is not None and self.composer.reader.pending):
-            self._error = 'Wait for child image read/admission settlement before browsing drafts'
-            return
-        if self._draft_source is None or self._draft_action is None:
-            self._error = 'Local child draft browser host unavailable'
+        if self._image_pending is not None or self.composer is not None and self.composer.reader.pending:
+            self._error = 'Wait for child image read/admission settlement before recovery'
             return
         self._save_draft()
+        self._close_draft_recovery()
         self._terminal_epoch += 1
         if self.preview is not None and self.preview.fullscreen:
             self.fullscreen()
@@ -308,43 +312,43 @@ class ChildPanel(Component):
             self._attachment_generation += 1
         self._mode = 'drafts'
         self._input.focused = False
-        self.draft_panel = ChildDraftPanel(self._draft_source, self._draft_action, self.back)
-        self.draft_panel.focused = self.focused
+        def reopen(action: str, entry: DraftEntry) -> None:
+            if (action != 'reopen' or not self.focused or self._mode != 'drafts'
+                    or self.draft_panel is not browser or self.terminal_lease != lease
+                    or browser.view_lease != view_lease):
+                raise ValueError('Child recovery owner/view changed; review current input, no replay')
+            self.adopt_draft(entry, reopen=True)
+        browser = ChildDraftPanel(self._transient_entries, reopen, self.back)
+        self.draft_panel = browser
+        browser.focused = self.focused
+        lease, view_lease = self.terminal_lease, browser.view_lease
         self._visible = False
 
     def adopt_draft(self, entry: DraftEntry, *, reopen: bool = False) -> None:
+        # Same-session editing recovery only. Disk/cross-context/copy grants are gone.
+        current = self._drafts.get(entry.key)
+        if (not reopen or not entry.current or entry.scope != self.owner_token
+                or current is None or current is not entry.original or current != entry.value):
+            raise ValueError('Only an unchanged current-session transient input can reopen')
         if entry.value.images and self.image_send is None:
             raise ValueError('Image-capable child draft owner required; no text fallback')
-        if reopen:
-            action, slot = entry.key
-            if action not in {'start', 'steer', 'follow-up'}:
-                raise ValueError('Unsupported retained draft action')
-            if action != 'start':
-                current = next((row for row in self._entries if row.id == slot), None)
-                if current is None or current.status != 'running':
-                    raise ValueError('Child no longer running; explicitly copy to a fresh task instead')
-                self._selected_id = slot
-        else:
-            action, slot = 'start', 'copied-local/' + uuid.uuid4().hex
-        self.draft_panel = None
+        action, slot = entry.key
+        if action not in {'start', 'steer', 'follow-up'}:
+            raise ValueError('Unsupported retained draft action')
+        if action != 'start':
+            child = next((row for row in self._entries if row.id == slot), None)
+            if child is None or child.status != 'running':
+                raise ValueError('Child no longer running; transient input kept, no automatic replay')
+            self._selected_id = slot
+        self._close_draft_recovery()
         self._form(action, draft_slot=slot)
         self._input.set_text(entry.value.text)
-        if reopen:
-            self._config = json.loads(json.dumps(entry.value.config))
-            self._access = entry.value.access
-            if entry.value.cursor is not None:
-                self._input._cursor = min(max(0, entry.value.cursor), len(self._input.get_text()))
-        else:
-            self._config = {'inherit_context': False}
-            self._access = 'read-only'
-            if entry.value.images and self.composer is not None:
-                self.composer.restore(entry.value.images)
+        self._config = json.loads(json.dumps(entry.value.config))
+        self._access = entry.value.access
+        if entry.value.cursor is not None:
+            self._input._cursor = min(max(0, entry.value.cursor), len(self._input.get_text()))
         if entry.value.uncertain:
             self._error = 'Previous receipt uncertain; inspect actual children before explicitly submitting'
-        self._drafts[action, slot] = ChildDraft(
-            self._input.get_text(), self._access, dict(self._config),
-            tuple(self.composer.items.values()) if self.composer else (), entry.value.uncertain,
-            self._input._cursor)
         self._save_draft()
         self._input.focused = self.focused
         self._visible = False
@@ -357,27 +361,18 @@ class ChildPanel(Component):
         self._mode = 'queue'
         self.queue = ChildQueuePanel(child,
             lambda request: self.send('queue', child, json.dumps(request), 'read-only'), self.back,
-            lambda item: self._returned_input(child, item),
-            retain_images=self._retain_return_images)
+            lambda item: self._returned_input(child, item))
         self.queue.focused = self.focused
         self.queue.image_recovery_enabled = self.queue_image_recovery_enabled
         self.queue.task_recovery_enabled = self.queue_task_recovery_enabled
-        self.queue.image_return_enabled = self.queue_image_return_enabled
         self.send('queue', child, json.dumps({'action': 'list'}), 'read-only')
-
-    def _retain_return_images(self, item: dict[str, Any], images: tuple[Attachment, ...]) -> None:
-        self._save_draft()
-        retained = self._retained_bytes() if self._retained_bytes is not None else sum(
-            len(image.data) for draft in self._drafts.values() for image in draft.images)
-        if retained + sum(len(image.data) for image in images) > 40 * 1024 * 1024:
-            raise ValueError('Return backup exceeds local retention budget; original not removed')
-        self._drafts['start', 'return-backup/' + uuid.uuid4().hex] = ChildDraft(
-            item['content'], 'read-only', {'inherit_context': False}, images, uncertain=True)
 
     def _returned_input(self, child: str, item: dict[str, Any]) -> None:
         self._selected_id = child
         images = item.get('images', ())
         if images:
+            if not item.get('stopped'):
+                raise ValueError('Live queued image return has no user UI entry')
             if self.image_send is None or not isinstance(images, tuple) or any(
                     not isinstance(image, Attachment) for image in images):
                 raise ValueError('Image-capable child draft owner required for stopped recovery')
@@ -402,6 +397,7 @@ class ChildPanel(Component):
         self._visible = False
 
     def _form(self, action: str, *, draft_slot: str | None = None) -> None:
+        self._close_draft_recovery()
         self._save_draft()
         self._terminal_epoch += 1
         if action != "start" and not self._selected_id:
@@ -434,7 +430,7 @@ class ChildPanel(Component):
         self._visible = False
 
     def _save_draft(self) -> None:
-        if not self._form_action or self.image_send is None and self._draft_source is None:
+        if not self._form_action:
             return
         if self._image_pending is not None:
             action, child, draft = self._image_pending
@@ -847,7 +843,7 @@ class ChildPanel(Component):
                 rows.append("No matching children · n starts read-only work")
             if self._error:
                 rows.append("Child error: " + self._error)
-            rows.append("Enter inspect · / filter · n new · s steer · t follow-up · q inputs · d drafts · "
+            rows.append("Enter inspect · / filter · n new · s steer · t follow-up · q inputs · d recover unsent · "
                         "c cancel · x close · Esc back")
             self._visible = self._budget >= 3 and width >= 24 and bool(entries)
         return [truncate_to_width(row, max(0, width), "") for row in rows[:self._budget]]

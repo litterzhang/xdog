@@ -16,6 +16,10 @@ MAX_CACHE = 4 * 1024 * 1024
 
 
 def main() -> None:
+    # A fixed private-protocol handshake separates cold import startup from
+    # bounded compilation/validation. No schema is processed before readiness.
+    sys.stdout.write('{"schema_helper_ready":1}\n')
+    sys.stdout.flush()
     cache: OrderedDict[str, tuple[CompiledSchema, int]] = OrderedDict()
     retained = 0
     while raw := sys.stdin.buffer.readline(MAX_FRAME + 1):

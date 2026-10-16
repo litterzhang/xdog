@@ -29,6 +29,10 @@ LOCK_TIMEOUT = 3.0
 _KEY = re.compile(r'[a-f0-9]{32}')
 
 
+class DraftStoreFullError(ValueError):
+    """A create-only snapshot was refused at the fixed capacity, before publishing bytes."""
+
+
 @dataclass(frozen=True)
 class SavedChildDraft:
     id: str
@@ -236,7 +240,7 @@ class ChildDraftStore:
         with self._directory(create=True) as fd:
             if sum(_KEY.fullmatch(name.removesuffix('.json')) is not None
                    for name in os.listdir(fd) if name.endswith('.json')) >= MAX_DRAFTS:
-                raise ValueError('Saved child draft catalog full; explicitly discard old snapshots')
+                raise DraftStoreFullError('Saved child draft catalog full; explicitly discard old snapshots')
             temporary = '.draft-' + uuid.uuid4().hex
             file_fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
             try:

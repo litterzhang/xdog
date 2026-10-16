@@ -176,36 +176,7 @@ class ClawChildren:
             return capture_tools(agent, inspection_session, spec.id)
         extension.tool_inventory = inventory
 
-        from xdog.ai.types import ImageContent
-        async def validate_queue_images(images: tuple[ImageContent, ...]) -> None:
-            from xdog.agent.core import ModelStreamFn
-            from xdog.ai.utils.image_files import validate_references
-            model = agent.state.model
-            def validate() -> None:
-                def current_metadata() -> Any:
-                    return (extension.provider_model(model) if model.startswith('ext-')
-                            else base_stream.resolve_model(model) if isinstance(base_stream, ModelStreamFn)
-                            else selected.metadata if model == selected.id else None)
-                metadata = current_metadata()
-                validate_references(images, metadata)
-                if current_metadata() != metadata:
-                    raise ValueError('Child image model capabilities changed during admission')
-            await asyncio.to_thread(validate)
-            if agent.state.model != model:
-                raise ValueError('Child image model changed during admission')
-        def queue_alive() -> bool:
-            return (not extension._closed and not self.extensions.parent._closed
-                and str(extension.context().get('session_id', '')) == inspection_session
-                and session._runtime._active_session is session)
-        from xdog.agent.input_queue import Delivery, QueuedInput
-        async def admit_queue(identifier: str, content: str, delivery: Delivery,
-                              images: tuple[ImageContent, ...], alive: Callable[[], bool]) -> QueuedInput:
-            return await self.supervisor._admit_identified_input(spec.id, agent, identifier,
-                                                                 content, delivery, images, alive)
-        async def discard_queue(identifier: str) -> bool:
-            return await self.supervisor._discard_identified_input(spec.id, agent, identifier)
-        self.extensions.bind_queued_input(spec.id, agent, validate_images=validate_queue_images,
-                                          queue_alive=queue_alive, admit=admit_queue, discard=discard_queue)
+        self.extensions.bind_pending_messages(spec.id, agent)
         await self.extensions.start(extension_spec, extension)
         inventory_tools = (*tools, *extension.tools())
         agent.set_tools(tuple(tool for tool in inventory_tools if allowed_tools is None or tool.name in allowed_tools))

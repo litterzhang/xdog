@@ -12,8 +12,8 @@ def setup(api):
             return {"action": "reject", "reason": "User input intentionally rejected by fixture"}
         if "hook-bad" in text:
             return {"action": "transform", "text": 42}
-        assert await api.get_editor() is None
-        assert not await api.open_sessions()
+        assert not hasattr(api, 'get_editor')
+        assert not hasattr(api, 'open_sessions')
         api.append_entry(
             "input_seen",
             {

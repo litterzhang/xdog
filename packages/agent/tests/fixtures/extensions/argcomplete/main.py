@@ -16,9 +16,9 @@ def setup(api):
         nonlocal completed
         completed += 1
         assert not api.has_ui
-        assert await api.get_editor() is None
-        assert not await api.navigate_session('new')
-        assert not await api.set_session_name('COMPLETION-CANNOT-RENAME')
+        assert not hasattr(api, 'get_editor')
+        assert not hasattr(api, 'navigate_session')
+        assert not hasattr(api, 'set_session_name')
         if prefix == 'hold':
             Path(api.settings['marker']).write_text('entered')
             await asyncio.Event().wait()

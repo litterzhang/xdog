@@ -1,4 +1,4 @@
-"""Read-only native navigation entries shared by Coding terminal and RPC clients."""
+"""Read-only native navigation entries shared by Coding terminal clients."""
 from __future__ import annotations
 
 from xdog.agent.history import history_points

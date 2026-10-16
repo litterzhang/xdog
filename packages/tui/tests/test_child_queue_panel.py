@@ -131,42 +131,26 @@ def test_stopped_edit_and_reorder_cannot_prepare_live_mutation():
     assert panel._confirm is None and panel._mode == 'list' and not sent
 
 
-def test_live_image_return_two_painted_reviews_and_bad_commit_keeps_backup():
-    import base64
-
-    from xdog.tui.attachments import attachment
-    from xdog.tui.child_drafts import draft_receipt
-    image = attachment(base64.b64decode(
-        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j5ioAAAAASUVORK5CYII='), 'image.png')
-    sent, returned, backups = [], [], []
-    panel = ChildQueuePanel('child', sent.append, lambda: None, returned.append,
-                            retain_images=lambda *args: backups.append(args))
-    panel.image_return_enabled = True
-    panel.focused = True
+def test_live_image_return_has_no_user_shortcut_review_or_backup_path():
+    panel, sent, drafts = make()
     value = data()
     value['stopped'] = False
     value['inputs'][0]['image_count'] = 1
     panel.publish(value)
-    panel.render(80)
+    # A stale host's old capability assignment cannot restore the removed UI.
+    panel.image_return_enabled = True
+    panel.set_render_budget(9)
+    rendered = '\n'.join(panel.render(120))
+    assert 'u return' not in rendered and 'SECOND' not in rendered
     panel.handle_input(KeyEvent('u'))
-    review(panel)
     panel.handle_input(KeyEvent('enter'))
-    assert sent[-1]['action'] == 'return_prepare' and not returned and not backups
-    receipt = draft_receipt(value['inputs'][0]['content'], (image,))
-    panel.publish({**value, 'return_prepared': value['inputs'][0], 'return_token': 'a' * 32,
-                   'image_receipt': receipt}, (image,))
-    assert len(backups) == 1 and not returned
-    panel.handle_input(KeyEvent('enter'))
-    assert sent[-1]['action'] == 'return_prepare'  # Second unpainted Enter cannot remove.
-    review(panel)
-    panel.handle_input(KeyEvent('enter'))
-    assert sent[-1]['action'] == 'return_commit'
-    with pytest.raises(ValueError, match='mismatched'):
-        panel.publish({**value, 'inputs': [], 'returned': value['inputs'][0], 'return_token': 'b' * 32,
-                       'image_receipt': receipt})
-    assert not returned and len(backups) == 1
-    panel.fail('Commit receipt lost; inspect current queue')
-    assert backups[0][1] == (image,)
+    panel.close()
+    assert panel._mode == 'list' and panel._confirm is None and not sent and not drafts
+    with pytest.raises(ValueError, match='queue UI'):
+        panel.publish({**value, 'return_prepared': value['inputs'][0], 'return_token': 'a' * 32})
+    with pytest.raises(ValueError, match='Unsupported queue UI'):
+        panel._review('return_prepare')
+    assert not sent and not drafts
 
 
 def test_crash_snapshot_source_is_reviewed_as_uncertain_not_an_unexecuted_queue_claim():

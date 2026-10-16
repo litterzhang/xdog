@@ -15,10 +15,11 @@ from xdog.agent.mcp.oauth_native_store import NativeCredentialStore
 
 def storage_config(value: Any) -> dict[str, str]:
     if (not isinstance(value, dict) or set(value) != {'backend', 'namespace'}
-            or value['backend'] not in ('secret-service', 'keychain', 'windows-credential')
+            or value['backend'] != 'secret-service'
             or not isinstance(value['namespace'], str) or not Path(value['namespace']).is_absolute()
             or len(value['namespace'].encode()) > 8192 or '\x00' in value['namespace']):
-        raise ValueError('Provider credential storage requires an explicit native backend/absolute namespace')
+        raise ValueError('Provider credential storage requires an explicit Linux Secret Service '
+                         'backend/absolute namespace')
     return dict(value)
 
 

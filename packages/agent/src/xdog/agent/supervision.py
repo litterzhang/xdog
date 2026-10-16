@@ -270,6 +270,9 @@ class ChildSupervisor:
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
         self._closed = False
+        # Process-local main-Agent ownership, never an argument, result or durable record.
+        # tools() is refreshed by hosts; the nonce must survive those refreshes.
+        self._tool_return_owner = uuid.uuid4().hex
         self._admission_pauses = 0
         from xdog.agent.supervision_queue import recovery_from_dicts
         for record in records or ():
@@ -525,7 +528,8 @@ class ChildSupervisor:
             missing = tuple(part for part in child.spec.images if part not in set(canonical))
             check_collection((*canonical, *missing))
             check_collection(part for row in child.agent.pending_inputs() for part in row.images)
-            check_retained((*canonical, *child.spec.images,
+            check_retained((*canonical, *child.spec.images, *child.live_returns.retained_images(),
+                            *(part for row in child.returned_backups for part in row.images),
                             *(part for row in child.agent.pending_inputs() for part in row.images)))
         except ValueError as exc:
             raise RuntimeError(str(exc)) from exc
@@ -827,6 +831,7 @@ class ChildSupervisor:
             child.progress_sources_limited = False
             child.progress.clear()  # Live progress never substitutes for durable final tool results.
             child.agent = None  # Never retain oversized canonical provider/tool history after settlement.
+            child.live_returns.clear()  # No stopped child retains process-local return leases/byte references.
         try:
             record = self._record(child, transcript=True)
             record["settling"] = False
@@ -904,6 +909,8 @@ class ChildSupervisor:
             raise ValueError('Child is not running or its bounded input queue is full/changed')
         check_collection((*item.images, *(part for row in agent.pending_inputs() for part in row.images)))
         check_retained((*image_parts(agent.messages), *child.spec.images, *item.images,
+                        *child.live_returns.retained_images(),
+                        *(part for row in child.returned_backups for part in row.images),
                         *(part for row in agent.pending_inputs() for part in row.images)))
         if self.persist_inputs is not None:
             # Persist BEFORE live acceptance. Cancellation must settle the actual
@@ -1244,6 +1251,7 @@ class ChildSupervisor:
             loop = self._loop
             first = not self._closed
             self._closed = True
+            self._tool_return_owner = uuid.uuid4().hex
             future = (asyncio.run_coroutine_threadsafe(self._close_children(), loop)
                       if first and loop is not None else None)
         canceled = False
@@ -1271,7 +1279,10 @@ class ChildSupervisor:
     def abort(self) -> None:
         """Cancel current children without closing the session's reusable supervisor."""
         with self._start_lock:
-            if self._closed or self._loop is None:
+            if self._closed:
+                return
+            self._tool_return_owner = uuid.uuid4().hex
+            if self._loop is None:
                 return
             future = asyncio.run_coroutine_threadsafe(self._close_children(), self._loop)
         def consume(result: concurrent.futures.Future[None]) -> None:
@@ -1285,6 +1296,7 @@ class ChildSupervisor:
             if self._closed:
                 return
             self._closed = True
+            self._tool_return_owner = uuid.uuid4().hex
             loop = self._loop
             if loop is None:
                 return
@@ -1302,14 +1314,44 @@ class ChildSupervisor:
                                           inherit_context=args.get("inherit_context", True),
                                           timeout=args.get("timeout", 120), config=args.get("config"))
             return AgentToolResult(content=(TextContent(text=identifier),))
-        async def action(call_id: str, args: dict[str, Any], *extra: Any, **kwargs: Any) -> AgentToolResult:
+        def validate_control(args: dict[str, Any]) -> None:
+            # The generic lightweight schema checker tolerates extra keys. Enforce
+            # this authority-sensitive tool's exact shape before the host hook too.
+            if (set(args) - {"action", "id", "text"} or not isinstance(args.get("action"), str)
+                    or args["action"] not in {"list", "presets", "inspect", "steer", "follow-up",
+                                              "cancel", "wait", "close", "queue"}
+                    or "text" in args and not isinstance(args["text"], str)
+                    or "id" in args and (not isinstance(args["id"], str) or not args["id"])
+                    or args["action"] not in {"list", "presets"} and (
+                        not isinstance(args.get("id"), str) or not args["id"])):
+                raise ValueError("Invalid child control tool arguments; no caller-supplied owner")
+        async def action(call_id: str, args: dict[str, Any], cancel: asyncio.Event | None = None,
+                         *extra: Any, **kwargs: Any) -> AgentToolResult:
+            validate_control(args)
+            with self._start_lock:
+                owner = self._tool_return_owner
+            def alive() -> bool:
+                with self._start_lock:
+                    return (not self._closed and self._tool_return_owner == owner
+                            and (cancel is None or not cancel.is_set()))
+            if not alive():
+                raise ValueError("Main-Agent child control owner canceled/closed")
             if args["action"] == "list":
                 result = self.snapshot()
             elif args["action"] == "presets":
                 result = {"presets": self.presets.snapshot()}
             else:
-                result = await self.control(args["action"], args["id"], args.get("text", ""))
-            return AgentToolResult(content=(TextContent(text=json.dumps(result)),))
+                result = await self.control(args["action"], args["id"], args.get("text", ""),
+                                            return_owner=owner, return_alive=alive)
+            # Prepared bytes already passed settled validation on the supervisor loop.
+            # Keep binary content typed, not base64 disguised as model-visible prose.
+            images: tuple[ImageContent, ...] = ()
+            if isinstance(result, dict) and "image_recovery" in result:
+                payload = result["image_recovery"]
+                images = tuple(ImageContent(data=row["data"], mime_type=row["mime_type"])
+                               for row in payload["images"])
+                result = {**result, "image_recovery": {"receipt": payload["receipt"], "image_count": len(images)}}
+            return AgentToolResult(content=(TextContent(text=json.dumps(result)), *images))
         return (
             AgentTool(name="agent_spawn", description="Start a bounded session-owned child; default read-only.",
                       parameters={"type": "object", "required": ["task"], "additionalProperties": False,
@@ -1334,10 +1376,19 @@ class ChildSupervisor:
                                                          "max_tokens": {"type": "integer", "minimum": 1,
                                                                         "maximum": 32000}}}}},
                       execute=spawn),
-            AgentTool(name="agent_control", description="List/inspect/steer/cancel/wait/close this session's children.",
+            AgentTool(name="agent_control", description=(
+                                   "List/inspect/steer/cancel/wait/close or control this session's child queues. "
+                                   "Queue controls use text JSON: list, edit/remove/move/return, stopped recovery, "
+                                   "or return_prepare/return_commit/return_cancel for live queued images. "
+                                   "Prepare requires id/revision and returns typed images plus return_token and "
+                                   "image_receipt; commit requires that exact id/revision/token/receipt. "
+                                   "Prepare does not remove input; cancellation, changed selection/owner or expiry "
+                                   "refuses commit. Never automatically replay an uncertain mutation. "
+                                   "Ownership is supplied by the supervisor, never by tool arguments."),
                       parameters={"type": "object", "required": ["action"], "additionalProperties": False,
                                   "properties": {
                                       "action": {"enum": ["list", "presets", "inspect", "steer", "follow-up",
-                                                          "cancel", "wait", "close"]},
-                                      "id": {"type": "string"}, "text": {"type": "string"}}}, execute=action),
+                                                          "cancel", "wait", "close", "queue"]},
+                                      "id": {"type": "string"}, "text": {"type": "string"}}},
+                      validate_arguments=validate_control, execute=action),
         )

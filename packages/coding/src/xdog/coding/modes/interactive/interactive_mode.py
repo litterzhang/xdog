@@ -45,12 +45,8 @@ from xdog.agent import (
 from xdog.agent.extensions.artifact_export import ArtifactLoader, export_snapshot
 from xdog.agent.extensions.command_result import ExtensionCommandResult
 from xdog.agent.extensions.runtime import validate_snapshot
-from xdog.agent.mcp.completion import McpCompletion, request_arguments
-from xdog.agent.mcp.context import McpDocument, McpEntry, resource_completion_document
-from xdog.agent.mcp.elicitation_owner import ElicitationReplyInvalid
+from xdog.agent.mcp.context import McpDocument, McpEntry
 from xdog.agent.mcp.oauth import validate_launch, validate_review
-from xdog.agent.mcp.sampling_context import project as sampling_context
-from xdog.agent.mcp.sampling_executor import SamplingExecutor, catalog_current, model_catalog
 from xdog.agent.planning import PlanState
 from xdog.agent.supervision_config import ChildConfig
 from xdog.ai.types import (
@@ -75,31 +71,24 @@ from xdog.coding.modes.interactive.session_presenter import SessionHistory, capt
 from xdog.coding.modes.interactive.theme import create_default_theme
 from xdog.tui.attachments import Attachment, AttachmentComposer
 from xdog.tui.child_browser import ChildSourceWorker, child_entries
-from xdog.tui.child_draft_autosave import ChildDraftAutosave
-from xdog.tui.child_draft_io import ChildDraftIO
-from xdog.tui.child_draft_store import ChildDraftStore, SavedChildDraft
 from xdog.tui.child_drafts import ChildDraft
 from xdog.tui.components.attachment_panel import AttachmentPanel
-from xdog.tui.components.child_draft_panel import ChildDraftPanel, DraftEntry, draft_entries
+from xdog.tui.components.child_draft_panel import DraftEntry
 from xdog.tui.components.child_panel import ChildPanel
 from xdog.tui.components.details_panel import DetailsPanel
 from xdog.tui.components.extension_command import ExtensionCommand
-from xdog.tui.components.extension_custom import ExtensionCustom, ExtensionCustomPresentation
 from xdog.tui.components.extension_dialog import ExtensionDialog
-from xdog.tui.components.extension_navigation import ExtensionNavigation
 from xdog.tui.components.extension_stack import ExtensionDialogStack
 from xdog.tui.components.extension_view import ExtensionView
 from xdog.tui.components.inline_layout import CompactText, InlineLayout
-from xdog.tui.components.input_panel import _sanitize_editor_text
 from xdog.tui.components.mcp_panel import McpPanel
 from xdog.tui.components.navigation_panel import NavigationPanel
 from xdog.tui.components.output_panel import OutputPanel
+from xdog.tui.components.parent_draft_panel import ParentDraftPanel
 from xdog.tui.components.plan_panel import PlanPanel
-from xdog.tui.components.review_panel import ReviewPanel
 from xdog.tui.components.text import Text
 from xdog.tui.components.tool_inventory import ToolInventoryPanel, inventory_records
 from xdog.tui.components.transcript_panel import TranscriptPanel
-from xdog.tui.editor_actions import EditorActions
 from xdog.tui.event_queue import EventQueue, thaw_event
 from xdog.tui.extension_shortcuts import ExtensionShortcuts
 from xdog.tui.external_editor import edit_draft
@@ -108,12 +97,8 @@ from xdog.tui.keys import KeyEvent, KeyEventType
 from xdog.tui.navigation import NavigationEntry, NavigationWorker
 from xdog.tui.parent_drafts import ParentDrafts
 from xdog.tui.prompt_keymap import PromptKeymap
-from xdog.tui.prompt_terminal import PromptTerminalInterceptor, prompt_key_policy
 from xdog.tui.queue_controls import QUEUE_HELP, LocalQueueIds, QueueEntry, parse_queue_command
-from xdog.tui.repository_review import RepositoryReview
-from xdog.tui.terminal_interception import HeldTerminalInput
 from xdog.tui.terminal_logging import capture_terminal_logs
-from xdog.tui.terminal_worker import TerminalHookWorker
 from xdog.tui.transcript_actions import TranscriptActions
 from xdog.tui.transcript_browser import TranscriptRecord
 from xdog.tui.transcript_transfer import TransferOptions, parse_transfer
@@ -122,6 +107,13 @@ from xdog.tui.url_open import ReviewedUrlOpener
 from xdog.tui.utils import sanitize_terminal_text
 
 logger = logging.getLogger(__name__)
+
+# Native panel operations only; protocol completion remains available to backend callers.
+_MCP_PANEL_ACTIONS = frozenset({
+    "list", "connect", "disconnect", "refresh", "resources", "templates", "prompts", "read", "prompt",
+    "watch_resource", "unwatch_resource", "watch_catalog", "unwatch_catalog",
+    "watch_notifications", "unwatch_notifications",
+})
 
 # Waiting phrases for the shimmer animation
 @dataclass(frozen=True, slots=True)
@@ -136,12 +128,6 @@ class _CommandState:
     name: str
     mutating: bool
     cancel_requested: bool = False
-    rename_target: tuple[str, str] | None = None
-    rename_alive: Callable[[], bool] | None = None
-    compact_target: str | None = None
-    compact_alive: Callable[[], bool] | None = None
-    tools_target: tuple[tuple[str, ...] | None, int] | None = None
-    tools_alive: Callable[[], bool] | None = None
 
 
 @dataclass
@@ -228,17 +214,12 @@ class InteractiveMode:
 
     def __init__(self, session: AgentSession, *, verbose: bool = False) -> None:
         self._session = session
-        self._context_trigger: tuple[Any, Any, str, str] | None = None
         self._verbose = verbose
         self._theme = create_default_theme()
 
         # State
         self._exit_requested = False
         self._draft_quit_failures: tuple[int, ...] | None = None
-        self._extension_browser: tuple[str, str, str] | None = None
-        self._extension_navigation: tuple[str, str, dict[str, Any]] | None = None
-        self._extension_navigation_review: tuple[str, str, dict[str, Any]] | None = None
-        self._editor_actions = EditorActions(self._command_editor_snapshot, self._command_editor_replace)
         self._last_ctrl_c_at = 0.0
         self._run_status = RunStatus()
         self._last_busy_label = ""
@@ -255,11 +236,10 @@ class InteractiveMode:
         ] = deque()
         self._details_expanded = verbose
         self._details_open = verbose
-        self._review_panel: ReviewPanel | None = None
-        self._review_backend: RepositoryReview | None = None
         self._navigation_panel: NavigationPanel | None = None
         self._navigation_provider: NavigationWorker | None = None
         self._child_ui_lease = uuid.uuid4().hex
+        self._parent_draft_panel: ParentDraftPanel | None = None
         self._child_panel: ChildPanel | None = None
         self._child_context = ""
         self._child_source_worker: ChildSourceWorker | None = None
@@ -274,9 +254,6 @@ class InteractiveMode:
         self._mcp_watch_lease = ""
         self._mcp_auth_stop = threading.Event()
         self._mcp_auth_review: dict[str, Any] | None = None
-        self._sampling_bindings: dict[str, tuple[Any, str, threading.Event]] = {}
-        self._sampling_execution_lock = threading.Lock()
-        self._elicitation_bindings: dict[str, tuple[Any, str, threading.Event]] = {}
         self._mcp_auth_copying = False
         self._reviewed_url = ReviewedUrlOpener()
         self._mcp_panel: McpPanel | None = None
@@ -300,20 +277,15 @@ class InteractiveMode:
         self._attachment_panel: AttachmentPanel | None = None
         self._child_image_starting = False
         self._child_drafts: dict[str, dict[tuple[str, str], ChildDraft]] = {}
-        self._child_draft_labels: dict[str, str] = {}
-        self._child_draft_io = ChildDraftIO()
-        self._child_autosave = ChildDraftAutosave()
         self._parent_drafts = ParentDrafts(
             lambda: self._session.session_manager._dir / 'saved-parent-drafts', self._parent_draft_snapshot,
                                            self._mcp_context_key, lambda text: self._chat_log.add_system(text),
             self._parent_draft_capacity)
-        self._saved_child_drafts: dict[str, SavedChildDraft] = {}
         self._local_images: dict[str, tuple[Attachment, ...]] = {}
         self._routed_images: dict[str, tuple[Attachment, ...]] = {}
         self._active_images: tuple[Attachment, ...] = ()
         self._active_input_origin = "user"
         self._dispatch_input_origin = "user"
-        self._extension_input_ids: set[str] = set()
         self._dispatch_images: tuple[Attachment, ...] = ()
         self._dispatch_failed_message: AssistantMessage | None = None
         self._pending_messages: deque[tuple[str, bool]] = deque()
@@ -325,12 +297,6 @@ class InteractiveMode:
         self._queue_lock = threading.Lock()
         self._worker_active = False
         self._worker_thread: threading.Thread | None = None
-        from xdog.coding.modes.interactive.after_run_compaction import NativeAfterRunCompaction
-        self._after_run_compaction = NativeAfterRunCompaction(self)
-        from xdog.coding.modes.interactive.after_run_tools import NativeAfterRunTools
-        self._after_run_tools = NativeAfterRunTools(self)
-        from xdog.coding.modes.interactive.after_run_name import NativeAfterRunName
-        self._after_run_name = NativeAfterRunName(self)
         self._worker_loop_ref: asyncio.AbstractEventLoop | None = None
         self._worker_task: asyncio.Task[None] | None = None
         self._command: _CommandState | None = None
@@ -348,8 +314,6 @@ class InteractiveMode:
         self._event_queue = EventQueue()
         from xdog.coding.modes.interactive.session_events import NativeSessionEvents
         self._session_events = NativeSessionEvents(self)
-        from xdog.coding.modes.interactive.message_inputs import NativeMessageInputs
-        self._message_inputs = NativeMessageInputs(self)
         self._saved_worker = SavedSourceWorker(self._event_queue.put)
 
         # Build component tree
@@ -394,12 +358,10 @@ class InteractiveMode:
         self._message_queue_container.add_child(self._queue_text)
         self._permission_container = Container()
         self._work_container = Container()
-        from xdog.tui.editor_write import EditorWriteReviews
-        self._editor_write_reviews = EditorWriteReviews()
         self._extension_snapshot: dict[str, Any] = {}
         self._extension_dialog_queue: list[dict[str, Any]] = []
         self._extension_stack = ExtensionDialogStack()
-        self._extension_dialog_panel: ExtensionDialog | ExtensionNavigation | ExtensionCustom | None = None
+        self._extension_dialog_panel: ExtensionDialog | None = None
         self._extension_view = ExtensionView(lambda: self._extension_snapshot)
         self._work_container.add_child(self._extension_view)
         self._details_panel = DetailsPanel(self._chat_log.detail_records, max_rows=8)
@@ -421,7 +383,6 @@ class InteractiveMode:
             queue=None,
             hints=self._hints,
         )
-        self._custom_presentation = ExtensionCustomPresentation(self._tui, self._layout)
         self._tui.add_child(self._layout)
         self._tui.set_focus(self._editor)
         self._editor.set_focus(True)
@@ -437,93 +398,7 @@ class InteractiveMode:
         # a canceled turn cannot surface an approval panel during its successor.
         self._unsubscribe: Callable[[], None] | None = self._session.agent.subscribe(self._on_agent_event)
         self._bind_child_approvals()
-        self._terminal_worker = TerminalHookWorker(self._event_queue.put)
-        self._terminal_input = PromptTerminalInterceptor(
-            self._tui, self._terminal_prompt_eligible, self._terminal_prompt_owner,
-            self._terminal_available, self._terminal_key_policy,
-            self._send_terminal_hook, self._terminal_worker.cancel, self._chat_log.add_system,
-            surface=lambda: "child-prompt" if self._terminal_child() else "prompt",
-            release_available=self._terminal_release_available)
-        if verbose:
-            self._open_details()
 
-    def _terminal_child(self) -> str:
-        return self._child_panel.terminal_child if self._child_panel is not None else ""
-
-    def _terminal_available(self) -> bool:
-        child = self._terminal_child()
-        if self._child_panel is not None:
-            return self._session.children.extensions.terminal_metadata(self._child_ui_lease).get(
-                child, {}).get("active") is True
-        return self._session.extensions.terminal_input_available
-
-    def _terminal_release_available(self) -> bool:
-        child = self._terminal_child()
-        if self._child_panel is not None:
-            return 'release' in self._session.children.extensions.terminal_metadata(self._child_ui_lease).get(
-                child, {}).get('events', [])
-        return 'release' in self._session.extensions.terminal_events
-
-    def _terminal_prompt_eligible(self) -> bool:
-        child = self._terminal_child()
-        target = self._child_panel if child else self._editor
-        return (not self._exit_requested and self._tui._focused is target
-                and not self._tui.has_overlay() and not self._details_open and self._command is None
-                and self._permission_prompt is None and not self._permission_waiters
-                and self._extension_dialog_panel is None and not self._extension_dialog_queue
-                and self._outputs.panel is None and (self._child_panel is None or bool(child))
-                and self._plan_panel is None and self._mcp_panel is None and self._transcript_panel is None
-                and self._attachment_panel is None and self._navigation_panel is None and self._review_panel is None)
-
-    def _terminal_prompt_owner(self) -> str:
-        extra = ""
-        if self._child_panel is not None:
-            child = self._terminal_child()
-            generation = self._session.children.extensions.terminal_metadata(self._child_ui_lease).get(
-                child, {}).get("generation", 0)
-            extra = f":child:{child}:{generation}:{self._child_panel.terminal_lease}:{id(self._child_panel)}"
-        return (f'{self._session.session_id}:{id(self._session.extensions)}:{self._output_epoch}:'
-                f'{self._cancel_epoch}:{self._command_sequence}:{self._session.extensions.generation}:'
-                f'{self._exit_requested}{extra}')
-
-    def _terminal_key_policy(self, event: KeyEvent) -> str:
-        if self._terminal_child() and self._child_panel is not None:
-            action = ("terminal_input" if self._keymap.resolve(event) == "terminal_input"
-                      else self._child_panel.terminal_policy_action(event))
-            return prompt_key_policy(event, action)
-        return prompt_key_policy(event, self._keymap.resolve(event),
-                                 extension=self._effective_extension_shortcuts().command(event) is not None)
-
-    def _restore_terminal_text(self, text: str) -> bool:
-        if self._terminal_child() and self._child_panel is not None:
-            return self._child_panel.restore_terminal_text(text)
-        return self._editor.handle_paste(text)
-
-    def _send_terminal_hook(self, item: HeldTerminalInput) -> bool:
-        extensions = self._session.extensions
-        child = self._terminal_child()
-        def alive() -> bool:
-            return True
-        if child:
-            metadata = self._session.children.extensions.terminal_metadata(self._child_ui_lease).get(child, {})
-            try:
-                extensions, alive = self._session.children.extensions.capture_terminal(
-                    child, self._child_ui_lease, metadata.get("generation", 0))
-            except ValueError:
-                return False
-        generation = extensions.generation
-        release = self._session_events.reserve_producer('terminal')
-        async def run(held: HeldTerminalInput) -> dict[str, Any]:
-            if extensions.generation != generation or not alive():
-                raise ValueError("Terminal worker selection changed before dispatch")
-            result = await extensions.terminal_input(held.data, kind=held.kind, surface=held.surface)
-            if not alive():
-                raise ValueError("Child terminal worker/UI owner changed before delivery")
-            return result
-        accepted = self._terminal_worker.send(item, run, settled=release)
-        if not accepted:
-            release()
-        return accepted
 
     @property
     def _is_busy(self) -> bool:
@@ -539,11 +414,9 @@ class InteractiveMode:
 
     def _handle_global_input(self, event: Any) -> dict[str, object] | None:
         """Handle bounded details, suspension, and active-turn cancellation."""
+        if self._parent_draft_panel is not None and self._tui.has_overlay():
+            return None  # Native overlays/approval own input, not the underlying recovery view.
         action = self._keymap.resolve(event)
-        if action == 'remote_save_draft':
-            if event.event_type is KeyEventType.PRESS:
-                self._chat_log.add_system('Remote snapshot save is a gateway-client action; use local draft save here')
-            return {'consume': True}
         if action == 'save_draft':
             if (event.event_type is KeyEventType.PRESS and self._editor.focused
                     and self._parent_draft_ui_available()):
@@ -555,46 +428,14 @@ class InteractiveMode:
 
         if self._permission_prompt is not None:
             return None
-        if isinstance(self._extension_dialog_panel, ExtensionCustom) and self._custom_presentation.blocked():
-            return None  # The top overlay owns all input; custom callbacks stay hidden/unfocused.
-        background_overlay = (isinstance(self._extension_dialog_panel, ExtensionCustom)
-                              and self._extension_dialog_panel.dialog.get('overlay') is not None
-                              and not self._extension_dialog_panel.focused)
-        if background_overlay and self._outputs.panel is None:
-            if event.matches('ctrl+c'):
-                if event.event_type is KeyEventType.PRESS and self._extension_dialog_panel is not None:
-                    self._answer_extension_dialog(self._extension_dialog_panel.dialog['id'], None)
-                return {"consume": True}
-            if action == 'suspend' or event.matches('ctrl+z'):
-                if event.event_type is KeyEventType.PRESS:
-                    self._custom_presentation.sync(None, False)
-                    self._tui.suspend()
-                return {"consume": True}
-            if event.matches('ctrl+d'):
-                if event.event_type is KeyEventType.PRESS:
-                    self._request_exit()
-                return {"consume": True}
-        if (self._extension_dialog_panel is not None and self._outputs.panel is None
-                and not background_overlay):
-            if isinstance(self._extension_dialog_panel, ExtensionCustom):
-                if event.ctrl and event.key.lower() in ("d", "z") or action == "suspend":
-                    if event.event_type is not KeyEventType.PRESS:
-                        return {"consume": True}
-                if event.ctrl and event.key.lower() == "d":
-                    self._request_exit()
-                    return {"consume": True}
-                if action == "suspend" or event.ctrl and event.key.lower() == "z":
-                    self._custom_presentation.sync(None, False)
-                    self._tui.suspend()
-                    return {"consume": True}
+        if self._extension_dialog_panel is not None and self._outputs.panel is None:
             self._extension_dialog_panel.handle_input(event)
             self._tui.request_render()
             return {"consume": True}
-        if self._terminal_child() and action == "terminal_input":
-            if event.event_type == KeyEventType.PRESS:
-                self._terminal_input.toggle_pause()
-                self._terminal_input.recovery_command('list', self._restore_terminal_text)
-            return {"consume": True}
+        if self._parent_draft_panel is not None and self._outputs.panel is None and action != 'suspend':
+            self._parent_draft_panel.handle_input(event)
+            self._tui.request_render()
+            return {'consume': True}
         if self._child_panel is not None and self._outputs.panel is None and action != "suspend":
             if action == "fullscreen":
                 self._child_fullscreen()
@@ -619,11 +460,6 @@ class InteractiveMode:
             self._outputs.panel.handle_input(event)
             self._tui.request_render()
             return {"consume": True}
-        if action == "terminal_input":
-            if event.event_type == KeyEventType.PRESS:
-                self._terminal_input.toggle_pause()
-                self._terminal_input.recovery_command('list', self._editor.handle_paste)
-            return {"consume": True}
         if action == "copy":
             if event.event_type == KeyEventType.PRESS:
                 scope = ("selection" if self._transcript_panel is not None and self._transcript_panel.selection
@@ -641,7 +477,7 @@ class InteractiveMode:
                     self._open_transcript()
             return {"consume": True}
         if self._transcript_panel is not None:
-            if action in {"details", "review", "sessions", "tree"}:
+            if action in {"details", "sessions", "tree"}:
                 self._close_transcript()
             elif action != "suspend":
                 self._transcript_panel.handle_input(event)
@@ -658,18 +494,15 @@ class InteractiveMode:
             if self._editor.focused and event.event_type == KeyEventType.PRESS:
                 self._composer.command("paste", "", self._session.working_dir)
             return {"consume": True}
-        if self._attachment_panel is not None and action not in {"suspend", "details", "review", "sessions", "tree"}:
+        if self._attachment_panel is not None and action not in {"suspend", "details", "sessions", "tree"}:
             self._attachment_panel.handle_input(event)
             self._tui.request_render()
             return {"consume": True}
-        if action in {"bindings", "external_editor", "suspend", "details", "review", "sessions", "tree"}:
+        if action in {"bindings", "external_editor", "suspend", "details", "sessions", "tree"}:
             if event.event_type != KeyEventType.PRESS:
                 return {"consume": True}
             if action in {"sessions", "tree"}:
                 self._open_navigation("sessions" if action == "sessions" else f"tree|{self._session.session_id}|")
-                return {"consume": True}
-            if action == "review":
-                self._close_review() if self._review_panel is not None else self._open_review()
                 return {"consume": True}
             if action == "bindings":
                 self._show_keybindings()
@@ -677,20 +510,13 @@ class InteractiveMode:
             if action == "external_editor":
                 self._open_external_editor()
                 return {"consume": True}
-        if self._editor.focused and self._editor.autocomplete_active and action not in {"suspend", "details", "review"}:
+        if self._editor.focused and self._editor.autocomplete_active and action not in {"suspend", "details"}:
             return None
         if self._navigation_panel is not None and action not in {"suspend", "details"}:
             if action == "interrupt":
                 self._close_navigation()
             else:
                 self._navigation_panel.handle_input(event)
-                self._tui.request_render()
-            return {"consume": True}
-        if self._review_panel is not None and action not in {"suspend", "details"}:
-            if action == "interrupt":
-                self._close_review()
-            else:
-                self._review_panel.handle_input(event)
                 self._tui.request_render()
             return {"consume": True}
         if self._details_open and self._permission_prompt is None:
@@ -725,7 +551,7 @@ class InteractiveMode:
         if (self._exit_requested or not self._editor.focused or self._editor.autocomplete_active
                 or self._tui.has_overlay() or self._outputs.pending or self._extension_dialog_panel is not None
                 or self._navigation_panel is not None or self._transcript_panel is not None
-                or self._review_panel is not None or self._details_open or self._child_panel is not None
+                or self._details_open or self._child_panel is not None
                 or self._plan_panel is not None or self._mcp_panel is not None or self._attachment_panel is not None):
             return False
         if self._permission_prompt is not None or self._command is not None or self._worker_active or self._is_busy:
@@ -741,6 +567,8 @@ class InteractiveMode:
         self._tui.request_render()
 
     def _open_external_editor(self) -> None:
+        if self._parent_draft_panel is not None:
+            self._close_parent_drafts()
         if self._exit_requested:
             return
         if not self._editor.focused or self._permission_prompt is not None or self._tui.has_overlay():
@@ -783,9 +611,8 @@ class InteractiveMode:
                  for item in group}
         return sum(len(item.data) for item in items.values()) + self._child_draft_bytes() + self._parent_saved_bytes()
 
-    def _child_draft_bytes(self, *, exclude_saved: bool = False) -> int:
+    def _child_draft_bytes(self) -> int:
         items = {item.id: item for scope, cache in self._child_drafts.items()
-                 if not exclude_saved or not scope.startswith('saved-draft:')
                  for draft in cache.values() for item in draft.images}
         if self._child_panel is not None and self._child_panel.composer is not None:
             items.update(self._child_panel.composer.items)
@@ -831,268 +658,16 @@ class InteractiveMode:
         session_id = self._session.session_id
         self._session.extension_dialogs.publish = lambda event: self._event_queue.put(
             {**event, "extension_session": session_id})
-        self._session.extensions.custom_handler = self._session.extension_dialogs.ask_custom
-        self._session.extensions.custom_refresh_handler = self._session.extension_dialogs.refresh_custom
-        self._session.extensions.custom_control_handler = self._session.extension_dialogs.control_custom
-        self._session.extensions.command_menu_handler = self._session.extension_dialogs.ask
-        self._session.extensions.editor_write_handler = self._request_editor_write
-        self._message_inputs.clear()
-        self._session.extensions.dialog_handler = self._message_inputs.ask
-        self._session.extensions.queued_input_handler = self._request_extension_queued_input
-        self._session.extensions.context_message_handler = self._request_extension_context_message
-        self._session.extensions.compaction_request_handler = self._after_run_compaction.request
-        self._session.extensions.active_tools_request_handler = self._after_run_tools.request
-        self._session.extensions.name_request_handler = self._after_run_name.request
+        self._session.extensions.command_menu_handler = self._session.extension_dialogs.ask_command_menu
+        self._session.extensions.dialog_handler = self._session.extension_dialogs.ask
         self._session.extensions.dialog_cancel = self._session.extension_dialogs.cancel_extension
 
-    async def _request_extension_context_message(self, extension: str, dialog: dict[str, Any]) -> bool:
-        from xdog.agent.extensions.invocation import current_invocation
-        session, stamp, command = self._session, self._active_stamp, self._command
-        context, lease = self._mcp_context_key(), current_invocation()
-        store = getattr(session, 'context_messages', None)
-        if store is None or lease is None or lease.child_id or lease.session_id != session.session_id:
-            return False
-        def alive() -> bool:
-            same_command = (command is not None and self._command is command and not command.cancel_requested
-                and command.name.lower().startswith('ext-' + extension.lower() + '-'))
-            same_turn = (command is None and self._command is None and self._worker_active
-                and self._active_stamp == stamp and not self._cancel_requested)
-            return (not self._exit_requested and self._session is session and self._mcp_context_key() == context
-                and (same_command or same_turn) and not session.permissions.has_pending_requests)
-        async def trigger(value: dict[str, Any]) -> None:
-            if command is None or not alive():
-                raise ValueError('Idle continuation needs the original successful command')
-            self._context_trigger = command.id, session, context, value['id']
-        return bool(await store.review(extension, dialog, ask=session.extension_dialogs.ask, alive=alive,
-                                       trigger=trigger if command is not None else None))
-
-    async def _request_extension_queued_input(self, extension: str, dialog: dict[str, Any]) -> bool:
-        from xdog.agent.extensions.invocation import current_invocation
-        from xdog.agent.extensions.queued_input import reviewed
-        from xdog.ai.utils.image_files import validate_references
-        session, stamp, loop = self._session, self._active_stamp, self._worker_loop_ref
-        invocation = current_invocation()
-        if loop is None or invocation is None or invocation.child_id or invocation.session_id != session.session_id:
-            return False
-        agent = session.agent
-        def alive() -> bool:
-            return (not self._exit_requested and not self._cancel_requested and self._worker_active
-                and self._active_stamp == stamp and self._session is session and session.agent is agent
-                and agent.is_streaming and not session.permissions.has_pending_requests
-                and not session.children.supervisor.active)
-        async def review(name: str, projected: dict[str, Any]) -> Any:
-            if not alive():
-                return False
-            answer = await session.extension_dialogs.ask(name, projected)
-            return answer if alive() else False
-        async def apply(identifier: str, content: str, delivery: str, images: tuple[ImageContent, ...]) -> None:
-            from typing import cast
-
-            from xdog.agent import Delivery
-            from xdog.tui.attachments import attachment
-            if not alive():
-                return
-            if images:
-                await asyncio.to_thread(validate_references, images, session.model_info)
-            attachments = tuple(attachment(base64.b64decode(image.data), 'extension-input') for image in images)
-            if not alive() or len(agent.pending_inputs()) >= 50:
-                return
-            agent.queue_input(identifier, content, cast(Delivery, delivery), images)
-            self._event_queue.put({'type': 'extension_input_queued', 'id': identifier, 'content': content,
-                'delivery': delivery, 'images': attachments, 'stamp': stamp, 'extension_session': session.session_id})
-        async def owned_apply(identifier: str, content: str, delivery: str,
-                              images: tuple[ImageContent, ...]) -> None:
-            from xdog.agent.supervision import settle_on
-            await settle_on(loop, apply(identifier, content, delivery, images))
-        return await reviewed(extension, dialog, ask=review, apply=owned_apply, alive=alive)
-
-    async def _request_editor_write(self, extension: str, dialog: dict[str, Any]) -> Any:
-        from xdog.agent.extensions.editor_request import reviewed
-        session_id = self._session.session_id
-        async def commit(event: dict[str, Any]) -> None:
-            self._event_queue.put({**event, 'extension_session': session_id})
-        return await reviewed(extension, dialog, ask=self._session.extension_dialogs.ask, commit=commit,
-            discard=lambda event: self._event_queue.put({**event, 'extension_session': session_id}))
-
-    def _prepare_editor_write(self, dialog: dict[str, Any]) -> bool:
-        identity = dialog.get('editor_write', {})
-        session, child = self._session, str(identity.get('child_id', ''))
-        if identity.get('session_id') != session.session_id or child != dialog.get('child_id', ''):
-            return False
-        runtime = session.children.extensions.owners.get(child) if child else session.extensions
-        if runtime is None:
-            return False
-        generation, context = runtime.generation, self._mcp_context_key()
-        def base_alive() -> bool:
-            return (self._session is session and self._mcp_context_key() == context and not self._exit_requested
-                and runtime.generation == generation and not runtime._closed
-                and not self._permission_waiters and self._permission_prompt is None
-                and not session.permissions.has_pending_requests
-                and dialog['extension'] not in runtime._failed | runtime._unloaded)
-        if child:
-            panel, ui_lease = self._child_panel, self._child_ui_lease
-            if panel is None or panel.terminal_child != child:
-                return False  # A child without its own selected draft never borrows the parent composer.
-            lease = panel.terminal_lease
-            write_generation = session.children.extensions.editor_write_generation(ui_lease)
-            def alive() -> bool:
-                return (base_alive() and self._child_panel is panel and self._child_ui_lease == ui_lease
-                    and panel.terminal_lease == lease and not panel._busy
-                    and session.children.extensions.owners.get(child) is runtime
-                    and session.children.extensions.editor_write_enabled(ui_lease)
-                    and session.children.extensions.editor_write_generation(ui_lease) == write_generation
-                    and (panel.composer is None or not panel.composer.reader.pending))
-            def snapshot() -> tuple[str, int, tuple[str, ...]]:
-                return (panel._input.get_text(), panel._input._cursor,
-                        tuple(panel.composer.items) if panel.composer is not None else ())
-            def replace(value: str) -> bool:
-                if _sanitize_editor_text(value) != value:
-                    return False
-                panel._input.set_text(value)
-                return True
-        else:
-            editor, composer = self._editor, self._composer
-            epoch = self._cancel_epoch
-            def alive() -> bool:
-                return (base_alive() and self._editor is editor and self._composer is composer
-                    and self._child_panel is None and self._cancel_epoch == epoch
-                    and not composer.reader.pending)
-            snapshot = self._command_editor_snapshot
-            replace = self._command_editor_replace
-        return self._editor_write_reviews.prepare(dialog, snapshot, replace, alive)
 
     def _dialog_contains(self, dialog: dict[str, Any]) -> bool:
         if dialog.get("child_id"):
             return self._session.children.extensions.contains(dialog["child_id"], dialog["id"], self._child_ui_lease)
         return self._session.extension_dialogs.contains(dialog["id"])
 
-    def _command_editor_snapshot(self) -> tuple[str, int, tuple[str, ...]]:
-        return (self._editor.get_text(), self._editor._cursor,
-                tuple(item.id for item in self._composer.items.values()))
-
-    def _command_editor_replace(self, value: str) -> bool:
-        if len(value.encode()) > 65536 or _sanitize_editor_text(value) != value:
-            return False
-        self._editor.set_text(value)
-        self._tui.request_render()
-        return True
-
-    def _queue_extension_navigation(self, item: dict[str, Any], answer: Any, *, accepted: bool = False) -> bool:
-        command = self._command
-        allowed = (command is not None and not command.cancel_requested and not item.get("child_id")
-                   and command.name.lower().startswith("ext-" + str(item.get("extension", "")).lower() + "-")
-                   and not self._worker_active and not self._exit_requested)
-        owner = str(command.id) if command is not None else ""
-        if (answer is not True or not allowed or self._extension_navigation is not None
-                or self._extension_navigation_review is not None
-                or item.get('operation') in {'compact', 'message'} and self._extension_browser is not None):
-            return False
-        if item.get('operation') == 'message' and (self._permission_prompt is not None
-                or self._permission_waiters or self._session.children.supervisor.active
-                or self._child_image_starting):
-            return False
-        if item.get('operation') == 'select_tools':
-            from xdog.agent.extensions.active_tools import names
-            try:
-                selected = names(item['names'])
-                if (item['revision'] != self._session.agent.tool_selection_revision
-                        or selected is not None
-                        and not set(selected) <= {tool.name for tool in self._session.agent.state.tools}
-                        or self._permission_prompt is not None or self._permission_waiters
-                        or self._session.children.supervisor.active):
-                    return False
-            except (ValueError, TypeError, KeyError):
-                return False
-        if not accepted:
-            self._extension_navigation_review = owner, self._mcp_context_key(), dict(item)
-            return True
-        if item.get('operation') == 'select_tools':
-            self._extension_navigation = owner, self._mcp_context_key(), {
-                'action': 'select_tools', 'names': selected, 'revision': item['revision']}
-            return True
-        if item.get('operation') == 'message':
-            try:
-                selected_message, message_images = self._message_inputs.take(item)
-            except ValueError:
-                return False
-            self._extension_navigation = owner, self._mcp_context_key(), {
-                'action': 'message', 'message': selected_message.content, 'images': message_images,
-                'image_model': (self._session.model, self._session.model_info)}
-            return True
-        if item.get('operation') == 'compact':
-            self._extension_navigation = owner, self._mcp_context_key(), {
-                'action': 'compact', 'instructions': item['instructions']}
-            return True
-        if item.get('operation') == 'rename':
-            self._extension_navigation = owner, self._mcp_context_key(), {
-                'action': 'rename', 'name': item['name'], 'expected_name': item['expected_name']}
-            return True
-        target = dict(item["target"])
-        if not target["session_id"] and target["action"] != "new":
-            target["session_id"] = self._command_session_id()
-        self._extension_navigation = owner, self._mcp_context_key(), target
-        return True
-
-    def _accept_extension_navigation(self, event: Mapping[str, Any]) -> None:
-        review = self._extension_navigation_review
-        if review is None or event.get("id") != review[2]["id"]:
-            return
-        self._extension_navigation_review = None
-        item = review[2]
-        if (event.get("extension") != item.get("extension")
-                or event.get("operation") != item.get("operation")
-                or review[1] != self._mcp_context_key()):
-            return
-        if self._command is None or str(self._command.id) != review[0]:
-            return
-        self._queue_extension_navigation(item, True, accepted=True)
-
-    def _finish_extension_navigation(self, owner: str, success: bool) -> bool:
-        self._message_inputs.clear()
-        self._extension_navigation_review = None
-        queued, self._extension_navigation = self._extension_navigation, None
-        if queued is None:
-            return False
-        if (queued[:2] != (owner, self._mcp_context_key()) or not success or self._exit_requested):
-            self._chat_log.add_system('Reviewed extension name discarded; callback/owner changed'
-                if queued[2].get('action') == 'rename' else
-                'Reviewed extension navigation discarded; callback/owner changed')
-            return False
-        target = queued[2]
-        action = target["action"]
-        if action == 'select_tools':
-            try:
-                self._session._children_idle()
-                if self._permission_prompt is not None or self._permission_waiters:
-                    raise ValueError('Tool approval still owns the host')
-                selected = None if target['names'] is None else tuple(target['names'])
-                self._handle_slash_command('active-tools', '', tools_target=(selected, target['revision']))
-            except (ValueError, RuntimeError):
-                self._chat_log.add_system('Active tool selection not applied; owner/inventory changed')
-        elif action == 'message':
-            if (self._worker_active or self._permission_prompt is not None or self._permission_waiters
-                    or self._session.children.supervisor.active or self._child_image_starting
-                    or self._command is not None or target.get('images')
-                    and target['image_model'] != (self._session.model, self._session.model_info)):
-                self._chat_log.add_system('Reviewed extension message discarded; host is no longer idle')
-            else:
-                self._start_turn(target['message'], images=target.get('images', ()), input_origin='extension')
-        elif action == 'compact':
-            self._handle_slash_command('compact', '', compact_target=target['instructions'])
-        elif action == 'rename':
-            self._handle_slash_command('name', '', rename_target=(target['name'], target['expected_name']))
-        elif action == "new":
-            self._handle_slash_command("new", "")
-        elif action == "resume":
-            self._handle_slash_command("resume", target["session_id"])
-        elif action == "branch":
-            self._handle_slash_command("branch", target["session_id"] + " " + target["branch_id"])
-        elif action == "goto":
-            self._handle_slash_command("goto", target["session_id"] + " " + (target["branch_id"] or "-")
-                                       + " " + str(target["index"] + 1))
-        else:
-            self._handle_slash_command("fork", str(target["index"]) if target["index"] >= 0 else "")
-        return True
 
     def _serve_session_request(self, item: dict[str, Any]) -> None:
         value: Any = None
@@ -1140,173 +715,61 @@ class InteractiveMode:
                         max_prompt_tokens=self._session.max_prompt_tokens)
                 except (ValueError, TypeError):
                     value = None
-            elif item['operation'] == 'browse':
-                value = not (self._extension_navigation is not None
-                             and self._extension_navigation[2]['action'] in {'compact', 'message'})
-                if value:
-                    self._extension_browser = owner, self._mcp_context_key(), item["scope"]
         self._answer_extension_dialog(item["id"], value)
 
-    def _finish_extension_browser(self, owner: str, success: bool) -> None:
-        queued, self._extension_browser = self._extension_browser, None
-        if (queued is not None and queued[:2] == (owner, self._mcp_context_key())
-                and success and not self._exit_requested):
-            scope = "sessions" if queued[2] == "sessions" else "tree|" + self._command_session_id() + "|"
-            self._open_navigation(scope)
 
     def _command_session_id(self) -> str:
         return self._session.session_id
 
-    def _serve_editor_request(self, item: dict[str, Any]) -> None:
-        command = self._command
-        allowed = (not item.get("child_id") and command is not None
-                   and command.name.lower().startswith("ext-" + str(item.get("extension", "")).lower() + "-")
-                   and not command.cancel_requested and not self._worker_active and not self._exit_requested)
-        owner = self._mcp_context_key() + ":" + (str(command.id) if command is not None else "")
-        value = None
-        if allowed:
-            try:
-                value = self._editor_actions.handle(owner, item)
-            except ValueError:
-                value = None
-        self._answer_extension_dialog(item["id"], value)
 
     def _sync_extension_dialog(self) -> None:
-        self._extension_dialog_queue = [dialog for dialog in self._extension_dialog_queue
-            if self._dialog_contains(dialog)]
-        panel = self._extension_dialog_panel
-        if panel is not None and not self._dialog_contains(panel.dialog):
-            self._extension_dialog_panel = None
+        self._extension_dialog_queue = [item for item in self._extension_dialog_queue
+            if self._dialog_contains(item)]
         selected = self._extension_stack.choose(self._extension_dialog_queue)
-        if (selected is not None and selected.get('kind') == 'session'
-                and selected.get('operation') == 'commands' and 'command_menu' in selected):
-            # Read-only client metadata is serviced without unfocusing its
-            # suspended custom parent. It is not a new modal input owner.
+        if selected is not None and selected.get('kind') == 'session':
             self._serve_session_request(selected)
             return
+        panel = self._extension_dialog_panel
         if selected is None:
             self._extension_dialog_panel = None
-        elif self._extension_dialog_panel is None or self._extension_dialog_panel.dialog["id"] != selected["id"]:
-            previous = self._extension_dialog_panel
-            if previous is not None:
-                previous.focused = False
-            cached = self._extension_stack.panels.get(selected["id"])
-            self._extension_dialog_panel = cached if isinstance(
-                cached, (ExtensionDialog, ExtensionNavigation, ExtensionCustom)) else None
+        elif panel is None or panel.dialog['id'] != selected['id']:
+            if panel is not None:
+                panel.focused = False
+            cached = self._extension_stack.panels.get(selected['id'])
+            self._extension_dialog_panel = cached if isinstance(cached, ExtensionDialog) else None
         if self._extension_dialog_panel is None and selected is not None:
             item = selected
-            if (item["kind"] in {"editor", "session"}
-                    and item.get("operation") not in {"navigate", "rename", "select_tools",
-                                                       "compact", "message", "propose", "queue_input",
-                                                       "context_message"}):
-                if (self._permission_prompt is not None or self._outputs.panel is not None
-                        or self._custom_presentation.blocked()):
-                    return
-                if item["kind"] == "session":
-                    self._serve_session_request(item)
-                else:
-                    self._serve_editor_request(item)
-                return
-
-            if item.get('operation') == 'propose' and not self._prepare_editor_write(item):
+            if (('provider_auth_host' in item or 'provider_auth_menu' in item) and not self._provider_auth.owns(item)):
                 self._answer_extension_dialog(item['id'], None)
                 return
-            if item.get('operation') == 'message':
-                try:
-                    self._message_inputs.take(item, consume=False)
-                except ValueError:
-                    self._answer_extension_dialog(item['id'], False)
-                    return
-            if item.get('operation') == 'select_tools' and item.get('after_run') is not True:
-                from xdog.agent.extensions.active_tools import names, snapshot
-                try:
-                    command = self._command
-                    current = snapshot(self._session.agent, self._session.session_id)
-                    selected_names = names(item['names'])
-                    if (item.get('child_id') or command is None or command.cancel_requested or self._worker_active
-                            or not command.name.lower().startswith(
-                                'ext-' + str(item.get('extension', '')).lower() + '-')
-                            or current['revision'] != item['revision']
-                            or selected_names is not None and not set(selected_names) <= set(current['configured'])):
-                        raise ValueError('Active tool selection owner changed')
-                    item = {**item, 'current_tools': current}
-                except (ValueError, KeyError, TypeError):
-                    self._answer_extension_dialog(item['id'], False)
-                    return
-            def answer(value: Any, key: str = item["id"]) -> None:
+            def answer(value: Any, key: str = item['id']) -> None:
                 self._answer_extension_dialog(key, value)
-            label = f"Child {item['child_id']} · {item['extension']}" if item.get("child_id") else item["extension"]
+            label = f"Child {item['child_id']} · {item['extension']}" if item.get('child_id') else item['extension']
             if 'provider_auth_host' in item:
                 from xdog.tui.components.extension_provider_auth import ExtensionProviderAuth
-                if not self._provider_auth.owns(item):
-                    self._answer_extension_dialog(item['id'], None)
-                    return
-                self._extension_dialog_panel = ExtensionProviderAuth(label, item, answer,
-                                                                     open_url=self._provider_auth.open_url)
-            elif item.get('operation') == 'context_message':
-                from xdog.tui.components.extension_context_message import ExtensionContextMessage
-                self._extension_dialog_panel = ExtensionContextMessage(label, item, answer, self._mcp_context_key())
-            elif item.get('operation') == 'queue_input':
-                from xdog.tui.components.extension_queued_input import ExtensionQueuedInput
-                self._extension_dialog_panel = ExtensionQueuedInput(item['extension'], item, answer,
-                    self._session.session_id + (f" · child {item['child_id']}" if item.get('child_id') else ''))
-            elif item.get('operation') == 'propose':
-                from xdog.tui.components.extension_editor_write import ExtensionEditorWrite
-                self._extension_dialog_panel = ExtensionEditorWrite(label, item, answer)
-            elif item["kind"] == "custom":
-                def request(event: dict[str, Any]) -> bool:
-                    return self._request_extension_custom(item, event)
-                self._extension_dialog_panel = ExtensionCustom(label, item, answer, request)
-            elif item.get("operation") in {"navigate", "rename", "select_tools", "compact", "message"}:
-                self._extension_dialog_panel = ExtensionNavigation(label, item, answer, self._command_session_id())
+                self._extension_dialog_panel = ExtensionProviderAuth(
+                    label, item, answer, open_url=self._provider_auth.open_url)
             else:
                 self._extension_dialog_panel = ExtensionDialog(label, item, answer)
-            self._extension_stack.panels[item["id"]] = self._extension_dialog_panel
-        if self._permission_prompt is None and self._outputs.panel is None and not self._custom_presentation.blocked():
+            self._extension_stack.panels[item['id']] = self._extension_dialog_panel
+        if self._permission_prompt is None and self._outputs.panel is None and not self._tui.has_overlay():
             if self._extension_dialog_panel is not None:
                 self._leave_child_fullscreen()
                 self._leave_transcript_fullscreen()
-                if self._extension_dialog_panel.dialog.get('overlay') is not None:
-                    self._layout.details = None
-                    if (isinstance(self._tui._focused, (ExtensionDialog, ExtensionNavigation, ExtensionCustom))
-                            and self._tui._focused is not self._extension_dialog_panel):
-                        self._restore_auxiliary_focus()
-                else:
-                    self._layout.details = self._extension_dialog_panel
-                    self._tui.set_focus(self._extension_dialog_panel)
-            elif (isinstance(self._layout.details, (ExtensionDialog, ExtensionNavigation, ExtensionCustom))
-                  or self._custom_presentation.overlay_panel is not None):
-                self._layout.details = (self._child_panel or self._plan_panel or self._mcp_panel
-                                       or self._transcript_panel) or (
-                    self._details_panel if self._details_open else None)
+                self._layout.details = self._extension_dialog_panel
+                self._tui.set_focus(self._extension_dialog_panel)
+            elif isinstance(self._layout.details, ExtensionDialog):
+                self._layout.details = (self._parent_draft_panel or self._child_panel or self._plan_panel
+                                       or self._mcp_panel
+                                       or self._transcript_panel or (
+                                           self._details_panel if self._details_open else None))
                 self._restore_auxiliary_focus()
 
-        custom = self._extension_dialog_panel
-        self._custom_presentation.sync(custom if isinstance(custom, ExtensionCustom) else None,
-            self._outputs.panel is None and not self._custom_presentation.blocked() and self._permission_prompt is None)
-
-    def _request_extension_custom(self, item: dict[str, Any], event: dict[str, Any]) -> bool:
-        panel = self._extension_dialog_panel
-        if ((item.get("fullscreen") and (not isinstance(panel, ExtensionCustom) or not panel.fullscreen)
-                or item.get("overlay") is not None and (not isinstance(panel, ExtensionCustom) or not panel.overlay))
-                and not (event.get("kind") == "resize" and event.get("height") == 0)):
-            return False
-        if not self._dialog_contains(item):
-            return False
-        if item.get("child_id"):
-            return self._session.children.extensions.request_custom(
-                item["child_id"], item["id"], self._child_ui_lease, event)
-        return self._session.extension_dialogs.request_custom(item["id"], event)
 
     def _answer_extension_dialog(self, key: str, value: Any) -> None:
-        item = next((item for item in self._extension_dialog_queue if item["id"] == key), None)
-        if item is not None and item.get('operation') == 'propose':
-            value = self._editor_write_reviews.answer(item, value is True)
-        if (item is not None and item.get("operation") in {"navigate", "rename", "select_tools", "compact", "message"}
-                and not (item.get("operation") in {"compact", "select_tools"} and item.get("after_run") is True)
-                and not item.get("name_after_run")):
-            value = self._queue_extension_navigation(item, value)
-
+        item = next((item for item in self._extension_dialog_queue if item['id'] == key), None)
+        if item is None or not self._extension_stack.accepts(item, self._extension_dialog_queue):
+            return
         if item is not None and item.get("child_id"):
             self._session.children.extensions.answer(item["child_id"], key, self._child_ui_lease, value)
         else:
@@ -1318,6 +781,8 @@ class InteractiveMode:
         self._tui.request_render()
 
     def _open_plan(self) -> None:
+        if self._parent_draft_panel is not None:
+            self._close_parent_drafts()
         if self._child_panel is not None:
             self._close_children()
         if self._exit_requested or self._permission_prompt is not None or self._tui.has_overlay():
@@ -1326,8 +791,7 @@ class InteractiveMode:
             return
         for panel, close in ((self._mcp_panel, self._close_mcp), (self._transcript_panel, self._close_transcript),
                              (self._attachment_panel, self._close_attachment_preview),
-                             (self._navigation_panel, self._close_navigation),
-                             (self._review_panel, self._close_review)):
+                             (self._navigation_panel, self._close_navigation)):
             if panel is not None:
                 close()
         if self._details_open:
@@ -1410,6 +874,8 @@ class InteractiveMode:
         return str(self._session.session_id) + ":" + str(self._output_epoch)
 
     def _open_mcp(self) -> None:
+        if self._parent_draft_panel is not None:
+            self._close_parent_drafts()
         if self._child_panel is not None:
             self._close_children()
         if self._exit_requested or self._permission_prompt is not None or self._tui.has_overlay():
@@ -1422,8 +888,6 @@ class InteractiveMode:
             self._close_transcript()
         if self._navigation_panel is not None:
             self._close_navigation()
-        if self._review_panel is not None:
-            self._close_review()
         if self._attachment_panel is not None:
             self._close_attachment_preview()
         if self._details_open:
@@ -1441,114 +905,8 @@ class InteractiveMode:
         self._update_hints()
         self._tui.request_render()
 
-    def _elicitation_off(self, server: str) -> None:
-        binding = self._elicitation_bindings.pop(server, None)
-        if binding is None:
-            return
-        manager, lease, revoked = binding
-        revoked.set()  # Synchronous guard before scheduling async cancellation.
-        def detach() -> None:
-            try:
-                asyncio.run(manager.detach_elicitation(server, lease=lease))
-            except (Exception, asyncio.CancelledError):
-                pass
-        threading.Thread(target=detach, daemon=True, name='xdog-elicitation-detach').start()
 
-    async def _elicitation_enable(self, server: str, *, tasks: bool = False) -> dict[str, str]:
-        session, manager, panel = self._session, self._session.mcp, self._mcp_panel
-        if (manager is None or panel is None or self._worker_active or self._command is not None
-                or session.agent.is_streaming or session.children.supervisor.active
-                or server in self._elicitation_bindings):
-            raise ValueError('Elicitation requires an idle original view and disconnected server')
-        lease, revoked = uuid.uuid4().hex, threading.Event()
-        context = self._mcp_context_key()
-        def alive() -> bool:
-            return (not revoked.is_set() and not self._exit_requested and self._session is session
-                    and session.mcp is manager and self._mcp_panel is panel and self._mcp_context_key() == context
-                    and not session.agent.is_streaming and not session.children.supervisor.active
-                    and self._permission_prompt is None and not self._permission_waiters
-                    and self._extension_dialog_panel is None and not self._extension_dialog_queue
-                    and not session.extension_dialogs.has_pending and not self._tui.has_overlay())
-        self._elicitation_bindings[server] = manager, lease, revoked
-        try:
-            await manager.register_elicitation(server, lease=lease, alive=alive, tasks=tasks,
-                publish=lambda event: self._event_queue.put({'type': 'mcp_elicitation_event', 'event': event,
-                    'session_token': id(session), 'context': context}))
-        except BaseException:
-            revoked.set()
-            self._elicitation_bindings.pop(server, None)
-            raise
-        return {'notice': ('Elicitation tasks armed' if tasks else 'Elicitation armed')
-                + ' for this view only; connect explicitly; requests/replies need review.'}
 
-    def _sampling_off(self, server: str) -> None:
-        binding = self._sampling_bindings.pop(server, None)
-        if binding is None:
-            return
-        manager, lease, revoked = binding
-        revoked.set()  # Synchronous guard before scheduling async cancellation.
-        def detach() -> None:
-            try:
-                asyncio.run(manager.detach_sampling(server, lease=lease))
-            except (Exception, asyncio.CancelledError):
-                pass
-        threading.Thread(target=detach, daemon=True, name='xdog-sampling-detach').start()
-
-    async def _sampling_enable(self, server: str, *, tasks: bool = False) -> dict[str, str]:
-        session, manager, panel = self._session, self._session.mcp, self._mcp_panel
-        if (manager is None or panel is None or self._permission_prompt is not None
-                or self._worker_active or self._command is not None or session.agent.is_streaming
-                or session.children.supervisor.active or server in self._sampling_bindings):
-            raise ValueError('Sampling requires an idle original MCP view and disconnected server')
-        lease, revoked = uuid.uuid4().hex, threading.Event()
-        context, stream, model = self._mcp_context_key(), session.agent.stream_fn, session.model
-        models, profiles = model_catalog(stream, model)
-        def alive() -> bool:
-            return (not revoked.is_set() and not self._exit_requested and self._session is session
-                    and session.mcp is manager and self._mcp_panel is panel and self._mcp_context_key() == context
-                    and session.agent.stream_fn is stream and session.model == model
-                    and catalog_current(stream, model, models, profiles)
-                    and not session.agent.is_streaming and not session.children.supervisor.active
-                    and self._permission_prompt is None and not self._permission_waiters
-                    and self._extension_dialog_panel is None and not self._extension_dialog_queue
-                    and not session.extension_dialogs.has_pending and not self._tui.has_overlay())
-        adapter = SamplingExecutor(stream, models, alive)
-        async def execute(value: dict[str, Any], selection: dict[str, Any], cancel: asyncio.Event) -> dict[str, Any]:
-            if not alive() or not self._sampling_execution_lock.acquire(blocking=False):
-                raise ValueError('Sampling executor requires exclusive idle host ownership')
-            if session._auth_changing:
-                self._sampling_execution_lock.release()
-                raise ValueError('Host authorization/policy work still owns execution')
-            session._auth_changing = True
-            try:
-                return await adapter(value, selection, cancel)
-            finally:
-                session._auth_changing = False
-                self._sampling_execution_lock.release()
-        async def capture_context(scope: str) -> list[dict[str, Any]]:
-            if not alive():
-                raise ValueError('Sampling context original host unavailable')
-            from xdog.tui.utils import redact_sensitive_text
-            history, aliases = session.agent.messages, manager.context_aliases()
-            from xdog.agent.supervision_transfer import settled_image_work
-            rows = await settled_image_work(lambda: sampling_context(history, aliases, server, scope,
-                                                                      redact_sensitive_text))
-            if not alive() or session.agent.messages is not history:
-                raise ValueError('Sampling context changed during capture; no disclosure')
-            return rows
-        self._sampling_bindings[server] = manager, lease, revoked
-        try:
-            await manager.register_sampling(server, lease=lease, execute=execute, alive=alive,
-                context=capture_context, tasks=tasks,
-                publish=lambda event: self._event_queue.put({'type': 'mcp_sampling_event', 'event': event,
-                    'session_token': id(session), 'context': context, 'models': models}))
-        except BaseException:
-            revoked.set()
-            self._sampling_bindings.pop(server, None)
-            raise
-        return {'state': 'enabled', 'notice': ('Sampling tasks armed' if tasks else 'Sampling armed')
-                + ' for this view only; connect explicitly. '
-                'Every request and result requires full review; no automatic model or tool execution.'}
 
     def _detach_mcp_auth(self) -> None:
         self._mcp_auth_stop.set()
@@ -1560,7 +918,6 @@ class InteractiveMode:
         if manager is not None and lease:
             def detach() -> None:
                 try:
-                    asyncio.run(manager.detach_roots(lease))
                     asyncio.run(manager.detach_auth(lease))
                 except (Exception, asyncio.CancelledError):
                     pass  # A retired/closed manager cannot authorize a successor.
@@ -1578,10 +935,6 @@ class InteractiveMode:
 
     def _close_mcp(self) -> None:
         self._reviewed_url.cancel()
-        for server in tuple(self._elicitation_bindings):
-            self._elicitation_off(server)
-        for sampling_server in tuple(self._sampling_bindings):
-            self._sampling_off(sampling_server)
         self._detach_mcp_auth()
         lease, self._mcp_watch_lease = self._mcp_watch_lease, ""
         manager = self._session.mcp
@@ -1633,6 +986,8 @@ class InteractiveMode:
                             Path(self._session.working_dir))
 
     def _mcp_publish(self, action: str, data: Any = (), error: str = "") -> None:
+        if action not in _MCP_PANEL_ACTIONS and not action.startswith('auth_'):
+            return  # Retired/unknown controls cannot invalidate a successor's active view.
         panel = self._mcp_panel
         if panel is None:
             return
@@ -1670,26 +1025,11 @@ class InteractiveMode:
                 panel.publish_auth(action, {}, str(exc))
             self._tui.request_render()
             return
-        if action.startswith(('sampling_', 'elicitation_')):
-            panel._busy = False
-            details = data if isinstance(data, dict) else {}
-            panel._message = error or str(details.get('notice', details.get('state', 'Sampling settled')))
-            self._tui.request_render()
-            return
-        if action.startswith('roots_'):
-            try:
-                panel.publish_roots(action, data if isinstance(data, dict) else {}, error)
-            except ValueError as exc:
-                panel.publish_roots(action, {}, str(exc))
-            self._tui.request_render()
-            return
         if action in {"watch_resource", "unwatch_resource", "watch_catalog", "unwatch_catalog",
                       "watch_notifications", "unwatch_notifications"}:
             panel.publish_watch(data if isinstance(data, dict) else {}, error, receipt=True)
         elif error:
             panel.publish(action, error=error)
-        elif isinstance(data, McpCompletion):
-            panel.publish(action, rows=(asdict(data),))
         elif isinstance(data, McpDocument):
             self._mcp_document = data
             panel.publish(action, text=data.text)
@@ -1701,92 +1041,11 @@ class InteractiveMode:
         self._tui.request_render()
 
     def _mcp_send(self, action: str, server: str, name: str, arguments: dict[str, str]) -> None:
-        if action == 'elicitation_open':
-            panel = self._mcp_panel
-            review = panel.elicitation_review if panel is not None else None
-            context = self._mcp_context_key()
-            binding = self._elicitation_bindings.get(server)
-            owner_session = self._session
-            def url_alive() -> bool:
-                return (binding is not None and self._elicitation_bindings.get(server) is binding
-                        and not binding[2].is_set() and self._session is owner_session
-                        and owner_session.mcp is binding[0] and not owner_session.agent.is_streaming
-                        and not owner_session.children.supervisor.active and not owner_session._auth_changing
-                        and self._permission_prompt is None and not self._permission_waiters
-                        and self._extension_dialog_panel is None and not self._extension_dialog_queue
-                        and not owner_session.extension_dialogs.has_pending and not self._tui.has_overlay()
-                        and self._tui._focused is panel and self._outputs.panel is None
-                        and not self._exit_requested and self._mcp_panel is panel and panel is not None
-                        and panel.elicitation_review is review and review is not None
-                        and review.focused and not review._disabled and not review._used
-                        and review._review._visible and self._mcp_context_key() == context
-                        and review.event['body'].get('params', {}).get('url') == name)
-            if not url_alive():
-                return
-            try:
-                self._reviewed_url.start(name, url_alive)
-            except ValueError:
-                self._chat_log.add_system('URL opening unavailable/busy; no repeat admission')
-            return  # URL opening is local explicit interaction, not MCP answer or completion.
-        if action == 'elicitation_off':
-            self._elicitation_off(server)
-            if self._mcp_panel is not None:
-                self._mcp_panel._busy = False
-                self._mcp_panel._message = 'Elicitation revoked; owned cleanup settling, no replay'
-            return
-        if action == 'elicitation_answer':
-            binding = self._elicitation_bindings.get(server)
-            if binding is None:
-                return
-            manager, lease, revoked = binding
-            try:
-                response = json.loads(name)
-            except ValueError:
-                self._elicitation_off(server)
-                return
-            def answer() -> None:
-                try:
-                    if revoked.is_set():
-                        return
-                    asyncio.run(manager.answer_elicitation(server, response.pop('id'), lease=lease,
-                                                         **response))
-                except ElicitationReplyInvalid:
-                    pass  # Owner published a fresh review with retained draft; do not revoke registration.
-                except (Exception, asyncio.CancelledError):
-                    self._event_queue.put({'type': 'mcp_elicitation_failed', 'server': server, 'lease': lease})
-            threading.Thread(target=answer, daemon=True, name='xdog-elicitation-answer').start()
-            return
-        if action == 'sampling_off':
-            self._sampling_off(server)
-            if self._mcp_panel is not None:
-                self._mcp_panel._busy = False
-                self._mcp_panel._message = 'Sampling revoked; owned cleanup settling, no replay'
-            return
-        if action == 'sampling_answer':
-            binding = self._sampling_bindings.get(server)
-            if binding is None:
-                return
-            manager, lease, revoked = binding
-            try:
-                response = json.loads(name)
-            except ValueError:
-                self._sampling_off(server)
-                return
-            def answer() -> None:
-                try:
-                    if revoked.is_set():
-                        return
-                    asyncio.run(manager.answer_sampling(server, response.pop('id'), lease=lease,
-                                                         **response))
-                except (Exception, asyncio.CancelledError):
-                    self._event_queue.put({'type': 'mcp_sampling_failed', 'server': server, 'lease': lease})
-            threading.Thread(target=answer, daemon=True, name='xdog-sampling-answer').start()
-            return
-        if action == "completion_cancel":
-            if self._mcp_cancel is not None:
-                self._mcp_cancel.set()
-            self._mcp_active, self._mcp_action = "", ""
-            return
+        if action not in _MCP_PANEL_ACTIONS and not action.startswith('auth_'):
+            return  # Retired/unknown controls cannot invalidate a successor's active view.
+        if action.startswith('sampling_'):
+            return  # A retired control cannot mutate or unlock a successor view.
+
         if action == "auth_cancel":
             self._mcp_auth_stop.set()  # Stop credential commitment immediately, not after worker delivery.
         if action == "auth_leave":
@@ -1800,12 +1059,6 @@ class InteractiveMode:
         self._mcp_sequence += 1
         identifier = str(self._mcp_sequence)
         self._mcp_active, self._mcp_action = identifier, action
-        if action == "resource_completion_preview":
-            try:
-                self._mcp_publish(action, resource_completion_document(server, name, arguments))
-            except (ValueError, RuntimeError) as exc:
-                self._mcp_publish(action, error=str(exc))
-            return  # Local operator-edited data; no IPC/remote read/model/tool request.
         if manager is None:
             self._event_queue.put({"type": "mcp_view_result", "id": identifier, "action": action,
                                    "error": "MCP manager unavailable"})
@@ -1830,14 +1083,6 @@ class InteractiveMode:
                     and self._session is owner_session and owner_session.mcp is manager
                     and self._mcp_watch_lease == watch_lease and watch_context == self._mcp_context_key())
         async def request() -> Any:
-            if action in {'elicitation_on', 'elicitation_tasks_on'}:
-                return await self._elicitation_enable(server, tasks=action == 'elicitation_tasks_on')
-            if action in {'sampling_on', 'sampling_tasks_on'}:
-                return await self._sampling_enable(server, tasks=action == 'sampling_tasks_on')
-            if action.startswith('roots_'):
-                return await owner_session.manage_mcp_roots(server, action.removeprefix('roots_'),
-                    json.loads(name) if action == 'roots_prepare' else None,
-                    name if action == 'roots_commit' else '', auth_lease, alive)
             if action == 'watch_notifications':
                 return await manager.watch_notifications(server, json.loads(name), lease=watch_lease, alive=watch_alive,
                     on_change=lambda data: self._event_queue.put({"type": "mcp_watch_notice", "lease": watch_lease,
@@ -1867,9 +1112,6 @@ class InteractiveMode:
                 return await manager.catalog(server, kind)
             if action == "read":
                 return await manager.resource(server, name)
-            if action in {"complete_prompt", "complete_template", "complete_resource"}:
-                argument, value, context = request_arguments(arguments)
-                return await manager.complete(server, action.removeprefix("complete_"), name, argument, value, context)
             return await manager.prompt(server, name, arguments)
         canceled = threading.Event()
         self._mcp_cancel = canceled
@@ -1902,6 +1144,8 @@ class InteractiveMode:
         return self._mcp_context_key() + ":" + self._session.children.token
 
     def _open_children(self, target: str = "") -> None:
+        if self._parent_draft_panel is not None:
+            self._close_parent_drafts()
         if self._exit_requested or self._permission_prompt is not None or self._tui.has_overlay():
             return
         if self._child_panel is not None:
@@ -1910,18 +1154,16 @@ class InteractiveMode:
             return
         for panel, close in ((self._plan_panel, self._close_plan), (self._mcp_panel, self._close_mcp),
                              (self._transcript_panel, self._close_transcript),
-                             (self._navigation_panel, self._close_navigation),
-                             (self._review_panel, self._close_review)):
+                             (self._navigation_panel, self._close_navigation)):
             if panel is not None:
                 close()
         if self._details_open:
             self._close_details()
         self._child_context = self._child_context_key()
+        self._child_drafts = {self._child_context: self._child_drafts.get(self._child_context, {})}
         self._child_target = target
         self._child_roster = {}
         self._child_source_worker = ChildSourceWorker(self._event_queue.put)
-        self._child_draft_labels[self._child_context] = (
-            f'{self._session.working_dir} · session {self._session.session_id}')
         self._child_panel = ChildPanel(self._child_send, self._child_read, self._close_children,
                                        self._child_output, self._child_fullscreen,
                                        configure=self._child_resolve_config,
@@ -1929,12 +1171,10 @@ class InteractiveMode:
                                        image_send=self._child_image_send, root=self._session.working_dir,
                                        drafts=self._child_drafts.setdefault(self._child_context, {}),
                                        retained_bytes=self._child_retained_bytes,
-                                       draft_source=self._child_draft_entries,
-                                       draft_action=self._child_draft_action)
+)
         self._child_panel.queue_enabled = True
         self._child_panel.queue_image_recovery_enabled = True
         self._child_panel.queue_task_recovery_enabled = True
-        self._child_panel.queue_image_return_enabled = True
         self._layout.details = self._child_panel
         self._tui.set_focus(self._child_panel)
         self._child_publish_roster()
@@ -1967,7 +1207,7 @@ class InteractiveMode:
         return sum(len(image.data) for row in self._parent_drafts.saved.values() for image in row.draft.images)
 
     def _parent_draft_capacity(self) -> int:
-        # Existing parent catalog is replaced; every unrelated active/local owner stays counted.
+        # Existing recovery records are replaced; unrelated active/local owners stay counted.
         return max(0, 40 * 1024 * 1024 - self._retained_image_bytes()
                    + self._parent_saved_bytes() - self._composer.bytes)
 
@@ -1975,23 +1215,70 @@ class InteractiveMode:
         return ChildDraft(self._editor.get_text(), images=tuple(self._composer.items.values()),
                           cursor=self._editor._cursor)
 
+    def _parent_view_alive(self, panel: ParentDraftPanel, lease: int) -> bool:
+        return (self._parent_draft_panel is panel and panel.focused and panel.view_lease == lease
+                and panel.context == self._mcp_context_key() and self._parent_draft_ui_available())
+
+    def _close_parent_drafts(self) -> None:
+        panel, self._parent_draft_panel = self._parent_draft_panel, None
+        self._parent_drafts.invalidate_read()
+        if panel is not None:
+            panel.close()
+            if self._tui._overlay_base_focus is panel:
+                # Retire only the dismissed base view; leave a protected overlay focused.
+                self._tui._overlay_base_focus = self._editor
+            if self._layout.details is panel:
+                self._layout.details = None
+            if self._tui._focused is panel:
+                self._tui.set_focus(self._editor)
+        self._update_hints()
+        self._tui.request_render()
+
+    def _attach_parent_drafts(self, panel: ParentDraftPanel) -> None:
+        # Replacing a successful loading view must not clear the adopted records.
+        prior = self._parent_draft_panel
+        if prior is not None:
+            prior.close()
+        self._parent_draft_panel = panel
+        self._layout.details = panel
+        self._tui.set_focus(panel)
+        lease = panel.view_lease
+        self._parent_drafts.bind_read_view(lambda: self._parent_view_alive(panel, lease))
+        self._update_hints()
+        self._tui.request_render()
+
+    def _begin_parent_drafts(self) -> None:
+        if not self._parent_draft_ui_available():
+            raise ValueError('Another modal UI owns input; parent draft unchanged')
+        if self._parent_drafts.io.busy:
+            raise ValueError('Parent draft disk work still settling')
+        self._close_parent_drafts()
+        # These are native view transitions, not a child-browser dependency.
+        for panel, close in ((self._child_panel, self._close_children),
+                             (self._plan_panel, self._close_plan), (self._mcp_panel, self._close_mcp),
+                             (self._transcript_panel, self._close_transcript),
+                             (self._attachment_panel, self._close_attachment_preview),
+                             (self._navigation_panel, self._close_navigation)):
+            if panel is not None:
+                close()
+        if self._details_open:
+            self._close_details()
+
     def _parent_draft_command(self, args: str) -> None:
         try:
             if args.strip() == 'save':
                 self._show_parent_save()
-            elif args.strip().partition(' ')[0] == 'saved':
-                if not self._parent_draft_ui_available():
-                    raise ValueError('Another modal UI owns input; parent snapshot read not admitted')
-                self._open_children()
-                panel = self._child_panel
-                if panel is None:
-                    raise ValueError('Parent recovery view unavailable; no read admitted')
-                lease = panel.terminal_lease
-                draft_view, queue_view, preview = panel.draft_panel, panel.queue, panel.preview
-                self._parent_drafts.command(args, alive=lambda: (
-                    self._child_panel is panel and not self._exit_requested and panel.terminal_lease == lease
-                    and panel.draft_panel is draft_view and panel.queue is queue_view and panel.preview is preview
-                    and self._parent_draft_ui_available()))
+            elif args.strip().partition(' ')[0] in {'restore', 'saved'}:
+                self._begin_parent_drafts()
+                panel = ParentDraftPanel(lambda: (), lambda *_: None, self._close_parent_drafts,
+                                         context=self._mcp_context_key(), mode='loading')
+                self._attach_parent_drafts(panel)
+                lease = panel.view_lease
+                try:
+                    self._parent_drafts.command(args, alive=lambda: self._parent_view_alive(panel, lease))
+                except ValueError:
+                    self._close_parent_drafts()
+                    raise
             else:
                 self._parent_drafts.command(args)
         except ValueError as exc:
@@ -1999,198 +1286,58 @@ class InteractiveMode:
         self._tui.request_render()
 
     def _show_parent_save(self) -> None:
-        if not self._parent_draft_ui_available():
-            raise ValueError('Another modal UI owns input; parent draft unchanged')
-        self._open_children()
-        panel = self._child_panel
-        if panel is None:
-            raise ValueError('Parent save view unavailable; no write admitted')
-        # Capture exact composer before opening its review; no consumption or mutation.
-        self._parent_drafts.prepare_save(alive=lambda: self._child_panel is panel and not self._exit_requested)
+        self._begin_parent_drafts()
+        self._parent_drafts.prepare_save(alive=lambda: False)
         entry = self._parent_drafts.save_entry()
         def act(action: str, reviewed: DraftEntry) -> None:
-            if (action != 'save' or self._child_panel is not panel or panel.draft_panel is not browser
-                    or panel.terminal_lease != lease or not self._parent_draft_ui_available()):
+            if action != 'save' or not self._parent_view_alive(panel, lease):
                 raise ValueError('Parent save view changed; reopen full review')
             self._parent_drafts.confirm_save(reviewed)
-            panel.back()
-        def back() -> None:
-            self._parent_drafts.invalidate_read()
-            panel.back()
-        browser = ChildDraftPanel(lambda: (entry,), act, back, parent=True, save_only=True)
-        panel._mode = 'drafts'
-        panel._input.focused = False
-        panel.draft_panel = browser
-        lease = panel.terminal_lease
-        self._parent_drafts.bind_read_view(lambda: (
-            self._child_panel is panel and panel.draft_panel is browser and panel.terminal_lease == lease
-            and self._parent_draft_ui_available()))
-        browser.focused = True
-        browser._prepare('save', entry)
-        self._tui.set_focus(panel)
-        self._tui.request_render()
+            self._close_parent_drafts()  # Admitted disk work still owns its quit barrier.
+        panel = ParentDraftPanel(lambda: (entry,), act, self._close_parent_drafts,
+                                 context=self._mcp_context_key(), mode='save')
+        panel.prepare_save(entry)
+        self._attach_parent_drafts(panel)
+        lease = panel.view_lease
 
     def _show_parent_drafts(self) -> None:
         if not self._parent_draft_ui_available():
-            self._parent_drafts.invalidate_read()
+            self._close_parent_drafts()
             self._chat_log.add_system('Parent recovery blocked by modal owner; explicitly reload after it settles')
             return
-        self._open_children()
-        panel = self._child_panel
-        if panel is None:
-            return
         def act(action: str, entry: DraftEntry) -> None:
-            if (self._child_panel is not panel or panel.draft_panel is not browser
-                    or panel.terminal_lease != lease or not self._parent_draft_ui_available()):
+            if not self._parent_view_alive(panel, lease):
                 raise ValueError('Parent recovery view changed; reopen and review')
             def restore(draft: ChildDraft) -> None:
                 retained = self._retained_image_bytes() - self._parent_saved_bytes() + self._composer.bytes
                 if retained + sum(len(item.data) for item in draft.images) > 40 * 1024 * 1024:
                     raise ValueError('Parent recovery exceeds local retention; existing draft preserved')
+                # Text/images only. Native set_text places the editing cursor at the end;
+                # persisted cursor/config/access never become restore authority.
                 self._editor.set_text(draft.text)
                 self._composer.restore(draft.images)
-                self._close_children()
+                self._close_parent_drafts()
                 self._chat_log.add_system('Parent draft recovered; NOT sent · inspect before explicit submission')
             self._parent_drafts.action(action, entry, restore)
-        panel._mode = 'drafts'
-        panel._input.focused = False
-        def back() -> None:
-            self._parent_drafts.invalidate_read()
-            panel.back()
-        browser = ChildDraftPanel(self._parent_drafts.entries, act, back, parent=True)
-        panel.draft_panel = browser
-        lease = panel.terminal_lease
-        self._parent_drafts.bind_read_view(lambda: (
-            self._child_panel is panel and not self._exit_requested and panel.terminal_lease == lease
-            and panel.draft_panel is browser and self._parent_draft_ui_available()))
-        browser.focused = True
-        self._tui.set_focus(panel)
-        self._tui.request_render()
+        panel = ParentDraftPanel(self._parent_drafts.entries, act, self._close_parent_drafts,
+                                 context=self._mcp_context_key(), mode='restore')
+        self._attach_parent_drafts(panel)
+        lease = panel.view_lease
 
-    def _poll_child_autosave(self, *, flush: bool = False) -> bool:
-        if self._child_panel is not None and self._child_autosave.enabled:
-            self._child_panel._save_draft()
-        entries = self._child_draft_entries() if self._child_autosave.enabled else ()
-        return self._child_autosave.poll(self._durable_child_store(), entries,
-                                         self._chat_log.add_system, flush=flush)
+    def _poll_parent_drafts(self) -> None:
+        panel = self._parent_draft_panel
+        if panel is not None and (not panel.focused or panel.context != self._mcp_context_key()
+                                  or not self._parent_draft_ui_available()):
+            self._close_parent_drafts()
+        self._parent_drafts.poll(self._show_parent_drafts)
+        panel = self._parent_draft_panel
+        if panel is not None and panel.mode == 'loading' and not self._parent_drafts.io.busy:
+            self._close_parent_drafts()  # Failed/revoked reads never keep a dead loading surface.
 
-    def _child_autosave_command(self, value: str) -> None:
-        if value not in {'on', 'off', ''}:
-            self._chat_log.add_system('Usage: /agents autosave [on|off]')
-            return
-        if value:
-            self._child_autosave.set_enabled(value == 'on')
-        self._chat_log.add_system('Child autosave ' + ('ON' if self._child_autosave.enabled else 'OFF')
-            + ' · PRIVATE PLAINTEXT · pending/writing edits are not acknowledged durable; '
-            'committed is a polled disk receipt, not per-key saving · /agents saved recovery only')
-        self._tui.request_render()
 
-    def _durable_child_store(self) -> ChildDraftStore:
-        return ChildDraftStore(self._session.session_manager._dir / 'saved-child-drafts')
 
-    def _load_saved_child_drafts(self, selection: str = '') -> None:
-        self._open_children()
-        panel = self._child_panel
-        if panel is None:
-            return
-        if self._child_draft_io.busy:
-            raise ValueError('Durable draft work still settling; no repeated load')
-        action = 'catalog' if selection == 'list' else 'load' if selection else 'list'
-        if selection not in {'', 'list'} and (len(selection) != 32
-                or any(char not in '0123456789abcdef' for char in selection)):
-            raise ValueError('Use /agents saved [list|SNAPSHOT_ID]')
-        self._child_draft_io.start(action, self._durable_child_store(), owner=panel.owner_token, key=selection)
-        self._chat_log.add_system('Loading explicit saved child snapshots; no agent execution')
 
-    def _finish_child_draft_io(self, result: dict[str, Any]) -> None:
-        panel = self._child_panel
-        if result.get('error'):
-            self._chat_log.add_system(str(result['error']))
-            if panel is not None and panel.owner_token == result['owner']:
-                panel.fail(str(result['error']))
-            return
-        action = result['action']
-        if action == 'save':
-            saved = result['saved']
-            self._chat_log.add_system('Child draft saved privately: ' + saved.id + ' · /agents saved reviews recovery')
-        elif action == 'discard':
-            key = result['discarded']
-            self._saved_child_drafts.pop(key, None)
-            self._child_drafts.pop('saved-draft:' + key, None)
-            self._chat_log.add_system('Discarded saved snapshot only; local editable copies unchanged')
-        elif action == 'catalog':
-            if (panel is None or panel.owner_token != result['owner']
-                    or self._child_context != self._child_context_key()):
-                self._chat_log.add_system('Saved catalog view changed; explicitly list again')
-                return
-            rows = result['catalog']
-            self._chat_log.add_system('Saved child snapshots (metadata only; no drafts adopted):\n' + '\n'.join(
-                f"{row['id']} · {row['image_count']} images · {row['image_bytes']} bytes · "
-                + str(row['label']) for row in rows)
-                + '\nUse /agents saved SNAPSHOT_ID to load one for full reviewed recovery')
-        elif action in {'list', 'load'}:
-            if (panel is None or panel.owner_token != result['owner']
-                    or self._child_context != self._child_context_key()):
-                self._chat_log.add_system('Saved draft read owner changed; reopen /agents saved explicitly')
-                return
-            records = result['saved']
-            total = sum(len(image.data) for record in records for image in record.draft.images)
-            # Replacing catalog rows releases only their EXCLUSIVE image ownership.
-            # Reviewed copies and the active child composer can still own the same
-            # immutable bytes; subtracting every old saved image undercounts them.
-            retained = (self._retained_image_bytes() - self._child_draft_bytes()
-                        + self._child_draft_bytes(exclude_saved=True))
-            if retained + self._composer.bytes + total > 40 * 1024 * 1024:
-                self._chat_log.add_system('Saved draft catalog exceeds local retained-image capacity; no partial load')
-                return
-            # Saved provenance is always an OLD context: only fresh read-only copy,
-            # never resume prior queue/model/permissions through a recovered draft.
-            for key in tuple(self._saved_child_drafts):
-                self._child_drafts.pop('saved-draft:' + key, None)
-            self._saved_child_drafts = {record.id: record for record in records}
-            for record in records:
-                scope = 'saved-draft:' + record.id
-                self._child_drafts[scope] = {('start', record.id): record.draft}
-                self._child_draft_labels[scope] = 'SAVED PRIVATE · ' + record.label
-            panel.open_drafts()
-        if panel is not None and panel.owner_token == result['owner']:
-            if action != 'list':
-                panel.open_drafts()
-            self._tui.request_render()
 
-    def _child_draft_entries(self) -> tuple[DraftEntry, ...]:
-        return draft_entries(self._child_drafts, self._child_draft_labels, self._child_context)
-
-    def _child_draft_action(self, action: str, entry: DraftEntry) -> None:
-        panel = self._child_panel
-        if panel is None or self._exit_requested or self._child_context != self._child_context_key():
-            raise ValueError('Child draft browser owner changed; reopen and review, no replay')
-        if self._child_draft_io.busy:
-            raise ValueError('Durable child draft operation still settling; no repeated action')
-        cached = self._child_drafts.get(entry.scope, {}).get(entry.key)
-        if cached is not entry.original or cached != entry.value:
-            raise ValueError('Retained child draft changed; review the current snapshot')
-        if action == 'save':
-            self._child_draft_io.start('save', self._durable_child_store(), owner=panel.owner_token, entry=entry)
-            panel.back()
-            return
-        if action == 'discard' and entry.scope.startswith('saved-draft:'):
-            key = entry.scope.removeprefix('saved-draft:')
-            saved = self._saved_child_drafts.get(key)
-            if saved is None or saved.draft is not entry.original:
-                raise ValueError('Saved draft receipt owner changed; reload and review')
-            self._child_draft_io.start('discard', self._durable_child_store(), owner=panel.owner_token, saved=saved)
-            panel.back()
-            return
-        if action == 'discard':
-            del self._child_drafts[entry.scope][entry.key]
-            panel.open_drafts()
-        elif action in {'copy', 'reopen'}:
-            if action == 'reopen' and entry.scope != self._child_context:
-                raise ValueError('Old contexts cannot resume; explicitly copy fresh/read-only')
-            panel.adopt_draft(entry, reopen=action == 'reopen')
-        else:
-            raise ValueError('Unknown local child draft action')
 
     def _child_image_send(self, action: str, child: str, text: str, access: str,
                           config: dict[str, Any], images: tuple[Attachment, ...]) -> None:
@@ -2259,6 +1406,14 @@ class InteractiveMode:
         self._child_send("start", "", shlex.join(options) + " -- " + task, "read-only")
 
     def _child_send(self, action: str, child: str, text: str, access: str) -> None:
+        if action == 'queue':
+            try:
+                command = json.loads(text)
+            except ValueError:
+                command = None  # Keep malformed native queue errors on the existing owned backend path.
+            if isinstance(command, dict) and command.get('action') in {
+                    'return_prepare', 'return_commit', 'return_cancel'}:
+                return  # Retired UI work cannot touch a current draft, owner or backend lease.
         panel = self._child_panel
         if panel is None or self._child_context != self._child_context_key():
             return
@@ -2279,18 +1434,13 @@ class InteractiveMode:
         self._child_jobs.add(identifier)
         owner, context = self._session.children, self._child_context
         queue_panel = panel.queue
-        return_owner = panel.owner_token + ':' + (queue_panel.owner_token if queue_panel is not None else '')
-        def return_alive() -> bool:
-            return (not self._exit_requested and self._child_panel is panel and panel.queue is queue_panel
-                    and self._child_context_key() == context)
         release = self._session_events.reserve_producer('child-control')
         def work() -> None:
             error = ""
             data: Any = None
             images: tuple[Attachment, ...] = ()
             try:
-                data = asyncio.run(owner.supervisor.control(action, child, text,
-                    return_owner=return_owner, return_alive=return_alive))
+                data = asyncio.run(owner.supervisor.control(action, child, text))
                 if 'image_recovery' in data:
                     from xdog.tui.child_recovery import decode_recovery
                     images = decode_recovery(data.pop('image_recovery'))
@@ -2328,7 +1478,6 @@ class InteractiveMode:
                 self._child_fullscreen()
 
     def _close_children(self) -> None:
-        self._parent_drafts.invalidate_read()
         self._leave_child_fullscreen()
         if self._child_source_worker is not None:
             self._child_source_worker.close()
@@ -2378,6 +1527,8 @@ class InteractiveMode:
 
     def _open_transcript(self, query: str = "", *, tools: bool = False,
                          saved: tuple[str, str] | None = None) -> None:
+        if self._parent_draft_panel is not None:
+            self._close_parent_drafts()
         if self._transcript_panel is not None and saved != self._saved_scope:
             self._close_transcript()
         if self._transcript_panel is not None and isinstance(self._transcript_panel, ToolInventoryPanel) != tools:
@@ -2398,8 +1549,6 @@ class InteractiveMode:
             self._close_attachment_preview()
         if self._navigation_panel is not None:
             self._close_navigation()
-        if self._review_panel is not None:
-            self._close_review()
         if self._details_open:
             self._close_details()
         self._saved_scope = saved
@@ -2511,7 +1660,8 @@ class InteractiveMode:
             self._layout.details = panel
             self._tui.set_focus(panel)
         elif isinstance(self._layout.details, OutputPanel):
-            self._layout.details = (self._child_panel or self._plan_panel or self._mcp_panel
+            self._layout.details = (self._parent_draft_panel or self._child_panel or self._plan_panel
+                                       or self._mcp_panel
                                        or self._transcript_panel) or (
                 self._details_panel if self._details_open else None)
             self._restore_auxiliary_focus()
@@ -2620,6 +1770,8 @@ class InteractiveMode:
             self._open_transcript(args)
 
     def _open_attachment_preview(self, item: Attachment) -> None:
+        if self._parent_draft_panel is not None:
+            self._close_parent_drafts()
         if self._transcript_panel is not None:
             self._close_transcript()
         if self._permission_prompt is not None or self._tui.has_overlay():
@@ -2631,8 +1783,6 @@ class InteractiveMode:
         self._close_attachment_preview()
         if self._navigation_panel is not None:
             self._close_navigation()
-        if self._review_panel is not None:
-            self._close_review()
         if self._details_open:
             self._close_details()
         self._attachment_panel = AttachmentPanel(item, self._close_attachment_preview)
@@ -2643,13 +1793,15 @@ class InteractiveMode:
 
     def _close_attachment_preview(self) -> None:
         self._attachment_panel = None
-        self._layout.details = (self._navigation_panel or self._review_panel
+        self._layout.details = (self._navigation_panel
                                 or (self._details_panel if self._details_open else None))
         self._restore_auxiliary_focus()
         self._update_hints()
         self._tui.request_render()
 
     def _open_navigation(self, scope: str = "sessions") -> None:
+        if self._parent_draft_panel is not None:
+            self._close_parent_drafts()
         if self._child_panel is not None:
             self._close_children()
         if self._transcript_panel is not None:
@@ -2668,8 +1820,6 @@ class InteractiveMode:
             self._close_plan()
         if self._navigation_panel is not None:
             self._close_navigation()
-        if self._review_panel is not None:
-            self._close_review()
         if self._details_open:
             self._close_details()
         self._navigation_provider = NavigationWorker(self._navigation_entries)
@@ -2696,67 +1846,29 @@ class InteractiveMode:
             self._navigation_provider.close()
         self._navigation_provider = None
         self._navigation_panel = None
-        self._layout.details = self._review_panel or (self._details_panel if self._details_open else None)
+        self._layout.details = (self._details_panel if self._details_open else None)
         if self._permission_prompt is None:
             self._restore_auxiliary_focus()
         self._update_hints()
         self._tui.request_render()
 
-    def _open_review(self) -> None:
-        if self._child_panel is not None:
-            self._close_children()
-        if self._transcript_panel is not None:
-            self._close_transcript()
-        if self._attachment_panel is not None:
-            self._close_attachment_preview()
-        if self._exit_requested:
-            return
-        if self._permission_prompt is not None or self._tui.has_overlay():
-            self._chat_log.add_system("Close the active dialog before opening repository review")
-            self._tui.request_render()
-            return
-        if self._mcp_panel is not None:
-            self._close_mcp()
-        if self._plan_panel is not None:
-            self._close_plan()
-        if self._navigation_panel is not None:
-            self._close_navigation()
-        if self._review_panel is not None:
-            self._review_backend.refresh() if self._review_backend is not None else None
-            return
-        if self._details_open:
-            self._close_details()
-        self._review_backend = RepositoryReview(self._session.working_dir)
-        self._review_panel = ReviewPanel(self._review_backend, self._close_review)
-        self._layout.details = self._review_panel
-        self._tui.set_focus(self._review_panel)
-        self._update_hints()
-        self._tui.request_render()
-
-    def _close_review(self) -> None:
-        if self._review_backend is not None:
-            self._review_backend.close()
-        self._review_backend = None
-        self._review_panel = None
-        self._layout.details = self._details_panel if self._details_open else None
-        if self._permission_prompt is None:
-            self._tui.set_focus(self._details_panel if self._details_open else self._editor)
-        self._update_hints()
-        self._tui.request_render()
 
     def _restore_auxiliary_focus(self) -> None:
         self._tui.set_focus(
             self._permission_prompt or self._outputs.panel
             or (self._extension_dialog_panel if self._extension_dialog_panel is not None
-                and self._extension_dialog_panel.dialog.get('overlay') is None else None)
-            or self._child_panel or self._plan_panel or self._mcp_panel
+                else None)
+            or self._parent_draft_panel or self._child_panel or self._plan_panel
+                                       or self._mcp_panel
             or self._transcript_panel
             or self._attachment_panel
-            or self._navigation_panel or self._review_panel
+            or self._navigation_panel
             or (self._details_panel if self._details_open else self._editor)
         )
 
     def _open_details(self) -> None:
+        if self._parent_draft_panel is not None:
+            self._close_parent_drafts()
         if self._child_panel is not None:
             self._close_children()
         if self._plan_panel is not None:
@@ -2769,8 +1881,6 @@ class InteractiveMode:
             self._close_attachment_preview()
         if self._navigation_panel is not None:
             self._close_navigation()
-        if self._review_panel is not None:
-            self._close_review()
         self._details_open = True
         self._details_panel.show_latest(from_start=True)
         self._layout.details = self._details_panel
@@ -2914,11 +2024,10 @@ class InteractiveMode:
             hint = "Permission focused · ↑/↓ choose · Enter confirm · Esc deny"
         elif self._outputs.panel is not None:
             hint = "Output review · Tab path · PgUp/PgDn preview · Enter saves locally · Esc cancels"
-        elif (isinstance(self._extension_dialog_panel, ExtensionCustom) and self._extension_dialog_panel.overlay
-              and not self._extension_dialog_panel.focused):
-            hint = "Background overlay · parent draft editable · Esc/Ctrl+C cancel view · NOT tool approval"
         elif self._extension_dialog_panel is not None:
             hint = "Extension dialog · Enter answers · Esc cancels · NOT tool approval"
+        elif self._parent_draft_panel is not None:
+            hint = "Primary draft · explicit save/restore review · p image preview · Esc cancel · NOT sent"
         elif self._child_panel is not None:
             hint = "Children focused · Enter inspect · n new · c cancel · / search · Esc parent draft"
         elif self._plan_panel is not None:
@@ -2933,8 +2042,6 @@ class InteractiveMode:
             hint = "Image preview · Esc return to draft · /attachments remove/clear"
         elif self._navigation_panel is not None:
             hint = "Sessions/tree · ↑/↓ select · →/← tree/back · / search · v read-only · Enter activate · Esc close"
-        elif self._review_panel is not None:
-            hint = "Review · ↑/↓ file · n/p hunk · PgUp/PgDn · s/w lane · / filter · r refresh · Esc close"
         elif self._details_open:
             hint = "Details focused · ←/→ entry · PgUp/PgDn scroll · End latest · Esc input"
         elif self._command is not None and self._command.mutating:
@@ -3180,7 +2287,6 @@ class InteractiveMode:
                 else:
                     self._chat_log.add_system(str(event.get("error", "Input rejected")))
             elif action == "remove":
-                self._extension_input_ids.discard(input_id)
                 self._routed_inputs.pop(input_id, None)
                 self._routed_images.pop(input_id, None)
             else:
@@ -3198,7 +2304,6 @@ class InteractiveMode:
                 self._chat_log.add_system(f"Input {input_id}: {action} accepted (not proof of consumption)")
         elif kind == "input_consumed":
             input_id = str(event["id"])
-            self._extension_input_ids.discard(input_id)
             item = self._routed_inputs.pop(input_id, None)
             if item is not None:
                 images = self._routed_images.pop(input_id, ())
@@ -3213,13 +2318,8 @@ class InteractiveMode:
                 item = self._routed_inputs.pop(str(raw["id"]), None)
                 if item is not None:
                     images = self._routed_images.pop(item.id, ())
-                    if item.id in self._extension_input_ids:
-                        self._extension_input_ids.discard(item.id)
-                        self._chat_log.add_system(f'Extension input {item.id} not consumed; '
-                            'not copied into the user draft. Inspect before re-requesting.\n' + str(raw['content']))
-                    else:
-                        self._composer.restore(images)
-                        texts.append(str(raw["content"]))
+                    self._composer.restore(images)
+                    texts.append(str(raw["content"]))
             if texts:
                 self._restore_editor_messages(texts)
                 self._chat_log.add_system("Unconsumed runtime inputs restored; not automatically replayed")
@@ -3295,12 +2395,7 @@ class InteractiveMode:
         self._chat_log.add_system(notice)
         self._tui.request_render()
 
-    def _handle_slash_command(self, cmd: str, args: str, *,
-                              rename_target: tuple[str, str] | None = None, compact_target: str | None = None,
-                              rename_alive: Callable[[], bool] | None = None,
-                              compact_alive: Callable[[], bool] | None = None,
-                              tools_target: tuple[tuple[str, ...] | None, int] | None = None,
-                              tools_alive: Callable[[], bool] | None = None) -> None:
+    def _handle_slash_command(self, cmd: str, args: str) -> None:
         if self._exit_requested:
             return
         if cmd == 'login':
@@ -3324,9 +2419,6 @@ class InteractiveMode:
         if cmd == "tools":
             self._open_tools(args)
             return
-        if cmd == "terminal-input":
-            self._terminal_input.recovery_command(args, self._restore_terminal_text)
-            return
         if cmd == "artifact":
             self._load_command_artifact(args)
             return
@@ -3334,14 +2426,10 @@ class InteractiveMode:
         """Serialize session commands; mutations require an idle agent."""
         if self._exit_requested:
             return
-        if cmd == 'agents' and (args.strip() == 'autosave' or args.strip().startswith('autosave ')):
-            self._child_autosave_command(args.strip().partition(' ')[2].strip())
-            return
-        if cmd == 'agents' and (args.strip() == 'saved' or args.strip().startswith('saved ')):
-            try:
-                self._load_saved_child_drafts(args.strip().partition(' ')[2].strip())
-            except ValueError as exc:
-                self._chat_log.add_system(str(exc))
+        if cmd == 'agents' and args.strip().partition(' ')[0] == 'saved':
+            self._chat_log.add_system('Child draft disk management was removed; '
+                                      '/agents drafts recovers this session only')
+            self._tui.request_render()
             return
         if cmd == 'agents' and args.strip() == 'drafts':
             self._open_children()
@@ -3386,15 +2474,6 @@ class InteractiveMode:
         if cmd in {"sessions", "tree"}:
             self._open_navigation("sessions" if cmd == "sessions" else f"tree|{self._session.session_id}|")
             return
-        if cmd == "diff":
-            if args.strip() == "close":
-                self._close_review()
-            elif args.strip() in {"", "refresh"}:
-                self._open_review()
-            else:
-                self._chat_log.add_system("Usage: /diff [refresh|close] — read-only repository changes")
-                self._tui.request_render()
-            return
         if cmd == "queue":
             self._queue_command(args)
             return
@@ -3432,7 +2511,7 @@ class InteractiveMode:
         if self._command is not None:
             self._preserve_input(value, f"wait for /{self._command.name}; command kept in draft")
             return
-        mutating = tools_target is not None or rename_target is not None or not _command_is_read_only(cmd, args)
+        mutating = not _command_is_read_only(cmd, args)
         with self._queue_lock:
             worker_active = self._worker_active
         if mutating and (worker_active or self._is_busy):
@@ -3440,10 +2519,7 @@ class InteractiveMode:
             return
 
         self._command_sequence += 1
-        command = _CommandState(self._command_sequence, cmd, mutating, rename_target=rename_target,
-                                rename_alive=rename_alive,
-                                tools_target=tools_target, compact_target=compact_target, compact_alive=compact_alive,
-                                tools_alive=tools_alive)
+        command = _CommandState(self._command_sequence, cmd, mutating)
         self._command = command
         if mutating:
             with self._queue_lock:
@@ -3502,25 +2578,7 @@ class InteractiveMode:
                     "clear", "compact", "branch", "goto", "resume", "new",
                 }
                 before = self._session.messages if changes_history else []
-                if command.compact_target is not None:
-                    from xdog.coding.core.slash_commands import CommandResult
-                    if command.compact_alive is None:
-                        await self._session.compact(command.compact_target)
-                    else:
-                        await self._session.compact(command.compact_target, command.compact_alive)
-                    result = CommandResult(output='Extension-requested compaction completed; inspect /transcript')
-                elif command.tools_target is not None:
-                    from xdog.coding.core.slash_commands import CommandResult
-                    names, revision = command.tools_target
-                    self._session.select_active_tools(names, expected_revision=revision, alive=command.tools_alive)
-                    result = CommandResult(output='Active tool selection applied; permissions unchanged')
-                elif command.rename_target is not None:
-                    from xdog.coding.core.slash_commands import CommandResult
-                    name, expected = command.rename_target
-                    selected = self._session.rename_session(name, expected_name=expected, alive=command.rename_alive)
-                    result = CommandResult(output=f"Session name: {selected or '(unnamed)'}")
-                else:
-                    result = await execute_command(command.name, args, self._session)
+                result = await execute_command(command.name, args, self._session)
                 changed = changes_history and (
                     command.name in {"clear", "resume", "new", "goto", "branch"} or before != self._session.messages
                 )
@@ -3652,19 +2710,11 @@ class InteractiveMode:
 
     def _handle_escape(self) -> None:
         """Escape cancels the active model turn or running tool task."""
-        panel = self._extension_dialog_panel
-        if (isinstance(panel, ExtensionCustom) and panel.dialog.get('overlay') is not None
-                and panel.dialog.get('live_overlay') and not panel.focused):
-            self._answer_extension_dialog(panel.dialog['id'], None)
-            return  # Cancel this owned background view, not unrelated parent/child work.
         if self._attachment_panel is not None:
             self._close_attachment_preview()
             return
         if self._navigation_panel is not None:
             self._close_navigation()
-            return
-        if self._review_panel is not None:
-            self._close_review()
             return
         if self._details_open:
             self._close_details()
@@ -3673,8 +2723,7 @@ class InteractiveMode:
             self._cancel_active_work()
 
     def _draft_write_failures(self) -> tuple[int, ...]:
-        return (self._child_draft_io.failures, self._child_autosave.io.failures,
-                self._parent_drafts.io.failures, self._parent_drafts.autosave.io.failures)
+        return (self._parent_drafts.io.failures, self._parent_drafts.autosave.io.failures)
 
     def _finish_deferred_draft_quit(self) -> bool:
         failures = self._draft_quit_failures
@@ -3692,21 +2741,18 @@ class InteractiveMode:
         """Stop once, cancel owned async work, and fail closed on approvals."""
         if self._exit_requested:
             return
-        self._poll_child_autosave(flush=True)
         self._parent_drafts.poll(self._show_parent_drafts, flush=True)
-        if self._child_draft_io.busy or self._child_autosave.busy or self._parent_drafts.busy:
+        if self._parent_drafts.busy:
             if self._draft_quit_failures is None:
                 self._draft_quit_failures = self._draft_write_failures()
                 self._chat_log.add_system('Saving pending drafts before quitting; storage failure keeps the UI open')
             return
         self._draft_quit_failures = None
         self._exit_requested = True
+        self._close_parent_drafts()
         if hasattr(self, "_argument_feed"):
             self._argument_feed.close()
-        self._custom_presentation.sync(None, False)
-        self._terminal_input.close()
         self._saved_worker.close()
-        self._editor_actions.invalidate()
         if self._child_panel is not None:
             self._close_children()
         self._artifact_loader.close()
@@ -3726,8 +2772,6 @@ class InteractiveMode:
             self._close_transcript()
         if self._navigation_provider is not None:
             self._navigation_provider.close()
-        if self._review_backend is not None:
-            self._review_backend.close()
         with self._queue_lock:
             self._cancel_requested = True
             self._cancel_epoch += 1
@@ -3924,8 +2968,6 @@ class InteractiveMode:
 
     def _bind_child_approvals(self) -> None:
         owner = self._session.children
-        owner.extensions.enable_editor_write(self._child_ui_lease, True)
-        owner.extensions.enable_queued_input(self._child_ui_lease, True)
         owner.extensions.default_ui = (self._child_ui_lease, lambda event: self._event_queue.put(
             {**event, "child_session_owner": owner.token}))
         owner.approver = lambda child, request: self._event_queue.put(
@@ -3970,24 +3012,15 @@ class InteractiveMode:
     def _poll(self) -> None:
         """Poll the event queue and update the UI (called per frame)."""
         self._bind_child_approvals()
-        self._editor_write_reviews.prune()
-        self._child_draft_io.poll(self._finish_child_draft_io)
-        self._poll_child_autosave()
-        self._parent_drafts.poll(self._show_parent_drafts)
+        self._poll_parent_drafts()
         if self._finish_deferred_draft_quit():
             return
-        draft_states = (('parent', self._parent_drafts.autosave.durability),
-                        ('child', self._child_autosave.durability))
-        durability = ' · '.join(f'{kind} draft:{state}' for kind, state in draft_states
-                                if state not in {'off', 'empty'})
+        draft_state = self._parent_drafts.autosave.durability
+        durability = f'parent draft:{draft_state}' if draft_state not in {'off', 'empty'} else ''
         draft_changed = self._footer.set_durability(durability)
         changed = bool(self._event_queue.drain(self._handle_ui_event))
         changed = draft_changed or changed
         changed = self._poll_permissions() or changed
-        self._after_run_compaction.poll()
-        self._after_run_tools.poll()
-        self._after_run_name.poll()
-        changed = self._terminal_input.poll() or changed
         if self._child_panel is not None:
             if self._child_context != self._child_context_key():
                 self._close_children()
@@ -4027,12 +3060,8 @@ class InteractiveMode:
         self._sync_output_panel()
         if self._extension_dialog_queue or self._extension_dialog_panel is not None:
             self._sync_extension_dialog()
-            if isinstance(self._extension_dialog_panel, ExtensionCustom):
-                changed = self._extension_dialog_panel.poll() or changed
         if self._navigation_panel is not None:
             changed = self._navigation_panel.poll() or changed
-        if self._review_panel is not None:
-            changed = self._review_panel.poll() or changed
 
         if self._is_busy and not self._awaiting_permission and self._run_status.phase != RunPhase.CANCELLING:
             elapsed = self._format_elapsed()
@@ -4061,7 +3090,6 @@ class InteractiveMode:
         self._permission_child = (owner, child_id) if owner is not None else None
         self._leave_child_fullscreen()
         self._leave_transcript_fullscreen()
-        self._custom_presentation.sync(None, False)
         """Display a focused approval panel above the input."""
         self._permission_container.clear()
         self._permission_alive = batch_alive
@@ -4142,6 +3170,10 @@ class InteractiveMode:
         """Handle a UI event from the event queue."""
         event = thaw_event(event)
         event_type = event.get("type")
+        if event_type in {'extension_dialog', 'child_extension_dialog'}:
+            question = event.get('dialog')
+            if not isinstance(question, dict) or not self._extension_stack.accepts(question, []):
+                return  # Removed extension controls cannot touch a successor owner or draft.
         if event_type == 'native_admission_failed':
             self._session_events.admission_failed(event['id'], event['error'])
             return
@@ -4158,106 +3190,13 @@ class InteractiveMode:
             self._session_events.display(event['event'])
             self._tui.request_render()
             return
-        if event_type == 'mcp_elicitation_failed':
-            binding = self._elicitation_bindings.get(str(event['server']))
-            if binding is not None and binding[1] == event['lease']:
-                self._elicitation_off(str(event['server']))
-                if self._mcp_panel is not None:
-                    active_elicitation_review = self._mcp_panel.elicitation_review
-                    if active_elicitation_review is not None:
-                        active_elicitation_review.disable('Elicitation answer refused; original owner revoked')
-                    self._mcp_panel._busy = False
-                    self._mcp_panel._message = 'Elicitation answer refused; no replay, inspect owner'
-            return
-        if event_type == 'mcp_elicitation_event':
-            value = event['event']
-            binding = self._elicitation_bindings.get(value['server'])
-            if (binding is None or binding[1] != value['lease'] or binding[2].is_set()
-                    or event['session_token'] != id(self._session) or event['context'] != self._mcp_context_key()
-                    or self._mcp_panel is None):
-                return
-            if value['type'] in {'elicitation_url_pending', 'elicitation_url_complete'}:
-                self._chat_log.add_system(str(value['notice']))
-                self._tui.request_render()
-                return
-            if value['type'] == 'elicitation_closed':
-                self._mcp_panel.elicitation_closed(value['id'])
-            else:
-                try:
-                    self._mcp_panel.publish_elicitation(value)
-                except ValueError:
-                    self._elicitation_off(value['server'])
-                    self._mcp_panel._busy = False
-                    self._mcp_panel._message = 'Elicitation review unavailable; request canceled, no replay'
-            self._tui.request_render()
-            return
-        if event_type == 'mcp_sampling_failed':
-            binding = self._sampling_bindings.get(str(event['server']))
-            if binding is not None and binding[1] == event['lease']:
-                self._sampling_off(str(event['server']))
-                if self._mcp_panel is not None:
-                    active_review = self._mcp_panel.sampling_review
-                    if active_review is not None:
-                        active_review.disable('Sampling answer refused; original owner revoked')
-                    self._mcp_panel._busy = False
-                    self._mcp_panel._message = 'Sampling answer refused; no replay, inspect owner'
-            return
-        if event_type == 'mcp_sampling_event':
-            value = event['event']
-            binding = self._sampling_bindings.get(value['server'])
-            if (binding is None or binding[1] != value['lease'] or binding[2].is_set()
-                    or event['session_token'] != id(self._session) or event['context'] != self._mcp_context_key()
-                    or self._mcp_panel is None):
-                return
-            if value['type'] == 'sampling_closed':
-                self._mcp_panel.sampling_closed(value['id'])
-            else:
-                try:
-                    self._mcp_panel.publish_sampling(value, tuple(event['models']))
-                except ValueError:
-                    self._sampling_off(value['server'])
-                    self._mcp_panel._busy = False
-                    self._mcp_panel._message = 'Sampling review unavailable; request canceled, no replay'
-            self._tui.request_render()
-            return
-        if event_type == 'extension_context_admitted':
-            if (event.get('extension_session') != self._session.session_id
-                    or event.get('session_id') != self._session.session_id):
-                return
-            from xdog.agent.extensions.context_message import display_text
-            value = {key: value for key, value in event.items() if key not in {'type', 'extension_session', 'stamp'}}
-            try:
-                text = display_text(value)
-            except ValueError:
-                text = 'Extension context display unavailable; inspect canonical transcript'
-            if text:
-                self._chat_log.add_system(text)
-                self._tui.request_render()
-            return
-        if event_type == 'extension_input_queued':
-            if event.get('extension_session') != self._session.session_id:
-                return
-            identifier = str(event['id'])
-            self._routed_inputs[identifier] = QueueEntry(identifier, str(event['content']),
-                str(event['delivery']), 'accepted', str(self._worker_generation))
-            self._routed_images[identifier] = tuple(event['images'])
-            self._extension_input_ids.add(identifier)
-            self._chat_log.add_system('Reviewed extension input queued; not proof of consumption')
-            self._update_message_queue()
-            self._tui.request_render()
-            return
-        if event_type == "terminal_input_result":
-            self._terminal_input.queue.accept(event['id'], event['result'])
-            return
         if event_type in {"input_transformed", "input_rejected", "input_handled"}:
             key = str(event.get("id", ""))
             if event_type == "input_handled":
                 if key:
                     self._routed_inputs.pop(key, None)
                     images = self._routed_images.pop(key, ())
-                    if key not in self._extension_input_ids:
-                        self._composer.restore(images)
-                    self._extension_input_ids.discard(key)
+                    self._composer.restore(images)
                     self._transformed_inputs.pop(key, None)
                 elif event.get('input_origin', 'user') == 'user':
                     self._composer.restore(tuple(event.get("images", ())))
@@ -4310,32 +3249,6 @@ class InteractiveMode:
                     and owner.has_pending(child, request.id)):
                 self._show_permission_request(request, owner=owner, child_id=child)
             return
-        if event_type in {'extension_custom_control', 'child_extension_custom_control'}:
-            item = next((item for item in self._extension_dialog_queue if item['id'] == event.get('id')), None)
-            if item is None or item.get('kind') != 'custom' or not item.get('live_overlay'):
-                return
-            if event_type.startswith('child_'):
-                if (event.get('child_session_owner') != self._session.children.token
-                        or event.get('child_owner') != self._child_ui_lease
-                        or event.get('session_id') != self._session.session_id
-                        or event.get('child_id') != item.get('child_id')):
-                    return
-            elif event.get('extension_session') != self._session.session_id or item.get('child_id'):
-                return
-            panel = self._extension_stack.panels.get(item['id'])
-            from xdog.tui.components.extension_custom import overlay_state
-            previous_overlay = item.get('overlay_state')
-            overlay_update = overlay_state(event.get('state'),
-                previous_overlay.get('sequence', 0) if isinstance(previous_overlay, dict) else 0)
-            if overlay_update is None:
-                return
-            item['overlay_state'] = overlay_update
-            if isinstance(panel, ExtensionCustom):
-                panel.accept_control(overlay_update)
-            self._sync_extension_dialog()
-            self._update_hints()
-            self._tui.request_render()
-            return
         if event_type in {'saved_source_ready', 'saved_source_failed'}:
             panel = self._transcript_panel
             if (self._saved_scope is None or panel is None or event.get('id') != self._saved_request
@@ -4363,62 +3276,12 @@ class InteractiveMode:
                 panel.invalidate_inventory('Inventory unavailable · r retries explicitly')
             self._tui.request_render()
             return
-        if event_type in {"extension_custom_frame", "extension_custom_error",
-                          "child_extension_custom_frame", "child_extension_custom_error"}:
-            panel = self._extension_dialog_panel
-            if not isinstance(panel, ExtensionCustom) or event.get("id") != panel.dialog["id"]:
-                return
-            if event_type.startswith("child_"):
-                if (event.get("child_session_owner") != self._session.children.token
-                        or event.get("child_owner") != self._child_ui_lease
-                        or event.get("session_id") != self._session.session_id
-                        or event.get("child_id") != panel.dialog.get("child_id")):
-                    return
-            elif event.get("extension_session") != self._session.session_id or panel.dialog.get("child_id"):
-                return
-            if event_type.endswith("_error"):
-                self._chat_log.add_system("Extension custom rendering/input failed; view canceled")
-            if self._dialog_contains(panel.dialog) and panel.accept(event):
-                self._tui.request_render()
-            return
-        if event_type in {'extension_editor_write_commit', 'extension_editor_write_discard',
-                          'child_extension_editor_write_commit', 'child_extension_editor_write_discard'}:
-            if (event.get('extension_session', self._session.session_id) != self._session.session_id
-                    or event.get('editor_write', {}).get('session_id') != self._session.session_id
-                    or event_type.startswith('child_') and event.get('child_owner') != self._child_ui_lease):
-                self._editor_write_reviews.discard(dict(event))
-                return
-            if event_type.endswith('_commit'):
-                applied = self._editor_write_reviews.apply(dict(event))
-                self._chat_log.add_system('Reviewed extension draft applied; not submitted' if applied else
-                                         'Extension draft proposal not applied; original owner/draft changed')
-            else:
-                self._editor_write_reviews.discard(dict(event))
-            self._tui.request_render()
-            return
-        if event_type in {'child_extension_input_queued', 'child_extension_input_consumed',
-                          'child_extension_input_returned'}:
-            if (event.get('child_session_owner') != self._session.children.token
-                    or event.get('child_owner') != self._child_ui_lease
-                    or event.get('session_id') != self._session.session_id
-                    or event.get('queued_input_generation') !=
-                    self._session.children.extensions.queued_input_generation(self._child_ui_lease)):
-                return
-            self._child_publish_roster()
-            self._chat_log.add_system('Child extension input ' + event_type.rsplit('_', 1)[-1]
-                + '; inspect the original child queue/history, never replayed into the parent')
-            self._tui.request_render()
-            return
         if event_type in {"child_extension_dialog", "child_extension_dialog_closed"}:
             if (event.get("child_session_owner") != self._session.children.token
                     or event.get("child_owner") != self._child_ui_lease
                     or event.get("session_id") != self._session.session_id):
                 return
             if event_type == "child_extension_dialog":
-                if (event['dialog'].get('operation') == 'queue_input'
-                        and event.get('queued_input_generation') !=
-                        self._session.children.extensions.queued_input_generation(self._child_ui_lease)):
-                    return
                 item = {**event["dialog"], "extension": event["extension"], "child_id": event["child_id"]}
                 if not self._extension_stack.accepts(item, self._extension_dialog_queue):
                     self._session.children.extensions.answer(item["child_id"], item["id"], self._child_ui_lease, None)
@@ -4429,24 +3292,6 @@ class InteractiveMode:
             self._update_hints()
             self._tui.request_render()
             return
-        if event_type == 'extension_name_after_run':
-            if event.get('session_id') == self._session.session_id:
-                self._chat_log.add_system('Reviewed name proposal: ' + str(event.get('status', 'unknown')))
-            return
-        if event_type == 'extension_compaction_after_run':
-            if event.get('session_id') == self._session.session_id:
-                status = event.get('status')
-                self._chat_log.add_system('Extension compaction: ' + str(status) +
-                    ('; waiting for original producer settlement' if status == 'staged' else ''))
-            return
-        if event_type == "extension_dialog_accepted":
-            if event.get("extension_session") == self._session.session_id:
-                self._accept_extension_navigation(event)
-            return
-        if event_type == "extension_dialog_closed":
-            review = self._extension_navigation_review
-            if review is not None and event.get("id") == review[2]["id"]:
-                self._extension_navigation_review = None
         if event_type in {"extension_dialog", "extension_dialog_closed"}:
             if event.get("extension_session") != self._session.session_id:
                 return
@@ -4632,8 +3477,6 @@ class InteractiveMode:
             if event.get("history_changed"):
                 self._extension_snapshot = {}
                 self._close_navigation()
-                if self._review_panel is not None:
-                    self._close_review()
                 self._file_completions.close()
                 self._file_completions = WorkspaceFileCompletionProvider(self._session.working_dir)
                 self._editor.set_autocomplete_provider(self._file_completions)
@@ -4665,21 +3508,6 @@ class InteractiveMode:
                     self._start_turn(prompt, echo=False)
             self._update_footer()
             self._update_header()
-            finished_owner = str(command.id) if command is not None else ""
-            success = not event.get("failed") and not event.get("cancelled")
-            if self._finish_extension_navigation(finished_owner, success):
-                self._extension_browser = None
-            else:
-                self._finish_extension_browser(finished_owner, success)
-            context_trigger = getattr(self, '_context_trigger', None)
-            if context_trigger is not None and command is not None and context_trigger[0] == command.id:
-                self._context_trigger = None
-                history = self._session.agent.messages
-                if (success and not command.cancel_requested and self._session is context_trigger[1]
-                        and self._mcp_context_key() == context_trigger[2] and history
-                        and getattr(history[-1], 'data', {}).get('id') == context_trigger[3]
-                        and not self._worker_active and not self._session.permissions.has_pending_requests):
-                    self._start_turn('', echo=False, input_origin='custom_context')
 
         elif event_type == "error":
             generation = event.get("generation")

@@ -1,3 +1,4 @@
+"""Intentionally legacy plugin: UI036 tests verify terminal registration fails closed."""
 import asyncio
 
 

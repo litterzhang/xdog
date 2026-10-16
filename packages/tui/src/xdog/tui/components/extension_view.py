@@ -15,7 +15,8 @@ class ExtensionView(Component):
     def render(self, width: int) -> list[str]:
         rows = []
         for key, value in tuple(self.source().get("ui", {}).items())[:8]:
-            if not isinstance(value, dict) or not isinstance(value.get("lines"), (list, tuple)):
+            if (not isinstance(value, dict) or value.get("kind") != "status"
+                    or not isinstance(value.get("lines"), (list, tuple))):
                 continue
             for line in value["lines"][:2]:
                 rows.append(truncate_to_width(sanitize_terminal_text(f"{key}: {line}"), max(0, width), ""))

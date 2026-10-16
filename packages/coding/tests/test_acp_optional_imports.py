@@ -7,9 +7,9 @@ import pytest
 
 
 @pytest.mark.parametrize('future',[False,True])
-def test_native_navigation_and_rpc_do_not_import_absent_acp_sdk(tmp_path,future):
+def test_native_navigation_and_print_do_not_import_absent_acp_sdk(tmp_path,future):
     script = '''
-import asyncio,sys,io,json
+import asyncio,sys
 from pathlib import Path
 from types import SimpleNamespace
 from importlib.abc import MetaPathFinder
@@ -42,13 +42,12 @@ try:
  assert session.runtime.server is None
 finally:
  ui._request_exit();ui._session_events.close()
-from xdog.coding.modes.rpc import rpc_mode
-rpc=make();sink=io.StringIO()
-rpc_mode.sys.stdin=io.StringIO('{"type":"status"}\\n{"type":"quit"}\\n')
-rpc_mode.sys.stdout=sink
-assert asyncio.run(rpc_mode.run_rpc_mode(rpc))==0
-ready=json.loads(sink.getvalue().splitlines()[0]);assert ready['type']=='ready'
-assert ready['capabilities']['acp']==0
+from xdog.coding.modes.print_mode import run_print_mode
+owner=make()
+try:
+ assert asyncio.run(run_print_mode(owner,'offline input'))==0
+finally:
+ owner.dispose()
 assert 'acp' not in sys.modules
 '''
     result = subprocess.run([sys.executable,'-c',script,str(tmp_path),str(future)],

@@ -17,17 +17,10 @@ def names(value: Any) -> tuple[str, ...] | None:
 
 
 def request(value: dict[str, Any]) -> None:
-    if 'after_run' in value:
-        from xdog.agent.extensions.active_tools_request import request as after_run_request
-        after_run_request(value)
-    if any(key in value for key in ('target', 'session_id', 'branch_id', 'scope', 'index')):
-        raise ValueError('Tool selection cannot change session scope')
-    if value['operation'] == 'select_tools':
-        if 'names' not in value:
-            raise ValueError('Explicit tool selection required')
-        names(value['names'])
-        if type(value.get('revision')) is not int or value['revision'] < 0:
-            raise ValueError('Original tool selection revision required')
+    if value.get('operation') != 'active_tools':
+        raise ValueError('Extension tool-selection requests have been removed')
+    if set(value) - {'id', 'kind', 'operation', 'title', 'message', 'timeout', 'extension'}:
+        raise ValueError('Active-tool inspection cannot change selection or session scope')
 
 
 def snapshot(agent: Agent, session_id: str) -> dict[str, Any]:

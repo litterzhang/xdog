@@ -1,8 +1,13 @@
 # Agent UI authoritative requirement checklist
 
+> **Historical audit — not the current goal or source gate.**
+> 2026-10-16 user-approved cleanup supersedes conflicting scope. Old rows/counts/evidence below are historical, not current source gates, support promises or outstanding simplification requirements. Use the new26-ID ledger and persistent goal.
+> Current scope/counts: `docs/agent-ui-simplification-requirements.json`.
+> Historical evidence paths may refer to intentionally removed code.
+
 Updated: **2026-10-11**. JSON is authoritative; this Markdown is generated.
 
-## Scope and completion conditions
+## Historical scope and completion conditions
 
 - 保留原目标全部已审计适用 UI/能力要求；仅 OS-enforced sandboxing 不在目标内。
 - 用户本轮只延期非当前 Linux 环境的**原生验证**；不声称通过、不作为本轮阻塞、不为这些验证继续扩展实现。
@@ -14,7 +19,7 @@ Updated: **2026-10-11**. JSON is authoritative; this Markdown is generated.
 - 后续发现真实新需求必须追加新 ID；已有范围细化留在原 ID，不重复计数。不回收或重新编号。
 - 不处理 Claw memory search/scheduler 另案；不发布、不重启用户服务、不打断正常推进的测试、不覆盖无关改动。经身份/根因确认的自有挂起测试及其 peer 可按用户2026-10-10授权优先正常退出、必要时定向 SIGTERM；不触碰 Codex/无关进程。
 
-## Exact requirement counts
+## Historical requirement counts
 
 **总计 64；本轮未完成 5；延期 4（另报、非阻塞）。**
 

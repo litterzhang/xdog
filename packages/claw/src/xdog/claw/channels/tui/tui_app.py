@@ -45,12 +45,9 @@ from typing import Any
 
 from xdog.agent.extensions.artifact_export import ArtifactLoader, export_snapshot
 from xdog.agent.extensions.command_result import ExtensionCommandResult
-from xdog.agent.extensions.custom import rich as custom_rich
 from xdog.agent.extensions.dialogs import validate_dialog
-from xdog.agent.extensions.forms import multi_choice_form
 from xdog.agent.extensions.runtime import validate_snapshot
-from xdog.agent.mcp.completion import McpCompletion
-from xdog.agent.mcp.context import McpDocument, McpEntry, resource_completion_document
+from xdog.agent.mcp.context import McpDocument, McpEntry
 from xdog.agent.mcp.oauth import validate_launch, validate_review
 from xdog.agent.planning import PlanState
 from xdog.agent.supervision_config import ChildConfig, ChildPresets, parse_child_options
@@ -60,55 +57,43 @@ from xdog.claw.channels.tui.source_reader import SourceReceiver
 from xdog.claw.config import get_config_dir, get_data_dir
 from xdog.tui.attachments import Attachment, AttachmentComposer
 from xdog.tui.child_browser import child_entries
-from xdog.tui.child_draft_autosave import ChildDraftAutosave
-from xdog.tui.child_draft_io import ChildDraftIO
-from xdog.tui.child_draft_store import ChildDraftStore, SavedChildDraft
 from xdog.tui.child_drafts import ChildDraft
 from xdog.tui.child_recovery import ChildRecoveryReceiver
 from xdog.tui.components.attachment_panel import AttachmentPanel
-from xdog.tui.components.child_draft_panel import ChildDraftPanel, DraftEntry, draft_entries
+from xdog.tui.components.child_draft_panel import DraftEntry
 from xdog.tui.components.child_panel import ChildPanel
 from xdog.tui.components.details import set_details_expanded
 from xdog.tui.components.details_panel import DetailRecord, DetailsPanel, streaming_preview
 from xdog.tui.components.extension_command import ExtensionCommand
-from xdog.tui.components.extension_custom import ExtensionCustom, ExtensionCustomPresentation
 from xdog.tui.components.extension_dialog import ExtensionDialog
-from xdog.tui.components.extension_navigation import ExtensionNavigation
 from xdog.tui.components.extension_stack import ExtensionDialogStack
 from xdog.tui.components.extension_view import ExtensionView
 from xdog.tui.components.image import Image
 from xdog.tui.components.inline_layout import CompactText, InlineLayout
-from xdog.tui.components.input_panel import InputPanel, SlashSelectList, _sanitize_editor_text
+from xdog.tui.components.input_panel import InputPanel, SlashSelectList
 from xdog.tui.components.markdown import DefaultTextStyle, MarkdownTheme
 from xdog.tui.components.mcp_panel import McpPanel
-from xdog.tui.components.mcp_sampling_panel import McpSamplingPanel, _json
 from xdog.tui.components.messages import AssistantMessages, ThinkingMessage, Transcript
 from xdog.tui.components.messages import UserMessage as SharedUserMessage
 from xdog.tui.components.navigation_panel import NavigationPanel
 from xdog.tui.components.output_panel import OutputPanel
+from xdog.tui.components.parent_draft_panel import ParentDraftPanel
 from xdog.tui.components.plan_panel import PlanPanel
-from xdog.tui.components.remote_parent_drafts import RemoteParentDraftPanel
-from xdog.tui.components.review_panel import ReviewPanel
 from xdog.tui.components.spacer import Spacer
 from xdog.tui.components.status_line import StatusLine
 from xdog.tui.components.text import Text
 from xdog.tui.components.tool_inventory import ToolInventoryPanel, inventory_records
 from xdog.tui.components.tool_message import ToolMessage as ToolMessageView
 from xdog.tui.components.transcript_panel import TranscriptPanel
-from xdog.tui.editor_actions import EditorActions
 from xdog.tui.event_queue import EventQueue, thaw_event
 from xdog.tui.extension_shortcuts import ExtensionShortcuts
 from xdog.tui.external_editor import edit_draft
 from xdog.tui.file_completion import WorkspaceFileCompletionProvider
 from xdog.tui.keys import KeyEvent, KeyEventType
 from xdog.tui.navigation import NavigationEntry, NavigationFeed, NavigationSnapshot
-from xdog.tui.parent_draft_receiver import ParentDraftReceiver, ParentRecovery, composer_receipt
 from xdog.tui.parent_drafts import ParentDrafts
 from xdog.tui.prompt_keymap import PromptKeymap
-from xdog.tui.prompt_terminal import PromptTerminalInterceptor, prompt_key_policy
 from xdog.tui.queue_controls import QUEUE_HELP, LocalQueueIds, QueueEntry, parse_queue_command
-from xdog.tui.repository_review import RepositoryReview
-from xdog.tui.terminal_interception import HeldTerminalInput
 from xdog.tui.terminal_logging import capture_terminal_logs
 from xdog.tui.transcript_actions import TranscriptActions
 from xdog.tui.transcript_browser import TranscriptRecord
@@ -118,6 +103,13 @@ from xdog.tui.url_open import ReviewedUrlOpener
 from xdog.tui.utils import sanitize_terminal_text
 
 logger = logging.getLogger(__name__)
+
+# Native panel operations only; protocol completion remains available to backend callers.
+_MCP_PANEL_ACTIONS = frozenset({
+    "list", "connect", "disconnect", "refresh", "resources", "templates", "prompts", "read", "prompt",
+    "watch_resource", "unwatch_resource", "watch_catalog", "unwatch_catalog",
+    "watch_notifications", "unwatch_notifications",
+})
 
 # ── ANSI color helpers (matching OpenClaw's chalk usage) ──────────────
 
@@ -289,7 +281,7 @@ SLASH_COMMANDS = {
     "/thinking": "Inspect/change session reasoning level; no model turn",
     "/extensions": "Explicit trusted extension status/reload/unload/auth",
     "/login": "Extension provider authentication menu/login; native provider auth uses xdog-ai",
-    "/draft": "Parent autosave/saved; remote recovery; remote-save (shortcut preserves composer)",
+    "/draft": "Local parent draft save and recovery",
     "/agents": "Child browser/controls; start supports --model/--thinking and reviewed specialization settings",
     "/plan": "Inspect plan or /plan start OBJECTIVE | execute REVISION | revise | stop",
     "/copy": "Copy response/selected source", "/export": "Save private transcript snapshot",
@@ -302,10 +294,8 @@ SLASH_COMMANDS = {
     "/status": "Show gateway status",
     "/clear": "Clear screen and chat",
     "/keys": "Show active keybindings",
-    "/terminal-input": "Inspect/restore/discard rejected input, or pause/resume hooks",
     "/editor": "Open external prompt editor",
     "/queue": "Inspect/edit/remove/reorder queued inputs",
-    "/diff": "Read-only repository-wide change review",
     "/sessions": "Browse saved sessions", "/tree": "Browse branches/checkpoints", "/resume": "Activate saved session",
     "/name": "Inspect/name session: /name [NAME|- to clear]",
     "/new": "Create new session", "/fork": "Save checkpoint",
@@ -717,31 +707,12 @@ class ChatApp:
         self._pending_ids = LocalQueueIds()
         self._transformed_inputs: dict[str, str] = {}
         self._routed_inputs: dict[str, QueueEntry] = {}
-        self._extension_queued_inputs: dict[str, tuple[str, int]] = {}
-        self._extension_queued_inputs_supported = False
-        self._extension_context_messages_supported = False
-        self._extension_context_messages_generation = 0
-        self._context_results: dict[str, tuple[str, str, int]] = {}
-        self._extension_queued_inputs_generation = 0
-        self._child_queued_inputs_supported = False
-        self._child_queued_inputs_generation = 0
-        self._child_queued_inputs_owner = ''
-        self._child_extension_inputs: dict[str, tuple[str, str, str]] = {}
         self._input_requests: dict[str, tuple[str, str, str, str]] = {}
         self._input_sequence = 0
         self._input_controls_supported = False
         self._last_ctrl_c_at: float = 0.0
         self._exit_requested = False
         self._draft_quit_failures: tuple[int, ...] | None = None
-        self._extension_browser: tuple[str, str, str] | None = None
-        self._extension_navigation: tuple[str, str, dict[str, Any]] | None = None
-        self._extension_navigation_review: tuple[str, str, dict[str, Any]] | None = None
-        self._editor_actions = EditorActions(self._command_editor_snapshot, self._command_editor_replace)
-        from xdog.tui.editor_write import EditorWriteReviews
-        self._editor_write_reviews = EditorWriteReviews()
-        self._extension_editor_write_supported = False
-        self._extension_editor_write_generation = 0
-        self._extension_editor_write_owner = ''
         self._has_connected = False
         self._connection_ready = False
         self._connection_generation = 0
@@ -757,8 +728,6 @@ class ChatApp:
         self._io_task: asyncio.Task[None] | None = None
         self._details_expanded = False
         self._details_open = False
-        self._review_panel: ReviewPanel | None = None
-        self._review_backend: RepositoryReview | None = None
         self._navigation_panel: NavigationPanel | None = None
         self._navigation_provider: NavigationFeed | None = None
         self._navigation_requests: dict[str, tuple[NavigationFeed | None, int, str]] = {}
@@ -773,42 +742,19 @@ class ChatApp:
         self._extension_snapshot: dict[str, Any] = {}
         self._extension_dialog_queue: list[dict[str, Any]] = []
         self._extension_stack = ExtensionDialogStack()
-        self._extension_dialog_panel: ExtensionDialog | ExtensionNavigation | ExtensionCustom | None = None
+        self._extension_dialog_panel: ExtensionDialog | None = None
         self._extension_supported = False
         self._extension_models_supported = False
         self._native_models_supported = False
         self._reasoning_supported = False
         self._reasoning_pending: str | None = None
         self._extension_model_pending: str | None = None
-        self._terminal_supported = False
-        self._terminal_release_supported = False
-        self._terminal_child_supported = False
-        self._terminal_children: dict[str, dict[str, Any]] = {}
-        self._child_terminal_owner = ""
-        self._terminal_owner = ""
-        self._terminal_request: dict[str, Any] | None = None
-        self._terminal_held: HeldTerminalInput | None = None
         self._extension_shortcuts_supported = False
-        self._extension_navigation_supported = False
         self._extension_session_supported = False
         self._extension_session_inspection_supported = False
-        self._extension_active_tools_supported = False
-        self._extension_tools_after_run_supported = False
-        self._extension_tools_after_run_generation = 0
-        self._extension_compaction_supported = False
-        self._extension_compaction_generation = 0
-        self._extension_name_after_run_supported = False
-        self._extension_name_after_run_generation = 0
-        self._extension_compaction_after_run_supported = False
-        self._extension_compaction_after_run_generation = 0
         self._extension_provider_auth_supported = False
         self._extension_provider_auth_generation = 0
         self._extension_auth_owner: tuple[str, str, int] | None = None
-        self._extension_message_supported = False
-        self._extension_message_generation = 0
-        self._extension_message_images_supported = False
-        self._extension_message_images_generation = 0
-        self._extension_name_supported = False
         self._extension_command_catalog_supported = False
         self._extension_command_catalog_generation = 0
         self._argument_supported = False
@@ -819,17 +765,10 @@ class ChatApp:
         self._argument_context_requests: set[str] = set()
         self._extension_cancel_supported = False
         self._extension_cancel_scope: tuple[str, str] | None = None
-        self._extension_editor_supported = False
-        self._extension_custom_nested_supported = False
-        self._extension_custom_rich_supported = False
-        self._extension_custom_overlay_supported = False
-        self._extension_custom_live_overlay_supported = False
-        self._extension_custom_supported = False
-        self._extension_forms_supported = False
-        self._extension_multi_forms_supported = False
         self._extension_command_results_supported = False
         self._extension_pending: tuple[str, str] | None = None
-        self._extension_editor_owner: tuple[str, str] | None = None
+        self._extension_command_owner: tuple[str, str] | None = None
+        self._parent_draft_panel: ParentDraftPanel | None = None
         self._child_panel: ChildPanel | None = None
         self._child_context = ""
         self._child_target = ""
@@ -841,34 +780,12 @@ class ChatApp:
         self._child_images_supported = False
         self._child_image_recovery_supported = False
         self._child_task_recovery_supported = False
-        self._child_return_supported = False
-        self._child_return_owner = ''
         self._child_queue_owners: dict[str, str] = {}
         self._child_recovery_ready: dict[str, dict[str, Any]] = {}
         self._child_drafts: dict[str, dict[tuple[str, str], ChildDraft]] = {}
-        self._child_draft_labels: dict[str, str] = {}
-        self._child_draft_io = ChildDraftIO()
-        self._child_autosave = ChildDraftAutosave()
         self._parent_drafts = ParentDrafts(lambda: get_data_dir() / 'saved-parent-drafts', self._parent_draft_snapshot,
                                            self._mcp_context_key, lambda text: self._chat_log.add_system(text),
             self._parent_draft_capacity, create_parent=True)
-        self._remote_parent_panel: RemoteParentDraftPanel | None = None
-        self._remote_parent_receiver = ParentDraftReceiver(
-            lambda: max(0, 40 * 1024 * 1024 - self._retained_image_bytes() - self._composer.bytes))
-        self._remote_parent_caps: dict[str, Any] = {}
-        self._remote_parent_scope: dict[str, Any] = {}
-        self._remote_parent_request = ''
-        self._remote_parent_read_completed = False
-        self._remote_parent_revision = 0
-        self._remote_parent_context = ''
-        self._remote_parent_deadline = 0.0
-        self._remote_parent_operation = ''
-        self._remote_parent_review_id = ''
-        self._remote_parent_upload: dict[str, Any] | None = None
-        self._remote_parent_selected: dict[str, Any] = {}
-        self._remote_parent_worker: threading.Thread | None = None
-        self._remote_parent_decode_cancel = threading.Event()
-        self._saved_child_drafts: dict[str, SavedChildDraft] = {}
         self._child_source_supported = False
         self._child_source_pending: tuple[str, str, str] | None = None
         self._child_source_deadline = 0.0
@@ -882,22 +799,11 @@ class ChatApp:
         self._plan_context = ""
         self._plan_refresh_needed = False
         self._mcp_refresh_supported = False
-        self._mcp_client_auth_supported = False
-        self._mcp_private_jwt_supported = False
-        self._mcp_registration_supported = False
         self._mcp_credentials_supported = False
         self._mcp_auth_supported = False
         self._mcp_watch_supported = False
         self._mcp_catalog_watch_supported = False
         self._mcp_combined_watch_supported = False
-        self._mcp_elicitation_supported = False
-        self._mcp_elicitation_servers: set[str] = set()
-        self._mcp_elicitation_requests: dict[str, str] = {}
-        self._mcp_sampling_supported = False
-        self._mcp_sampling_servers: set[str] = set()
-        self._mcp_sampling_requests: dict[str, str] = {}
-        self._mcp_roots_supported = False
-        self._mcp_root_requests: set[str] = set()
         self._mcp_watch_view = ""
         self._mcp_watch_requests: set[str] = set()
         self._mcp_auth_group = ""
@@ -921,8 +827,6 @@ class ChatApp:
         self._mcp_owner_request: tuple[str, str, str] | None = None
         self._mcp_data_supported = False
         self._mcp_content_types_supported = False
-        self._mcp_completion_supported = False
-        self._mcp_resource_completion_supported = False
         self._mcp_requests: set[str] = set()
         self._compaction_supported = False
         self._compact_pending: tuple[str, str] | None = None
@@ -1009,7 +913,6 @@ class ChatApp:
         self._editor._command_provider = lambda: {**original_commands(),
             **self._extension_snapshot.get("commands", {})}
         self._editor.set_keymap(self._keymap)
-        self._editor.on_change = lambda _text: self._remote_parent_edited()
         from xdog.tui.argument_completion import ArgumentCompletionFeed
         self._argument_feed = ArgumentCompletionFeed(self._mcp_context_key,
             lambda: self._extension_snapshot.get('command_completions', {})
@@ -1042,7 +945,6 @@ class ChatApp:
             hints=self._hints,
         )
 
-        self._custom_presentation = ExtensionCustomPresentation(self._tui, self._layout)
         self._tui.add_child(self._layout)
         self._tui.set_focus(self._editor)
         self._tui.add_input_listener(self._handle_global_input)
@@ -1055,213 +957,29 @@ class ChatApp:
         self._editor.on_ctrl_d = self._request_exit
         self._editor.on_escape = self._handle_escape
 
-        self._terminal_input = PromptTerminalInterceptor(
-            self._tui, self._terminal_prompt_eligible, self._terminal_prompt_owner,
-            self._terminal_available,
-            self._terminal_key_policy, self._send_terminal_input, self._cancel_terminal_input,
-            self._chat_log.add_system,
-            surface=lambda: "child-prompt" if self._terminal_child() else "prompt",
-            release_available=self._terminal_release_available)
-
-    def _terminal_child(self) -> str:
-        return self._child_panel.terminal_child if self._child_panel is not None else ""
-
-    def _terminal_available(self) -> bool:
-        child = self._terminal_child()
-        if self._child_panel is not None:
-            return (self._terminal_supported and self._terminal_child_supported
-                    and self._terminal_children.get(child, {}).get("active") is True)
-        return self._terminal_supported and self._extension_snapshot.get('terminal_input') is True
-
-    def _terminal_release_available(self) -> bool:
-        if not self._terminal_release_supported or not self._terminal_available():
-            return False
-        child = self._terminal_child()
-        events = (self._terminal_children.get(child, {}).get('events', []) if self._child_panel is not None
-                  else self._extension_snapshot.get('terminal_events', []))
-        return isinstance(events, list) and 'release' in events
-
-    def _terminal_prompt_eligible(self) -> bool:
-        child = self._terminal_child()
-        target = self._child_panel if child else self._editor
-        return (not self._exit_requested and self._connection_ready and not self._history_loading
-                and not self._session_context_stale and self._tui._focused is target
-                and not self._tui.has_overlay() and not self._details_open
-                and self._pending_command is None and self._session_mutation_id is None
-                and self._extension_pending is None and self._extension_dialog_panel is None
-                and not self._extension_dialog_queue and self._outputs.panel is None
-                and (self._child_panel is None or bool(child)) and self._plan_panel is None
-                and self._mcp_panel is None and self._transcript_panel is None and self._attachment_panel is None
-                and self._navigation_panel is None and self._review_panel is None)
-
-    def _terminal_prompt_owner(self) -> str:
-        extra = ""
-        if self._child_panel is not None:
-            child = self._terminal_child()
-            generation = self._terminal_children.get(child, {}).get("generation", 0)
-            extra = (f":child:{child}:{generation}:{self._child_panel.terminal_lease}:"
-                     f"{self._child_terminal_owner}:{id(self._child_panel)}")
-        return (f'{self.group_id}:{self._gateway_session_id}:{self._connection_generation}:'
-                f'{self._terminal_owner}:{self._output_epoch}:'
-                f'{self._extension_snapshot.get("terminal_generation", 0)}:{self._exit_requested}{extra}')
-
-    def _terminal_key_policy(self, event: KeyEvent) -> str:
-        if self._terminal_child() and self._child_panel is not None:
-            action = ("terminal_input" if self._keymap.resolve(event) == "terminal_input"
-                      else self._child_panel.terminal_policy_action(event))
-            return prompt_key_policy(event, action)
-        return prompt_key_policy(event, self._keymap.resolve(event),
-                                 extension=self._effective_extension_shortcuts().command(event) is not None)
-
-    def _restore_terminal_text(self, text: str) -> bool:
-        if self._terminal_child() and self._child_panel is not None:
-            return self._child_panel.restore_terminal_text(text)
-        return self._editor.handle_paste(text)
-
-    def _accept_child_terminal_metadata(self, msg: Mapping[str, Any]) -> None:
-        if not self._terminal_child_supported:
-            return
-        rows, owner = msg.get("terminal_children", {}), msg.get("child_terminal_owner", "")
-        try:
-            if (not isinstance(rows, dict) or len(rows) > 16 or not isinstance(owner, str)
-                    or re.fullmatch(r"[a-f0-9]{32}", owner) is None):
-                raise ValueError("Invalid child terminal registry")
-            for child, info in rows.items():
-                if (not isinstance(child, str) or re.fullmatch(r"[a-f0-9]{12}", child) is None
-                        or not isinstance(info, dict) or set(info) - {"active", "generation", "events"}
-                        or not {"active", "generation"} <= set(info)
-                        or type(info["active"]) is not bool or type(info["generation"]) is not int
-                        or not 0 <= info["generation"] <= 2**53):
-                    raise ValueError("Invalid child terminal registration")
-                from xdog.agent.extensions.terminal_input import event_kinds
-                event_kinds(info.get("events", []))
-        except ValueError:
-            self._terminal_children = {}
-            self._child_terminal_owner = ""
-            if self._terminal_child():
-                self._terminal_input.invalidate()
-            self._chat_log.add_system("Invalid child terminal registrations; hooks disabled")
-            return
-        self._terminal_children = {child: dict(info) for child, info in rows.items()}
-        self._child_terminal_owner = owner
-
-    def _send_terminal_input(self, item: HeldTerminalInput) -> bool:
-        if not self._terminal_supported or self._terminal_request is not None:
-            return False
-        request = {'type': 'terminal_input', 'request_id': 'terminal-' + uuid.uuid4().hex,
-                   'group_id': self.group_id, 'session_id': self._gateway_session_id,
-                   'terminal_owner': self._terminal_owner,
-                   'input_owner': hashlib.sha256(item.owner.encode()).hexdigest(),
-                   'input_sequence': item.id,
-                   'extension_generation': self._extension_snapshot.get('terminal_generation', 0),
-                   'kind': item.kind, 'surface': item.surface, 'data': item.data}
-        child = self._terminal_child()
-        if child:
-            if not self._terminal_child_supported:
-                return False
-            request.update(child_id=child, child_owner=self._child_terminal_owner,
-                           extension_generation=self._terminal_children.get(child, {}).get("generation", 0))
-        self._terminal_request, self._terminal_held = request, item
-        self._queue_request(request)
-        return True
-
-    def _cancel_terminal_input(self) -> None:
-        request, self._terminal_request = self._terminal_request, None
-        self._terminal_held = None
-        if request is not None:
-            self._queue_request({key: value for key, value in request.items()
-                                 if key not in {'data', 'kind'}} | {'type': 'terminal_input_cancel'})
-
-    def _terminal_input_result(self, msg: Mapping[str, Any]) -> None:
-        request, item = self._terminal_request, self._terminal_held
-        if (request is None or item is None or any(type(msg.get(key)) is not type(request[key])
-                or msg.get(key) != request[key] for key in (
-                'request_id', 'group_id', 'session_id', 'terminal_owner', 'input_owner',
-                'extension_generation', 'input_sequence'))):
-            return
-        if request.get('surface') == 'child-prompt' and any(
-                type(msg.get(key)) is not str or msg.get(key) != request[key]
-                for key in ('child_id', 'child_owner', 'surface')):
-            return
-        self._terminal_request, self._terminal_held = None, None
-        result = ({key: msg[key] for key in ('data', 'consume') if key in msg}
-                  if msg.get('error') is False else {'error': True})
-        if msg.get('error') is False and 'terminal_input_active' in msg:
-            active = msg['terminal_input_active']
-            from xdog.agent.extensions.terminal_input import event_kinds
-            try:
-                events = list(event_kinds(msg.get('terminal_events', [])))
-            except ValueError:
-                events = []
-                result = {'error': True}
-            if type(active) is not bool:
-                result = {'error': True}
-            else:
-                child = request.get('child_id')
-                if request.get('surface') == 'child-prompt' and isinstance(child, str):
-                    self._terminal_children[child] = {"active": active, "generation": request['extension_generation'],
-                                                      "events": events}
-                else:
-                    self._extension_snapshot = {**self._extension_snapshot, 'terminal_input': active,
-                                                'terminal_events': events}
-        self._terminal_input.queue.accept(item.id, result)
 
     def _handle_global_input(self, event: KeyEvent) -> dict[str, object] | None:
         """Route bounded detail navigation before cancellation."""
+        if self._parent_draft_panel is not None and self._tui.has_overlay():
+            return None  # Native overlays/approval own input, not the underlying recovery view.
         action = self._keymap.resolve(event)
-        if action in {'save_draft', 'remote_save_draft'}:
+        if action == 'save_draft':
             if (event.event_type is KeyEventType.PRESS and self._editor.focused
                     and self._parent_draft_ui_available()):
-                self._parent_draft_command('remote-save' if action == 'remote_save_draft' else 'save')
-            return {'consume': True}
-        if self._remote_parent_panel is not None and action != 'suspend':
-            self._remote_parent_panel.handle_input(event)
-            self._tui.request_render()
+                self._parent_draft_command('save')
             return {'consume': True}
         if (action is None or action.startswith("ext-")) and self._extension_shortcut_input(event):
             self._tui.request_render()
             return {"consume": True}
 
-        if isinstance(self._extension_dialog_panel, ExtensionCustom) and self._custom_presentation.blocked():
-            return None  # The top overlay owns all input; custom callbacks stay hidden/unfocused.
-        background_overlay = (isinstance(self._extension_dialog_panel, ExtensionCustom)
-                              and self._extension_dialog_panel.dialog.get('overlay') is not None
-                              and not self._extension_dialog_panel.focused)
-        if background_overlay and self._outputs.panel is None:
-            if event.matches('ctrl+c'):
-                if event.event_type is KeyEventType.PRESS and self._extension_dialog_panel is not None:
-                    self._answer_extension_dialog(self._extension_dialog_panel.dialog['id'], None)
-                return {"consume": True}
-            if action == 'suspend' or event.matches('ctrl+z'):
-                if event.event_type is KeyEventType.PRESS:
-                    self._custom_presentation.sync(None, False)
-                    self._tui.suspend()
-                return {"consume": True}
-            if event.matches('ctrl+d'):
-                if event.event_type is KeyEventType.PRESS:
-                    self._request_exit()
-                return {"consume": True}
-        if (self._extension_dialog_panel is not None and self._outputs.panel is None
-                and not background_overlay):
-            if isinstance(self._extension_dialog_panel, ExtensionCustom):
-                if event.ctrl and event.key.lower() in ("d", "z") or action == "suspend":
-                    if event.event_type is not KeyEventType.PRESS:
-                        return {"consume": True}
-                if event.ctrl and event.key.lower() == "d":
-                    self._request_exit()
-                    return {"consume": True}
-                if action == "suspend" or event.ctrl and event.key.lower() == "z":
-                    self._custom_presentation.sync(None, False)
-                    self._tui.suspend()
-                    return {"consume": True}
+        if self._extension_dialog_panel is not None and self._outputs.panel is None:
             self._extension_dialog_panel.handle_input(event)
             self._tui.request_render()
             return {"consume": True}
-        if self._terminal_child() and action == "terminal_input":
-            if event.event_type == KeyEventType.PRESS:
-                self._terminal_input.toggle_pause()
-                self._terminal_input.recovery_command('list', self._restore_terminal_text)
-            return {"consume": True}
+        if self._parent_draft_panel is not None and self._outputs.panel is None and action != 'suspend':
+            self._parent_draft_panel.handle_input(event)
+            self._tui.request_render()
+            return {'consume': True}
         if self._child_panel is not None and self._outputs.panel is None and action != "suspend":
             if action == "fullscreen":
                 self._child_fullscreen()
@@ -1303,27 +1021,18 @@ class ChatApp:
                     self._open_transcript()
             return {"consume": True}
         if self._transcript_panel is not None:
-            if action in {"details", "review", "sessions", "tree"}:
+            if action in {"details", "sessions", "tree"}:
                 self._close_transcript()
             elif action != "suspend":
                 self._transcript_panel.handle_input(event)
                 self._tui.request_render()
                 return {"consume": True}
-        if action == "terminal_input":
-            if event.event_type == KeyEventType.PRESS:
-                if self._terminal_supported:
-                    self._terminal_input.toggle_pause()
-                    self._terminal_input.recovery_command('list', self._editor.handle_paste)
-                else:
-                    self._chat_log.add_system("Updated terminal-input gateway required; input remains host-owned")
-                    self._tui.request_render()
-            return {"consume": True}
         if action == "paste_clipboard":
             if self._editor.focused and event.event_type == KeyEventType.PRESS:
                 root = self._file_completions.root if self._file_completions is not None else Path.cwd()
                 self._composer.command("paste", "", root)
             return {"consume": True}
-        if self._attachment_panel is not None and action not in {"suspend", "details", "review", "sessions", "tree"}:
+        if self._attachment_panel is not None and action not in {"suspend", "details", "sessions", "tree"}:
             self._attachment_panel.handle_input(event)
             self._tui.request_render()
             return {"consume": True}
@@ -1337,15 +1046,12 @@ class ChatApp:
                         self._editor.set_text("")
                         self._send_runtime_input(action, content)
             return {"consume": True}
-        if action in {"suspend", "details", "external_editor", "bindings", "review", "sessions", "tree"} and (
+        if action in {"suspend", "details", "external_editor", "bindings", "sessions", "tree"} and (
             event.event_type != KeyEventType.PRESS
         ):
             return {"consume": True}
         if action in {"sessions", "tree"}:
             self._open_navigation("sessions" if action == "sessions" else f"tree|{self._state['session_id']}|")
-            return {"consume": True}
-        if action == "review":
-            self._close_review() if self._review_panel is not None else self._open_review()
             return {"consume": True}
         if action == "bindings":
             self._show_keybindings()
@@ -1362,13 +1068,6 @@ class ChatApp:
                 self._close_navigation()
             else:
                 self._navigation_panel.handle_input(event)
-                self._tui.request_render()
-            return {"consume": True}
-        if self._review_panel is not None and action != "details":
-            if action == "interrupt":
-                self._close_review()
-            else:
-                self._review_panel.handle_input(event)
                 self._tui.request_render()
             return {"consume": True}
         if self._editor.focused and self._editor.autocomplete_active and action != "details":
@@ -1396,8 +1095,6 @@ class ChatApp:
             self._close_attachment_preview()
         if self._navigation_panel is not None:
             self._close_navigation()
-        if self._review_panel is not None:
-            self._close_review()
         self._details_open = not self._details_open
         if self._details_open:
             self._details_panel.show_latest(from_start=True)
@@ -1421,7 +1118,7 @@ class ChatApp:
         if (self._exit_requested or not self._editor.focused or self._editor.autocomplete_active
                 or self._tui.has_overlay() or self._outputs.pending or self._extension_dialog_panel is not None
                 or self._navigation_panel is not None or self._transcript_panel is not None
-                or self._review_panel is not None or self._details_open or self._child_panel is not None
+                or self._details_open or self._child_panel is not None
                 or self._plan_panel is not None or self._mcp_panel is not None or self._attachment_panel is not None):
             return False
         if (self._extension_pending is not None or self._active_run_id is not None or self._waiting
@@ -1438,6 +1135,8 @@ class ChatApp:
         self._tui.request_render()
 
     def _open_external_editor(self) -> None:
+        if self._parent_draft_panel is not None:
+            self._close_parent_drafts()
         if self._exit_requested:
             return
         if not self._editor.focused or self._tui.has_overlay():
@@ -1463,7 +1162,6 @@ class ChatApp:
             self._tui.request_render()
 
     def _attachment_changed(self) -> None:
-        self._remote_parent_edited()
         count = len(self._composer.items)
         self._editor.set_attachment_summary(f"Images: {count} · /attachments inspect/remove/preview" if count else "")
         self._tui.request_render()
@@ -1473,9 +1171,8 @@ class ChatApp:
                                            self._active_images) for item in group}
         return sum(len(item.data) for item in items.values()) + self._child_draft_bytes() + self._parent_saved_bytes()
 
-    def _child_draft_bytes(self, *, exclude_saved: bool = False) -> int:
+    def _child_draft_bytes(self) -> int:
         items = {item.id: item for scope, cache in self._child_drafts.items()
-                 if not exclude_saved or not scope.startswith('saved-draft:')
                  for draft in cache.values() for item in draft.images}
         if self._child_panel is not None and self._child_panel.composer is not None:
             items.update(self._child_panel.composer.items)
@@ -1511,6 +1208,8 @@ class ChatApp:
         return True
 
     def _open_plan(self) -> None:
+        if self._parent_draft_panel is not None:
+            self._close_parent_drafts()
         if self._child_panel is not None:
             self._close_children()
         if self._exit_requested or self._tui.has_overlay():
@@ -1519,8 +1218,7 @@ class ChatApp:
             return
         for panel, close in ((self._mcp_panel, self._close_mcp), (self._transcript_panel, self._close_transcript),
                              (self._attachment_panel, self._close_attachment_preview),
-                             (self._navigation_panel, self._close_navigation),
-                             (self._review_panel, self._close_review)):
+                             (self._navigation_panel, self._close_navigation)):
             if panel is not None:
                 close()
         if self._details_open:
@@ -1563,6 +1261,8 @@ class ChatApp:
         return True
 
     def _open_children(self, target: str = "") -> None:
+        if self._parent_draft_panel is not None:
+            self._close_parent_drafts()
         if self._outputs.panel is not None or self._extension_dialog_panel is not None or self._tui.has_overlay():
             return
         if self._child_panel is not None:
@@ -1571,16 +1271,14 @@ class ChatApp:
             return
         for panel, close in ((self._plan_panel, self._close_plan), (self._mcp_panel, self._close_mcp),
                              (self._transcript_panel, self._close_transcript),
-                             (self._navigation_panel, self._close_navigation),
-                             (self._review_panel, self._close_review)):
+                             (self._navigation_panel, self._close_navigation)):
             if panel is not None:
                 close()
         if self._details_open:
             self._close_details()
         self._child_context = self._mcp_context_key()
+        self._child_drafts = {self._child_context: self._child_drafts.get(self._child_context, {})}
         self._child_target = target
-        self._child_draft_labels[self._child_context] = (
-            f'{self._state.get("workspace_dir", ".")} · group {self.group_id} · session {self._gateway_session_id}')
         self._child_panel = ChildPanel(self._child_send, self._child_read, self._close_children,
                                        self._child_output, self._child_fullscreen,
                                        configure=lambda value: self._child_presets.resolve(value).to_dict(),
@@ -1589,12 +1287,10 @@ class ChatApp:
                                        root=Path(str(self._state.get('workspace_dir', '.'))),
                                        drafts=self._child_drafts.setdefault(self._child_context, {}),
                                        retained_bytes=self._child_retained_bytes,
-                                       draft_source=self._child_draft_entries,
-                                       draft_action=self._child_draft_action)
+)
         self._child_panel.queue_enabled = self._child_queues_supported
         self._child_panel.queue_image_recovery_enabled = self._child_image_recovery_supported
         self._child_panel.queue_task_recovery_enabled = self._child_task_recovery_supported
-        self._child_panel.queue_image_return_enabled = self._child_return_supported
         self._layout.details = self._child_panel
         self._tui.set_focus(self._child_panel)
         self._child_panel.request_list()
@@ -1615,7 +1311,7 @@ class ChatApp:
         return sum(len(image.data) for row in self._parent_drafts.saved.values() for image in row.draft.images)
 
     def _parent_draft_capacity(self) -> int:
-        # Existing parent catalog is replaced; every unrelated active/local owner stays counted.
+        # Existing recovery records are replaced; unrelated active/local owners stay counted.
         return max(0, 40 * 1024 * 1024 - self._retained_image_bytes()
                    + self._parent_saved_bytes() - self._composer.bytes)
 
@@ -1623,548 +1319,129 @@ class ChatApp:
         return ChildDraft(self._editor.get_text(), images=tuple(self._composer.items.values()),
                           cursor=self._editor._cursor)
 
+    def _parent_view_alive(self, panel: ParentDraftPanel, lease: int) -> bool:
+        return (self._parent_draft_panel is panel and panel.focused and panel.view_lease == lease
+                and panel.context == self._mcp_context_key() and self._parent_draft_ui_available())
+
+    def _close_parent_drafts(self) -> None:
+        panel, self._parent_draft_panel = self._parent_draft_panel, None
+        self._parent_drafts.invalidate_read()
+        if panel is not None:
+            panel.close()
+            if self._tui._overlay_base_focus is panel:
+                # Retire only the dismissed base view; leave a protected overlay focused.
+                self._tui._overlay_base_focus = self._editor
+            if self._layout.details is panel:
+                self._layout.details = None
+            if self._tui._focused is panel:
+                self._tui.set_focus(self._editor)
+        self._update_hints()
+        self._tui.request_render()
+
+    def _attach_parent_drafts(self, panel: ParentDraftPanel) -> None:
+        # Replacing a successful loading view must not clear the adopted records.
+        prior = self._parent_draft_panel
+        if prior is not None:
+            prior.close()
+        self._parent_draft_panel = panel
+        self._layout.details = panel
+        self._tui.set_focus(panel)
+        lease = panel.view_lease
+        self._parent_drafts.bind_read_view(lambda: self._parent_view_alive(panel, lease))
+        self._update_hints()
+        self._tui.request_render()
+
+    def _begin_parent_drafts(self) -> None:
+        if not self._parent_draft_ui_available():
+            raise ValueError('Another modal UI owns input; parent draft unchanged')
+        if self._parent_drafts.io.busy:
+            raise ValueError('Parent draft disk work still settling')
+        self._close_parent_drafts()
+        # These are native view transitions, not a child-browser dependency.
+        for panel, close in ((self._child_panel, self._close_children),
+                             (self._plan_panel, self._close_plan), (self._mcp_panel, self._close_mcp),
+                             (self._transcript_panel, self._close_transcript),
+                             (self._attachment_panel, self._close_attachment_preview),
+                             (self._navigation_panel, self._close_navigation)):
+            if panel is not None:
+                close()
+        if self._details_open:
+            self._close_details()
+
     def _parent_draft_command(self, args: str) -> None:
         try:
-            if args.strip() == 'remote-save':
-                self._save_remote_parent()
-            elif args.strip() == 'remote':
-                self._open_remote_parent()
-            elif args.strip() == 'save':
+            if args.strip() == 'save':
                 self._show_parent_save()
-            elif args.strip().partition(' ')[0] == 'saved':
-                if not self._parent_draft_ui_available():
-                    raise ValueError('Another modal UI owns input; parent snapshot read not admitted')
-                self._open_children()
-                panel = self._child_panel
-                if panel is None:
-                    raise ValueError('Parent recovery view unavailable; no read admitted')
-                lease = panel.terminal_lease
-                draft_view, queue_view, preview = panel.draft_panel, panel.queue, panel.preview
-                self._parent_drafts.command(args, alive=lambda: (
-                    self._child_panel is panel and not self._exit_requested and panel.terminal_lease == lease
-                    and panel.draft_panel is draft_view and panel.queue is queue_view and panel.preview is preview
-                    and self._parent_draft_ui_available()))
+            elif args.strip().partition(' ')[0] in {'restore', 'saved'}:
+                self._begin_parent_drafts()
+                panel = ParentDraftPanel(lambda: (), lambda *_: None, self._close_parent_drafts,
+                                         context=self._mcp_context_key(), mode='loading')
+                self._attach_parent_drafts(panel)
+                lease = panel.view_lease
+                try:
+                    self._parent_drafts.command(args, alive=lambda: self._parent_view_alive(panel, lease))
+                except ValueError:
+                    self._close_parent_drafts()
+                    raise
             else:
                 self._parent_drafts.command(args)
         except ValueError as exc:
             self._chat_log.add_system(str(exc))
         self._tui.request_render()
 
-    def _remote_parent_edited(self) -> None:
-        self._remote_parent_revision += 1
-
-    def _remote_parent_composer(self) -> dict[str, Any]:
-        return composer_receipt(self._parent_draft_snapshot(), self._remote_parent_revision)
-
-    def _remote_parent_alive(self) -> bool:
-        return (self._remote_parent_panel is not None and self._connection_ready
-                and self._remote_parent_context == self._mcp_context_key() and not self._exit_requested
-                and self._parent_draft_ui_available() and self._active_run_id is None and not self._waiting
-                and self._tui._focused is self._remote_parent_panel)
-
-    def _open_remote_parent(self, *, catalog: bool = True) -> None:
-        if (not self._connection_ready or self._remote_parent_caps.get('parent_saved_drafts') != 1
-                or not self._parent_draft_ui_available() or self._active_run_id is not None or self._waiting):
-            raise ValueError('Remote parent drafts require current idle negotiated gateway')
-        if self._remote_parent_worker is not None and self._remote_parent_worker.is_alive():
-            raise ValueError('Remote parent decode still settling')
-        self._open_children()
-        self._close_children()
-        self._remote_parent_receiver.close()
-        self._remote_parent_receiver = ParentDraftReceiver(
-            lambda: max(0, 40 * 1024 * 1024 - self._retained_image_bytes() - self._composer.bytes))
-        if self._remote_parent_panel is not None:
-            self._close_remote_parent()
-        self._remote_parent_context = self._mcp_context_key()
-        self._remote_parent_panel = RemoteParentDraftPanel(self._read_remote_parent, self._close_remote_parent,
-            discard=self._discard_remote_parent)
-        self._layout.details = self._remote_parent_panel
-        self._tui.set_focus(self._remote_parent_panel)
-        self._remote_parent_request = 'parent-' + uuid.uuid4().hex
-        self._remote_parent_scope = {'request_id': self._remote_parent_request, 'group_id': self.group_id,
-            'session_id': self._gateway_session_id, 'view': uuid.uuid4().hex,
-            'parent_draft_owner': self._remote_parent_caps['parent_draft_owner'],
-            'parent_draft_generation': self._remote_parent_caps['parent_draft_generation']}
-        self._remote_parent_deadline = time.monotonic() + 30
-        if catalog:
-            self._queue_request({'type': 'parent_draft_control', **self._remote_parent_scope, 'action': 'catalog'})
-        self._update_hints()
-        self._tui.request_render()
-
-    def _close_remote_parent(self) -> None:
-        self._remote_parent_decode_cancel.set()
-        if self._connection_ready and self._remote_parent_scope:
-            self._queue_request({'type': 'parent_draft_control',
-                **{key: value for key, value in self._remote_parent_scope.items() if key != 'session_revision'},
-                'request_id': 'parent-view-cancel-' + uuid.uuid4().hex, 'action': 'view_cancel'})
-        self._remote_parent_upload = None
-        self._remote_parent_review_id = ''
-        self._remote_parent_selected = {}
-        panel, self._remote_parent_panel = self._remote_parent_panel, None
-        if panel is not None:
-            panel.close()
-        # A decode worker owns the original spools until finish returns. View
-        # revocation blocks delivery immediately without closing its active files.
-        if self._remote_parent_worker is None or not self._remote_parent_worker.is_alive():
-            self._remote_parent_receiver.close()
-        self._remote_parent_request = ''
-        self._remote_parent_operation = ''
-        self._remote_parent_scope = {}
-        if self._layout.details is panel:
-            self._layout.details = None
-            self._tui.set_focus(self._editor)
-        self._tui.request_render()
-
-    def _read_remote_parent(self, row: dict[str, Any]) -> None:
-        if not self._remote_parent_alive() or self._editor.get_text() or self._composer.items:
-            raise ValueError('Remote recovery needs original empty composer')
-        if row['image_bytes'] + self._retained_image_bytes() + self._composer.bytes > 40 * 1024 * 1024:
-            raise ValueError('Remote parent recovery exceeds current retained-image capacity')
-        old = dict(self._remote_parent_scope)
-        self._remote_parent_request = 'parent-' + uuid.uuid4().hex
-        scope = {**old, 'request_id': self._remote_parent_request}
-        self._remote_parent_read_completed = False
-        self._remote_parent_scope = scope
-        self._remote_parent_receiver.expect(scope, self._remote_parent_composer(), row['id'], row['sha256'])
-        self._remote_parent_deadline = time.monotonic() + 30
-        self._queue_request({'type': 'parent_draft_control',
-            **{key: value for key, value in scope.items() if key != 'session_revision'},
-            'action': 'read', 'composer': self._remote_parent_composer(),
-            'snapshot_id': row['id'], 'snapshot_sha256': row['sha256']})
-
-    def _remote_parent_control(self, action: str, **fields: Any) -> None:
-        if not self._remote_parent_alive():
-            raise ValueError('Remote parent original view unavailable')
-        self._remote_parent_request = 'parent-' + uuid.uuid4().hex
-        self._remote_parent_scope = {**self._remote_parent_scope, 'request_id': self._remote_parent_request}
-        self._remote_parent_operation = action
-        self._remote_parent_deadline = time.monotonic() + 30
-        self._queue_request({'type': 'parent_draft_control',
-            **{key: value for key, value in self._remote_parent_scope.items() if key != 'session_revision'},
-            'action': action, **fields})
-
-    def _save_remote_parent(self) -> None:
-        if self._remote_parent_caps.get('parent_saved_save') != 1:
-            raise ValueError('Remote parent save requires independent gateway capability')
-        draft = self._parent_draft_snapshot()
-        receipt = self._remote_parent_composer()
-        if not draft.text and not draft.images:
-            raise ValueError('Remote parent composer is empty; nothing to save')
-        self._open_remote_parent(catalog=False)
-        panel = self._remote_parent_panel
-        assert panel is not None
-        if draft.images:
-            if self._remote_parent_caps.get('parent_saved_uploads') != 1:
-                self._close_remote_parent()
-                raise ValueError('Updated independently negotiated parent upload gateway required')
-            self._remote_parent_upload = {'draft': draft, 'composer': receipt, 'image': 0, 'offset': 0,
-                                          'refs': ['parent-image-' + uuid.uuid4().hex for _ in draft.images]}
-            self._send_remote_parent_chunk()
-        else:
-            self._remote_parent_control('save_prepare', text=draft.text, images=[],
-                                        composer=receipt, label='Claw remote parent draft')
-        panel.message = 'Preparing remote parent save review; no disk write yet'
-
-    def _send_remote_parent_chunk(self) -> None:
-        upload = self._remote_parent_upload
-        if upload is None or not self._remote_parent_alive():
-            raise ValueError('Parent upload view revoked')
-        if _json(self._remote_parent_composer()) != _json(upload['composer']):
-            raise ValueError('Parent upload composer changed')
-        draft = upload['draft']
-        index, offset = upload['image'], upload['offset']
-        if index == len(draft.images):
-            self._remote_parent_control('save_prepare', text=draft.text, image_refs=upload['refs'],
-                image_names=[image.name for image in draft.images], composer=upload['composer'],
-                label='Claw remote parent draft')
-            self._remote_parent_upload = None
-            return
-        image = draft.images[index]
-        final = offset + 65536 >= len(image.data)
-        self._remote_parent_control('upload_chunk', id=upload['refs'][index], index=offset // 65536,
-            mime_type=image.mime_type, data=base64.b64encode(image.data[offset:offset + 65536]).decode(),
-            final=final, **({'sha256': hashlib.sha256(image.data).hexdigest()} if final else {}))
-        upload['offset'] = offset + 65536
-        upload['last_final'] = final
-
-    def _discard_remote_parent(self, row: dict[str, Any]) -> None:
-        if self._remote_parent_caps.get('parent_saved_discard') != 1:
-            raise ValueError('Remote parent discard requires independent gateway capability')
-        self._remote_parent_selected = dict(row)
-        self._remote_parent_control('discard_prepare', snapshot_id=row['id'], snapshot_sha256=row['sha256'],
-                                    composer=self._remote_parent_composer())
-
-    def _remote_parent_mutation_review(self, msg: Mapping[str, Any]) -> None:
-        panel = self._remote_parent_panel
-        if panel is None or not self._remote_parent_alive():
-            raise ValueError('Remote parent review view unavailable')
-        scope = dict(self._remote_parent_scope)
-        if any(type(msg.get(key)) is not type(value) or msg.get(key) != value
-               for key, value in scope.items()):
-            raise ValueError('Remote parent review owner changed')
-        body = json.loads(_json(msg.get('review')))
-        operation = 'save' if msg.get('action') == 'save_prepare' else 'discard'
-        if (body.get('operation') != operation or _json(body.get('composer')) != _json(self._remote_parent_composer())
-                or not isinstance(body.get('content'), str) or len(body['content'].encode()) > 65536
-                or not isinstance(msg.get('review_id'), str)
-                or re.fullmatch(r'[a-f0-9]{32}', msg['review_id']) is None):
-            raise ValueError('Remote parent review data/composer changed')
-        expected_fields = {'operation', 'composer', 'label', 'content', 'images', 'snapshot_sha256', 'notice'}
-        if operation == 'discard':
-            expected_fields.add('snapshot_id')
-        if (set(body) != expected_fields or not isinstance(body['images'], list) or len(body['images']) > 4
-                or not isinstance(body['label'], str) or len(body['label'].encode()) > 4096
-                or not isinstance(body['snapshot_sha256'], str)
-                or re.fullmatch(r'[a-f0-9]{64}', body['snapshot_sha256']) is None):
-            raise ValueError('Invalid remote disk review shape')
-        if not isinstance(body.get('notice'), str) or len(body['notice'].encode()) > 8192:
-            raise ValueError('Invalid remote disk review notice')
-        for image in body['images']:
-            if (not isinstance(image, dict) or set(image) != {'name', 'mime_type', 'bytes', 'sha256'}
-                    or not isinstance(image['name'], str) or len(image['name'].encode()) > 1024
-                    or image['mime_type'] not in {'image/png', 'image/jpeg', 'image/webp'}
-                    or type(image['bytes']) is not int or not 0 < image['bytes'] <= 10 * 1024 * 1024
-                    or not isinstance(image['sha256'], str)
-                    or re.fullmatch(r'[a-f0-9]{64}', image['sha256']) is None):
-                raise ValueError('Invalid remote disk image review')
-        if operation == 'discard' and (len(body['images']) != self._remote_parent_selected.get('image_count')
-                or sum(image['bytes'] for image in body['images'])
-                != self._remote_parent_selected.get('image_bytes')):
-            raise ValueError('Remote discard manifest differs from selected catalog')
-        if operation == 'discard' and any(body.get(key) != self._remote_parent_selected.get(source)
-                for key, source in [('snapshot_id', 'id'), ('snapshot_sha256', 'sha256'), ('label', 'label')]):
-            raise ValueError('Remote discard target differs from selected catalog')
-        if operation == 'save':
-            draft = self._parent_draft_snapshot()
-            manifest = [{'name': image.name, 'mime_type': image.mime_type, 'bytes': len(image.data),
-                         'sha256': hashlib.sha256(image.data).hexdigest()} for image in draft.images]
-            if body['content'] != draft.text or body.get('images') != manifest:
-                raise ValueError('Remote save review differs from original composer')
-        self._remote_parent_scope['session_revision'] = msg['session_revision']
-        owner = dict(self._remote_parent_scope)
-        review_id = msg['review_id']
-        self._remote_parent_review_id = review_id
-        consumed = False
-        def confirm(_response: dict[str, Any]) -> None:
-            nonlocal consumed
-            if (consumed or not self._remote_parent_alive() or self._remote_parent_scope != owner
-                    or _json(self._remote_parent_composer()) != _json(body['composer'])):
-                raise ValueError('Remote parent review/composer changed; no mutation')
-            consumed = True
-            self._remote_parent_review_id = ''  # Confirmation owns outcome; close must not imply rollback.
-            self._remote_parent_control(operation + '_confirm', review_id=review_id, review=body,
-                                        confirmed=True, composer=body['composer'])
-            panel.review = None
-            panel.busy = True
-            panel.message = 'Remote disk confirmation settling; composer unchanged, no replay'
-        event = {'type': 'sampling_review', 'phase': 'output', 'id': '0' * 32, 'receipt': review_id,
-            'body': body, 'sha256': hashlib.sha256(_json(body).encode()).hexdigest(),
-            'notice': 'Review full remote ' + operation + ' receipt; DISK snapshot only, no submission.'}
-        panel.review = McpSamplingPanel(event, (), confirm, self._close_remote_parent)
-        panel.review.focused = True
-        panel.review.set_render_budget(panel._budget)
-        panel.busy = False
-
-    def _remote_parent_response(self, msg: Mapping[str, Any]) -> bool:
-        if msg.get('type') not in {'parent_draft_begin', 'parent_draft_chunk', 'parent_draft_end',
-                                  'parent_draft_result', '_remote_parent_decoded'}:
-            return False
-        panel = self._remote_parent_panel
-        if panel is None or msg.get('request_id') != self._remote_parent_request:
-            return True
-        if not self._remote_parent_alive():
-            self._close_remote_parent()
-            return True
-        try:
-            if msg['type'] == '_remote_parent_decoded':
-                if msg.get('error') or not isinstance(msg.get('recovery'), ParentRecovery):
-                    raise ValueError('Remote parent decode refused')
-                recovery = msg['recovery']
-                if (self._retained_image_bytes() + self._composer.bytes
-                        + sum(len(image.data) for image in recovery.draft.images) > 40 * 1024 * 1024):
-                    raise ValueError('Remote parent retained-image capacity changed before review')
-                def adopt(draft: ChildDraft, expected: dict[str, Any]) -> None:
-                    if (not self._remote_parent_alive() or self._remote_parent_composer() != expected
-                            or self._editor.get_text() or self._composer.items
-                            or self._retained_image_bytes() + sum(len(image.data) for image in draft.images)
-                            > 40 * 1024 * 1024):
-                        raise ValueError('Remote parent composer/capacity changed; no adoption')
-                    if _sanitize_editor_text(draft.text) != draft.text:
-                        raise ValueError('Remote text cannot be adopted losslessly')
-                    self._editor.set_text(draft.text)
-                    self._composer.restore(draft.images)
-                    self._close_remote_parent()
-                    self._chat_log.add_system('Remote parent draft recovered; NOT sent')
-                panel.review = recovery.panel(lambda: self._remote_parent_scope,
-                    self._remote_parent_composer, adopt, self._close_remote_parent)
-                panel.review.focused = True
-                panel.review.set_render_budget(panel._budget)
-                panel.busy = False
-                self._remote_parent_deadline = time.monotonic() + 30
-            elif msg['type'] != 'parent_draft_result':
-                self._remote_parent_receiver.feed({key: value for key, value in msg.items()
-                                                  if key != '_connection_generation'})
-            elif msg.get('success') is not True:
-                raise ValueError('Remote parent read refused')
-            elif msg.get('action') == 'upload_chunk':
-                upload = self._remote_parent_upload
-                if (upload is None or any(msg.get(key) != value for key, value in self._remote_parent_scope.items())
-                        or msg.get('upload_id') != upload['refs'][upload['image']]
-                        or msg.get('upload_status') != ('ready' if upload['last_final'] else 'partial')):
-                    raise ValueError('Parent upload acknowledgment owner/sequence changed')
-                if upload['last_final']:
-                    upload['image'] += 1
-                    upload['offset'] = 0
-                self._send_remote_parent_chunk()
-            elif msg.get('action') in {'save_prepare', 'discard_prepare'}:
-                self._remote_parent_mutation_review(msg)
-            elif msg.get('action') in {'save_confirm', 'discard_confirm'}:
-                if any(msg.get(key) != value for key, value in self._remote_parent_scope.items()):
-                    raise ValueError('Remote mutation response owner changed')
-                self._chat_log.add_system('Remote parent disk ' + str(msg['action']) + ' completed; composer unchanged')
-                self._close_remote_parent()
-            elif msg.get('action') == 'catalog':
-                if any(msg.get(key) != value for key, value in self._remote_parent_scope.items()):
-                    raise ValueError('Remote catalog owner changed')
-                rows = msg.get('catalog')
-                if not isinstance(rows, (tuple, list)) or len(rows) > 32:
-                    raise ValueError('Invalid remote catalog')
-                for row in rows:
-                    if (not isinstance(row, dict) or not isinstance(row.get('id'), str)
-                            or re.fullmatch(r'[a-f0-9]{32}', row['id']) is None
-                            or not isinstance(row.get('sha256'), str)
-                            or re.fullmatch(r'[a-f0-9]{64}', row['sha256']) is None
-                            or not isinstance(row.get('label'), str) or len(row['label'].encode()) > 4096
-                            or type(row.get('image_count')) is not int or not 0 <= row['image_count'] <= 4
-                            or type(row.get('image_bytes')) is not int
-                            or not 0 <= row['image_bytes'] <= 40 * 1024 * 1024):
-                        raise ValueError('Invalid remote parent catalog row')
-                self._remote_parent_scope['session_revision'] = msg['session_revision']
-                panel.rows = tuple(dict(row) for row in rows)
-                panel.busy = False
-                panel.message = 'Select snapshot; empty composer required'
-                self._remote_parent_deadline = 0
-            elif msg.get('action') == 'read':
-                if self._remote_parent_read_completed:
-                    return True  # Duplicate terminal receipt cannot spawn/replace a decoder or review.
-                self._remote_parent_read_completed = True
-                receiver, key, result = self._remote_parent_receiver, self._remote_parent_request, dict(msg)
-                self._remote_parent_decode_cancel = canceled = threading.Event()
-                def decode() -> None:
-                    event: dict[str, Any] = {'type': '_remote_parent_decoded', 'request_id': key}
-                    try:
-                        recovery = receiver.finish(key, result)
-                        if not canceled.is_set():
-                            event['recovery'] = recovery
-                    except (ValueError, RuntimeError, OSError):
-                        event['error'] = True
-                    finally:
-                        if canceled.is_set():
-                            receiver.close()  # Worker settled; no active spool is closed prematurely.
-                    if not canceled.is_set():
-                        self._recv_queue.put(event)
-                self._remote_parent_worker = threading.Thread(target=decode, daemon=True,
-                                                               name='xdog-parent-recovery')
-                self._remote_parent_worker.start()
-        except (ValueError, TypeError, KeyError):
-            self._chat_log.add_system('Remote parent snapshot owner/data changed; no adoption')
-            self._close_remote_parent()
-        self._tui.request_render()
-        return True
-
     def _show_parent_save(self) -> None:
-        if not self._parent_draft_ui_available():
-            raise ValueError('Another modal UI owns input; parent draft unchanged')
-        self._open_children()
-        panel = self._child_panel
-        if panel is None:
-            raise ValueError('Parent save view unavailable; no write admitted')
-        # Capture exact composer before opening its review; no consumption or mutation.
-        self._parent_drafts.prepare_save(alive=lambda: self._child_panel is panel and not self._exit_requested)
+        self._begin_parent_drafts()
+        self._parent_drafts.prepare_save(alive=lambda: False)
         entry = self._parent_drafts.save_entry()
         def act(action: str, reviewed: DraftEntry) -> None:
-            if (action != 'save' or self._child_panel is not panel or panel.draft_panel is not browser
-                    or panel.terminal_lease != lease or not self._parent_draft_ui_available()):
+            if action != 'save' or not self._parent_view_alive(panel, lease):
                 raise ValueError('Parent save view changed; reopen full review')
             self._parent_drafts.confirm_save(reviewed)
-            panel.back()
-        def back() -> None:
-            self._parent_drafts.invalidate_read()
-            panel.back()
-        browser = ChildDraftPanel(lambda: (entry,), act, back, parent=True, save_only=True)
-        panel._mode = 'drafts'
-        panel._input.focused = False
-        panel.draft_panel = browser
-        lease = panel.terminal_lease
-        self._parent_drafts.bind_read_view(lambda: (
-            self._child_panel is panel and panel.draft_panel is browser and panel.terminal_lease == lease
-            and self._parent_draft_ui_available()))
-        browser.focused = True
-        browser._prepare('save', entry)
-        self._tui.set_focus(panel)
-        self._tui.request_render()
+            self._close_parent_drafts()  # Admitted disk work still owns its quit barrier.
+        panel = ParentDraftPanel(lambda: (entry,), act, self._close_parent_drafts,
+                                 context=self._mcp_context_key(), mode='save')
+        panel.prepare_save(entry)
+        self._attach_parent_drafts(panel)
+        lease = panel.view_lease
 
     def _show_parent_drafts(self) -> None:
         if not self._parent_draft_ui_available():
-            self._parent_drafts.invalidate_read()
+            self._close_parent_drafts()
             self._chat_log.add_system('Parent recovery blocked by modal owner; explicitly reload after it settles')
             return
-        self._open_children()
-        panel = self._child_panel
-        if panel is None:
-            return
         def act(action: str, entry: DraftEntry) -> None:
-            if (self._child_panel is not panel or panel.draft_panel is not browser
-                    or panel.terminal_lease != lease or not self._parent_draft_ui_available()):
+            if not self._parent_view_alive(panel, lease):
                 raise ValueError('Parent recovery view changed; reopen and review')
             def restore(draft: ChildDraft) -> None:
                 retained = self._retained_image_bytes() - self._parent_saved_bytes() + self._composer.bytes
                 if retained + sum(len(item.data) for item in draft.images) > 40 * 1024 * 1024:
                     raise ValueError('Parent recovery exceeds local retention; existing draft preserved')
+                # Text/images only. Native set_text places the editing cursor at the end;
+                # persisted cursor/config/access never become restore authority.
                 self._editor.set_text(draft.text)
                 self._composer.restore(draft.images)
-                self._close_children()
+                self._close_parent_drafts()
                 self._chat_log.add_system('Parent draft recovered; NOT sent · inspect before explicit submission')
             self._parent_drafts.action(action, entry, restore)
-        panel._mode = 'drafts'
-        panel._input.focused = False
-        def back() -> None:
-            self._parent_drafts.invalidate_read()
-            panel.back()
-        browser = ChildDraftPanel(self._parent_drafts.entries, act, back, parent=True)
-        panel.draft_panel = browser
-        lease = panel.terminal_lease
-        self._parent_drafts.bind_read_view(lambda: (
-            self._child_panel is panel and not self._exit_requested and panel.terminal_lease == lease
-            and panel.draft_panel is browser and self._parent_draft_ui_available()))
-        browser.focused = True
-        self._tui.set_focus(panel)
-        self._tui.request_render()
+        panel = ParentDraftPanel(self._parent_drafts.entries, act, self._close_parent_drafts,
+                                 context=self._mcp_context_key(), mode='restore')
+        self._attach_parent_drafts(panel)
+        lease = panel.view_lease
 
-    def _poll_child_autosave(self, *, flush: bool = False) -> bool:
-        if self._child_panel is not None and self._child_autosave.enabled:
-            self._child_panel._save_draft()
-        entries = self._child_draft_entries() if self._child_autosave.enabled else ()
-        return self._child_autosave.poll(self._durable_child_store(), entries,
-                                         self._chat_log.add_system, flush=flush)
+    def _poll_parent_drafts(self) -> None:
+        panel = self._parent_draft_panel
+        if panel is not None and (not panel.focused or panel.context != self._mcp_context_key()
+                                  or not self._parent_draft_ui_available()):
+            self._close_parent_drafts()
+        self._parent_drafts.poll(self._show_parent_drafts)
+        panel = self._parent_draft_panel
+        if panel is not None and panel.mode == 'loading' and not self._parent_drafts.io.busy:
+            self._close_parent_drafts()  # Failed/revoked reads never keep a dead loading surface.
 
-    def _child_autosave_command(self, value: str) -> None:
-        if value not in {'on', 'off', ''}:
-            self._chat_log.add_system('Usage: /agents autosave [on|off]')
-            return
-        if value:
-            self._child_autosave.set_enabled(value == 'on')
-        self._chat_log.add_system('Child autosave ' + ('ON' if self._child_autosave.enabled else 'OFF')
-            + ' · PRIVATE PLAINTEXT · pending/writing edits are not acknowledged durable; '
-            'committed is a polled disk receipt, not per-key saving · /agents saved recovery only')
-        self._tui.request_render()
 
-    def _durable_child_store(self) -> ChildDraftStore:
-        return ChildDraftStore(get_data_dir() / 'saved-child-drafts', create_parent=True)
 
-    def _load_saved_child_drafts(self, selection: str = '') -> None:
-        self._open_children()
-        panel = self._child_panel
-        if panel is None:
-            return
-        if self._child_draft_io.busy:
-            raise ValueError('Durable draft work still settling; no repeated load')
-        action = 'catalog' if selection == 'list' else 'load' if selection else 'list'
-        if selection not in {'', 'list'} and (len(selection) != 32
-                or any(char not in '0123456789abcdef' for char in selection)):
-            raise ValueError('Use /agents saved [list|SNAPSHOT_ID]')
-        self._child_draft_io.start(action, self._durable_child_store(), owner=panel.owner_token, key=selection)
-        self._chat_log.add_system('Loading explicit saved child snapshots; no agent execution')
 
-    def _finish_child_draft_io(self, result: dict[str, Any]) -> None:
-        panel = self._child_panel
-        if result.get('error'):
-            self._chat_log.add_system(str(result['error']))
-            if panel is not None and panel.owner_token == result['owner']:
-                panel.fail(str(result['error']))
-            return
-        action = result['action']
-        if action == 'save':
-            saved = result['saved']
-            self._chat_log.add_system('Child draft saved privately: ' + saved.id + ' · /agents saved reviews recovery')
-        elif action == 'discard':
-            key = result['discarded']
-            self._saved_child_drafts.pop(key, None)
-            self._child_drafts.pop('saved-draft:' + key, None)
-            self._chat_log.add_system('Discarded saved snapshot only; local editable copies unchanged')
-        elif action == 'catalog':
-            if (panel is None or panel.owner_token != result['owner']
-                    or self._child_context != self._mcp_context_key()):
-                self._chat_log.add_system('Saved catalog view changed; explicitly list again')
-                return
-            rows = result['catalog']
-            self._chat_log.add_system('Saved child snapshots (metadata only; no drafts adopted):\n' + '\n'.join(
-                f"{row['id']} · {row['image_count']} images · {row['image_bytes']} bytes · "
-                + str(row['label']) for row in rows)
-                + '\nUse /agents saved SNAPSHOT_ID to load one for full reviewed recovery')
-        elif action in {'list', 'load'}:
-            if (panel is None or panel.owner_token != result['owner']
-                    or self._child_context != self._mcp_context_key()):
-                self._chat_log.add_system('Saved draft read owner changed; reopen /agents saved explicitly')
-                return
-            records = result['saved']
-            total = sum(len(image.data) for record in records for image in record.draft.images)
-            # Replacing catalog rows releases only their EXCLUSIVE image ownership.
-            # Reviewed copies and the active child composer can still own the same
-            # immutable bytes; subtracting every old saved image undercounts them.
-            retained = (self._retained_image_bytes() - self._child_draft_bytes()
-                        + self._child_draft_bytes(exclude_saved=True))
-            if retained + self._composer.bytes + total > 40 * 1024 * 1024:
-                self._chat_log.add_system('Saved draft catalog exceeds local retained-image capacity; no partial load')
-                return
-            # Saved provenance is always an OLD context: only fresh read-only copy,
-            # never resume prior queue/model/permissions through a recovered draft.
-            for key in tuple(self._saved_child_drafts):
-                self._child_drafts.pop('saved-draft:' + key, None)
-            self._saved_child_drafts = {record.id: record for record in records}
-            for record in records:
-                scope = 'saved-draft:' + record.id
-                self._child_drafts[scope] = {('start', record.id): record.draft}
-                self._child_draft_labels[scope] = 'SAVED PRIVATE · ' + record.label
-            panel.open_drafts()
-        if panel is not None and panel.owner_token == result['owner']:
-            if action != 'list':
-                panel.open_drafts()
-            self._tui.request_render()
 
-    def _child_draft_entries(self) -> tuple[DraftEntry, ...]:
-        return draft_entries(self._child_drafts, self._child_draft_labels, self._child_context)
-
-    def _child_draft_action(self, action: str, entry: DraftEntry) -> None:
-        panel = self._child_panel
-        if panel is None or self._exit_requested or self._child_context != self._mcp_context_key():
-            raise ValueError('Child draft browser owner changed; reopen and review, no replay')
-        if self._child_draft_io.busy:
-            raise ValueError('Durable child draft operation still settling; no repeated action')
-        cached = self._child_drafts.get(entry.scope, {}).get(entry.key)
-        if cached is not entry.original or cached != entry.value:
-            raise ValueError('Retained child draft changed; review the current snapshot')
-        if action == 'save':
-            self._child_draft_io.start('save', self._durable_child_store(), owner=panel.owner_token, entry=entry)
-            panel.back()
-            return
-        if action == 'discard' and entry.scope.startswith('saved-draft:'):
-            key = entry.scope.removeprefix('saved-draft:')
-            saved = self._saved_child_drafts.get(key)
-            if saved is None or saved.draft is not entry.original:
-                raise ValueError('Saved draft receipt owner changed; reload and review')
-            self._child_draft_io.start('discard', self._durable_child_store(), owner=panel.owner_token, saved=saved)
-            panel.back()
-            return
-        if action == 'discard':
-            del self._child_drafts[entry.scope][entry.key]
-            panel.open_drafts()
-        elif action in {'copy', 'reopen'}:
-            if action == 'reopen' and entry.scope != self._child_context:
-                raise ValueError('Old contexts cannot resume; explicitly copy fresh/read-only')
-            panel.adopt_draft(entry, reopen=action == 'reopen')
-        else:
-            raise ValueError('Unknown local child draft action')
 
     def _child_image_send(self, action: str, child: str, text: str, access: str,
                           config: dict[str, Any], images: tuple[Attachment, ...]) -> None:
@@ -2196,6 +1473,14 @@ class ChatApp:
 
     def _child_send(self, action: str, child: str, text: str, access: str,
                     *, config: dict[str, Any] | None = None, images: tuple[Attachment, ...] = ()) -> None:
+        if action == 'queue':
+            try:
+                command = json.loads(text)
+            except ValueError:
+                command = None  # Keep malformed native queue errors on the existing owned backend path.
+            if isinstance(command, dict) and command.get('action') in {
+                    'return_prepare', 'return_commit', 'return_cancel'}:
+                return  # Retired UI work cannot touch a current draft, owner or backend lease.
         panel = self._child_panel
         if panel is None:
             return
@@ -2204,11 +1489,6 @@ class ChatApp:
                 or action == "start" and (self._active_run_id is not None or self._waiting)
                 or action == 'queue' and not self._child_queues_supported):
             panel.fail("Ready updated gateway/idle start required; child form retained")
-            return
-        command = json.loads(text) if action == 'queue' else {}
-        returning = command.get('action') in {'return_prepare', 'return_commit', 'return_cancel'}
-        if returning and (not self._child_return_supported or panel.queue is None):
-            panel.fail('Updated live image-return gateway required; original not removed')
             return
         identifier = "child-ui-" + uuid.uuid4().hex
         if action == 'queue' and panel.queue is not None:
@@ -2224,10 +1504,7 @@ class ChatApp:
             wire_config.pop("preset", None)
         self._queue_request({"type": "child_control", "request_id": identifier, "group_id": self.group_id,
                              "session_id": self._gateway_session_id, "action": action, "child_id": child,
-                             "text": text, "access": access, "config": wire_config,
-                             **({'child_return_owner': self._child_return_owner,
-                                 'queue_view': panel.queue.owner_token}
-                                if returning and panel.queue is not None else {})},
+                             "text": text, "access": access, "config": wire_config},
                             images)
 
     def _cancel_child_source(self) -> None:
@@ -2266,7 +1543,6 @@ class ChatApp:
                 self._child_fullscreen()
 
     def _close_children(self) -> None:
-        self._parent_drafts.invalidate_read()
         self._leave_child_fullscreen()
         self._cancel_child_source()
         if self._child_panel is not None:
@@ -2297,14 +1573,10 @@ class ChatApp:
         if action == "inspect":
             self._open_children(rest.strip())
             return
-        if action == 'autosave':
-            self._child_autosave_command(rest.strip())
-            return
         if action == 'saved':
-            try:
-                self._load_saved_child_drafts(rest.strip())
-            except ValueError as exc:
-                self._chat_log.add_system(str(exc))
+            self._chat_log.add_system('Child draft disk management was removed; '
+                                      '/agents drafts recovers this session only')
+            self._tui.request_render()
             return
         if action == 'drafts':
             self._open_children()
@@ -2371,16 +1643,6 @@ class ChatApp:
         if not self._plan_send(action, revision, text if action == "start" else ""):
             self._preserve_submission("/plan " + args, "Plan command not sent; draft preserved")
 
-    def _command_editor_snapshot(self) -> tuple[str, int, tuple[str, ...]]:
-        return (self._editor.get_text(), self._editor._cursor,
-                tuple(item.id for item in self._composer.items.values()))
-
-    def _command_editor_replace(self, value: str) -> bool:
-        if len(value.encode()) > 65536 or _sanitize_editor_text(value) != value:
-            return False
-        self._editor.set_text(value)
-        self._tui.request_render()
-        return True
 
     def _provider_auth_review_current(self, item: dict[str, Any]) -> bool:
         pending = self._extension_pending
@@ -2406,192 +1668,13 @@ class ChatApp:
             except (ValueError, RuntimeError):
                 self._chat_log.add_system('Provider URL opening unavailable/busy; no automatic retry')
 
-    def _queued_input_review_current(self, item: dict[str, Any]) -> bool:
-        if (not self._connection_ready or self._exit_requested or self._session_context_stale):
-            return False
-        if item.get('child_id'):
-            return (self._child_queued_inputs_supported and item.get('session_id') == self._gateway_session_id
-                    and item.get('child_owner') == self._child_queued_inputs_owner
-                    and type(item.get('_child_queue_generation')) is int
-                    and item['_child_queue_generation'] == self._child_queued_inputs_generation)
-        return (self._extension_queued_inputs_supported and self._child_panel is None
-                and self._active_run_id is not None and item.get('_queue_run') == self._active_run_id
-                and self._aborting_run_id != self._active_run_id
-                and type(item.get('_queue_generation')) is int
-                and item['_queue_generation'] == self._extension_queued_inputs_generation)
-
-    def _retire_extension_inputs(self, owner: str) -> None:
-        retired = False
-        for key, (run, _images) in tuple(self._extension_queued_inputs.items()):
-            if run == owner:
-                self._extension_queued_inputs.pop(key, None)
-                self._routed_inputs.pop(key, None)
-                self._transformed_inputs.pop(key, None)
-                retired = True
-        if retired:
-            self._chat_log.add_system('Unconsumed/uncertain extension inputs not replayed; original draft kept')
-
-    def _prepare_editor_write(self, dialog: dict[str, Any]) -> bool:
-        from xdog.agent.extensions.editor_request import METHODS
-        identity = dialog.get('editor_write', {})
-        child = str(identity.get('child_id', ''))
-        if (not self._extension_editor_write_supported or identity.get('session_id') != self._gateway_session_id
-                or identity.get('method') not in METHODS or child != dialog.get('child_id', '')
-                or type(dialog.get('editor_write_generation')) is not int
-                or dialog['editor_write_generation'] != self._extension_editor_write_generation):
-            return False
-        context, generation, capability_owner = (self._mcp_context_key(), self._extension_editor_write_generation,
-                                                 self._extension_editor_write_owner)
-        def base_alive() -> bool:
-            return (self._connection_ready and not self._exit_requested and not self._session_context_stale
-                    and self._extension_editor_write_supported and self._mcp_context_key() == context
-                    and self._extension_editor_write_generation == generation
-                    and self._extension_editor_write_owner == capability_owner
-                    and self._session_mutation_id is None and self._remote_parent_panel is None)
-        if child:
-            panel = self._child_panel
-            if (panel is None or panel.terminal_child != child
-                    or dialog.get('child_owner') != capability_owner):
-                return False  # No selected original child draft; never borrow the parent composer.
-            lease = panel.terminal_lease
-            def alive() -> bool:
-                return (base_alive() and self._child_panel is panel
-                        and panel.terminal_lease == lease and not panel._busy
-                        and (panel.composer is None or not panel.composer.reader.pending))
-            def snapshot() -> tuple[str, int, tuple[str, ...]]:
-                return (panel._input.get_text(), panel._input._cursor,
-                        tuple(panel.composer.items) if panel.composer is not None else ())
-            def replace(value: str) -> bool:
-                if _sanitize_editor_text(value) != value:
-                    return False
-                panel._input.set_text(value)
-                return True
-        else:
-            editor, composer = self._editor, self._composer
-            command, run = dialog.get('_editor_write_command'), dialog.get('_editor_write_run')
-            if not command and not run:
-                return False
-            def alive() -> bool:
-                command_alive = (bool(command) and self._extension_pending is not None
-                                 and self._extension_pending[0] == command)
-                run_alive = bool(run) and self._active_run_id == run
-                return (base_alive() and self._editor is editor and self._composer is composer
-                        and self._child_panel is None and not composer.reader.pending and (command_alive or run_alive))
-            snapshot = self._command_editor_snapshot
-            replace = self._command_editor_replace
-        return self._editor_write_reviews.prepare(dialog, snapshot, replace, alive)
-
-    def _queue_extension_navigation(self, item: dict[str, Any], answer: Any, *, accepted: bool = False) -> bool:
-        pending = self._extension_pending
-        owner = pending[0] if pending is not None else ""
-        allowed = (pending is not None and not item.get("child_id") and self._active_run_id is None
-                   and self._extension_editor_owner == (owner, str(item.get("extension", "")).lower())
-                   and self._connection_ready and not self._exit_requested
-                   and (self._extension_message_supported if item.get('operation') == 'message' else
-                        self._extension_compaction_supported if item.get('operation') == 'compact' else
-                        self._extension_name_supported if item.get('operation') == 'rename'
-                        else self._extension_navigation_supported))
-        if (answer is not True or not allowed or self._extension_navigation is not None
-                or self._extension_navigation_review is not None):
-            return False
-        if item.get('operation') == 'message' and (
-                type(item.get('message_generation')) is not int
-                or item['message_generation'] != self._extension_message_generation):
-            return False
-        if item.get('operation') == 'compact' and (
-                type(item.get('compaction_generation')) is not int
-                or item['compaction_generation'] != self._extension_compaction_generation):
-            return False
-        if not accepted:
-            self._extension_navigation_review = owner, self._mcp_context_key(), dict(item)
-            return True
-        if item.get('operation') == 'message':
-            self._extension_navigation = owner, self._mcp_context_key(), {'action': 'message',
-                'host_message': item['host_message'], 'message_generation': item['message_generation'],
-                'image_count': len(item.get('image_summaries', [])),
-                'message_images_generation': item.get('message_images_generation')}
-            return True
-        if item.get('operation') == 'compact':
-            self._extension_navigation = owner, self._mcp_context_key(), {'action': 'compact',
-                'instructions': item['instructions'], 'compaction_generation': item['compaction_generation']}
-            return True
-        if item.get('operation') == 'rename':
-            self._extension_navigation = owner, self._mcp_context_key(), {
-                'action': 'rename', 'name': item['name'], 'expected_name': item['expected_name']}
-            return True
-        target = dict(item["target"])
-        if not target["session_id"] and target["action"] != "new":
-            target["session_id"] = self._command_session_id()
-        self._extension_navigation = owner, self._mcp_context_key(), target
-        return True
-
-    def _accept_extension_navigation(self, event: Mapping[str, Any]) -> None:
-        review = self._extension_navigation_review
-        if review is None or event.get("id") != review[2]["id"]:
-            return
-        self._extension_navigation_review = None
-        item = review[2]
-        if (event.get("extension") != item.get("extension")
-                or event.get("operation") != item.get("operation")
-                or review[1] != self._mcp_context_key()):
-            return
-        if (self._extension_pending is None or self._extension_pending[0] != review[0]
-                or event.get("request_id") != review[0] or event.get("group_id") != self.group_id):
-            return
-        self._queue_extension_navigation(item, True, accepted=True)
-
-    def _finish_extension_navigation(self, owner: str, success: bool,
-                                     delivery: Any = None) -> bool:
-        self._extension_navigation_review = None
-        queued, self._extension_navigation = self._extension_navigation, None
-        if queued is None:
-            return False
-        if (queued[:2] != (owner, self._mcp_context_key()) or not success or self._exit_requested):
-            self._chat_log.add_system('Reviewed extension name discarded; callback/owner changed'
-                if queued[2].get('action') == 'rename' else
-                'Reviewed extension navigation discarded; callback/owner changed')
-            return False
-        target = queued[2]
-        if target['action'] == 'message':
-            if (not self._connection_ready or not self._extension_message_supported
-                    or target['message_generation'] != self._extension_message_generation
-                    or self._active_run_id is not None or self._session_context_stale
-                    or not isinstance(delivery, dict) or set(delivery) != {'token', 'generation'}
-                    or not isinstance(delivery['token'], str) or not 0 < len(delivery['token']) <= 128
-                    or type(delivery['generation']) is not int
-                    or delivery['generation'] != self._extension_message_generation):
-                self._chat_log.add_system('Reviewed message discarded; owner/capability/delivery changed, no replay')
-                return False
-            if target.get('image_count') and (not self._extension_message_images_supported
-                    or target.get('message_images_generation') != self._extension_message_images_generation):
-                self._chat_log.add_system('Reviewed message images discarded; image grant changed, no replay')
-                return False
-            self._start_message(target['host_message'], (),
-                requested_message={**delivery, 'image_count': target.get('image_count', 0)})
-        elif target['action'] == 'compact':
-            if (not self._extension_compaction_supported
-                    or target['compaction_generation'] != self._extension_compaction_generation):
-                self._chat_log.add_system('Reviewed compaction discarded; capability changed, no replay')
-                return False
-            self._compact_command(target['instructions'], extension_generation=target['compaction_generation'])
-        elif target['action'] == 'rename':
-            if not self._extension_name_supported:
-                self._chat_log.add_system('Reviewed name discarded; extension naming support withdrawn')
-                return False
-            self._name_session('', selected_name=target['name'], expected_name=target['expected_name'])
-        else:
-            if not self._extension_navigation_supported:
-                self._chat_log.add_system('Reviewed navigation discarded; extension navigation support withdrawn')
-                return False
-            self._navigate_session(target["action"], target["session_id"], target["branch_id"], target["index"])
-        return True
 
     def _serve_session_request(self, item: dict[str, Any]) -> None:
         value: Any = None
         pending = self._extension_pending
         owner = pending[0] if pending is not None else ""
         allowed = (not item.get("child_id") and pending is not None and self._active_run_id is None
-                   and self._extension_editor_owner == (owner, str(item.get("extension", "")).lower())
+                   and self._extension_command_owner == (owner, str(item.get("extension", "")).lower())
                    and self._connection_ready and self._extension_session_supported and not self._exit_requested)
         metadata = {"session_id": self._gateway_session_id, "group_id": self.group_id,
                     "workspace": str(self._file_completions.root) if self._file_completions is not None else ""}
@@ -2622,236 +1705,65 @@ class ChatApp:
                 value = metadata
             elif item["operation"] in ("model", "usage"):
                 value = None  # Only the owning gateway may supply actual runtime inspection.
-            elif item['operation'] == 'browse':
-                self._extension_browser = owner, self._mcp_context_key(), item["scope"]
-                value = True
         self._answer_extension_dialog(item["id"], value)
 
-    def _finish_extension_browser(self, owner: str, success: bool) -> None:
-        queued, self._extension_browser = self._extension_browser, None
-        if (queued is not None and queued[:2] == (owner, self._mcp_context_key())
-                and success and not self._exit_requested):
-            scope = "sessions" if queued[2] == "sessions" else "tree|" + self._command_session_id() + "|"
-            self._open_navigation(scope)
 
     def _command_session_id(self) -> str:
         return self._gateway_session_id
 
-    def _serve_editor_request(self, item: dict[str, Any]) -> None:
-        pending = self._extension_pending
-        allowed = (not item.get("child_id") and pending is not None
-                   and self._extension_editor_owner == (pending[0], str(item.get("extension", "")).lower())
-                   and self._active_run_id is None
-                   and self._connection_ready and self._extension_editor_supported and not self._exit_requested)
-        owner = self._mcp_context_key() + ":" + (pending[0] if pending is not None else "")
-        value = None
-        if allowed:
-            try:
-                value = self._editor_actions.handle(owner, item)
-            except ValueError:
-                value = None
-        self._answer_extension_dialog(item["id"], value)
 
     def _sync_extension_dialog(self) -> None:
         selected = self._extension_stack.choose(self._extension_dialog_queue)
-        if (selected is not None and selected.get('kind') == 'session'
-                and selected.get('operation') == 'commands' and 'command_menu' in selected):
-            # Read-only client metadata is serviced without unfocusing its
-            # suspended custom parent. It is not a new modal input owner.
+        if selected is not None and selected.get('kind') == 'session':
             self._serve_session_request(selected)
             return
+        panel = self._extension_dialog_panel
         if selected is None:
             self._extension_dialog_panel = None
-        elif self._extension_dialog_panel is None or self._extension_dialog_panel.dialog["id"] != selected["id"]:
-            previous = self._extension_dialog_panel
-            if previous is not None:
-                previous.focused = False
-            cached = self._extension_stack.panels.get(selected["id"])
-            self._extension_dialog_panel = cached if isinstance(
-                cached, (ExtensionDialog, ExtensionNavigation, ExtensionCustom)) else None
+        elif panel is None or panel.dialog['id'] != selected['id']:
+            if panel is not None:
+                panel.focused = False
+            cached = self._extension_stack.panels.get(selected['id'])
+            self._extension_dialog_panel = cached if isinstance(cached, ExtensionDialog) else None
         if self._extension_dialog_panel is None and selected is not None:
             item = selected
-            if (item["kind"] in {"editor", "session"}
-                    and item.get("operation") not in {"navigate", "rename", "select_tools", "compact",
-                                                      "message", "propose", "queue_input", "context_message"}):
-                if self._outputs.panel is not None or self._custom_presentation.blocked():
-                    return
-                if item["kind"] == "session":
-                    self._serve_session_request(item)
-                else:
-                    self._serve_editor_request(item)
-                return
-
-            if item.get('name_after_run') is True and (not self._extension_name_after_run_supported
-                    or item.get('child_id') or self._active_run_id is None
-                    or item.get('name_after_run_generation') != self._extension_name_after_run_generation):
-                self._answer_extension_dialog(item['id'], False)
-                return
-            if item.get('operation') == 'compact' and item.get('after_run') is True and (
-                    not self._extension_compaction_after_run_supported or item.get('child_id')
-                    or self._active_run_id is None
-                    or item.get('compaction_after_run_generation') != self._extension_compaction_after_run_generation):
-                self._answer_extension_dialog(item['id'], False)
-                return
-            if item.get('operation') == 'context_message' and (
-                    not self._extension_context_messages_supported or item.get('child_id')
-                    or item.get('_context_message_generation') != self._extension_context_messages_generation):
-                self._answer_extension_dialog(item['id'], False)
-                return
-            if item.get('operation') == 'queue_input' and not self._queued_input_review_current(item):
-                self._answer_extension_dialog(item['id'], False)
-                return
-            if item.get('operation') == 'propose' and not self._prepare_editor_write(item):
-                self._answer_extension_dialog(item['id'], False)
-                return
-            if item.get('operation') == 'message':
-                from xdog.agent.extensions.message_request import host_message
-                try:
-                    if (not self._extension_message_supported or item.get('child_id')
-                            or self._extension_pending is None
-                            or item.get('host_message') != host_message(item['extension'], item['text'],
-                                image_only=bool(item.get('image_summaries')))
-                            or item.get('image_summaries') and (not self._extension_message_images_supported
-                                or type(item.get('message_images_generation')) is not int
-                                or item['message_images_generation'] != self._extension_message_images_generation)
-                            or type(item.get('message_generation')) is not int
-                            or item['message_generation'] != self._extension_message_generation):
-                        raise ValueError('Requested message owner/capability changed')
-                except (ValueError, KeyError, TypeError):
-                    self._answer_extension_dialog(item['id'], False)
-                    return
-            if item.get('operation') == 'select_tools':
-                from xdog.agent.extensions.active_tools import answer as tool_snapshot
-                from xdog.agent.extensions.active_tools import names
-                try:
-                    current = tool_snapshot(item['current_tools'])
-                    selected_tools = names(item['names'])
-                    if ((not self._after_run_tools_review_current(item) if item.get('after_run') is True
-                            else not self._extension_active_tools_supported or item.get('child_id')
-                                 or self._extension_pending is None)
-                            or current['session_id'] != self._gateway_session_id
-                            or current['revision'] != item['revision']
-                            or selected_tools is not None and not set(selected_tools) <= set(current['configured'])):
-                        raise ValueError('Active tool selection owner/capability changed')
-                except (ValueError, KeyError, TypeError):
-                    self._answer_extension_dialog(item['id'], False)
-                    return
             if (('provider_auth_host' in item or 'provider_auth_menu' in item)
                     and not self._provider_auth_review_current(item)):
                 self._answer_extension_dialog(item['id'], None)
                 return
-            def answer(value: Any, key: str = item["id"]) -> None:
+            def answer(value: Any, key: str = item['id']) -> None:
                 self._answer_extension_dialog(key, value)
-            label = f"Child {item['child_id']} · {item['extension']}" if item.get("child_id") else item["extension"]
-            if "provider_auth_host" in item:
+            label = f"Child {item['child_id']} · {item['extension']}" if item.get('child_id') else item['extension']
+            if 'provider_auth_host' in item:
                 from xdog.tui.components.extension_provider_auth import ExtensionProviderAuth
                 self._extension_dialog_panel = ExtensionProviderAuth(
                     label, item, answer, open_url=self._open_provider_auth_url)
-            elif item["kind"] == "custom":
-                def request(event: dict[str, Any]) -> bool:
-                    return self._request_extension_custom(item, event)
-                self._extension_dialog_panel = ExtensionCustom(label, item, answer, request)
-            elif item.get('operation') == 'context_message':
-                from xdog.tui.components.extension_context_message import ExtensionContextMessage
-                self._extension_dialog_panel = ExtensionContextMessage(
-                    label, item, answer, self._command_session_id())
-            elif item.get('operation') == 'queue_input':
-                from xdog.tui.components.extension_queued_input import ExtensionQueuedInput
-                projected = {key: value for key, value in item.items()
-                             if key not in {'session_id', '_queue_generation', '_queue_run', 'child_id', 'child_owner',
-                                            '_child_queue_generation'}}
-                self._extension_dialog_panel = ExtensionQueuedInput(
-                    item["extension"], projected, answer, self._command_session_id()
-                    + (" / child " + item["child_id"] if item.get("child_id") else ""))
-            elif item.get('operation') == 'propose':
-                from xdog.tui.components.extension_editor_write import ExtensionEditorWrite
-                self._extension_dialog_panel = ExtensionEditorWrite(label, item, answer)
-            elif item.get("operation") in {"navigate", "rename", "select_tools", "compact", "message"}:
-                self._extension_dialog_panel = ExtensionNavigation(label, item, answer, self._command_session_id())
             else:
                 self._extension_dialog_panel = ExtensionDialog(label, item, answer)
-            self._extension_stack.panels[item["id"]] = self._extension_dialog_panel
-        if self._outputs.panel is None and not self._custom_presentation.blocked():
+            self._extension_stack.panels[item['id']] = self._extension_dialog_panel
+        if self._outputs.panel is None and not self._tui.has_overlay():
             if self._extension_dialog_panel is not None:
                 self._leave_child_fullscreen()
                 self._leave_transcript_fullscreen()
-                if self._extension_dialog_panel.dialog.get('overlay') is not None:
-                    self._layout.details = None
-                    if (isinstance(self._tui._focused, (ExtensionDialog, ExtensionNavigation, ExtensionCustom))
-                            and self._tui._focused is not self._extension_dialog_panel):
-                        self._tui.set_focus(self._child_panel or self._plan_panel or self._mcp_panel
-                                            or self._transcript_panel or self._editor)
-                else:
-                    self._layout.details = self._extension_dialog_panel
-                    self._tui.set_focus(self._extension_dialog_panel)
-            elif (isinstance(self._layout.details, (ExtensionDialog, ExtensionNavigation, ExtensionCustom))
-                  or self._custom_presentation.overlay_panel is not None):
-                self._layout.details = (self._extension_dialog_panel or self._child_panel or self._plan_panel
-                    or self._mcp_panel
-                or self._transcript_panel or (
-                    self._details_panel if self._details_open else None))
-                self._tui.set_focus((self._extension_dialog_panel if self._extension_dialog_panel is not None
-                                    and self._extension_dialog_panel.dialog.get('overlay') is None else None)
-                                    or self._child_panel or self._plan_panel
-                    or self._mcp_panel
+                self._layout.details = self._extension_dialog_panel
+                self._tui.set_focus(self._extension_dialog_panel)
+            elif isinstance(self._layout.details, ExtensionDialog):
+                self._layout.details = (self._parent_draft_panel or self._child_panel or self._plan_panel
+                                       or self._mcp_panel
+                                       or self._transcript_panel or (
+                                           self._details_panel if self._details_open else None))
+                self._tui.set_focus(self._parent_draft_panel or self._child_panel or self._plan_panel
+                                       or self._mcp_panel
                                     or self._transcript_panel or self._editor)
 
-        custom = self._extension_dialog_panel
-        self._custom_presentation.sync(custom if isinstance(custom, ExtensionCustom) else None,
-            self._outputs.panel is None and not self._custom_presentation.blocked())
-
-    def _request_extension_custom(self, item: dict[str, Any], event: dict[str, Any]) -> bool:
-        panel = self._extension_dialog_panel
-        if ((item.get("fullscreen") and (not isinstance(panel, ExtensionCustom) or not panel.fullscreen)
-                or item.get("overlay") is not None and (not isinstance(panel, ExtensionCustom) or not panel.overlay))
-                and not (event.get("kind") == "resize" and event.get("height") == 0)):
-            return False
-        if (not self._connection_ready or not self._extension_custom_supported
-                or item.get("session_id", self._gateway_session_id) != self._gateway_session_id
-                or not any(row["id"] == item["id"] for row in self._extension_dialog_queue)):
-            return False
-        request = {"type": "extension_custom_request", "id": item["id"], "event": event,
-                   "group_id": self.group_id, "session_id": self._gateway_session_id}
-        if item.get("child_id"):
-            request.update(type="child_extension_custom_request", child_id=item["child_id"],
-                           child_owner=item["child_owner"])
-        self._queue_request(request)
-        return True
-
-    def _after_run_tools_review_current(self, item: dict[str, Any]) -> bool:
-        return (self._connection_ready and not self._exit_requested and self._active_run_id is not None
-            and self._extension_tools_after_run_supported and not item.get('child_id')
-            and item.get('session_id', self._gateway_session_id) == self._gateway_session_id
-            and item.get('active_tools_after_run_generation') == self._extension_tools_after_run_generation)
 
     def _answer_extension_dialog(self, key: str, value: Any) -> None:
-        if not any(item["id"] == key for item in self._extension_dialog_queue):
+        item = next((item for item in self._extension_dialog_queue if item['id'] == key), None)
+        if item is None or not self._extension_stack.accepts(item, self._extension_dialog_queue):
             return
-        item = next(item for item in self._extension_dialog_queue if item["id"] == key)
         if (("provider_auth_host" in item or "provider_auth_menu" in item)
                 and not self._provider_auth_review_current(item)):
             value = None
-        if item.get("operation") == "queue_input":
-            value = value is True and self._queued_input_review_current(item)
-        if item.get("operation") == "propose":
-            value = self._editor_write_reviews.answer(item, value is True)
-        if item is not None and item.get('operation') == 'select_tools':
-            if item.get('after_run') is True:
-                value = value is True and self._after_run_tools_review_current(item)
-            elif (not self._extension_active_tools_supported or item.get('child_id')
-                    or self._extension_pending is None or not self._connection_ready or self._exit_requested
-                    or self._extension_editor_owner != (self._extension_pending[0],
-                                                        str(item.get('extension', '')).lower())):
-                value = False
-        if (item is not None and item.get("operation") in {"navigate", "rename", "compact", "message"}
-                and not (item.get("operation") == "compact" and item.get("after_run") is True)
-                and not item.get("name_after_run")):
-            value = self._queue_extension_navigation(item, value)
-        elif item.get("operation") == "compact" and item.get("after_run") is True:
-            value = (value is True and self._extension_compaction_after_run_supported and not item.get("child_id")
-                and self._active_run_id is not None and self._connection_ready
-                and item.get("compaction_after_run_generation") == self._extension_compaction_after_run_generation)
-
         if item.get("child_id"):
             self._queue_request({"type": "child_extension_dialog_answer", "id": key, "value": value,
                                  "group_id": self.group_id, "session_id": item["session_id"],
@@ -2888,7 +1800,7 @@ class ChatApp:
         self._extension_auth_owner = ((identifier, self._mcp_context_key(), self._extension_provider_auth_generation)
                                       if action == "auth" else None)
         self._extension_cancel_scope = identifier, self._gateway_session_id
-        self._extension_editor_owner = (identifier, command.split("-", 2)[1].lower()) if action == "command" else None
+        self._extension_command_owner = (identifier, command.split("-", 2)[1].lower()) if action == "command" else None
         self._queue_request({"type": "extension_control", "request_id": identifier, "group_id": self.group_id,
                              "session_id": self._gateway_session_id, "action": action, "name": name, "args": text})
         self._update_hints()
@@ -2905,9 +1817,7 @@ class ChatApp:
             expected = captured[1] if captured is not None and captured[0] == pending[0] else pending[1]
             # Revoke reviewed command authority immediately; a late successful
             # callback/receipt must not dispatch navigation after local cancel.
-            self._extension_navigation = None
-            self._extension_navigation_review = None
-            self._extension_editor_owner = None
+            self._extension_command_owner = None
             self._extension_auth_owner = None
             self._queue_request({'type': 'extension_control_cancel', 'request_id': pending[0],
                                  'group_id': self.group_id, 'expected_session': expected})
@@ -2938,6 +1848,8 @@ class ChatApp:
         return f"{self._connection_generation}:{self._gateway_session_id}:{self._output_epoch}"
 
     def _open_mcp(self) -> None:
+        if self._parent_draft_panel is not None:
+            self._close_parent_drafts()
         if self._child_panel is not None:
             self._close_children()
         if self._exit_requested or self._tui.has_overlay():
@@ -2950,8 +1862,6 @@ class ChatApp:
             self._close_transcript()
         if self._navigation_panel is not None:
             self._close_navigation()
-        if self._review_panel is not None:
-            self._close_review()
         if self._attachment_panel is not None:
             self._close_attachment_preview()
         if self._details_open:
@@ -2971,30 +1881,10 @@ class ChatApp:
 
     def _cancel_mcp_data(self) -> None:
         if (self._mcp_active is not None and self._connection_ready
-                and self._mcp_action in {"resources", "templates", "prompts", "read", "prompt",
-                                         "complete_prompt", "complete_template", "complete_resource"}):
+                and self._mcp_action in {"resources", "templates", "prompts", "read", "prompt"}):
             self._queue_request({"type": "mcp_context_cancel", "request_id": self._mcp_active})
 
     def _detach_mcp_auth(self) -> None:
-        if self._connection_ready and self._mcp_elicitation_supported:
-            for server in tuple(self._mcp_elicitation_servers):
-                self._queue_request({'type': 'mcp_elicitation_control', 'action': 'detach', 'server': server,
-                    'request_id': 'elicitation-detach-' + uuid.uuid4().hex, 'group_id': self._mcp_auth_group,
-                    'session_id': self._mcp_auth_session, 'view': self._mcp_auth_lease})
-        self._mcp_elicitation_servers.clear()
-        self._mcp_elicitation_requests.clear()
-        if self._connection_ready and self._mcp_sampling_supported:
-            for server in tuple(self._mcp_sampling_servers):
-                self._queue_request({'type': 'mcp_sampling_control', 'action': 'detach', 'server': server,
-                    'request_id': 'sampling-detach-' + uuid.uuid4().hex, 'group_id': self._mcp_auth_group,
-                    'session_id': self._mcp_auth_session, 'view': self._mcp_auth_lease})
-        self._mcp_sampling_servers.clear()
-        self._mcp_sampling_requests.clear()
-        if self._mcp_auth_lease and self._connection_ready and self._mcp_roots_supported:
-            self._queue_request({'type': 'mcp_roots_control', 'action': 'detach', 'group_id': self._mcp_auth_group,
-                                 'session_id': self._mcp_auth_session, 'view': self._mcp_auth_lease,
-                                 'request_id': 'roots-detach-' + uuid.uuid4().hex})
-        self._mcp_root_requests.clear()
         if self._mcp_auth_lease and self._connection_ready and self._mcp_auth_supported:
             self._queue_request({"type": "mcp_auth_control", "action": "detach", "group_id": self._mcp_auth_group,
                                  "session_id": self._mcp_auth_session, "request_id": "detach-" + uuid.uuid4().hex,
@@ -3072,6 +1962,8 @@ class ChatApp:
                             self._file_completions.root)
 
     def _mcp_publish(self, action: str, data: Any = (), error: str = "") -> None:
+        if action not in _MCP_PANEL_ACTIONS and not action.startswith('auth_'):
+            return  # Retired/unknown controls cannot invalidate a successor's active view.
         panel = self._mcp_panel
         if panel is None:
             return
@@ -3090,13 +1982,6 @@ class ChatApp:
                     self._mcp_auth_review = validate_review(data)
                     data = self._mcp_auth_review
                 elif action == "auth_prepare" and not error:
-                    if (data.get("registration", "pre-registered") != "pre-registered"
-                            and not self._mcp_registration_supported):
-                        raise ValueError("Updated registration gateway required; strategy was not silently ignored")
-                    if data.get("token_auth_method", "none") != "none" and not self._mcp_client_auth_supported:
-                        raise ValueError("Updated client-auth gateway required; method was not silently ignored")
-                    if data.get('token_auth_method') == 'private_key_jwt' and not self._mcp_private_jwt_supported:
-                        raise ValueError('Updated private-key JWT gateway required; no method downgrade')
                     self._mcp_auth_review = validate_review(data, prepared=True)
                     data = self._mcp_auth_review
                 elif action == "auth_refresh_prepare" and not error:
@@ -3116,23 +2001,8 @@ class ChatApp:
                 panel.publish_auth(action, {}, str(exc))
             self._tui.request_render()
             return
-        if action.startswith(('sampling_', 'elicitation_')):
-            panel._busy = False
-            details = data if isinstance(data, dict) else {}
-            panel._message = error or str(details.get('notice', 'Sampling control settled'))
-            self._tui.request_render()
-            return
-        if action.startswith('roots_'):
-            try:
-                panel.publish_roots(action, data if isinstance(data, dict) else {}, error)
-            except ValueError as exc:
-                panel.publish_roots(action, {}, str(exc))
-            self._tui.request_render()
-            return
         if error:
             panel.publish(action, error=error)
-        elif isinstance(data, McpCompletion):
-            panel.publish(action, rows=(asdict(data),))
         elif isinstance(data, McpDocument):
             self._mcp_document = data
             panel.publish(action, text=data.text)
@@ -3144,104 +2014,11 @@ class ChatApp:
         self._tui.request_render()
 
     def _mcp_send(self, action: str, server: str, name: str, arguments: dict[str, str]) -> None:
-        if action == 'elicitation_open':
-            panel = self._mcp_panel
-            review = panel.elicitation_review if panel is not None else None
-            context = self._mcp_context_key()
-            generation, view = self._connection_generation, self._mcp_auth_lease
-            def url_alive() -> bool:
-                return (self._mcp_elicitation_supported and self._connection_ready
-                        and server in self._mcp_elicitation_servers and self._connection_generation == generation
-                        and self._mcp_auth_lease == view and self._active_run_id is None and not self._waiting
-                        and self._extension_dialog_panel is None and not self._extension_dialog_queue
-                        and self._child_panel is None and not self._tui.has_overlay()
-                        and self._tui._focused is panel and self._outputs.panel is None
-                        and not self._exit_requested and self._mcp_panel is panel and panel is not None
-                        and panel.elicitation_review is review and review is not None
-                        and review.focused and not review._disabled and not review._used
-                        and review._review._visible and self._mcp_context_key() == context
-                        and review.event['body'].get('params', {}).get('url') == name)
-            if not url_alive():
-                return
-            try:
-                self._reviewed_url.start(name, url_alive)
-            except ValueError:
-                self._chat_log.add_system('URL opening unavailable/busy; no repeat admission')
-            return  # URL opening is local explicit interaction, not MCP answer or completion.
-        if action in {'sampling_on', 'sampling_tasks_on', 'elicitation_on', 'elicitation_tasks_on'}:
-            if not self._gateway_session_id:
-                if self._mcp_panel is not None:
-                    self._mcp_panel._busy = False
-                    self._mcp_panel._message = ('An authoritative idle session is required; '
-                                                'reopen MCP on an updated gateway')
-                return  # Never arm against an empty owner, including older gateways.
-        if action.startswith('elicitation_'):
-            panel = self._mcp_panel
-            if not self._mcp_elicitation_supported or not self._connection_ready or panel is None:
-                if panel is not None:
-                    panel._busy = False
-                    panel._message = 'Elicitation gateway support unavailable; no request sent'
-                return
-            operation = {'elicitation_on': 'enable', 'elicitation_tasks_on': 'enable', 'elicitation_off': 'detach',
-                         'elicitation_answer': 'answer'}.get(action)
-            if operation is None or len(self._mcp_elicitation_requests) >= 16 and operation != 'detach':
-                panel._busy = False
-                panel._message = 'Elicitation control unavailable/busy; no replay'
-                return
-            identifier = 'elicitation-' + uuid.uuid4().hex
-            self._mcp_elicitation_requests[identifier] = action
-            if operation == 'enable':
-                self._mcp_elicitation_servers.add(server)
-            elif operation == 'detach':
-                self._mcp_elicitation_servers.discard(server)
-            response = json.loads(name) if operation == 'answer' else None
-            self._queue_request({'type': 'mcp_elicitation_control', 'request_id': identifier,
-                'group_id': self.group_id, 'session_id': self._gateway_session_id, 'view': self._mcp_auth_lease,
-                'server': server, 'action': operation,
-                **({'tasks': True} if action.endswith('_tasks_on') else {}),
-                **({'response': response} if operation == 'answer' else {})})
-            return
+        if action not in _MCP_PANEL_ACTIONS and not action.startswith('auth_'):
+            return  # Retired/unknown controls cannot invalidate a successor's active view.
         if action.startswith('sampling_'):
-            panel = self._mcp_panel
-            if not self._mcp_sampling_supported or not self._connection_ready or panel is None:
-                if panel is not None:
-                    panel._busy = False
-                    panel._message = 'Sampling gateway support unavailable; no request sent'
-                return
-            operation = {'sampling_on': 'enable', 'sampling_tasks_on': 'enable',
-                         'sampling_off': 'detach', 'sampling_answer': 'answer'}.get(action)
-            if operation is None or len(self._mcp_sampling_requests) >= 16 and operation != 'detach':
-                panel._busy = False
-                panel._message = 'Sampling control unavailable/busy; no replay'
-                return
-            identifier = 'sampling-' + uuid.uuid4().hex
-            self._mcp_sampling_requests[identifier] = action
-            if operation == 'enable':
-                self._mcp_sampling_servers.add(server)
-            elif operation == 'detach':
-                self._mcp_sampling_servers.discard(server)
-            response = json.loads(name) if operation == 'answer' else None
-            self._queue_request({'type': 'mcp_sampling_control', 'request_id': identifier,
-                'group_id': self.group_id, 'session_id': self._gateway_session_id, 'view': self._mcp_auth_lease,
-                'server': server, 'action': operation,
-                **({'tasks': True} if action.endswith('_tasks_on') else {}),
-                **({'response': response} if operation == 'answer' else {})})
-            return
-        if action.startswith('roots_'):
-            if not self._mcp_roots_supported or not self._connection_ready or not self._mcp_panel:
-                if self._mcp_panel is not None:
-                    self._mcp_panel.publish_roots(action, {},
-                                                 'Dynamic roots gateway support unavailable; no request sent')
-                return
-            identifier = 'roots-' + uuid.uuid4().hex
-            self._mcp_active, self._mcp_action = identifier, action
-            self._mcp_root_requests.add(identifier)
-            self._queue_request({'type': 'mcp_roots_control', 'request_id': identifier,
-                'group_id': self.group_id, 'session_id': self._gateway_session_id, 'view': self._mcp_auth_lease,
-                'server': server, 'action': action.removeprefix('roots_'),
-                'review_id': name if action == 'roots_commit' else '',
-                **({'roots': json.loads(name)} if action == 'roots_prepare' else {})})
-            return
+            return  # A retired control cannot mutate or unlock a successor view.
+
         if action in {"watch_resource", "unwatch_resource", "watch_catalog", "unwatch_catalog",
                       "watch_notifications", "unwatch_notifications"}:
             if (not self._mcp_watch_supported or not self._connection_ready or not self._mcp_watch_view
@@ -3260,10 +2037,6 @@ class ChatApp:
                                  "catalog": name if action.endswith('catalog') else '',
                                  **({'notifications': json.loads(name)} if action.endswith('notifications') else {})})
             return
-        if action == "completion_cancel":
-            self._cancel_mcp_data()
-            self._mcp_active = None
-            return
         if action == "auth_leave":
             self._detach_mcp_auth()
             self._mcp_auth_lease = uuid.uuid4().hex
@@ -3271,35 +2044,18 @@ class ChatApp:
         self._cancel_mcp_data()
         identifier = "view-" + uuid.uuid4().hex
         self._mcp_active, self._mcp_action = identifier, action
-        if action == "resource_completion_preview":
-            try:
-                self._mcp_publish(action, resource_completion_document(server, name, arguments))
-            except (ValueError, RuntimeError) as exc:
-                self._mcp_publish(action, error=str(exc))
-            return  # Local operator-edited data; no IPC/remote read/model/tool request.
         if not self._connection_ready or not self._mcp_supported:
             self._recv_queue.put({"type": "mcp_view_failed", "id": identifier,
                                   "error": "Ready updated gateway required"})
             return
-        if action == "complete_resource" and not self._mcp_resource_completion_supported:
-            self._recv_queue.put({"type": "mcp_view_failed", "id": identifier,
-                                  "error": "Updated opaque-resource-completion gateway required"})
-            return
-        if (action in {"complete_prompt", "complete_template", "complete_resource"}
-                and not self._mcp_completion_supported):
-            self._recv_queue.put({"type": "mcp_view_failed", "id": identifier,
-                                  "error": "Updated argument-completion gateway required"})
-            return
         if action.startswith("auth_"):
             active_auth = self._mcp_panel.auth if self._mcp_panel is not None else None
-            private_review = (self._mcp_auth_review or {}).get('token_auth_method') == 'private_key_jwt'
-            private_review = private_review or (active_auth is not None
-                and active_auth.review.get('token_auth_method') == 'private_key_jwt')
-            if (private_review and not self._mcp_private_jwt_supported
-                    and action not in {'auth_cancel', 'auth_status'}):
-                self._recv_queue.put({'type': 'mcp_view_failed', 'id': identifier,
-                                      'error': 'Private-key signing support withdrawn; no request sent'})
-                return
+            for review in (self._mcp_auth_review or {}, active_auth.review if active_auth is not None else {}):
+                if (review.get('registration', 'pre-registered') != 'pre-registered'
+                        or review.get('token_auth_method', 'none') != 'none' or review.get('client_secret_env', '')):
+                    self._recv_queue.put({'type': 'mcp_view_failed', 'id': identifier,
+                                          'error': 'Only pre-registered public PKCE consent is supported'})
+                    return
             if action.startswith("auth_credentials_") and not self._mcp_credentials_supported:
                 self._recv_queue.put({"type": "mcp_view_failed", "id": identifier,
                                      "error": "Updated private-credential gateway required"})
@@ -3315,9 +2071,7 @@ class ChatApp:
             self._mcp_auth_requests.add(identifier)
             self._queue_request({"type": "mcp_auth_control", "request_id": identifier, "group_id": self.group_id,
                                  "session_id": self._gateway_session_id, "lease_id": self._mcp_auth_lease,
-                                 "action": action.removeprefix("auth_"), "server": server, "review_id": name,
-                                 "token_auth_method": (self._mcp_auth_review or {}).get("token_auth_method", "none"),
-                                 "client_secret_env": (self._mcp_auth_review or {}).get("client_secret_env", "")})
+                                 "action": action.removeprefix("auth_"), "server": server, "review_id": name})
             return
         if action == 'list' and not self._gateway_session_id and self._mcp_browser_owner_supported:
             self._mcp_owner_request = identifier, self._mcp_auth_lease, self._mcp_owner_context
@@ -3337,8 +2091,8 @@ class ChatApp:
                                  "session_id": self._gateway_session_id, "server": server, "action": action,
                                  "name": name, "arguments": arguments})
 
-    def _compact_command(self, instructions: str, *, extension_generation: int | None = None) -> None:
-        if instructions.strip() == 'cancel' and extension_generation is None:
+    def _compact_command(self, instructions: str) -> None:
+        if instructions.strip() == 'cancel':
             self._cancel_compaction()
             return
         from xdog.agent.summarization import summary_instructions
@@ -3356,9 +2110,7 @@ class ChatApp:
         self._compact_pending = identifier, self._gateway_session_id
         self._compact_deadline = time.monotonic() + 180
         self._queue_request({'type': 'session_compact', 'request_id': identifier, 'group_id': self.group_id,
-                             'session_id': self._gateway_session_id, 'instructions': instructions,
-                             **({'extension_compaction_generation': extension_generation}
-                                if extension_generation is not None else {})})
+                             'session_id': self._gateway_session_id, 'instructions': instructions})
         self._set_activity_status('compacting · Esc cancels')
         self._update_hints()
         self._tui.request_render()
@@ -3420,6 +2172,8 @@ class ChatApp:
 
     def _open_transcript(self, query: str = "", *, tools: bool = False,
                          saved: tuple[str, str] | None = None) -> None:
+        if self._parent_draft_panel is not None:
+            self._close_parent_drafts()
         if self._transcript_panel is not None and saved != self._saved_scope:
             self._close_transcript()
         if self._transcript_panel is not None and isinstance(self._transcript_panel, ToolInventoryPanel) != tools:
@@ -3440,8 +2194,6 @@ class ChatApp:
             self._close_attachment_preview()
         if self._navigation_panel is not None:
             self._close_navigation()
-        if self._review_panel is not None:
-            self._close_review()
         if self._details_open:
             self._close_details()
         self._saved_scope = saved
@@ -3618,13 +2370,14 @@ class ChatApp:
             self._layout.details = panel
             self._tui.set_focus(panel)
         elif isinstance(self._layout.details, OutputPanel):
-            self._layout.details = (self._extension_dialog_panel or self._child_panel or self._plan_panel
+            self._layout.details = (self._extension_dialog_panel or self._parent_draft_panel
+                                    or self._child_panel or self._plan_panel
                     or self._mcp_panel
                 or self._transcript_panel or (
                 self._details_panel if self._details_open else None))
             self._tui.set_focus((self._extension_dialog_panel if self._extension_dialog_panel is not None
-                                    and self._extension_dialog_panel.dialog.get('overlay') is None else None)
-                                    or self._child_panel or self._plan_panel
+                                    else None)
+                                    or self._parent_draft_panel or self._child_panel or self._plan_panel
                     or self._mcp_panel
                                     or self._transcript_panel or self._editor)
         self._update_hints()
@@ -3759,6 +2512,8 @@ class ChatApp:
             self._open_transcript(args)
 
     def _open_attachment_preview(self, item: Attachment) -> None:
+        if self._parent_draft_panel is not None:
+            self._close_parent_drafts()
         if self._transcript_panel is not None:
             self._close_transcript()
         if self._tui.has_overlay():
@@ -3771,8 +2526,6 @@ class ChatApp:
             self._close_attachment_preview()
         if self._navigation_panel is not None:
             self._close_navigation()
-        if self._review_panel is not None:
-            self._close_review()
         if self._details_open:
             self._close_details()
         self._attachment_panel = AttachmentPanel(item, self._close_attachment_preview)
@@ -3783,14 +2536,16 @@ class ChatApp:
 
     def _close_attachment_preview(self) -> None:
         self._attachment_panel = None
-        self._layout.details = (self._navigation_panel or self._review_panel
+        self._layout.details = (self._navigation_panel
                                 or (self._details_panel if self._details_open else None))
-        self._tui.set_focus(self._navigation_panel or self._review_panel
+        self._tui.set_focus(self._navigation_panel
                             or (self._details_panel if self._details_open else self._editor))
         self._update_hints()
         self._tui.request_render()
 
     def _open_navigation(self, scope: str = "sessions") -> None:
+        if self._parent_draft_panel is not None:
+            self._close_parent_drafts()
         if self._child_panel is not None:
             self._close_children()
         if self._transcript_panel is not None:
@@ -3811,8 +2566,6 @@ class ChatApp:
             self._close_plan()
         if self._navigation_panel is not None:
             self._close_navigation()
-        if self._review_panel is not None:
-            self._close_review()
         if self._details_open:
             self._close_details()
         self._navigation_provider = NavigationFeed(self._request_navigation)
@@ -3834,8 +2587,8 @@ class ChatApp:
                                          if value[0] is not provider}
         self._navigation_panel = None
         self._navigation_provider = None
-        self._layout.details = self._review_panel or (self._details_panel if self._details_open else None)
-        self._tui.set_focus(self._review_panel or (self._details_panel if self._details_open else self._editor))
+        self._layout.details = (self._details_panel if self._details_open else None)
+        self._tui.set_focus((self._details_panel if self._details_open else self._editor))
         self._update_hints()
         self._tui.request_render()
 
@@ -3872,9 +2625,8 @@ class ChatApp:
         self._set_waiting(True)
         self._tui.request_render()
 
-    def _name_session(self, args: str, *, selected_name: str | None = None,
-                      expected_name: str | None = None) -> None:
-        if not args and selected_name is None:
+    def _name_session(self, args: str) -> None:
+        if not args:
             if (not self._connection_ready or not self._name_read_supported or self._session_context_stale
                     or not self._gateway_session_id or self._pending_command is not None or self._exit_requested):
                 self._chat_log.add_system('Name inspection requires an updated ready current owner; no cached fallback')
@@ -3897,7 +2649,7 @@ class ChatApp:
             return
         from xdog.agent.session_name import session_name
         try:
-            name = session_name(selected_name if selected_name is not None else '' if args.strip() == '-' else args)
+            name = session_name('' if args.strip() == '-' else args)
         except ValueError as exc:
             self._chat_log.add_system(str(exc))
             self._tui.request_render()
@@ -3912,8 +2664,7 @@ class ChatApp:
         self._session_mutation_id = request_id
         self._pending_command = 'session:' + request_id
         self._queue_request({'type': 'session_control', 'request_id': request_id, 'group_id': self.group_id,
-                             'action': 'rename', 'expected_session': self._gateway_session_id, 'name': name,
-                             **({'expected_name': expected_name} if expected_name is not None else {})})
+                             'action': 'rename', 'expected_session': self._gateway_session_id, 'name': name})
         self._set_waiting(True)
         self._tui.request_render()
 
@@ -4029,8 +2780,6 @@ class ChatApp:
             if request_id != self._session_mutation_id:
                 return
             self._close_navigation()
-            if self._review_panel is not None:
-                self._close_review()
             self._output_epoch += 1
             self._close_transcript()
             self._chat_log.clear_all()
@@ -4039,10 +2788,7 @@ class ChatApp:
             self._state["session_id"] = str(msg.get("session_id", ""))
             self._state["session_name"] = msg.get("session_name", "")
             self._gateway_session_id = self._state["session_id"]
-            self._extension_snapshot = {**self._extension_snapshot,
-                                        "terminal_input": False, "terminal_generation": 0}
-            self._terminal_children = {}
-            self._child_terminal_owner = ""
+            self._extension_snapshot = {**self._extension_snapshot}
             self._session_context_stale = False
             if "model" in msg:
                 self._state["model"] = msg["model"]
@@ -4065,50 +2811,6 @@ class ChatApp:
         self._update_footer()
         self._dispatch_next_pending()
 
-    def _open_review(self) -> None:
-        if self._child_panel is not None:
-            self._close_children()
-        if self._transcript_panel is not None:
-            self._close_transcript()
-        if self._attachment_panel is not None:
-            self._close_attachment_preview()
-        if self._exit_requested:
-            return
-        if self._file_completions is None:
-            self._chat_log.add_system("Repository review needs gateway workspace metadata; no guessed cwd")
-            self._tui.request_render()
-            return
-        if self._tui.has_overlay():
-            self._chat_log.add_system("Close the active dialog before opening repository review")
-            self._tui.request_render()
-            return
-        if self._mcp_panel is not None:
-            self._close_mcp()
-        if self._plan_panel is not None:
-            self._close_plan()
-        if self._navigation_panel is not None:
-            self._close_navigation()
-        if self._review_panel is not None:
-            self._review_backend.refresh() if self._review_backend is not None else None
-            return
-        if self._details_open:
-            self._close_details()
-        self._review_backend = RepositoryReview(self._file_completions.root)
-        self._review_panel = ReviewPanel(self._review_backend, self._close_review)
-        self._layout.details = self._review_panel
-        self._tui.set_focus(self._review_panel)
-        self._update_hints()
-        self._tui.request_render()
-
-    def _close_review(self) -> None:
-        if self._review_backend is not None:
-            self._review_backend.close()
-        self._review_backend = None
-        self._review_panel = None
-        self._layout.details = self._details_panel if self._details_open else None
-        self._tui.set_focus(self._details_panel if self._details_open else self._editor)
-        self._update_hints()
-        self._tui.request_render()
 
     def _close_details(self) -> None:
         self._details_open = False
@@ -4120,15 +2822,12 @@ class ChatApp:
         self._tui.request_render()
 
     def _update_hints(self) -> None:
-        if self._remote_parent_panel is not None:
-            hint = 'Remote parent draft · full review before copy · Esc closes · NOT submission'
-        elif self._outputs.panel is not None:
+        if self._outputs.panel is not None:
             hint = "Output review · Tab path · PgUp/PgDn preview · Enter saves locally · Esc cancels"
-        elif (isinstance(self._extension_dialog_panel, ExtensionCustom) and self._extension_dialog_panel.overlay
-              and not self._extension_dialog_panel.focused):
-            hint = "Background overlay · parent draft editable · Esc/Ctrl+C cancel view · NOT tool approval"
         elif self._extension_dialog_panel is not None:
             hint = "Extension dialog · Enter answers · Esc cancels · NOT tool approval"
+        elif self._parent_draft_panel is not None:
+            hint = "Primary draft · explicit save/restore review · p image preview · Esc cancel · NOT sent"
         elif self._child_panel is not None:
             hint = "Child browser · Enter inspect · n new · c cancel · / search · Esc parent draft"
         elif self._plan_panel is not None:
@@ -4143,8 +2842,6 @@ class ChatApp:
             hint = "Image preview · Esc return to draft · /attachments remove/clear"
         elif self._navigation_panel is not None:
             hint = "Sessions/tree · ↑/↓ select · →/← tree/back · / search · v read-only · Enter activate · Esc close"
-        elif self._review_panel is not None:
-            hint = "Review · ↑/↓ file · n/p hunk · PgUp/PgDn · s/w lane · / filter · r refresh · Esc close"
         elif self._details_open:
             hint = "Details focused · ←/→ entry · PgUp/PgDn scroll · End latest · Esc input"
         elif self._compact_pending is not None:
@@ -4215,19 +2912,11 @@ class ChatApp:
 
     def _handle_escape(self) -> None:
         """Abort once, restore pending text, and quarantine late run events."""
-        panel = self._extension_dialog_panel
-        if (isinstance(panel, ExtensionCustom) and panel.dialog.get('overlay') is not None
-                and panel.dialog.get('live_overlay') and not panel.focused):
-            self._answer_extension_dialog(panel.dialog['id'], None)
-            return  # Cancel this owned background view, not unrelated parent/child work.
         if self._attachment_panel is not None:
             self._close_attachment_preview()
             return
         if self._navigation_panel is not None:
             self._close_navigation()
-            return
-        if self._review_panel is not None:
-            self._close_review()
             return
         if self._details_open:
             self._close_details()
@@ -4264,7 +2953,6 @@ class ChatApp:
 
     def _restore_pending_draft(self, run_id: str, *, runtime: bool = True) -> None:
         """Restore active, queued, and currently typed text exactly once."""
-        self._retire_extension_inputs(run_id)
         if run_id in self._restored_run_ids and not runtime:
             return
         already_restored = run_id in self._restored_run_ids
@@ -4298,8 +2986,7 @@ class ChatApp:
         self._update_queue_summary()
 
     def _draft_write_failures(self) -> tuple[int, ...]:
-        return (self._child_draft_io.failures, self._child_autosave.io.failures,
-                self._parent_drafts.io.failures, self._parent_drafts.autosave.io.failures)
+        return (self._parent_drafts.io.failures, self._parent_drafts.autosave.io.failures)
 
     def _finish_deferred_draft_quit(self) -> bool:
         failures = self._draft_quit_failures
@@ -4317,27 +3004,17 @@ class ChatApp:
         """Request clean exit (matching OpenClaw's requestExit)."""
         if self._exit_requested:
             return
-        self._poll_child_autosave(flush=True)
         self._parent_drafts.poll(self._show_parent_drafts, flush=True)
-        if self._remote_parent_worker is not None and self._remote_parent_worker.is_alive():
-            self._close_remote_parent()
-            if self._draft_quit_failures is None:
-                self._draft_quit_failures = self._draft_write_failures()
-                self._chat_log.add_system('Remote parent decode cleanup settling before quit; no late adoption')
-            return
-        if self._child_draft_io.busy or self._child_autosave.busy or self._parent_drafts.busy:
+        if self._parent_drafts.busy:
             if self._draft_quit_failures is None:
                 self._draft_quit_failures = self._draft_write_failures()
                 self._chat_log.add_system('Saving pending drafts before quitting; storage failure keeps the UI open')
             return
         self._draft_quit_failures = None
-        self._close_remote_parent()
         self._exit_requested = True
+        self._close_parent_drafts()
         self._argument_feed.close()
         self._cancel_name_read(send=False)
-        self._custom_presentation.sync(None, False)
-        self._terminal_input.close()
-        self._editor_actions.invalidate()
         if self._child_panel is not None:
             self._close_children()
         self._composer.close()
@@ -4353,8 +3030,6 @@ class ChatApp:
             self._close_transcript()
         if self._navigation_provider is not None:
             self._navigation_provider.close()
-        if self._review_backend is not None:
-            self._review_backend.close()
         if self._file_completions is not None:
             self._file_completions.close()
         self._artifact_loader.close()
@@ -4762,7 +3437,6 @@ class ChatApp:
         self._tui.request_render()
 
     def _restore_uncertain_inputs(self, owner: str) -> None:
-        self._retire_extension_inputs(owner)
         texts = [item.content for item in self._routed_inputs.values() if item.owner == owner]
         for key, item in tuple(self._routed_inputs.items()):
             if item.owner == owner:
@@ -4801,7 +3475,6 @@ class ChatApp:
                 else:
                     self._chat_log.add_system(str(msg.get("error", "Input rejected")))
             elif action == "remove":
-                self._extension_queued_inputs.pop(input_id, None)
                 self._routed_inputs.pop(input_id, None)
                 self._routed_images.pop(input_id, None)
             else:
@@ -4826,18 +3499,13 @@ class ChatApp:
                 self._tui.request_render()
                 return
             self._routed_inputs.pop(input_id)
-            extension_input = self._extension_queued_inputs.pop(input_id, None)
             images = self._routed_images.pop(input_id, ())
             if kind == "input_consumed":
                 content = self._transformed_inputs.pop(input_id, content)
                 self._chat_log.close_assistant(item.owner)
-                image_count = extension_input[1] if extension_input is not None else len(images)
+                image_count = len(images)
                 self._chat_log.add_user(content + (f"\n[Images: {image_count}]" if image_count else ""))
-                if extension_input is None:
-                    self._editor.add_to_history(content)
-            elif extension_input is not None:
-                self._transformed_inputs.pop(input_id, None)
-                self._chat_log.add_system('Extension input returned without consumption; draft kept, not replayed')
+                self._editor.add_to_history(content)
             else:
                 self._transformed_inputs.pop(input_id, None)
                 self._composer.restore(images)
@@ -4880,9 +3548,6 @@ class ChatApp:
                 return
             if command == "/compact":
                 self._compact_command(args)
-                return
-            if command == "/terminal-input":
-                self._terminal_input.recovery_command(args, self._restore_terminal_text)
                 return
             if command == "/artifact":
                 self._load_command_artifact(args)
@@ -5003,15 +3668,6 @@ class ChatApp:
                     self._chat_log.add_system(str(exc))
                     self._tui.request_render()
                 return
-            if command == "/diff":
-                if args.strip() == "close":
-                    self._close_review()
-                elif args.strip() in {"", "refresh"}:
-                    self._open_review()
-                else:
-                    self._chat_log.add_system("Usage: /diff [refresh|close] — read-only repository changes")
-                    self._tui.request_render()
-                return
             if command in {"/queue", "/steer", "/follow-up"}:
                 if command == "/queue":
                     self._queue_command(args)
@@ -5098,18 +3754,15 @@ class ChatApp:
 
         self._start_message(value, images)
 
-    def _start_message(self, value: str, images: tuple[Attachment, ...], *,
-                       requested_message: dict[str, Any] | None = None) -> None:
+    def _start_message(self, value: str, images: tuple[Attachment, ...]) -> None:
         """Canonical native turn transport, without slash parsing or composer capture."""
         self._clear_todos()  # clear any finalized todos from previous turn
         self._clear_goal()   # clear goal widget from previous turn
         self._active_images = images
-        image_count = requested_message.get("image_count", 0) if requested_message is not None else len(images)
-        if not (requested_message or {}).get('canonical_context'):
-            self._chat_log.add_user(value + (f"\n[Images: {image_count}]" if image_count else ""))
+        image_count = len(images)
+        self._chat_log.add_user(value + (f"\n[Images: {image_count}]" if image_count else ""))
         self._active_run_id = f"run-{uuid.uuid4().hex}"
-        # Extension requests are never restored into the unsent user draft or replayed.
-        self._active_text = value if requested_message is None else None
+        self._active_text = value
         self._aborting_run_id = None
         self._set_waiting(True)
         self._streaming_output_chars = 0
@@ -5118,12 +3771,7 @@ class ChatApp:
         self._queue_request({
             "type": "message",
             "group_id": self._state.get("group_id", "main"),
-            **({'content': value} if requested_message is None else {
-                **({'extension_context_token': requested_message['token'],
-                    'extension_context_generation': requested_message['generation']}
-                   if requested_message.get('canonical_context') else
-                   {'extension_message_token': requested_message['token'],
-                    'extension_message_generation': requested_message['generation']})}),
+            "content": value,
             "run_id": self._active_run_id,
             **({"session_id": self._gateway_session_id} if self._session_controls_supported else {}),
         }, images)
@@ -5144,27 +3792,14 @@ class ChatApp:
     # ── Per-frame polling (matching OpenClaw's event loop) ──
 
     def _poll(self) -> None:
-        self._editor_write_reviews.prune()
-        if self._remote_parent_panel is not None and (not self._remote_parent_alive()
-                or self._remote_parent_deadline and time.monotonic() >= self._remote_parent_deadline):
-            self._close_remote_parent()
-        if self._remote_parent_worker is None or not self._remote_parent_worker.is_alive():
-            self._remote_parent_receiver.poll()
-            if self._remote_parent_panel is None:
-                self._remote_parent_receiver.close()
-        self._child_draft_io.poll(self._finish_child_draft_io)
-        self._poll_child_autosave()
-        self._parent_drafts.poll(self._show_parent_drafts)
+        self._poll_parent_drafts()
         if self._finish_deferred_draft_quit():
             return
-        draft_states = (('parent', self._parent_drafts.autosave.durability),
-                        ('child', self._child_autosave.durability))
-        durability = ' · '.join(f'{kind} draft:{state}' for kind, state in draft_states
-                                if state not in {'off', 'empty'})
+        draft_state = self._parent_drafts.autosave.durability
+        durability = f'parent draft:{draft_state}' if draft_state not in {'off', 'empty'} else ''
         draft_changed = self._footer.set_durability(durability)
         changed = bool(self._recv_queue.drain(self._handle_response))
         changed = draft_changed or changed
-        changed = self._terminal_input.poll() or changed
         changed = self._editor.poll_autocomplete() or changed
         if self._transcript_panel is not None:
             if self._source_request_id is not None and time.monotonic() >= self._source_deadline:
@@ -5207,8 +3842,6 @@ class ChatApp:
                 self._transcript_panel.invalidate_inventory('Tool inventory timed out; r retries explicitly')
         if self._extension_dialog_queue or self._extension_dialog_panel is not None:
             self._sync_extension_dialog()
-            if isinstance(self._extension_dialog_panel, ExtensionCustom):
-                changed = self._extension_dialog_panel.poll() or changed
         if self._child_panel is not None:
             if self._child_context != self._mcp_context_key():
                 self._close_children()
@@ -5230,8 +3863,6 @@ class ChatApp:
         self._sync_output_panel()
         if self._navigation_panel is not None:
             changed = self._navigation_panel.poll() or changed
-        if self._review_panel is not None:
-            changed = self._review_panel.poll() or changed
 
         if self._waiting and self._status_started is not None:
             previous_status = self._footer.text
@@ -5300,6 +3931,10 @@ class ChatApp:
     def _handle_response(self, msg: Mapping[str, Any]) -> None:
         msg = thaw_event(msg)
         msg_type = msg.get("type")
+        if msg_type in {'extension_dialog', 'child_extension_dialog'}:
+            question = msg.get('dialog')
+            if not isinstance(question, dict) or not self._extension_stack.accepts(question, []):
+                return  # Removed extension controls cannot touch a successor owner or draft.
         if msg_type in {"output_prepared", "output_done", "output_failed"}:
             self._outputs.handle(msg)
             self._sync_output_panel()
@@ -5318,53 +3953,10 @@ class ChatApp:
             generation = int(msg["generation"])
             if generation <= self._connection_generation:
                 return
-            self._terminal_input.invalidate()
-            self._terminal_supported = False
-            self._terminal_owner = ""
-            self._terminal_child_supported = False
-            self._terminal_children = {}
-            self._child_terminal_owner = ""
-            self._close_remote_parent()
-            self._remote_parent_caps = {}
-            self._extension_active_tools_supported = False
-            self._extension_tools_after_run_supported = False
-            self._extension_tools_after_run_generation = 0
-            self._extension_compaction_supported = False
-            self._extension_compaction_generation = 0
-            self._extension_compaction_after_run_supported = False
-            self._extension_compaction_after_run_generation = 0
-            self._extension_message_supported = False
-            self._extension_message_generation = 0
-            self._extension_message_images_supported = False
-            self._extension_message_images_generation = 0
             self._extension_provider_auth_supported = False
             self._extension_provider_auth_generation = 0
             self._extension_auth_owner = None
-            self._extension_queued_inputs_supported = False
-            self._extension_queued_inputs_generation = 0
-            self._child_queued_inputs_supported = False
-            self._child_queued_inputs_generation = 0
-            self._child_queued_inputs_owner = ""
-            self._child_extension_inputs.clear()
-            self._extension_editor_write_supported = False
-            self._extension_editor_write_generation = 0
-            self._extension_editor_write_owner = ''
-            self._editor_write_reviews.clear()
             self._connection_generation = generation
-            self._mcp_elicitation_supported = False
-            self._mcp_elicitation_servers.clear()
-            self._mcp_elicitation_requests.clear()
-            if self._mcp_panel is not None and self._mcp_panel.elicitation_review is not None:
-                self._mcp_panel.elicitation_review.disable('Elicitation connection changed; no replay')
-            self._mcp_sampling_supported = False
-            self._mcp_sampling_servers.clear()
-            self._mcp_sampling_requests.clear()
-            if self._mcp_panel is not None and self._mcp_panel.sampling_review is not None:
-                self._mcp_panel.sampling_review.disable('Sampling connection changed; no replay')
-            self._mcp_roots_supported = False
-            self._mcp_root_requests.clear()
-            if self._mcp_panel is not None and self._mcp_panel.roots_review is not None:
-                self._mcp_panel.roots_review.invalidate()
             self._tools_request = ''
             self._tools_deadline = 0.0
             self._tool_inventory_supported = False
@@ -5388,8 +3980,6 @@ class ChatApp:
             self._child_images_supported = False
             self._child_image_recovery_supported = False
             self._child_task_recovery_supported = False
-            self._child_return_supported = False
-            self._child_return_owner = ''
             self._child_queue_owners.clear()
             self._child_recovery_ready.clear()
             self._child_source_supported = False
@@ -5401,9 +3991,7 @@ class ChatApp:
             self._plan_supported = False
             if self._plan_panel is not None:
                 self._close_plan()
-            self._extension_navigation = None
-            self._extension_navigation_review = None
-            self._extension_editor_owner = None
+            self._extension_command_owner = None
             self._extension_pending = None
             self._extension_auth_owner = None
             self._extension_cancel_scope = None
@@ -5413,7 +4001,6 @@ class ChatApp:
             self._native_models_supported = False
             self._reasoning_pending = None
             self._reasoning_supported = False
-            self._custom_presentation.sync(None, False)
             self._extension_dialog_queue.clear()
             self._extension_stack.clear()
             self._extension_dialog_panel = None
@@ -5443,8 +4030,6 @@ class ChatApp:
             return
         event_generation = msg.get("_connection_generation")
         if event_generation is not None and event_generation != self._connection_generation:
-            return
-        if self._remote_parent_response(msg):
             return
         if msg_type in {"mcp_resource_watch_result", "mcp_resource_watch_notice"}:
             if (self._mcp_panel is None or msg.get("view") != self._mcp_watch_view
@@ -5508,57 +4093,6 @@ class ChatApp:
                     "\n".join(str(row.get("id", "")) for row in msg.get("models", []) if isinstance(row, dict)))
                 self._update_header()
                 self._update_footer()
-            self._tui.request_render()
-            return
-        if msg_type == "child_terminal_registry":
-            child, token = msg.get("child_id"), msg.get("child_owner")
-            if (not self._terminal_child_supported or msg.get("terminal_owner") != self._terminal_owner
-                    or msg.get("group_id") != self.group_id or msg.get("session_id") != self._gateway_session_id
-                    or not isinstance(child, str) or re.fullmatch(r"[a-f0-9]{12}", child) is None
-                    or not isinstance(token, str) or re.fullmatch(r"[a-f0-9]{32}", token) is None
-                    or self._child_terminal_owner and token != self._child_terminal_owner):
-                return
-            info = msg.get("terminal")
-            rows: dict[str, Any]
-            if msg.get("closing") is True:
-                if (not isinstance(info, dict) or info.get("active") is not False
-                        or type(info.get("generation")) is not int
-                        or not 0 <= info["generation"] <= 2**53):
-                    return
-                rows = {key: value for key, value in self._terminal_children.items() if key != child}
-            else:
-                rows = {**self._terminal_children, child: info}
-            self._accept_child_terminal_metadata({"terminal_children": rows, "child_terminal_owner": token})
-            return
-        if msg_type == "terminal_input_result":
-            self._terminal_input_result(msg)
-            return
-        if msg_type == 'extension_name_after_run':
-            if (msg.get('group_id') == self.group_id and msg.get('session_id') == self._gateway_session_id
-                    and msg.get('name_after_run_generation') == self._extension_name_after_run_generation):
-                self._chat_log.add_system('Reviewed name proposal: ' + str(msg.get('status', 'unknown')))
-            return
-        if msg_type == 'extension_active_tools_after_run':
-            if (msg.get('group_id') == self.group_id and msg.get('session_id') == self._gateway_session_id
-                    and self._extension_tools_after_run_supported
-                    and msg.get('active_tools_after_run_generation') == self._extension_tools_after_run_generation):
-                self._chat_log.add_system('Extension tool selection: ' + str(msg.get('status', 'unknown')))
-                self._tui.request_render()
-            return
-        if msg_type == 'extension_compaction_after_run':
-            if (msg.get('group_id') != self.group_id or msg.get('session_id') != self._gateway_session_id
-                    or not self._extension_compaction_after_run_supported
-                    or msg.get('compaction_after_run_generation') != self._extension_compaction_after_run_generation):
-                return
-            if msg.get('status') == 'started':
-                key = msg.get('request_id')
-                if not isinstance(key, str) or re.fullmatch('extcompact-[a-f0-9]{32}', key) is None:
-                    return
-                self._compact_pending = key, self._gateway_session_id
-                self._compact_deadline = time.monotonic() + 600
-                self._set_activity_status('compacting after original run · Esc cancels')
-                self._update_hints()
-            self._chat_log.add_system('Extension compaction: ' + str(msg.get('status', 'unknown')))
             self._tui.request_render()
             return
         if msg_type == 'session_compact_result':
@@ -5650,48 +4184,6 @@ class ChatApp:
                 inventory_panel.invalidate_inventory('Inventory unavailable · r retries explicitly')
             self._tui.request_render()
             return
-        if msg_type in {'extension_custom_control', 'child_extension_custom_control'}:
-            item = next((item for item in self._extension_dialog_queue if item['id'] == msg.get('id')), None)
-            if (item is None or item.get('kind') != 'custom' or not item.get('live_overlay')
-                    or not self._extension_custom_live_overlay_supported or msg.get('group_id') != self.group_id
-                    or msg.get('session_id') != self._gateway_session_id):
-                return
-            if msg_type.startswith('child_'):
-                if (msg.get('child_id') != item.get('child_id') or msg.get('child_owner') != item.get('child_owner')):
-                    return
-            elif item.get('child_id'):
-                return
-            panel = self._extension_stack.panels.get(item['id'])
-            from xdog.tui.components.extension_custom import overlay_state
-            previous_overlay = item.get('overlay_state')
-            overlay_update = overlay_state(msg.get('state'),
-                previous_overlay.get('sequence', 0) if isinstance(previous_overlay, dict) else 0)
-            if overlay_update is None:
-                return
-            item['overlay_state'] = overlay_update
-            if isinstance(panel, ExtensionCustom):
-                panel.accept_control(overlay_update)
-            self._sync_extension_dialog()
-            self._update_hints()
-            self._tui.request_render()
-            return
-        if msg_type in {"extension_custom_frame", "extension_custom_error", "extension_custom_ack",
-                        "child_extension_custom_frame", "child_extension_custom_error", "child_extension_custom_ack"}:
-            panel = self._extension_dialog_panel
-            if (not isinstance(panel, ExtensionCustom) or msg.get("id") != panel.dialog["id"]
-                    or msg.get("group_id") != self.group_id or msg.get("session_id") != self._gateway_session_id):
-                return
-            if msg_type.startswith("child_"):
-                if (msg.get("child_id") != panel.dialog.get("child_id")
-                        or msg.get("child_owner") != panel.dialog.get("child_owner")):
-                    return
-            elif panel.dialog.get("child_id"):
-                return
-            if msg_type.endswith("_error"):
-                self._chat_log.add_system("Extension custom rendering/input failed; view canceled")
-            if panel.accept(msg):
-                self._tui.request_render()
-            return
         if msg_type in {"child_extension_dialog", "child_extension_dialog_closed"}:
             if (not isinstance(msg.get("child_id"), str) or not re.fullmatch(r"[a-f0-9]{12}", msg["child_id"])
                     or not isinstance(msg.get("child_owner"), str)
@@ -5717,24 +4209,9 @@ class ChatApp:
                     dialog = validate_dialog(msg.get("dialog"))
                 except (ValueError, TypeError):
                     return
-                if (dialog["kind"] == "form" and (not self._extension_forms_supported
-                        or multi_choice_form(dialog) and not self._extension_multi_forms_supported)
-                        or dialog["kind"] == "custom" and (not self._extension_custom_supported
-                            or custom_rich(dialog) and not self._extension_custom_rich_supported
-                            or dialog.get("overlay") is not None and not self._extension_custom_overlay_supported
-                            or dialog.get("live_overlay") and not self._extension_custom_live_overlay_supported)):
-                    self._queue_request({"type": "child_extension_dialog_answer", "id": dialog["id"], "value": None,
-                        "group_id": self.group_id, "session_id": msg["session_id"], "child_id": msg["child_id"],
-                        "child_owner": msg["child_owner"]})
-                    self._chat_log.add_system("Updated custom-view gateway required; dialog canceled"
-                        if dialog["kind"] == "custom" else "Updated typed-form gateway required; dialog canceled")
-                    return
                 item = {**dialog, "extension": str(msg.get("extension", "")), "child_id": msg["child_id"],
                         "child_owner": msg["child_owner"], "session_id": msg["session_id"]}
-                if item.get("operation") == "queue_input":
-                    item["_child_queue_generation"] = msg.get("child_queued_input_generation")
-                if (item.get("parent_id") and not self._extension_custom_nested_supported
-                        or not self._extension_stack.accepts(item, self._extension_dialog_queue)):
+                if not self._extension_stack.accepts(item, self._extension_dialog_queue):
                     self._queue_request({"type": "child_extension_dialog_answer", "id": item["id"], "value": None,
                         "group_id": self.group_id, "session_id": item["session_id"], "child_id": item["child_id"],
                         "child_owner": item["child_owner"]})
@@ -5752,35 +4229,6 @@ class ChatApp:
             self._update_hints()
             self._tui.request_render()
             return
-        if msg_type in {'extension_editor_write_commit', 'extension_editor_write_discard',
-                        'child_extension_editor_write_commit', 'child_extension_editor_write_discard'}:
-            identity = msg.get('editor_write', {})
-            if not isinstance(identity, dict):
-                return
-            if (not self._extension_editor_write_supported or not self._connection_ready
-                    or msg.get('group_id') != self.group_id or msg.get('session_id') != self._gateway_session_id
-                    or type(msg.get('editor_write_generation')) is not int
-                    or msg['editor_write_generation'] != self._extension_editor_write_generation
-                    or identity.get('child_id', '') != msg.get('child_id', '')
-                    or bool(identity.get('child_id')) != msg_type.startswith('child_')
-                    or msg_type.startswith('child_') and msg.get('child_owner') != self._extension_editor_write_owner):
-                self._editor_write_reviews.discard(dict(msg))
-                return
-            if msg_type.endswith('_commit'):
-                applied = self._editor_write_reviews.apply(dict(msg))
-                self._chat_log.add_system('Reviewed editor text applied; nothing sent' if applied else
-                                          'Reviewed editor proposal discarded; original draft/owner changed')
-            else:
-                self._editor_write_reviews.discard(dict(msg))
-            self._tui.request_render()
-            return
-        if msg_type == "extension_dialog_accepted":
-            self._accept_extension_navigation(msg)
-            return
-        if msg_type == "extension_dialog_closed":
-            review = self._extension_navigation_review
-            if review is not None and msg.get("id") == review[2]["id"]:
-                self._extension_navigation_review = None
         if msg_type in {"extension_dialog", "extension_dialog_closed"}:
             if msg.get("group_id") != self.group_id:
                 return
@@ -5808,35 +4256,10 @@ class ChatApp:
                     item["session_id"] = self._gateway_session_id
                     if item.get('operation') == 'commands':
                         item.update(_command_menu_run=msg.get('run_id'), _command_menu_command=msg.get('request_id'))
-                    if item.get('operation') == 'context_message':
-                        item['_context_message_generation'] = msg.get('context_message_generation')
-                        if (not self._extension_context_messages_supported
-                                or type(item['_context_message_generation']) is not int
-                                or item['_context_message_generation'] != self._extension_context_messages_generation):
-                            self._queue_request({'type': 'extension_dialog_answer', 'id': item['id'], 'value': None,
-                                'group_id': self.group_id, 'session_id': self._gateway_session_id})
-                            return
-                    if item.get("operation") == "queue_input":
-                        item.update(_queue_generation=msg.get("queued_input_generation"), _queue_run=msg.get("run_id"))
-                    if item.get("operation") == "propose":
-                        item.update(_editor_write_command=msg.get("request_id"),
-                                    _editor_write_run=msg.get("run_id"))
-                    if (item["kind"] == "form" and (not self._extension_forms_supported
-                            or multi_choice_form(item) and not self._extension_multi_forms_supported)
-                            or item["kind"] == "custom" and (not self._extension_custom_supported
-                                or custom_rich(item) and not self._extension_custom_rich_supported
-                                or item.get("overlay") is not None and not self._extension_custom_overlay_supported
-                                or item.get("live_overlay") and not self._extension_custom_live_overlay_supported)):
-                        self._queue_request({"type": "extension_dialog_answer", "id": item["id"], "value": None,
-                                             "group_id": self.group_id, "session_id": self._gateway_session_id})
-                        self._chat_log.add_system("Updated custom-view gateway required; dialog canceled"
-                            if item["kind"] == "custom" else "Updated typed-form gateway required; dialog canceled")
-                        return
                 except (ValueError, TypeError):
                     self._chat_log.add_system("Invalid extension dialog ignored")
                     return
-                if (item.get("parent_id") and not self._extension_custom_nested_supported
-                        or not self._extension_stack.accepts(item, self._extension_dialog_queue)):
+                if not self._extension_stack.accepts(item, self._extension_dialog_queue):
                     self._queue_request({"type": "extension_dialog_answer", "id": item["id"], "value": None})
                     return
                 if not any(row["id"] == item["id"] for row in self._extension_dialog_queue):
@@ -5896,8 +4319,6 @@ class ChatApp:
                     try:
                         self._extension_snapshot = validate_snapshot(msg["snapshot"])
                     except (ValueError, TypeError):
-                        self._terminal_supported = False
-                        self._terminal_input.invalidate()
                         self._chat_log.add_system("Invalid extension snapshot ignored")
                 for notice in msg.get("notices", [])[:8]:
                     self._chat_log.add_system(str(notice))
@@ -5912,26 +4333,6 @@ class ChatApp:
                         self._chat_log.add_system("Invalid/unnegotiated extension command artifact rejected")
                 else:
                     self._chat_log.add_system(str(msg.get("output") or json.dumps(self._extension_snapshot)))
-                selection = msg.get('active_tool_selection')
-                if isinstance(selection, dict) and type(selection.get('applied')) is bool:
-                    self._chat_log.add_system('Active tool selection applied; permissions unchanged'
-                        if selection['applied'] else 'Active tool selection not applied; owner/inventory changed')
-            if msg.get('context_pending') is True and msg.get('success') is True:
-                # Result delivery permits commit, but UI stays busy until owned disk settles.
-                self._extension_pending = extension_pending
-                self._context_results[extension_pending[0]] = (
-                    self._gateway_session_id, self._mcp_context_key(), self._extension_context_messages_generation)
-                if len(self._context_results) > 8:
-                    self._context_results.pop(next(iter(self._context_results)))
-            can_finish = msg.get('success') is True
-            if self._extension_navigation is not None and self._extension_navigation[2]['action'] == 'compact':
-                can_finish = can_finish and msg.get('compaction_queued') is True
-            if self._extension_navigation is not None and self._extension_navigation[2]['action'] == 'message':
-                can_finish = can_finish and msg.get('message_queued') is True
-            if self._finish_extension_navigation(extension_pending[0], can_finish, msg.get('message_delivery')):
-                self._extension_browser = None
-            else:
-                self._finish_extension_browser(extension_pending[0], msg.get("success") is True)
             self._tui.request_render()
             return
         if msg_type in {"child_source_ready", "child_source_failed", "child_source_progress", "child_source_loading"}:
@@ -5964,6 +4365,8 @@ class ChatApp:
                     self._child_panel.complete('queue', str(msg.get('error', 'Child image copy failed')))
             return
         if msg_type == "child_result":
+            if 'child_return_owner' in msg or 'queue_view' in msg:
+                return  # Removed live-return receipts cannot settle a current native request.
             request_id = str(msg.get("request_id", ""))
             recovered_bytes = self._child_recovery_ready.pop(request_id, None)
             queue_owner = self._child_queue_owners.pop(request_id, '')
@@ -5978,12 +4381,6 @@ class ChatApp:
             if queue_owner and (self._child_panel is None or self._child_panel.queue is None
                                 or self._child_panel.queue.owner_token != queue_owner):
                 return  # Late replies cannot adopt/cancel a replacement queue view's draft.
-            if msg.get('child_return_owner') is not None and (
-                    not self._child_return_supported or msg['child_return_owner'] != self._child_return_owner
-                    or msg.get('queue_view') != queue_owner):
-                if self._child_panel is not None:
-                    self._child_panel.complete('queue', 'Return connection/view changed; backup retained')
-                return
             if not msg.get("success"):
                 self._chat_log.add_system("Child control failed: " + str(msg.get("error", "unknown error")))
                 if browser_job and self._child_panel is not None:
@@ -6004,7 +4401,6 @@ class ChatApp:
                     self._gateway_session_id = actual
                     self._state["session_id"] = actual
                     self._output_epoch += 1
-                self._accept_child_terminal_metadata(msg)
                 if browser_job and self._child_panel is not None:
                     self._child_context = self._mcp_context_key()
                     try:
@@ -6017,7 +4413,7 @@ class ChatApp:
                             queue_data = msg['data'].get('queue')
                             if (isinstance(queue_data, dict) and 'image_receipt' in queue_data
                                     and 'returned' not in queue_data):
-                                source_row = queue_data.get('recovered') or queue_data.get('return_prepared') or {}
+                                source_row = queue_data.get('recovered') or {}
                                 if (recovered_bytes is None or recovered_bytes.get('receipt')
                                         != queue_data['image_receipt']
                                         or recovered_bytes.get('queue_revision') != queue_data.get('revision')
@@ -6043,12 +4439,13 @@ class ChatApp:
                 elif child_pending[0] == "start":
                     try:
                         roster = child_entries(msg["data"])
-                        child = next(row for row in roster if row.id == msg["data"].get("child_id"))
+                        started_child = next(row for row in roster if row.id == msg["data"].get("child_id"))
                     except (ValueError, TypeError, StopIteration):
                         self._chat_log.add_system("Invalid child start receipt; inspect roster before retrying")
                     else:
                         self._chat_log.add_system(
-                            f"Child {child.id} started ({child.access}); /agents inspect {child.id}")
+                            f"Child {started_child.id} started ({started_child.access}); "
+                            f"/agents inspect {started_child.id}")
                 else:
                     self._chat_log.add_system(json.dumps(msg["data"], indent=2, ensure_ascii=True))
             if browser_job and self._child_panel is not None and not msg.get("success"):
@@ -6110,118 +4507,6 @@ class ChatApp:
         if msg_type == "mcp_data_failed":
             if msg.get("request_id") == self._mcp_active:
                 self._mcp_publish(self._mcp_action, error=str(msg.get("error", "MCP read failed")))
-            return
-        if msg_type == 'mcp_elicitation_result':
-            elicitation_id = str(msg.get('request_id', ''))
-            operation = self._mcp_elicitation_requests.pop(elicitation_id, None)
-            if (operation is None or msg.get('group_id') != self.group_id
-                    or msg.get('session_id') != self._gateway_session_id
-                    or msg.get('view') != self._mcp_auth_lease or self._mcp_panel is None
-                    or not self._mcp_elicitation_supported or self._mcp_owner_context != self._mcp_context_key()):
-                return
-            if not msg.get('success'):
-                server = str(msg.get('server', ''))
-                self._mcp_elicitation_servers.discard(server)
-                elicitation_review = self._mcp_panel.elicitation_review
-                if elicitation_review is not None:
-                    elicitation_review.disable('Elicitation control refused; inspect owner, no replay')
-                if server:
-                    self._queue_request({'type': 'mcp_elicitation_control', 'action': 'detach', 'server': server,
-                        'request_id': 'elicitation-detach-' + uuid.uuid4().hex, 'group_id': self.group_id,
-                        'session_id': self._gateway_session_id, 'view': self._mcp_auth_lease})
-            # An answer ack must not unbusy a newer input/output review that
-            # raced it on the connection. Reviews own their own lifecycle.
-            if operation == 'elicitation_answer' and msg.get('success'):
-                return  # Review/closed events own progress; an ack cannot overwrite completed status.
-            if operation != 'elicitation_answer' or self._mcp_panel.elicitation_review is None:
-                self._mcp_publish(operation, msg,
-                                  '' if msg.get('success') else str(msg.get('error', 'Elicitation refused')))
-            return
-        if msg_type == 'mcp_elicitation_event':
-            if (not self._mcp_elicitation_supported or not self._connection_ready or self._mcp_panel is None
-                    or msg.get('group_id') != self.group_id or msg.get('session_id') != self._gateway_session_id
-                    or msg.get('view') != self._mcp_auth_lease or self._mcp_owner_context != self._mcp_context_key()):
-                return
-            value = msg.get('event')
-            if not isinstance(value, dict) or value.get('server') not in self._mcp_elicitation_servers:
-                return
-            if value.get('type') in {'elicitation_url_pending', 'elicitation_url_complete'}:
-                self._chat_log.add_system(str(value.get('notice', 'URL elicitation notice')))
-                self._tui.request_render()
-                return
-            if value.get('type') == 'elicitation_closed':
-                self._mcp_panel.elicitation_closed(str(value.get('id', '')))
-            else:
-                try:
-                    if (self._extension_dialog_panel is not None or self._child_panel is not None
-                            or self._tui.has_overlay()):
-                        raise ValueError('Protected host focus unavailable')
-                    self._mcp_panel.publish_elicitation(value)
-                except (ValueError, TypeError):
-                    self._mcp_send('elicitation_off', str(value.get('server', '')), '', {})
-                    self._mcp_panel._busy = False
-                    self._mcp_panel._message = 'Elicitation review unavailable; canceled, no replay'
-            self._tui.request_render()
-            return
-        if msg_type == 'mcp_sampling_result':
-            sampling_id = str(msg.get('request_id', ''))
-            operation = self._mcp_sampling_requests.pop(sampling_id, None)
-            if (operation is None or msg.get('group_id') != self.group_id
-                    or msg.get('session_id') != self._gateway_session_id
-                    or msg.get('view') != self._mcp_auth_lease or self._mcp_panel is None
-                    or not self._mcp_sampling_supported or self._mcp_owner_context != self._mcp_context_key()):
-                return
-            if not msg.get('success'):
-                server = str(msg.get('server', ''))
-                self._mcp_sampling_servers.discard(server)
-                sampling_review = self._mcp_panel.sampling_review
-                if sampling_review is not None:
-                    sampling_review.disable('Sampling control refused; inspect owner, no replay')
-                if server:
-                    self._queue_request({'type': 'mcp_sampling_control', 'action': 'detach', 'server': server,
-                        'request_id': 'sampling-detach-' + uuid.uuid4().hex, 'group_id': self.group_id,
-                        'session_id': self._gateway_session_id, 'view': self._mcp_auth_lease})
-            # An answer ack must not unbusy a newer input/output review that
-            # raced it on the connection. Reviews own their own lifecycle.
-            if operation == 'sampling_answer' and msg.get('success'):
-                return  # Review/closed events own progress; an ack cannot overwrite completed status.
-            if operation != 'sampling_answer' or self._mcp_panel.sampling_review is None:
-                self._mcp_publish(operation, msg,
-                                  '' if msg.get('success') else str(msg.get('error', 'Sampling refused')))
-            return
-        if msg_type == 'mcp_sampling_event':
-            if (not self._mcp_sampling_supported or not self._connection_ready or self._mcp_panel is None
-                    or msg.get('group_id') != self.group_id or msg.get('session_id') != self._gateway_session_id
-                    or msg.get('view') != self._mcp_auth_lease or self._mcp_owner_context != self._mcp_context_key()):
-                return
-            value = msg.get('event')
-            if not isinstance(value, dict) or value.get('server') not in self._mcp_sampling_servers:
-                return
-            if value.get('type') == 'sampling_closed':
-                self._mcp_panel.sampling_closed(str(value.get('id', '')))
-            else:
-                try:
-                    if (self._extension_dialog_panel is not None or self._child_panel is not None
-                            or self._tui.has_overlay()):
-                        raise ValueError('Protected host focus unavailable')
-                    self._mcp_panel.publish_sampling(value, tuple(msg.get('models', ())))
-                except (ValueError, TypeError):
-                    self._mcp_send('sampling_off', str(value.get('server', '')), '', {})
-                    self._mcp_panel._busy = False
-                    self._mcp_panel._message = 'Sampling review unavailable; canceled, no replay'
-            self._tui.request_render()
-            return
-        if msg_type == 'mcp_roots_result':
-            root_identifier = str(msg.get('request_id', ''))
-            if root_identifier not in self._mcp_root_requests:
-                return
-            self._mcp_root_requests.discard(root_identifier)
-            if (root_identifier != self._mcp_active or msg.get('group_id') != self.group_id
-                    or msg.get('view') != self._mcp_auth_lease or not self._mcp_panel
-                    or not self._mcp_roots_supported or self._mcp_owner_context != self._mcp_context_key()):
-                return
-            self._mcp_publish(self._mcp_action, msg.get('data', {}),
-                              '' if msg.get('success') else str(msg.get('error', 'Root disclosure unavailable')))
             return
         if msg_type == "mcp_auth_result":
             request_id = str(msg.get("request_id", ""))
@@ -6290,66 +4575,11 @@ class ChatApp:
             if run_id != self._active_run_id or run_id == self._aborting_run_id:
                 return
 
-        if msg_type in {'child_extension_input_queued', 'child_extension_input_consumed',
-                        'child_extension_input_returned'}:
-            key, child, session, token = (msg.get('id'), msg.get('child_id'),
-                                          msg.get('session_id'), msg.get('child_owner'))
-            if (not isinstance(key, str) or re.fullmatch('extq-[a-f0-9]{32}', key) is None
-                    or not isinstance(child, str) or not isinstance(session, str) or not isinstance(token, str)
-                    or msg.get('group_id') != self.group_id or session != self._gateway_session_id):
-                return
-            if msg_type == 'child_extension_input_queued':
-                if (not self._child_queued_inputs_supported or token != self._child_queued_inputs_owner
-                        or type(msg.get('child_queued_input_generation')) is not int
-                        or msg['child_queued_input_generation'] != self._child_queued_inputs_generation):
-                    return
-                self._child_extension_inputs[key] = child, session, token
-                self._chat_log.add_system(f'Child {child}: extension input {key} queued, not consumed')
-            elif self._child_extension_inputs.pop(key, None) == (child, session, token):
-                self._chat_log.add_system(f'Child {child}: extension input {key} '
-                    + ('consumed' if msg_type.endswith('_consumed') else
-                       'returned without replay; inspect this child’s queue/history'))
-            panel = self._child_panel
-            if panel is not None and panel.queue is not None and panel.queue.child == child:
-                panel.queue.refresh()
-            self._tui.request_render()
-            return
-        if msg_type == 'extension_input_queued':
-            key, run, count = msg.get('id'), msg.get('run_id'), msg.get('image_count')
-            if (not isinstance(key, str) or re.fullmatch('extq-[a-f0-9]{32}', key) is None
-                    or run != self._active_run_id or msg.get('group_id') != self.group_id
-                    or msg.get('session_id') != self._gateway_session_id
-                    or type(msg.get('success')) is not bool or type(count) is not int or not 0 <= count <= 4
-                    or msg.get('delivery') not in {'steer', 'follow_up'} or not isinstance(msg.get('content'), str)
-                    or len(msg['content'].encode()) > 17000):
-                return
-            if (msg['success'] and self._extension_queued_inputs_supported and self._connection_ready
-                    and type(msg.get('queued_input_generation')) is int
-                    and msg['queued_input_generation'] == self._extension_queued_inputs_generation):
-                if key not in self._routed_inputs:
-                    self._routed_inputs[key] = QueueEntry(key, msg['content'], msg['delivery'], 'accepted', str(run))
-                    self._extension_queued_inputs[key] = str(run), count
-                    self._chat_log.add_system(f'Extension input {key} queued; not yet consumed')
-            else:
-                self._extension_queued_inputs.pop(key, None)
-                self._routed_inputs.pop(key, None)
-                self._chat_log.add_system('Extension queue admission failed/withdrawn; no replay or draft change')
-            self._update_queue_summary()
-            self._tui.request_render()
-            return
         if msg_type in {"input_transformed", "input_rejected", "input_handled"}:
             run = str(msg.get("run_id", ""))
             if run != self._active_run_id or msg.get("group_id") != self.group_id:
                 return
             key = str(msg.get("id", ""))
-            if key in self._extension_queued_inputs and msg_type in {'input_handled', 'input_rejected'}:
-                self._extension_queued_inputs.pop(key, None)
-                self._routed_inputs.pop(key, None)
-                self._transformed_inputs.pop(key, None)
-                self._chat_log.add_system('Extension input not admitted to model; original draft/images kept')
-                self._update_queue_summary()
-                self._tui.request_render()
-                return
             if msg_type == "input_handled":
                 if key:
                     self._routed_inputs.pop(key, None)
@@ -6407,46 +4637,6 @@ class ChatApp:
             self._tui.request_render()
             return
         if msg_type == "pong":
-            owner, parent_generation = msg.get('parent_draft_owner'), msg.get('parent_draft_generation')
-            caps = {key: msg.get(key, 0) for key in ('parent_saved_drafts', 'parent_saved_images',
-                                                                 'parent_saved_save', 'parent_saved_discard',
-                                                                 'parent_saved_uploads')}
-            if (any(type(value) is not int or value not in (0, 1) for value in caps.values())
-                    or not isinstance(owner, str) or re.fullmatch(r'[a-f0-9]{32}', owner) is None
-                    or type(parent_generation) is not int or parent_generation < 0):
-                caps = {}
-            else:
-                caps.update(parent_draft_owner=owner, parent_draft_generation=parent_generation)
-            if caps != self._remote_parent_caps:
-                self._close_remote_parent()
-            self._remote_parent_caps = caps
-            self._extension_active_tools_supported = (type(msg.get("extension_active_tools")) is int
-                                                       and msg["extension_active_tools"] == 1)
-            tools_after_generation = msg.get('active_tools_after_run_generation', -1)
-            self._extension_tools_after_run_generation = (tools_after_generation
-                if type(tools_after_generation) is int else -1)
-            self._extension_tools_after_run_supported = (type(msg.get('extension_active_tools_after_run')) is int
-                and msg['extension_active_tools_after_run'] == 1 and self._extension_tools_after_run_generation >= 0)
-            self._extension_compaction_supported = (type(msg.get('extension_compaction')) is int
-                                                     and msg['extension_compaction'] == 1)
-            child_queue_generation = msg.get('child_extension_queued_inputs_generation', -1)
-            child_queue_owner = msg.get('child_extension_queued_inputs_owner', '')
-            self._child_queued_inputs_supported = (type(msg.get('child_extension_queued_inputs')) is int
-                and msg['child_extension_queued_inputs'] == 1 and type(child_queue_generation) is int
-                and child_queue_generation >= 0 and isinstance(child_queue_owner, str)
-                and re.fullmatch('[a-f0-9]{32}', child_queue_owner) is not None)
-            self._child_queued_inputs_generation = (child_queue_generation
-                                                    if type(child_queue_generation) is int else -1)
-            self._child_queued_inputs_owner = child_queue_owner if self._child_queued_inputs_supported else ''
-            context_generation = msg.get('extension_context_messages_generation', -1)
-            self._extension_context_messages_supported = (type(msg.get('extension_context_messages')) is int
-                and msg['extension_context_messages'] == 1 and type(context_generation) is int
-                and context_generation >= 0)
-            self._extension_context_messages_generation = context_generation if type(context_generation) is int else -1
-            queue_generation = msg.get('extension_queued_inputs_generation', -1)
-            self._extension_queued_inputs_supported = (type(msg.get('extension_queued_inputs')) is int
-                and msg['extension_queued_inputs'] == 1 and type(queue_generation) is int and queue_generation >= 0)
-            self._extension_queued_inputs_generation = queue_generation if type(queue_generation) is int else -1
             auth_generation = msg.get('extension_provider_auth_generation', -1)
             self._extension_provider_auth_supported = (type(msg.get('extension_provider_auth')) is int
                 and msg['extension_provider_auth'] == 1 and type(auth_generation) is int and auth_generation >= 0)
@@ -6457,86 +4647,19 @@ class ChatApp:
                 if isinstance(self._extension_dialog_panel, ExtensionProviderAuth):
                     self._extension_dialog_panel.focused = False  # Clear its private code on withdrawal.
             self._extension_provider_auth_generation = auth_generation if type(auth_generation) is int else -1
-            write_generation = msg.get('extension_editor_write_generation', -1)
-            write_owner = msg.get('extension_editor_write_owner', '')
-            write_supported = (type(msg.get('extension_editor_write')) is int and msg['extension_editor_write'] == 1
-                               and type(write_generation) is int and write_generation >= 0
-                               and isinstance(write_owner, str)
-                               and re.fullmatch('[a-f0-9]{32}', write_owner) is not None)
-            if (not write_supported or write_generation != self._extension_editor_write_generation
-                    or write_owner != self._extension_editor_write_owner):
-                self._editor_write_reviews.clear()
-            self._extension_editor_write_supported = write_supported
-            self._extension_editor_write_generation = write_generation if type(write_generation) is int else -1
-            self._extension_editor_write_owner = write_owner if write_supported else ''
-            self._extension_message_supported = (type(msg.get('extension_message')) is int
-                                                 and msg['extension_message'] == 1)
-            image_generation = msg.get('extension_message_images_generation', -1)
-            self._extension_message_images_supported = (type(msg.get('extension_message_images')) is int
-                and msg['extension_message_images'] == 1 and type(image_generation) is int and image_generation >= 0)
-            self._extension_message_images_generation = image_generation if type(image_generation) is int else -1
-            message_generation = msg.get('extension_message_generation', -1)
-            self._extension_message_generation = message_generation if type(message_generation) is int else -1
-            self._extension_message_supported &= self._extension_message_generation >= 0
-            compact_generation = msg.get('extension_compaction_generation', 0)
-            self._extension_compaction_generation = (compact_generation if type(compact_generation) is int
-                                                      and compact_generation >= 0 else -1)
-            self._extension_compaction_supported &= self._extension_compaction_generation >= 0
-            self._extension_name_after_run_supported = (type(msg.get('extension_name_after_run')) is int
-                                                        and msg.get('extension_name_after_run') == 1)
-            name_generation = msg.get('name_after_run_generation', 0)
-            self._extension_name_after_run_generation = name_generation if type(name_generation) is int else -1
-            self._extension_compaction_after_run_supported = (
-                type(msg.get('extension_compaction_after_run')) is int
-                and msg['extension_compaction_after_run'] == 1)
-            generation = msg.get('compaction_after_run_generation', -1)
-            self._extension_compaction_after_run_generation = generation if type(generation) is int else -1
-            self._extension_compaction_after_run_supported &= self._extension_compaction_after_run_generation >= 0
             self._extension_models_supported = type(msg.get("extension_models")) is int and msg["extension_models"] == 1
             self._native_models_supported = type(msg.get("native_models")) is int and msg["native_models"] == 1
             self._reasoning_supported = type(msg.get("reasoning_controls")) is int and msg["reasoning_controls"] == 1
             self._mcp_watch_supported = type(msg.get("mcp_resource_watch")) is int and msg["mcp_resource_watch"] == 1
-            terminal_owner = msg.get('terminal_owner', '')
-            terminal_supported = (type(msg.get('terminal_input')) is int and msg['terminal_input'] == 1
-                                  and isinstance(terminal_owner, str)
-                                  and re.fullmatch(r'[a-f0-9]{32}', terminal_owner) is not None)
-            if not terminal_supported or terminal_owner != self._terminal_owner:
-                self._terminal_input.invalidate()
-            self._terminal_supported = terminal_supported
-            self._terminal_release_supported = (terminal_supported
-                and type(msg.get("terminal_release_input")) is int and msg["terminal_release_input"] == 1)
-            self._terminal_owner = terminal_owner if terminal_supported else ''
-            child_token = msg.get('child_terminal_owner', '')
-            child_supported = (type(msg.get('terminal_child_input')) is int and msg['terminal_child_input'] == 1
-                               and isinstance(child_token, str)
-                               and re.fullmatch(r'[a-f0-9]{32}', child_token) is not None)
-            if self._terminal_child() and (not child_supported or child_token != self._child_terminal_owner):
-                self._terminal_input.invalidate()
-            self._terminal_child_supported = child_supported
-            if not child_supported or child_token != self._child_terminal_owner:
-                self._terminal_children = {}
-            self._child_terminal_owner = child_token if child_supported else ""
             self._extension_supported = type(msg.get("extension_controls")) is int and msg["extension_controls"] == 1
             if isinstance(msg.get("extension_snapshot"), dict):
                 try:
                     self._extension_snapshot = validate_snapshot(msg["extension_snapshot"])
                 except (ValueError, TypeError):
                     self._extension_supported = False
-                    self._terminal_supported = False
-                    self._terminal_input.invalidate()
                     self._chat_log.add_system("Invalid extension registrations; controls disabled")
             if isinstance(msg.get("plan_error"), str):
                 self._chat_log.add_system(msg["plan_error"])
-            new_return_owner = msg.get('child_return_owner')
-            new_return_supported = (type(msg.get('child_image_return')) is int and msg.get('child_image_return') == 1
-                                    and isinstance(new_return_owner, str) and len(new_return_owner) == 32)
-            if self._child_return_owner and (not new_return_supported or new_return_owner != self._child_return_owner):
-                if self._child_panel is not None and self._child_panel.queue is not None:
-                    self._child_panel.queue.fail('Live return owner changed; local backup kept, inspect queue')
-                self._child_recovery_ready.clear()
-            self._child_return_supported = new_return_supported
-            self._child_return_owner = (new_return_owner
-                                        if new_return_supported and isinstance(new_return_owner, str) else '')
             self._child_task_recovery_supported = (type(msg.get('child_task_recovery')) is int
                                                    and msg.get('child_task_recovery') == 1)
             self._child_image_recovery_supported = (type(msg.get('child_image_recovery')) is int
@@ -6544,11 +4667,9 @@ class ChatApp:
             if self._child_panel is not None:
                 self._child_panel.queue_image_recovery_enabled = self._child_image_recovery_supported
                 self._child_panel.queue_task_recovery_enabled = self._child_task_recovery_supported
-                self._child_panel.queue_image_return_enabled = self._child_return_supported
                 if self._child_panel.queue is not None:
                     self._child_panel.queue.image_recovery_enabled = self._child_image_recovery_supported
                     self._child_panel.queue.task_recovery_enabled = self._child_task_recovery_supported
-                    self._child_panel.queue.image_return_enabled = self._child_return_supported
             self._child_images_supported = type(msg.get('child_images')) is int and msg.get('child_images') == 1
             self._child_presets_supported = type(msg.get("child_config")) is int and msg.get("child_config") == 3
             self._child_model_supported = (type(msg.get("child_config")) is int and msg.get("child_config") in {2, 3})
@@ -6595,30 +4716,12 @@ class ChatApp:
             self._skills_supported = type(msg.get("skill_controls")) is int and msg.get("skill_controls") == 1
             if not self._skills_supported:
                 self._skills_request = ""
-            self._mcp_private_jwt_supported = (type(msg.get('mcp_private_key_jwt')) is int
-                                               and msg.get('mcp_private_key_jwt') == 1)
-            private_panel = self._mcp_panel.auth if self._mcp_panel is not None else None
-            if (not self._mcp_private_jwt_supported and private_panel is not None
-                    and private_panel.review.get('token_auth_method') == 'private_key_jwt'
-                    and self._mcp_panel is not None):
-                self._mcp_auth_requests.clear()
-                self._mcp_auth_review = None
-                self._mcp_active = None
-                self._mcp_panel._busy = False
-                private_panel.disable('Private-key signing support withdrawn; reopen fresh consent. '
-                                      'Completed tokens are not remotely revoked.')
             self._mcp_refresh_supported = type(msg.get("mcp_refresh")) is int and msg.get("mcp_refresh") == 1
-            self._mcp_client_auth_supported = (type(msg.get("mcp_client_auth")) is int
-                                               and msg.get("mcp_client_auth") == 1)
             self._mcp_credentials_supported = (type(msg.get("mcp_credentials")) is int
                                                and msg.get("mcp_credentials") == 1)
-            self._mcp_registration_supported = (type(msg.get("mcp_registration")) is int
-                                                 and msg.get("mcp_registration") == 1)
             self._mcp_auth_supported = type(msg.get("mcp_auth")) is int and msg.get("mcp_auth") == 1
             self._extension_shortcuts_supported = (type(msg.get("extension_shortcuts")) is int
                                                    and msg.get("extension_shortcuts") == 1)
-            self._extension_navigation_supported = (type(msg.get("extension_navigation")) is int
-                                                    and msg.get("extension_navigation") == 1)
             self._extension_session_inspection_supported = (type(msg.get("extension_session_inspection")) is int
                                                             and msg.get("extension_session_inspection") == 1)
             self._argument_context_supported = (type(msg.get('extension_argument_context')) is int
@@ -6638,32 +4741,10 @@ class ChatApp:
                                                           and menu_generation >= 0 else -1)
             self._extension_cancel_supported = (type(msg.get('extension_command_cancel')) is int
                                                 and msg.get('extension_command_cancel') == 1)
-            self._extension_name_supported = (type(msg.get('extension_session_name')) is int
-                                              and msg.get('extension_session_name') == 1)
             self._extension_session_supported = (type(msg.get("extension_session")) is int
                                                   and msg.get("extension_session") == 1)
-            self._extension_editor_supported = (type(msg.get("extension_editor")) is int
-                                                and msg.get("extension_editor") == 1)
             self._extension_command_results_supported = (type(msg.get("extension_command_results")) is int
                                                           and msg.get("extension_command_results") == 1)
-            self._extension_custom_nested_supported = (type(msg.get("extension_custom_nested")) is int
-                                                       and msg.get("extension_custom_nested") == 1)
-            self._extension_custom_live_overlay_supported = (type(msg.get("extension_custom_live_overlay")) is int
-                                                             and msg.get("extension_custom_live_overlay") == 1)
-            self._extension_custom_overlay_supported = (type(msg.get("extension_custom_overlay")) is int
-                                                        and msg.get("extension_custom_overlay") == 1)
-            self._extension_custom_rich_supported = (type(msg.get("extension_custom_rich")) is int
-                                                     and msg.get("extension_custom_rich") == 1)
-            self._extension_custom_supported = (type(msg.get("extension_custom")) is int
-                                                and msg.get("extension_custom") == 1)
-            self._extension_multi_forms_supported = (type(msg.get("extension_multi_forms")) is int
-                                                     and msg.get("extension_multi_forms") == 1)
-            self._extension_forms_supported = (type(msg.get("extension_forms")) is int
-                                               and msg.get("extension_forms") == 1)
-            self._mcp_resource_completion_supported = (type(msg.get("mcp_resource_completion")) is int
-                                                       and msg.get("mcp_resource_completion") == 1)
-            self._mcp_completion_supported = (type(msg.get("mcp_completion")) is int
-                                              and msg.get("mcp_completion") == 1)
             self._mcp_data_supported = type(msg.get("mcp_context")) is int and msg["mcp_context"] == 1
             self._mcp_combined_watch_supported = (type(msg.get("mcp_combined_watch")) is int
                                                  and msg.get("mcp_combined_watch") == 1)
@@ -6677,23 +4758,6 @@ class ChatApp:
                                                 and msg.get("mcp_catalog_watch") == 1)
             self._mcp_content_types_supported = (type(msg.get("mcp_content_types")) is int
                                                   and msg["mcp_content_types"] == 1)
-            self._mcp_elicitation_supported = (type(msg.get('mcp_elicitation')) is int
-                                               and msg.get('mcp_elicitation') == 1)
-            if not self._mcp_elicitation_supported:
-                self._mcp_elicitation_servers.clear()
-                self._mcp_elicitation_requests.clear()
-                if self._mcp_panel is not None and self._mcp_panel.elicitation_review is not None:
-                    self._mcp_panel.elicitation_review.disable('Elicitation capability withdrawn; no replay')
-            self._mcp_sampling_supported = type(msg.get('mcp_sampling')) is int and msg.get('mcp_sampling') == 1
-            if not self._mcp_sampling_supported:
-                self._mcp_sampling_servers.clear()
-                self._mcp_sampling_requests.clear()
-                if self._mcp_panel is not None and self._mcp_panel.sampling_review is not None:
-                    self._mcp_panel.sampling_review.disable('Sampling capability withdrawn; no replay')
-            self._mcp_roots_supported = type(msg.get('mcp_roots')) is int and msg.get('mcp_roots') == 1
-            if not self._mcp_roots_supported and self._mcp_panel and self._mcp_panel.roots_review:
-                self._mcp_panel.roots_review.invalidate()
-                self._mcp_panel._cancel_roots()
             self._mcp_supported = type(msg.get("mcp_controls")) is int and msg["mcp_controls"] == 1
             self._mcp_browser_owner_supported = (type(msg.get('mcp_browser_owner')) is int
                                                  and msg['mcp_browser_owner'] == 1)
@@ -6720,13 +4784,9 @@ class ChatApp:
                 if self._file_completions is None or str(self._file_completions.root) != workspace:
                     if self._file_completions is not None:
                         self._file_completions.close()
-                    if self._review_panel is not None:
-                        self._close_review()
                     self._file_completions = WorkspaceFileCompletionProvider(workspace)
                     self._editor.set_autocomplete_provider(self._file_completions)
             elif self._file_completions is not None:
-                if self._review_panel is not None:
-                    self._close_review()
                 self._file_completions.close()
                 self._file_completions = None
                 self._editor.set_autocomplete_provider(None)
@@ -6841,44 +4901,6 @@ class ChatApp:
                 self._render_goal(goal)
             return
 
-        if msg_type == 'extension_context_delivery_result':
-            key = str(msg.get('request_id', ''))
-            if (key in self._context_results and msg.get('group_id') == self.group_id
-                    and msg.get('session_id') == self._gateway_session_id):
-                if self._extension_pending is not None and self._extension_pending[0] == key:
-                    self._extension_pending = None
-                if msg.get('success') is not True or msg.get('continuation') is not True:
-                    self._context_results.pop(key, None)
-                if msg.get('success') is not True:
-                    self._chat_log.add_system('Canonical context delivery failed/uncertain; inspect source, no replay')
-                self._update_hints()
-                self._tui.request_render()
-            return
-        if msg_type == 'extension_context_continuation':
-            receipt = self._context_results.pop(str(msg.get('request_id', '')), None)
-            if (receipt is not None and self._connection_ready and self._extension_context_messages_supported
-                    and receipt == (self._gateway_session_id, self._mcp_context_key(),
-                                    self._extension_context_messages_generation)
-                    and msg.get('group_id') == self.group_id and msg.get('session_id') == receipt[0]
-                    and type(msg.get('generation')) is int and msg['generation'] == receipt[2]
-                    and isinstance(msg.get('token'), str) and re.fullmatch('[a-f0-9]{32}', msg['token'])
-                    and self._active_run_id is None and self._extension_pending is None and not self._waiting):
-                self._start_message('', (), requested_message={'token': msg['token'],
-                    'generation': msg['generation'], 'canonical_context': True})
-            return
-        if msg_type == 'extension_context_admitted':
-            if (msg.get('group_id') == self.group_id and msg.get('run_id') == self._active_run_id
-                    and self._active_run_id is not None and msg.get('session_id') == self._gateway_session_id):
-                from xdog.agent.extensions.context_message import display_text
-                try:
-                    body = display_text({key: value for key, value in msg.items()
-                                         if key not in {'type', 'group_id', 'run_id'}})
-                except ValueError:
-                    return
-                if body:
-                    self._chat_log.add_system(body)
-                    self._tui.request_render()
-            return
         if msg_type in {"extension_notice", "extension_ui"}:
             if (msg.get("group_id") != self.group_id or msg.get("run_id") != self._active_run_id
                     or self._active_run_id is None):
@@ -6889,8 +4911,6 @@ class ChatApp:
                 try:
                     self._extension_snapshot = validate_snapshot(msg["snapshot"])
                 except (ValueError, TypeError):
-                    self._terminal_supported = False
-                    self._terminal_input.invalidate()
                     self._chat_log.add_system("Invalid extension UI snapshot ignored")
             self._tui.request_render()
             return
@@ -7060,9 +5080,6 @@ class ChatApp:
         # Error (matching OpenClaw's chat event: state=error)
         if msg_type in ("error", "internal_error"):
             if msg_type == "internal_error":
-                self._terminal_input.invalidate()
-                self._terminal_supported = False
-                self._terminal_owner = ""
                 if self._mcp_requests:
                     self._chat_log.add_system("MCP control outcome uncertain; inspect /mcp list before retrying")
                     self._mcp_requests.clear()
@@ -7070,20 +5087,6 @@ class ChatApp:
                 self._output_epoch += 1
             if msg_type == "internal_error":
                 self._connection_ready = False
-                self._mcp_elicitation_supported = False
-                self._mcp_elicitation_servers.clear()
-                self._mcp_elicitation_requests.clear()
-                if self._mcp_panel is not None and self._mcp_panel.elicitation_review is not None:
-                    self._mcp_panel.elicitation_review.disable('Elicitation disconnected; response withheld')
-                self._mcp_sampling_supported = False
-                self._mcp_sampling_servers.clear()
-                self._mcp_sampling_requests.clear()
-                if self._mcp_panel is not None and self._mcp_panel.sampling_review is not None:
-                    self._mcp_panel.sampling_review.disable('Sampling disconnected; output withheld')
-                self._mcp_roots_supported = False
-                self._mcp_root_requests.clear()
-                if self._mcp_panel is not None and self._mcp_panel.roots_review is not None:
-                    self._mcp_panel.roots_review.invalidate()
                 self._pending_command = None
                 if self._session_mutation_id is not None:
                     self._chat_log.add_system(
@@ -7170,10 +5173,7 @@ class ChatApp:
                 self._state["session_id"] = str(uuid.uuid4())
             self._close_transcript()
             self._gateway_session_id = str(self._state["session_id"])
-            self._extension_snapshot = {**self._extension_snapshot,
-                                        "terminal_input": False, "terminal_generation": 0}
-            self._terminal_children = {}
-            self._child_terminal_owner = ""
+            self._extension_snapshot = {**self._extension_snapshot}
             self._session_context_stale = False
             self._chat_log.clear_all()
             self._usage = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
@@ -7365,31 +5365,18 @@ class ChatApp:
 
         async def write_requests() -> None:
             try:
-                hello = {"type": "ping", "group_id": self.group_id, "extension_forms": 1, 'child_image_return': 1,
-                         "extension_multi_forms": 1, "extension_custom": 1,
-                         "extension_custom_rich": 1, "extension_custom_nested": 1, "extension_custom_overlay": 1,
-                         "extension_custom_live_overlay": 1,
-                         "extension_command_results": 1, "extension_editor": 1, "extension_editor_write": 1,
-                         "reasoning_controls": 1,
-                         "extension_session": 1, "extension_navigation": 1, "extension_session_inspection": 1,
-                         "extension_session_name": 1, "extension_active_tools": 1, "extension_compaction": 1,
-                         "extension_compaction_after_run": 1, "extension_active_tools_after_run": 1,
-                         "extension_name_after_run": 1,
-                         "extension_context_messages": 1, "extension_context_delivery_modes": 1,
-                "extension_message": 1, "extension_message_images": 1,
-                         "extension_queued_inputs": 1, "child_extension_queued_inputs": 1,
+                hello = {"type": "ping", "group_id": self.group_id,
+                         "extension_command_results": 1, "reasoning_controls": 1,
+                         "extension_session": 1, "extension_session_inspection": 1,
                          "extension_provider_auth": 1,
                          "session_name_read": 1,
                          "extension_command_catalog": 1,
                          "extension_argument_completion": 1, "extension_argument_cancel": 1,
                          "extension_argument_context": 1,
-                         "terminal_input": 1, "terminal_child_input": 1, "terminal_release_input": 1,
                          "mcp_content_types": 1,
-                         "mcp_catalog_watch": 1, "mcp_combined_watch": 1, "mcp_roots": 1,
-                         "mcp_sampling": 1, "mcp_elicitation": 1,
-                         "parent_saved_drafts": 1, "parent_saved_images": 1,
-                         "parent_saved_save": 1, "parent_saved_discard": 1, "parent_saved_uploads": 1,
-                         "tool_inventory": 1, "mcp_private_key_jwt": 1,
+                         "mcp_catalog_watch": 1, "mcp_combined_watch": 1,
+
+                         "tool_inventory": 1,
                          "skill_controls": 1, "session_compaction": 1, "saved_source": 1, "saved_timeline": 1}
                 writer.write((json.dumps(hello) + "\n").encode("utf-8"))
                 await asyncio.wait_for(writer.drain(), timeout=self._TRANSPORT_TIMEOUT)
@@ -7425,14 +5412,11 @@ class ChatApp:
                         await asyncio.to_thread(source_receiver.close)
                     if request['type'] == 'child_control' and request.get('action') == 'queue':
                         command = json.loads(request['text'])
-                        if command.get('action') in {'recover_images', 'recover_task', 'return_prepare'}:
+                        if command.get('action') in {'recover_images', 'recover_task'}:
                             await asyncio.to_thread(recovery_receiver.expect, {
                                 'request_id': request['request_id'], 'group_id': request['group_id'],
                                 'session_id': request['session_id'], 'child_id': request['child_id'],
-                                'input_id': command['id'], 'queue_revision': command['revision'],
-                                **({'child_return_owner': request['child_return_owner'],
-                                    'queue_view': request['queue_view']}
-                                   if command['action'] == 'return_prepare' else {})})
+                                'input_id': command['id'], 'queue_revision': command['revision']})
                     images = request.pop("_images", ())
                     references = []
                     for image in images:

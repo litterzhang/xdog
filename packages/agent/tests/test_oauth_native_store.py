@@ -84,3 +84,51 @@ runpy.run_path(sys.argv[1],run_name='__main__')
     assert json.loads(result.stdout) == {
         'ok': False, 'error': 'Native storage unavailable/locked/unsafe; no fallback'}
     assert b'PRIVATE-DEPENDENCY-DIAGNOSTIC' not in result.stdout
+
+
+@pytest.mark.parametrize('changes', [
+    {'registration': 'dynamic'}, {'registration': 'metadata'},
+    {'token_auth_method': 'client_secret_basic', 'client_secret_env': 'XDOG_SECRET'},
+    {'token_auth_method': 'client_secret_post', 'client_secret_env': 'XDOG_SECRET'},
+    {'token_auth_method': 'client_secret_jwt', 'client_secret_env': 'XDOG_SECRET'},
+    {'token_auth_method': 'private_key_jwt', 'client_secret_env': 'XDOG_PRIVATE_KEY'},
+    {'client_private_key_env': ''}, {'registration_endpoint': 'https://issuer.test/register'},
+    {'unexpected_credential_field': 'PRIVATE'},
+])
+def test_native_save_revalidates_mutated_review_snapshot_before_helper_io(tmp_path, monkeypatch, changes):
+    from xdog.agent.mcp.oauth_store import capture
+
+    from packages.agent.tests.test_oauth_store import seeded
+
+    saved = capture(seeded())
+    saved.review.update(changes)
+    store = NativeCredentialStore(tmp_path / 'not-created')
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('Stale unsupported snapshot reached native helper I/O')
+
+    monkeypatch.setattr(store, '_run', forbidden)
+    with pytest.raises(OAuthError) as error:
+        store.save(saved, lambda: True)
+    assert 'PRIVATE' not in str(error.value) and not store.directory.exists()
+
+
+def test_native_save_public_record_keeps_exact_payload_and_explicit_owner_guard(tmp_path, monkeypatch):
+    from xdog.agent.mcp.oauth_store import capture, decode_credential
+
+    from packages.agent.tests.test_oauth_store import seeded
+
+    saved = capture(seeded())
+    store = NativeCredentialStore(tmp_path / 'not-created')
+    calls = []
+    def alive():
+        return True
+
+    def run(action, resource, guard, payload):
+        calls.append((action, resource, guard))
+        assert decode_credential(payload.encode(), resource) == saved
+        return {'ok': True}
+
+    monkeypatch.setattr(store, '_run', run)
+    store.save(saved, alive)
+    assert calls == [('save', saved.resource, alive)] and not store.directory.exists()

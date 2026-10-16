@@ -17,6 +17,9 @@ STATUSES = ('待实现', '待验证', '缺外部环境', '已完成', '延期')
 def render() -> tuple[str, Counter[str]]:
     data = json.loads(LEDGER.read_text())
     rows = data['requirements']
+    successor = data.get('superseded_by')
+    if successor and not (ROOT / successor).is_file():
+        raise ValueError('Missing successor requirement ledger')
     seen: set[str] = set()
     for row in rows:
         identifier = row['id']
@@ -29,7 +32,7 @@ def render() -> tuple[str, Counter[str]]:
             if not isinstance(row[field], str) or not row[field].strip():
                 raise ValueError(f'Missing {field}: {identifier}')
         for item in row['evidence'].split('; '):
-            if item.startswith('packages/') and not (ROOT / item).exists():
+            if not successor and item.startswith('packages/') and not (ROOT / item).exists():
                 raise ValueError(f'Missing source evidence path: {identifier}: {item}')
     counts = Counter(row['status'] for row in rows)
     remaining = sum(counts[status] for status in STATUSES[:3])
@@ -52,6 +55,15 @@ def render() -> tuple[str, Counter[str]]:
         f'**总计 {len(rows)}；本轮未完成 {remaining}；延期 {counts["延期"]}（另报、非阻塞）。**', '',
         '| 状态 | 需求数 |', '| --- | ---: |',
     ]
+    if successor:
+        lines[2:2] = [
+            '> **Historical audit — not the current goal or source gate.**',
+            f"> {data['superseded_scope_note']}",
+            f'> Current scope/counts: `{successor}`.',
+            '> Historical evidence paths may refer to intentionally removed code.', '',
+        ]
+        lines = [line.replace('## Scope and completion conditions', '## Historical scope and completion conditions')
+                 .replace('## Exact requirement counts', '## Historical requirement counts') for line in lines]
     lines.extend(f'| {status} | {counts[status]} |' for status in STATUSES)
     lines += ['', '计数单位是唯一需求 ID，不是实现轮数、测试用例数或历史 OPEN 出现次数。', '',
               '复算/一致性检查：`python tools/agent_ui_checklist.py --check`；更新 JSON 后用 `--write` 生成本文。', '',
@@ -109,7 +121,8 @@ def main() -> None:
         VIEW.write_text(text)
     elif not VIEW.exists() or VIEW.read_text() != text:
         raise SystemExit('Checklist Markdown/counts are stale: run --write')
-    print(json.dumps({'total': sum(counts.values()),
+    print(json.dumps({'historical': bool(json.loads(LEDGER.read_text()).get('superseded_by')),
+                      'total': sum(counts.values()),
                       'remaining': sum(counts[status] for status in STATUSES[:3]),
                       'counts': {status: counts[status] for status in STATUSES}}, ensure_ascii=False))
 

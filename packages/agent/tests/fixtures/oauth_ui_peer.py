@@ -3,9 +3,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import hmac
 import json
-from urllib.parse import parse_qs, unquote_plus, urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 
@@ -15,11 +14,8 @@ PROFILE = {"issuer": ISSUER, "client_id": "registered-client", "scopes": ["tools
 
 
 class Peer:
-    def __init__(self, mode="pre-registered"):
+    def __init__(self):
         self.requests = []
-        self.mode = mode
-        self.method = "none"
-        self.secret = ""
         self.client_id = "registered-client"
         self.registration_posts = []
         self.challenge = ""
@@ -27,8 +23,6 @@ class Peer:
         self.token_posts = 0
         self.issue_refresh = False
         self.refresh_posts = []
-        self.assertions = []
-        self.public_rsa: tuple[int, int] | None = None
 
     def launch(self, url):
         self.challenge = parse_qs(urlsplit(url).query)["code_challenge"][0]
@@ -44,58 +38,19 @@ class Peer:
             assert "authorization" not in request.headers
             return httpx.Response(200, json={"issuer": ISSUER, "authorization_endpoint": "https://issuer.test/authorize",
                 "token_endpoint": "https://issuer.test/token", "code_challenge_methods_supported": ["S256"],
-                "response_types_supported": ["code"], "token_endpoint_auth_methods_supported": [self.method],
-                "token_endpoint_auth_signing_alg_values_supported": [
-                    "RS256" if self.method == "private_key_jwt" else "HS256"],
+                "response_types_supported": ["code"], "token_endpoint_auth_methods_supported": ["none"],
                 "authorization_response_iss_parameter_supported": True,
                 "registration_endpoint": "https://issuer.test/register",
                 "client_id_metadata_document_supported": True})
         if path == "/register":
-            body = json.loads(request.content)
-            assert body["token_endpoint_auth_method"] == "none" and body["grant_types"] == ["authorization_code"]
-            self.registration_posts.append(body)
-            self.client_id = "issued-native-client"
-            return httpx.Response(201, json={"client_id": self.client_id, "token_endpoint_auth_method": "none",
-                                           "client_secret": "IGNORED-REGISTRATION-SECRET"})
+            self.registration_posts.append(request)
+            raise AssertionError("Public pre-registered clients must never attempt registration")
         if path == "/token":
             body = parse_qs(request.content.decode())
-            if self.method == "client_secret_basic":
-                raw = base64.b64decode(request.headers["authorization"].removeprefix("Basic ")).decode()
-                identifier, secret = raw.split(":", 1)
-                assert unquote_plus(identifier) == self.client_id and unquote_plus(secret) == self.secret
-                assert "client_id" not in body and "client_secret" not in body
-            elif self.method == "client_secret_post":
-                assert "authorization" not in request.headers and body.pop("client_secret") == [self.secret]
-            elif self.method in {"client_secret_jwt", "private_key_jwt"}:
-                assert "authorization" not in request.headers and "client_secret" not in body
-                assert body.pop("client_assertion_type") == ["urn:ietf:params:oauth:client-assertion-type:jwt-bearer"]
-                assertion = body.pop("client_assertion")[0]
-                header, claims, signature = assertion.split(".")
-                def decode(value):
-                    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
-                if self.method == "client_secret_jwt":
-                    assert json.loads(decode(header)) == {"alg": "HS256", "typ": "JWT"}
-                    assert hmac.compare_digest(decode(signature), hmac.digest(
-                        self.secret.encode(), (header + "." + claims).encode(), "sha256"))
-                else:
-                    assert json.loads(decode(header)) == {"alg": "RS256", "typ": "JWT"}
-                    assert self.public_rsa is not None
-                    modulus, exponent = self.public_rsa
-                    size = (modulus.bit_length() + 7) // 8
-                    encoded = pow(int.from_bytes(decode(signature)), exponent, modulus).to_bytes(size)
-                    digest = bytes.fromhex("3031300d060960864801650304020105000420") + hashlib.sha256(
-                        (header + "." + claims).encode()).digest()
-                    assert encoded == b"\x00\x01" + b"\xff" * (size - len(digest) - 3) + b"\x00" + digest
-                claim = json.loads(decode(claims))
-                assert claim["iss"] == claim["sub"] == self.client_id and claim["aud"] == "https://issuer.test/token"
-                assert claim["exp"] - claim["iat"] == 60
-                self.assertions.append(assertion)
-            else:
-                assert "authorization" not in request.headers
-
+            assert "authorization" not in request.headers
+            assert not {"client_secret", "client_assertion", "client_assertion_type"} & body.keys()
             assert body["resource"] == [RESOURCE]
-            if self.method != "client_secret_basic":
-                assert body["client_id"] == [self.client_id]
+            assert body["client_id"] == [self.client_id]
             if body.get("grant_type") == ["refresh_token"]:
                 assert body["refresh_token"] == ["FIXTURE-REFRESH-ONE-SECRET"]
                 assert body["scope"] == ["tools:read"]

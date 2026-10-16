@@ -17,7 +17,6 @@ from xdog.tui.components.loader import Loader, LoaderComponent
 from xdog.tui.components.markdown import Markdown, MarkdownComponent
 from xdog.tui.components.navigation_panel import NavigationPanel
 from xdog.tui.components.permission_panel import PermissionPanel
-from xdog.tui.components.review_panel import ReviewPanel
 from xdog.tui.components.select_list import SelectListComponent
 from xdog.tui.components.settings_list import SettingItem, SettingsList, SettingsListTheme
 from xdog.tui.components.spacer import Spacer, SpacerComponent
@@ -32,7 +31,6 @@ __all__ = [
     "DetailsPanel",
     "InputPanel",
     "PermissionPanel",
-    "ReviewPanel",
     "NavigationPanel",
     "StatusLine",
     "Box",

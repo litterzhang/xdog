@@ -1,4 +1,4 @@
-"""Native read-only transcript sources, shared by Coding terminal and RPC readers."""
+"""Native read-only transcript sources, shared by Coding terminal and local exports."""
 from __future__ import annotations
 
 import threading

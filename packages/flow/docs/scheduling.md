@@ -286,10 +286,8 @@ source's concern or a later transport.
   <bundle>` for timer mode. Hook mode has no crontab analogue — it needs a
   long-lived listener, so on a systemd-less host the listener is started via a
   provided `nohup`/`&`-style shim or documented as manual.
-- **Linux first (v1).** systemd user units cover the common case. macOS
-  (`launchd` plist) and a container-native mode (a sidecar) are documented as
-  follow-ups; the unit-rendering is behind an interface so a second backend drops
-  in.
+- **Linux only.** systemd user units cover the supported deployment. The
+  unit-rendering interface is not a promise of non-Linux backends.
 - The scheduler layer is **optional** — it lives in `flow.scheduler` and is only
   imported by `xdog-flow scheduling install`; `run`/`generate`/the engine never touch it.
 

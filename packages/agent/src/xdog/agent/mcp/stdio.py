@@ -13,7 +13,6 @@ from typing import Any
 from xdog.agent.mcp.client_capabilities import RootCapability, advertised
 from xdog.agent.mcp.config import McpServerConfig
 from xdog.agent.mcp.input_requests import INPUT_METHODS, InputRequests
-from xdog.agent.mcp.reverse_requests import ReverseRequests
 from xdog.agent.mcp.subscriptions import CATALOGS, ResourceSubscriptions, ResourceWatch, resource_uri
 
 CURRENT_VERSION = "2026-07-28"
@@ -32,8 +31,7 @@ class StdioClient:
     def __init__(self, config: McpServerConfig, cwd: Path) -> None:
         self.config, self.cwd = config, cwd
         self.root_capability = RootCapability(config.roots)
-        self.reverse = ReverseRequests()
-        self.inputs = InputRequests(self.root_capability, self.reverse)
+        self.inputs = InputRequests(self.root_capability)
         self.process: asyncio.subprocess.Process | None = None
         self._reader: asyncio.Task[None] | None = None
         self._stderr: asyncio.Task[None] | None = None
@@ -55,14 +53,13 @@ class StdioClient:
             raise McpError("Server already owns a process; disconnect before reconnecting")
         self.modern, self.version = False, ""
         self.root_capability.active = False
-        self.reverse.active = False
         self.inputs.active = False
         self.inputs._failed = False
         self.state = "connecting"
         self.process = await asyncio.create_subprocess_exec(
             *self.config.command, cwd=self.cwd, env={**os.environ, **dict(self.config.env)},
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            limit=MAX_FRAME, start_new_session=os.name == "posix",
+            limit=MAX_FRAME, start_new_session=True,
         )
         self._reader = asyncio.create_task(self._read())
         self._stderr = asyncio.create_task(self._drain_stderr())
@@ -77,23 +74,20 @@ class StdioClient:
                 if exc.code != -32601:
                     raise
                 self.root_capability.active = True
-                self.reverse.active = True
                 response = await self.request("initialize", {
                     "protocolVersion": LEGACY_VERSIONS[0],
-                    "capabilities": {**self.root_capability.advertised(), **self.reverse.advertised()},
+                    "capabilities": self.root_capability.advertised(),
                     "clientInfo": {"name": "xdog", "version": "2.4.1"},
                 })
                 chosen = response.get("protocolVersion")
                 if chosen not in LEGACY_VERSIONS:
                     raise McpError("Server selected an unsupported legacy protocol version")
                 self.version = chosen
-                await self.reverse.negotiated(chosen)
                 await self.notify("notifications/initialized")
             else:
                 from xdog.agent.mcp.protocol import modern_discovery
                 self.version, self.capabilities, self.server_info = modern_discovery(response)
                 self.modern = True
-                await self.reverse.negotiated(self.version)
                 self.root_capability.active = True
                 self.inputs.active = True
             if not self.modern and (not isinstance(response.get("capabilities", {}), dict)
@@ -288,11 +282,7 @@ class StdioClient:
                 if "method" in message:
                     if self.modern:
                         raise McpError("Current MCP stdio servers cannot send unsolicited requests/notifications")
-                    if self.reverse.notification(message) or self.reverse.cancel(message):
-                        continue
                     if "id" in message:
-                        if self.reverse.admit(message, self._write, timeout=self.config.timeout):
-                            continue
                         response = self.root_capability.response(message)
                         await self._write({"jsonrpc": "2.0", "id": message["id"], **response})
                     elif message.get("method") in {"notifications/" + kind + "/list_changed" for kind in CATALOGS}:
@@ -326,7 +316,6 @@ class StdioClient:
             self.state, self.error = "disconnected", type(exc).__name__
             self.root_capability.active = False
             await self.inputs.close(failed=True)
-            await self.reverse.close()
             self.resources.close()
             for future in tuple(self._pending.values()):
                 if not future.done():
@@ -340,7 +329,6 @@ class StdioClient:
     async def close(self) -> None:
         self.root_capability.active = False
         await self.inputs.close()
-        await self.reverse.close()
         process = self.process
         self.state = "disconnected"
         self.resources.close()
@@ -354,10 +342,7 @@ class StdioClient:
                 await asyncio.wait_for(process.wait(), 0.2)
             except TimeoutError:
                 try:
-                    if os.name == "posix":
-                        os.killpg(process.pid, signal.SIGTERM)
-                    else:
-                        process.terminate()
+                    os.killpg(process.pid, signal.SIGTERM)
                 except ProcessLookupError:
                     pass
                 try:
@@ -368,11 +353,10 @@ class StdioClient:
                     except ProcessLookupError:
                         pass
                     await process.wait()
-            if os.name == "posix":
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         for task in (self._reader, self._stderr):
             if task is not None:
                 task.cancel()

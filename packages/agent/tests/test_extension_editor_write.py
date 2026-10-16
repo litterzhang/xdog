@@ -1,30 +1,9 @@
-"""Actual worker write proposals preserve original ownership and callback completion."""
+"""Removed editor packets are rejected; generic invocation settlement still stays once-only."""
 from __future__ import annotations
-
-import asyncio
-import shutil
-from pathlib import Path
 
 import pytest
 from xdog.agent.extensions.dialogs import validate_dialog
 from xdog.agent.extensions.invocation import InvocationLease
-from xdog.agent.extensions.runtime import ExtensionRuntime
-
-FIXTURE = Path(__file__).parent / 'fixtures/extensions/editorwrite'
-
-
-def setup(tmp_path, **settings):
-    root = tmp_path / 'extensions'
-    shutil.copytree(FIXTURE, root / 'editorwrite')
-    runtime = ExtensionRuntime(['editorwrite'], root, tmp_path, settings={'editorwrite': settings},
-        context=lambda: {'session_id': 'original', 'child_id': ''})
-    return runtime
-
-
-async def until(predicate):
-    async with asyncio.timeout(5):
-        while not predicate():
-            await asyncio.sleep(0.003)
 
 
 def test_proposal_codec_refuses_controls_and_oversize() -> None:
@@ -45,7 +24,7 @@ async def test_once_only_generic_lease_discard_nested_success_and_no_retry_of_fa
         events.append('discard')
     key = object()
     root = InvocationLease('extension', 'session', '', 'tools/call', lambda: True, key)
-    nested = InvocationLease('extension', 'session', '', 'xdog/custom_frame', lambda: True, key, root)
+    nested = InvocationLease('extension', 'session', '', 'xdog/event', lambda: True, key, root)
     assert nested.defer(commit, discard)
     await nested.complete(True)
     assert not events

@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 
-from xdog.tui.child_draft_store import ChildDraftStore, SavedChildDraft, encode_draft
+from xdog.tui.child_draft_store import ChildDraftStore, DraftStoreFullError, SavedChildDraft, encode_draft
 from xdog.tui.components.child_draft_panel import DraftEntry
 
 
@@ -48,6 +48,9 @@ class ChildDraftIO:
                     result['discarded'] = saved.id
                 else:
                     raise ValueError('Invalid durable child draft operation')
+            except DraftStoreFullError:
+                result['error'] = ('Snapshot store full (32 snapshots); no snapshot saved, overwritten or removed; '
+                                   'unsaved source remains editable')
             except Exception as exc:
                 # Do not disclose task/config/image data through exception diagnostics.
                 result['error'] = ('Durable child draft operation failed (' + type(exc).__name__

@@ -1,5 +1,12 @@
 # UI-045: non-Linux native credential backend implementation
 
+> **Superseded on 2026-10-16:** the user removed feature 45. Keychain and Windows
+> Credential Manager implementations and their platform tests are being deleted;
+> the current selector accepts only explicit `file` or `secret-service`. The
+> implementation descriptions below are historical evidence, not current support
+> claims or outstanding non-Linux requirements. Track this cleanup in
+> [the simplification plan](agent-ui-simplification-plan.md).
+
 Implementation checkpoint completed locally 2026-10-11. Native macOS/Windows
 execution is **not verified**; UI-062 remains deferred by the user's scope update.
 This document records implementation and Linux-run contracts, not native conformance.

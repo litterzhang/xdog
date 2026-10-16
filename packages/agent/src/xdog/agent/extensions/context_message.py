@@ -12,8 +12,8 @@ from dataclasses import asdict
 from typing import Any
 
 from xdog.agent.core import AgentMessage, CustomAgentMessage
+from xdog.agent.extensions.context_images import MAX_PROPOSAL_BYTES, _images
 from xdog.agent.extensions.invocation import current_invocation
-from xdog.agent.extensions.queued_input import MAX_PROPOSAL_BYTES, _images
 from xdog.agent.mcp.schema import json_value
 from xdog.ai.types import ImageContent, TextContent, UserMessage
 
@@ -54,12 +54,14 @@ def proposal(custom_type: str, value: str | tuple[TextContent | ImageContent, ..
              trigger_turn: bool = False) -> dict[str, Any]:
     if type(trigger_turn) is not bool:
         raise ValueError('Custom trigger_turn must be an explicit boolean')
-    if not isinstance(value, str):
+    if isinstance(value, str):
+        body: str | list[dict[str, Any]] = value
+    else:
         if not isinstance(value, tuple) or any(type(part) not in (TextContent, ImageContent) for part in value):
             raise ValueError('Custom context content must contain typed text/image values')
-        value = [({'type': 'text', 'text': part.text} if isinstance(part, TextContent) else asdict(part))
-                 for part in value]  # type: ignore[assignment]
-    result = {'custom_type': custom_type, 'content': value, 'display': display, 'details': details,
+        body = [({'type': 'text', 'text': part.text} if isinstance(part, TextContent) else asdict(part))
+                for part in value]
+    result = {'custom_type': custom_type, 'content': body, 'display': display, 'details': details,
               'delivery': delivery, 'trigger_turn': trigger_turn if delivery != 'next_turn' else False}
     return validate(result)
 
@@ -77,7 +79,7 @@ def validate(value: dict[str, Any]) -> dict[str, Any]:
     projected = 'image_summaries' in value
     body = content(value.get('content'), projected=projected)
     if projected:
-        from xdog.agent.extensions.queued_input import _summaries
+        from xdog.agent.extensions.context_images import _summaries
         _summaries(value['image_summaries'])
     result = {**value, 'content': body, 'details': details}
     if len(json.dumps(result, ensure_ascii=True).encode()) > MAX_PROPOSAL_BYTES:

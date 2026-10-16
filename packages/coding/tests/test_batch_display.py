@@ -109,7 +109,9 @@ def test_native_five_inputs_one_answer_live_and_reopened(coding_session, externa
 
 
 @pytest.mark.parametrize('decision', ['deny', 'allow_once'])
-def test_native_tool_approval_keeps_batch_identity_when_new_human_input_arrives(coding_session, tmp_path, decision):
+def test_native_tool_approval_keeps_batch_identity_when_new_human_input_arrives(
+    coding_session, tmp_path, monkeypatch, decision,
+):
     import time
 
     from xdog.agent import AgentTool, AgentToolResult
@@ -145,6 +147,19 @@ def test_native_tool_approval_keeps_batch_identity_when_new_human_input_arrives(
 
     coding_session.agent.set_stream_fn(stream)
     ui = InteractiveMode(coding_session)
+    publishing, deliver = threading.Event(), threading.Event()
+    receive = ui._session_events.receive
+
+    def held_permission_publish(event):
+        if event.kind == 'permission_request':
+            # Pending admission precedes async UI publication. Reproduce this
+            # scheduler window explicitly instead of assuming a single frame
+            # after has_pending_requests must already contain the UI event.
+            publishing.set()
+            assert deliver.wait(3), 'test did not release permission publication'
+        receive(event)
+
+    monkeypatch.setattr(ui._session_events, 'receive', held_permission_publish)
     ui._session_events.start()
     runtime = coding_session.runtime
     message = InboxMessage(coding_session.session_id, tmp_path, 'callback', 'inspect', (), 'observer', {})
@@ -155,12 +170,17 @@ def test_native_tool_approval_keeps_batch_identity_when_new_human_input_arrives(
         # event has not been painted yet. A human submission changes the UI stamp.
         ui._start_turn('later human input')
         release.set()
-        deadline = time.monotonic() + 3
-        while not coding_session.permissions.has_pending_requests:
-            assert time.monotonic() < deadline
-            time.sleep(0.01)
+        assert publishing.wait(3)
+        assert coding_session.permissions.has_pending_requests
         ui._poll()
-        assert ui._permission_prompt is not None, 'approval belongs to the active batch, not the later UI stamp'
+        assert ui._permission_prompt is None, 'paused publication has not delivered a UI event'
+        assert not target.exists(), 'pending but unpainted approval must not permit effects'
+        deliver.set()
+        deadline = time.monotonic() + 3
+        while ui._permission_prompt is None:
+            ui._poll()
+            assert time.monotonic() < deadline, 'active batch approval was discarded by the later UI stamp'
+            time.sleep(.005)
         assert ui._permission_prompt.request.tool_name == 'batch_write'
         assert not target.exists()
         ui._permission_prompt._on_decision(decision)
@@ -168,6 +188,7 @@ def test_native_tool_approval_keeps_batch_identity_when_new_human_input_arrives(
         assert target.exists() is (decision == 'allow_once')
     finally:
         release.set()
+        deliver.set()
         ui._request_exit()
         ui._session_events.close()
 

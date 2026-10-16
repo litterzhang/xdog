@@ -26,7 +26,6 @@ def run_agent(
     output_format: str = "text",
     working_dir: Path | None = None,
     config_path: Path | None = None,
-    rpc: bool = False,
     acp: bool = False,
     session_id: str | None = None,
     enqueue: bool = False,
@@ -39,7 +38,7 @@ def run_agent(
     Called by :func:`coding.cli.args.cli` after argument parsing.
     """
     if enqueue:
-        if (not session_id or not message_id or not prompt or any((acp, rpc, resume, resume_id, print_mode,
+        if (not session_id or not message_id or not prompt or any((acp, resume, resume_id, print_mode,
                                                                  working_dir, config_path, overrides, files))):
             raise ValueError("Enqueue requires exact session/message/instruction without runtime overrides")
         import json
@@ -93,12 +92,6 @@ def run_agent(
 
     # Load extensions
     _load_extensions(session, verbose)
-
-    if rpc:
-        # stdin is the bidirectional JSON-lines control stream, not a one-shot
-        # piped user prompt. Its reader must be ready before a client sends input.
-        _run_rpc(session)
-        return
 
     # Build initial message from CLI args + piped stdin + files
     initial_images: list[ImageContent] = []
@@ -164,25 +157,6 @@ def _run_print(
             await session.children.supervisor.aclose()
             session.dispose()
     exit_code = asyncio.run(owned_print())
-    sys.exit(exit_code)
-
-
-def _run_rpc(session: Any) -> None:
-    """Run in headless RPC mode."""
-    from xdog.coding.modes.rpc.rpc_mode import run_rpc_mode
-
-    async def owned_rpc() -> int:
-        try:
-            return await run_rpc_mode(session)
-        finally:
-            try:
-                await session.children.supervisor.aclose()
-            finally:
-                try:
-                    await session.extensions.aclose()
-                finally:
-                    session.dispose()
-    exit_code = asyncio.run(owned_rpc())
     sys.exit(exit_code)
 
 

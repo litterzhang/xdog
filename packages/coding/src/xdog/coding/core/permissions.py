@@ -83,7 +83,7 @@ def _redact(value: Any, *, key: str = "") -> Any:
 
 
 def _request_arguments(tool_name: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
-    """Return redacted, bounded arguments suitable for terminals and RPC."""
+    """Return redacted, bounded arguments suitable for terminals and structured clients."""
     displayed = cast(dict[str, Any], _redact(dict(arguments)))
     if tool_name == "filesystem":
         content = arguments.get("content")

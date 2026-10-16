@@ -1,4 +1,4 @@
-"""Explicit public-client PKCE/registration; no browser launch, credential disk writes or POST replay.
+"""Explicit pre-registered public-client PKCE; no browser launch, credential disk writes or POST replay.
 
 Issuer/client/scopes are operator-selected. Discovery cannot activate arbitrary
 issuers or forward existing MCP headers. Tokens belong to one exact resource URL.
@@ -85,39 +85,19 @@ class OAuthConfig:
     def parse(cls, value: Any) -> OAuthConfig:
         if not isinstance(value, dict) or set(value) - {
                 "issuer", "client_id", "scopes", "callback_port", "ca_file", "metadata_origins",
-                "registration", "client_name", "token_auth_method", "client_secret_env", "client_private_key_env"}:
+                "registration", "client_name", "token_auth_method", "client_secret_env"}:
             raise OAuthError("Invalid/unsupported OAuth configuration")
         issuer = endpoint(value.get("issuer"))
-        from xdog.agent.mcp.oauth_registration import client_name, metadata_id
+        from xdog.agent.mcp.oauth_registration import client_name
         registration = value.get("registration", "pre-registered")
-        if not isinstance(registration, str) or registration not in {"pre-registered", "metadata", "dynamic"}:
-            raise OAuthError("Invalid OAuth registration strategy")
-        identifier = value.get("client_id", "")
-        if registration == "dynamic":
-            if not isinstance(identifier, str) or identifier != "":
-                raise OAuthError("Dynamic registration cannot override supplied pre-registered credentials")
-            client_id = ""
-        else:
-            client_id = client_identifier(identifier)
-            if registration == "metadata":
-                metadata_id(client_id)
-        display_name = client_name(value.get("client_name", "XDOG"))
         from xdog.agent.mcp.oauth_client_auth import validate
-        requested_method = value.get('token_auth_method', 'none')
-        if requested_method == 'private_key_jwt':
-            if value.get('client_secret_env'):
-                raise OAuthError('Private-key JWT requires an explicit client_private_key_env, not a shared secret')
-            source = value.get('client_private_key_env', '')
-        else:
-            if value.get('client_private_key_env'):
-                raise OAuthError('Only private-key JWT can use a private-key source')
-            source = value.get('client_secret_env', '')
-        method, variable = validate(requested_method, source, registration)
+        method, variable = validate(value.get("token_auth_method", "none"),
+                                    value.get("client_secret_env", ""), registration)
+        client_id = client_identifier(value.get("client_id"))
+        display_name = client_name(value.get("client_name", "XDOG"))
         port = value.get("callback_port", 0)
         if type(port) is not int or not 0 <= port <= 65535:
             raise OAuthError("Invalid OAuth callback port")
-        if registration == "metadata" and port == 0:
-            raise OAuthError("Self-hosted client metadata requires an exact configured nonzero callback_port")
         ca = value.get("ca_file", "")
         if not isinstance(ca, str) or ca and (not Path(ca).expanduser().is_absolute() or '\x00' in ca):
             raise OAuthError("OAuth CA file must be an explicit absolute path")
@@ -133,7 +113,17 @@ class OAuthConfig:
         return cls(issuer, client_id, scopes(value.get("scopes")), port, ca, tuple(origins),
                    registration, display_name, method, variable)
 
+    def __post_init__(self) -> None:
+        self.validate_public()
+
+    def validate_public(self) -> None:
+        """Pure validation, also used before CA, discovery and owned-flow I/O."""
+        from xdog.agent.mcp.oauth_client_auth import validate
+        validate(self.token_auth_method, self.client_secret_env, self.registration)
+        client_identifier(self.client_id)
+
     def verify(self) -> bool | ssl.SSLContext:
+        self.validate_public()
         return ssl.create_default_context(cafile=str(Path(self.ca_file).expanduser())) if self.ca_file else True
 
 
@@ -185,6 +175,7 @@ class _Flow:
 class OAuthOwner:
     """Call on the manager's owned loop. Public snapshots never contain bearer credentials."""
     def __init__(self, resource: str, config: OAuthConfig) -> None:
+        config.validate_public()
         self.resource = endpoint(resource, https=False)
         if origin(resource)[0] == "http" and origin(resource)[1] not in {"127.0.0.1", "localhost", "::1"}:
             raise OAuthError("OAuth credentials cannot be used over non-loopback plaintext HTTP")
@@ -219,15 +210,15 @@ class OAuthOwner:
         try:
             client.cookies.clear()  # Discovery cookies cannot become cross-origin authorization credentials.
             headers = {"Accept": "application/json", "Accept-Encoding": "identity"}
-            confidential = bool(token_headers) or (
-                data is not None and ("client_secret" in data or "client_assertion" in data)
-            )
-            if confidential:
-                if (self._closed or not self.live() or method != "POST" or not self._token_target
-                        or url != self._token_target
-                        or origin(url) != origin(self.config.issuer)):
-                    raise OAuthError("Client authentication cannot leave its exact pinned token operation")
-                headers.update(token_headers or {})
+            self.config.validate_public()
+            if token_headers or (data is not None and any(
+                    key in data for key in ("client_secret", "client_assertion", "client_assertion_type"))):
+                raise OAuthError("Only public OAuth clients are supported; confidential credentials refused")
+            if document is not None:
+                raise OAuthError("OAuth client registration is not supported")
+            if method == "POST" and (self._closed or not self.live() or not self._token_target
+                    or url != self._token_target or origin(url) != origin(self.config.issuer)):
+                raise OAuthError("Token request cannot leave its exact pinned token operation")
             async with client.stream(method, url, data=data, json=document, headers=headers) as response:
                 if method == "GET" and response.status_code in {404, 405}:
                     raise MetadataAbsent("OAuth metadata route not provided")
@@ -268,12 +259,7 @@ class OAuthOwner:
         if self.flow is not None and self.flow.status == "waiting":
             raise OAuthError("Finish/cancel pending OAuth before preparing another review")
         self.review = None
-        from xdog.agent.mcp.oauth_client_auth import validate as validate_client_auth
-        validate_client_auth(self.config.token_auth_method, self.config.client_secret_env, self.config.registration)
-        if self.config.token_auth_method != "none":
-            from xdog.agent.mcp.oauth_client_auth import validate_source
-            # Fail before discovery if the explicit source is unusable.
-            await validate_source(self.config.token_auth_method, self.config.client_secret_env)
+        self.config.validate_public()
         from xdog.agent.mcp.oauth_discovery import OAuthChallenge, issuer_candidates, resource_candidates
         if hint is not None and not isinstance(hint, OAuthChallenge):
             raise OAuthError("Invalid retained resource challenge")
@@ -309,30 +295,10 @@ class OAuthOwner:
             raise OAuthError("OAuth issuer must explicitly support S256 PKCE")
         if not supports("response_types_supported", "code"):
             raise OAuthError("OAuth issuer must advertise authorization-code responses")
-        methods = metadata.get("token_endpoint_auth_methods_supported", ["client_secret_basic"])
+        methods = metadata.get("token_endpoint_auth_methods_supported")
         if (not isinstance(methods, list) or self.config.token_auth_method not in methods
                 or any(not isinstance(item, str) for item in methods)):
             raise OAuthError("Configured OAuth token authentication is not advertised; no method fallback")
-        if self.config.token_auth_method == "client_secret_jwt" and not supports(
-                "token_endpoint_auth_signing_alg_values_supported", "HS256"):
-            raise OAuthError("Client-secret JWT requires explicitly advertised HS256 signing; no algorithm fallback")
-        if self.config.token_auth_method == 'private_key_jwt' and not supports(
-                'token_endpoint_auth_signing_alg_values_supported', 'RS256'):
-            raise OAuthError('Private-key JWT requires explicitly advertised RS256; no algorithm fallback')
-        registration_endpoint = ""
-        display_name = self.config.client_name
-        if self.config.registration == "metadata":
-            from xdog.agent.mcp.oauth_registration import validate_document
-            if metadata.get("client_id_metadata_document_supported") is not True:
-                raise OAuthError("Issuer does not advertise client ID metadata; no hidden dynamic fallback")
-            async with asyncio.timeout(15), self.client() as client:
-                document = await self._json(client, "GET", self.config.client_id)
-            display_name = validate_document(document, self.config.client_id,
-                                             f"http://127.0.0.1:{self.config.callback_port}/callback")
-        elif self.config.registration == "dynamic":
-            registration_endpoint = endpoint(metadata.get("registration_endpoint"))
-            if origin(registration_endpoint) != origin(self.config.issuer):
-                raise OAuthError("Registration endpoint differs from pinned issuer origin")
         response_issuer = metadata.get("authorization_response_iss_parameter_supported", False)
         if type(response_issuer) is not bool:
             raise OAuthError("Invalid OAuth response-issuer capability")
@@ -341,7 +307,7 @@ class OAuthOwner:
         self.review = OAuthReview(secrets.token_hex(16), self.config.issuer, self.resource, self.config.client_id,
                                   requested, authorize, token, response_issuer,
                                   self.config.ca_file or "system", self.config.registration,
-                                  registration_endpoint, display_name, self.config.callback_port,
+                                  "", self.config.client_name, self.config.callback_port,
                                   self.config.token_auth_method, self.config.client_secret_env)
         return {**self.review.to_dict(), "resource_metadata": metadata_url, "issuer_metadata": authorization_url,
                 "scope_source": "challenge" if hint is not None and hint.scopes is not None else
@@ -386,12 +352,10 @@ class OAuthOwner:
             raise OAuthError("OAuth consent owner changed; prepare a fresh review")
         await self._cancel()
         self.review = None  # A confirmation receipt is single-use, not a repeatable browser/code action.
-        if self.config.token_auth_method != "none":
-            from xdog.agent.mcp.oauth_client_auth import validate_source
-            # No browser/code flow if its explicit source disappeared.
-            await validate_source(self.config.token_auth_method, self.config.client_secret_env)
+        self.config.validate_public()
+        validate_review(review.to_dict(), prepared=True)
         if self._closed or not self.live():
-            raise OAuthError('OAuth consent owner changed during source validation; prepare fresh consent')
+            raise OAuthError("OAuth consent owner changed; prepare fresh consent")
         state, verifier = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         code: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         flow_ref: list[_Flow] = []
@@ -466,32 +430,15 @@ class OAuthOwner:
             raise OAuthError("OAuth consent owner changed before listener admission")
         port = listener.sockets[0].getsockname()[1]
         redirect = f"http://127.0.0.1:{port}/callback"
-        effective_review = review
-        try:
-            if review.registration == "dynamic":
-                from xdog.agent.mcp.oauth_registration import registered_id, registration_request
-                # An explicit, already-reviewed side effect. Never retry a POST
-                # or pretend cancel rolls back a remotely created client record.
-                async with asyncio.timeout(30), self.client() as client:
-                    record = await self._json(client, "POST", review.registration_endpoint,
-                        document=registration_request(review.client_name, redirect, review.scopes), accepted=(201,))
-                if self._closed or not self.live():
-                    raise OAuthError("Consent changed; remote registration effects uncertain; local client not adopted")
-                effective_review = replace(review, client_id=registered_id(record, redirect))
-        except BaseException:
-            listener.close()
-            await listener.wait_closed()
-            code.cancel()
-            raise
-        flow = _Flow(effective_review, state, verifier, redirect, code, listener)
+        flow = _Flow(review, state, verifier, redirect, code, listener)
         flow_ref.append(flow)
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
-        flow.url = review.authorize + "?" + urlencode({"response_type": "code", "client_id": effective_review.client_id,
+        flow.url = review.authorize + "?" + urlencode({"response_type": "code", "client_id": review.client_id,
             "redirect_uri": redirect, "scope": " ".join(review.scopes), "resource": review.resource,
             "state": state, "code_challenge": challenge, "code_challenge_method": "S256"})
         self.flow = flow
         flow.task = asyncio.create_task(self._finish(flow))
-        return {"authorization_url": flow.url, "review_id": review.id, "client_id": effective_review.client_id,
+        return {"authorization_url": flow.url, "review_id": review.id, "client_id": review.client_id,
                 "registration": review.registration,
                 "notice": "Open this operator-reviewed URL in your browser. Do not paste auth codes/tokens into chat."}
 
@@ -541,6 +488,8 @@ class OAuthOwner:
                 raise OAuthError("No live resource-bound refresh grant; authorize explicitly again")
             if self.flow is not None and self.flow.status == "waiting":
                 raise OAuthError("Finish/cancel code authorization before refreshing")
+            self.config.validate_public()
+            validate_review(self._grant.to_dict())
             self._refresh_review = replace(self._grant, id=secrets.token_hex(16), created=time.monotonic())
             return {**self._refresh_review.to_dict(), "operation": "refresh",
                     "notice": "Refresh only this resource's existing scopes; no MCP call replay or tool approval."}
@@ -554,6 +503,8 @@ class OAuthOwner:
                 raise OAuthError("Refresh consent is stale/unavailable; prepare a fresh review")
             if self.flow is not None and self.flow.status == "waiting":
                 raise OAuthError("Another authorization transaction owns this resource")
+            self.config.validate_public()
+            validate_review(review.to_dict())
             self._refresh_review = None
             previous, self._refresh = self._refresh, ""  # Unknown rotation outcome cannot replay the old token.
             self._refresh_state = "refreshing"
@@ -659,36 +610,24 @@ def validate_review(value: Any, *, prepared: bool = False) -> dict[str, Any]:
         raise OAuthError("Invalid OAuth certificate trust review")
     chosen = scopes(value.get("scopes"), allow_empty=True)
     registration = value.get("registration", "pre-registered")
-    if not isinstance(registration, str) or registration not in {"pre-registered", "metadata", "dynamic"}:
-        raise OAuthError("Invalid reviewed client registration")
-    from xdog.agent.mcp.oauth_registration import client_name, metadata_id
+    from xdog.agent.mcp.oauth_registration import client_name
     client_name(value.get("client_name", "XDOG"))
     from xdog.agent.mcp.oauth_client_auth import validate
     validate(value.get("token_auth_method", "none"), value.get("client_secret_env", ""), registration)
+    if any(key in value for key in ("client_private_key_env", "client_secret", "client_assertion",
+                                    "client_assertion_type", "registration_access_token")):
+        raise OAuthError("Unsupported OAuth credential fields")
+    if value.get("registration_endpoint", "") != "" or value.get("client_assigned", True) is not True:
+        raise OAuthError("Only an assigned pre-registered public OAuth client is supported")
     port = value.get("callback_port", 0)
-    if type(port) is not int or not 0 <= port <= 65535 or registration == "metadata" and port == 0:
+    if type(port) is not int or not 0 <= port <= 65535:
         raise OAuthError("Invalid reviewed native callback port")
-    if registration == "dynamic":
-        assigned = value.get("client_assigned", False)
-        if type(assigned) is not bool:
-            raise OAuthError("Invalid dynamic-client assignment state")
-        if prepared and (assigned or value.get("client_id") != ""):
-            raise OAuthError("A prepared dynamic review cannot substitute a pre-existing client ID")
-        if assigned:
-            client_identifier(value.get("client_id"))
-        elif value.get("client_id") != "":
-            raise OAuthError("Invalid unassigned dynamic client")
-        target = endpoint(value.get("registration_endpoint"))
-        if origin(target) != origin(value["issuer"]):
-            raise OAuthError("Reviewed registration endpoint origin mismatch")
-    else:
-        client_identifier(value.get("client_id"))
-        if registration == "metadata":
-            metadata_id(value["client_id"])
+    client_identifier(value.get("client_id"))
     return {**value, "scopes": list(chosen), "tls_trust": trust}
 
 
 def validate_launch(value: Any, review: dict[str, Any]) -> dict[str, Any]:
+    review = validate_review(review, prepared=True)
     if not isinstance(value, dict) or value.get("review_id") != review["review_id"]:
         raise OAuthError("OAuth launch receipt changed")
     url = value.get("authorization_url")
@@ -702,10 +641,9 @@ def validate_launch(value: Any, review: dict[str, Any]) -> dict[str, Any]:
     if any(len(values) != 1 for values in args.values()):
         raise OAuthError("Duplicate OAuth URI fields")
     identifier = review["client_id"]
-    if review.get("registration") == "dynamic":
-        if value.get("registration") != "dynamic":
-            raise OAuthError("Registered client strategy changed after consent")
-        identifier = client_identifier(value.get("client_id"))
+    if (value.get("registration", "pre-registered") != "pre-registered"
+            or value.get("client_id", identifier) != identifier):
+        raise OAuthError("Pre-registered client changed after consent")
     expected = {"response_type": "code", "client_id": identifier, "resource": review["resource"],
                 "scope": " ".join(review["scopes"]), "code_challenge_method": "S256"}
     if any(args.get(key) != [text] for key, text in expected.items()):

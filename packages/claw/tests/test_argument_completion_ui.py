@@ -5,6 +5,7 @@ import json
 from unittest.mock import patch
 
 import pytest
+from xdog.agent.extensions.runtime import validate_snapshot
 from xdog.ai.types import AssistantMessage
 from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.channels.tui.tui_app import ChatApp
@@ -48,11 +49,12 @@ async def test_argument_query_requires_its_own_explicit_viewer_negotiation(tmp_p
 def test_withdrawn_argument_support_and_reconnection_cannot_insert_old_results_or_send_again():
     ui = ChatApp('/tmp/unused-arguments.sock')
     try:
-        snapshot = {'extensions': [{'name': 'owned', 'state': 'active'}],
+        snapshot = validate_snapshot({'extensions': [{'name': 'owned', 'state': 'active'}],
             'commands': {'ext-owned-run': 'Registered'}, 'command_completions': {'ext-owned-run': 'a' * 32},
-            'ui': {}, 'shortcuts': [], 'terminal_input': False, 'terminal_generation': 0}
+            'ui': {}, 'shortcuts': []})
         ui._handle_response({'type': 'pong', 'session_controls': 1, 'session_id': 'owner',
                              'extension_argument_completion': 1, 'extension_snapshot': snapshot})
+        assert ui._extension_snapshot == snapshot
         ui._editor.set_text('/ext-owned-run a')
         request = ui._send_queue.get_nowait()
         assert request['type'] == 'argument_completion'
@@ -110,11 +112,12 @@ async def test_cancel_before_argument_admission_is_negotiated_and_releases_only_
 def test_cancel_identity_uses_original_group_session_and_requires_current_exact_capability():
     ui = ChatApp('/tmp/unused-argument-cancel-scope.sock')
     try:
-        snapshot = {'extensions': [{'name': 'owned', 'state': 'active'}],
+        snapshot = validate_snapshot({'extensions': [{'name': 'owned', 'state': 'active'}],
             'commands': {'ext-owned-run': 'Registered'}, 'command_completions': {'ext-owned-run': 'a' * 32},
-            'ui': {}, 'shortcuts': [], 'terminal_input': False, 'terminal_generation': 0}
+            'ui': {}, 'shortcuts': []})
         ui._handle_response({'type': 'pong', 'session_id': 'original', 'extension_argument_completion': 1,
                              'extension_argument_cancel': True, 'extension_snapshot': snapshot})
+        assert ui._extension_snapshot == snapshot
         ui._editor.set_text('/ext-owned-run a')
         ui._send_queue.get_nowait()
         pending = ui._argument_feed._inflight
@@ -140,11 +143,12 @@ def test_cancel_identity_uses_original_group_session_and_requires_current_exact_
 def test_withdrawn_full_context_cannot_adopt_late_contextual_items_as_prefix_only_data():
     ui = ChatApp('/tmp/unused-context-withdrawal.sock')
     try:
-        snapshot = {'extensions': [{'name': 'owned', 'state': 'active'}],
+        snapshot = validate_snapshot({'extensions': [{'name': 'owned', 'state': 'active'}],
             'commands': {'ext-owned-run': 'Registered'}, 'command_completions': {'ext-owned-run': 'a' * 32},
-            'ui': {}, 'shortcuts': [], 'terminal_input': False, 'terminal_generation': 0}
+            'ui': {}, 'shortcuts': []})
         ui._handle_response({'type': 'pong', 'session_id': 'owner', 'extension_argument_completion': 1,
             'extension_argument_cancel': 1, 'extension_argument_context': 1, 'extension_snapshot': snapshot})
+        assert ui._extension_snapshot == snapshot
         ui._editor.set_text('/ext-owned-run production en')
         request = ui._send_queue.get_nowait()
         assert request['argument_context'] == {'arguments': 'production en', 'cursor': 13, 'start': 11, 'end': 13}

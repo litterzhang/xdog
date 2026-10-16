@@ -6,7 +6,7 @@ import asyncio
 import pytest
 from xdog.ai.types import AssistantMessage, TextContent
 
-from packages.coding.tests.test_rpc_extensions import close, session
+from packages.coding.tests.extension_session_helpers import close, session
 
 
 async def test_before_replace_revocation_refuses_name_save_without_overwriting_transcript(tmp_path, monkeypatch):

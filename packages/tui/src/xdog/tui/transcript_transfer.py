@@ -165,51 +165,39 @@ def write_snapshot(data: bytes, target: Path, canceled: threading.Event) -> None
 
 
 def clipboard_command() -> list[str] | None:
-    if sys.platform == "win32":
-        return [sys.executable, "-m", "xdog.tui.clipboard_windows_write_worker"]
+    if sys.platform != "linux":
+        raise ValueError("Clipboard integration requires Linux; use local export")
     if os.environ.get("WAYLAND_DISPLAY") and shutil.which("wl-copy"):
         return ["wl-copy", "--type", "text/plain;charset=utf-8"]
     if os.environ.get("DISPLAY") and shutil.which("xclip"):
         return ["xclip", "-selection", "clipboard", "-in"]
-    if shutil.which("pbcopy"):
-        return ["pbcopy"]
     return None
 
 
 def _stop_clipboard(process: subprocess.Popen[bytes]) -> None:
     try:
-        if os.name == "posix":
-            os.killpg(process.pid, signal.SIGTERM)
-        else:
-            process.terminate()
+        os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
         pass
     try:
         process.wait(timeout=0.5)
     except subprocess.TimeoutExpired:
         try:
-            if os.name == "posix":
-                os.killpg(process.pid, signal.SIGKILL)
-            else:
-                process.kill()
-        except ProcessLookupError:
-            pass
-        process.wait(timeout=0.5)
-    if os.name == "posix":
-        # A failed helper can have forked even after its parent was reaped.
-        try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+        process.wait(timeout=0.5)
+    # A failed helper can have forked even after its parent was reaped.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 def copy_snapshot(text: str, canceled: threading.Event) -> str:
     if canceled.is_set():
         raise ValueError("Copy canceled before clipboard commit")
     data = text.encode("utf-8")
-    if sys.platform == "win32":
-        from xdog.tui.clipboard_windows_write import unicode_payload
-        unicode_payload(data)  # Reject oversize/embedded NUL before launching a native write.
     command = clipboard_command()
     if command is None:
         if canceled.is_set():
@@ -228,7 +216,7 @@ def copy_snapshot(text: str, canceled: threading.Event) -> str:
         if canceled.is_set():
             raise ValueError("Copy canceled before clipboard commit")
         process = subprocess.Popen(command, stdin=source, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                   start_new_session=os.name == "posix")
+                                   start_new_session=True)
         deadline = time.monotonic() + 3
         success = False
         try:
