@@ -125,7 +125,7 @@ async def test_peer_close_does_not_cancel_the_active_human_turn(coding_session, 
                 pending = asyncio.create_task(conn.prompt(session_id=coding_session.session_id,
                     prompt=[TextContentBlock(type='text', text='Queued ACP work')]))
                 async with asyncio.timeout(3):
-                    while len(runtime.controller.store.records()) < 2:
+                    while not runtime.inbox.store.records(coding_session.session_id, tmp_path):
                         await asyncio.sleep(0.01)
                 await conn.cancel(session_id=coding_session.session_id)
                 assert (await asyncio.wait_for(pending, 3)).stop_reason == 'cancelled'

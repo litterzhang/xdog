@@ -30,6 +30,10 @@ async def _settled(future: asyncio.Future[Any]) -> None:
         future.exception()
 
 
+class InboxPromptCancelled(RuntimeError):
+    """A durable prompt was withdrawn before an execution attempt was admitted."""
+
+
 class InboxCoordinator:
     def __init__(self, controller: SessionController, store: InboxStore) -> None:
         self.controller, self.store = controller, store
@@ -42,6 +46,8 @@ class InboxCoordinator:
         self._activation_lock = asyncio.Lock()
         self._bindings: dict[str, InboxRecord] = {}
         self._tickets: dict[str, Submission] = {}
+        self._ticket_events: dict[str, asyncio.Event] = {}
+        self._withdrawals: dict[str, asyncio.Event] = {}
         self._message_peers: dict[str, str] = {}
         self._workers: set[asyncio.Task[Any]] = set()
         self._retired = False
@@ -205,7 +211,14 @@ class InboxCoordinator:
             return await self._admit_pending()
         if self._draining is None or self._draining.done():
             self._draining = self.controller.control(self._admit_pending, name='inbox-intake')
-        return await asyncio.shield(asyncio.wrap_future(self._draining))
+        receipt = asyncio.wrap_future(self._draining)
+        try:
+            return await asyncio.shield(receipt)
+        except asyncio.CancelledError:
+            # The shared control remains owned by the coordinator. Retirement
+            # settles it; an abandoned polling observer must still retrieve errors.
+            receipt.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+            raise
 
     async def _admit_pending(self) -> tuple[Submission, ...]:
         self._context()
@@ -234,6 +247,7 @@ class InboxCoordinator:
                                'branch_id': row.branch_id}, 'submitted': message.provenance})
                 ticket = controller.submit(value, peer_id=self._message_peers.get(message.message_id, 'inbox'))
                 self._tickets[message.message_id] = ticket
+                self._ticket_events.setdefault(message.message_id, asyncio.Event()).set()
                 tickets.append(ticket)
             for ticket in tickets:
                 await asyncio.shield(asyncio.wrap_future(ticket.accepted))
@@ -255,8 +269,18 @@ class InboxCoordinator:
         await self._initialize()
         if message.session_id != self.session_id or message.cwd.resolve() != self.cwd:
             raise ValueError('Prompt target does not match its owner')
+        previous_peer = self._message_peers.get(message.message_id)
         self._message_peers[message.message_id] = peer_id
-        await self._disk(lambda: self.store.enqueue(message, expected_branch_id=self.branch))
+        try:
+            await self._disk(lambda: self.store.enqueue(message, expected_branch_id=self.branch))
+        except ValueError:
+            if previous_peer is None:
+                self._message_peers.pop(message.message_id, None)
+            else:
+                self._message_peers[message.message_id] = previous_peer
+            raise
+        ready = self._ticket_events.setdefault(message.message_id, asyncio.Event())
+        withdrawn = self._withdrawals.setdefault(message.message_id, asyncio.Event())
         self._context()
         if message.message_id in self._tickets:
             return self._tickets[message.message_id]
@@ -264,17 +288,37 @@ class InboxCoordinator:
             await self._admit_pending()
         else:
             future = self.controller.control(self._admit_pending, name='inbox-prompt-intake')
-            await asyncio.shield(asyncio.wrap_future(future))
-        ticket = self._tickets.get(message.message_id)
-        if ticket is None:
-            raise RuntimeError('Prompt remains durable pending; owner queue is full or context changed')
-        return ticket
+            receipt = asyncio.wrap_future(future)
+            withdrawal = asyncio.create_task(withdrawn.wait())
+            try:
+                signals: set[asyncio.Future[Any]] = {receipt, withdrawal}
+                await asyncio.wait(signals, return_when=asyncio.FIRST_COMPLETED)
+                if withdrawn.is_set():
+                    raise InboxPromptCancelled('Prompt withdrawn before admission')
+                await asyncio.shield(receipt)
+            except BaseException:
+                self.controller.cancel_control(future)
+                await _settled(receipt)
+                raise
+            finally:
+                withdrawal.cancel()
+                await asyncio.gather(withdrawal, return_exceptions=True)
+        while True:
+            self._context()
+            if withdrawn.is_set():
+                raise InboxPromptCancelled('Prompt withdrawn before admission')
+            ticket = self._tickets.get(message.message_id)
+            if ticket is not None:
+                return ticket
+            ready.clear()
+            await ready.wait()
 
     async def retry(self, message_id: str, *, peer_id: str) -> str:
         async def retry_owned() -> str:
             await self._initialize()
             await self._disk(lambda: self.store.retry(self.session_id, message_id, cwd=self.cwd, branch_id=self.branch))
             self._tickets.pop(message_id, None)
+            self._withdrawals[message_id] = asyncio.Event()
             self._message_peers[message_id] = peer_id
             self._context()
             if self.controller.owns_current_task:
@@ -300,6 +344,8 @@ class InboxCoordinator:
                     return await asyncio.wrap_future(self.controller.cancel(ticket.id, peer_id=job.peer, wait=True))
             await self._disk(lambda: self.store.cancel_pending(self.session_id, message_id, cwd=self.cwd,
                 branch_id=self.branch, generation=self.generation))
+            self._withdrawals.setdefault(message_id, asyncio.Event()).set()
+            self._ticket_events.setdefault(message_id, asyncio.Event()).set()
             if ticket is not None:
                 row = self._bindings.pop(ticket.id, None)
                 if row is not None:
@@ -367,3 +413,5 @@ class InboxCoordinator:
             self._lease_owned(current=False)
             await self._disk(lambda: self.store.retire(self.session_id, self.generation), retiring=True)
         self._bindings.clear()
+        for event in self._ticket_events.values():
+            event.set()

@@ -31,12 +31,12 @@ async def test_enqueue_without_load_or_owner_is_durable_and_does_not_construct_a
     async with connected(config.address) as (conn, client, hello):
         assert hello.field_meta['xdog']['extensions']['enqueue'] == 1
         result = await conn.ext_method('xdog/enqueue', payload(data, tmp_path))
-        assert result['status'] == 'queued' and result['message_state'] == 'pending_review'
+        assert result['status'] == 'queued' and result['message_state'] == 'pending'
         duplicate = await conn.ext_method('xdog/enqueue', payload(data, tmp_path))
         assert duplicate['status'] == 'duplicate'
         status = await conn.ext_method('xdog/inbox_status', {'session_id':data.session_id, 'cwd':str(tmp_path)})
         assert status['messages'][0]['message_id'] == 'm1'
-        assert status['messages'][0]['status'] == 'pending_review'
+        assert status['messages'][0]['status'] == 'pending'
         assert 'evidence' not in status['messages'][0]
         assert not client.updates
         with pytest.raises(RequestError):

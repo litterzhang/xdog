@@ -28,7 +28,7 @@ def test_offline_enqueue_receipt_is_durable_idempotent_and_not_execution(offline
     first = CliRunner().invoke(cli,argv)
     assert first.exit_code==0,first.output
     body = json.loads(first.output)
-    assert body['status']=='queued' and body['message_state']=='pending_review'
+    assert body['status']=='queued' and body['message_state']=='pending'
     assert body['message_id']=='stable'
     second = CliRunner().invoke(cli,argv)
     assert second.exit_code==0,second.output
@@ -110,7 +110,7 @@ main()
         receipt = await conn.ext_method('xdog/enqueue',params)
         assert receipt['status']=='queued'
         status = await conn.ext_method('xdog/inbox_status',{'session_id':data.session_id,'cwd':str(tmp_path)})
-        assert status['messages'][0]['status']=='pending_review'
+        assert status['messages'][0]['status']=='pending'
         with pytest.raises(RequestError):
             await conn.ext_method('xdog/approve',{'session_id':data.session_id,'message_ids':['stdio-offline']})
     assert not manager.load_session(data.session_id).messages

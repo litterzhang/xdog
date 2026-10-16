@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -12,11 +13,12 @@ from acp import PromptResponse, RequestError
 from acp.schema import AgentMessageChunk, TextContentBlock, UserMessageChunk
 from xdog.agent.acp.contracts import JsonValue, Peer, SessionRef, UpdateSink, invalid
 from xdog.agent.acp.events import EventProjector
-from xdog.agent.session_input import SessionInput
 from xdog.ai.types import AssistantMessage, TextContent, UserMessage
 from xdog.coding.acp.client import AcpAttachment
 from xdog.coding.acp.ingress_backend import IngressBackend
 from xdog.coding.core.sessions.controller import SessionController
+from xdog.coding.core.sessions.inbox_models import InboxMessage
+from xdog.coding.core.sessions.inbox_runtime import InboxPromptCancelled
 from xdog.coding.core.sessions.inbox_store import InboxStore
 from xdog.coding.core.sessions.models import SessionEvent, Submission
 from xdog.coding.core.sessions.ownership import OwnerRegistry, runtime_directory
@@ -25,6 +27,15 @@ from xdog.coding.core.sessions.runtime import SessionRuntime
 
 if TYPE_CHECKING:
     from xdog.coding.core.agent_session import AgentSession
+
+
+@dataclass
+class _PendingPrompt:
+    controller: SessionController
+    message: InboxMessage
+    task: asyncio.Task[Any]
+    ticket: Submission | None = None
+    cancel_requested: bool = False
 
 
 class CodingBackend:
@@ -49,7 +60,7 @@ class CodingBackend:
         self._owned: dict[str, tuple[str, SessionRuntime, Any]] = {}
         self._remote: dict[tuple[str, str], AcpAttachment] = {}
         self._refs: dict[tuple[str, str], SessionRef] = {}
-        self._running: dict[tuple[str, str], tuple[SessionController, Submission]] = {}
+        self._running: dict[tuple[str, str], _PendingPrompt] = {}
         self._remote_busy: set[tuple[str, str]] = set()
 
     def _target(self, session_id: str) -> None:
@@ -163,7 +174,10 @@ class CodingBackend:
         evidence, provenance = details.get("evidence", []), details.get("provenance", {})
         if not isinstance(source, str) or not isinstance(evidence, list) or not isinstance(provenance, dict):
             raise invalid("Invalid external input metadata")
-        value = SessionInput(uuid.uuid4().hex, "acp", source, text, tuple(evidence), provenance)
+        inbox = controller.inbox
+        if inbox is None:
+            raise invalid("Session owner has no durable input coordinator")
+        value = InboxMessage(ref.id, ref.cwd, uuid.uuid4().hex, text, tuple(evidence), source, provenance)
         queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=256)
         loop = asyncio.get_running_loop()
         failure: asyncio.Future[BaseException] = loop.create_future()
@@ -171,7 +185,10 @@ class CodingBackend:
         projector = EventProjector()
 
         def receive(event: SessionEvent) -> None:
-            if (event.request_id != value.id and value.id not in event.request_ids) or event.kind != "agent_event":
+            if event.kind != "agent_event" or not any(
+                inbox.message_id(identifier) == value.message_id
+                for identifier in (event.request_ids or (event.request_id,))
+            ):
                 return
             updates = projector.project(event.data)  # type: ignore[arg-type]
             for update in updates:
@@ -211,10 +228,15 @@ class CodingBackend:
             return await future
 
         unsubscribe = controller.subscribe(receive)
-        ticket = controller.submit(value, peer_id=peer.id)
-        self._running[key] = controller, ticket
+        task = asyncio.current_task()
+        assert task is not None
+        pending = _PendingPrompt(controller, value, task)
+        self._running[key] = pending
         consumer = asyncio.create_task(drain())
+        transport_cancelled = False
         try:
+            ticket = await inbox.submit_prompt(value, peer_id=peer.id)
+            pending.ticket = ticket
             await checked(asyncio.wrap_future(ticket.accepted))
             result = await checked(asyncio.wrap_future(ticket.result))
             await checked(asyncio.create_task(queue.join()))
@@ -223,16 +245,45 @@ class CodingBackend:
             return PromptResponse.model_validate(
                 {
                     "stopReason": "end_turn" if result.status == "succeeded" else "cancelled",
-                    "_meta": {"xdog": {"request_id": ticket.id, "status": result.status,
+                    "_meta": {"xdog": {"request_id": ticket.id, "message_id": value.message_id, "status": result.status,
                                       "batch_id": result.batch_id, "execution_continues": result.execution_continues}},
                 }
             )
+        except (asyncio.CancelledError, InboxPromptCancelled) as exc:
+            transport_cancelled = isinstance(exc, asyncio.CancelledError) and not pending.cancel_requested
+            try:
+                # Intake workers settle before cancellation propagates. Even
+                # before admission, withdraw the prompt when its owner is live.
+                rows = await inbox.snapshot()
+                row = next((row for row in rows if row.message.message_id == value.message_id), None)
+                if row is not None and row.status in {'pending', 'claimed', 'running'}:
+                    await inbox.cancel(value.message_id, peer_id=peer.id)
+                    rows = await inbox.snapshot()
+                    row = next(row for row in rows if row.message.message_id == value.message_id)
+                return PromptResponse.model_validate({
+                    "stopReason": "cancelled",
+                    "_meta": {"xdog": {"message_id": value.message_id,
+                        "request_id": row.request_id if row else "", "status": "cancelled",
+                        "batch_id": row.batch_id if row else "",
+                        "execution_continues": row.status == "running" if row else False}},
+                })
+            finally:
+                if transport_cancelled:
+                    # Preserve transport cancellation even if the owner has
+                    # retired: SDK shutdown must not send either result or error
+                    # to its already closed sender. Retirement settles disk state.
+                    raise exc
         finally:
             unsubscribe()
             consumer.cancel()
             await asyncio.gather(consumer, return_exceptions=True)
             self._running.pop(key, None)
-            await asyncio.wrap_future(controller.cancel(ticket.id, peer_id=peer.id))
+            if pending.ticket is not None:
+                try:
+                    await asyncio.wrap_future(controller.cancel(pending.ticket.id, peer_id=peer.id))
+                except RuntimeError:
+                    if not transport_cancelled:
+                        raise
 
     async def cancel(self, ref: SessionRef, peer: Peer) -> None:
         remote = self._remote.get((peer.id, ref.id))
@@ -241,13 +292,27 @@ class CodingBackend:
             return
         running = self._running.get((peer.id, ref.id))
         if running is not None:
-            await asyncio.wrap_future(running[0].cancel(running[1].id, peer_id=peer.id))
+            if running.ticket is None:
+                running.cancel_requested = True
+                if not running.task.cancelling():
+                    running.task.cancel()
+            else:
+                await asyncio.wrap_future(running.controller.cancel(running.ticket.id, peer_id=peer.id))
 
     async def disconnect(self, peer: Peer) -> None:
         await self._inbox.disconnect(peer)
-        controllers = {row[0] for key, row in self._running.items() if key[0] == peer.id}
-        for controller in controllers:
+        pending = tuple(row for key, row in self._running.items() if key[0] == peer.id)
+        for row in pending:
+            if row.ticket is None and not row.task.cancelling():
+                row.task.cancel()
+        for controller in {row.controller for row in pending}:
             await asyncio.wrap_future(controller.disconnect(peer.id))
+        tasks = [row.task for row in pending if row.task is not asyncio.current_task()]
+        if tasks:
+            for task in tasks:
+                if not task.done() and not task.cancelling():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
         for key, remote in tuple(self._remote.items()):
             if key[0] == peer.id:
                 await remote.close()
