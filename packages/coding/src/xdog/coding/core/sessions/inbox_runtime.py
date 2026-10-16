@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from xdog.agent import AgentContext, BeforeToolCallContext
 from xdog.agent.session_input import SessionInput
 from xdog.ai.types import AssistantMessage, ToolCall
+from xdog.coding.core.sessions.batches import TurnBatch
 from xdog.coding.core.sessions.inbox_models import InboxRecord, encoded, message_data
 from xdog.coding.core.sessions.inbox_store import InboxStore
 from xdog.coding.core.sessions.models import Submission, TurnResult
@@ -218,8 +219,6 @@ class InboxCoordinator:
             self._context()
             await self._snapshot()
             self._context()
-            controller._budget_targets = frozenset(ticket.id for ticket in tickets)
-            controller._budget = 1  # Actual permission + exact context, never a client-provided grant.
             return tuple(ticket.id for ticket in tickets)
         except BaseException:
             await self._rollback(ids, peer, tickets)
@@ -244,24 +243,33 @@ class InboxCoordinator:
             controller._broken = exc
             raise
 
-    async def starting(self, value: SessionInput) -> None:
-        row = self._bindings.get(value.id)
-        if row is None:
+    async def starting(self, batch: TurnBatch) -> None:
+        selected = tuple(self._bindings[key] for key in batch.request_ids if key in self._bindings)
+        if not selected:
             return
         self._context()
-        self._bindings[value.id] = await self._disk(lambda: self.store.claim(
-            self.session_id, row.message.message_id, generation=self.generation, branch_id=self.branch,
-            attempt_id=row.attempt_id, request_id=value.id))
+        updated = await self._disk(lambda: self.store.begin_batch(
+            self.session_id, selected, batch_id=batch.id, generation=self.generation))
+        for row in updated:
+            self._bindings[row.request_id] = row
 
-    async def finished(self, value: SessionInput, result: TurnResult) -> None:
-        row = self._bindings.get(value.id)
-        if row is None:
+    async def finished(self, batch: TurnBatch, result: TurnResult) -> None:
+        selected = tuple(self._bindings[key] for key in batch.request_ids if key in self._bindings)
+        if not selected:
             return
         self._lease_owned(current=False)
         status = result.status if result.status in {'succeeded', 'failed', 'cancelled'} else 'cancelled'
-        await self._disk(lambda: self.store.finish(self.session_id, row.message.message_id,
-            generation=self.generation, attempt_id=row.attempt_id, status=status, error=result.error[:1024]))
-        self._bindings.pop(value.id, None)
+
+        async def finish(row: InboxRecord) -> None:
+            await self._disk(lambda: self.store.finish(self.session_id, row.message.message_id,
+                generation=self.generation, attempt_id=row.attempt_id, status=status, error=result.error[:1024],
+                batch_id=result.batch_id or None))
+            self._bindings.pop(row.request_id, None)
+
+        outcomes = await asyncio.gather(*(finish(row) for row in selected), return_exceptions=True)
+        for outcome in outcomes:
+            if isinstance(outcome, BaseException):
+                raise outcome
         sequence, rows = await self._read_snapshot()
         self._publish(rows, sequence)
 

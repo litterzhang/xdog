@@ -19,7 +19,7 @@ T = TypeVar("T")
 
 
 class IngressBackend:
-    extensions = {'enqueue': 1, 'inbox_status': 1, 'session_info': 1, 'resume': 1}
+    extensions = {'enqueue': 1, 'inbox_status': 1, 'session_info': 1}
 
     def __init__(self, store: InboxStore, registry: OwnerRegistry) -> None:
         self.store, self.registry = store, registry
@@ -231,7 +231,7 @@ class IngressBackend:
                                       'branch_id': r.branch_id, 'attempt_id': r.attempt_id,
                                       'request_id': r.request_id} for r in page],
                         'next_cursor': cursor + len(page) if cursor + len(page) < len(rows) else None}
-            if method not in {'xdog/session_info', 'xdog/resume'}:
+            if method != 'xdog/session_info':
                 raise RequestError(-32601, 'Unsupported ACP ingress extension')
             if set(params) != {'session_id'}:
                 raise ValueError('Expected bound session_id')

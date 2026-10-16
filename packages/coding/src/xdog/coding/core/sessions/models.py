@@ -29,6 +29,7 @@ class TurnResult:
     error: str = ""
     cause: BaseException | None = field(default=None, repr=False, compare=False)
     batch_id: str = ""
+    execution_continues: bool = False
 
 
 @dataclass(frozen=True)

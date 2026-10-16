@@ -15,6 +15,15 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from xdog.agent.session_input import SessionInput, decode_input, input_data
 from xdog.ai.types import ImageContent
+from xdog.coding.config import validate_max_messages_per_turn
+from xdog.coding.core.sessions.batches import (
+    MAX_BATCH_BYTES,
+    TurnBatch,
+    TurnInput,
+    available_input_tokens,
+    input_size,
+    member_tokens,
+)
 from xdog.coding.core.sessions.models import InputRecord, SessionEvent, Submission, TurnResult
 from xdog.coding.core.sessions.store import InputStore
 
@@ -40,6 +49,7 @@ class _Job:
     images: tuple[ImageContent, ...] = ()
     input_origin: str | None = None
     raw_text: str | None = None
+    batch_id: str = ""
 
 
 class SessionController:
@@ -50,14 +60,17 @@ class SessionController:
         session: AgentSession,
         *,
         bound: bool,
-        execute: Callable[[SessionInput], Awaitable[TurnResult]] | None = None,
+        max_messages_per_turn: int | None = None,
+        execute_batch: Callable[[TurnBatch], Awaitable[TurnResult]] | None = None,
     ) -> None:
         self.session = session
         self.bound = bound
         self.store = InputStore(session)
         self.generation = uuid.uuid4().hex
         self.branch = session.session_data.active_branch
-        self._execute = execute or self._default_execute
+        self._message_limit_override = (validate_max_messages_per_turn(max_messages_per_turn)
+                                        if max_messages_per_turn is not None else None)
+        self._execute_batch = execute_batch or self._default_execute_batch
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
@@ -71,9 +84,8 @@ class SessionController:
         self._active: asyncio.Task[None] | None = None
         self._current: _Job | None = None
         self._revoked: set[str] = set()
-        self._resume_tasks: dict[str, set[asyncio.Task[Any]]] = {}
-        self._budget = 0
-        self._budget_targets: frozenset[str] | None = None
+        self._batch: TurnBatch | None = None
+        self._batch_jobs: tuple[_Job, ...] = ()
         self._human_pending = False
         self._queue_changes = 0
         self._producers: set[str] = set()
@@ -84,6 +96,8 @@ class SessionController:
         self.on_control_settled: Callable[[], None] | None = None
         self._close_hook: Callable[[], Awaitable[None]] | None = None
         self.inbox: InboxCoordinator | None = None
+        self.before_batch: Callable[[TurnBatch], Awaitable[None]] | None = None
+        self.after_batch: Callable[[TurnBatch, TurnResult], Awaitable[None]] | None = None
         self.before_turn: Callable[[SessionInput], Awaitable[None]] | None = None
         self.after_turn: Callable[[SessionInput, TurnResult], Awaitable[None]] | None = None
         self._closing = False
@@ -106,6 +120,15 @@ class SessionController:
                 self._thread = threading.Thread(target=self._thread_main, name="xdog-session-owner", daemon=True)
                 self._thread.start()
                 self._ready.wait()
+
+    @property
+    def max_messages_per_turn(self) -> int:
+        return (self._message_limit_override if self._message_limit_override is not None else
+                validate_max_messages_per_turn(self.session.settings.max_messages_per_turn))
+
+    @max_messages_per_turn.setter
+    def max_messages_per_turn(self, value: int) -> None:
+        self._message_limit_override = validate_max_messages_per_turn(value)
 
     @property
     def busy(self) -> bool:
@@ -202,10 +225,15 @@ class SessionController:
     def _settle(future: Future[T], value: T | None = None, *, error: BaseException | None = None) -> None:
         if future.done():
             return
-        if error is not None:
-            future.set_exception(error)
-        else:
-            future.set_result(value)  # type: ignore[arg-type]
+        # Completion observers receive data, never the producer's execution authority.
+        observer_scope = _OWNER.set(None)
+        try:
+            if error is not None:
+                future.set_exception(error)
+            else:
+                future.set_result(value)  # type: ignore[arg-type]
+        finally:
+            _OWNER.reset(observer_scope)
 
     def subscribe(self, listener: Callable[[SessionEvent], None]) -> Callable[[], None]:
         self._listeners.append(listener)
@@ -217,7 +245,8 @@ class SessionController:
         return unsubscribe
 
     def _emit(self, kind: str, job: _Job, data: object) -> None:
-        event = SessionEvent(self.session.session_id, job.generation, job.value.id, kind, data)
+        event = SessionEvent(self.session.session_id, job.generation, job.value.id, kind, data, job.batch_id,
+                             self._batch.request_ids if self._in_active(job) and self._batch is not None else ())
         self._notify(event)
 
     def publish(self, kind: str, data: object) -> None:
@@ -225,18 +254,24 @@ class SessionController:
         self._notify(SessionEvent(self.session.session_id, self.generation, '', kind, data))
 
     def _notify(self, event: SessionEvent) -> None:
-        for listener in tuple(self._listeners):
-            try:
-                listener(event)
-            except Exception:
-                logger.exception("Session event consumer failed")
+        observer_scope = _OWNER.set(None)
+        try:
+            for listener in tuple(self._listeners):
+                try:
+                    listener(event)
+                except Exception:
+                    logger.exception('Session event consumer failed')
+        finally:
+            _OWNER.reset(observer_scope)
 
-    async def _default_execute(self, value: SessionInput) -> TurnResult:
-        from xdog.coding.core.sessions.turns import run_turn
+    async def _default_execute_batch(self, batch: TurnBatch) -> TurnResult:
+        from xdog.coding.core.sessions.turns import run_batch
 
-        job = self._jobs[value.id]
-        return await run_turn(self.session, value, emit=lambda event: self._emit("agent_event", job, event),
-                              images=job.images, input_origin=job.input_origin, raw_text=job.raw_text)
+        return await run_batch(self.session, batch, emit=lambda event: self._notify(SessionEvent(
+            batch.session_id, batch.generation, '', 'agent_event', event, batch.id, batch.request_ids)))
+
+    def _in_active(self, job: _Job) -> bool:
+        return any(member is job for member in self._batch_jobs)
 
     def submit(self, value: SessionInput, *, peer_id: str, images: tuple[ImageContent, ...] = (),
                input_origin: str | None = None, raw_text: str | None = None) -> Submission:
@@ -245,8 +280,15 @@ class SessionController:
             if self._closing:
                 raise RuntimeError("Session controller is closed")
             snapshot = decode_input(input_data(value))
+            if any(not isinstance(image, ImageContent) for image in images):
+                raise ValueError('Expected typed image attachments')
+            if raw_text is not None and not isinstance(raw_text, str):
+                raise ValueError('Expected message text')
+            prepared = TurnInput(snapshot, images=tuple(images), input_origin=input_origin, raw_text=raw_text)
+            if input_size(prepared) > MAX_BATCH_BYTES:
+                raise ValueError('Input exceeds per-turn byte capacity')
             job = _Job(snapshot, peer_id, ticket, self.branch, self.generation,
-                       images=images, input_origin=input_origin, raw_text=raw_text)
+                       images=prepared.images, input_origin=input_origin, raw_text=raw_text)
 
             def spawn() -> None:
                 task = asyncio.create_task(self._accept(job))
@@ -269,16 +311,12 @@ class SessionController:
                 raise ValueError("Session queue exceeds capacity")
             if job.value.id in self._jobs or job.value.id in self._admitting_jobs:
                 raise ValueError("Duplicate request identity")
-            paused = self._needs_credit(job) and not self._can_start(job)
-            record = InputRecord(job.value, job.branch, job.generation, "paused" if paused else "queued")
+            record = InputRecord(job.value, job.branch, job.generation, "queued")
             self._admitting_jobs[job.value.id] = job
             await self.store.accept(record)
             self._jobs[job.value.id] = job
             self._emit("input_" + record.status, job, record)
             self._settle(job.ticket.accepted, None)
-            if job.value.origin == "human":
-                self._budget = 1
-                self._budget_targets = None
             if self._closing or job.peer in self._revoked or job.cancelled:
                 await self._finish(job, TurnResult("cancelled", None))
             elif job.generation != self.generation:
@@ -290,14 +328,6 @@ class SessionController:
         finally:
             if self._admitting_jobs.get(job.value.id) is job:
                 self._admitting_jobs.pop(job.value.id, None)
-
-    def _needs_credit(self, job: _Job) -> bool:
-        return job.value.origin != 'human' and (
-            self.bound or self.inbox is not None and self.inbox.is_submission(job.value.id))
-
-    def _can_start(self, job: _Job) -> bool:
-        return not self._needs_credit(job) or (
-            self._budget > 0 and (self._budget_targets is None or job.value.id in self._budget_targets))
 
     def _pump(self) -> None:
         if self._closing or self._active is not None or self._queue_changes or self._producer_receipts:
@@ -324,10 +354,48 @@ class SessionController:
                     self._pump()
                 self._readiness_timer = self._loop.call_later(0.05, retry)
             return
-        selected = human or next((job for job in jobs if self._can_start(job)), None)
-        if selected is not None:
-            self._current = selected
-            self._active = asyncio.create_task(self._run_job(selected))
+        ordered = [job for job in jobs if job.value.origin == 'human']
+        ordered.extend(job for job in jobs if job.value.origin != 'human'
+                       and not (self._human_pending or self._producers))
+        message_limit = self.max_messages_per_turn
+        selected: list[_Job] = []
+        inputs: list[TurnInput] = []
+        size = 0
+        tokens = 0
+        images = 0
+        try:
+            token_limit = available_input_tokens(self.session)
+        except (ValueError, TypeError, AttributeError):
+            token_limit = None  # Actual prompt preparation will report malformed/unsupported context.
+        vision = self.session.model_info.vision_limits if self.session.model_info is not None else None
+        image_limit = min(4, vision.max_prompt_images or 4) if vision is not None else 4
+        for job in ordered:
+            if selected and (job.branch != selected[0].branch or job.generation != selected[0].generation):
+                break
+            item = TurnInput(job.value, images=job.images, input_origin=job.input_origin, raw_text=job.raw_text)
+            count = input_size(item)
+            continuation = item.input_origin == 'custom_context'
+            cost = 0 if continuation else member_tokens(item)
+            if selected and (continuation or inputs[0].input_origin == 'custom_context'
+                             or size + count > MAX_BATCH_BYTES
+                             or token_limit is not None and tokens + cost > token_limit
+                             or images + len(item.images) > image_limit):
+                break
+            selected.append(job)
+            inputs.append(item)
+            size += count
+            tokens += cost
+            images += len(item.images)
+            if len(selected) >= message_limit or continuation:
+                break
+        if selected:
+            batch = TurnBatch(uuid.uuid4().hex, self.session.session_id, selected[0].branch,
+                              selected[0].generation, tuple(inputs))
+            self._batch, self._batch_jobs = batch, tuple(selected)
+            for member in selected:
+                member.batch_id = batch.id
+            self._current = selected[0]
+            self._active = asyncio.create_task(self._run_batch(batch, tuple(selected)))
 
     async def _run_control(self, operation: Callable[[], Awaitable[Any]], future: Future[Any]) -> None:
         self._owner_token = uuid.uuid4().hex
@@ -353,62 +421,90 @@ class SessionController:
             self._active = None
             self._pump()
 
-    async def _run_job(self, job: _Job) -> None:
+    async def _run_batch(self, batch: TurnBatch, jobs: tuple[_Job, ...]) -> None:
         self._owner_token = uuid.uuid4().hex
         token = _OWNER.set((self, self._owner_token))
-        outcome = TurnResult("cancelled", None)
+        outcome = TurnResult('cancelled', None, batch_id=batch.id)
+        prepared = False
         try:
             if self._broken is not None:
-                raise RuntimeError("Session persistence is unavailable") from self._broken
-            if job.generation != self.generation:
-                outcome = TurnResult("discarded", None)
+                raise RuntimeError('Session persistence is unavailable') from self._broken
+            if batch.generation != self.generation:
+                outcome = TurnResult('discarded', None, batch_id=batch.id)
             else:
                 if self.inbox is not None:
-                    await self.inbox.starting(job.value)
-                await self.store.transition(job.value.id, "running")
-                if self.before_turn is not None:
-                    await self.before_turn(job.value)
-                self._emit("input_running", job, job.value)
-                if self._needs_credit(job):
-                    self._budget -= 1
-                outcome = await self._execute(job.value)
+                    await self.inbox.starting(batch)
+                await self.store.transition_batch(batch.request_ids, 'running', batch_id=batch.id)
+                prepared = True
+                if self.before_batch is not None:
+                    await self.before_batch(batch)
+                elif self.before_turn is not None:
+                    await self.before_turn(jobs[0].value)
+                for job in jobs:
+                    self._emit('input_running', job, job.value)
+                outcome = replace(await self._execute_batch(batch), batch_id=batch.id)
         except asyncio.CancelledError:
             if not self.session.agent.is_idle:
                 await self.session.agent.cancel_and_wait()
         except Exception as exc:
-            outcome = TurnResult("failed", None, str(exc), exc)
+            outcome = TurnResult('failed', None, str(exc), exc, batch_id=batch.id)
         finally:
             try:
-                if self.after_turn is not None:
-                    await self.after_turn(job.value, outcome)
-                await self._settle_operations()
-            except Exception as exc:
-                outcome = TurnResult("failed", outcome.response, str(exc), exc)
-            await self._finish(job, outcome)
-            self._current = None
-            self._owner_token = None
-            _OWNER.reset(token)
-            self._active = None
-            self._pump()
+                try:
+                    if prepared and self.after_batch is not None:
+                        await self.after_batch(batch, outcome)
+                    elif prepared and self.after_turn is not None:
+                        await self.after_turn(jobs[0].value, outcome)
+                except asyncio.CancelledError:
+                    if outcome.status != 'failed':
+                        outcome = replace(outcome, status='cancelled', error='Batch finalization cancelled')
+                except Exception as exc:
+                    outcome = TurnResult('failed', outcome.response, str(exc), exc, batch_id=batch.id)
+                try:
+                    await self._settle_operations()
+                except asyncio.CancelledError:
+                    if outcome.status != 'failed':
+                        outcome = replace(outcome, status='cancelled', error='Batch settlement cancelled')
+                except Exception as exc:
+                    outcome = TurnResult('failed', outcome.response, str(exc), exc, batch_id=batch.id)
+                await self._finish_jobs(jobs, outcome, batch)
+            finally:
+                self._current = None
+                self._batch, self._batch_jobs = None, ()
+                self._owner_token = None
+                _OWNER.reset(token)
+                self._active = None
+                self._pump()
 
     async def _finish(self, job: _Job, result: TurnResult) -> None:
-        if job.finishing:
+        await self._finish_jobs((job,), result)
+
+    async def _finish_jobs(self, jobs: tuple[_Job, ...], result: TurnResult, batch: TurnBatch | None = None) -> None:
+        finishing = tuple(job for job in jobs if not job.finishing)
+        if not finishing:
             return
-        job.finishing = True
+        for job in finishing:
+            job.finishing = True
         try:
             if self.inbox is not None:
-                await self.inbox.finished(job.value, result)
+                envelope = batch or TurnBatch('', self.session.session_id, finishing[0].branch,
+                    finishing[0].generation, tuple(TurnInput(job.value) for job in finishing))
+                await self.inbox.finished(envelope, result)
         except BaseException as exc:
             self._broken = exc
-            result = TurnResult("failed", result.response, "Inbox persistence failed: " + str(exc), exc)
+            result = replace(result, status='failed', error='Inbox persistence failed: ' + str(exc), cause=exc)
         try:
-            await self.store.transition(job.value.id, result.status, result.error)
+            await self.store.transition_batch(tuple(job.value.id for job in finishing), result.status,
+                                              batch_id=result.batch_id, error=result.error)
         except BaseException as exc:
             self._broken = exc
-            result = TurnResult("failed", result.response, "Session persistence failed: " + str(exc), exc)
-        self._jobs.pop(job.value.id, None)
-        self._emit("input_completed", job, replace(result, cause=None))
-        self._settle(job.ticket.result, result)
+            result = replace(result, status='failed', error='Session persistence failed: ' + str(exc), cause=exc)
+        # All durable receipts settle before any member observes a completed result.
+        for job in finishing:
+            self._jobs.pop(job.value.id, None)
+            self._emit('input_completed', job, replace(result, cause=None))
+        for job in finishing:
+            self._settle(job.ticket.result, result)
 
     def control(self, operation: Callable[[], Awaitable[T]], *, name: str) -> Future[T]:
         future: Future[T] = Future()
@@ -446,8 +542,6 @@ class SessionController:
 
     def human_input(self) -> None:
         def grant() -> None:
-            self._budget = 1
-            self._budget_targets = None
             self._pump()
 
         self._post(grant)
@@ -473,7 +567,7 @@ class SessionController:
         """Change an unselected human submission on the owner loop, not a UI mirror."""
         async def run() -> bool:
             job = self._jobs.get(request_id)
-            if (job is None or job.peer != peer_id or job is self._current or job.finishing
+            if (job is None or job.peer != peer_id or self._in_active(job) or job.finishing
                     or job.value.origin != "human"):
                 return False
             self._queue_changes += 1
@@ -488,7 +582,7 @@ class SessionController:
                     job.raw_text = content
                     self._emit("input_edited", job, changed)
                 elif action == "move" and direction in {-1, 1}:
-                    pending = [item for item in self._jobs.values() if item is not self._current
+                    pending = [item for item in self._jobs.values() if not self._in_active(item)
                                and not item.finishing and item.value.origin == "human" and item.peer == peer_id]
                     position = pending.index(job)
                     target = position + direction
@@ -520,9 +614,15 @@ class SessionController:
                 return True
             if job.peer != peer_id:
                 return False
-            if self._current is job and self._active is not None:
+            if self._in_active(job) and self._active is not None:
+                if len(self._batch_jobs) > 1:
+                    self._settle(job.ticket.result, TurnResult('cancelled', None,
+                        'Waiter detached; shared batch execution continues', batch_id=job.batch_id,
+                        execution_continues=True))
+                    return True
                 task = self._active
-                task.cancel()
+                if not task.cancelling():
+                    task.cancel()
                 if wait:
                     await asyncio.gather(task, return_exceptions=True)
             else:
@@ -534,31 +634,33 @@ class SessionController:
     def disconnect(self, peer_id: str) -> Future[None]:
         async def run() -> None:
             self._revoked.add(peer_id)
-            await self._cancel_resumes(peer_id)
-            tasks = []
             for job in tuple(self._jobs.values()):
-                if job.peer == peer_id:
-                    if self._current is job and self._active is not None:
-                        self._active.cancel()
-                        tasks.append(self._active)
+                if job.peer != peer_id:
+                    continue
+                if self._in_active(job) and self._active is not None:
+                    if len(self._batch_jobs) > 1:
+                        self._settle(job.ticket.result, TurnResult('cancelled', None,
+                            'Peer detached; shared batch execution continues', batch_id=job.batch_id,
+                            execution_continues=True))
                     else:
-                        await self._finish(job, TurnResult("cancelled", None))
+                        if not self._active.cancelling():
+                            self._active.cancel()
+                        await asyncio.gather(self._active, return_exceptions=True)
+                else:
+                    await self._finish(job, TurnResult('cancelled', None))
             admissions = [asyncio.wrap_future(job.ticket.result) for job in self._admitting_jobs.values()
                           if job.peer == peer_id]
-            if tasks or admissions:
-                await asyncio.gather(*tasks, *admissions, return_exceptions=True)
-
+            if admissions:
+                await asyncio.gather(*admissions, return_exceptions=True)
         return self._async(run)
 
     def rotate(self, branch_id: str) -> Future[None]:
         # Publish the fence before scheduling cleanup so a successor cannot start
         # on the already-mutated SessionData with the old generation.
         self.branch, self.generation = branch_id, uuid.uuid4().hex
-        self._budget = 0
-        self._budget_targets = None
         async def run() -> None:
             for job in tuple(self._jobs.values()):
-                if job is not self._current and job.generation != self.generation:
+                if not self._in_active(job) and job.generation != self.generation:
                     await self._finish(job, TurnResult("discarded", None))
         return self._async(run)
 
@@ -571,55 +673,6 @@ class SessionController:
                 await asyncio.gather(task, return_exceptions=True)
         return self._async(run)
 
-    async def _cancel_resumes(self, peer_id: str | None = None) -> None:
-        tasks = tuple(task for peer, pending in tuple(self._resume_tasks.items())
-                      if peer_id is None or peer == peer_id for task in tuple(pending))
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            receipt = asyncio.gather(*tasks, return_exceptions=True)
-            while not receipt.done():
-                try:
-                    await asyncio.shield(receipt)
-                except asyncio.CancelledError:
-                    continue
-
-    def resume(self, peer_id: str) -> Future[bool]:
-        async def run() -> bool:
-            if self._closing or peer_id in self._revoked:
-                return False
-            from xdog.agent import AgentContext, BeforeToolCallContext
-            from xdog.ai.types import AssistantMessage, ToolCall
-
-            task = asyncio.current_task()
-            assert task is not None
-            self._resume_tasks.setdefault(peer_id, set()).add(task)
-            try:
-                captured = self.generation
-                args = {"session_id": self.session.session_id, "generation": captured}
-                context = BeforeToolCallContext(
-                    assistant_message=AssistantMessage(),
-                    tool_call=ToolCall(id=uuid.uuid4().hex, name="session_resume", arguments=args),
-                    args=args,
-                    context=AgentContext(),
-                )
-                verdict = await self.session.permissions.before_tool_call(context)
-                allowed = (verdict is None and not self._closing and captured == self.generation
-                           and peer_id not in self._revoked)
-                if allowed:
-                    self._budget = 1
-                    self._budget_targets = None
-                    self._pump()
-                return allowed
-            finally:
-                pending = self._resume_tasks.get(peer_id)
-                if pending is not None:
-                    pending.discard(task)
-                    if not pending:
-                        self._resume_tasks.pop(peer_id, None)
-
-        return self._async(run)
-
     def close(self) -> Future[None]:
         if self._closing:
             return self._closed
@@ -629,7 +682,6 @@ class SessionController:
         return self._closed
 
     async def _shutdown(self) -> None:
-        await self._cancel_resumes()
         if self._readiness_timer is not None:
             self._readiness_timer.cancel()
             self._readiness_timer = None

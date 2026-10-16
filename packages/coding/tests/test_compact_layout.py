@@ -15,6 +15,8 @@ from xdog.tui.keys import KeyEvent
 from xdog.tui.tui import Component
 from xdog.tui.utils import strip_ansi
 
+from packages.coding.tests.batch_helpers import single_input_execute
+
 
 @dataclass
 class _BudgetEditor(Component):
@@ -158,7 +160,8 @@ def test_controller_exit_clears_thinking_timer(outcome: str, coding_session) -> 
         if outcome == 'error':
             raise RuntimeError('upstream failed')
         return TurnResult('cancelled' if outcome == 'cancel' else 'succeeded', None)
-    runtime.controller._execute = execute
+    runtime.controller.max_messages_per_turn = 1
+    runtime.controller._execute_batch = single_input_execute(execute)
     mode = InteractiveMode(coding_session)
     mode._set_busy(True)
     try:
@@ -270,7 +273,8 @@ def test_controller_failure_never_mutates_editor_on_owner_thread(coding_session)
     runtime = coding_session.enable_runtime(bound=True)
     async def fail(value):
         raise RuntimeError('boom')
-    runtime.controller._execute = fail
+    runtime.controller.max_messages_per_turn = 1
+    runtime.controller._execute_batch = single_input_execute(fail)
     try:
         ticket = mode._session_events.enqueue('first', (), 'user')
         assert ticket.result.result(timeout=3).status == 'failed'

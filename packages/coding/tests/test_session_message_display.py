@@ -1,11 +1,12 @@
 """Source-neutral inputs remain labelled, bounded and correlated in the transcript."""
-
 import pytest
 from xdog.agent.session_input import SessionInput
 from xdog.coding.core.sessions.models import InputRecord, SessionEvent, TurnResult
 from xdog.coding.modes.interactive.components.chat_log import ChatLog
 from xdog.coding.modes.interactive.theme import create_default_theme
 from xdog.tui.utils import strip_ansi
+
+from packages.coding.tests.batch_helpers import single_input_execute
 
 
 def text(log):
@@ -118,7 +119,8 @@ def test_native_duplicate_stream_and_late_generation_do_not_repeat_tools_or_comp
         )
         return TurnResult("failed", None, "provider failed after tool")
 
-    controller._execute = execute
+    controller.max_messages_per_turn = 1
+    controller._execute_batch = single_input_execute(execute)
     try:
         controller.human_input()
         controller.submit(value(), peer_id="acp").result.result(timeout=3)

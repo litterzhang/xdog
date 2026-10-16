@@ -548,7 +548,7 @@ async def _handle_prompt(
     if correlated:
         assert controller is not None
         def owned_event(event: Any) -> None:
-            if event.request_id == identifier and event.kind == 'agent_event':
+            if (event.request_id == identifier or identifier in event.request_ids) and event.kind == 'agent_event':
                 on_event(event.data)
         unsubscribe = controller.subscribe(owned_event)
     else:

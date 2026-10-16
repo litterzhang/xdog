@@ -8,6 +8,8 @@ from xdog.tui.components.bounded_details import BoundedDetails, DetailRecord
 from xdog.tui.keys import KeyEvent
 from xdog.tui.utils import strip_ansi
 
+from packages.coding.tests.batch_helpers import single_input_execute
+
 
 def mode():
     session = MagicMock()
@@ -517,7 +519,8 @@ def test_exit_cancels_controller_before_agent_prompt_or_compaction_finishes(monk
             await asyncio.Event().wait()
         finally:
             finished.set()
-    runtime.controller._execute = blocked_turn
+    runtime.controller.max_messages_per_turn = 1
+    runtime.controller._execute_batch = single_input_execute(blocked_turn)
     def terminal():
         app._start_turn('blocked')
         assert entered.wait(3)

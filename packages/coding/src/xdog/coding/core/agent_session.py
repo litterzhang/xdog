@@ -728,8 +728,8 @@ class AgentSession:
             raise RuntimeError("Compaction owns this session; cancel/wait before sending input")
         import json
 
-        from xdog.agent.session_input import encode_input, input_data
-        from xdog.coding.core.sessions.batches import MAX_BATCH_BYTES, input_size
+        from xdog.agent.session_input import input_data
+        from xdog.coding.core.sessions.batches import MAX_BATCH_BYTES, agent_message, input_size
 
         if not inputs or len(inputs) > 128 or len({item.value.id for item in inputs}) != len(inputs):
             raise ValueError('A turn requires distinct input messages')
@@ -782,13 +782,7 @@ class AgentSession:
                     context_images((self.agent.messages[-1],)), self.model_info))
                 event_stream = await self.agent.continue_()
             else:
-                messages: list[AgentMessage] = []
-                for item, origin in zip(inputs, origins, strict=True):
-                    if origin == 'session_input':
-                        messages.append(encode_input(item.value))
-                    else:
-                        message_text = item.raw_text if item.raw_text is not None else item.value.instruction
-                        messages.append(UserMessage(content=(TextContent(text=message_text), *item.images)))
+                messages = [agent_message(item) for item in inputs]
                 event_stream = await self.agent.prompt(messages,
                     initial_prompt_context=(lambda: self.context_messages.admit(context_snapshot))
                         if context_snapshot is not None else None)

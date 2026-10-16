@@ -1,10 +1,11 @@
 """Durable intake never implies execution approval or a second turn owner."""
-
 import asyncio
 import threading
 from dataclasses import replace
 
 import pytest
+
+from packages.coding.tests.batch_helpers import single_input_execute
 
 
 @pytest.fixture
@@ -66,7 +67,8 @@ async def test_reviewed_batch_has_one_automatic_turn_even_for_headless_owner(inb
         started.append(value.id)
         return TurnResult('succeeded',None)
 
-    runtime.controller._execute = execute
+    runtime.controller.max_messages_per_turn = 1
+    runtime.controller._execute_batch = single_input_execute(execute)
     allow(runtime)
     ids = await asyncio.wait_for(runtime.inbox.approve(('m1','m2'),peer_id='reviewer'),3)
     await wait_until(lambda: len([r for r in runtime.controller.store.records() if r.status=='succeeded'])==1)
@@ -250,7 +252,8 @@ async def test_terminal_persistence_failure_prevents_successor_execution(inbox_o
     def failed(*args,**kwargs):
         raise OSError('terminal disk failure')
 
-    runtime.controller._execute = execute
+    runtime.controller.max_messages_per_turn = 1
+    runtime.controller._execute_batch = single_input_execute(execute)
     monkeypatch.setattr(store,'finish',failed)
     ids = await runtime.inbox.approve(('m1','m2'),peer_id='reviewer')
     await wait_until(lambda:runtime.controller._broken is not None)
@@ -486,7 +489,7 @@ async def main():
  async def execute(value):
   (root/'attempts.txt').write_text('first attempt\\n')
   os._exit(19)
- runtime.controller._execute=execute
+ runtime.controller._execute_batch=execute
  await runtime.inbox.approve(('m1',),peer_id='reviewer')
  await asyncio.Event().wait()
 asyncio.run(main())
@@ -512,7 +515,8 @@ asyncio.run(main())
                 stream.write('reviewed retry\n')
             return TurnResult('succeeded',None)
 
-        runtime.controller._execute = retry
+        runtime.controller.max_messages_per_turn = 1
+        runtime.controller._execute_batch = single_input_execute(retry)
         request_id = await runtime.inbox.retry('m1',peer_id='reviewer')
         await wait_until(lambda:runtime.controller.store.records()[-1].status=='succeeded')
         updated = (await runtime.inbox.snapshot())[0]

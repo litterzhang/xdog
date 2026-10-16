@@ -1,5 +1,4 @@
 """ACP ingress routes to an existing execution owner; it never creates one."""
-
 import asyncio
 import tempfile
 from contextlib import asynccontextmanager
@@ -8,6 +7,8 @@ from pathlib import Path
 import pytest
 from acp import PROTOCOL_VERSION, RequestError, connect_to_agent
 from acp.schema import DeniedOutcome, RequestPermissionResponse, TextContentBlock
+
+from packages.coding.tests.batch_helpers import single_input_execute
 
 
 class Client:
@@ -111,7 +112,8 @@ async def test_peer_close_does_not_cancel_the_active_human_turn(coding_session, 
         await release.wait()
         return TurnResult('succeeded', None)
 
-    runtime.controller._execute = execute
+    runtime.controller.max_messages_per_turn = 1
+    runtime.controller._execute_batch = single_input_execute(execute)
     human = runtime.controller.submit(SessionInput('human', 'human', 'Human', 'Work', (), {}), peer_id='local')
     await asyncio.wait_for(entered.wait(), 3)
     with tempfile.TemporaryDirectory(prefix='acp-human-') as short:

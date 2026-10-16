@@ -1,5 +1,4 @@
 """Opening and observing an inbox is presentation, not an executable replay queue."""
-
 import asyncio
 from dataclasses import replace
 
@@ -7,6 +6,8 @@ from xdog.coding.core.sessions.models import InputRecord, SessionEvent
 from xdog.coding.modes.interactive.components.chat_log import ChatLog
 from xdog.coding.modes.interactive.theme import create_default_theme
 from xdog.tui.utils import strip_ansi
+
+from packages.coding.tests.batch_helpers import single_input_execute
 
 
 def text(log):
@@ -235,7 +236,8 @@ def test_native_inbox_read_does_not_wait_for_a_busy_model(coding_session,tmp_pat
         await asyncio.to_thread(release.wait,4)
         return TurnResult('succeeded',None)
 
-    controller._execute = execute
+    controller.max_messages_per_turn = 1
+    controller._execute_batch = single_input_execute(execute)
     try:
         ticket = ui._session_events.enqueue('A running turn',(),'user')
         assert entered.wait(3)
@@ -277,7 +279,8 @@ def test_native_inbox_query_is_not_a_new_human_wake_credit(coding_session,tmp_pa
     async def barrier():
         await asyncio.sleep(0)
 
-    runtime.controller._execute = execute
+    runtime.controller.max_messages_per_turn = 1
+    runtime.controller._execute_batch = single_input_execute(execute)
     ticket = runtime.controller.submit(
         SessionInput('older-query','acp','Other','Unapproved backlog',(),{}),peer_id='other')
     ticket.accepted.result(timeout=3)

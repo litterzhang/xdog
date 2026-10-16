@@ -43,18 +43,25 @@ class InputStore:
         result = []
         identifiers: set[str] = set()
         for row in rows:
-            if not isinstance(row, dict) or set(row) != {"input", "branch_id", "generation", "status", "error"}:
+            if (not isinstance(row, dict) or set(row) not in (
+                {"input", "branch_id", "generation", "status", "error"},
+                {"input", "branch_id", "generation", "status", "error", "batch_id"}
+            )):
                 raise ValueError("Invalid input history record")
             if row["status"] not in STATES or any(
                 not isinstance(row[key], str) for key in ("branch_id", "generation", "error")
             ):
                 raise ValueError("Invalid input history state")
+            batch_id = row.get('batch_id', '')
+            if not isinstance(batch_id, str) or '\x00' in batch_id or len(batch_id.encode()) > 256:
+                raise ValueError('Invalid input history batch identity')
             value = decode_input(row["input"])
             if value.id in identifiers:
                 raise ValueError("Duplicate input history identity")
             identifiers.add(value.id)
             status = row["status"] if row["status"] in TERMINAL else "interrupted"
-            result.append(InputRecord(value, row["branch_id"], row["generation"], status, row["error"]))
+            result.append(InputRecord(value, row["branch_id"], row["generation"], status, row["error"],
+                                      row.get("batch_id", "")))
         return tuple(result)
 
     def records(self) -> tuple[InputRecord, ...]:
@@ -71,6 +78,7 @@ class InputStore:
                 "generation": row.generation,
                 "status": row.status,
                 "error": row.error,
+                "batch_id": row.batch_id,
             }
             for row in records
         ]
@@ -125,4 +133,19 @@ class InputStore:
             rows = tuple(
                 replace(row, status=status, error=error) if row.input.id == identifier else row for row in self._records
             )
+            await self._save(rows)
+
+
+    async def transition_batch(self, identifiers: tuple[str, ...], status: str, *, batch_id: str,
+                               error: str = '') -> None:
+        async with self._lock:
+            selected = set(identifiers)
+            if (not selected or len(selected) != len(identifiers) or status not in STATES
+                    or not selected <= {row.input.id for row in self._records}):
+                raise ValueError('Invalid input batch transition')
+            if any(row.input.id in selected and row.status in TERMINAL and row.status != status
+                   for row in self._records):
+                raise ValueError('Cannot reactivate a terminal input')
+            rows = tuple(replace(row, status=status, error=error, batch_id=batch_id)
+                         if row.input.id in selected else row for row in self._records)
             await self._save(rows)

@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 
 class CodingBackend:
-    extensions = {"session_info": 1, "resume": 1, "enqueue": 1, "inbox_status": 1}
+    extensions = {"session_info": 1, "enqueue": 1, "inbox_status": 1}
 
     def __init__(
         self,
@@ -50,7 +50,6 @@ class CodingBackend:
         self._remote: dict[tuple[str, str], AcpAttachment] = {}
         self._refs: dict[tuple[str, str], SessionRef] = {}
         self._running: dict[tuple[str, str], tuple[SessionController, Submission]] = {}
-        self._control_owners: dict[tuple[str, str], SessionController] = {}
         self._remote_busy: set[tuple[str, str]] = set()
 
     def _target(self, session_id: str) -> None:
@@ -172,7 +171,7 @@ class CodingBackend:
         projector = EventProjector()
 
         def receive(event: SessionEvent) -> None:
-            if event.request_id != value.id or event.kind != "agent_event":
+            if (event.request_id != value.id and value.id not in event.request_ids) or event.kind != "agent_event":
                 return
             updates = projector.project(event.data)  # type: ignore[arg-type]
             for update in updates:
@@ -224,7 +223,8 @@ class CodingBackend:
             return PromptResponse.model_validate(
                 {
                     "stopReason": "end_turn" if result.status == "succeeded" else "cancelled",
-                    "_meta": {"xdog": {"request_id": ticket.id, "status": result.status}},
+                    "_meta": {"xdog": {"request_id": ticket.id, "status": result.status,
+                                      "batch_id": result.batch_id, "execution_continues": result.execution_continues}},
                 }
             )
         finally:
@@ -246,7 +246,6 @@ class CodingBackend:
     async def disconnect(self, peer: Peer) -> None:
         await self._inbox.disconnect(peer)
         controllers = {row[0] for key, row in self._running.items() if key[0] == peer.id}
-        controllers.update(controller for key, controller in self._control_owners.items() if key[0] == peer.id)
         for controller in controllers:
             await asyncio.wrap_future(controller.disconnect(peer.id))
         for key, remote in tuple(self._remote.items()):
@@ -261,10 +260,6 @@ class CodingBackend:
         for key in tuple(self._refs):
             if key[0] == peer.id:
                 del self._refs[key]
-        for key in tuple(self._control_owners):
-            if key[0] == peer.id:
-                del self._control_owners[key]
-
     async def extension(self, peer: Peer, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method in {'xdog/enqueue', 'xdog/inbox_status'}:
             target = params.get('session_id')
@@ -288,9 +283,7 @@ class CodingBackend:
                 "cwd": str(ref.cwd),
                 "generation": ref.generation,
                 "branch_id": controller.branch,
-                "automatic_budget": controller.bound,
+                "automatic_budget": False,
+                "max_messages_per_turn": controller.max_messages_per_turn,
             }
-        if method == "xdog/resume":
-            self._control_owners[peer.id, session_id] = controller
-            return {"resumed": await asyncio.wrap_future(controller.resume(peer.id))}
         raise RequestError(-32601, "Unsupported extension")

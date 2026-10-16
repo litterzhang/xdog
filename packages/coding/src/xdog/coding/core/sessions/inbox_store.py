@@ -410,7 +410,7 @@ class InboxStore:
                        batch_id='' if status == 'pending' else row.batch_id)
 
     def finish(self, session_id: str, message_id: str, *, generation: str, attempt_id: str,
-               status: str, error: str = '') -> InboxRecord:
+               status: str, error: str = '', batch_id: str | None = None) -> InboxRecord:
         if status not in RESOLVED | {'interrupted'}:
             raise ValueError('Invalid inbox attempt result')
         with self._locked(session_id) as (directory, working, branch):
@@ -418,7 +418,13 @@ class InboxStore:
             if (not generation or row.owner_generation != generation or row.attempt_id != attempt_id
                     or row.status not in {'claimed', 'running'}):
                 raise ValueError('Inbox result owner/attempt mismatch')
-            final = 'pending' if row.status == 'claimed' else cast(InboxState, status)
+            if batch_id is not None:
+                label(batch_id)
+                if row.status == 'running' and row.batch_id != batch_id:
+                    raise ValueError('Inbox result batch mismatch')
+                row = replace(row, batch_id=batch_id,
+                              attempts=(*row.attempts[:-1], replace(row.attempts[-1], batch_id=batch_id)))
+            final = 'pending' if row.status == 'claimed' and status == 'cancelled' else cast(InboxState, status)
             updated = self._transition(row, final, error)
             self._save(directory, updated, path)
             return updated

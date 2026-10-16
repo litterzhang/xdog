@@ -9,6 +9,8 @@ from xdog.coding.core.sessions.models import TurnResult
 from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
 from xdog.tui.utils import strip_ansi
 
+from packages.coding.tests.batch_helpers import single_input_execute
+
 
 def test_native_submits_all_inputs_without_waiting_for_a_render_tick(coding_session):
     ui = InteractiveMode(coding_session)
@@ -25,7 +27,8 @@ def test_native_submits_all_inputs_without_waiting_for_a_render_tick(coding_sess
             finished.set()
         return TurnResult('succeeded', None)
 
-    runtime.controller._execute = execute
+    runtime.controller.max_messages_per_turn = 1
+    runtime.controller._execute_batch = single_input_execute(execute)
     try:
         ui._start_turn('first')
         assert entered.wait(3)
@@ -63,7 +66,8 @@ def test_native_external_turn_uses_same_streaming_presenter(coding_session):
         controller._emit('agent_event', job, MessageStartEvent(message=AssistantMessage()))
         controller._emit('agent_event', job, MessageEndEvent(message=answer))
         return TurnResult('succeeded', answer)
-    controller._execute = execute
+    controller.max_messages_per_turn = 1
+    controller._execute_batch = single_input_execute(execute)
     try:
         controller.human_input()
         ticket = controller.submit(SessionInput('external', 'acp', 'watcher', 'review file', (), {}), peer_id='acp')
@@ -99,7 +103,8 @@ def test_terminal_callback_holds_automatic_work_until_its_cleanup(coding_session
         return TurnResult('succeeded', None)
 
     coding_session.extensions.terminal_input = terminal
-    controller._execute = execute
+    controller.max_messages_per_turn = 1
+    controller._execute_batch = single_input_execute(execute)
     ticket = None
     try:
         controller.human_input()
@@ -134,7 +139,8 @@ def test_child_control_cleanup_holds_automatic_successor(coding_session, monkeyp
         started.set()
         return TurnResult('succeeded', None)
     monkeypatch.setattr(coding_session.children.supervisor, 'control', child_control)
-    controller._execute = execute
+    controller.max_messages_per_turn = 1
+    controller._execute_batch = single_input_execute(execute)
     try:
         controller.human_input()
         if kind == 'control':
@@ -168,7 +174,8 @@ def test_cancelled_current_input_preserves_its_image_for_explicit_retry(coding_s
     async def execute(value):
         entered.set()
         await asyncio.Event().wait()
-    runtime.controller._execute = execute
+    runtime.controller.max_messages_per_turn = 1
+    runtime.controller._execute_batch = single_input_execute(execute)
     try:
         ticket = ui._session_events.enqueue('inspect', (image,), 'user')
         assert entered.wait(3)

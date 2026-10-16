@@ -1,10 +1,10 @@
 """Tests for interactive mode components."""
-
-
 from xdog.coding.modes.interactive.run_status import RunStatus
 from xdog.coding.modes.interactive.theme import (
     create_default_theme,
 )
+
+from packages.coding.tests.batch_helpers import single_input_execute
 
 
 class TestFooterComponent:
@@ -277,7 +277,8 @@ class TestInteractiveMessageHandling:
                 entered.set()
                 await asyncio.to_thread(release.wait)
             return TurnResult('succeeded', None)
-        runtime.controller._execute = execute
+        runtime.controller.max_messages_per_turn = 1
+        runtime.controller._execute_batch = single_input_execute(execute)
         try:
             first = mode._session_events.enqueue('first', (), 'user')
             assert entered.wait(3)

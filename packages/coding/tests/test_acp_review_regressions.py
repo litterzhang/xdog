@@ -1,5 +1,4 @@
 """Confirmed independent-review defects: public adapters must respect final owner state."""
-
 import asyncio
 import io
 import json
@@ -7,6 +6,8 @@ import json
 import pytest
 from xdog.ai.types import AssistantMessage, TextContent, UserMessage
 from xdog.ai.utils.event_stream import EventStream
+
+from packages.coding.tests.batch_helpers import single_input_execute
 
 
 def answer(session,text='NEW ANSWER'):
@@ -118,7 +119,8 @@ async def test_sdk_failed_status_without_exception_cause_is_not_success(coding_s
     async def failed(value):
         return TurnResult('failed',AssistantMessage(content=(TextContent(text='partial'),)),'reported failure')
 
-    runtime.controller._execute=failed
+    runtime.controller.max_messages_per_turn = 1
+    runtime.controller._execute_batch = single_input_execute(failed)
     try:
         with pytest.raises(RuntimeError,match='reported failure'):
             await coding_session.send_message('work')

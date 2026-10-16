@@ -1,10 +1,11 @@
 """One execution owner, independent of terminal or transport."""
-
 import asyncio
 import threading
 from concurrent.futures import Future
 
 import pytest
+
+from packages.coding.tests.batch_helpers import single_input_execute
 
 
 def value(identifier, origin="acp"):
@@ -34,7 +35,8 @@ async def test_control_cleanup_blocks_turn_not_input_admission(coding_session):
             entered.set()
             await asyncio.to_thread(release.wait)
 
-    controller = SessionController(coding_session, bound=True, execute=execute)
+    controller = SessionController(coding_session, bound=True, max_messages_per_turn=1,
+                                   execute_batch=single_input_execute(execute))
     controller.start()
     controller.human_input()
     try:
@@ -53,7 +55,7 @@ async def test_control_cleanup_blocks_turn_not_input_admission(coding_session):
         await asyncio.wrap_future(controller.close())
 
 
-async def test_human_priority_and_one_automatic_wake(coding_session):
+async def test_human_priority_and_consecutive_automatic_inputs_without_credit(coding_session):
     from xdog.coding.core.sessions.controller import SessionController
     from xdog.coding.core.sessions.models import TurnResult
 
@@ -63,7 +65,8 @@ async def test_human_priority_and_one_automatic_wake(coding_session):
         started.append(item.id)
         return TurnResult("succeeded", None)
 
-    controller = SessionController(coding_session, bound=True, execute=execute)
+    controller = SessionController(coding_session, bound=True, max_messages_per_turn=1,
+                                   execute_batch=single_input_execute(execute))
     controller.start()
     try:
         controller.set_human_pending(True)
@@ -77,11 +80,15 @@ async def test_human_priority_and_one_automatic_wake(coding_session):
         assert started == ["human", "a"]
         second = controller.submit(value("b"), peer_id="p1")
         await asyncio.wrap_future(second.accepted)
-        assert not second.result.done()
-        assert controller.store.records()[-1].status == "paused"
-        assert not await asyncio.wrap_future(controller.cancel(second.id, peer_id="p2"))
-        assert await asyncio.wrap_future(controller.cancel(second.id, peer_id="p1"))
-        assert (await result(second)).status == "cancelled"
+        assert (await result(second)).status == 'succeeded'
+        assert started == ['human', 'a', 'b']
+        controller.set_human_pending(True)
+        cancelled = controller.submit(value('cancel-me'), peer_id='p1')
+        await asyncio.wrap_future(cancelled.accepted)
+        assert controller.store.records()[-1].status == 'queued'
+        assert not await asyncio.wrap_future(controller.cancel(cancelled.id, peer_id='p2'))
+        assert await asyncio.wrap_future(controller.cancel(cancelled.id, peer_id='p1'))
+        assert (await result(cancelled)).status == 'cancelled'
     finally:
         await asyncio.wrap_future(controller.close())
 
@@ -150,7 +157,8 @@ async def test_storage_failure_after_execution_stops_following_model_work(coding
         started.append(item.id)
         return TurnResult("succeeded", None)
 
-    controller = SessionController(coding_session, bound=False, execute=execute)
+    controller = SessionController(coding_session, bound=False, max_messages_per_turn=1,
+                                   execute_batch=single_input_execute(execute))
     controller.start()
     commit = controller.store._commit
 
@@ -189,7 +197,8 @@ async def test_pending_human_edits_moves_and_removals_change_owner_queue(coding_
             await release.wait()
         return TurnResult('succeeded', None)
 
-    controller = SessionController(coding_session, bound=True, execute=execute)
+    controller = SessionController(coding_session, bound=True, max_messages_per_turn=1,
+                                   execute_batch=single_input_execute(execute))
     controller.start()
     tickets = []
     try:
@@ -225,7 +234,8 @@ async def test_cancellation_during_admission_cannot_start_model_after_disk_commi
     async def execute(item):
         started.append(item.id)
         return TurnResult('succeeded', None)
-    controller = SessionController(coding_session, bound=False, execute=execute)
+    controller = SessionController(coding_session, bound=False, max_messages_per_turn=1,
+                                   execute_batch=single_input_execute(execute))
     controller.start()
     commit = controller.store._commit
     def blocked(records):
@@ -246,21 +256,34 @@ async def test_cancellation_during_admission_cannot_start_model_after_disk_commi
         await asyncio.wrap_future(controller.close())
 
 
-async def test_owner_close_settles_pending_resume_approval(coding_session):
+async def test_owner_close_settles_actual_tool_permission_request(coding_session):
+    from xdog.agent import AgentTool, AgentToolResult
+    from xdog.ai.types import AssistantMessage, ToolCall
+    from xdog.ai.utils.event_stream import EventStream
     from xdog.coding.core.sessions.controller import SessionController
 
-    controller = SessionController(coding_session,bound=True)
-    controller.start()
-    requests = []
-    coding_session.permissions.set_request_handler(requests.append)
-    pending = controller.resume('peer')
+    requests, effects = [], []
+    entered = asyncio.Event()
+
+    async def execute(tool_call_id, params, cancel=None, on_update=None, ctx=None):
+        effects.append(True)
+        return AgentToolResult()
+
+    def permission(request):
+        requests.append(request)
+        entered.set()
+
+    coding_session.agent.set_tools([AgentTool(name='mutating_probe', parameters={'type': 'object'}, execute=execute)])
+    coding_session.agent.set_stream_fn(lambda *_: EventStream.empty(
+        AssistantMessage(content=(ToolCall(id='tool', name='mutating_probe', arguments={}),))))
+    coding_session.permissions.set_request_handler(permission)
+    controller = SessionController(coding_session, bound=True)
     try:
-        async with asyncio.timeout(3):
-            while not requests:
-                await asyncio.sleep(0.01)
-        await asyncio.wait_for(asyncio.wrap_future(controller.close()),3)
-        assert not coding_session.permissions.has_pending_requests
-        assert pending.done() and controller._budget==0
+        ticket = controller.submit(value('external'), peer_id='peer')
+        await asyncio.wait_for(entered.wait(), 3)
+        await asyncio.wait_for(asyncio.wrap_future(controller.close()), 3)
+        assert not effects and not coding_session.permissions.has_pending_requests
+        assert not coding_session.permissions.resolve(requests[0].id, 'allow_once')
+        assert (await result(ticket)).status == 'cancelled'
     finally:
-        pending.cancel()
-        await asyncio.gather(asyncio.wrap_future(pending),return_exceptions=True)
+        await asyncio.wrap_future(controller.close())

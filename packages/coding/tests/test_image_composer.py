@@ -17,6 +17,8 @@ from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
 from xdog.tui.attachments import attachment
 from xdog.tui.keys import KeyEvent
 
+from packages.coding.tests.batch_helpers import single_input_execute
+
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j5ioAAAAASUVORK5CYII=")
 
 
@@ -124,7 +126,8 @@ def test_coding_later_queue_failure_recovers_current_images_not_first_turn(codin
             await asyncio.to_thread(release.wait)
             return TurnResult('succeeded', None)
         raise ValueError('second failed')
-    runtime.controller._execute = execute
+    runtime.controller.max_messages_per_turn = 1
+    runtime.controller._execute_batch = single_input_execute(execute)
     try:
         ui._start_turn('first', images=(first,))
         assert entered.wait(3)
