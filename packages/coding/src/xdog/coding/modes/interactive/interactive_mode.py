@@ -247,7 +247,10 @@ class InteractiveMode:
         self._tool_components: dict[str, ToolExecutionComponent] = {}
         self._permission_prompt: PermissionPromptComponent | None = None
         self._permission_child: tuple[CodingChildren, str] | None = None
-        self._permission_waiters: deque[tuple[PermissionRequest, CodingChildren | None, str, _TurnStamp]] = deque()
+        self._permission_alive: Callable[[], bool] | None = None
+        self._permission_waiters: deque[
+            tuple[PermissionRequest, CodingChildren | None, str, Callable[[], bool]]
+        ] = deque()
         self._details_expanded = verbose
         self._details_open = verbose
         self._review_panel: ReviewPanel | None = None
@@ -3938,15 +3941,23 @@ class InteractiveMode:
                 self._layout.permission = None
                 self._restore_auxiliary_focus()
                 changed = True
+        if (self._permission_child is None and self._permission_prompt is not None
+                and self._permission_alive is not None and not self._permission_alive()):
+            self._permission_prompt = None
+            self._permission_alive = None
+            self._permission_container.clear()
+            self._layout.permission = None
+            self._restore_auxiliary_focus()
+            changed = True
         while self._permission_prompt is None and self._permission_waiters:
-            request, waiting_owner, child, stamp = self._permission_waiters.popleft()
+            request, waiting_owner, child, alive = self._permission_waiters.popleft()
             if waiting_owner is not None:
                 if waiting_owner is not self._session.children or not waiting_owner.has_pending(child, request.id):
                     continue
-            elif stamp != self._active_stamp:
+            elif not alive():
                 self._session.permissions.resolve(request.id, "deny")
                 continue
-            self._show_permission_request(request, owner=waiting_owner, child_id=child)
+            self._show_permission_request(request, owner=waiting_owner, child_id=child, alive=alive)
             changed = True
         if changed:
             self._update_hints()
@@ -4036,9 +4047,12 @@ class InteractiveMode:
             self._tui.request_render()
 
     def _show_permission_request(self, request: PermissionRequest, *, owner: CodingChildren | None = None,
-                                 child_id: str = "") -> None:
+                                 child_id: str = "", alive: Callable[[], bool] | None = None) -> None:
+        batch_alive = alive
+        stamp = self._active_stamp
+        alive = alive or (lambda: self._active_stamp == stamp)
         if self._permission_prompt is not None and (owner is not None or self._permission_child is not None):
-            self._permission_waiters.append((request, owner, child_id, self._active_stamp))
+            self._permission_waiters.append((request, owner, child_id, alive))
             return
         if owner is not None:
             request = replace(request, summary=f"Child {child_id} · independent approval\n" + request.summary)
@@ -4048,7 +4062,7 @@ class InteractiveMode:
         self._custom_presentation.sync(None, False)
         """Display a focused approval panel above the input."""
         self._permission_container.clear()
-        stamp = self._active_stamp
+        self._permission_alive = batch_alive
 
         def _decide(decision: PermissionDecision) -> None:
             if self._permission_prompt is not prompt:
@@ -4058,13 +4072,14 @@ class InteractiveMode:
                     return
                 owner.resolve(child_id, request.id, decision)
             else:
-                if self._active_stamp != stamp:
+                if not alive():
                     return
                 self._session.permissions.resolve(request.id, decision)
             self._permission_child = None
             self._permission_container.clear()
             self._layout.permission = None
             self._permission_prompt = None
+            self._permission_alive = None
             self._run_status = self._run_status.resume()
             self._update_hints()
             self._restore_auxiliary_focus()

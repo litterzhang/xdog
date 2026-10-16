@@ -407,20 +407,23 @@ def test_short_multiline_tool_result_is_compact_and_retained_in_details() -> Non
     assert "TAIL" in tool.detail_body
 
 
-async def test_delayed_permission_request_retains_originating_stamp(coding_session) -> None:
+async def test_delayed_permission_request_retains_originating_batch(coding_session) -> None:
     from xdog.coding.core.permissions import PermissionRequest
     mode = InteractiveMode(coding_session)
     origin = mode._active_stamp
     try:
-        await mode._session_events.submit('old', (), 'user')
+        result = await mode._session_events.submit('old', (), 'user')
         callback = coding_session.permissions._handler
         mode._active_stamp = type(origin)(origin.generation + 1, origin.cancel_epoch)
         callback(PermissionRequest(id='old', tool_name='bash', arguments={}, summary='old'))
         events = []
         while not mode._event_queue.empty():
             events.append(mode._event_queue.get_nowait())
-        event = next(event for event in events if event['type'] == 'permission_request')
-        assert event['stamp'] == origin
+        event = next(event for event in events if event['type'] == 'session_event'
+                     and event['event'].kind == 'permission_request')
+        assert event['event'].batch_id == result.batch_id
+        assert not event['event'].request_id  # No arbitrary batch leader owns approval.
+        assert len(event['event'].request_ids) == 1
         mode._handle_ui_event(event)
         assert mode._permission_prompt is None
     finally:

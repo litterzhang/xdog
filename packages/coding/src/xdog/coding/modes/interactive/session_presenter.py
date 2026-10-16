@@ -135,6 +135,8 @@ class SessionPresenter:
             + json.dumps(value.provenance, ensure_ascii=True, allow_nan=False)
         )
         status = f"\nRequest: {value.id}\nStatus: {record.status}"
+        if record.batch_id:
+            status += "\nBatch: " + record.batch_id
         if record.error:
             status += "\nError: " + _bounded(sanitize_terminal_text(record.error), 1024)
         row = self._inbox_requests.get(value.id)
@@ -197,9 +199,10 @@ class SessionPresenter:
                 return
             record = event.data
         elif previous is not None and event.kind == "input_running":
-            record = replace(previous, status="running")
+            record = replace(previous, status="running", batch_id=event.batch_id or previous.batch_id)
         elif previous is not None and event.kind == "input_completed" and isinstance(event.data, TurnResult):
-            record = replace(previous, status=event.data.status, error=event.data.error)
+            record = replace(previous, status=event.data.status, error=event.data.error,
+                             batch_id=event.data.batch_id or event.batch_id or previous.batch_id)
         else:
             return
         self.records[event.request_id] = record

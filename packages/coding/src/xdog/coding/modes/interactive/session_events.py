@@ -21,6 +21,8 @@ from xdog.agent import (
 )
 from xdog.agent.session_input import SessionInput
 from xdog.ai.types import AssistantMessage, TextContent
+from xdog.coding.core.permissions import PermissionRequest
+from xdog.coding.core.sessions.batches import TurnBatch
 from xdog.coding.core.sessions.models import SessionEvent, Submission, TurnResult
 from xdog.coding.modes.interactive.session_presenter import SessionHistory, capture_history
 from xdog.coding.modes.interactive.session_presenter import SessionPresenter as SessionPresenter
@@ -77,7 +79,9 @@ class NativeSessionEvents:
         self.lock = threading.RLock()
         self.unsubscribe: Any = None
         self.cancelled: set[str] = set()
-        self.display_request: str | None = None
+        self.display_batch: str | None = None
+        self.display_members: set[str] = set()
+        self.completed_batches: set[tuple[str, str]] = set()
         self.queue_sequence = 0
         self._presenter: SessionPresenter | None = None
         self.completed: set[tuple[str, str]] = set()
@@ -96,8 +100,8 @@ class NativeSessionEvents:
         self.runtime = self.ui._session.enable_runtime(bound=True)
         self.runtime.start(own_thread=True, setup_pending=True)
         controller = self.runtime.controller
-        controller.before_turn = self.prepare
-        controller.after_turn = self.finished
+        controller.before_batch = self.prepare
+        controller.after_batch = self.finished
         self.unsubscribe = controller.subscribe(self.receive)
         self.ui._session.permissions.set_request_handler(self.ui._on_permission_request)
         self.initial_history = controller._async(lambda: capture_history(self.ui._session)).result(timeout=10)
@@ -117,22 +121,20 @@ class NativeSessionEvents:
         if self.runtime is not None:
             self.runtime.controller.human_input()
 
-    async def prepare(self, value: SessionInput) -> None:
+    async def prepare(self, batch: TurnBatch) -> None:
         ui = self.ui
         ui._worker_loop_ref = asyncio.get_running_loop()
         ui._worker_task = asyncio.current_task()
         ui._bind_extension_dialogs()
         captured = ui._session.session_id
         ui._session.extensions.publish = lambda event: ui._event_queue.put({**event, 'extension_session': captured})
-        self.receipts[value.id] = ui._after_run_compaction.begin()
-        # Capture the originating turn, not a later global display stamp.
-        stamp = ui._active_stamp
-        ui._session.permissions.set_request_handler(
-            lambda request: ui._put_turn_event('permission_request', stamp=stamp, request=request))
+        self.receipts[batch.id] = ui._after_run_compaction.begin()
+        ui._session.permissions.set_request_handler(lambda request: self.receive(SessionEvent(
+            batch.session_id, batch.generation, '', 'permission_request', request, batch.id, batch.request_ids)))
 
-    async def finished(self, value: SessionInput, result: TurnResult) -> None:
+    async def finished(self, batch: TurnBatch, result: TurnResult) -> None:
         ui = self.ui
-        producer = self.receipts.pop(value.id, None)
+        producer = self.receipts.pop(batch.id, None)
         if producer is not None:
             success = result.status == 'succeeded'
             ui._after_run_compaction.finish(producer, success)
@@ -148,7 +150,7 @@ class NativeSessionEvents:
         # completed turn must never be a scheduling acknowledgement.
         if any(getattr(helper.queue, '_pending', None) is not None for helper in
                (ui._after_run_compaction, ui._after_run_tools, ui._after_run_name)):
-            token = 'native-' + value.id
+            token = 'native-' + batch.id
             self.runtime.controller.hold_producer(token)
             with self.lock:
                 self.holds.add(token)
@@ -266,13 +268,28 @@ class NativeSessionEvents:
             self.ui._chat_log.add_system('Inbox refresh unavailable: ' + str(event.data))
             return
         ui = self.ui
+        if event.kind == 'permission_request' and isinstance(event.data, PermissionRequest):
+            request = event.data
+
+            def alive() -> bool:
+                active = self.runtime.controller._batch
+                return (active is not None and active.id == event.batch_id
+                    and active.generation == event.generation
+                    and ui._session.permissions.has_pending(request.id))
+
+            if alive():
+                ui._show_permission_request(request, alive=alive)
+            return
         key = event.generation, event.request_id
-        if key in self.completed:
+        if key in self.completed or (event.kind == 'agent_event'
+                and (event.generation, event.batch_id) in self.completed_batches):
             return
         self.presenter.apply(event)
         item = self.local.get(event.request_id)
         if event.kind == 'input_running':
-            self.display_request = event.request_id
+            if self.display_batch != event.batch_id:
+                self.display_batch = event.batch_id
+                self.display_members = set(event.request_ids or (event.request_id,))
             ui._worker_active = True
             ui._cancel_requested = False
             ui._dispatch_images = item.images if item else ()
@@ -285,14 +302,14 @@ class NativeSessionEvents:
                     ui._chat_log.add_user(item.text + (f'\n[Images: {len(item.images)}]' if item.images else ''))
             self.refresh_queue()
             ui._set_busy(True)
-        elif event.kind == 'agent_event' and event.request_id not in self.cancelled:
-            if self.display_request != event.request_id:
+        elif event.kind == 'agent_event':
+            if self.display_batch != event.batch_id or not self.display_members - self.cancelled:
                 return
             sequence = getattr(event.data, 'sequence', 0)
             if sequence:
-                if sequence <= self.stream_sequences.get(event.request_id, 0):
+                if sequence <= self.stream_sequences.get(event.batch_id, 0):
                     return
-                self.stream_sequences[event.request_id] = sequence
+                self.stream_sequences[event.batch_id] = sequence
             # Projection and consumption happen on the terminal thread in FIFO
             # order. A fast successor cannot invalidate its predecessor's text.
             if isinstance(event.data, _AgentUiProjection):
@@ -319,18 +336,21 @@ class NativeSessionEvents:
             self.refresh_queue()
         elif event.kind == 'input_completed' and isinstance(event.data, TurnResult):
             self.completed.add(key)
-            self.stream_sequences.pop(event.request_id, None)
             with self.lock:
                 self.local.pop(event.request_id, None)
                 self.cancelled.discard(event.request_id)
-            if self.display_request == event.request_id:
+            if self.display_batch == event.batch_id:
+                self.display_members.discard(event.request_id)
+            if self.display_batch == event.batch_id and not self.display_members:
+                self.completed_batches.add((event.generation, event.batch_id))
+                self.stream_sequences.pop(event.batch_id, None)
                 ui._worker_active = any(value.origin == 'user' for value in self.local.values())
                 ui._active_images = ()
                 ui._set_busy(ui._worker_active)
                 ui._finalize_streaming_assistant()
                 ui._update_footer()
                 ui._update_header()
-                self.display_request = None
+                self.display_batch = None
             if event.data.status == 'failed' and item is not None:
                 ui._chat_log.add_system('Session task failed: ' + event.data.error)
             if (item and item.images and item.origin == 'user'
@@ -345,7 +365,7 @@ class NativeSessionEvents:
             self.ui._composer.restore(item.images)
             self.ui._preserve_input(item.text, 'Input not admitted: ' + error)
         self.refresh_queue()
-        if not self.local and self.display_request is None:
+        if not self.local and self.display_batch is None:
             self.ui._worker_active = False
             self.ui._set_busy(False)
 
