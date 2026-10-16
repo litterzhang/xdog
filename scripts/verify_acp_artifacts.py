@@ -127,6 +127,7 @@ from xdog.coding.core.agent_session import AgentSession
 from xdog.coding.core.session_manager import SessionManager
 from xdog.coding.core.sessions.inbox_models import InboxMessage
 from xdog.coding.core.sessions.inbox_store import InboxStore
+from xdog.coding.core.sessions.ownership import SessionLease,runtime_directory
 from xdog.coding.core.sessions.store import InputStore
 from xdog.coding.core.settings_manager import SettingsManager
 import xdog.coding.core.agent_session as module
@@ -156,12 +157,16 @@ async def main():
   history=InputStore(session).records()
   assert len(history)==6 and {row.status for row in history}=={'succeeded'}
   assert len({row.batch_id for row in history})==1
-  assert session.runtime is None and session._sdk_controller is None and session._lease is None
+  assert session.runtime is None and session._sdk_controller is None
   assert session.permissions.mode=='ask' and not session.permissions.has_pending_requests
  finally:
   session.dispose()
+ assert session._lease is None
+ replacement=SessionLease.acquire(runtime_directory(manager._dir),data.session_id)
+ replacement.close()
  print(json.dumps({'coding_owner':'wheel-only SDK owner, five durable callbacks plus independent human input',
-                   'model_calls':len(calls),'inputs':len(calls[0].messages),'message_approval':False}))
+                   'model_calls':len(calls),'inputs':len(calls[0].messages),'message_approval':False,
+                   'lease_reusable_after_dispose':True}))
 asyncio.run(main())
 '''
 
