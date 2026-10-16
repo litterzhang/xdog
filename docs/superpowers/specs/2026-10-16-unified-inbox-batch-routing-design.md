@@ -1,7 +1,7 @@
 # 统一 Inbox、通用事件路由与批量 Turn 设计
 
-日期：2026-10-16  
-状态：会话中的行为设计已获用户确认；本文为书面设计，待用户审核。产品代码尚未按本文修改。  
+日期：2026-10-16
+状态：用户于 2026-10-16 批准本文；实施计划见 `../plans/2026-10-16-unified-inbox-batch-routing.md`，待用户审核。产品代码尚未按本文修改。
 执行边界：原 checkout `/data/workspaces/pyspace/xdog`、`feat/eyes-observation`，继续 Native，不创建 worktree，不自动 push/PR/发布。
 
 ## 1. 用户确认的意图
@@ -173,4 +173,4 @@ agent 包的标准 ACP backend 不被迫依赖 coding Inbox。coding 的标准 A
 - 新 pending 自动处理不等于 running 副作用重放；旧格式迁移和取消边界明确。
 - 没有声称产品已更新，也没有以会话批准替代本书面设计及后续实施计划审核。
 
-下一步：用户审核本文；通过后编写具体文件/接口/TDD 步骤的实施计划，继续沿用 Native。实施计划获审后进入产品修改。
+下一步：审核 `../plans/2026-10-16-unified-inbox-batch-routing.md` 的具体文件/接口/TDD 步骤；继续沿用 Native，实施计划获审后进入产品修改。
