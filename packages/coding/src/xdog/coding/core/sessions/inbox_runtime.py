@@ -166,7 +166,7 @@ class InboxCoordinator:
             selected = []
             for key in ids:
                 row = by_id.get(key)
-                if row is None or row.status != ('interrupted' if retry else 'pending_review'):
+                if row is None or row.status != ('interrupted' if retry else 'pending'):
                     raise ValueError('Inbox message is not pending this explicit review/retry')
                 if row.branch_id != self.branch:
                     raise ValueError('Inbox message branch mismatch')
@@ -235,7 +235,7 @@ class InboxCoordinator:
             # approve may have committed some/all records before a failed or cancelled write receipt.
             rows = await self._disk(lambda: self.store.records(self.session_id, self.cwd))
             for row in rows:
-                if (row.message.message_id in ids and row.status == 'approved'
+                if (row.message.message_id in ids and row.status == 'claimed'
                         and row.owner_generation == self.generation):
                     await self._disk(lambda: self.store.finish(self.session_id, row.message.message_id,
                         generation=self.generation, attempt_id=row.attempt_id, status='cancelled'))

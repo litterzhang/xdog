@@ -127,7 +127,9 @@ class Peer(Agent):
         return {'session_id': 'wrong' if options.mode == 'inbox-bad-session' else 'target',
                 'message_id': 'wrong' if options.mode == 'inbox-bad-id' else key,
                 'status': 'duplicate' if duplicate else 'queued',
-                'message_state': 'unknown' if options.mode == 'inbox-bad-state' else 'pending_review',
+                'message_state': ('unknown' if options.mode == 'inbox-bad-state' else
+                                  options.mode.removeprefix('inbox-state-') if options.mode.startswith('inbox-state-')
+                                  else 'pending_review'),
                 'branch_id': 'wrong' if options.mode == 'inbox-bad-branch' else branch}
 
     async def prompt(self, session_id, prompt, **kwargs):

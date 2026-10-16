@@ -30,7 +30,7 @@ def test_message_identity_survives_store_reopen(box):
     again = InboxStore(manager._dir, store.root).enqueue(message)
     assert first.duplicate is False and again.duplicate is True
     assert first.record == again.record
-    assert first.record.status == 'pending_review'
+    assert first.record.status == 'pending'
     assert data.messages == [] and data.model == ''
     assert not list(store.root.rglob('*.sock'))
 
@@ -89,55 +89,53 @@ def test_branch_changes_do_not_rebind_duplicates_or_grant_execution(box):
     manager.save_session(data)
     duplicate = store.enqueue(message)
     assert duplicate.record.branch_id == ''
-    assert duplicate.record.status == 'pending_review'
+    assert duplicate.record.status == 'pending'
     with pytest.raises(ValueError, match='branch'):
-        store.approve(message.session_id, ('m1',), cwd=message.cwd, branch_id='branch-b', generation='g')
+        store.reserve(message.session_id, ('m1',), cwd=message.cwd, branch_id='branch-b', generation='g')
 
 
-def test_exact_approval_and_attempt_results_survive_retry(box):
+def test_exact_reservation_and_attempt_results_survive_retry(box):
     store, message, manager, data = box
     store.enqueue(message)
     store.enqueue(replace(message, message_id='m2'))
-    first = store.approve(message.session_id, ('m1',), cwd=message.cwd, branch_id='', generation='g1')[0]
-    assert first.status == 'approved' and first.attempt_id and first.request_id
-    assert store.records(message.session_id, message.cwd)[1].status == 'pending_review'
+    first = store.reserve(message.session_id, ('m1',), cwd=message.cwd, branch_id='', generation='g1')[0]
+    assert first.status == 'claimed' and first.attempt_id and first.request_id
+    assert store.records(message.session_id, message.cwd)[1].status == 'pending'
     with pytest.raises(ValueError):
-        store.claim(message.session_id, 'm1', generation='other', branch_id='',
-                    attempt_id=first.attempt_id, request_id=first.request_id)
-    running = store.claim(message.session_id, 'm1', generation='g1', branch_id='',
-                          attempt_id=first.attempt_id, request_id=first.request_id)
+        store.begin_batch(message.session_id, (first,), generation='other', batch_id='test-batch')[0]
+    running = store.begin_batch(message.session_id, (first,), generation='g1', batch_id='test-batch')[0]
     assert running.status == 'running'
     assert store.records(message.session_id, message.cwd)[0].status == 'running'  # Query never recovers a live owner.
     recovered = store.recover(message.session_id, 'g2')
     assert next(r for r in recovered if r.message.message_id == 'm1').status == 'interrupted'
-    second = store.approve(message.session_id, ('m1',), cwd=message.cwd, branch_id='', generation='g2')[0]
+    store.retry(message.session_id, 'm1', cwd=message.cwd, branch_id='')
+    second = store.reserve(message.session_id, ('m1',), cwd=message.cwd, branch_id='', generation='g2')[0]
     assert second.attempt_id != first.attempt_id and second.request_id != first.request_id
     assert second.attempts[0].status == 'interrupted'
-    store.claim(message.session_id, 'm1', generation='g2', branch_id='',
-                attempt_id=second.attempt_id, request_id=second.request_id)
+    store.begin_batch(message.session_id, (second,), generation='g2', batch_id='test-batch')[0]
     final = store.finish(message.session_id, 'm1', generation='g2', attempt_id=second.attempt_id, status='succeeded')
     assert final.status == 'succeeded'
     assert [a.status for a in final.attempts] == ['interrupted', 'succeeded']
     assert store.enqueue(message).record.status == 'succeeded'
 
 
-def test_retirement_revokes_only_selected_owner_approval(box):
+def test_retirement_releases_only_selected_owner_claims(box):
     store, message, manager, data = box
     store.enqueue(message)
     store.enqueue(replace(message, message_id='m2'))
-    store.approve(message.session_id, ('m1',), cwd=message.cwd, branch_id='', generation='g1')
-    store.approve(message.session_id, ('m2',), cwd=message.cwd, branch_id='', generation='g2')
+    store.reserve(message.session_id, ('m1',), cwd=message.cwd, branch_id='', generation='g1')
+    store.reserve(message.session_id, ('m2',), cwd=message.cwd, branch_id='', generation='g2')
     store.retire(message.session_id, 'g1')
-    assert [r.status for r in store.records(message.session_id, message.cwd)] == ['pending_review', 'approved']
+    assert [r.status for r in store.records(message.session_id, message.cwd)] == ['pending', 'claimed']
 
 
 @pytest.mark.parametrize('selection', [(), ('m1', 'm1'), ('m1', 'missing')])
-def test_bad_batch_approval_is_not_partially_applied(box, selection):
+def test_bad_batch_reservation_is_not_partially_applied(box, selection):
     store, message, manager, data = box
     store.enqueue(message)
     with pytest.raises(ValueError):
-        store.approve(message.session_id, selection, cwd=message.cwd, branch_id='', generation='g')
-    assert store.records(message.session_id, message.cwd)[0].status == 'pending_review'
+        store.reserve(message.session_id, selection, cwd=message.cwd, branch_id='', generation='g')
+    assert store.records(message.session_id, message.cwd)[0].status == 'pending'
 
 
 def test_pending_capacity_rejects_new_messages_but_not_duplicates(box):
@@ -197,15 +195,20 @@ def test_corrupt_or_duplicate_authoritative_records_fail_closed(box):
 def test_terminal_identity_capacity_does_not_evict_dedup_records(box):
     store, message, manager, data = box
     store.enqueue(message)
-    attempt = store.approve(message.session_id, ('m1',), cwd=message.cwd, branch_id='', generation='g')[0]
-    store.claim(message.session_id, 'm1', generation='g', branch_id='',
-                attempt_id=attempt.attempt_id, request_id=attempt.request_id)
+    attempt = store.reserve(message.session_id, ('m1',), cwd=message.cwd, branch_id='', generation='g')[0]
+    store.begin_batch(message.session_id, (attempt,), generation='g', batch_id='test-batch')[0]
     store.finish(message.session_id, 'm1', generation='g', attempt_id=attempt.attempt_id, status='succeeded')
     path = next(store.root.rglob('*.json'))
     template = json.loads(path.read_text())
     for index in range(4095):
         key = f'old-{index}'
         template['message']['message_id'] = key
+        template['sequence'] = index + 2
+        template['request_id'] = f'old-request-{index}'
+        template['attempt_id'] = f'old-attempt-{index}'
+        template['batch_id'] = f'old-batch-{index}'
+        template['attempts'][-1].update(id=template['attempt_id'], request_id=template['request_id'],
+                                         batch_id=template['batch_id'])
         target = path.parent/(hashlib.sha256(key.encode()).hexdigest()+'.json')
         target.write_text(json.dumps(template))
         target.chmod(0o600)
@@ -249,7 +252,7 @@ def test_disk_failures_never_acknowledge_or_overwrite_another_identity(box, monk
         store.enqueue(replace(message, message_id='unacked'))
     monkeypatch.setattr(os, 'fsync', original)
     assert store.enqueue(message).duplicate
-    assert store.enqueue(replace(message, message_id='unacked')).record.status == 'pending_review'
+    assert store.enqueue(replace(message, message_id='unacked')).record.status == 'pending'
 
 
 @pytest.mark.parametrize('boundary', range(1, 9))
@@ -292,9 +295,8 @@ def test_record_cannot_claim_another_workspace(box, tmp_path):
 def test_corrupt_attempt_authority_is_not_loaded(box, change):
     store, message, manager, data = box
     store.enqueue(message)
-    a = store.approve(message.session_id, ('m1',), cwd=message.cwd, branch_id='', generation='g')[0]
-    store.claim(message.session_id, 'm1', generation='g', branch_id='',
-                attempt_id=a.attempt_id, request_id=a.request_id)
+    a = store.reserve(message.session_id, ('m1',), cwd=message.cwd, branch_id='', generation='g')[0]
+    store.begin_batch(message.session_id, (a,), generation='g', batch_id='test-batch')[0]
     path = next(store.root.rglob('*.json'))
     raw = json.loads(path.read_text())
     if change == 'running-without-attempt':

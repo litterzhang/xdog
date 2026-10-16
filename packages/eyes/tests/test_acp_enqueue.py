@@ -259,3 +259,16 @@ async def test_close_settles_an_explicit_reconnect_that_is_still_initializing(tm
             task.cancel()
             await asyncio.gather(task,return_exceptions=True)
         await handler.close()
+
+
+@pytest.mark.parametrize('state', ['pending', 'claimed'])
+async def test_v2_inbox_states_are_valid_durable_receipts(tmp_path, state):
+    from xdog.eyes.handlers.acp import AcpHandler
+
+    handler = AcpHandler(enqueue_definition(tmp_path / 'peer.jsonl', mode='inbox-state-' + state), cwd=tmp_path)
+    try:
+        await handler.start()
+        result = await handler.deliver(delivery())
+        assert result.status == 'queued' and result.message_state == state
+    finally:
+        await handler.close()

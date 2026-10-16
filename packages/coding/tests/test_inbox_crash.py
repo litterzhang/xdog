@@ -9,7 +9,7 @@ from packages.coding.tests.test_inbox_store import box as inbox_box
 box = inbox_box
 
 
-def test_running_process_crash_requires_new_owner_review(box):
+def test_running_process_crash_requires_explicit_retry(box):
     store, message, manager, data = box
     store.enqueue(message)
     script = '''
@@ -17,8 +17,8 @@ import os,sys
 from pathlib import Path
 from xdog.coding.core.sessions.inbox_store import InboxStore
 s=InboxStore(Path(sys.argv[1]),Path(sys.argv[2]))
-a=s.approve(sys.argv[3],('m1',),cwd=Path(sys.argv[4]),branch_id='',generation='old')[0]
-s.claim(sys.argv[3],'m1',generation='old',branch_id='',attempt_id=a.attempt_id,request_id=a.request_id)
+a=s.reserve(sys.argv[3],('m1',),cwd=Path(sys.argv[4]),branch_id='',generation='old')
+s.begin_batch(sys.argv[3],a,generation='old',batch_id='crash-batch')
 os._exit(17)
 '''
     process = subprocess.run([sys.executable, '-c', script, str(manager._dir), str(store.root),
@@ -34,9 +34,8 @@ os._exit(17)
 def test_terminal_fact_survives_death_between_publication_and_directory_move(box, monkeypatch):
     store, message, manager, data = box
     store.enqueue(message)
-    a = store.approve(message.session_id, ('m1',), cwd=message.cwd, branch_id='', generation='g')[0]
-    store.claim(message.session_id, 'm1', generation='g', branch_id='',
-                attempt_id=a.attempt_id, request_id=a.request_id)
+    a = store.reserve(message.session_id, ('m1',), cwd=message.cwd, branch_id='', generation='g')[0]
+    store.begin_batch(message.session_id, (a,), generation='g', batch_id='test-batch')[0]
     original = os.replace
 
     def fail_move(source, target, **kwargs):

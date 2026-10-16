@@ -147,11 +147,11 @@ class AcpClient:
         if self.conn is None or 'enqueue' not in self.extensions:
             raise RuntimeError('Durable enqueue is not negotiated')
         result = await self.conn.ext_method('xdog/enqueue', parameters)
-        states = {'pending_review', 'approved', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted'}
+        states = {'pending', 'claimed', 'pending_review', 'approved', 'running',
+                  'succeeded', 'failed', 'cancelled', 'interrupted'}
         if (result.get('session_id') != self.session_id or result.get('message_id') != parameters['message_id']
                 or result.get('branch_id') != self.branch_id or result.get('status') not in {'queued', 'duplicate'}
-                or result.get('message_state') not in states
-                or result.get('status') == 'queued' and result.get('message_state') != 'pending_review'):
+                or result.get('message_state') not in states):
             raise ValueError('Invalid durable enqueue receipt; acceptance is unknown')
         return result
 

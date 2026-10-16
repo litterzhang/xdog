@@ -192,7 +192,44 @@ class InboxStore:
                 if path.name != _key(key) or row.message.session_id != directory.name:
                     raise ValueError('Inbox file/message identity mismatch')
                 result[key] = path, row
+        sequences = [row.sequence for _, row in result.values() if row.sequence]
+        if len(set(sequences)) != len(sequences):
+            raise ValueError('Duplicate inbox intake sequence')
+        next_sequence = max([self._sequence(directory), *sequences])
+        for key, (path, row) in sorted(result.items()):
+            if row.sequence == 0:
+                next_sequence += 1
+                self._save_sequence(directory, next_sequence)
+                row = replace(row, sequence=next_sequence)
+                path = self._save(directory, row, path)
+                result[key] = path, row
         return result
+
+    @staticmethod
+    def _sequence(directory: Path) -> int:
+        path = directory / '.sequence'
+        if not path.exists() and not path.is_symlink():
+            return 0
+        value = _read(path, 4096)
+        if type(value) is not int or not 0 <= value < 2**63:
+            raise ValueError('Invalid inbox sequence counter')
+        return value
+
+    @staticmethod
+    def _save_sequence(directory: Path, sequence: int) -> None:
+        if type(sequence) is not int or not 0 < sequence < 2**63:
+            raise ValueError('Inbox sequence capacity exceeded')
+        fd, name = tempfile.mkstemp(prefix='.sequence-', dir=directory)
+        try:
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(encoded(sequence, 4096))
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(name, directory / '.sequence')
+            _sync_directory(directory)
+        finally:
+            if os.path.exists(name):
+                os.unlink(name)
 
     def _save(self, directory: Path, record: InboxRecord, old: Path | None = None) -> Path:
         destination = directory / _folder(record) / _key(record.message.message_id)
@@ -231,65 +268,125 @@ class InboxStore:
                 return EnqueueReceipt(True, row)
             if len(rows) >= MAX_RECORDS or sum(r.status not in RESOLVED for _, r in rows.values()) >= MAX_PENDING:
                 raise ValueError('Inbox capacity exceeded; explicit review/archive required')
-            row = InboxRecord(message, branch, 'pending_review')
+            sequence = max([self._sequence(directory), *(r.sequence for _, r in rows.values())]) + 1
+            self._save_sequence(directory, sequence)
+            row = InboxRecord(message, branch, 'pending', sequence=sequence)
             self._save(directory, row)
             return EnqueueReceipt(False, row)
 
     def records(self, session_id: str, cwd: Path) -> tuple[InboxRecord, ...]:
         with self._locked(session_id, cwd) as (directory, working, branch):
             rows = self._scan(directory, working)
-            return tuple(row for key, (path, row) in sorted(rows.items()))
+            return tuple(sorted((row for _, row in rows.values()), key=lambda row: row.sequence))
 
-    def approve(self, session_id: str, message_ids: tuple[str, ...], *, cwd: Path,
+    def reserve(self, session_id: str, message_ids: tuple[str, ...], *, cwd: Path,
                 branch_id: str, generation: str,
                 expected: tuple[InboxRecord, ...] | None = None) -> tuple[InboxRecord, ...]:
         label(generation)
         label(branch_id, empty=True)
-        if not message_ids or len(set(message_ids)) != len(message_ids):
-            raise ValueError('Approval requires distinct explicit message IDs')
-        reviewed = {r.message.message_id: r for r in expected} if expected is not None else None
+        if (not isinstance(message_ids, tuple) or not message_ids
+                or any(not isinstance(key, str) for key in message_ids)
+                or len(set(message_ids)) != len(message_ids)):
+            raise ValueError('Reservation requires distinct explicit message IDs')
+        reviewed = {row.message.message_id: row for row in expected} if expected is not None else None
         if reviewed is not None and (set(reviewed) != set(message_ids) or len(reviewed) != len(expected or ())):
             raise ValueError('Inbox reviewed selection changed')
         with self._locked(session_id, cwd) as (directory, working, branch):
             rows = self._scan(directory, working)
             if branch_id != branch:
-                raise ValueError('Inbox approval branch mismatch')
+                raise ValueError('Inbox reservation branch mismatch')
             selected = []
             for key in message_ids:
-                previous = rows.get(label(key))
-                if previous is None:
-                    raise ValueError('Unknown inbox message')
-                path, row = previous
-                if reviewed is not None and (
-                    encoded(record_data(row), MAX_RECORD_BYTES)
-                    != encoded(record_data(reviewed[key]), MAX_RECORD_BYTES)
+                path, row = self._selected(rows, key)
+                if reviewed is not None and encoded(record_data(row), MAX_RECORD_BYTES) != encoded(
+                    record_data(reviewed[key]), MAX_RECORD_BYTES
                 ):
                     raise ValueError('Inbox content/state changed after review')
                 if row.branch_id != branch:
                     raise ValueError('Inbox message branch mismatch')
-                if row.status not in {'pending_review', 'interrupted'}:
-                    raise ValueError('Inbox message is not pending explicit review')
-                attempt = InboxAttempt(uuid.uuid4().hex, uuid.uuid4().hex, generation, branch, 'approved')
-                updated = replace(row, status='approved', owner_generation=generation, attempt_id=attempt.id,
-                                  request_id=attempt.request_id, error='', attempts=row.attempts + (attempt,))
+                if row.status != 'pending':
+                    raise ValueError('Inbox message is not pending in the current context')
+                attempt = InboxAttempt(uuid.uuid4().hex, uuid.uuid4().hex, generation, branch, 'claimed')
+                updated = replace(row, status='claimed', owner_generation=generation, attempt_id=attempt.id,
+                                  request_id=attempt.request_id, error='', batch_id='',
+                                  attempts=row.attempts + (attempt,))
                 encoded(record_data(updated), MAX_RECORD_BYTES)
                 selected.append((path, updated))
             for path, updated in selected:
                 self._save(directory, updated, path)
             return tuple(row for path, row in selected)
 
-    def claim(self, session_id: str, message_id: str, *, generation: str, branch_id: str,
-              attempt_id: str, request_id: str) -> InboxRecord:
+    def begin_batch(self, session_id: str, records: tuple[InboxRecord, ...], *, batch_id: str,
+                    generation: str) -> tuple[InboxRecord, ...]:
+        label(batch_id)
+        label(generation)
+        if not records or len({r.message.message_id for r in records}) != len(records):
+            raise ValueError('Batch requires distinct claimed records')
         with self._locked(session_id) as (directory, working, branch):
             rows = self._scan(directory, working)
-            path, row = self._selected(rows, message_id)
-            if (row.status != 'approved' or row.owner_generation != generation or not generation
-                    or row.branch_id != branch_id or branch != branch_id
-                    or row.attempt_id != attempt_id or row.request_id != request_id):
-                raise ValueError('Inbox claim context/attempt mismatch')
-            updated = self._transition(row, 'running')
+            selected = []
+            for expected in records:
+                path, row = self._selected(rows, expected.message.message_id)
+                if (encoded(record_data(row), MAX_RECORD_BYTES) != encoded(record_data(expected), MAX_RECORD_BYTES)
+                        or row.status != 'claimed' or row.owner_generation != generation
+                        or row.branch_id != branch or row.message.cwd != working):
+                    raise ValueError('Inbox batch claim context/attempt mismatch')
+                updated = self._transition(row, 'running')
+                updated = replace(updated, batch_id=batch_id,
+                                  attempts=(*updated.attempts[:-1], replace(updated.attempts[-1], batch_id=batch_id)))
+                encoded(record_data(updated), MAX_RECORD_BYTES)
+                selected.append((path, updated))
+            for path, updated in selected:
+                self._save(directory, updated, path)
+            return tuple(row for path, row in selected)
+
+    def release_unstarted(self, session_id: str, message_ids: tuple[str, ...], *, generation: str) -> None:
+        label(generation)
+        with self._locked(session_id) as (directory, working, branch):
+            rows = self._scan(directory, working)
+            for key in message_ids:
+                path, row = self._selected(rows, key)
+                if row.status == 'claimed' and row.owner_generation == generation:
+                    self._save(directory, self._transition(row, 'pending', 'Unstarted owner claim released'), path)
+
+    def retry(self, session_id: str, message_id: str, *, cwd: Path, branch_id: str) -> InboxRecord:
+        with self._locked(session_id, cwd) as (directory, working, branch):
+            path, row = self._selected(self._scan(directory, working), message_id)
+            if row.status != 'interrupted' or row.branch_id != branch or branch_id != branch:
+                raise ValueError('Only an interrupted current-branch message can retry')
+            updated = replace(row, status='pending', owner_generation='', attempt_id='', request_id='', batch_id='',
+                              error='Explicit retry after interrupted attempt')
             self._save(directory, updated, path)
             return updated
+
+    def cancel_pending(self, session_id: str, message_id: str, *, cwd: Path, branch_id: str,
+                       generation: str) -> InboxRecord:
+        label(generation)
+        with self._locked(session_id, cwd) as (directory, working, branch):
+            path, row = self._selected(self._scan(directory, working), message_id)
+            if (row.branch_id != branch or branch_id != branch or row.status not in {'pending', 'claimed'}
+                    or row.status == 'claimed' and row.owner_generation != generation):
+                raise ValueError('Inbox message is not cancellable in this owner context')
+            updated = self._transition(row, 'cancelled', 'Cancelled before execution')
+            self._save(directory, updated, path)
+            return updated
+
+    def approve(self, session_id: str, message_ids: tuple[str, ...], *, cwd: Path,
+                branch_id: str, generation: str,
+                expected: tuple[InboxRecord, ...] | None = None) -> tuple[InboxRecord, ...]:
+        """Temporary old-coordinator adapter; removed with that coordinator in Task 5."""
+        return self.reserve(session_id, message_ids, cwd=cwd, branch_id=branch_id,
+                            generation=generation, expected=expected)
+
+    def claim(self, session_id: str, message_id: str, *, generation: str, branch_id: str,
+              attempt_id: str, request_id: str) -> InboxRecord:
+        """Temporary singleton adapter; real scheduling uses begin_batch."""
+        working, branch = self.identity(session_id)
+        row = next((row for row in self.records(session_id, working) if row.message.message_id == message_id), None)
+        if (row is None or row.branch_id != branch_id or branch != branch_id
+                or row.attempt_id != attempt_id or row.request_id != request_id):
+            raise ValueError('Inbox claim context/attempt mismatch')
+        return self.begin_batch(session_id, (row,), generation=generation, batch_id=uuid.uuid4().hex)[0]
 
     @staticmethod
     def _selected(rows: dict[str, tuple[Path, InboxRecord]], message_id: str) -> tuple[Path, InboxRecord]:
@@ -301,14 +398,16 @@ class InboxStore:
     @staticmethod
     def _transition(row: InboxRecord, status: InboxState, error: str = '') -> InboxRecord:
         label(error, empty=True, maximum=4096)
-        attempt_status = 'cancelled' if status == 'pending_review' else status
+        attempt_status = 'cancelled' if status == 'pending' else status
+        preserve_history = status == 'pending' and row.status == 'interrupted'
         attempts = row.attempts
-        if row.attempt_id:
+        if row.attempt_id and not preserve_history:
             attempts = attempts[:-1] + (replace(attempts[-1], status=attempt_status, error=error),)
         return replace(row, status=status, error=error, attempts=attempts,
-                       owner_generation='' if status in {'pending_review', 'interrupted'} else row.owner_generation,
-                       attempt_id='' if status == 'pending_review' else row.attempt_id,
-                       request_id='' if status == 'pending_review' else row.request_id)
+                       owner_generation='' if status in {'pending', 'interrupted'} else row.owner_generation,
+                       attempt_id='' if status == 'pending' else row.attempt_id,
+                       request_id='' if status == 'pending' else row.request_id,
+                       batch_id='' if status == 'pending' else row.batch_id)
 
     def finish(self, session_id: str, message_id: str, *, generation: str, attempt_id: str,
                status: str, error: str = '') -> InboxRecord:
@@ -317,9 +416,9 @@ class InboxStore:
         with self._locked(session_id) as (directory, working, branch):
             path, row = self._selected(self._scan(directory, working), message_id)
             if (not generation or row.owner_generation != generation or row.attempt_id != attempt_id
-                    or row.status not in {'approved', 'running'}):
+                    or row.status not in {'claimed', 'running'}):
                 raise ValueError('Inbox result owner/attempt mismatch')
-            final = 'pending_review' if row.status == 'approved' else cast(InboxState, status)
+            final = 'pending' if row.status == 'claimed' else cast(InboxState, status)
             updated = self._transition(row, final, error)
             self._save(directory, updated, path)
             return updated
@@ -335,11 +434,12 @@ class InboxStore:
         with self._locked(session_id) as (directory, working, branch):
             rows = self._scan(directory, working)
             result = []
-            for key, (path, row) in sorted(rows.items()):
+            for path, row in sorted(rows.values(), key=lambda item: item[1].sequence):
                 stale = row.owner_generation == generation if retiring else row.owner_generation != generation
-                if stale and row.status in {'approved', 'running'}:
-                    row = self._transition(row, 'pending_review' if row.status == 'approved' else 'interrupted',
-                                           'Owner retired; explicit review required')
+                if stale and row.status in {'claimed', 'running'}:
+                    error = ('Owner retired before start' if row.status == 'claimed'
+                             else 'Owner interrupted during execution')
+                    row = self._transition(row, 'pending' if row.status == 'claimed' else 'interrupted', error)
                     self._save(directory, row, path)
                 elif path.parent.name != _folder(row):
                     self._save(directory, row, path)
