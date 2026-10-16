@@ -20,7 +20,7 @@ def definition(data,address,sid,root,delivery):
     return result
 
 
-async def test_file_to_acp_coding_turn_then_self_edit_budget_pause(tmp_path,observer_data,coding_session):
+async def test_file_to_acp_coding_turn_then_self_edit_is_automatically_consumed(tmp_path,observer_data,coding_session):
     from xdog.ai.types import AssistantMessage, TextContent
     from xdog.ai.utils.event_stream import EventStream
     from xdog.coding.core.sessions.runtime import SessionRuntime
@@ -44,7 +44,6 @@ async def test_file_to_acp_coding_turn_then_self_edit_budget_pause(tmp_path,obse
     owner = SessionRuntime(coding_session,bound=True)
     owner.start()
     await owner.open_endpoint()
-    owner.controller.human_input()
     runtime = ObserverRuntime(runtime_location(tmp_path))
     identifier = (await runtime.start(definition(observer_data,owner.record.address,coding_session.session_id,
                                                 tmp_path,'prompt')))['registration_id']
@@ -53,14 +52,8 @@ async def test_file_to_acp_coding_turn_then_self_edit_budget_pause(tmp_path,obse
         changed.write_text('human edit')
         await wait_for(lambda:len(turns)==1)
         await wait_for(lambda:len(owner.controller.store.records())==2)
-        assert owner.controller.store.records()[1].status=='paused'
-        assert len(turns)==1 and changed.read_text()=='agent edit'
-        coding_session.permissions.set_mode('deny')
-        assert not await runtime.resume_entry(identifier)
-        assert len(turns)==1
-        coding_session.permissions.set_mode('allow-all')
-        assert await runtime.resume_entry(identifier)
         await wait_for(lambda:len(turns)==2 and owner.controller.store.records()[-1].status=='succeeded')
+        assert changed.read_text()=='agent edit'
         log = ChatLog(create_default_theme())
         snapshot = await capture_history(coding_session)
         SessionPresenter(log).replay(snapshot.records,snapshot.messages,snapshot.inbox)

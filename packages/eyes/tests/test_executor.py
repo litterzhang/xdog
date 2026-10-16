@@ -375,7 +375,7 @@ async def test_unknown_receipt_retries_only_an_explicitly_resumed_durable_route(
 
     async def send(item):
         sent.append(item)
-        return (DeliveryResult('outcome-unknown','lost',retry_on_resume=True)
+        return (DeliveryResult('outcome-unknown','lost',retry_on_resume=mode == 'enqueue')
                 if len(sent)==1 else DeliveryResult('queued'))
 
     def emit(event):

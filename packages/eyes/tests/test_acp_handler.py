@@ -6,8 +6,8 @@ import sys
 from pathlib import Path
 
 import pytest
-from xdog.eyes.executor import Delivery
-from xdog.eyes.models import Event, FileEvidence, FileState, HandlerDef
+from xdog.eyes.deliveries import Delivery
+from xdog.eyes.models import AcpHandlerDef, Event, FileEvidence, FileState
 
 
 def definition(record, *, mode="success", xdog=False, gate=None):
@@ -25,7 +25,7 @@ def definition(record, *, mode="success", xdog=False, gate=None):
         argv.extend(["--gate", str(gate)])
     from xdog.eyes.connections import StdioConnection
 
-    return HandlerDef("handler", "acp", StdioConnection(tuple(argv)), "target", "Review tests")
+    return AcpHandlerDef("handler", "acp", StdioConnection(tuple(argv)), "target", "Review tests")
 
 
 def delivery(identifier="d1"):
@@ -34,7 +34,6 @@ def delivery(identifier="d1"):
         identifier,
         "registration",
         "route",
-        "Review tests",
         (Event("event", "files", "changes", "file.created", 1.0, (evidence,)),),
     )
 
@@ -55,7 +54,7 @@ async def test_generic_sdk_agent_gets_explicit_target_and_untrusted_evidence(tmp
     record = tmp_path / "record;touch should-not-exist"
     handler = AcpHandler(definition(record), cwd=tmp_path)
     try:
-        await handler.connect()
+        await handler.start()
         assert handler.owner_generation is None
         result = await handler.deliver(delivery())
         assert result.status == "succeeded"
@@ -85,7 +84,7 @@ async def test_update_is_not_completion_and_shared_handler_serializes_prompts(tm
     handler = AcpHandler(definition(record, mode="wait", gate=gate), cwd=tmp_path)
     first = second = None
     try:
-        await handler.connect()
+        await handler.start()
         first = asyncio.create_task(handler.deliver(delivery()))
         await wait_for(lambda: any(row["kind"] == "update" for row in rows(record)))
         second = asyncio.create_task(handler.deliver(delivery("d2")))
@@ -94,9 +93,9 @@ async def test_update_is_not_completion_and_shared_handler_serializes_prompts(tm
         assert len([row for row in rows(record) if row["kind"] == "prompt"]) == 1
         gate.touch()
         assert (await first).status == "succeeded"
-        assert (await second).status == "paused"
+        assert (await second).status == "succeeded"
         assert not await handler.resume()  # Generic ACP has no authorized resume extension.
-        assert [row["concurrent"] for row in rows(record) if row["kind"] == "prompt"] == [1]
+        assert [row["concurrent"] for row in rows(record) if row["kind"] == "prompt"] == [1, 1]
     finally:
         for task in (first, second):
             if task is not None and not task.done():
@@ -122,7 +121,7 @@ async def test_explicit_result_and_disconnect_have_distinct_semantics(tmp_path, 
     handler = AcpHandler(definition(record, mode=mode), cwd=tmp_path)
     try:
         async with asyncio.timeout(8):
-            await handler.connect()
+            await handler.start()
             result = await handler.deliver(delivery())
         assert result.status == status
         if mode == "permission":
@@ -143,7 +142,7 @@ async def test_extensions_are_used_only_when_negotiated_and_do_not_follow_a_new_
     record = tmp_path / "record"
     handler = AcpHandler(definition(record, mode="changed-owner", xdog=True), cwd=tmp_path)
     try:
-        await handler.connect()
+        await handler.start()
         assert handler.owner_generation == "g1"
         assert (await handler.deliver(delivery())).status == "cancelled"
         assert not [row for row in rows(record) if row["kind"] == "prompt"]
@@ -151,15 +150,15 @@ async def test_extensions_are_used_only_when_negotiated_and_do_not_follow_a_new_
         await handler.close()
 
 
-async def test_resume_is_an_explicit_negotiated_permission_request(tmp_path):
+async def test_resume_does_not_request_message_execution_permission(tmp_path):
     from xdog.eyes.handlers.acp import AcpHandler
 
     record = tmp_path / "record"
     handler = AcpHandler(definition(record, mode="deny-resume", xdog=True), cwd=tmp_path)
     try:
-        await handler.connect()
+        await handler.start()
         assert not await handler.resume()
-        assert len([row for row in rows(record) if row["kind"] == "extension" and row["method"] == "xdog/resume"]) == 1
+        assert len([row for row in rows(record) if row["kind"] == "extension" and row["method"] == "xdog/resume"]) == 0
         assert not [row for row in rows(record) if row["kind"] == "prompt"]
     finally:
         await handler.close()
@@ -172,46 +171,38 @@ async def test_load_support_and_exact_session_are_required_before_any_prompt(tmp
     handler = AcpHandler(definition(record, mode="no-load"), cwd=tmp_path)
     try:
         with pytest.raises(ValueError, match="load"):
-            await handler.connect()
+            await handler.start()
         assert not [row for row in rows(record) if row["kind"] in {"load", "prompt"}]
     finally:
         await handler.close()
     assert handler.process.returncode is not None
 
 
-async def test_target_managed_pending_prompt_resumes_without_reissuing_it(tmp_path):
+async def test_negotiated_target_extensions_do_not_require_a_resume_request(tmp_path):
     from xdog.eyes.handlers.acp import AcpHandler
 
-    record = tmp_path / "record"
+    record = tmp_path / 'record'
     handler = AcpHandler(definition(record, xdog=True), cwd=tmp_path)
-    pending = None
     try:
-        await handler.connect()
-        assert (await handler.deliver(delivery())).status == "succeeded"
-        pending = asyncio.create_task(handler.deliver(delivery("d2")))
-        await asyncio.sleep(0.05)
-        assert not pending.done()
-        assert len([row for row in rows(record) if row["kind"] == "prompt"]) == 1
-        assert await handler.resume()
-        assert (await pending).status == "succeeded"
-        assert len([row for row in rows(record) if row["kind"] == "received"]) == 2
-        assert [row["concurrent"] for row in rows(record) if row["kind"] == "prompt"] == [1, 1]
+        await handler.start()
+        for identifier in ('first', 'second'):
+            assert (await handler.deliver(delivery(identifier))).status == 'succeeded'
+        assert len([row for row in rows(record) if row['kind'] == 'received']) == 2
+        assert [row['concurrent'] for row in rows(record) if row['kind'] == 'prompt'] == [1, 1]
+        assert not [r for r in rows(record) if r['kind'] == 'extension' and r['method'] == 'xdog/resume']
     finally:
-        if pending is not None and not pending.done():
-            pending.cancel()
-            await asyncio.gather(pending, return_exceptions=True)
         await handler.close()
 
 
-async def test_human_credit_at_target_does_not_need_a_second_eyes_budget(tmp_path):
+async def test_target_metadata_does_not_grant_message_execution_credit(tmp_path):
     from xdog.eyes.handlers.acp import AcpHandler
 
     record, gate = tmp_path / "record", tmp_path / "human-credit"
     handler = AcpHandler(definition(record, mode="human-credit", xdog=True, gate=gate), cwd=tmp_path)
     try:
-        await handler.connect()
+        await handler.start()
         assert (await handler.deliver(delivery())).status == "succeeded"
-        gate.touch()
+        assert not gate.exists()
         assert (await handler.deliver(delivery("d2"))).status == "succeeded"
         assert not [row for row in rows(record) if row["kind"] == "extension" and row["method"] == "xdog/resume"]
     finally:
@@ -221,15 +212,30 @@ async def test_human_credit_at_target_does_not_need_a_second_eyes_budget(tmp_pat
 
 
 @pytest.mark.parametrize('mode',['headless','no-budget-hint'])
-async def test_resume_extension_names_alone_do_not_claim_owner_managed_automatic_budget(tmp_path,mode):
+async def test_missing_or_false_budget_metadata_does_not_block_second_message(tmp_path,mode):
     from xdog.eyes.handlers.acp import AcpHandler
 
     record = tmp_path/'peer.jsonl'
     handler = AcpHandler(definition(record,mode=mode,xdog=True),cwd=tmp_path)
     try:
-        await handler.connect()
+        await handler.start()
         assert (await handler.deliver(delivery())).status=='succeeded'
-        assert (await handler.deliver(delivery('second'))).status=='paused'
-        assert len([r for r in rows(record) if r['kind']=='prompt'])==1
+        assert (await handler.deliver(delivery('second'))).status=='succeeded'
+        assert len([r for r in rows(record) if r['kind']=='prompt'])==2
+    finally:
+        await handler.close()
+
+
+async def test_two_prompt_deliveries_need_no_human_credit(tmp_path):
+    from xdog.eyes.handlers.acp import AcpHandler
+
+    record = tmp_path / 'auto-delivery.jsonl'
+    handler = AcpHandler(definition(record), cwd=tmp_path)
+    try:
+        await handler.start()
+        assert (await handler.deliver(delivery('first'))).status == 'succeeded'
+        assert (await handler.deliver(delivery('second'))).status == 'succeeded'
+        assert len([row for row in rows(record) if row['kind'] == 'prompt']) == 2
+        assert not [row for row in rows(record) if row['kind'] == 'extension']
     finally:
         await handler.close()

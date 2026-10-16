@@ -13,10 +13,13 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-from xdog.eyes.events import RuntimeEvent
+from xdog.eyes.deliveries import Delivery
+from xdog.eyes.events import DeliveryResult, RuntimeEvent
 from xdog.eyes.executor import Registration, observe
+from xdog.eyes.handlers.contracts import EventHandler, HandlerHealthError
+from xdog.eyes.handlers.registry import HandlerRegistry, builtin_handlers
 from xdog.eyes.loader import definition_data, parse
 from xdog.eyes.local_control import (
     MAX_FRAME,
@@ -37,14 +40,11 @@ from xdog.eyes.local_control import (
 from xdog.eyes.models import HandlerDef, ObserverDef, SourceDef
 from xdog.eyes.sources.file import FileSnapshot, scan_async
 
-if TYPE_CHECKING:
-    from xdog.eyes.handlers.acp import AcpHandler
-
 
 @dataclass
 class Entry:
     registration: Registration
-    handlers: dict[str, AcpHandler]
+    handlers: dict[str, EventHandler]
     digest: str
     sources: dict[str, str]
     routes: dict[str, dict[str, Any]]
@@ -58,11 +58,13 @@ class ObserverRuntime:
     def __init__(self, location: RuntimeLocation, *, clock: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
                  scanner: Callable[[SourceDef], Awaitable[FileSnapshot]] = scan_async,
-                 handler_factory: Callable[[HandlerDef], AcpHandler] | None = None) -> None:
+                 handler_factory: Callable[[HandlerDef], EventHandler] | None = None,
+                 handler_registry: HandlerRegistry | None = None) -> None:
         validate_location(location)
         self.location = replace(location, generation=uuid.uuid4().hex)
         self.clock, self.sleep, self.scanner = clock, sleep, scanner
         self.handler_factory = handler_factory
+        self.handler_registry = handler_registry if handler_registry is not None else builtin_handlers()
         self.entries: dict[str, Entry] = {}
         self.names: dict[str, str] = {}
         self.stop = asyncio.Event()
@@ -76,11 +78,10 @@ class ObserverRuntime:
         self._record_identity: tuple[int, int] | None = None
         self._closing = False
 
-    def _handler(self, definition: HandlerDef) -> AcpHandler:
+    def _handler(self, definition: HandlerDef) -> EventHandler:
         if self.handler_factory is not None:
             return self.handler_factory(definition)
-        from xdog.eyes.handlers.acp import AcpHandler
-        return AcpHandler(definition, cwd=self.location.cwd)
+        return self.handler_registry.create(definition, self.location.cwd)
 
     async def start(self, data: object) -> dict[str, JsonValue]:
         task = asyncio.current_task()
@@ -93,7 +94,7 @@ class ObserverRuntime:
 
     async def _start(self, data: object) -> dict[str, JsonValue]:
         definition = parse(definition_data(data) if isinstance(data, ObserverDef) else data,
-                           base_dir=self.location.cwd)
+                           base_dir=self.location.cwd, handler_registry=self.handler_registry)
         normalized = definition_data(definition)
         digest = hashlib.sha256(json.dumps(normalized, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
         async with self.lock:
@@ -105,7 +106,7 @@ class ObserverRuntime:
                     raise ValueError('Definition name is already active; stop it before changing the definition')
                 return {'registration_id': existing, 'duplicate': True}
             handlers = {item.id: self._handler(item) for item in definition.handlers}
-            connections = [asyncio.create_task(handler.connect()) for handler in handlers.values()]
+            connections = [asyncio.create_task(handler.start()) for handler in handlers.values()]
             self._pending_starts += 1
             try:
                 try:
@@ -123,12 +124,16 @@ class ObserverRuntime:
                 cancel, resume, suspended = asyncio.Event(), asyncio.Event(), asyncio.Event()
                 routes = {item.id: item for item in definition.routes}
 
-                async def deliver(value: Any) -> Any:
+                async def deliver(value: Delivery) -> DeliveryResult:
                     return await handlers[routes[value.route_id].handler].deliver(value)
+
+                def validate(value: Delivery) -> None:
+                    handlers[routes[value.route_id].handler].validate(value)
 
                 task = asyncio.create_task(observe(definition, registration_id=identifier, scanner=self.scanner,
                     deliver=deliver, emit=lambda event: self.emit(identifier, event), clock=self.clock,
-                    sleep=self.sleep, cancel=cancel, resume=resume, cwd=self.location.cwd, suspended=suspended))
+                    sleep=self.sleep, cancel=cancel, resume=resume, cwd=self.location.cwd,
+                    suspended=suspended, validate=validate))
                 registration = Registration(identifier, definition, task, cancel, resume)
                 self.entries[identifier] = Entry(registration, handlers, digest,
                     {item.id: 'baselining' for item in definition.sources},
@@ -197,9 +202,8 @@ class ObserverRuntime:
             rows.append({'registration_id': key, 'name': entry.registration.definition.name,
                          'state': self._state(entry), 'sources': entry.sources, 'routes': entry.routes,
                          'retired': entry.retired, 'health': entry.health, 'resume_results': entry.resume_results,
-                         'handlers': {name: {'session': h.definition.session, 'delivery': h.definition.delivery,
-                             'state': h.state, 'connected': h.client.connected,
-                             'owner_generation': h.owner_generation} for name, h in entry.handlers.items()}})
+                         'handlers': {name: {'state': snapshot.state, **snapshot.details}
+                                      for name, h in entry.handlers.items() for snapshot in (h.snapshot(),)}})
         return object_value(json.loads(json.dumps({'registrations': rows}, ensure_ascii=True, allow_nan=False)))
 
     async def stop_entry(self, identifier: str) -> dict[str, JsonValue]:
@@ -228,10 +232,7 @@ class ObserverRuntime:
             return False
         entry.resume_results = {}
         for name, handler in entry.handlers.items():
-            if handler.definition.delivery == 'enqueue' and name in entry.health:
-                accepted = await handler.reconnect()
-            else:
-                accepted = await handler.resume()
+            accepted = await handler.resume()
             entry.resume_results[name] = accepted
             if accepted:
                 entry.health.pop(name, None)
@@ -251,21 +252,13 @@ class ObserverRuntime:
                 if entry.retired:
                     continue
                 for name, handler in entry.handlers.items():
-                    if handler.state in {'processing', 'outcome-unknown', 'closed'}:
-                        continue  # Settle a sent request before interpreting its connection loss.
                     try:
-                        if not handler.client.connected:
-                            raise ConnectionError('ACP connection ended; explicit resume/rebaseline required')
                         async with asyncio.timeout(2):
-                            if handler.definition.delivery == 'enqueue':
-                                await handler.client.inbox_status()
-                            elif handler.owner_generation is not None:
-                                if await handler.client.generation() != handler.owner_generation:
-                                    raise ValueError('ACP owner generation changed')
+                            await handler.check()
                     except Exception as exc:
                         entry.health[name] = str(exc)[:2048]
                         entry.suspended.set()
-                        if handler.definition.delivery == 'prompt':
+                        if not isinstance(exc, HandlerHealthError) or not exc.recoverable:
                             entry.retired = str(exc)[:2048]
                             await entry.registration.aclose()
                             await asyncio.gather(*(h.close() for h in entry.handlers.values()), return_exceptions=True)
@@ -299,7 +292,7 @@ class ObserverRuntime:
             accepted = await self.resume_entry(identifier)
             return ('accepted' if accepted else 'rejected'), {
                 'registration_id': identifier, 'resumed': accepted,
-                'notice': 'Enqueue resume only collects data; prompt resume requests target permission'}
+                'notice': 'Resume recovers data delivery only; it never requests execution permission'}
         raise ControlError('Unknown Eyes lifecycle action; this endpoint does not receive agent events')
 
     async def serve(self) -> None:

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12+, uv, asyncio, frozen dataclasses, existing Pydantic configuration, Unix-local ACP/stdio, `agent-client-protocol>=0.12.1,<0.13; python_version < '3.15'`, existing flock/fsync/atomic publication, pytest, Ruff, strict mypy.
 
-**Spec:** `docs/superpowers/specs/2026-10-16-unified-inbox-batch-routing-design.md`, approved by the user on 2026-10-16. This plan is awaiting its own user review. Product implementation has not started.
+**Spec:** `docs/superpowers/specs/2026-10-16-unified-inbox-batch-routing-design.md`, approved by the user on 2026-10-16. The user approved this implementation plan on 2026-10-16. Native/TDD execution has started; task completion is recorded in its SDD ledger.
 
 ## Global Constraints
 

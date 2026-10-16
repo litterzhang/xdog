@@ -35,6 +35,11 @@ class DetectorDef:
 @dataclass(frozen=True)
 class HandlerDef:
     id: str
+    type: str
+
+
+@dataclass(frozen=True)
+class AcpHandlerDef(HandlerDef):
     type: Literal["acp"]
     connection: ConnectionDef
     session: str

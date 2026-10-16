@@ -80,9 +80,9 @@ async def unix_peer():
 def handler_for(path, cwd, session='target'):
     from xdog.eyes.connections import UnixConnection
     from xdog.eyes.handlers.acp import AcpHandler
-    from xdog.eyes.models import HandlerDef
+    from xdog.eyes.models import AcpHandlerDef
 
-    return AcpHandler(HandlerDef('handler', 'acp', UnixConnection(path), session, 'Review tests'), cwd=cwd)
+    return AcpHandler(AcpHandlerDef('handler', 'acp', UnixConnection(path), session, 'Review tests'), cwd=cwd)
 
 
 async def wait_until(predicate):
@@ -102,7 +102,7 @@ async def test_unix_delivery_never_spawns_a_cli_and_closes_only_its_connection(u
     monkeypatch.setattr(acp_client, 'spawn_agent_process', forbidden)
     handler = handler_for(path, tmp_path)
     try:
-        await handler.connect()
+        await handler.start()
         assert handler.process is None
         assert (await handler.deliver(delivery())).status == 'succeeded'
         assert handler.client.updates == 1
@@ -116,7 +116,7 @@ async def test_unix_delivery_never_spawns_a_cli_and_closes_only_its_connection(u
     await wait_until(lambda: not writers)
     second = handler_for(path, tmp_path)
     try:
-        await second.connect()  # Closing peer one did not stop the service.
+        await second.start()  # Closing peer one did not stop the service.
         assert (await second.deliver(delivery('d2'))).status == 'succeeded'
     finally:
         await second.close()
@@ -126,7 +126,7 @@ async def test_cancelled_handshake_releases_the_socket(unix_peer, tmp_path):
     path, events, gate, writers = unix_peer
     gate.clear()
     handler = handler_for(path, tmp_path)
-    task = asyncio.create_task(handler.connect())
+    task = asyncio.create_task(handler.start())
     try:
         await wait_until(lambda: any(kind == 'initialize' for kind, data in events))
         task.cancel()
@@ -148,7 +148,7 @@ async def test_failed_target_load_does_not_fall_back_to_another_session(unix_pee
     handler = handler_for(path, tmp_path, session='missing')
     try:
         with pytest.raises(RequestError, match='Unknown session'):
-            await handler.connect()
+            await handler.start()
         await wait_until(lambda: not writers)
         assert not [event for event in events if event[0] == 'prompt']
     finally:
@@ -180,7 +180,7 @@ async def test_insecure_or_non_socket_target_is_rejected_before_connect(unix_pee
         handler = handler_for(target, tmp_path)
         try:
             with pytest.raises(ValueError):
-                await handler.connect()
+                await handler.start()
             assert not events
         finally:
             await handler.close()

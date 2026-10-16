@@ -30,8 +30,6 @@ class AcpClient:
         self.conn: ClientSideConnection | None = None
         self.process: asyncio.subprocess.Process | None = None
         self.owner_generation: str | None = None
-        self.automatic_budget = False
-        self._budget_contract: bool | None = None
         self.inbox_id: str | None = None
         self.branch_id: str | None = None
         self.extensions: dict[str, int] = {}
@@ -125,10 +123,6 @@ class AcpClient:
             or Path(cwd).resolve() != self.cwd
         ):
             raise ValueError("Invalid ACP owner identity")
-        managed = info.get('automatic_budget') is True and 'resume' in self.extensions
-        if self._budget_contract is not None and self._budget_contract != managed:
-            raise ValueError('ACP automatic budget contract changed; explicit reattach required')
-        self._budget_contract = self.automatic_budget = managed
         return generation
 
     async def inbox_status(self, message_id: str | None = None) -> dict[str, Any]:

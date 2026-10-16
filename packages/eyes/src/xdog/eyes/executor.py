@@ -6,27 +6,20 @@ import asyncio
 import json
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
+from xdog.eyes.deliveries import Delivery
 from xdog.eyes.detectors.file_change import FileChangeDetector
 from xdog.eyes.errors import SourceError
-from xdog.eyes.events import DeliveryResult, RuntimeEvent, enqueue_parameters, prompt_parameters
-from xdog.eyes.models import Event, HandlerDef, ObserverDef, SourceDef
+from xdog.eyes.events import DeliveryResult, RuntimeEvent
+from xdog.eyes.models import Event, ObserverDef, SourceDef
+from xdog.eyes.router import EventRouter
 from xdog.eyes.sources.file import FileSnapshot
 
 MAX_PENDING = 128
 MAX_PATHS = 256
 MAX_DELIVERY_BYTES = 1024 * 1024 - 4096
-
-
-@dataclass(frozen=True)
-class Delivery:
-    id: str
-    registration_id: str
-    route_id: str
-    instruction: str
-    events: tuple[Event, ...]
 
 
 @dataclass
@@ -39,13 +32,12 @@ class _Pending:
     terminal: bool = False
 
 
-def _bounded(delivery: Delivery, *, handler: HandlerDef | None = None, cwd: Path | None = None) -> bool:
+def _bounded(delivery: Delivery) -> bool:
     paths = {(evidence.root, evidence.path) for event in delivery.events for evidence in event.evidence}
     try:
-        parameters = (enqueue_parameters(delivery, session_id=handler.session, cwd=str(cwd or Path.cwd()))
-                      if handler is not None and handler.delivery == 'enqueue' else prompt_parameters(delivery))
-        encoded = json.dumps(parameters, ensure_ascii=True, allow_nan=False).encode()
-    except (ValueError, TypeError, UnicodeError):
+        # Generic safety bound; protocol encodings are checked by their handler.
+        encoded = json.dumps(asdict(delivery), ensure_ascii=True, allow_nan=False).encode()
+    except (ValueError, TypeError, UnicodeError, RecursionError):
         return False
     return len(paths) <= MAX_PATHS and len(encoded) <= MAX_DELIVERY_BYTES
 
@@ -63,13 +55,13 @@ async def observe(
     resume: asyncio.Event | None = None,
     cwd: Path | None = None,
     suspended: asyncio.Event | None = None,
+    validate: Callable[[Delivery], None] | None = None,
 ) -> None:
     sources = {item.id: item for item in definition.sources}
     detectors = {
         item.id: FileChangeDetector(item, source_root=str(sources[item.source].root)) for item in definition.detectors
     }
-    handlers = {item.id: item for item in definition.handlers}
-    routes = {item.id: item for item in definition.routes}
+    router = EventRouter(definition)
     scans: dict[str, asyncio.Task[FileSnapshot]] = {}
     next_scan = {item.id: clock() for item in definition.sources}
     baselined: set[str] = set()
@@ -95,14 +87,19 @@ async def observe(
             )
         )
 
-    def enqueue(route_id: str, instruction: str, events: tuple[Event, ...]) -> bool:
-        created = Delivery(uuid.uuid4().hex, registration_id, route_id, instruction, events)
+    def enqueue(route_id: str, events: tuple[Event, ...]) -> bool:
+        created = Delivery(uuid.uuid4().hex, registration_id, route_id, events)
         current = pending.get(route_id)
         # Never alter a delivery after its first attempt: a lost ACK may hide acceptance.
         previous = current.delivery if current is not None and current.attempts == 0 else backlog.get(route_id)
         candidate = replace(previous, events=previous.events + events) if previous else created
-        if (not _bounded(candidate, handler=handlers[routes[route_id].handler], cwd=cwd)
-                or previous is None and len(pending) + len(backlog) >= MAX_PENDING):
+        try:
+            if validate is not None:
+                validate(candidate)
+            valid = _bounded(candidate)
+        except (ValueError, TypeError, UnicodeError):
+            valid = False
+        if not valid or previous is None and len(pending) + len(backlog) >= MAX_PENDING:
             report("paused", delivery=created, error="overflow: stop and restart to establish a new baseline")
             return False
         if current is None:
@@ -157,8 +154,7 @@ async def observe(
                     item.retry_at = now + min(5.0, 0.25 * 2 ** min(item.attempts - 1, 5))
                 else:
                     item.paused = True
-                    durable_retry = (handlers[routes[route_id].handler].delivery == 'enqueue'
-                                     and result.status == 'outcome-unknown' and result.retry_on_resume)
+                    durable_retry = result.status == 'outcome-unknown' and result.retry_on_resume
                     item.terminal = result.status != "paused" and not durable_retry
                     if item.terminal or result.status == 'outcome-unknown':
                         report(
@@ -209,12 +205,10 @@ async def observe(
                                 "event_detected", registration_id, source_id=event.source_id, event_ids=(event.id,)
                             )
                         )
-                    for route in definition.routes:
-                        matching = tuple(event for event in events if event.type in route.event_types)
-                        if route.detector == detector_id and matching:
-                            if not enqueue(route.id, handlers[route.handler].instruction, matching):
-                                overflowed = True
-                                break
+                    for routed in router.route(events):
+                        if not enqueue(routed.route_id, routed.events):
+                            overflowed = True
+                            break
                     if overflowed:
                         break
             for item in pending.values():

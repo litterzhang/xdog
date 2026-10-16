@@ -132,19 +132,6 @@ class Peer(Agent):
 
     async def prompt(self, session_id, prompt, **kwargs):
         self.record("received", session_id=session_id)
-        if options.xdog and options.mode not in {"headless", "no-budget-hint"}:
-            while self.budget <= 0 and not self.cancelled.is_set():
-                if options.mode == "human-credit" and options.gate.exists():
-                    self.budget = 1  # Explicit external human actor, not a model result.
-                    break
-                try:
-                    await asyncio.wait_for(self.wake.wait(), 0.01)
-                except TimeoutError:
-                    pass
-                self.wake.clear()
-            if self.cancelled.is_set():
-                return PromptResponse(stop_reason="cancelled")
-            self.budget -= 1
         self.running += 1
         self.record(
             "prompt",

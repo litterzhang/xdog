@@ -103,7 +103,7 @@ async def test_real_sdk_disconnect_records_one_request_and_freezes_source_until_
                 cancel.set()
 
     try:
-        await handler.connect()
+        await handler.start()
         await observe(
             config,
             registration_id="reg",
@@ -172,6 +172,10 @@ async def test_first_attempt_identity_and_evidence_are_frozen_when_later_changes
 
 async def test_wire_capacity_counts_both_text_and_structured_evidence_without_truncating(tmp_path, observer_data):
     from xdog.eyes.executor import observe
+    from xdog.eyes.handlers.acp import AcpHandler
+
+    config = parse(observer_data, base_dir=tmp_path)
+    handler = AcpHandler(config.handlers[0], cwd=tmp_path)
 
     clock, cancel, scans, attempted, events = FakeClock(limit=5), asyncio.Event(), [], [], []
 
@@ -193,7 +197,7 @@ async def test_wire_capacity_counts_both_text_and_structured_evidence_without_tr
             cancel.set()
 
     await observe(
-        parse(observer_data, base_dir=tmp_path),
+        config,
         registration_id="reg",
         scanner=scanner,
         deliver=deliver,
@@ -201,6 +205,7 @@ async def test_wire_capacity_counts_both_text_and_structured_evidence_without_tr
         clock=clock.now,
         sleep=clock.sleep,
         cancel=cancel,
+        validate=handler.validate,
     )
     assert not attempted
     assert any(item.kind == "paused" and "overflow" in item.error for item in events)

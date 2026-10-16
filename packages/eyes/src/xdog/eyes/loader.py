@@ -5,15 +5,16 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
-from xdog.eyes.connections import ConnectionDef, StdioConnection, UnixConnection
+if TYPE_CHECKING:
+    from xdog.eyes.handlers.registry import HandlerRegistry
+
 from xdog.eyes.errors import ObserverValidationError
 from xdog.eyes.models import (
     EVENT_TYPES,
     DetectorDef,
     EventType,
-    HandlerDef,
     ObserverDef,
     RouteDef,
     SourceDef,
@@ -108,43 +109,6 @@ def _detector(value: object, path: str) -> DetectorDef:
     )
 
 
-def _connection(value: object, path: str) -> ConnectionDef:
-    data = _object(value, path, {"transport", "path", "command"})
-    transport = data.get("transport")
-    try:
-        if transport == "unix":
-            data = _object(value, path, {"transport", "path"})
-            return UnixConnection(Path(_text(data.get("path"), path + ".path", maximum=4096)))
-        if transport == "stdio":
-            data = _object(value, path, {"transport", "command"})
-            return StdioConnection(tuple(
-                _text(arg, f"{path}.command[{i}]", maximum=65536)
-                for i, arg in enumerate(_items(data.get("command"), path + ".command"))
-            ))
-    except ObserverValidationError:
-        raise
-    except (ValueError, UnicodeError) as exc:
-        raise ObserverValidationError(str(exc), path=path, code="wrong_shape") from exc
-    raise ObserverValidationError("Expected unix or stdio ACP transport", path=path, code="unknown_type")
-
-
-def _handler(value: object, path: str) -> HandlerDef:
-    data = _object(value, path, {"id", "type", "connection", "session", "instruction", "delivery"})
-    if data.get("type") != "acp":
-        raise ObserverValidationError("Only ACP handlers are supported", path=path, code="unknown_type")
-    delivery = data.get("delivery", "prompt")
-    if delivery not in ("prompt", "enqueue"):
-        raise ObserverValidationError("Expected prompt or enqueue delivery", path=path + ".delivery")
-    return HandlerDef(
-        _text(data.get("id"), path + ".id"),
-        "acp",
-        _connection(data.get("connection"), path + ".connection"),
-        _text(data.get("session"), path + ".session"),
-        _text(data.get("instruction"), path + ".instruction", maximum=65536),
-        delivery,
-    )
-
-
 def _route(value: object, path: str) -> RouteDef:
     data = _object(value, path, {"id", "detector", "handler", "event_types"})
     values = _items(data.get("event_types"), path + ".event_types")
@@ -158,7 +122,10 @@ def _route(value: object, path: str) -> RouteDef:
     )
 
 
-def parse(value: object, *, base_dir: Path) -> ObserverDef:
+def parse(value: object, *, base_dir: Path, handler_registry: HandlerRegistry | None = None) -> ObserverDef:
+    from xdog.eyes.handlers.registry import builtin_handlers
+
+    registry = handler_registry if handler_registry is not None else builtin_handlers()
     data = _object(value, "$", {"version", "name", "sources", "detectors", "handlers", "routes"})
     if type(data.get("version")) is not int or data["version"] != 2:
         raise ObserverValidationError(
@@ -174,7 +141,8 @@ def parse(value: object, *, base_dir: Path) -> ObserverDef:
         _detector(item, f"$.detectors[{i}]") for i, item in enumerate(_items(data.get("detectors"), "$.detectors"))
     )
     handlers = tuple(
-        _handler(item, f"$.handlers[{i}]") for i, item in enumerate(_items(data.get("handlers"), "$.handlers"))
+        registry.parse_definition(item, f"$.handlers[{i}]", base_dir)
+        for i, item in enumerate(_items(data.get("handlers"), "$.handlers"))
     )
     routes = tuple(_route(item, f"$.routes[{i}]") for i, item in enumerate(_items(data.get("routes"), "$.routes")))
     identifiers = (

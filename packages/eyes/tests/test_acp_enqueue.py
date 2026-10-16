@@ -4,7 +4,8 @@ import asyncio
 from dataclasses import replace
 
 import pytest
-from xdog.eyes.executor import Delivery, observe
+from xdog.eyes.deliveries import Delivery
+from xdog.eyes.executor import observe
 from xdog.eyes.models import Event, FileEvidence, FileState
 
 from packages.eyes.tests.test_acp_handler import definition, delivery, rows
@@ -20,7 +21,7 @@ async def test_enqueue_does_not_load_or_prompt_an_inactive_owner(tmp_path):
     record = tmp_path/'peer.jsonl'
     handler = AcpHandler(enqueue_definition(record),cwd=tmp_path)
     try:
-        await handler.connect()
+        await handler.start()
         assert handler.owner_generation is None
         for identifier in ('stable-message','second-message'):
             result = await handler.deliver(delivery(identifier))
@@ -38,7 +39,7 @@ async def test_enqueue_does_not_load_or_prompt_an_inactive_owner(tmp_path):
             'after':{'digest':'hash','size':3},'observed_at':1.0,'root':'/project'}]
         assert sent[0]['provenance']['delivery_id']=='stable-message'
         assert sent[0]['source']=='Eyes'
-        assert handler.wake_budget is None
+        assert handler.snapshot().state == 'ready'
     finally:
         await handler.close()
 
@@ -48,7 +49,7 @@ async def test_duplicate_receipt_preserves_existing_message_state(tmp_path):
 
     handler = AcpHandler(enqueue_definition(tmp_path/'peer.jsonl'),cwd=tmp_path)
     try:
-        await handler.connect()
+        await handler.start()
         assert (await handler.deliver(delivery('same'))).receipt_status=='queued'
         duplicate = await handler.deliver(delivery('same'))
         assert duplicate.status=='queued' and duplicate.receipt_status=='duplicate'
@@ -65,7 +66,7 @@ async def test_missing_extension_or_invalid_target_scope_fails_before_intake(tmp
     handler = AcpHandler(enqueue_definition(record,mode=mode),cwd=tmp_path)
     try:
         with pytest.raises(ValueError):
-            await handler.connect()
+            await handler.start()
         assert not [r for r in rows(record) if r['kind'] in {'load','prompt'}]
         assert not [r for r in rows(record) if r['kind']=='extension' and r['method']=='xdog/enqueue']
     finally:
@@ -78,7 +79,7 @@ async def test_malformed_ack_is_unknown_and_never_model_success(tmp_path,mode):
 
     handler = AcpHandler(enqueue_definition(tmp_path/'peer.jsonl',mode=mode),cwd=tmp_path)
     try:
-        await handler.connect()
+        await handler.start()
         result = await handler.deliver(delivery())
         assert result.status=='outcome-unknown' and result.retry_on_resume
         assert (await handler.deliver(delivery('must-not-pass'))).status=='outcome-unknown'
@@ -92,7 +93,7 @@ async def test_ack_loss_requires_explicit_same_store_reconnect_and_same_message_
     record = tmp_path/'peer.jsonl'
     handler = AcpHandler(enqueue_definition(record,mode='inbox-disconnect-once'),cwd=tmp_path)
     try:
-        await handler.connect()
+        await handler.start()
         result = await handler.deliver(delivery('stable'))
         assert result.status=='outcome-unknown' and result.retry_on_resume
         assert (await handler.deliver(delivery('later'))).status=='outcome-unknown'
@@ -116,7 +117,7 @@ async def test_resume_cannot_silently_move_to_another_store_or_branch(tmp_path,m
     record,gate = tmp_path/'peer.jsonl',tmp_path/'changed'
     handler = AcpHandler(enqueue_definition(record,mode=mode,gate=gate),cwd=tmp_path)
     try:
-        await handler.connect()
+        await handler.start()
         gate.touch()
         result = await handler.deliver(delivery())
         assert result.status in {'paused','cancelled'}
@@ -132,7 +133,7 @@ async def test_capacity_refusal_pauses_without_any_prompt_or_authorization(tmp_p
     record = tmp_path/'peer.jsonl'
     handler = AcpHandler(enqueue_definition(record,mode='inbox-quota'),cwd=tmp_path)
     try:
-        await handler.connect()
+        await handler.start()
         assert (await handler.deliver(delivery())).status=='paused'
         assert not [r for r in rows(record) if r['kind'] in {'load','prompt'}]
         assert not [r for r in rows(record) if r.get('method')=='xdog/resume']
@@ -180,9 +181,13 @@ def test_enqueue_size_is_not_limited_by_duplicated_prompt_evidence(tmp_path,obse
     config = parse(observer_data,base_dir=tmp_path)
     relative = '/'.join('x'*100 for _ in range(29))
     evidence = tuple(FileEvidence(f'{i}/{relative}',None,FileState('h',3),1.0,'/project') for i in range(200))
-    item = Delivery('d','r','review','Review',(Event('e','files','changes','file.created',1.0,evidence),))
-    assert executor._bounded(item,handler=config.handlers[0],cwd=tmp_path)
-    assert not executor._bounded(item,handler=replace(config.handlers[0],delivery='prompt'),cwd=tmp_path)
+    item = Delivery('d','r','review',(Event('e','files','changes','file.created',1.0,evidence),))
+    from xdog.eyes.handlers.acp import AcpHandler
+
+    assert executor._bounded(item)
+    AcpHandler(config.handlers[0], cwd=tmp_path).validate(item)
+    with pytest.raises(ValueError, match='capacity'):
+        AcpHandler(replace(config.handlers[0], delivery='prompt'), cwd=tmp_path).validate(item)
 
 
 @pytest.mark.parametrize('replace_store',[False,True])
@@ -196,7 +201,7 @@ async def test_real_unix_intake_survives_service_restart_only_for_the_same_store
     from xdog.eyes import acp_client
     from xdog.eyes.connections import UnixConnection
     from xdog.eyes.handlers.acp import AcpHandler
-    from xdog.eyes.models import HandlerDef
+    from xdog.eyes.models import AcpHandlerDef
 
     def forbidden(*args,**kwargs):
         raise AssertionError('Unix durable intake cannot spawn CLI or construct an AgentSession')
@@ -208,10 +213,10 @@ async def test_real_unix_intake_survives_service_restart_only_for_the_same_store
     with tempfile.TemporaryDirectory(prefix='eyes-durable-') as short:
         config = IngressConfig(manager._dir,tmp_path/'inbox',Path(short)/'acp.sock')
         server = await IngressServer.start(config)
-        handler = AcpHandler(HandlerDef('h','acp',UnixConnection(config.address),data.session_id,'Review','enqueue'),
+        handler = AcpHandler(AcpHandlerDef('h','acp',UnixConnection(config.address),data.session_id,'Review','enqueue'),
                              cwd=tmp_path)
         try:
-            await handler.connect()
+            await handler.start()
             namespace = handler.client.inbox_id
             assert (await handler.deliver(delivery('first'))).status=='queued'
             assert handler.process is None and handler.owner_generation is None
@@ -240,7 +245,7 @@ async def test_close_settles_an_explicit_reconnect_that_is_still_initializing(tm
     handler = AcpHandler(enqueue_definition(record,mode='inbox-disconnect-once-slow',gate=gate),cwd=tmp_path)
     task = None
     try:
-        await handler.connect()
+        await handler.start()
         assert (await handler.deliver(delivery())).status=='outcome-unknown'
         task = asyncio.create_task(handler.resume())
         async with asyncio.timeout(5):
