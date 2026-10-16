@@ -5,13 +5,21 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
+from xdog.coding.config import validate_max_messages_per_turn
 
 
 class SessionSettings(BaseModel):
     """Per-session overrides that live inside the session JSON."""
 
     model_config = ConfigDict(extra="ignore")
+
+    max_messages_per_turn: int | None = None
+
+    @field_validator('max_messages_per_turn', mode='before')
+    @classmethod
+    def _batch_limit(cls, value: object) -> int:
+        return validate_max_messages_per_turn(value)
 
     model: str | None = None
     thinking_level: str | None = None
@@ -45,6 +53,19 @@ class SettingsManager:
         self._session = SessionSettings()
 
     # --- Getters (resolved) ---
+
+    @property
+    def max_messages_per_turn(self) -> int:
+        for value in (self._session.max_messages_per_turn, self._project.max_messages_per_turn,
+                      self._global.max_messages_per_turn):
+            if value is not None:
+                return validate_max_messages_per_turn(value)
+        return 10
+
+    def set_session_max_messages_per_turn(self, value: int) -> None:
+        self._session = self._session.model_copy(update={
+            'max_messages_per_turn': validate_max_messages_per_turn(value)})
+
 
     @property
     def model(self) -> str:

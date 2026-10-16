@@ -19,6 +19,7 @@ class InputRecord:
     generation: str
     status: str
     error: str = ""
+    batch_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,7 @@ class TurnResult:
     response: AssistantMessage | None
     error: str = ""
     cause: BaseException | None = field(default=None, repr=False, compare=False)
+    batch_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -36,6 +38,8 @@ class SessionEvent:
     request_id: str
     kind: str
     data: object
+    batch_id: str = ""
+    request_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

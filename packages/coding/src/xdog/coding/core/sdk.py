@@ -28,6 +28,7 @@ from xdog.coding.config import (
     ProjectConfig,
     RuntimeConfig,
     get_sessions_dir,
+    validate_max_messages_per_turn,
 )
 from xdog.coding.core.agent_session import AgentSession
 from xdog.coding.core.defaults import DEFAULT_MODEL, DEFAULT_THINKING_LEVEL, MAX_CONTEXT_TOKENS
@@ -136,6 +137,23 @@ def _build_agent_session(options: CreateSessionOptions, *, new_session_id: str) 
     settings = SettingsManager(global_path=opts.config_path, project_dir=wd)
     session_mgr = SessionManager(sessions_dir=get_sessions_dir())
 
+    # Validate persisted owner settings under its lease, before provider bootstrap.
+    loaded = None
+    if opts.resume_id:
+        loaded = session_mgr.load_session(opts.resume_id)
+        if loaded is None:
+            raise RuntimeError(f"Session not found: {opts.resume_id}")
+    elif opts.resume:
+        loaded = session_mgr.get_most_recent()
+        if loaded is None:
+            raise RuntimeError('No previous session to resume.')
+    saved_limit = None
+    if loaded is not None and 'max_messages_per_turn' in loaded.settings:
+        saved_limit = validate_max_messages_per_turn(loaded.settings['max_messages_per_turn'])
+    batch_limit = validate_max_messages_per_turn(
+        ov['max_messages_per_turn'] if 'max_messages_per_turn' in ov else
+        saved_limit if saved_limit is not None else config.max_messages_per_turn)
+
     # Build model catalog for default model resolution
     import xdog.ai as ai
     provider = ai.load()
@@ -154,15 +172,7 @@ def _build_agent_session(options: CreateSessionOptions, *, new_session_id: str) 
     session_data: SessionData
     model_fallback_message: str | None = None
 
-    if opts.resume:
-        loaded = session_mgr.get_most_recent()
-        if loaded is None:
-            raise RuntimeError("No previous session to resume.")
-        session_data = loaded
-    elif opts.resume_id:
-        loaded = session_mgr.load_session(opts.resume_id)
-        if loaded is None:
-            raise RuntimeError(f"Session not found: {opts.resume_id}")
+    if loaded is not None:
         session_data = loaded
     else:
         model_name = opts.model_name or ov.get("model") or config.model or DEFAULT_MODEL or _first_model_id()
@@ -246,6 +256,8 @@ def _build_agent_session(options: CreateSessionOptions, *, new_session_id: str) 
     # Restore messages if resuming
     if session_data.messages:
         agent.replace_messages(session_data.messages)
+
+    session_data.settings = {**session_data.settings, 'max_messages_per_turn': batch_limit}
 
     # Create AgentSession wrapper
     session = AgentSession(

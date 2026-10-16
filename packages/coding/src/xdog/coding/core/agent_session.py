@@ -56,6 +56,7 @@ if TYPE_CHECKING:
     from concurrent.futures import Future
 
     from xdog.coding.core.session_staging import StagedExtensions
+    from xdog.coding.core.sessions.batches import TurnInput
     from xdog.coding.core.sessions.controller import SessionController
     from xdog.coding.core.sessions.ownership import SessionLease
     from xdog.coding.core.sessions.runtime import SessionRuntime
@@ -208,6 +209,7 @@ class AgentSession:
         # Restore session-level settings
         if self.session_data.settings:
             self.settings.load_session_settings(self.session_data.settings)
+        self.settings.set_session_max_messages_per_turn(self.settings.max_messages_per_turn)
 
         from xdog.agent.supervision import RESERVED_TOOLS
         if any(tool.name in RESERVED_TOOLS for tool in self.agent.state.tools):
@@ -704,25 +706,57 @@ class AgentSession:
                     await asyncio.shield(asyncio.wrap_future(closing))
 
     async def _execute_message(self, user_text: str, *, images: tuple[ImageContent, ...] = (),
-                           input_origin: str = "user") -> AssistantMessage | None:
-        """Send a user message and run the full agent loop.
+                               input_origin: str = 'user') -> AssistantMessage | None:
+        """Singleton compatibility entry into the same batch lifecycle."""
+        from xdog.agent.session_input import SessionInput, decode_input
+        from xdog.coding.core.sessions.batches import TurnInput
 
-        Returns the final assistant message, or None if aborted.
-        """
+        if input_origin == 'session_input':
+            import json
+            item = TurnInput(decode_input(json.loads(user_text)), images=images, input_origin=input_origin)
+        else:
+            value = SessionInput(uuid.uuid4().hex, 'human' if input_origin == 'user' else 'automatic',
+                                 'coding', user_text if user_text.strip() else '[Image/context input]', (), {})
+            item = TurnInput(value, images=images, input_origin=input_origin, raw_text=user_text)
+        return await self._execute_messages((item,), batch_id=uuid.uuid4().hex)
+
+    async def _execute_messages(self, inputs: tuple[TurnInput, ...], *, batch_id: str) -> AssistantMessage | None:
+        """Prepare independent input messages and execute exactly one shared Agent turn."""
         if self._tool_selection_retiring:
             raise RuntimeError("Tool retirement persistence owns this session")
         if self._compacting:
             raise RuntimeError("Compaction owns this session; cancel/wait before sending input")
-        if input_origin not in {'user', 'extension', 'system', 'custom_context', 'session_input'}:
+        import json
+
+        from xdog.agent.session_input import encode_input, input_data
+        from xdog.coding.core.sessions.batches import MAX_BATCH_BYTES, input_size
+
+        if not inputs or len(inputs) > 128 or len({item.value.id for item in inputs}) != len(inputs):
+            raise ValueError('A turn requires distinct input messages')
+        if not isinstance(batch_id, str) or not batch_id.strip() or len(batch_id.encode()) > 256 or '\x00' in batch_id:
+            raise ValueError('Invalid batch identity')
+        if sum(input_size(item) for item in inputs) > MAX_BATCH_BYTES:
+            raise ValueError('Batch input exceeds capacity')
+        origins = tuple(item.input_origin or ('user' if item.value.origin == 'human' else 'session_input')
+                        for item in inputs)
+        if any(origin not in {'user', 'extension', 'system', 'custom_context', 'session_input'} for origin in origins):
             raise ValueError('Invalid input origin')
-        context_snapshot = await self.context_messages.capture() if input_origin == 'user' else None
+        if 'custom_context' in origins and len(inputs) != 1:
+            raise ValueError('Canonical continuation cannot share a batch')
+        images = tuple(image for item in inputs for image in item.images)
+        context_snapshot = await self.context_messages.capture() if 'user' in origins else None
         try:
             self.handled_feedback = []
             if images:
                 from xdog.ai.utils.image_files import validate_references
                 await asyncio.to_thread(validate_references, images, self.model_info)
             await self.initialize_extensions()
-            await self.extensions.event("turn_start", {"user_input": user_text})
+            payload: dict[str, Any] = {'batch_id': batch_id, 'inputs': [input_data(item.value) for item in inputs]}
+            if len(inputs) == 1:
+                item = inputs[0]
+                payload['user_input'] = (json.dumps(input_data(item.value)) if origins == ('session_input',) else
+                                         item.raw_text if item.raw_text is not None else item.value.instruction)
+            await self.extensions.event("turn_start", payload)
             await self.initialize_extensions()  # Lifecycle hooks may update provider metadata.
             if images:
                 # A turn-start hook may replace the selected provider's vision
@@ -734,13 +768,8 @@ class AgentSession:
             # Check for compaction before the turn
             await self._maybe_compact()
 
-            # Run the agent loop
-            if input_origin == 'session_input':
-                import json
-
-                from xdog.agent.session_input import decode_input, encode_input
-                event_stream = await self.agent.prompt(encode_input(decode_input(json.loads(user_text))))
-            elif input_origin == 'custom_context':
+            # One lifecycle and one prompt, while retaining each member's message boundary.
+            if origins == ('custom_context',):
                 from xdog.agent.core import CustomAgentMessage
                 from xdog.agent.extensions.context_message import TYPE
                 if (images or not self.agent.messages or not isinstance(self.agent.messages[-1], CustomAgentMessage)
@@ -753,7 +782,14 @@ class AgentSession:
                     context_images((self.agent.messages[-1],)), self.model_info))
                 event_stream = await self.agent.continue_()
             else:
-                event_stream = await self.agent.prompt(user_text, images=list(images) if images else None,
+                messages: list[AgentMessage] = []
+                for item, origin in zip(inputs, origins, strict=True):
+                    if origin == 'session_input':
+                        messages.append(encode_input(item.value))
+                    else:
+                        message_text = item.raw_text if item.raw_text is not None else item.value.instruction
+                        messages.append(UserMessage(content=(TextContent(text=message_text), *item.images)))
+                event_stream = await self.agent.prompt(messages,
                     initial_prompt_context=(lambda: self.context_messages.admit(context_snapshot))
                         if context_snapshot is not None else None)
 

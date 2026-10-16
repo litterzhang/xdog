@@ -18,7 +18,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+class InvalidBatchLimit(ValueError):
+    """An explicit malformed owner setting must not fall back silently."""
+
+
+def validate_max_messages_per_turn(value: object) -> int:
+    if type(value) is not int or not 1 <= value <= 128:
+        raise InvalidBatchLimit('max_messages_per_turn must be an integer in 1..128')
+    return value
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -175,6 +186,13 @@ class PlatformInfo:
 class GlobalConfig(BaseModel):
     """Top-level configuration loaded from settings.json."""
 
+    max_messages_per_turn: int = 10
+
+    @field_validator('max_messages_per_turn', mode='before')
+    @classmethod
+    def _batch_limit(cls, value: object) -> int:
+        return validate_max_messages_per_turn(value)
+
     default_model: str = ""
     thinking_level: str = "normal"
     permission_mode: str = "ask"
@@ -195,7 +213,11 @@ class GlobalConfig(BaseModel):
             return cls()
         try:
             raw = json.loads(target.read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and 'max_messages_per_turn' in raw:
+                validate_max_messages_per_turn(raw['max_messages_per_turn'])
             return cls.model_validate(raw)
+        except InvalidBatchLimit:
+            raise
         except Exception:
             return cls()
 
@@ -216,6 +238,13 @@ class GlobalConfig(BaseModel):
 class ProjectConfig(BaseModel):
     """Project-level overrides."""
 
+    max_messages_per_turn: int | None = None
+
+    @field_validator('max_messages_per_turn', mode='before')
+    @classmethod
+    def _batch_limit(cls, value: object) -> int:
+        return validate_max_messages_per_turn(value)
+
     model: str | None = None
     thinking_level: str | None = None
     permission_mode: str | None = None
@@ -231,7 +260,11 @@ class ProjectConfig(BaseModel):
             return cls()
         try:
             raw = json.loads(target.read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and 'max_messages_per_turn' in raw:
+                validate_max_messages_per_turn(raw['max_messages_per_turn'])
             return cls.model_validate(raw)
+        except InvalidBatchLimit:
+            raise
         except Exception:
             return cls()
 
@@ -252,6 +285,7 @@ class RuntimeConfig:
     extensions: tuple[str, ...]
     working_dir: str
     platform_info: PlatformInfo
+    max_messages_per_turn: int = 10
 
     @classmethod
     def resolve(
@@ -291,4 +325,8 @@ class RuntimeConfig:
             extensions=tuple(merged_ext),
             working_dir=str(working_dir or Path.cwd()),
             platform_info=PlatformInfo.detect(),
+            max_messages_per_turn=validate_max_messages_per_turn(
+                ov['max_messages_per_turn'] if 'max_messages_per_turn' in ov else
+                pcfg.max_messages_per_turn if pcfg.max_messages_per_turn is not None else
+                global_cfg.max_messages_per_turn),
         )
