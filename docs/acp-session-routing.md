@@ -1,4 +1,7 @@
-# ACP session routing and durable inbox
+# ACP session routing, automatic inbox and batched turns
+
+Current contract: 2026-10-16. The message-approval and wake-credit rules in the
+2026-10-15 designs are historical; tool permissions and ownership remain enforced.
 
 XDOG routes to a session, not a TUI widget. `xdog.agent.acp` supplies the official
 ACP SDK adapter/backend boundary; coding supplies its permission, persistence and
@@ -8,14 +11,22 @@ harness or runs a tool loop. Coding does not import Eyes or a concrete source.
 ## Entry points and lifetimes
 
 ```text
-Eyes evidence → event → ACP handler ───→ explicit endpoint + session ID
-                                              │
-                                  lightweight coding ACP ingress
-                                   ├─ prompt → live owner → controller → AgentSession
-                                   └─ enqueue → durable session inbox
-                                                    │ explicit review + credit
-                                                    └──────────→ same controller
-TUI / RPC: submit human input and subscribe to owner events; not callback hosts
+Evidence → Detector → Event → EventRouter → selected EventHandler
+                                              ├─ ACP (built in)
+                                              └─ registered handler implementations
+                                                   │ explicit endpoint + exact session
+                                        lightweight coding ACP ingress
+                                         ├─ live prompt: forward to existing owner
+                                         └─ enqueue: model-free durable intake
+                                                   │
+                                      same durable Session Inbox
+                                                   │ automatic pending intake
+TUI / RPC human inputs ──────────────────→ sole SessionController
+                                                   │ fixed batch of independent inputs
+                                           AgentSession → Agent
+                                                   │ tool calls only
+                                           existing permission hook
+TUI / RPC observe per-input facts and one shared batch stream; neither is a callback host
 ```
 
 Three independent lifetimes matter: persisted session identity/history, a live
@@ -122,15 +133,19 @@ detector and route logic does not know coding's files, sources or event types.
 ## Prompt versus durable enqueue
 
 - `delivery: "prompt"` (default): explicit load followed by standard
-  `session/prompt`; completion means a final PromptResponse, never a streamed
+  `session/prompt`. A coding owner first persists the input in its Inbox and waits
+  for the actual associated batch result; ingress only forwards, never enqueues a
+  second copy. Generic ACP backends retain their own standard prompt policy.
+  Completion means a final PromptResponse, never a streamed
   `session/update`. Target must be active. A lost final response is
   **outcome-unknown**: pause, inspect effects and explicitly stop/rebaseline;
   never blindly resend. Only explicit local **not-sent** failures retry
   automatically.
 - `delivery: "enqueue"`: negotiate XDOG inbox extensions, validate persisted
   session/cwd/branch/storage scope, and write evidence with a stable message ID.
-  No load, prompt, resume approval, AgentSession or model is started. `queued` and
-  `duplicate` are durable receipts, **not model completion**. A duplicate may
+  The receiver does not load or construct an AgentSession/model. An existing
+  activated owner can consume immediately; messages need no approval or wake
+  credit. `queued` and `duplicate` are durable receipts, **not model completion**. A duplicate may
   report an existing running/terminal message state; it did not execute a second
   turn.
 
@@ -150,8 +165,7 @@ Do not add a second `_` or wrap SDK keyword metadata inside another `_meta`.
 
 | Method (SDK name) | Contract |
 |---|---|
-| `xdog/session_info` | Bound live session ID/cwd/owner generation/branch and truthful `automatic_budget` boolean |
-| `xdog/resume` | Requests current owner's normal permission hook; no metadata-based grant; disconnect retires waiting approval |
+| `xdog/session_info` | Bound live session ID/cwd/owner generation/branch and `max_messages_per_turn`; historical `automatic_budget` is always false |
 | `xdog/enqueue` | Existing session, cwd, stable message_id, instruction, evidence array, source label and provenance object |
 | `xdog/inbox_status` | Existing session/cwd; optional message_id or integer cursor (exclusive); bounded state summaries, branch and persistent inbox_id |
 
@@ -163,22 +177,69 @@ permission, owner generation, storage path or branch override is accepted.
 Status pages contain at most 64 summaries; full evidence is available through
 explicit inbox inspection. All JSON/frame/capacity errors fail closed.
 
-## Review, execution attempts and TUI/RPC
+## Automatic intake, execution attempts and TUI/RPC
 
 ```text
-pending_review → approved(current owner/branch) → running(attempt ID) → terminal
-                    │ owner exits before start         │ abnormal death
-                    └────────→ pending_review          └→ interrupted
+pending → claimed(owner generation + attempt/request IDs) → running(batch ID) → terminal
+   ▲             │ owner retires before model admission          │ abnormal death
+   └─────────────┘                                                └→ interrupted
 ```
 
-Opening a session displays pending/interrupted evidence, but does not queue it
-for a model. Use `/inbox list [OFFSET]`, `/inbox show ID`, then an explicit
-`/inbox approve ID [ID...]`. No implicit all. `/inbox retry ID` requires an
-interrupted attempt, current context and fresh permission; it creates a new
-attempt ID while retaining the old attempt/result. Opening, inspecting, enqueue
-and reconnect do not refill automatic credit. Inbox approval credit applies only
-to the selected request IDs, not unrelated older ACP inputs. A batch still starts
-at most one automatic turn until another legitimate input/authorized resume.
+Every coding external prompt/callback uses the same durable Inbox, online and
+offline. A running receiver can accept without a TUI or owner. Opening a native,
+RPC or SDK owner installs its normal permission/UI hooks and then automatically
+consumes eligible pending messages. The setup barrier is machine initialization,
+not user approval. Loading a skill or inspecting history never starts an owner.
+
+`/inbox list [OFFSET]` and `/inbox show ID` are read-only. `/inbox cancel ID` targets
+pending/claimed-unstarted intake; when execution already contains a message,
+scoped cancellation can end its waiter but cannot withdraw it from model context.
+`/inbox retry ID` explicitly admits an interrupted attempt again under current
+context/tool policy. It retains old attempt facts and creates a distinct execution
+attempt. There is no implicit all, message-approval dialog, human wake budget or
+success/error-based credit refill. The old `approve` command reports obsolete
+usage and `xdog/resume` is neither advertised nor supported. Eyes' CLI `resume`
+restores only data collection/connection; it is not an ACP permission method.
+
+Version-1 `pending_review`/`approved` records migrate to pending data, not authority.
+Old approval facts remain history. Unstarted claims can return to pending;
+actually running work becomes interrupted after crash and is never automatically
+replayed. Message ID, execution request ID, attempt ID and shared batch ID are
+separate identities. A durable ACK is not a started or completed execution.
+
+### Fixed independent-message batches
+
+`max_messages_per_turn` defaults to **10**, accepts only integers **1..128** (not
+booleans), and can be set in the normal global/project settings or SDK
+`CreateSessionOptions`. Explicit override wins over saved session settings, then
+project, global and the default. Setting 1 selects one input per turn.
+
+At a scheduling boundary the sole controller selects currently eligible inputs,
+with human priority and stable admission order within each priority. It does not
+wait to fill the limit. Byte/context/image limits can narrow selection without
+truncation or data loss. New arrivals after selection wait for the next batch.
+Five messages remain five separate history inputs, not concatenated text and not
+five independent turns: one `Agent.prompt(message_list)` lifecycle executes the
+batch, including normal model/tool iterations. Sources, provenance, IDs and typed
+attachments remain associated with their individual inputs.
+
+Each member retains its own acceptance/result/state; members share assistant/tool
+output and a batch ID. TUI live/replay displays each input once and the shared
+output once. RPC emits independent `session_event` receipts and one correlated
+`message_start`/`message_end` stream with `batch_id` and `request_ids`; negotiated
+extension dialogs belong to the actual batch, not an arbitrary first member or
+caller waiting task. Clients echo the supplied scope rather than guessing it from
+one input ID. Ready precedes initial Inbox snapshots. The reader remains active
+for real tool `permission_response`, inspection and scoped controls.
+
+Only participating ACP prompt peers receive that batch's live response; explicit
+load replays history to its own peer. A member's cancel/disconnect does not abort
+other members, and `execution_continues` distinguishes detached waiters from
+withdrawn execution. A singleton batch can be canceled normally; trusted local
+abort/owner shutdown can stop the whole batch and must settle real producers/tools
+before releasing ownership. A terminal persistence failure is an error to SDK,
+print, RPC and ACP, never a successful empty answer. Handled inputs produce system
+feedback rather than an invented assistant response.
 
 An optional human CLI data-write path exists:
 
@@ -190,12 +251,11 @@ It runs without ACP or model construction and checks cwd against the target.
 It is optional management, **not the Eyes callback**. It cannot combine with
 model/permission/resume overrides or silently convert a failed live prompt.
 
-TUI real-time/history views label source and evidence as untrusted, show statuses,
-retain full details, and join inbox records to canonical attempts without duplicate
-input payloads. RPC keeps reading while `type: inbox` approve/retry waits for a
-`permission_response`; `inbox_cancel` retires only its own review. Ready precedes
-initial inbox snapshots. Both use the same controller; neither owns a separate
-agent loop. New canonical model inputs use `xdog.session_input.v1`.
+TUI real-time/history views label source and evidence as untrusted, retain full
+details, and join durable records to canonical attempts without duplicate payloads.
+RPC `type: inbox` supports list/show/cancel/retry; `inbox_cancel` cancels only its
+own administrative operation, not another peer's accepted execution. New canonical
+external inputs use `xdog.session_input.v1`.
 
 ## Ownership, limits and security
 
@@ -213,11 +273,10 @@ mutating tools need approval. With no approver they fail closed unless the user
 explicitly selected allow-all. Eyes denies reverse ACP permission requests and
 advertises no filesystem/terminal tool access.
 
-A bound coding owner manages automatic prompt credit. `automatic_budget: false`
-or missing capability uses Eyes' one-turn fallback; extension names alone cannot
-claim unlimited owner-managed credit. Human/authorized resume, not success/error
-or self-edit output, supplies new credit. No permission mode is changed by
-observation or receipt.
+There is no message approval or automatic-credit fallback in either Eyes or
+coding. Legacy `automatic_budget: false` is compatibility metadata, not a reason
+for a client to impose a one-turn gate. All actual tool calls still use the target
+permission policy; receipt, source labels and connection recovery never change it.
 
 Initial limits: 128 unresolved inbox messages/session, 1 MiB/message, 4096 retained
 identity records, 2 MiB encoded record including attempt history. No automatic ID
@@ -233,7 +292,8 @@ No claim of exactly-once tool side effects or exhaustive filesystem audit is mad
 
 ## Verification and exclusions
 
-See `eyes-verification.md` and the checked-in acceptance evidence. CI uses
+See `unified-inbox-batch-verification.md` for current acceptance evidence.
+`eyes-verification.md` preserves the historical 2026-10-15 checkpoint. CI uses
 SDK-only deterministic peers plus real subprocesses/Unix sockets/files and
 permission/controller persistence tests; no provider credentials are required.
 Actual external IDE integrations and live provider/model runs must be verified

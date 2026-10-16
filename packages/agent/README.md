@@ -2302,4 +2302,8 @@ The direct dependency is `agent-client-protocol>=0.12.1,<0.13` on Python 3.12–
 independent of that SDK. Coding's session ownership and durable inbox extensions
 are product policy, not a second generic Agent loop. Historical external-event
 records retain only codec/projection compatibility, not a live event host.
+`Agent.prompt` also accepts a list of independent Agent messages in one turn;
+coding's bounded SessionController batches use that path without another tool
+loop. Coding's automatic durable Inbox, batch IDs and message-cancellation policy
+are harness policy, not forced into the generic ACP backend.
 See [ACP session routing](../../docs/acp-session-routing.md).

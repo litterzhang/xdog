@@ -1,5 +1,12 @@
 # ACP Endpoint 与 Session Inbox Implementation Plan
 
+> **Historical checkpoint (2026-10-15), not the current message contract.**
+> Message approval, human wake credit and one-message-only turns are superseded
+> by the approved 2026-10-16 unified Inbox/batch design. Recorded past results
+> and review findings below are preserved, not relabeled as fresh verification.
+> Current protocol: `docs/acp-session-routing.md`; current acceptance evidence:
+> `docs/unified-inbox-batch-verification.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Execution method already selected: Native; no implementation subagents. Preserve the approved final independent whole-branch review.
 
 **Goal:** Eyes 不依赖 coding CLI 而直接经 ACP 向指定 session 投递；独立接入服务在 TUI/owner 不运行时持久收件，显式批准后由唯一 controller 执行；删除旧 event host 并验证完整闭环。

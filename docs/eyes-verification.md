@@ -1,5 +1,12 @@
 # ACP / Eyes / session inbox verification — 2026-10-15
 
+> **Historical checkpoint (2026-10-15), not the current message contract.**
+> Message approval, human wake credit and one-message-only turns are superseded
+> by the approved 2026-10-16 unified Inbox/batch design. Recorded past results
+> and review findings below are preserved, not relabeled as fresh verification.
+> Current protocol: `docs/acp-session-routing.md`; current acceptance evidence:
+> `docs/unified-inbox-batch-verification.md`.
+
 Implemented in the requested checkout `/data/workspaces/pyspace/xdog`, feature
 branch `feat/eyes-observation`, without a worktree, merge, push, PR or publication.
 Specs: ACP session routing, ACP endpoint callback and session inbox designs dated

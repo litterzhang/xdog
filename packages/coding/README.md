@@ -4438,7 +4438,7 @@ earlier hook result, even when no request remains pending at delivery. Replacing
 child approval-manager inventory also refuses the old result. This prevents edits
 crossing an input ownership change; it is not a tool policy change or callback rollback.
 
-## ACP session routing and reviewed inbox
+## ACP session routing, automatic inbox and batched turns
 
 `--session ID --prompt TEXT` sends through ACP to the exact live owner without
 constructing another Agent. It differs from `--resume-id ID` (explicit history
@@ -4453,12 +4453,28 @@ coding CLI subprocess or TUI event host. The independent lightweight ingress
 inbox even when every TUI/owner is closed. It does not create an Agent or silently
 restore history. Starting/stopping the ingress is explicit and independent.
 
-`/inbox list [OFFSET]` and `/inbox show ID` inspect without running a model or
-refilling credit. `/inbox approve ID [ID...]` selects exact messages through the
-normal permission hook and sole controller. No implicit all or startup replay.
-A batch starts at most one automatic turn; interrupted attempts need explicit
-`/inbox retry ID`, retaining prior attempt evidence. TUI/RPC label external source,
-evidence, status and full details, joining canonical attempts without duplicates.
+`/inbox list [OFFSET]` and `/inbox show ID` inspect without scheduling work.
+Every external ACP prompt/callback first enters the same durable Inbox. An
+activated owner automatically consumes pending messages, whether they arrived
+online or while all owners were offline. There is no message-approval dialog,
+human wake-up budget, or approval-bearing ACP resume extension. `/inbox cancel ID`
+targets pending intake; `/inbox retry ID` explicitly retries interrupted work while
+retaining its old attempt facts. Actual tool calls still use the existing policy:
+read-only calls may run automatically, restricted calls need approval, and no
+approver means fail-closed unless the user explicitly selected `allow-all`.
+
+`max_messages_per_turn` defaults to **10**, accepts only integer **1..128** (not
+booleans), and follows explicit SDK override > saved session > project > global >
+default precedence. Five inputs remain five independent history messages, with
+separate IDs/sources/typed attachments, but one shared Agent turn and response/tool
+stream. Setting 1 restores single-input selection. Selection is fixed; later
+arrivals wait for the next turn, and byte/context/image limits can narrow a batch
+without dropping messages. TUI live/replay and RPC show shared output once.
+
+A shared batch cannot withdraw an already admitted message from model context:
+cancel/disconnect ends that peer's waiter, not the other members' execution.
+Running crashes become interrupted and are not replayed automatically. SDK/print/
+RPC/ACP report finalization or persistence failures as errors, not blank success.
 
 Optional `--session ID --enqueue --message-id STABLE_ID --prompt TEXT` writes data
 without ACP/model startup, with a durable JSON receipt, not an execution result.

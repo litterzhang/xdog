@@ -92,7 +92,7 @@ The core invariant in `models.py` and `loader.py` is node-private typed ports co
 
 `packages/coding/src/xdog/coding/main.py` selects interactive TUI, one-shot print, or JSON-lines RPC modes. `core/sdk.py` resolves layered configuration, model metadata, permissions, skills, tools, and persisted state before constructing an `xdog.agent.Agent`. Configuration precedence is global settings, project `.coding/settings.json`, then CLI overrides.
 
-`core/agent_session.py` rebuilds the prompt and checks compaction before each turn, then adapts agent events to the selected UI mode. Session history, settings, summaries, and branches are persisted as JSON by `core/session_manager.py`. `core/sessions/` owns the single controller, writer lease, route ownership and separate durable reviewed inbox; TUI/RPC/ACP share that execution path, and offline ingress never constructs a second Agent. Project context discovery is non-recursive from the working directory: `AGENTS.md`, `AGENTS.md`, `.coding/INSTRUCTIONS.md`, and `.coding/instructions.md`, each capped at 64 KiB. Permissions belong in the coding client's pre-tool hook, not in the generic agent runtime. Preserve the default fail-closed behavior: read-only calls may run automatically, mutating calls require approval, and unattended execution may mutate only when `allow-all` was explicitly selected. Permission gates are not an OS sandbox.
+`core/agent_session.py` rebuilds the prompt and checks compaction before each turn, then adapts agent events to the selected UI mode. Session history, settings, summaries, and branches are persisted as JSON by `core/session_manager.py`. `core/sessions/` owns the single controller, writer lease, route ownership and separate durable automatically consumed inbox; TUI/RPC/ACP share that execution path, and offline ingress never constructs a second Agent. Project context discovery is non-recursive from the working directory: `AGENTS.md`, `AGENTS.md`, `.coding/INSTRUCTIONS.md`, and `.coding/instructions.md`, each capped at 64 KiB. Permissions belong in the coding client's pre-tool hook, not in the generic agent runtime. Preserve the default fail-closed behavior: read-only calls may run automatically, mutating calls require approval, and unattended execution may mutate only when `allow-all` was explicitly selected. Permission gates are not an OS sandbox.
 
 ### `xdog.claw`: persistent multi-channel assistant
 
@@ -118,8 +118,9 @@ Importing `xdog.claw.core` intentionally registers claw-specific tools. Preserve
 
 Like flow, eyes owns a versioned JSON definition, frozen models, whole-definition
 validation, asynchronous executor, CLI and packaged `eyes-observers` skill.
-Sources collect evidence, detectors emit events, and explicit routes invoke ACP
-handlers. Regular-file content changes use bounded no-follow polling.
+Sources collect evidence, detectors emit events, and EventRouter dispatches
+explicit routes to registered EventHandler implementations; ACP is one built-in
+handler. Its connection/payload details stay outside the generic executor/runtime. Regular-file content changes use bounded no-follow polling.
 
 Eyes depends only on the optional version-bounded ACP SDK, never on
 agent/ai/coding/claw/flow, and does not execute tools or an agent loop. A coding
@@ -131,9 +132,12 @@ start observation, a model, a receiver or TUI.
 Coding's independently managed lightweight ACP ingress forwards live prompts or
 persists negotiated XDOG enqueue messages without constructing AgentSession.
 TUI/owner absence does not prevent durable intake while the receiver is running.
-Opening a session displays pending/interrupted messages without consuming them;
-exact approval/retry uses the sole controller, existing permissions and one-turn
-credit. Message and execution-attempt identities differ; crash running becomes
+An activated owner automatically consumes pending messages; there is no message
+approval, human wake-up budget or approval-bearing ACP resume. Tool execution
+still uses the existing permission policy. The sole controller selects fixed
+batches using max_messages_per_turn (default10, strict integer1..128), preserving
+independent input boundaries, source/attachments/IDs and one shared output stream.
+list/show are read-only; cancel/retry are separately fenced Inbox controls. Message and execution-attempt identities differ; crash running becomes
 interrupted, never automatic side-effect replay. Persisted inbox namespace,
 project/branch and stable IDs make explicit enqueue ACK-loss recovery safe;
 standard prompt outcome-unknown is never blindly resent. Source labels/evidence

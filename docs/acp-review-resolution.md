@@ -1,5 +1,12 @@
 # Independent ACP/session review resolution — 2026-10-15
 
+> **Historical checkpoint (2026-10-15), not the current message contract.**
+> Message approval, human wake credit and one-message-only turns are superseded
+> by the approved 2026-10-16 unified Inbox/batch design. Recorded past results
+> and review findings below are preserved, not relabeled as fresh verification.
+> Current protocol: `docs/acp-session-routing.md`; current acceptance evidence:
+> `docs/unified-inbox-batch-verification.md`.
+
 Review: one fresh, read-only whole-branch review of
 `283d12db873e14d290675d880a4eb0f22bc7ef71..e13c28ed5d4294487b7195e52267b1e8ee2a2a46`,
 covering all 21 feature commits and 175 changed files, not only deletion.

@@ -1,5 +1,12 @@
 # ACP 会话路由与 Eyes 迁移设计
 
+> **Historical checkpoint (2026-10-15), not the current message contract.**
+> Message approval, human wake credit and one-message-only turns are superseded
+> by the approved 2026-10-16 unified Inbox/batch design. Recorded past results
+> and review findings below are preserved, not relabeled as fresh verification.
+> Current protocol: `docs/acp-session-routing.md`; current acceptance evidence:
+> `docs/unified-inbox-batch-verification.md`.
+
 日期：2026-10-15
 状态：原设计及 endpoint/inbox 补充设计与实施计划已获用户批准。实现与旧 host 删除已完成，完整测试、构建与隔离验证已通过；最终独立审核发现的五项 Important 问题均已通过 RED→GREEN 回归修复，全量测试及重建隔离验证通过；验收与裁决见 `docs/eyes-verification.md`、`docs/acp-review-resolution.md`。以 `docs/acp-session-routing.md` 为当前协议说明，保留本文中的历史方案与修订标记。
 替代范围：本文获批并实施后，替代 `2026-10-14-eyes-design.md` 中的专用宿主协议、绑定和调度方案；保留 Eyes 的 source/detector/route、文件采集与 Flow 风格产品形态。
