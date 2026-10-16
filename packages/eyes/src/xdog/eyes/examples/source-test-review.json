@@ -33,7 +33,7 @@
       },
       "session": "EXPLICIT_SESSION_ID",
       "delivery": "enqueue",
-      "instruction": "Review changed source and related tests after user approval. Follow target tool permissions."
+      "instruction": "Review changed source and related tests. Follow target tool permissions."
     }
   ],
   "routes": [

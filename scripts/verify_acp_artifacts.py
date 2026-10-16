@@ -104,7 +104,7 @@ async def main():
   assert (await conn.ext_method('xdog/enqueue',request))['status']=='queued'
   assert (await conn.ext_method('xdog/enqueue',request))['status']=='duplicate'
   status=await conn.ext_method('xdog/inbox_status',{'session_id':data.session_id,'cwd':str(root)})
-  assert status['messages'][0]['status']=='pending_review' and status['inbox_id']
+  assert status['messages'][0]['status']=='pending' and status['inbox_id']
   assert not manager.load_session(data.session_id).messages
   assert not any(n in sys.modules for n in ('xdog.coding.core.agent_session','xdog.coding.core.sdk'))
  finally:
@@ -112,6 +112,56 @@ async def main():
  assert len(InboxStore(manager._dir,root/'inbox').records(data.session_id,root))==1
  print(json.dumps({'coding':'wheel-only Unix ACP enqueue/status/dedup with model imports forbidden',
                    'session_id':data.session_id}))
+asyncio.run(main())
+'''
+
+
+CODING_OWNER = r'''
+import asyncio,json,sys
+from pathlib import Path
+from xdog.agent import Agent,AgentConfig
+from xdog.agent.session_input import TYPE,decode_input
+from xdog.ai.types import AssistantMessage,TextContent,UserMessage
+from xdog.ai.utils.event_stream import EventStream
+from xdog.coding.core.agent_session import AgentSession
+from xdog.coding.core.session_manager import SessionManager
+from xdog.coding.core.sessions.inbox_models import InboxMessage
+from xdog.coding.core.sessions.inbox_store import InboxStore
+from xdog.coding.core.sessions.store import InputStore
+from xdog.coding.core.settings_manager import SettingsManager
+import xdog.coding.core.agent_session as module
+assert Path(module.__file__).is_relative_to(Path(sys.prefix))
+async def main():
+ root=Path.cwd();manager=SessionManager(root/'sessions');data=manager.create_session(model='test',working_dir=root)
+ store=InboxStore(manager._dir,root/'inbox');calls=[]
+ for i in range(5):
+  store.enqueue(InboxMessage(data.session_id,root,f'wheel-callback-{i}',f'Evidence message {i}',
+                            ({'path':f'src/{i}.py'},),'wheel observer',{}))
+ def model(_,context,options):
+  calls.append(context)
+  return EventStream.empty(AssistantMessage(content=(TextContent(text='wheel batch answer'),)))
+ session=AgentSession(agent=Agent(model,config=AgentConfig(model='test')),
+  session_data=manager.load_session(data.session_id),session_manager=manager,
+  settings=SettingsManager(global_path=root/'settings.json'),working_dir=root,tool_registry=None,bash=None)
+ try:
+  response=await session.send_message('Process all retained evidence')
+  assert response.content==(TextContent(text='wheel batch answer'),)
+  assert len(calls)==1 and len(calls[0].messages)==6
+  assert all(isinstance(message,UserMessage) for message in calls[0].messages)
+  rows=store.records(data.session_id,root)
+  assert len(rows)==5 and {row.status for row in rows}=={'succeeded'}
+  assert len({row.batch_id for row in rows})==1 and rows[0].batch_id
+  canonical=[decode_input(message.data) for message in session.messages if getattr(message,'type','')==TYPE]
+  assert len(canonical)==5 and {item.id for item in canonical}=={row.request_id for row in rows}
+  history=InputStore(session).records()
+  assert len(history)==6 and {row.status for row in history}=={'succeeded'}
+  assert len({row.batch_id for row in history})==1
+  assert session.runtime is None and session._sdk_controller is None and session._lease is None
+  assert session.permissions.mode=='ask' and not session.permissions.has_pending_requests
+ finally:
+  session.dispose()
+ print(json.dumps({'coding_owner':'wheel-only SDK owner, five durable callbacks plus independent human input',
+                   'model_calls':len(calls),'inputs':len(calls[0].messages),'message_approval':False}))
 asyncio.run(main())
 '''
 
@@ -129,6 +179,7 @@ def main() -> None:
         ('eyes', ('eyes',), EYES),
         ('agent', ('ai', 'agent'), AGENT),
         ('coding', ('ai', 'agent', 'tui', 'coding'), CODING),
+        ('coding-owner', ('ai', 'agent', 'tui', 'coding'), CODING_OWNER),
     ):
         env = root / (name + '-venv')
         work = root / (name + '-work')
