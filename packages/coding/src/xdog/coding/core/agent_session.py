@@ -144,7 +144,13 @@ def _idle_change(method: Callable[Concatenate["AgentSession", P], R]) -> Callabl
                         async def rebind_sdk() -> None:
                             from xdog.coding.core.sessions.store import InputStore
                             await asyncio.wrap_future(discarded)
+                            previous = controller.inbox
+                            if previous is not None:
+                                await previous.retire()
                             controller.store = await asyncio.to_thread(InputStore, self)
+                            from xdog.coding.core.sessions.intake import attach_inbox
+                            inbox = attach_inbox(controller, previous.store if previous is not None else None)
+                            await inbox.activate()
 
                         controller.settle_before_release(rebind_sdk())
     return wrapped
@@ -631,7 +637,9 @@ class AgentSession:
             lease.close()
             self._sdk_retiring_leases.discard(lease)
 
-    async def _close_sdk_owner(self) -> None:
+    async def _close_sdk_owner(self, controller: SessionController) -> None:
+        if controller.inbox is not None:
+            await controller.inbox.retire()
         self._release_sdk_leases()
 
     async def _acquire_owner(self) -> tuple[SessionController, bool]:
@@ -654,7 +662,9 @@ class AgentSession:
                                 runtime_directory(self.session_manager._dir), self.session_id)
                         controller = SessionController(self, bound=False)
                         controller.on_control_settled = self._release_sdk_leases
-                        controller._close_hook = self._close_sdk_owner
+                        from xdog.coding.core.sessions.intake import attach_inbox
+                        attach_inbox(controller)
+                        controller._close_hook = lambda: self._close_sdk_owner(controller)
                         controller.start()
                         self._sdk_controller = controller
                     self._sdk_users += 1
@@ -688,6 +698,8 @@ class AgentSession:
                                        input_origin=input_origin, raw_text=user_text)
             try:
                 await asyncio.wrap_future(ticket.accepted)
+                if temporary and controller.inbox is not None:
+                    await controller.inbox.activate()
                 result = await asyncio.wrap_future(ticket.result)
             except asyncio.CancelledError:
                 await asyncio.wrap_future(controller.cancel(ticket.id, peer_id="local-sdk", wait=True))

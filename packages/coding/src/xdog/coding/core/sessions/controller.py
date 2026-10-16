@@ -96,6 +96,7 @@ class SessionController:
         self.on_control_settled: Callable[[], None] | None = None
         self._close_hook: Callable[[], Awaitable[None]] | None = None
         self.inbox: InboxCoordinator | None = None
+        self._inputs_ready = True
         self.before_batch: Callable[[TurnBatch], Awaitable[None]] | None = None
         self.after_batch: Callable[[TurnBatch, TurnResult], Awaitable[None]] | None = None
         self.before_turn: Callable[[SessionInput], Awaitable[None]] | None = None
@@ -338,6 +339,8 @@ class SessionController:
                 self._control_future = future
                 self._active = asyncio.create_task(self._run_control(operation, future))
                 return
+        if not self._inputs_ready:
+            return
         jobs = [job for job in self._jobs.values() if not job.finishing]
         human = next((job for job in jobs if job.value.origin == "human"), None)
         if human is None and (self._human_pending or self._producers):

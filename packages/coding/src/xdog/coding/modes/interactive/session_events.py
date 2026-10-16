@@ -94,7 +94,7 @@ class NativeSessionEvents:
         if self.runtime is not None:
             return
         self.runtime = self.ui._session.enable_runtime(bound=True)
-        self.runtime.start(own_thread=True)
+        self.runtime.start(own_thread=True, setup_pending=True)
         controller = self.runtime.controller
         controller.before_turn = self.prepare
         controller.after_turn = self.finished

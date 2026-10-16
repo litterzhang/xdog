@@ -1,4 +1,4 @@
-"""Read-only inbox inspection and exact review through an already active owner."""
+"""Inspect automatic delivery or explicitly cancel/retry under the existing owner."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from xdog.coding.core.agent_session import AgentSession
     from xdog.coding.core.slash_commands import CommandResult
 
-USAGE = 'Usage: /inbox [list [OFFSET]|show ID|approve ID [ID...]|retry ID] (quote opaque IDs; no implicit all)'
+USAGE = 'Usage: /inbox [list [OFFSET]|show ID|cancel ID|retry ID] (quote opaque IDs; no implicit all)'
 
 
 def session_inbox(session: AgentSession) -> InboxStore:
@@ -26,12 +26,12 @@ def session_inbox(session: AgentSession) -> InboxStore:
 
 async def inbox_action(session: AgentSession, action: str, ids: tuple[str, ...] = (), *,
                        cursor: int = 0) -> dict[str, Any]:
-    if action not in {'list', 'show', 'approve', 'retry'} or type(cursor) is not int or not 0 <= cursor <= 4096:
+    if action not in {'list', 'show', 'cancel', 'retry'} or type(cursor) is not int or not 0 <= cursor <= 4096:
         raise ValueError(USAGE)
     if any(not isinstance(key, str) or key == '--all' for key in ids) or len(set(ids)) != len(ids):
         raise ValueError(USAGE)
-    if ((action == 'list' and ids) or (action in {'show', 'retry'} and len(ids) != 1)
-            or action == 'approve' and not ids or action != 'list' and cursor):
+    if ((action == 'list' and ids) or (action in {'show', 'cancel', 'retry'} and len(ids) != 1)
+            or action != 'list' and cursor):
         raise ValueError(USAGE)
     for key in ids:
         label(key)
@@ -46,21 +46,25 @@ async def inbox_action(session: AgentSession, action: str, ids: tuple[str, ...] 
             if selected is None:
                 raise ValueError('Unknown inbox message')
             return {'session_id': sid, 'record': record_data(selected), 'untrusted': True,
-                    'notice': 'Read-only evidence; not model input or execution approval'}
+                    'notice': 'Read-only evidence; delivery is automatic and tool permissions are unchanged'}
         page = rows[cursor:cursor + 64]
         return {'session_id': sid, 'messages': [summary(row) for row in page],
                 'next_cursor': cursor + len(page) if cursor + len(page) < len(rows) else None,
-                'notice': 'Durable intake is not completion; select explicit IDs for review'}
+                'notice': 'Durable intake is not completion; pending messages are delivered automatically'}
     runtime = session.runtime
     if runtime is None:
-        raise RuntimeError('Inbox approval requires an active session runtime; open/resume the session explicitly')
-    requests: tuple[str, ...]
-    if action == 'retry':
-        requests = (await runtime.inbox.retry(ids[0], peer_id='inbox-review'),)
-    else:
-        requests = await runtime.inbox.approve(ids, peer_id='inbox-review')
-    return {'session_id': sid, 'status': 'accepted', 'request_ids': list(requests),
-            'notice': 'Accepted for execution; not proof of completion; existing permissions and budget retained'}
+        raise RuntimeError('Inbox control requires an active session runtime; open/resume the session explicitly')
+    if action == 'cancel':
+        cancelled = await runtime.inbox.cancel(ids[0], peer_id='inbox-command')
+        rows = await runtime.inbox.snapshot()
+        state = next((row.status for row in rows if row.message.message_id == ids[0]), 'unknown')
+        return {'session_id': sid, 'message_id': ids[0],
+                'status': 'cancelled' if state == 'cancelled' else 'cancel_requested' if cancelled else 'unchanged',
+                'message_state': state, 'execution_continues': state == 'running',
+                'notice': 'An already running shared batch cannot be withdrawn from model context'}
+    request = await runtime.inbox.retry(ids[0], peer_id='inbox-command')
+    return {'session_id': sid, 'status': 'accepted', 'request_ids': [request],
+            'notice': 'Retry accepted; not completion; existing tool permissions still apply'}
 
 
 async def inbox_command(session: AgentSession, args: str) -> CommandResult:

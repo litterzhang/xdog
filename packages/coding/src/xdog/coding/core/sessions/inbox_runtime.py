@@ -1,22 +1,19 @@
-"""Explicit review and durable attempts owned by the existing session controller."""
-
+"""Automatic durable input admission under the session's single execution owner."""
 from __future__ import annotations
 
 import asyncio
-import hashlib
 from collections.abc import Awaitable, Callable
+from concurrent.futures import Future
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from xdog.agent import AgentContext, BeforeToolCallContext
 from xdog.agent.session_input import SessionInput
-from xdog.ai.types import AssistantMessage, ToolCall
 from xdog.coding.core.sessions.batches import TurnBatch
-from xdog.coding.core.sessions.inbox_models import InboxRecord, encoded, message_data
+from xdog.coding.core.sessions.inbox_models import InboxMessage, InboxRecord
 from xdog.coding.core.sessions.inbox_store import InboxStore
 from xdog.coding.core.sessions.models import Submission, TurnResult
 
 if TYPE_CHECKING:
-    from xdog.coding.core.sessions.runtime import SessionRuntime
+    from xdog.coding.core.sessions.controller import SessionController
 
 T = TypeVar('T')
 
@@ -30,46 +27,56 @@ async def _settled(future: asyncio.Future[Any]) -> None:
         except BaseException:
             break
     if future.done() and not future.cancelled():
-        future.exception()  # Observe failures without replacing the caller's cancellation.
+        future.exception()
 
 
 class InboxCoordinator:
-    def __init__(self, runtime: SessionRuntime, store: InboxStore) -> None:
-        self.runtime, self.store = runtime, store
-        self.session_id, self.cwd = runtime.record.session_id, runtime.record.cwd
-        self.generation, self.branch = runtime.controller.generation, runtime.controller.branch
-        self.lease = runtime.session._lease
+    def __init__(self, controller: SessionController, store: InboxStore) -> None:
+        self.controller, self.store = controller, store
+        session = controller.session
+        self.session_id, self.cwd = session.session_id, session.working_dir.resolve()
+        self.generation, self.branch = controller.generation, controller.branch
+        self.lease = session._lease
         self._ready = False
         self._initializing = asyncio.Lock()
+        self._activation_lock = asyncio.Lock()
         self._bindings: dict[str, InboxRecord] = {}
-        self._reviewing: set[str] = set()
-        self._reviews: set[asyncio.Task[Any]] = set()
+        self._tickets: dict[str, Submission] = {}
+        self._message_peers: dict[str, str] = {}
         self._workers: set[asyncio.Task[Any]] = set()
         self._retired = False
+        self._stopping = False
         self._last: tuple[InboxRecord, ...] | None = None
         self._snapshot_sequence = 0
         self._published_sequence = -1
+        self._watch_task: asyncio.Task[None] | None = None
+        self._enabled = False
+        self._draining: Future[tuple[Submission, ...]] | None = None
 
     def is_submission(self, request_id: str) -> bool:
         return request_id in self._bindings
 
+    def message_id(self, request_id: str) -> str | None:
+        row = self._bindings.get(request_id)
+        return row.message.message_id if row is not None else None
+
     def _lease_owned(self, *, current: bool = True) -> None:
         if self.lease is None or self.lease._fd < 0 or self.lease.session_id != self.session_id:
             raise RuntimeError('Inbox execution requires its session writer lease')
-        if current and self.runtime.session._lease is not self.lease:
+        if current and self.controller.session._lease is not self.lease:
             raise RuntimeError('Inbox owner lease changed')
 
     def _context(self) -> None:
         self._lease_owned()
-        session, controller = self.runtime.session, self.runtime.controller
-        if (self._retired or controller._closing or controller._broken is not None
+        session, controller = self.controller.session, self.controller
+        if (self._retired or self._stopping or controller._closing or controller._broken is not None
                 or session.session_id != self.session_id or session.working_dir.resolve() != self.cwd
                 or controller.generation != self.generation or controller.branch != self.branch
                 or session.session_data.active_branch != self.branch):
             raise RuntimeError('Inbox owner context/generation/branch changed or is unavailable')
 
     async def _owner(self, operation: Callable[[], Awaitable[T]]) -> T:
-        controller = self.runtime.controller
+        controller = self.controller
         controller.start()
         if asyncio.get_running_loop() is controller._loop:
             return await operation()
@@ -98,7 +105,9 @@ class InboxCoordinator:
             await _settled(receipt)
             raise
 
-    async def _disk(self, operation: Callable[[], T]) -> T:
+    async def _disk(self, operation: Callable[[], T], *, retiring: bool = False) -> T:
+        if self._retired and not retiring:
+            raise RuntimeError('Inbox owner is retired')
         worker = asyncio.create_task(asyncio.to_thread(operation))
         self._workers.add(worker)
         worker.add_done_callback(self._workers.discard)
@@ -111,6 +120,7 @@ class InboxCoordinator:
     async def _initialize(self) -> None:
         self._context()
         async with self._initializing:
+            self._context()
             if not self._ready:
                 await self._disk(lambda: self.store.recover(self.session_id, self.generation))
                 self._context()
@@ -131,117 +141,173 @@ class InboxCoordinator:
         return sequence, await self._disk(lambda: self.store.records(self.session_id, self.cwd))
 
     def _publish(self, rows: tuple[InboxRecord, ...], sequence: int) -> tuple[InboxRecord, ...]:
-        controller = self.runtime.controller
+        controller = self.controller
         if (self._retired or controller.generation != self.generation
-                or self.runtime.session.session_id != self.session_id):
+                or self.controller.session.session_id != self.session_id):
             return rows
         if sequence < self._published_sequence:
             return self._last if self._last is not None else rows
         self._published_sequence = sequence
         if rows != self._last:
             self._last = rows
-            self.runtime.controller.publish('inbox_snapshot', rows)
+            self.controller.publish('inbox_snapshot', rows)
         return rows
 
-    async def approve(self, message_ids: tuple[str, ...], *, peer_id: str) -> tuple[str, ...]:
-        return await self._owner(lambda: self._review(message_ids, peer_id, retry=False))
-
-    async def retry(self, message_id: str, *, peer_id: str) -> str:
-        ids = await self._owner(lambda: self._review((message_id,), peer_id, retry=True))
-        return ids[0]
-
-    async def _review(self, ids: tuple[str, ...], peer: str, *, retry: bool) -> tuple[str, ...]:
-        await self._initialize()
-        if (not isinstance(ids, tuple) or not ids or any(not isinstance(key, str) for key in ids)
-                or len(set(ids)) != len(ids)):
-            raise ValueError('Inbox review requires distinct explicit message IDs')
-        if self._reviewing.intersection(ids):
-            raise ValueError('Inbox messages are already pending review')
-        self._reviewing.update(ids)
-        task = asyncio.current_task()
-        assert task is not None
-        self._reviews.add(task)
+    async def activate(self) -> None:
         try:
-            rows = await self._disk(lambda: self.store.records(self.session_id, self.cwd))
-            by_id = {row.message.message_id: row for row in rows}
-            selected = []
-            for key in ids:
-                row = by_id.get(key)
-                if row is None or row.status != ('interrupted' if retry else 'pending'):
-                    raise ValueError('Inbox message is not pending this explicit review/retry')
-                if row.branch_id != self.branch:
-                    raise ValueError('Inbox message branch mismatch')
-                selected.append(row)
-            digests = {r.message.message_id: hashlib.sha256(encoded(message_data(r.message), 1024 * 1024)).hexdigest()
-                       for r in selected}
-            arguments = {'session_id': self.session_id, 'generation': self.generation, 'branch_id': self.branch,
-                         'message_ids': list(ids), 'content_digests': digests, 'retry': retry, 'peer_id': peer}
-            context = BeforeToolCallContext(assistant_message=AssistantMessage(),
-                tool_call=ToolCall(id='inbox-review-' + ids[0], name='session_inbox_approve', arguments=arguments),
-                args=arguments, context=AgentContext())
-            verdict = await self.runtime.session.permissions.before_tool_call(context)
+            await self._owner(self._activate)
+        except Exception as exc:
+            if (not self._retired and not self._stopping and self.controller.inbox is self
+                    and self.controller.generation == self.generation):
+                self.controller._broken = exc
+                self.controller._inputs_ready = True
+                self.controller.publish('inbox_error', str(exc))
+                self.controller._pump()  # Settle accepted inputs as failed; never strand them behind setup.
+            raise
+
+    async def _activate(self) -> None:
+        async with self._activation_lock:
+            if self._enabled:
+                return
+            await self._initialize()
+            await self._drain(initial=True)
             self._context()
-            if verdict is not None:
-                raise PermissionError(verdict.reason or 'Inbox execution approval denied')
-            controller = self.runtime.controller
-            if controller.owns_current_task:
-                return await self._admit(ids, peer, tuple(selected))
-            future = controller.control(lambda: self._admit(ids, peer, tuple(selected)), name='inbox-review')
-            receipt = asyncio.wrap_future(future)
+            self._enabled = True
+            self.controller._inputs_ready = True
+            if self._watch_task is None:
+                self._watch_task = asyncio.create_task(self._watch())
+            self.controller._pump()
+
+    async def _watch(self) -> None:
+        error = ''
+        while not self._retired and not self.controller._closing:
             try:
-                return await asyncio.shield(receipt)
-            except asyncio.CancelledError:
-                controller.cancel_control(future)
-                await _settled(receipt)
-                raise
-        finally:
-            self._reviewing.difference_update(ids)
-            self._reviews.discard(task)
+                await self._snapshot()
+                await self._drain()
+                error = ''
+            except (OSError, ValueError, RuntimeError) as exc:
+                if self._retired or self.controller._closing:
+                    break
+                if str(exc) != error:
+                    self.controller.publish('inbox_error', str(exc))
+                    error = str(exc)
+            await asyncio.sleep(0.5)
 
-    async def _admit(self, ids: tuple[str, ...], peer: str, expected: tuple[InboxRecord, ...]) -> tuple[str, ...]:
-        controller = self.runtime.controller
-        tickets: list[Submission] = []
+    async def drain(self) -> tuple[Submission, ...]:
+        return await self._owner(self._drain)
+
+    async def _drain(self, *, initial: bool = False) -> tuple[Submission, ...]:
+        await self._initialize()
+        if ((self.controller._active is not None and not self.controller.owns_current_task)
+                or not (initial or self._enabled)):
+            return ()
+        if self.controller.owns_current_task:
+            return await self._admit_pending()
+        if self._draining is None or self._draining.done():
+            self._draining = self.controller.control(self._admit_pending, name='inbox-intake')
+        return await asyncio.shield(asyncio.wrap_future(self._draining))
+
+    async def _admit_pending(self) -> tuple[Submission, ...]:
         self._context()
+        controller = self.controller
+        # Prefetch only the next fixed turn, rather than claiming the entire durable backlog.
+        available = min(128 - len(controller._jobs) - len(controller._admissions),
+                        controller.max_messages_per_turn - len(controller._jobs) - len(controller._admissions))
+        if available <= 0:
+            return ()
+        rows = await self._disk(lambda: self.store.records(self.session_id, self.cwd))
+        self._context()
+        selected = tuple(row for row in rows if row.status == 'pending' and row.branch_id == self.branch)[:available]
+        if not selected:
+            return ()
+        claimed = await self._disk(lambda: self.store.reserve(self.session_id,
+            tuple(row.message.message_id for row in selected), cwd=self.cwd, branch_id=self.branch,
+            generation=self.generation, expected=selected))
+        self._context()
+        tickets = []
         try:
-            records = await self._disk(lambda: self.store.approve(
-                self.session_id, ids, cwd=self.cwd, branch_id=self.branch, generation=self.generation,
-                expected=expected))
-            self._context()
-            for record in records:
-                self._bindings[record.request_id] = record
-                message = record.message
-                value = SessionInput(record.request_id, 'acp', message.source, message.instruction, message.evidence,
-                    {'inbox': {'message_id': message.message_id, 'attempt_id': record.attempt_id,
-                               'branch_id': record.branch_id}, 'submitted': message.provenance})
-                tickets.append(controller.submit(value, peer_id=peer))
+            for row in claimed:
+                self._bindings[row.request_id] = row
+                message = row.message
+                value = SessionInput(row.request_id, 'acp', message.source, message.instruction, message.evidence,
+                    {'inbox': {'message_id': message.message_id, 'attempt_id': row.attempt_id,
+                               'branch_id': row.branch_id}, 'submitted': message.provenance})
+                ticket = controller.submit(value, peer_id=self._message_peers.get(message.message_id, 'inbox'))
+                self._tickets[message.message_id] = ticket
+                tickets.append(ticket)
             for ticket in tickets:
                 await asyncio.shield(asyncio.wrap_future(ticket.accepted))
             self._context()
             await self._snapshot()
-            self._context()
-            return tuple(ticket.id for ticket in tickets)
+            return tuple(tickets)
         except BaseException:
-            await self._rollback(ids, peer, tickets)
+            for ticket in tickets:
+                await asyncio.wrap_future(controller.cancel(ticket.id,
+                    peer_id=self._message_peers.get(self.message_id(ticket.id) or '', 'inbox'), wait=True))
+            await self._disk(lambda: self.store.release_unstarted(self.session_id,
+                tuple(row.message.message_id for row in claimed), generation=self.generation))
             raise
 
-    async def _rollback(self, ids: tuple[str, ...], peer: str, tickets: list[Submission]) -> None:
-        controller = self.runtime.controller
-        try:
-            for ticket in tickets:
-                await _settled(asyncio.wrap_future(ticket.accepted))
-                await asyncio.wrap_future(controller.cancel(ticket.id, peer_id=peer, wait=True))
-                await _settled(asyncio.wrap_future(ticket.result))
-            # approve may have committed some/all records before a failed or cancelled write receipt.
-            rows = await self._disk(lambda: self.store.records(self.session_id, self.cwd))
-            for row in rows:
-                if (row.message.message_id in ids and row.status == 'claimed'
-                        and row.owner_generation == self.generation):
-                    await self._disk(lambda: self.store.finish(self.session_id, row.message.message_id,
-                        generation=self.generation, attempt_id=row.attempt_id, status='cancelled'))
-                    self._bindings.pop(row.request_id, None)
-        except BaseException as exc:
-            controller._broken = exc
-            raise
+    async def submit_prompt(self, message: InboxMessage, *, peer_id: str) -> Submission:
+        return await self._owner(lambda: self._submit_prompt(message, peer_id))
+
+    async def _submit_prompt(self, message: InboxMessage, peer_id: str) -> Submission:
+        await self._initialize()
+        if message.session_id != self.session_id or message.cwd.resolve() != self.cwd:
+            raise ValueError('Prompt target does not match its owner')
+        self._message_peers[message.message_id] = peer_id
+        await self._disk(lambda: self.store.enqueue(message, expected_branch_id=self.branch))
+        self._context()
+        if message.message_id in self._tickets:
+            return self._tickets[message.message_id]
+        if self.controller.owns_current_task:
+            await self._admit_pending()
+        else:
+            future = self.controller.control(self._admit_pending, name='inbox-prompt-intake')
+            await asyncio.shield(asyncio.wrap_future(future))
+        ticket = self._tickets.get(message.message_id)
+        if ticket is None:
+            raise RuntimeError('Prompt remains durable pending; owner queue is full or context changed')
+        return ticket
+
+    async def retry(self, message_id: str, *, peer_id: str) -> str:
+        async def retry_owned() -> str:
+            await self._initialize()
+            await self._disk(lambda: self.store.retry(self.session_id, message_id, cwd=self.cwd, branch_id=self.branch))
+            self._tickets.pop(message_id, None)
+            self._message_peers[message_id] = peer_id
+            self._context()
+            if self.controller.owns_current_task:
+                await self._admit_pending()
+            else:
+                future = self.controller.control(self._admit_pending, name='inbox-retry')
+                await asyncio.shield(asyncio.wrap_future(future))
+            ticket = self._tickets.get(message_id)
+            if ticket is None:
+                raise RuntimeError('Retry retained pending until queue capacity is available')
+            return ticket.id
+        return await self._owner(retry_owned)
+
+    async def cancel(self, message_id: str, *, peer_id: str) -> bool:
+        async def cancel_owned() -> bool:
+            await self._initialize()
+            if self._message_peers.get(message_id) != peer_id and peer_id != 'inbox-command':
+                return False
+            ticket = self._tickets.get(message_id)
+            if ticket is not None and ticket.id in self.controller._jobs:
+                job = self.controller._jobs[ticket.id]
+                if self.controller._in_active(job):
+                    return await asyncio.wrap_future(self.controller.cancel(ticket.id, peer_id=job.peer, wait=True))
+            await self._disk(lambda: self.store.cancel_pending(self.session_id, message_id, cwd=self.cwd,
+                branch_id=self.branch, generation=self.generation))
+            if ticket is not None:
+                row = self._bindings.pop(ticket.id, None)
+                if row is not None:
+                    await asyncio.wrap_future(self.controller.cancel(ticket.id,
+                        peer_id=self._message_peers.get(message_id, 'inbox'), wait=True))
+            await self._snapshot()
+            return True
+        return await self._owner(cancel_owned)
 
     async def starting(self, batch: TurnBatch) -> None:
         selected = tuple(self._bindings[key] for key in batch.request_ids if key in self._bindings)
@@ -273,6 +339,17 @@ class InboxCoordinator:
         sequence, rows = await self._read_snapshot()
         self._publish(rows, sequence)
 
+    async def stop_polling(self) -> None:
+        await self._owner(self._stop_polling)
+
+    async def _stop_polling(self) -> None:
+        self._stopping = True
+        self._enabled = False
+        self.controller._inputs_ready = False
+        if self._watch_task is not None and self._watch_task is not asyncio.current_task():
+            self._watch_task.cancel()
+            await asyncio.gather(self._watch_task, return_exceptions=True)
+
     async def retire(self) -> None:
         await self._owner(self._retire)
 
@@ -280,15 +357,13 @@ class InboxCoordinator:
         if self._retired:
             return
         self._retired = True
-        current = asyncio.current_task()
-        reviews = tuple(t for t in self._reviews if t is not current)
-        for task in reviews:
-            task.cancel()
-        if reviews:
-            await asyncio.gather(*reviews, return_exceptions=True)
+        await self._stop_polling()
+        if self._draining is not None and not self._draining.done():
+            self.controller.cancel_control(self._draining)
+            await _settled(asyncio.wrap_future(self._draining))
         if self._workers:
             await _settled(asyncio.gather(*tuple(self._workers), return_exceptions=True))
         if self._ready or self._bindings:
             self._lease_owned(current=False)
-            await self._disk(lambda: self.store.retire(self.session_id, self.generation))
+            await self._disk(lambda: self.store.retire(self.session_id, self.generation), retiring=True)
         self._bindings.clear()

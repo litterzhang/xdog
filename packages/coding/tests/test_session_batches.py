@@ -281,8 +281,7 @@ async def test_partial_running_publication_never_starts_batch(coding_session, tm
     for key in ('one', 'two'):
         store.enqueue(InboxMessage(coding_session.session_id, tmp_path, key, key, (), 'external', {}))
     runtime = SessionRuntime(coding_session, bound=True, inbox_store=store)
-    runtime.start()
-    coding_session.permissions.set_mode('allow-all')  # Transitional old intake caller, removed by Task 5.
+    runtime.start(setup_pending=True)
     calls, hooks, completed = [], [], []
     done = asyncio.Event()
     coding_session.agent.set_stream_fn(lambda *_: calls.append(True) or EventStream.empty(AssistantMessage()))
@@ -310,7 +309,7 @@ async def test_partial_running_publication_never_starts_batch(coding_session, tm
 
     monkeypatch.setattr(store, '_save', fail)
     try:
-        await runtime.inbox.approve(('one', 'two'), peer_id='test')
+        await runtime.activate_inputs()
         await asyncio.wait_for(done.wait(), 3)
         assert calls == [] and hooks == []
         assert [result.status for result in completed] == ['failed', 'failed']

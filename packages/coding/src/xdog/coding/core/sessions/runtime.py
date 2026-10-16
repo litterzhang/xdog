@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING, Any
 
 from xdog.coding.core.sessions.availability import acp_available
 from xdog.coding.core.sessions.controller import SessionController
-from xdog.coding.core.sessions.inbox_runtime import InboxCoordinator
 from xdog.coding.core.sessions.inbox_store import InboxStore
+from xdog.coding.core.sessions.intake import attach_inbox
 from xdog.coding.core.sessions.ownership import OwnerRecord, OwnerRegistry, SessionLease, runtime_directory
 from xdog.coding.core.sessions.router import SessionRouter
 
@@ -48,13 +48,11 @@ class SessionRuntime:
         self.server: Any = None
         # A custom SessionManager must not write its inbox into ambient user data.
         store = inbox_store or InboxStore(session.session_manager._dir, session.session_manager._dir.parent / 'inbox')
-        self.inbox = InboxCoordinator(self, store)
-        self.controller.inbox = self.inbox
+        self.inbox = attach_inbox(self.controller, store)
         self._endpoint_lock = asyncio.Lock()
         self._started = False
         self._closed: Future[None] | None = None
         self.disposing = False
-        self._inbox_watch: asyncio.Task[None] | None = None
 
     def retain_lease(self, lease: SessionLease) -> None:
         """A navigated-away writer stays exclusive until all control cleanup settles."""
@@ -65,11 +63,13 @@ class SessionRuntime:
             lease.close()
             self._retiring_leases.discard(lease)
 
-    def start(self, *, own_thread: bool = False) -> None:
+    def start(self, *, own_thread: bool = False, setup_pending: bool = False) -> None:
         if not self._started:
             self.controller.start(own_thread=own_thread)
             self.router.register(self.controller, self.record)
             self._started = True
+            if not setup_pending:
+                self.controller._async(self.activate_inputs)
 
     async def _aclose_resources(self) -> None:
         try:
@@ -81,31 +81,14 @@ class SessionRuntime:
             finally:
                 await self.session._aclose_resources()
 
-    async def start_inbox_watch(self) -> None:
-        if self._closed is None and (self._inbox_watch is None or self._inbox_watch.done()):
-            self._inbox_watch = asyncio.create_task(self._watch_inbox())
+    async def activate_inputs(self) -> None:
+        await self.inbox.activate()
 
-    async def _watch_inbox(self) -> None:
-        error = ''
-        while self._closed is None and not self.controller._closing:
-            await asyncio.sleep(0.5)
-            if self._closed is not None or self.controller._closing:
-                break
-            try:
-                await self.inbox.snapshot()
-                error = ''
-            except (OSError, ValueError, RuntimeError) as exc:
-                if self.record.generation != self.controller.generation:
-                    continue  # A context rebind is still settling, not a new target to follow.
-                if str(exc) != error:
-                    error = str(exc)
-                    self.controller.publish('inbox_error', error)
+    async def start_inbox_watch(self) -> None:
+        await self.activate_inputs()
 
     async def _stop_inbox_watch(self) -> None:
-        task, self._inbox_watch = self._inbox_watch, None
-        if task is not None:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+        await self.inbox.stop_polling()
 
     async def open_endpoint(self) -> None:
         if not acp_available():
@@ -137,8 +120,8 @@ class SessionRuntime:
                     self.session.session_id, self.session.working_dir.resolve(),
                     self.registry.socket_path(self.session.session_id), self.controller.generation,
                 )
-                self.inbox = InboxCoordinator(self, previous_inbox.store)
-                self.controller.inbox = self.inbox
+                self.inbox = attach_inbox(self.controller, previous_inbox.store)
+                await self.inbox.activate()
                 self.router.register(self.controller, self.record)
                 await self.open_endpoint()
             except BaseException as exc:

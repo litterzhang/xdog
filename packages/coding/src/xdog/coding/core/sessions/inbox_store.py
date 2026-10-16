@@ -254,9 +254,11 @@ class InboxStore:
         finally:
             temp.unlink(missing_ok=True)
 
-    def enqueue(self, message: InboxMessage) -> EnqueueReceipt:
+    def enqueue(self, message: InboxMessage, *, expected_branch_id: str | None = None) -> EnqueueReceipt:
         message = message_from_data(message_data(message))
         with self._locked(message.session_id, message.cwd) as (directory, working, branch):
+            if expected_branch_id is not None and branch != expected_branch_id:
+                raise ValueError('Inbox intake branch changed')
             rows = self._scan(directory, working)
             previous = rows.get(message.message_id)
             if previous is not None:
@@ -267,7 +269,7 @@ class InboxStore:
                 _sync_file(path)
                 return EnqueueReceipt(True, row)
             if len(rows) >= MAX_RECORDS or sum(r.status not in RESOLVED for _, r in rows.values()) >= MAX_PENDING:
-                raise ValueError('Inbox capacity exceeded; explicit review/archive required')
+                raise ValueError('Inbox capacity exceeded; inspect/cancel/archive messages')
             sequence = max([self._sequence(directory), *(r.sequence for _, r in rows.values())]) + 1
             self._save_sequence(directory, sequence)
             row = InboxRecord(message, branch, 'pending', sequence=sequence)
@@ -370,23 +372,6 @@ class InboxStore:
             updated = self._transition(row, 'cancelled', 'Cancelled before execution')
             self._save(directory, updated, path)
             return updated
-
-    def approve(self, session_id: str, message_ids: tuple[str, ...], *, cwd: Path,
-                branch_id: str, generation: str,
-                expected: tuple[InboxRecord, ...] | None = None) -> tuple[InboxRecord, ...]:
-        """Temporary old-coordinator adapter; removed with that coordinator in Task 5."""
-        return self.reserve(session_id, message_ids, cwd=cwd, branch_id=branch_id,
-                            generation=generation, expected=expected)
-
-    def claim(self, session_id: str, message_id: str, *, generation: str, branch_id: str,
-              attempt_id: str, request_id: str) -> InboxRecord:
-        """Temporary singleton adapter; real scheduling uses begin_batch."""
-        working, branch = self.identity(session_id)
-        row = next((row for row in self.records(session_id, working) if row.message.message_id == message_id), None)
-        if (row is None or row.branch_id != branch_id or branch != branch_id
-                or row.attempt_id != attempt_id or row.request_id != request_id):
-            raise ValueError('Inbox claim context/attempt mismatch')
-        return self.begin_batch(session_id, (row,), generation=generation, batch_id=uuid.uuid4().hex)[0]
 
     @staticmethod
     def _selected(rows: dict[str, tuple[Path, InboxRecord]], message_id: str) -> tuple[Path, InboxRecord]:

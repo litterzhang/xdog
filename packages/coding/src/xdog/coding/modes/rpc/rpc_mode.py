@@ -86,7 +86,7 @@ async def run_rpc_mode(session: AgentSession) -> int:
     session_events = None
     inbox = RpcInbox(session, navigation, _emit) if runtime is not None else None
     if runtime is not None:
-        runtime.start()
+        runtime.start(setup_pending=True)
         session_events = RpcSessionEvents(session, runtime, extensions, _emit)
         await runtime.inbox.snapshot()
         await runtime.open_endpoint()
@@ -566,6 +566,8 @@ async def _handle_prompt(
             ticket = controller.submit(value, peer_id='rpc', images=images,
                                                 input_origin=input_origin, raw_text=message)
             await asyncio.wrap_future(ticket.accepted)
+            if temporary_owner and controller.inbox is not None:
+                await controller.inbox.activate()
             outcome = await asyncio.wrap_future(ticket.result)
             if outcome.status == 'failed':
                 final_error = outcome.error or 'Session task failed; inspect effects before retrying'
