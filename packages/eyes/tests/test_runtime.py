@@ -267,3 +267,148 @@ async def test_crashed_runtime_is_not_restarted_by_status_and_explicit_start_reb
     finally:
         await asyncio.to_thread(main,['stop',second])
         await asyncio.to_thread(new_child.wait,timeout=5)
+
+
+async def test_runtime_canonical_socket_is_absent_until_private_listener_is_ready(tmp_path, monkeypatch):
+    import os
+    import stat
+
+    from xdog.eyes import runtime as module
+    from xdog.eyes.control import request
+    from xdog.eyes.local_control import read_location, runtime_location, validate_socket
+
+    runtime = module.ObserverRuntime(runtime_location(tmp_path))
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = asyncio.start_unix_server
+    staged = []
+
+    async def held_server(*args, **kwargs):
+        server = await original(*args, **kwargs)
+        # Hold the exact original bind-to-chmod gap. Force a permissive initial
+        # inode regardless of the test runner's umask, without changing the umask.
+        if kwargs.get('path') == str(runtime.location.socket):
+            os.chmod(runtime.location.socket, 0o666)
+        else:
+            staged.append(kwargs['sock'].getsockname())
+        entered.set()
+        try:
+            await release.wait()
+            return server
+        except BaseException:
+            server.close()
+            await server.wait_closed()
+            raise
+
+    monkeypatch.setattr(module.asyncio, 'start_unix_server', held_server)
+    serving = asyncio.create_task(runtime.serve())
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        # Startup absence is transient; an exposed unsafe inode is NOT and must
+        # still fail closed as ControlError, reproducing the full-gate regression.
+        with pytest.raises(FileNotFoundError):
+            await request(runtime.location, 'hello', {})
+        assert not runtime.location.socket.exists()
+        assert len(staged) == 1
+        info = os.lstat(staged[0])
+        assert stat.S_ISSOCK(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600
+        assert info.st_uid == os.getuid()
+        release.set()
+        await wait_for(runtime.location.socket.exists)
+        validate_socket(runtime.location)
+        assert read_location(runtime.location).generation == runtime.location.generation
+        assert (await request(runtime.location, 'hello', {}))['status'] == 'ok'
+    finally:
+        release.set()
+        runtime.stop.set()
+        await asyncio.wait_for(serving, 3)
+    assert not runtime.location.socket.exists()
+    assert not (runtime.location.directory / 'owner.json').exists()
+    assert not [path for path in runtime.location.directory.iterdir() if path.name.startswith('.eyes-')]
+
+
+async def test_runtime_socket_publication_refuses_a_new_canonical_occupant(tmp_path, monkeypatch):
+    from xdog.eyes import runtime as module
+    from xdog.eyes.local_control import ControlError, runtime_location, validate_socket
+
+    runtime = module.ObserverRuntime(runtime_location(tmp_path))
+    original = module.publish_location
+    identity = []
+
+    def occupied(location):
+        assert not location.socket.exists()
+        location.socket.write_text('preserve the new occupant')
+        location.socket.chmod(0o600)
+        info = location.socket.lstat()
+        identity.append((info.st_dev, info.st_ino))
+        return original(location)
+
+    monkeypatch.setattr(module, 'publish_location', occupied)
+    try:
+        with pytest.raises(FileExistsError):
+            await runtime.serve()
+        assert runtime.location.socket.read_text() == 'preserve the new occupant'
+        info = runtime.location.socket.lstat()
+        assert (info.st_dev, info.st_ino) == identity[0]
+        with pytest.raises(ControlError, match='private owned Unix socket'):
+            validate_socket(runtime.location)
+        assert runtime._lease == -1 and not (runtime.location.directory / 'owner.json').exists()
+        assert not [path for path in runtime.location.directory.iterdir() if path.name.startswith('.eyes-')]
+    finally:
+        runtime.location.socket.unlink(missing_ok=True)
+
+
+async def test_runtime_private_socket_setup_failure_never_publishes_or_leaks_staging(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from xdog.eyes import runtime as module
+    from xdog.eyes.local_control import runtime_location
+
+    runtime = module.ObserverRuntime(runtime_location(tmp_path))
+    original = module.os.chmod
+    attempted = []
+
+    def refused(path, mode):
+        if Path(path).name.startswith('.eyes-'):
+            attempted.append(path)
+            raise PermissionError('private socket setup refused')
+        return original(path, mode)
+
+    monkeypatch.setattr(module.os, 'chmod', refused)
+    with pytest.raises(PermissionError, match='private socket setup refused'):
+        await runtime.serve()
+    assert len(attempted) == 1 and runtime._lease == -1
+    assert not runtime.location.socket.exists()
+    assert not (runtime.location.directory / 'owner.json').exists()
+    assert not [path for path in runtime.location.directory.iterdir() if path.name.startswith('.eyes-')]
+
+
+@pytest.mark.parametrize('kind', ['file', 'unsafe-socket'])
+async def test_runtime_unsafe_canonical_endpoint_still_fails_closed_without_replacement(tmp_path, kind):
+    import socket
+
+    from xdog.eyes.control import request
+    from xdog.eyes.local_control import ControlError, runtime_location
+    from xdog.eyes.runtime import ObserverRuntime
+
+    runtime = ObserverRuntime(runtime_location(tmp_path))
+    listener = None
+    if kind == 'file':
+        runtime.location.socket.write_text('preserve unsafe file')
+    else:
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(runtime.location.socket))
+    runtime.location.socket.chmod(0o666)
+    before = runtime.location.socket.lstat()
+    try:
+        with pytest.raises(ControlError, match='private owned Unix socket'):
+            await runtime.serve()
+        with pytest.raises(ControlError, match='private owned Unix socket'):
+            await request(runtime.location, 'hello', {})
+        after = runtime.location.socket.lstat()
+        assert (after.st_dev, after.st_ino, after.st_mode) == (before.st_dev, before.st_ino, before.st_mode)
+        assert runtime._lease == -1 and not (runtime.location.directory / 'owner.json').exists()
+        assert not [path for path in runtime.location.directory.iterdir() if path.name.startswith('.eyes-')]
+    finally:
+        if listener is not None:
+            listener.close()
+        runtime.location.socket.unlink(missing_ok=True)

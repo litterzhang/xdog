@@ -9,19 +9,13 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 import httpx
-from xdog.agent.mcp.client_capabilities import RootCapability, advertised
+from xdog.agent.mcp.client_capabilities import RootCapability
 from xdog.agent.mcp.config import McpServerConfig
 from xdog.agent.mcp.input_requests import INPUT_METHODS, InputRequests
 from xdog.agent.mcp.oauth_discovery import OAuthChallenge, challenge
 from xdog.agent.mcp.protocol import header_value, modern_discovery
+from xdog.agent.mcp.resource_metadata import UNSUPPORTED_WATCH_METHODS, catalog_notice
 from xdog.agent.mcp.stdio import CURRENT_VERSION, LEGACY_VERSIONS, MAX_FRAME, McpError
-from xdog.agent.mcp.subscriptions import (
-    CATALOGS,
-    ResourceSubscriptions,
-    ResourceWatch,
-    resource_uri,
-    subscription_identity,
-)
 
 
 class HttpMcpError(McpError):
@@ -130,10 +124,7 @@ class HttpClient:
         self._headers: dict[str, str] = {}
         self._session = ""
         self._sequence = 0
-        self._background: asyncio.Task[None] | None = None
         self._active: set[asyncio.Task[Any]] = set()
-        self.resources = ResourceSubscriptions()
-        self._resource_streams: dict[int, asyncio.Task[None]] = {}
 
     async def connect(self) -> None:
         if self._client is not None:
@@ -177,7 +168,6 @@ class HttpClient:
                 if not isinstance(self.capabilities, dict) or not isinstance(self.server_info, dict):
                     raise McpError("Invalid legacy HTTP discovery metadata")
                 await self.notify("notifications/initialized", {})
-                self._background = asyncio.create_task(self._listen())
             else:
                 self.version, self.capabilities, self.server_info = modern_discovery(response)
                 self.modern = True
@@ -210,6 +200,8 @@ class HttpClient:
 
     async def request(self, method: str, params: dict[str, Any], *, version: str = "",
                       mirrors: dict[str, str] | None = None) -> dict[str, Any]:
+        if method in UNSUPPORTED_WATCH_METHODS:
+            raise McpError("MCP subscriptions are not supported", code=-32601)
         if self.modern and self.state == "connected" and not version and method in INPUT_METHODS:
             return await self.inputs.run(method, params,
                                          lambda value: self._request_once(method, value, mirrors=mirrors))
@@ -321,12 +313,8 @@ class HttpClient:
             if "id" in message:
                 answer = self.root_capability.response(message)
                 await self._post({"jsonrpc": "2.0", "id": message["id"], **answer})
-            elif message.get("method") in {"notifications/" + kind + "/list_changed" for kind in CATALOGS}:
-                kind = str(message["method"]).split('/')[1]
-                self.dirty = self.dirty or kind == 'tools'
-                self.resources.legacy_catalog_notice(kind)
-            elif message.get("method") == "notifications/resources/updated":
-                self.resources.legacy_notice(message.get("params"))
+            elif catalog_notice(message) == 'tools':
+                self.dirty = True  # No background subscriptions or automatic catalog reload.
             return None
         if (type(message.get("id")) is not int or message.get("id") != expected
                 or ("result" in message) == ("error" in message)):
@@ -342,134 +330,9 @@ class HttpClient:
             raise McpError("Invalid MCP HTTP result")
         return cast(dict[str, Any], message["result"])
 
-    async def watch_resource(self, uri: str, sink: Callable[[dict[str, Any]], None]) -> ResourceWatch:
-        uri = resource_uri(uri)
-        resources = self.capabilities.get('resources')
-        if self.state != 'connected' or not isinstance(resources, dict) or resources.get('subscribe') is not True:
-            raise McpError('Server does not advertise resource subscriptions')
-        async with self.resources.lock:
-            shared = any(watch.uri == uri and watch.state == 'active' for watch in self.resources.watches.values())
-            watch = self.resources.add(uri, sink, self.stop_resource_watch)
-            try:
-                if self.modern:
-                    task = asyncio.create_task(self._resource_stream(watch))
-                    self._resource_streams[watch.id] = task
-                    await asyncio.wait_for(asyncio.shield(watch.ready), self.config.timeout)
-                else:
-                    if self._background is None or self._background.done():
-                        raise McpError('Legacy resource notification stream is unavailable')
-                    if not shared:
-                        await self.request('resources/subscribe', {'uri': uri})
-                    watch.activate()
-                return watch
-            except BaseException:
-                self.resources.remove(watch, 'failed')
-                failed_task = self._resource_streams.pop(watch.id, None)
-                if failed_task is not None:
-                    failed_task.cancel()
-                    await asyncio.gather(failed_task, return_exceptions=True)
-                raise
-
-    async def _resource_stream(self, watch: ResourceWatch) -> None:
-        assert self._client is not None
-        message = {'jsonrpc': '2.0', 'id': watch.id, 'method': 'subscriptions/listen', 'params': {'_meta': {
-            'io.modelcontextprotocol/protocolVersion': self.version,
-            'io.modelcontextprotocol/clientInfo': {'name': 'xdog', 'version': '2.4.1'},
-            'io.modelcontextprotocol/clientCapabilities': advertised()},
-            'notifications': watch.filters()}}
-        try:
-            async with self._client.stream('POST', self.config.url,
-                    headers=self._request_headers('subscriptions/listen'), content=json.dumps(message).encode(),
-                    timeout=httpx.Timeout(self.config.timeout, read=None)) as response:
-                if response.status_code in {401, 403}:
-                    raise self._authorization_error(response, 'Resource subscription authorization required')
-                if (response.status_code != 200
-                        or response.headers.get('content-type', '').split(';', 1)[0].lower() != 'text/event-stream'):
-                    raise McpError('Current resource subscription requires an owned SSE response; no GET/retry')
-                async for frame in _sse_messages(response):
-                    identity = subscription_identity(frame)
-                    if type(identity) is not int or identity != watch.id or not self.resources.modern_frame(frame):
-                        raise McpError('Resource stream subscription identity mismatch')
-                    if watch.state not in {'opening', 'active'}:
-                        return
-            if watch.state in {'opening', 'active'}:
-                self.resources.remove(watch, 'interrupted')
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            self.resources.remove(watch, 'failed')
-        finally:
-            if watch.state in {'opening', 'active'}:
-                self.resources.remove(watch, 'stopped')
-            if self._resource_streams.get(watch.id) is asyncio.current_task():
-                self._resource_streams.pop(watch.id, None)
-
-    async def watch_catalog(self, kind: str, sink: Callable[[dict[str, Any]], None]) -> ResourceWatch:
-        capability = self.capabilities.get(kind)
-        if (kind not in CATALOGS or self.state != 'connected' or not isinstance(capability, dict)
-                or not self.modern and capability.get('listChanged') is not True):
-            raise McpError('Server does not advertise this catalog change capability')
-        async with self.resources.lock:
-            watch = self.resources.add('', sink, self.stop_resource_watch, kind=kind)
-            try:
-                if self.modern:
-                    task = asyncio.create_task(self._resource_stream(watch))
-                    self._resource_streams[watch.id] = task
-                    await asyncio.wait_for(asyncio.shield(watch.ready), self.config.timeout)
-                else:
-                    if self._background is None or self._background.done():
-                        raise McpError('Legacy catalog notification stream is unavailable')
-                    watch.activate()  # Legacy declared list-change notices need no resource subscribe/read.
-                return watch
-            except BaseException:
-                self.resources.remove(watch, 'failed')
-                failed = self._resource_streams.pop(watch.id, None)
-                if failed is not None:
-                    failed.cancel()
-                    await asyncio.gather(failed, return_exceptions=True)
-                raise
-
-    async def watch_notifications(self, selected: dict[str, Any],
-                                  sink: Callable[[dict[str, Any]], None]) -> ResourceWatch:
-        from xdog.agent.mcp.subscriptions import notification_filters
-        filters = notification_filters(selected)
-        if not self.modern or self.state != 'connected':
-            raise McpError('Combined notification filters require a connected current-protocol server')
-        if any(not isinstance(self.capabilities.get(kind), dict)
-               for kind, flag in CATALOGS.items() if filters.get(flag)):
-            raise McpError('Server does not advertise a requested catalog capability')
-        resources = self.capabilities.get('resources')
-        if filters.get('resourceSubscriptions') and (not isinstance(resources, dict)
-                                                    or resources.get('subscribe') is not True):
-            raise McpError('Server does not advertise resource subscriptions')
-        async with self.resources.lock:
-            watch = self.resources.add_notifications(filters, sink, self.stop_resource_watch)
-            try:
-                task = asyncio.create_task(self._resource_stream(watch))
-                self._resource_streams[watch.id] = task
-                await asyncio.wait_for(asyncio.shield(watch.ready), self.config.timeout)
-                return watch
-            except BaseException:
-                self.resources.remove(watch, 'failed')
-                failed = self._resource_streams.pop(watch.id, None)
-                if failed is not None:
-                    failed.cancel()
-                    await asyncio.gather(failed, return_exceptions=True)
-                raise
-
-    async def stop_resource_watch(self, watch: ResourceWatch) -> None:
-        async with self.resources.lock:
-            owned = self.resources.watches.get(watch.id) is watch
-            self.resources.remove(watch)
-            task = self._resource_streams.pop(watch.id, None)
-            if task is not None:
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
-            if (owned and watch.kind == 'resource' and not self.modern and self.state == 'connected'
-                    and not any(other.uri == watch.uri for other in self.resources.watches.values())):
-                await self.request('resources/unsubscribe', {'uri': watch.uri})
-
     async def notify(self, method: str, params: dict[str, Any]) -> None:
+        if method in UNSUPPORTED_WATCH_METHODS:
+            raise McpError("MCP subscriptions are not supported", code=-32601)
         async with asyncio.timeout(min(3, self.config.timeout)):
             await self._post({"jsonrpc": "2.0", "method": method, "params": params})
 
@@ -533,52 +396,15 @@ class HttpClient:
                 continue
         raise McpError("MCP response resumption exhausted/unavailable; effects uncertain, POST not replayed")
 
-    async def _listen(self) -> None:
-        assert self._client is not None
-        state = _SseState()
-        attempts = 0
-        try:
-            while True:
-                try:
-                    async with self._client.stream("GET", self.config.url,
-                                                   headers=self._get_headers(state)) as response:
-                        if response.status_code == 405 and not state.cursor:
-                            return
-                        self._check_get(response)
-                        async for message in _sse_messages(response, state):
-                            await self._message(message, None, response.status_code, modern=False)
-                except (_SseInterrupted, httpx.TransportError):
-                    pass
-                if not state.cursor or attempts >= MAX_RESUME_ATTEMPTS or self.state != "connected":
-                    raise McpError("Notification stream cannot be resumed")
-                attempts += 1
-                await asyncio.sleep(state.retry)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            self.root_capability.active = False
-            await self.inputs.close(failed=True)
-            self.error = "Legacy notification stream closed; resumption unavailable/exhausted, reconnect explicitly"
-            self.resources.close()
-
     async def close(self) -> None:
         self.root_capability.active = False
         await self.inputs.close()
         self.state = "disconnected"
-        self.resources.close()
-        resource_tasks = tuple(self._resource_streams.values())
-        for task in resource_tasks:
-            task.cancel()
-        await asyncio.gather(*resource_tasks, return_exceptions=True)
-        self._resource_streams.clear()
         current = asyncio.current_task()
         tasks = tuple(task for task in self._active if task is not current)
         for task in tasks:
             task.cancel()
-        if self._background is not None:
-            self._background.cancel()
-        await asyncio.gather(*tasks, *([self._background] if self._background is not None else []),
-                             return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
         if self._client is not None:
             if self._session and not self.modern:
                 try:

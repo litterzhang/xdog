@@ -141,8 +141,9 @@ Basic extension input/select/confirm and provider OAuth callbacks are separate
 retained interfaces, not MCP Elicitation.
 
 Ordinary modern Roots/request-state continuations do not authorize retrying an
-uncertain operation. Existing explicit resource/catalog/log subscription filters
-and response-scoped SSE remain. Legacy cursor-based **GET** recovery retains the
+uncertain operation. Active resource/catalog/combined subscriptions are removed.
+Ordinary response-scoped SSE and request telemetry remain. Legacy cursor-based
+**GET** recovery retains the
 original identity/deadline and never repeats a tool **POST**; current stateless
 HTTP does not acquire legacy GET resumption. No disconnect, failed response or
 continuation silently reconnects, replays POSTs or expands configured disclosure.
@@ -194,18 +195,25 @@ and bounded waits, and existing Coding approvals/Claw `allow_tools` gates remain
 unchanged. Real third-party replay retention behavior remains unverified.
 
 
-### Session-owned structured planning metadata
+### Task planning skill and host access scope
 
-`xdog.agent.planning` provides frozen `PlanState`/`PlanStep` values and `PlanOwner`
-for caller-owned persistence and its structured `update_plan` tool. It does not
-install global policy, register a process-wide tool or create another agent loop.
-The Coding/Claw hosts own mode controls and pre-tool restrictions. The model tool
-only changes bounded steps/explanation under an expected revision; host mode is
-not an accepted model argument. Competing updates cannot overwrite the same
-revision, failed persistence retains the prior state, and async ownership settles
-metadata writes before cancellation releases the caller. In-process metadata
-controls are not a hostile-code boundary or OS sandbox.
+`xdog-planning` is a builtin packaged skill for ordinary objective/scope/dependency
+notes, acceptance criteria and evidence-backed progress. It grants no permissions,
+creates no parallel task database and starts no second Agent loop. The former
+`xdog.agent.planning`/`PlanOwner`/`PlanState`, dedicated plan inspector and
+`update_plan` tool are removed.
 
+`xdog.agent.access` supplies the separate host-owned `AccessState`/`AccessScope`.
+Coding/Claw expose `/readonly on|off|status` as native user controls, never model or
+extension tools. Restriction changes persist before publication and require idle
+ownership. Only explicit user release can clear read-only scope; release leaves
+ordinary permissions, MCP/extension allow-tools gates and child access unchanged.
+Saved access/legacy planning state is decoded fail-closed, not turned into executable
+plan commands or restored tool grants. Skills/task text cannot release the scope.
+
+SDK embedders still supply pre-tool policy. The native read-only allowlist is local
+filesystem read/ls/grep/find and current time; shell, external/extension and child
+control calls are not inferred safe. Permission gates are not an OS sandbox.
 
 ### Explicit extension process owners
 
@@ -246,7 +254,7 @@ Register `api.context(callback)` to transform the ephemeral message list before
 EACH model invocation. The callback receives serialized typed user/assistant/tool
 content plus its entry snapshot and returns a message list. It may inject summaries
 or filter complete history batches, but does not edit the canonical transcript,
-system prompt, static cache prefix, planning mode or tool permissions. Coding also
+system prompt, static cache prefix, host read-only scope or tool permissions. Coding also
 composes an existing SDK transform before its extension pipeline.
 
 ```python
@@ -305,7 +313,7 @@ draft and input cursor, and require a rendered visible question/action before En
 answer. Select/confirm pastes do not submit; tiny/resize/release/repeat/unpainted
 selection input cannot confirm. Escape/Ctrl+C cancel the dialog. Tool approval and
 output review retain higher focus priority. An affirmative extension confirmation
-never grants the underlying agent tool permission or switches planning mode.
+never grants the underlying agent tool permission or switches host read-only scope.
 
 Dialog IDs are host-generated and scoped to their session/request/run/connection.
 Timeout, abort, navigation, disconnect and shutdown settle/cancel pending futures;
@@ -326,16 +334,25 @@ none of these interfaces grants tool permission or full Pi API compatibility.
 `xdog.agent.supervision.ChildSupervisor` owns a separate asyncio loop and bounded
 children, with start/inspect/steer/follow-up/wait/cancel/close operations and reserved
 `agent_spawn`/`agent_control` tool adapters. Each factory supplies a fresh `Agent`
-and MUST implement host permission/planning policies and safe context inheritance.
+and MUST implement host permission/read-only policies and safe context inheritance.
 Coding/Claw now provide permission-aware factories and `/agents` commands on top.
 The module alone does not grant access or provide a UI. No generic access string
 is an approval or a sandbox.
+
+Main-Agent `agent_control(action="queue", id=..., text=JSON)` and SDK
+`ChildSupervisor.control("queue", ...)` retain the owner-scoped queue/recovery API.
+Edit/remove/move/return, explicit `recover`/`recover_images`/`recover_task`, and
+separate durable discard remain guarded by revisions, selected-input/byte limits,
+write-ahead journals and caller permission hooks. The main-Agent wrapper returns
+images as typed `ImageContent` with bounded receipt metadata, not raw base64 text.
+Native child queue panels expose inspection only; they cannot mutate or recover
+those records. Restoring records/copying recovery never restarts child execution.
 
 Limits: three children, 16 retained records, 16 model requests, a 32,000 reported-token
 stop threshold (not exact billing), 1–600-second execution deadline (default 120),
 32 identified queued inputs and 512 KiB / 2,000-message retained transcripts. The
 request wrapper clamps output limits; provider input accounting can overshoot on
-one request. Children cannot borrow delegation or parent `update_plan` tools.
+one request. Children cannot recursively delegate through `agent_spawn` or `agent_control`.
 Persistence callbacks and all parallel tool siblings settle before slots release;
 failed callbacks are visible. Transcripts carry a stable checkpoint index; inherited
 context with incomplete tool batches is rejected before making a request.
@@ -365,7 +382,7 @@ per-child `DialogBroker`, and fences replies by child/session/lease identity. De
 returns canceled values to pending and subsequent questions, without replay/adoption.
 Inherited parent validation still runs under `silent_extension_ui()`; it never
 borrows a child's or parent's unrelated question reservation. Actual child callback
-questions are UI answers, not host tool approvals or planning changes.
+questions are UI answers, not host tool approvals or host access changes.
 
 
 `ChildConfig` is frozen and validated independently of UI policy. `ChildSupervisor.start`
@@ -407,7 +424,7 @@ current editing text/images/settings/cursor, never a prior execution approval.
 Native primary `/draft` persistence remains separate.
 
 This does not remove actual Agent child journals, initial-task records, stopped
-image/task recovery or Agent-tool-owned queued-image return/backups. Those durable
+Agent/SDK image/task recovery or Agent-tool-owned queued-image return/backups. Those durable
 records are execution/recovery data, not child editor autosave or a resurrected
 cross-session draft UI. Generic worker/provider OAuth callbacks and read-only
 extension menus also remain distinct from the removed MCP input/task families.
@@ -714,7 +731,7 @@ object-root intersection while validation keeps all raw advertised constraints.
 MCP uses an optional sync/async AgentTool argument validator before permission hooks
 and validates effective arguments again immediately before the remote call. Coding
 and Claw extension pre-hooks use the same check when they rewrite arguments. Existing
-permission/planning/allow_tools rules still decide execution; a schema/readOnly hint
+permission/read-only/allow_tools rules still decide execution; a schema/readOnly hint
 never approves a call. Coding's parameter prompt formatter now handles boolean/union
 property declarations rather than crashing on a valid schema.
 
@@ -735,7 +752,7 @@ legacy peers, both app permission paths and Linux/private-tmux inspectors are ve
 provider-specific full-schema acceptance and mixed-dialect/native-platform
 interoperability are not inferred. Format-assertion/custom required vocabularies,
 ambiguous HTTP header mappings through schema composition, richer content/client
-capabilities, subscriptions, credential persistence and extension/platform gaps remain
+capabilities and external credential/provider interoperability gaps remain
 open. Earlier object-only/current structured-result limits are superseded by this pass.
 
 Schema packaging includes a direct `referencing` dependency and the portable SDK
@@ -777,7 +794,7 @@ No file/URI is implicitly opened and no image is automatically saved or attached
 as a new user prompt. Raise an exception for tool errors; rich isError/audio/resource
 payloads are not silently guessed in this API version. Commands remain bounded text.
 
-Coding approvals, Claw extension_allow_tools, planning and child inherited permission
+Coding approvals, Claw extension_allow_tools, read-only and child inherited permission
 restrictions still gate execution. Text-only post-hooks do not replace or drop a
 result containing images. Legacy text callbacks/post-hooks retain their behavior.
 Both UIs display tool images without printing base64. Claw now forwards final tool
@@ -817,7 +834,7 @@ this does not pretend a text-only transcript export includes binary images.
 
 Returning `/quit`, a URI or other command-looking text is data, never executed.
 Rich artifacts cannot trigger a model prompt, mutate the main draft, approve tools
-or change planning/permission modes. The prior draft/focus and normal approval
+or change host read-only scope or permission modes. The prior draft/focus and normal approval
 priority remain; callbacks still require trusted activation/idle ownership. Results
 are fenced by command/session/connection identity; canceled/stale/foreign output is
 not appended to a new owner and callbacks are not replayed. Artifacts are local UI
@@ -858,7 +875,7 @@ semantics and are not falsely labelled binary exports.
 
 `/artifact PATH` explicitly reads a bounded regular artifact file off the UI thread
 and appends a read-only image/JSON command display. It does not activate extensions,
-execute stored command names/text/URIs, change permissions/planning or send input to
+execute stored command names/text/URIs, change permissions or host read-only scope, or send input to
 the model. The 4 MiB file envelope is versioned as xdog.extension-command/v1; its
 SHA-256 covers canonical validated identity/content/metadata. Checksums detect
 corruption, NOT authenticity: treat files as untrusted data. Unsupported versions,
@@ -1060,7 +1077,7 @@ introduced. The percentage can exceed 100 rather than silently clipping it.
 Coding reads its captured idle command session. Claw resolves the read against the
 original active runtime/broker under the existing reserved command group, not
 cached UI footer/catalog data or a client-supplied measurement. Both methods preserve
-session, draft, permission/planning policy and native terminal focus.
+session, draft, permission/read-only policy and native terminal focus.
 
 Claw separately requires `extension_session_inspection:1` in addition to
 `extension_session:1`; older session-capable viewers receive an unavailable result,
@@ -1147,7 +1164,7 @@ authority. Tools/hooks/context/child/unattended callbacks return None; original 
 invocation and host extension/command/group/session ownership are independently
 checked. Missing/foreign/unreadable targets or membership changes yield unavailable
 without disabling the extension or replaying reads. Invalid plugin request/response
-codecs still fail closed. No model turn, permission/planning mutation or session activation is introduced.
+codecs still fail closed. No model turn, permission/read-only mutation or session activation is introduced.
 
 Real workers, both live hosts' 61-entry multi-page catalogs, search/tree/branch
 previews, revision ordering/changed membership, foreign-group refusal, cancellation
@@ -1197,7 +1214,7 @@ some Ctrl/Alt combinations indistinguishable from Enter/Tab; choose an unambiguo
 key or a terminal with extended keyboard support. Alt+K/Alt+X are physically tested.
 
 Dispatch is confined to the ready idle prompt: approvals, extension dialogs,
-viewers, completion pickers, child/MCP/plan panels, overlays, output reviews,
+viewers, completion pickers, child/MCP panels, overlays, output reviews,
 active commands/model work and closing/disconnected owners retain priority. Unload/
 failure/reload updates registrations; stale keys cannot adopt a new callback. Coding
 now refreshes actual registration snapshots after extension commands even if a plugin
@@ -1249,7 +1266,7 @@ hooks are composed rather than replaced.
 The extension API sees text plus image MIME/encoded-size metadata, never original
 base64. Its output cannot silently remove/replace images: transformed messages keep
 original typed attachments/timestamps. All later model capability, tool argument,
-approval, planning and child permission gates remain authoritative. A transformed
+approval, host read-only and child permission gates remain authoritative. A transformed
 string resembling `/quit`/a URI stays model input data, not a reparsed host command.
 Editor/session/navigation mutation authority is absent from both hook and command APIs.
 
@@ -1315,7 +1332,7 @@ Original image bytes are never given to the hook, and handled decisions cannot
 silently discard attachments. Both interactive clients retain them in the editable
 composer without restoring/replaying the consumed text. Queue/run/connection ID
 fences apply to the handled receipt too. Feedback is labelled system/extension data,
-not fabricated assistant prose or tool approval. Permissions/planning/tool/model
+not fabricated assistant prose or tool approval. Permission, host read-only, tool and model
 capability gates are unchanged; returned command-looking feedback is never executed.
 
 Print mode outputs explicit feedback and returns success for handled-only input;
@@ -1394,6 +1411,11 @@ model history or a replacement question. Cancellation/reload/disconnect retires
 that owner without automatic callback replay. Login/refresh does not grant tools,
 select a model or change permissions. Logout clears worker memory, not saved data.
 
+Provider-defined OAuth callbacks are independent of MCP's public-PKCE profile.
+Env/resolver credentials remain private and lazy. A grant that expires while an
+async key callback is suspended cannot admit a business stream; failure does not
+silently log in, refresh, replay a callback or choose another provider.
+
 Provider credential persistence is retained through explicit
 `/extensions auth save ID secret-service /ABSOLUTE/NAMESPACE`, with equivalent
 `restore` and `forget` actions. This is **Linux Secret Service vault only**, with
@@ -1439,23 +1461,13 @@ needed callbacks during setup/session startup, using its existing trusted settin
 or durable entries as appropriate. Independent child workers do not borrow a
 parent's mutable callback registry or automatically replay its commands.
 
-#### Independent resource-watch interoperability checks
+#### Retained MCP interoperability scope
 
-Optional tests in `tests/test_mcp_official_sdk.py` exercise the current subscription
-wire against the independently published MCP TypeScript serving SDK 2.3.1 over
-stdio and HTTP, rather than only XDOG-authored peers. Setup is documented in
-`tests/fixtures/mcp_official_sdk/README.md`; no production dependency/download is
-introduced. An absent SDK causes explicit skips, not a conformance success claim.
-
-Watch acknowledgements may include omitted/default-false list-change filters;
-those do not subscribe the host to new notification types. Unrequested true or
-malformed filters remain errors. Schema-empty completion payloads use their MCP JSON-RPC
-identity and do not require resource contents. A completion before acknowledgement
-refuses that watch without disconnecting a valid sibling or retrying the operation.
-Bare completion compatibility is not proof that every malformed server conforms.
-The verified serving-SDK path includes notices, exact unwatch ownership and
-metadata-bearing graceful teardown; broader MCP/auth/content conformance remains
-separate work.
+The independent serving-SDK fixture covers retained discovery, schemas, ordinary
+tool/resource/prompt/completion paths and owned transport cleanup. Active watch
+APIs and their subscription-specific checks are no longer current capabilities.
+See `tests/fixtures/mcp_official_sdk/README.md` for the optional local fixture setup;
+this is not a claim of general third-party conformance or completed release gates.
 
 #### Inert resource links in prompt previews
 
@@ -1603,7 +1615,7 @@ Tool inventory is projected on the owning Agent loop after context hooks, and ea
 model request plus its execution batch shares that inventory snapshot. Tools created
 or removed inside a callback are reflected in the next model request on the SAME
 loop, including actual independent child agents; no second in-process tool loop or
-worker-reader-thread Agent mutation is introduced. Parent/child permissions, planning,
+worker-reader-thread Agent mutation is introduced. Parent/child permissions, read-only,
 extension allowlists and normal Coding approval still apply to every new tool.
 
 Generic MCP tools leave optional adapter provenance unset; trusted extension adapters
@@ -1619,83 +1631,21 @@ are refused. Supported/unknown-capability models may receive newly registered to
 even when the turn began with an empty inventory. Provider replacement follows the
 current cached capability, not the original catalog's support or an old send-tools flag.
 
-### Explicit MCP catalog-change watches
+### MCP browsing and manual refresh
 
-`manager.watch_catalog(server, kind, lease=..., on_change=..., alive=...)` and
-`unwatch_catalog` support `tools`, `prompts`, and `resources`. Current stdio/HTTP
-transport opens an owned `subscriptions/listen` with only the selected opt-in
-list-change flag; legacy peers must declare `listChanged` and use their existing
-notification channel. Every acknowledgement/filter/identity is checked, unrelated
-notifications are refused, and retired IDs cannot target a successor.
+Active resource/catalog/combined notification watches are removed from the SDK,
+transports and native UI. There are no watch/unwatch methods, editable subscription
+filters, watch jobs or background subscription listeners. Former **w** resource
+watch and **Alt+T/P/U/W** catalog/combined controls are not supported.
 
-Both Coding and Claw expose these from the focused MCP server list:
-**Alt+T** watches tools, **Alt+P** prompts, **Alt+U** resources/catalog entries;
-press the same key to unwatch. Ordinary t/p/u browsing and w URI-resource watches
-remain separate. The UI shows state/change count with a catalog label, not a
-fabricated resource URI. Catalog/resource ownership keys cannot collide.
-
-Watches are notices only: no automatic list/read/completion, tool registration,
-connection/model input or permission change. Operators explicitly refresh or browse
-through the normal controls. Original view/session/connection leases, close cleanup,
-cancellation/timeouts and no uncertain request replay remain authoritative. Claw
-separately negotiates `mcp_catalog_watch:1`; unsupported viewers cannot create these
-watches, and capability withdrawal settles catalog jobs/watches without removing
-unrelated resource watches.
-
-Independent pinned serving-SDK tests exercise all three filters over both transports
-and verify one explicit notification cause, no automatic reads/list calls and owned
-cleanup. This verifies the singleton catalog-filter UI path; broader client capabilities,
-external server/provider and native-platform interoperability remain separate checks.
-
-
-### Combined MCP notification filters
-
-`manager.watch_notifications(server, filters, lease=..., on_change=..., alive=...)`
-opens **one** current-protocol subscription for an exact combination of catalog flags
-and explicitly supplied resource URIs. `unwatch_notifications` stops that exact set;
-`detach_notification_watches` stops only combined watches for the lease, while
-`detach_resource_watches` retains its existing all-watch view cleanup semantics.
-
-```python
-filters = {
-    "toolsListChanged": True,
-    "promptsListChanged": True,
-    "resourceSubscriptions": ["test://one", "test://two"],
-}
-await manager.watch_notifications("peer", filters, lease="view",
-                                  on_change=show_notice, alive=view_is_alive)
-```
-
-Accepted catalog flags are `toolsListChanged`, `promptsListChanged`, and
-`resourcesListChanged` with exact boolean values. URI arrays have at most 16 distinct
-explicit entries, 8 KiB per URI and 64 KiB total. Unknown fields, invalid/empty sets
-and duplicates are refused before subscription admission. False flags/empty arrays
-are omitted; URI order is canonicalized so reordered operator input identifies the
-same owned set. Filters and returned snapshots are copied. No wildcard expansion,
-URI inference, resource read or tool registration is performed.
-
-In both clients' focused MCP server list, **Alt+W** opens the editable JSON filter
-form. **Enter** explicitly starts that exact set, or stops it when already active.
-The draft remains editable after submission/errors. Different sets retain separate
-owned identities; Escape returns to the server list and closing the MCP view stops
-all its watches. Existing Alt+T/P/U catalog and w resource controls remain separate.
-Combined snapshots carry `notifications`, not a fabricated resource URI/catalog.
-
-ACKs must match the entire selected set, including exact flags, URI membership and
-request order. Partial acknowledgement settles the watch as unsupported rather than
-silently weakening it; extra flags/URIs, malformed types, duplicates, reordering and
-unrelated notices are refused. Counters cover only requested change notices. Original
-negative IDs, owning HTTP POST/SSE or stdio lifetime, cancellation and no-replay
-semantics remain in force. Legacy combined requests are explicitly unsupported;
-existing legacy singleton catalog/resource watches remain available without silently
-emulating a combined stream or upgrading a session.
-
-Claw negotiates `mcp_combined_watch:1` independently. Missing/withdrawn support refuses
-combined requests and settles only combined jobs/watches, preserving unrelated
-singleton resource/catalog watches. All operations retain the original connection,
-group/session/view lease. Independent pinned serving-SDK 2.3.1 tests exercise three
-catalog flags plus multiple URIs on one stream over both stdio and HTTP, including
-unrequested URI suppression and owned unwatch; these are not full MCP conformance.
+Ordinary MCP tools, resource/prompt catalogs, explicit reads/completions and manual
+refresh remain. Passive tool-catalog invalidation on supported legacy notices only
+marks cached definitions dirty; it does not fetch a catalog/resource, register tools
+or start a model turn. Configured Roots and exact request-state continuations,
+response-scoped SSE, cancellation and bounded legacy GET recovery remain separate
+transport features. They never authorize uncertain tool POST replay or automatic
+reconnect. Normal MCP chat/tool traffic and private extension-worker JSON-RPC are
+not removed by this simplification.
 
 
 ### Read-only invocation tool inventory
@@ -1718,7 +1668,7 @@ schema references, executes tools, registers new tools or submits a model turn.
 `api_enabled` reflects the Agent's capability gate (`supports_tool_calls is not
 False`), not a claim that a provider definitely supports every schema or any tool
 is approved. Text-only/explicitly unsupported models can still inspect configured
-local definitions with this flag False. Permission/planning/child access gates are
+local definitions with this flag False. Permission/read-only/child access gates are
 unchanged and apply separately on actual execution.
 
 At most 32 definitions return per page. Continue with `next_offset` and the same
@@ -1836,7 +1786,7 @@ Coding and Claw this identifies a durable, complete pre-compaction checkpoint in
 the owning session tree. It is an opaque navigation identity, not a filesystem path
 or permission grant. The before hook's `previous` metadata retains prior recovery
 links; repeated compaction does not replace earlier checkpoints. Core history and
-planning/extension state recovery still uses normal host navigation and its idle,
+access/extension state recovery still uses normal host navigation and its idle,
 ownership, and complete-tool-batch checks.
 
 Hosts preparing an extension owner before session navigation may create an

@@ -24,8 +24,6 @@ from typing import Any
 from xdog.agent import AgentConfig
 from xdog.agent.mcp.completion import McpCompletion
 from xdog.agent.mcp.context import McpDocument, McpEntry
-from xdog.agent.mcp.manager import McpManager
-from xdog.agent.mcp.subscriptions import CATALOGS, notification_filters, resource_uri
 from xdog.agent.supervision_config import ChildConfig
 from xdog.ai.types import ImageContent, StreamOptions, ThinkingLevel
 from xdog.claw.channels.tui.image_upload import ImageUploads
@@ -273,8 +271,6 @@ class GatewayServer:
         saved_timeline_supported = False
         child_jobs: set[asyncio.Task[None]] = set()
         auth_jobs: set[asyncio.Task[None]] = set()
-        watch_jobs: set[asyncio.Task[None]] = set()
-        watch_views: dict[str, tuple[str, str, McpManager, str]] = {}
         auth_closing: set[str] = set()
         auth_views: dict[str, tuple[str, tuple[str, int], str, threading.Event]] = {}
         child_receipts: dict[str, tuple[str, dict[str, Any] | None]] = {}
@@ -282,9 +278,6 @@ class GatewayServer:
         child_dialog_owners: dict[str, tuple[str, str, str, str]] = {}
         child_ui_token = uuid.uuid4().hex
         child_ui_connected = True
-        return_supported = False
-        return_token = uuid.uuid4().hex
-        return_revoked = threading.Event()
         session_supported = False
         inspection_supported = False
         provider_auth_supported = False
@@ -296,10 +289,6 @@ class GatewayServer:
         command_catalog_generation = 0
         command_menu_dialogs: dict[str, tuple[str, str, int]] = {}
         mcp_content_types_supported = False
-        combined_watch_supported = False
-        combined_watch_jobs: set[asyncio.Task[Any]] = set()
-        catalog_watch_supported = False
-        catalog_watch_jobs: set[asyncio.Task[Any]] = set()
         skills_supported = False
         tool_inventory_supported = False
         tool_inventory_jobs: dict[str, asyncio.Task[None]] = {}
@@ -542,16 +531,6 @@ class GatewayServer:
                     })
                     continue
                 msg_type = request.get("type", "")
-                if msg_type == 'ping' and 'child_image_return' in request:
-                    value = request['child_image_return']
-                    if type(value) is not int or value not in (0, 1):
-                        await write({'type': 'protocol_error', 'message': 'child_image_return requires integer 0 or 1'})
-                        continue
-                    if return_supported != (value == 1):
-                        return_revoked.set()
-                        return_token = uuid.uuid4().hex
-                        return_revoked = threading.Event()
-                    return_supported = value == 1
                 if msg_type == 'ping' and 'saved_source' in request:
                     saved_source_supported = type(request['saved_source']) is int and request['saved_source'] == 1
                     if not saved_source_supported:
@@ -766,32 +745,6 @@ class GatewayServer:
                     extension_jobs.add(job)
                     job.add_done_callback(extension_jobs.discard)
                     continue
-                if msg_type == "ping" and "mcp_combined_watch" in request:
-                    combined_watch_supported = (type(request["mcp_combined_watch"]) is int
-                                                and request["mcp_combined_watch"] == 1)
-                    if not combined_watch_supported:
-                        for task in tuple(combined_watch_jobs):
-                            if not task.cancelling():
-                                task.cancel()
-                        for record in tuple(watch_views.values()):
-                            async def detach_combined(owner: tuple[str, str, McpManager, str]) -> None:
-                                await owner[2].detach_notification_watches(owner[3])
-                            detached = asyncio.create_task(detach_combined(record))
-                            watch_jobs.add(detached)
-                            detached.add_done_callback(watch_jobs.discard)
-                if msg_type == "ping" and "mcp_catalog_watch" in request:
-                    catalog_watch_supported = (type(request["mcp_catalog_watch"]) is int
-                                               and request["mcp_catalog_watch"] == 1)
-                    if not catalog_watch_supported:
-                        for task in tuple(catalog_watch_jobs):
-                            if not task.cancelling():
-                                task.cancel()
-                        for record in tuple(watch_views.values()):
-                            async def detach_catalog(owner: tuple[str, str, McpManager, str]) -> None:
-                                await owner[2].detach_catalog_watches(owner[3])
-                            detached = asyncio.create_task(detach_catalog(record))
-                            watch_jobs.add(detached)
-                            detached.add_done_callback(watch_jobs.discard)
                 if msg_type == "ping" and "mcp_content_types" in request:
                     mcp_content_types_supported = (type(request["mcp_content_types"]) is int
                                                    and request["mcp_content_types"] == 1)
@@ -851,105 +804,6 @@ class GatewayServer:
                                                  and request["extension_command_results"] == 1)
                 if not isinstance(msg_type, str):
                     await write({"type": "protocol_error" if runs else "error", "message": "Invalid request type"})
-                    continue
-                if msg_type == "mcp_resource_watch":
-                    rid, view, group, session = (request.get(key) for key in
-                                                ("request_id", "view", "group_id", "session_id"))
-                    action, server, uri = request.get("action"), request.get("server", ""), request.get("uri", "")
-                    catalog = request.get("catalog", "")
-                    combined = request.get("notifications")
-                    watch_reply = {"type": "mcp_resource_watch_result", "request_id": rid, "view": view,
-                             "group_id": group, "session_id": session, "success": False}
-                    try:
-                        if (not isinstance(rid, str) or not 0 < len(rid) <= 128 or not isinstance(view, str)
-                                or re.fullmatch(r"[a-f0-9]{32}", view) is None or not isinstance(group, str)
-                                or not isinstance(session, str) or not isinstance(server, str)
-                                or action not in ("watch", "unwatch", "close") or len(watch_jobs) >= 8
-                                or self._orchestrator is None):
-                            raise ValueError("Invalid/busy resource watch request")
-                        watch_binding = watch_views.get(view)
-                        if action == "close":
-                            watch_views.pop(view, None)
-                        else:
-                            if "notifications" in request:
-                                if not combined_watch_supported or catalog or uri:
-                                    raise ValueError("Updated combined-watch capability required")
-                                combined = notification_filters(combined)
-                            elif catalog:
-                                if (not catalog_watch_supported or not isinstance(catalog, str)
-                                        or catalog not in CATALOGS):
-                                    raise ValueError("Updated catalog-watch capability required")
-                            else:
-                                resource_uri(uri)
-                            runtime = self._orchestrator._runtimes.get(group)
-                            if runtime is None or (runtime.get_new_session_id() or "") != session:
-                                raise ValueError("Resource watch group/session changed")
-                            if watch_binding is None:
-                                if len(watch_views) >= 16:
-                                    raise ValueError("Resource watch view capacity reached")
-                                watch_binding = (group, session, runtime.mcp,
-                                                 "watch:" + child_ui_token + ":" + uuid.uuid4().hex)
-                                watch_views[view] = watch_binding
-                            elif watch_binding[:2] != (group, session) or watch_binding[2] is not runtime.mcp:
-                                raise ValueError("Resource watch view owner changed")
-                    except (ValueError, RuntimeError, UnicodeError):
-                        await write({**watch_reply, "error": "Resource watch refused; inspect owner/capability"})
-                        continue
-                    loop = asyncio.get_running_loop()
-                    async def watch_job(record: tuple[str, str, McpManager, str] | None, op: str,
-                                        srv: str, resource: str, vid: str, response: dict[str, Any],
-                                        catalog_kind: str, combined_filters: dict[str, Any] | None) -> None:
-                        def alive() -> bool:
-                            return (child_ui_connected and record is not None and watch_views.get(vid) is record
-                                    and (not catalog_kind or catalog_watch_supported)
-                                    and (combined_filters is None or combined_watch_supported)
-                                    and self._orchestrator is not None
-                                    and (self._orchestrator.get_new_session_id(record[0]) or "") == record[1])
-                        def notice(data: dict[str, Any]) -> None:
-                            def publish() -> None:
-                                if alive() and record is not None:
-                                    task = asyncio.create_task(write({"type": "mcp_resource_watch_notice", "view": vid,
-                                        "group_id": record[0], "session_id": record[1], "data": data}))
-                                    child_ui_writes.add(task)
-                                    task.add_done_callback(child_ui_done)
-                            loop.call_soon_threadsafe(publish)
-                        try:
-                            if record is None:
-                                data: dict[str, Any] = {"state": "stopped"}
-                            elif op == "close":
-                                await record[2].detach_resource_watches(record[3])
-                                data = {"state": "stopped"}
-                            elif combined_filters is not None:
-                                if op == "unwatch":
-                                    data = await record[2].unwatch_notifications(srv, combined_filters, lease=record[3])
-                                else:
-                                    data = await record[2].watch_notifications(srv, combined_filters, lease=record[3],
-                                                                            on_change=notice, alive=alive)
-                            elif catalog_kind:
-                                if op == "unwatch":
-                                    data = await record[2].unwatch_catalog(srv, catalog_kind, lease=record[3])
-                                else:
-                                    data = await record[2].watch_catalog(srv, catalog_kind, lease=record[3],
-                                                                        on_change=notice, alive=alive)
-                            elif op == "unwatch":
-                                data = await record[2].unwatch_resource(srv, resource, lease=record[3])
-                            else:
-                                data = await record[2].watch_resource(srv, resource, lease=record[3],
-                                                                     on_change=notice, alive=alive)
-                            response.update(success=True, data=data)
-                        except Exception:
-                            response["error"] = "Resource watch failed/unsupported; no read or request replay"
-                        await write(response)
-                    job = asyncio.create_task(watch_job(watch_binding, action, server, uri, view, watch_reply,
-                                                        catalog, combined))
-                    if combined is not None:
-                        combined_watch_jobs.add(job)
-                        job.add_done_callback(combined_watch_jobs.discard)
-                    if catalog:
-                        catalog_watch_jobs.add(job)
-                        job.add_done_callback(catalog_watch_jobs.discard)
-                    watch_jobs.add(job)
-                    job.add_done_callback(watch_jobs.discard)
                     continue
                 if msg_type == "mcp_context_cancel":
                     identifier = request.get("request_id")
@@ -1280,18 +1134,11 @@ class GatewayServer:
                                 or access not in {"read-only", "inherit"} or self._orchestrator is None):
                             raise ValueError("Invalid child control")
                         ChildConfig.from_dict(selected_config)  # Preserve sparse preset overrides for host resolution.
-                        return_command: dict[str, Any] = {}
                         if action == 'queue':
-                            from xdog.agent.supervision_queue import request as queue_request
-                            return_command = queue_request(json.loads(text))
-                        returning = return_command.get('action') in {'return_prepare', 'return_commit', 'return_cancel'}
-                        view = request.get('queue_view', '')
-                        if returning and (not return_supported or request.get('child_return_owner') != return_token
-                                or not isinstance(view, str) or len(view) != 32
-                                or any(char not in '0123456789abcdef' for char in view)):
-                            raise ValueError('Current negotiated child return owner and queue view required')
-                        captured_return = return_token
-                        captured_revoked = return_revoked
+                            if json.loads(text) != {"action": "list"}:
+                                raise ValueError("Native child queue is read-only; only exact list is accepted")
+                        if 'child_return_owner' in request or 'queue_view' in request:
+                            raise ValueError("Native child recovery protocol has been removed")
                         signature = json.dumps(request, sort_keys=True)
                         previous = child_receipts.get(identifier)
                         if previous is not None:
@@ -1329,58 +1176,16 @@ class GatewayServer:
                     async def child_job(rid: str, gid: str, op: str, sid: str, key: str, content: str,
                                         policy: str, owns_group: bool, fingerprint: str,
                                         configuration: dict[str, Any], input_images: tuple[ImageContent, ...],
-                                        refs: object, returning: bool, lease: str, revoked: threading.Event,
-                                        view: str) -> None:
+                                        refs: object) -> None:
                         reply = {"type": "child_result", "request_id": rid, "group_id": gid, "success": False}
-                        prepared_token = ''
-                        active_return_owner: Any = None
-                        def return_alive() -> bool:
-                            return (child_ui_connected and not revoked.is_set()
-                                    and return_supported and return_token == lease)
-                        host_lease = lease + ':' + view
-                        if returning:
-                            reply.update(queue_view=view, child_return_owner=lease)
                         try:
                             assert self._orchestrator is not None
-                            if returning and not return_alive():
-                                raise ValueError('Live return connection revoked before admission')
                             result = await self._orchestrator.manage_children(
                                 gid, op, key, content, policy, sid,
                                 child_ui(gid, request_id=rid) if op == "start" else None,
                                 config=configuration,
-                                images=input_images, return_owner=host_lease if returning else '',
-                                return_alive=return_alive)
+                                images=input_images)
                             data = result.get('data')
-                            if returning and isinstance(data, dict):
-                                prepared_token = data.get('queue', {}).get('return_token', '')
-                                if not return_alive():
-                                    raise ValueError('Live return connection revoked after work; inspect queue')
-                            if isinstance(data, dict) and 'image_recovery' in data:
-                                from xdog.agent.supervision_transfer import send_recovery
-                                recovery = data.pop('image_recovery')
-                                command = json.loads(content)
-                                runtime = self._orchestrator._runtimes[gid]
-                                active = runtime._active_session
-                                if active is None:
-                                    raise ValueError('Child image copy owner disappeared')
-                                recovery_owner = active.children
-                                active_return_owner = recovery_owner
-                                scope = {'request_id': rid, 'group_id': gid, 'session_id': sid, 'child_id': key,
-                                         'input_id': command['id'], 'queue_revision': command['revision']}
-                                if returning:
-                                    scope.update(child_return_owner=lease, queue_view=view)
-                                async def current() -> bool:
-                                    if (runtime._active_session is not active or active.children is not recovery_owner
-                                            or self._orchestrator is None
-                                            or gid in self._orchestrator._navigation_groups):
-                                        return False
-                                    if returning:
-                                        return return_alive() and await recovery_owner.supervisor.return_current(
-                                            key, prepared_token, host_lease)
-                                    return recovery_owner.supervisor.recovery_current(key, command['revision'])
-                                await send_recovery(recovery, scope, write, current)
-                                if not await current():
-                                    raise ValueError('Child image copy owner changed before receipt')
                             if isinstance(data, dict) and any(key in data for key in ('messages', 'task_images')):
                                 # Canonical image-bearing records cannot fit a socket line. The
                                 # separately owned child-source reader provides complete DISPLAY
@@ -1402,24 +1207,6 @@ class GatewayServer:
                         except (ValueError, RuntimeError, OSError) as exc:
                             reply["error"] = str(exc)
                         finally:
-                            if (returning and prepared_token and active_return_owner is not None
-                                    and not reply['success'] and json.loads(content)['action'] == 'return_prepare'):
-                                async def revoke() -> None:
-                                    command = json.loads(content)
-                                    try:
-                                        await active_return_owner.supervisor.control('queue', key, json.dumps({
-                                            'action': 'return_cancel', 'id': command['id'],
-                                            'revision': command['revision'], 'token': prepared_token}),
-                                            return_owner=host_lease)
-                                    except (ValueError, RuntimeError):
-                                        pass
-                                cleanup = asyncio.create_task(revoke())
-                                while not cleanup.done():
-                                    try:
-                                        await asyncio.shield(cleanup)
-                                    except asyncio.CancelledError:
-                                        continue
-                                cleanup.result()
                             if owns_group and self._orchestrator is not None:
                                 self._orchestrator.release_group_reservation(gid)
                         if op in {"list", "presets", "inspect", "wait"} or len(child_receipts) > 128:
@@ -1429,39 +1216,37 @@ class GatewayServer:
                         await write(reply)
                     task = asyncio.create_task(child_job(identifier, group, action, session, child, text, access,
                                                          reserved, signature, selected_config, images,
-                                                         request.get('image_refs'), returning, captured_return,
-                                                         captured_revoked, view))
+                                                         request.get('image_refs')))
                     child_jobs.add(task)
                     task.add_done_callback(child_jobs.discard)
                     continue
-                if msg_type == "plan_control":
+                if msg_type == "access_control":
                     identifier, group = request.get("request_id"), request.get("group_id")
                     action, session = request.get("action"), request.get("session_id")
-                    revision, objective = request.get("revision"), request.get("objective", "")
-                    plan_reply = {"type": "plan_result", "request_id": identifier, "group_id": group, "success": False}
+                    access_reply = {"type": "access_control_result", "request_id": identifier,
+                             "group_id": group, "success": False}
                     reserved = False
                     try:
-                        if (not isinstance(identifier, str) or not 0 < len(identifier) <= 128
+                        if (set(request) != {"type", "request_id", "group_id", "action", "session_id"}
+                                or not isinstance(identifier, str) or not 0 < len(identifier) <= 128
                                 or not isinstance(group, str) or not isinstance(session, str)
-                                or not isinstance(action, str)
-                                or action not in {"show", "start", "execute", "revise", "stop"}
-                                or type(revision) is not int or not isinstance(objective, str)
-                                or len(objective.encode("utf-8")) > 4000 or self._orchestrator is None):
-                            raise ValueError("Invalid planning control")
-                        if action != "show":
+                                or not isinstance(action, str) or action not in {"status", "restrict", "release"}
+                                or self._orchestrator is None):
+                            raise ValueError("Invalid access control")
+                        if action != "status":
                             async with self._group_runs_lock:
                                 reserved = group not in self._group_runs and self._orchestrator.try_reserve_group(group)
                             if not reserved:
-                                raise ValueError("Plan transitions require an idle group")
-                        result = await self._orchestrator.manage_plan(group, action, revision, objective, session)
-                        plan_reply.update(success=True, **result)
+                                raise ValueError("Access changes require an idle group")
+                        result = await self._orchestrator.manage_access(group, action, session)
+                        access_reply.update(success=True, **result)
                     except (ValueError, RuntimeError, OSError) as exc:
-                        plan_reply["error"] = str(exc)
+                        access_reply["error"] = str(exc)
                     finally:
                         if reserved and self._orchestrator is not None:
                             assert isinstance(group, str)
                             self._orchestrator.release_group_reservation(group)
-                    await write(plan_reply)
+                    await write(access_reply)
                     continue
                 if msg_type == "mcp_auth_control":
                     rid, group, view = request.get("request_id"), request.get("group_id"), request.get("lease_id")
@@ -2041,8 +1826,7 @@ class GatewayServer:
                     compaction_active=compaction_supported, saved_source_active=saved_source_supported,
                     saved_timeline_active=saved_timeline_supported, name_read_active=name_read_supported,
                     command_menu_generation=command_catalog_generation,
-                    provider_auth_active=provider_auth_supported, provider_auth_generation=provider_auth_generation,
-                    child_return_owner=return_token if return_supported else '')
+                    provider_auth_active=provider_auth_supported, provider_auth_generation=provider_auth_generation)
 
         except (ConnectionResetError, BrokenPipeError):
             logger.info("Client disconnected: %s", peer)
@@ -2053,7 +1837,6 @@ class GatewayServer:
                 nonlocal child_ui_connected
                 try:
                     child_ui_connected = False
-                    return_revoked.set()
                     child_ui_connected = False
                     for argument_task, _, _ in tuple(argument_jobs.values()):
                         argument_task.cancel()
@@ -2083,13 +1866,6 @@ class GatewayServer:
                         await asyncio.gather(*(self._orchestrator._runtimes[binding[0]].mcp.detach_auth(binding[2])
                                                for binding in auth_views.values()), return_exceptions=True)
                     child_ui_connected = False
-                    for job in tuple(watch_jobs):
-                        job.cancel()
-                    await asyncio.gather(*watch_jobs, return_exceptions=True)
-                    await asyncio.gather(
-                        *(record[2].detach_resource_watches(record[3]) for record in watch_views.values()),
-                        return_exceptions=True)
-                    watch_views.clear()
                     if self._orchestrator is not None:
                         self._orchestrator.detach_child_ui(child_ui_token)
                     for task in tuple(child_ui_writes):
@@ -2151,7 +1927,6 @@ class GatewayServer:
         command_menu_generation: int = 0,
         provider_auth_active: bool = False,
         provider_auth_generation: int = 0,
-        child_return_owner: str = '',
     ) -> None:
         """Route a client request to the appropriate handler."""
         msg_type = request.get("type", "")
@@ -2170,9 +1945,9 @@ class GatewayServer:
                 "session_navigation_cancel": 1, "attachment_transport": 1,
                 "transcript_source": 1, "mcp_controls": 1, "mcp_browser_owner": 1,
                 "mcp_context": 1, "mcp_completion": 1,
-                "mcp_content_types": 1, "mcp_catalog_watch": 1,
-                "mcp_combined_watch": 1, "tool_inventory": 1, "tool_inventory_selection": 1,
-                "mcp_resource_completion": 1, "mcp_resource_watch": 1,
+                "mcp_content_types": 1,
+                "tool_inventory": 1, "tool_inventory_selection": 1,
+                "mcp_resource_completion": 1,
                 "extension_command_results": 1,
                 "extension_session": 1,
                 "extension_provider_auth": int(provider_auth_active),
@@ -2187,10 +1962,9 @@ class GatewayServer:
                 "session_compaction": int(compaction_active),
                 "skill_controls": int(skill_controls_active),
                 "mcp_refresh": 1, "mcp_credentials": 1,
-                "plan_controls": 1, "extension_controls": 1, "child_controls": 1, "child_source": 1, "child_queues": 1,
-                "child_dialogs": 1, "child_config": 3, "child_images": 1, "child_image_recovery": 1,
-                "child_task_recovery": 1, 'child_image_return': int(bool(child_return_owner)),
-                'child_return_owner': child_return_owner,
+                "access_controls": 1, "extension_controls": 1, "child_controls": 1,
+                "child_source": 1, "child_queues": 1,
+                "child_dialogs": 1, "child_config": 3, "child_images": 1,
             }
             history: list[dict[str, Any]] = []
             if self._orchestrator:
@@ -2201,12 +1975,12 @@ class GatewayServer:
                         session_info["extension_snapshot"] = runtime._active_session.extensions.snapshot()
                         session_info["thinking"] = runtime._active_session.agent.options.thinking or "off"
                     try:
-                        result = await self._orchestrator.manage_plan(
-                            group_id, "show", 0, "", self._orchestrator.get_new_session_id(group_id) or "")
-                        session_info["plan"] = result["plan"]
+                        result = await self._orchestrator.manage_access(
+                            group_id, "status", self._orchestrator.get_new_session_id(group_id) or "")
+                        session_info["access"] = result["access"]
                     except (ValueError, RuntimeError, OSError):
-                        session_info["plan_controls"] = 0
-                        session_info["plan_error"] = "Invalid saved plan; repair it or explicitly create a new session"
+                        session_info["access_controls"] = 0
+                        session_info["access_error"] = "Invalid saved access; repair or explicitly create a new session"
                 raw_history = session_info.pop("history", [])
                 if isinstance(raw_history, list):
                     history = raw_history

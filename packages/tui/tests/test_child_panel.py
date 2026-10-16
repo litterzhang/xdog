@@ -352,7 +352,7 @@ def test_image_child_receipt_mismatch_preserves_exact_draft_and_closed_panel_cac
         reopened.close()
 
 
-def test_stopped_copy_uses_a_separate_read_only_draft_and_successful_roster_does_not_revoke_queue_receipt():
+def test_stopped_queue_inspection_and_roster_replies_never_adopt_a_recovery_draft():
     import base64
 
     from xdog.tui.attachments import attachment
@@ -360,54 +360,61 @@ def test_stopped_copy_uses_a_separate_read_only_draft_and_successful_roster_does
     image = attachment(base64.b64decode(
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j5ioAAAAASUVORK5CYII='), 'saved.png')
     saved = ChildDraft('PREEXISTING CHILD DRAFT', 'inherit', {'label': 'old'}, (image,))
-    cache = {('start', ''): saved}
-    panel = ChildPanel(lambda *args: None, lambda *args: None, lambda: None, lambda *args: None, lambda: None,
-                       image_send=lambda *args: None, drafts=cache)
+    cache, sent = {('start', ''): saved}, []
+    panel = ChildPanel(lambda *args: sent.append(args), lambda *_: None, lambda: None,
+                       lambda *_: None, lambda: None, image_send=lambda *_: None, drafts=cache)
     panel.queue_enabled = True
-    panel.queue_image_recovery_enabled = True
     panel.focused = True
     panel.publish(child_entries({'children': [entry()]}))
     panel.open_queue()
-    panel.queue._sent_action = 'recover_images'
-    panel.queue._pending_return = {'id': 'input'}
-    original = panel.queue._pending_return
-    panel.complete('list')  # A periodic successful roster reply must not erase this copy's pending receipt.
-    assert panel.queue._sent_action == 'recover_images' and panel.queue._pending_return is original
-    row = {'id': 'input', 'content': 'COPIED IMAGE TASK', 'delivery': 'follow_up', 'stopped': True, 'images': (image,)}
+    inspector = panel.queue
+    assert inspector._busy
+    panel.complete('list')
+    assert inspector._busy  # A roster reply cannot settle the distinct queue metadata read.
+    row = {'id': 'initial', 'content': 'SAVED BACKEND INPUT', 'delivery': 'follow_up', 'selected': False,
+           'image_count': 1, 'source': 'initial-task', 'uncertain': True}
+    snapshot = {'child_id': '0123456789ab', 'revision': 'a' * 64, 'stopped': True, 'inputs': [row]}
     try:
-        panel._returned_input('0123456789ab', row)
-        assert panel._form_action == 'start' and panel._access == 'read-only'
-        assert panel._config == {'inherit_context': False}
-        assert panel._draft_slot != '' and cache['start', ''] is saved
-        first_slot = panel._draft_slot
-        panel._input.set_text('EDITED RECOVERY COPY')
-        panel._returned_input('0123456789ab', row)
-        assert panel._draft_slot != first_slot and cache['start', first_slot].text == 'EDITED RECOVERY COPY'
-        assert cache['start', ''] is saved
+        panel.complete('queue', data={'queue': snapshot})
+        assert not inspector._busy and inspector._rows == [row]
+        for key in ('u', 'x', 'e', 'k', 'j'):
+            panel.handle_input(KeyEvent(key))
+        panel.handle_paste('CHILD EDIT MUST NOT BE APPLIED\n')
+        panel.handle_input(KeyEvent('enter'))
+        assert panel._mode == 'queue' and cache == {('start', ''): saved}
+        assert sent == [('queue', '0123456789ab', '{"action": "list"}', 'read-only')]
+        for receipt in ({'queue': {**snapshot, 'recovered': row}},
+                        {'queue': snapshot, 'image_recovery': {'images': []}}):
+            panel.complete('queue', data=receipt)
+            assert cache['start', ''] is saved and panel._mode == 'queue'
+        panel.complete('queue', data={'queue': snapshot}, images=(image,))
+        assert 'refuses' in inspector._error and cache['start', ''] is saved
+        assert not hasattr(panel, '_returned_input')
+        assert not hasattr(panel, 'queue_image_recovery_enabled')
+        assert not hasattr(panel, 'queue_task_recovery_enabled')
     finally:
         panel.close()
 
 
-def test_child_panel_cannot_wire_a_live_image_return_ui_but_keeps_text_queue():
+def test_readonly_child_queue_has_no_live_text_or_image_return_even_with_obsolete_flags():
     panel, actions, *_ = make()
     panel.queue_enabled = True
-    panel.queue_image_return_enabled = True  # An obsolete host flag must be inert.
+    panel.queue_image_return_enabled = panel.queue_image_recovery_enabled = panel.queue_task_recovery_enabled = True
     panel.open_queue()
-    assert panel.queue is not None and actions[-1][0] == 'queue'
     value = {'child_id': panel._selected_id, 'revision': 'a' * 64, 'stopped': False,
              'inputs': [{'id': 'photo', 'content': 'KEEP PHOTO', 'delivery': 'steer',
                          'selected': False, 'image_count': 1}]}
     try:
-        panel.queue.publish(value)
-        panel.set_render_budget(10)
-        assert 'u return' not in '\n'.join(panel.render(120))
-        before = list(actions)
-        panel.handle_input(KeyEvent('u'))
-        panel.handle_input(KeyEvent('enter'))
-        assert actions == before and not panel._drafts
-        assert not hasattr(panel, '_retain_return_images')
-        panel.queue.publish({**value, 'inputs': [{**value['inputs'][0], 'image_count': 0}]})
-        assert 'u return text' in '\n'.join(panel.render(120))
+        for count in (1, 0):
+            panel.queue.publish({**value, 'inputs': [{**value['inputs'][0], 'image_count': count}]})
+            panel.set_render_budget(10)
+            text = '\n'.join(panel.render(120))
+            assert 'READ ONLY' in text and 'u return' not in text and 'e edit' not in text
+            before = list(actions)
+            for key in ('u', 'x', 'd', 'e', 'j', 'k', 'enter'):
+                panel.handle_input(KeyEvent(key))
+            assert actions == before and not panel._drafts
+        assert not hasattr(panel, '_retain_return_images') and not hasattr(panel, '_returned_input')
     finally:
         panel.close()
 
@@ -567,5 +574,96 @@ def test_child_recovery_cannot_accept_saved_or_foreign_entries_and_has_no_catalo
         assert 'draft_source' not in inspect.signature(ChildPanel).parameters
         assert 'draft_action' not in inspect.signature(ChildPanel).parameters
         assert panel._drafts['start', ''] is original and not actions
+    finally:
+        panel.close()
+
+
+def test_queue_inspection_is_not_child_stop_consent_and_stop_still_requires_native_review():
+    panel, actions, *_ = make()
+    panel.queue_enabled = True
+    try:
+        panel.open_queue()
+        panel.complete('queue', data={'queue': {'child_id': panel._selected_id, 'revision': 'a' * 64, 'inputs': []}})
+        panel.render(100)
+        panel.handle_input(KeyEvent('c'))
+        assert len(actions) == 1 and actions[0][0] == 'queue'
+        panel.handle_input(KeyEvent('escape'))
+        assert panel._mode == 'list' and panel.queue is None
+        panel.handle_input(KeyEvent('c'))
+        panel.handle_input(KeyEvent('enter'))
+        assert len(actions) == 1  # Read-only queue painting cannot approve stopping a child.
+        panel.render(100)
+        panel.handle_input(KeyEvent('enter'))
+        assert actions[-1] == ('cancel', '0123456789ab', '', 'read-only')
+    finally:
+        panel.close()
+
+
+def test_readonly_queue_switch_paste_and_refresh_preserve_unsent_transient_input():
+    panel, actions, *_ = make()
+    panel.queue_enabled = True
+    panel._form('start')
+    panel._input.set_text('未发送 /quit\nKEEP UNSENT')
+    panel._input._cursor = 4
+    panel._access, panel._config = 'inherit', {'tools': []}
+    try:
+        panel.open_queue()
+        saved = panel._drafts['start', '']
+        panel.complete('queue', data={'queue': {'child_id': panel._selected_id, 'revision': 'a' * 64, 'inputs': []}})
+        for key in ('e', 'u', 'x', 'd', 'j', 'k'):
+            panel.handle_input(KeyEvent(key))
+        panel.handle_paste('\n/quit')
+        panel.paste_clipboard()  # Read-only view cannot initiate a clipboard/image edit either.
+        panel.handle_input(KeyEvent('r'))
+        assert len(actions) == 2 and all(json_request[0] == 'queue' for json_request in actions)
+        assert all(json_request[2] == '{"action": "list"}' for json_request in actions)
+        assert panel._drafts['start', ''] is saved
+        panel.back()
+        panel._form('start')
+        assert panel._input.get_text() == saved.text and panel._input._cursor == saved.cursor
+        assert panel._access == saved.access and panel._config == saved.config
+    finally:
+        panel.close()
+
+
+def test_replaced_queue_owner_cannot_send_or_settle_the_current_inspector():
+    panel, actions, *_ = make()
+    panel.queue_enabled = True
+    try:
+        panel.open_queue()
+        old = panel.queue
+        captured = old._refresh
+        panel.open_queue()
+        current = panel.queue
+        assert old._closed and current is not old and current._busy
+        with pytest.raises(ValueError, match='owner changed'):
+            captured()
+        old.focused = old.enabled = True
+        old.refresh()
+        old.publish({'child_id': panel._selected_id, 'revision': 'a' * 64, 'inputs': []})
+        old.fail('Late old failure must not settle successor')
+        assert current._busy and not current._error and panel.queue is current
+        assert len(actions) == 2
+    finally:
+        panel.close()
+
+
+@pytest.mark.parametrize('transition', ['close', 'blur', 'withdraw'])
+def test_captured_queue_read_callback_cannot_borrow_closed_blurred_or_withdrawn_owner(transition):
+    panel, actions, *_ = make()
+    panel.queue_enabled = True
+    panel.open_queue()
+    inspector = panel.queue
+    captured = inspector._refresh
+    try:
+        if transition == 'close':
+            panel.close()
+        elif transition == 'blur':
+            panel.focused = False
+        else:
+            inspector.enabled = False
+        with pytest.raises(ValueError, match='owner changed'):
+            captured()
+        assert len(actions) == 1
     finally:
         panel.close()

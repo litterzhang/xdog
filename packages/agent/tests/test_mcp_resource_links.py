@@ -5,7 +5,6 @@ import json
 import pytest
 from xdog.agent.mcp.context import McpDocument, prompt_blocks
 from xdog.agent.mcp.stdio import McpError
-from xdog.agent.mcp.subscriptions import SubscriptionError
 
 LINK = {'type': 'resource_link', 'name': 'document', 'title': 'Untrusted title',
         'uri': 'https://must-not-fetch.invalid/path', 'mimeType': 'text/plain', 'size': 123,
@@ -32,7 +31,7 @@ def test_prompt_link_complete_metadata_survives_preview_export_and_explicit_draf
     {'_meta': {'private': '\ud800'}},
 ])
 def test_invalid_link_metadata_is_not_coerced_dropped_or_promoted_to_content(updates):
-    with pytest.raises((McpError, SubscriptionError)):
+    with pytest.raises(McpError):
         prompt_blocks([{'role': 'user', 'content': {**LINK, **updates}}])
 
 

@@ -79,38 +79,21 @@ def test_template_requires_explicit_resolved_uri_and_argument_submit_is_busy_gat
         panel.close()
 
 
-async def test_resource_watch_notices_are_visible_over_preview_without_replacing_the_snapshot():
-    from xdog.tui.components.mcp_panel import McpPanel
-    from xdog.tui.utils import strip_ansi
-    panel = McpPanel(lambda *args: None, lambda: None, lambda: None, lambda: None)
-    panel.publish('read', text='original resource snapshot')
-    panel.publish_watch({'server': 'peer', 'uri': 'test://watched', 'state': 'active', 'changes': 2})
-    import asyncio
-    panel.render(120)  # Width establishes the transcript indexing request.
-    async with asyncio.timeout(3):
-        while not panel._preview.settled:
-            panel.poll()
-            await asyncio.sleep(0.003)
-    rendered = strip_ansi('\n'.join(panel.render(120)))
-    assert '2 change notice' in rendered and 'original resource snapshot' in rendered
-    assert 'no automatic read/prompt insertion' in rendered
-
-
-def test_resource_watch_state_survives_catalog_refresh_and_unrelated_notice():
+def test_retired_watch_controls_are_absent_and_manual_catalog_refresh_is_explicit():
     requests = []
     panel = McpPanel(lambda *args: requests.append(args), lambda: None, lambda: None, lambda: None)
     try:
+        assert not hasattr(panel, 'publish_watch') and not hasattr(panel, '_subscription_form')
         panel.publish('list', rows=({'server': 'peer', 'state': 'connected'},))
+        for event in (KeyEvent('w'), KeyEvent('w', alt=True), KeyEvent('t', alt=True),
+                      KeyEvent('p', alt=True), KeyEvent('u', alt=True)):
+            panel.handle_input(event)
+        assert requests == [('list', '', '', {})]
         panel.handle_input(KeyEvent('u'))
         panel.publish('resources', rows=({'name': 'test://one'}, {'name': 'test://two'}))
-        panel.publish_watch({'server': 'peer', 'uri': 'test://one', 'state': 'ended', 'changes': 3})
-        panel.publish_watch({'server': 'peer', 'uri': 'test://two', 'state': 'active', 'changes': 0})
+        panel.handle_input(KeyEvent('r'))
+        assert requests[-1] == ('resources', 'peer', '', {})
         panel.publish('resources', rows=({'name': 'test://one'}, {'name': 'test://two'}))
-        rows = panel.render(120)
-        assert any('test://one' in row and 'watch ended' in row and '3 change notice' in row for row in rows)
-        assert any('test://two' in row and 'watch active' in row for row in rows)
-        panel.handle_input(KeyEvent('w'))
-        assert requests[-1] == ('watch_resource', 'peer', 'test://one', {})
         for height in (0, 1, 2, 6):
             panel.set_render_budget(height)
             for width in (1, 16, 32):
@@ -176,45 +159,32 @@ def test_modified_keys_do_not_trigger_plain_management_actions():
         panel.handle_input(KeyEvent('t', alt=True, ctrl=True))
         assert requests == [('list', '', '', {})]
         panel.handle_input(KeyEvent('t', alt=True))
-        assert requests[-1] == ('watch_catalog', 'peer', 'tools', {})
+        assert requests == [('list', '', '', {})]
     finally:
         panel.close()
 
 
-def test_combined_watch_form_validates_and_toggles_exact_canonical_filters():
-    import json
+def test_subscription_codec_is_removed_and_stale_controls_preserve_successor_state():
+    import importlib
 
-    from xdog.tui.mcp_subscription import filter_text
+    import pytest
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module('xdog.tui.mcp_subscription')
     requests = []
     panel = McpPanel(lambda *args: requests.append(args), lambda: None, lambda: None, lambda: None)
     try:
         panel.publish('list', rows=({'server': 'peer', 'state': 'connected'},))
-        panel.handle_input(KeyEvent('w', alt=True))
-        assert panel._mode == 'subscriptions'
-        for invalid in ('{}', '{"toolsListChanged":1}', '{"resourceSubscriptions":["x","x"]}'):
-            panel._arguments.set_text(invalid)
-            panel.handle_input(KeyEvent('enter'))
-            assert len(requests) == 1 and panel._arguments.get_text() == invalid
-        selected = {'toolsListChanged': True, 'resourceSubscriptions': ['two', 'one']}
-        draft = json.dumps(selected)
-        panel._arguments.set_text(draft)
-        panel.handle_input(KeyEvent('enter'))
-        assert requests[-1] == ('watch_notifications', 'peer', filter_text(selected), {})
-        assert panel._arguments.get_text() == draft
-        panel.publish_watch({'server': 'peer', 'uri': '', 'state': 'active', 'changes': 2,
-                             'notifications': selected}, receipt=True)
-        assert 'no automatic read/registration/prompt insertion' in panel._message
-        panel.handle_input(KeyEvent('enter'))
-        assert requests[-1] == ('unwatch_notifications', 'peer', filter_text(selected), {})
-        panel.publish_watch({'server': 'peer', 'uri': '', 'state': 'stopped', 'changes': 2,
-                             'notifications': selected}, receipt=True)
-        for height in (0, 1, 4, 12):
-            panel.set_render_budget(height)
-            for width in (1, 20, 80):
-                rows = panel.render(width)
-                assert len(rows) <= height and all(visible_width(row) <= width for row in rows)
-        panel.handle_input(KeyEvent('escape'))
-        assert requests[-1] == ('list', '', '', {})
+        panel.handle_input(KeyEvent('p'))
+        panel._message = 'current prompt catalog pending'
+        for action in ('watch_resource', 'unwatch_resource', 'watch_catalog', 'unwatch_catalog',
+                       'watch_notifications', 'unwatch_notifications'):
+            panel.request(action)
+            panel.publish(action, text='stale preview', error='obsolete result')
+            assert panel._busy and panel._mode == 'servers' and panel._preview is None
+            assert panel._message == 'current prompt catalog pending'
+        assert requests == [('list', '', '', {}), ('prompts', 'peer', '', {})]
+        panel.publish('prompts', rows=({'name': 'review'},))
+        assert not panel._busy and panel._mode == 'catalog'
     finally:
         panel.close()
 

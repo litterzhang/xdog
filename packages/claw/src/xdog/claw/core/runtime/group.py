@@ -262,7 +262,7 @@ class GroupRuntime:
         else:
             raise ValueError("Unknown MCP management action")
         if self._active_session is not None:
-            self._active_session.agent.set_tools((*self.tools, self._active_session.plan.tool(),
+            self._active_session.agent.set_tools((*self.tools,
                                                   *self._active_session.extensions.tools(),
                                                   *self._active_session.children.supervisor.tools()))
             await self._active_session._persist_tool_retirement()
@@ -313,12 +313,12 @@ class GroupRuntime:
         group_id = self.group.id
         config = self.group.config
 
-        from xdog.agent.planning import PlanState
+        from xdog.agent.access import AccessState
         current = self.transcript_store.get_active_session(group_id)
-        planning = (current is not None and PlanState.from_dict(
-            self.transcript_store.get_plan(current.session_id)).mode != "off")
+        read_only = (current is not None and AccessState.from_dict(
+            self.transcript_store.get_access(current.session_id)).read_only)
         children_active = self._active_session is not None and self._active_session.children.supervisor.active
-        if allow_reset and not planning and not children_active and (
+        if allow_reset and not read_only and not children_active and (
                 self.transcript_store.needs_daily_reset(group_id, config.daily_reset_hour)
                              or self.transcript_store.needs_idle_reset(group_id, config.idle_reset_seconds)):
             self._drop_session()
@@ -424,7 +424,7 @@ class GroupRuntime:
             raise ValueError("Branch unavailable")
         messages = transcript_to_messages(source)
         if action == "resume":
-            self._navigate_prepared(session_id, store.active_branch(session_id), source, store.get_plan(session_id),
+            self._navigate_prepared(session_id, store.active_branch(session_id), source, store.get_access(session_id),
                                     store.get_extension_entries(session_id), [], alive, resume=True,
                                     active_tools=store.get_active_tools(session_id),
                                     owner_loop=owner_loop)
@@ -437,9 +437,9 @@ class GroupRuntime:
             validate_checkpoint(messages, len(messages) - 1)
         if action == "goto" and index < 0:
             raise ValueError("A valid checkpoint index is required")
-        from xdog.agent.planning import PlanState
-        source_plan = PlanState.from_dict(store.branch_plan(session_id, branch_id) if branch_id
-                                          else store.get_plan(session_id))
+        from xdog.agent.access import AccessState
+        source_access = AccessState.from_dict(store.branch_access(session_id, branch_id) if branch_id
+                                          else store.get_access(session_id))
         from xdog.agent.extensions.state import validate_entries
         source_entries = store.get_extension_entries(session_id, branch_id)
         source_tools = store.get_active_tools(session_id, branch_id)
@@ -455,7 +455,7 @@ class GroupRuntime:
             prefix = messages_to_transcript(messages[:point + 1])
             store.save_branch(session_id, key, prefix, metadata={
                 "branch_point": point, "label": "Saved checkpoint",
-                "parent_branch": branch_id or store.active_branch(session_id), "plan": source_plan.to_dict(),
+                "parent_branch": branch_id or store.active_branch(session_id), "access": source_access.to_dict(),
                 "extension_entries": source_entries,
                 "active_tools": list(source_tools) if source_tools is not None else None,
             })
@@ -468,27 +468,31 @@ class GroupRuntime:
             source = messages_to_transcript(messages[:point + 1])
             new_branch = uuid.uuid4().hex[:8]
             branches.append((new_branch, source, {"branch_point": point, "parent_branch": branch_id,
-                "label": f"Checkpoint at message {point + 1}", "plan": source_plan.to_dict(),
+                "label": f"Checkpoint at message {point + 1}", "access": source_access.to_dict(),
                 "extension_entries": source_entries,
                 "active_tools": list(source_tools) if source_tools is not None else None}))
             branch_id = new_branch
-        self._navigate_prepared(session_id, branch_id, source, source_plan.to_dict(), source_entries,
+        self._navigate_prepared(session_id, branch_id, source, source_access.to_dict(), source_entries,
                                 branches, alive, owner_loop=owner_loop, active_tools=source_tools)
 
     def _navigate_prepared(self, session_id: str, branch_id: str, source: list[dict[str, Any]],
-                           plan: Any, entries: Any,
+                           access: Any, entries: Any,
                            branches: list[tuple[str, list[dict[str, Any]], dict[str, Any]]],
                            alive: Callable[[], bool], *, resume: bool = False,
                            active_tools: tuple[str, ...] | None = None,
                            owner_loop: asyncio.AbstractEventLoop | None = None) -> None:
-        from xdog.agent.planning import PlanState
+        from xdog.agent.access import AccessState
         from xdog.claw.core.runtime.session_staging import prepare
-        stage = prepare(self, session_id, source, plan, entries, branch_id, alive, active_tools=active_tools)
+        target_access = AccessState.from_dict(access)
+        if self._active_session is not None:
+            target_access = target_access.retain_restriction(self._active_session.access.state)
+        access = target_access.to_dict()
+        stage = prepare(self, session_id, source, access, entries, branch_id, alive, active_tools=active_tools)
         try:
             if not alive():
                 raise asyncio.CancelledError
             self.transcript_store.commit_navigation(self.group.id, session_id, branch_id, source,
-                PlanState.from_dict(plan).to_dict(), stage.session.extensions.entries.snapshot(),
+                AccessState.from_dict(access).to_dict(), stage.session.extensions.entries.snapshot(),
                 branches=branches, resume=resume, active_tools=stage.session.agent.active_tool_selection)
         except BaseException:
             stage.close()
@@ -498,13 +502,13 @@ class GroupRuntime:
         old_loop = self._active_session._host_loop if self._active_session is not None else None
         self._drop_session()
         stage.store.promote()
-        stage.runtime.transcript_store = self.transcript_store  # Captured plan writer delegates to real storage.
+        stage.runtime.transcript_store = self.transcript_store  # Captured access writer delegates to real storage.
         stage.session._runtime = self
         stage.session._host_loop = owner_loop or old_loop
         stage.session.extensions.context = lambda: {
             'session_id': stage.session.meta.session_id, 'group_id': self.group.id,
             'cwd': str(self.workspace_dir), 'model': self.model,
-            'planning_mode': stage.session.plan.state.mode, 'permission_mode': 'configured'}
+            'read_only': stage.session.access.state.read_only, 'permission_mode': 'configured'}
         self.model = stage.runtime.model
         self.context_window = stage.runtime.context_window
         self.max_prompt_tokens = stage.runtime.max_prompt_tokens

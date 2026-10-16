@@ -248,6 +248,11 @@ allow 50 pending messages; runtime text is limited to 64 KiB. SDK receipts are
 bounded individual frames, not one huge text snapshot. Rejected oversized or
 malformed protocol frames do not cancel an unrelated owned run.
 
+These controls concern the primary composer/current parent run. The child-input
+queue viewer is read-only; child queue mutation/recovery stays in the main-Agent/
+SDK path described below.
+
+
 ### Gateway-owned session browsing and branch trees
 
 **Alt+R / `/sessions`** opens the group's searchable archived-session browser;
@@ -484,7 +489,7 @@ uses the same group owner and idle reservation as stdio, with unchanged explicit
 mirrors/session lifecycle and bounded no-replay behavior are shared with Coding.
 Authorization failures and redirects never trigger automatic credentials, downgrade
 or forwarding. See the Agent README for the public-PKCE profile, configured Roots,
-retained continuations/subscriptions and explicit no-POST-replay limits.
+retained request continuations/SSE and explicit no-POST-replay limits.
 
 
 ### MCP browser and inert context previews
@@ -510,7 +515,7 @@ chunked, with group/session/revision fencing and owned temporary-file cleanup.
 Browser close cancels the active read; late responses cannot update a successor.
 
 The retained MCP surface includes explicit public-PKCE authorization, selected
-credential storage, inert previews and explicit subscription filters below. Native
+credential storage, inert previews and manual catalog refresh below. Native
 manual completion and optional Sampling/Elicitation/Tasks/Roots-management controls
 are removed, not pending browser features. Binary/image resources are exportable,
 not directly attached to model input. Broader third-party interoperability is not
@@ -551,64 +556,49 @@ Basic extension input/select/confirm and provider OAuth callbacks are separate
 retained interfaces, not MCP Elicitation.
 
 Ordinary modern Roots/request-state continuations do not authorize retrying an
-uncertain operation. Existing explicit resource/catalog/log subscription filters
-and response-scoped SSE remain. Legacy cursor-based **GET** recovery retains the
+uncertain operation. Active resource/catalog/combined subscriptions are removed.
+Ordinary response-scoped SSE and request telemetry remain. Legacy cursor-based
+**GET** recovery retains the
 original identity/deadline and never repeats a tool **POST**; current stateless
 HTTP does not acquire legacy GET resumption. No disconnect, failed response or
 continuation silently reconnects, replays POSTs or expands configured disclosure.
 
 
-### Session planning workflow
+### Task planning and host read-only scope
 
-Use `/plan start OBJECTIVE` to enter **read-only planning**, then send a normal
-request asking the agent to build/refine the plan. The session-owned `update_plan`
-tool maintains structured pending/in-progress/completed steps with revision checks;
-it cannot change mode or authorize execution. `/plan` opens the focused inspector.
-Arrows select and reveal steps, pages scroll long text, **r** returns to planning,
-**e** reviews the execution transition, **s** reviews stopping the plan, and Escape
-closes the inspector without disabling planning. The prompt shows a mode badge.
+The builtin **`xdog-planning`** skill uses ordinary conversation or task documents
+for objectives, dependencies, acceptance criteria and evidence-backed progress.
+It does not create a separate plan database, inspector, execution mode or model
+loop. The former `/plan`, `PlanPanel` and `update_plan` UI/tool APIs are removed.
+List it with `/skills`; load it explicitly with `/skills load xdog-planning`.
 
-Execution requires an idle owner and a current plan revision. The inspector's
-Enter confirmation works only after a visible confirmation has been rendered;
-resize, busy refresh or revision changes invalidate it. Direct user commands are
-`/plan execute REVISION`, `/plan revise [REVISION]` and `/plan stop [REVISION]`.
-These commands only change mode: **no model turn or work is automatically started**.
-Send a normal message to proceed under the host's existing tool policy.
+Use the native host control separately:
 
-Planning blocks shell, workspace mutations, external MCP and unknown tools in the
-host pre-tool hook. Read-only filesystem calls still follow the normal policy.
-Structured plan updates and automatic session/compaction persistence are managed
-application metadata, not permission to modify project files. This is a tool gate,
-not an OS sandbox. Durable plan state survives session reloads and branch snapshots;
-invalid saved state fails rather than silently removing restrictions. Plans are
-captured at branch creation, not reconstructed for every older message checkpoint.
+```text
+/readonly on
+/readonly status
+/readonly off
+```
 
-Claw uses group-owned correlated controls with session/revision checks and idle
-reservations. Its normal MCP `allow_tools` policy remains in force after execution
-is selected. Old gateways disable plan controls rather than receiving unknown
-operations; uncertain controls are never replayed on reconnect.
+With host read-only scope on, only local `filesystem` read/ls/grep/find and
+`current_time` tool calls are eligible; shell, workspace writes, MCP/extension
+tools and child-control tools are blocked. Normal permission policy still applies
+to eligible calls. Cached approvals, `allow-all`, skill text, model arguments and
+delayed approvals cannot release or bypass this restriction. Keep planning notes
+in the conversation while read-only; writing a task document still needs the
+normal write permission outside that scope.
 
-Metadata writes are serialized, committed before publication and settled during
-cancellation before ownership is released; cancellation cannot undo an already
-committed metadata update. Plan changes are idle-only, preserve drafts, and never
-bypass approval/output-review focus. Claw's active plan also suppresses automatic
-idle/daily session replacement until it is stopped or explicitly navigated away.
-Its silent compaction tools retain host policy gates while managed durable-memory
-flushes remain available. Other clients' plan changes are refreshed by opening the
-inspector; backend revisions reject stale transitions. Desktop/platform validation
-remains limited to the Linux/private-tmux evidence in the goal tracker.
+Only an explicit user `/readonly off` releases the host restriction. It does
+**not** change permission mode, `allow_tools`, extension trust or child access,
+and it grants no tool approvals or automatic execution. Access changes require
+the original idle owner with child/storage work settled, persist before publication,
+and do not submit a model turn. Claw additionally fences controls to its ready
+original group/session/connection; uncertain requests are not replayed.
 
-Claw plan state has independent atomic session/branch sidecars, cached at runtime
-startup. Transcript-catalog recovery cannot silently clear planning mode. Invalid
-or corrupt plan state fails closed and is reported in gateway health without a
-reconnect loop; repair it or explicitly select a new session. Invalid initial plan
-commands do not implicitly create a session. Sidecars are local application state,
-not tamper-proof or OS-enforced isolation.
-
-Mode controls do not pause Claw's scheduler or other input channels. They enqueue
-no new agent turn themselves, but already queued/scheduled work can continue under
-the selected mode and the normal host policy.
-
+Access state survives session/branch restore. Historical saved planning state is
+read only for compatibility: a retained restriction is not silently cleared by
+navigation, and malformed state fails closed. These are host policy gates, not an
+OS sandbox or a restriction on arbitrary trusted Python code.
 
 ### Trusted Python extensions (runtime API v1)
 
@@ -657,8 +647,8 @@ veto/parameter transforms, post-tool text transforms, bounded notifications and
 simple text status. Legacy Python pre/post/stop hook types remain compatible.
 
 Rewritten tool arguments are schema-validated and checked by the host's ORIGINAL
-permission and planning gates AFTER transformation. A plugin cannot use the API
-to grant tool approval/change planning mode, or mask a denied/failed call as success.
+permission and read-only gates AFTER transformation. A plugin cannot use the API
+to grant tool approval/change host read-only scope, or mask a denied/failed call as success.
 UI text is sanitized and row-bounded; direct plugin prints never paint the host
 terminal. Timed-out/failed/canceled callbacks close their owned process, with no
 replay. An unavailable selected extension makes pre-tool validation fail closed
@@ -694,7 +684,7 @@ Register `api.context(callback)` to transform the ephemeral message list before
 EACH model invocation. The callback receives serialized typed user/assistant/tool
 content plus its entry snapshot and returns a message list. It may inject summaries
 or filter complete history batches, but does not edit the canonical transcript,
-system prompt, static cache prefix, planning mode or tool permissions. Coding also
+system prompt, static cache prefix, host read-only scope or tool permissions. Coding also
 composes an existing SDK transform before its extension pipeline.
 
 ```python
@@ -758,7 +748,7 @@ draft and input cursor, and require a rendered visible question/action before En
 answer. Select/confirm pastes do not submit; tiny/resize/release/repeat/unpainted
 selection input cannot confirm. Escape/Ctrl+C cancel the dialog. Tool approval and
 output review retain higher focus priority. An affirmative extension confirmation
-never grants the underlying agent tool permission or switches planning mode.
+never grants the underlying agent tool permission or switches host read-only scope.
 
 Dialog IDs are host-generated and scoped to their session/request/run/connection.
 Timeout, abort, navigation, disconnect and shutdown settle/cancel pending futures;
@@ -779,10 +769,10 @@ none of these interfaces grants tool permission or full Pi API compatibility.
 The TUI supports `/agents start TASK` (read-only), `/agents start --inherit TASK`,
 `/agents list` and `inspect/steer/follow-up/cancel/wait/close ID` controls (steer and
 follow-up take trailing text). Parents expose `agent_spawn`/`agent_control` tools;
-children cannot recursively delegate or borrow the parent's `update_plan` owner.
+children cannot recursively delegate through `agent_spawn` or `agent_control`.
 
 Children share their group's workspace, model/options and selected tools. Inherited
-access cannot exceed current parent planning restrictions or configured MCP/extension
+access cannot exceed current parent read-only restrictions or configured MCP/extension
 allow-tools gates. Independent child extension workers/entries/tool executors do not
 borrow the parent's stateful tool proxies; parent validation/context hooks still
 retain authority. Read-only children permit only known read-only filesystem calls
@@ -823,7 +813,7 @@ or persisted as fabricated results. Source IDs preserve concurrent/reused-call o
 
 Child extension select/input/confirm dialogs now display the child identity and
 resume the original suspended callback with actual user answers. An extension yes
-is NOT tool approval or a planning transition. Input/select cancel returns None;
+is NOT tool approval or a host read-only transition. Input/select cancel returns None;
 confirm cancel returns False. Detaching/exiting the origin UI settles pending
 questions and subsequent child questions use canceled values; callbacks/work are
 not replayed or automatically adopted after reconnect. Parent inherited validation
@@ -838,7 +828,7 @@ Complex extension forms are removed; basic child dialogs retain these ownership 
 changing parent permissions. Options precede the task; `--` preserves a task that
 starts with flags. Plain tasks preserve quotes/newlines. `--tools none` gives the
 child no executable tools; otherwise selected names must exist in its inherited tool
-set and cannot include delegation/parent-plan metadata tools. Unknown/malformed flags
+set and cannot include recursive delegation tools. Unknown/malformed flags
 fail visibly. Instructions append to, rather than replace, parent restrictions.
 
 In `/agents` press `n`, then Ctrl+G for settings JSON. Supported keys are `label`,
@@ -865,7 +855,7 @@ provider activation/login/catalog sync/fallback occurs. Plain custom adapters wi
 metadata reject overrides. Claw requires `child_config: 2` for these fields.
 
 Requested and effective routing/reasoning/limits persist separately in child source.
-Selected capabilities/window/output limits apply, while parent/child planning,
+Selected capabilities/window/output limits apply, while parent/child read-only,
 approval/external-tool gates remain unchanged. Same-model aliases preserve explicit
 host native-tool overrides. Switching to a nonreasoning model disables inherited
 reasoning; unsupported positive choices fail visibly. Model switches omit inherited/
@@ -928,7 +918,7 @@ servers and `c` to connect explicitly. Server-list `s` inspects authorization,
 `l` reviews saved restore and `x` reviews saved-credential erase. Inside authorization
 status (not the server list), `f` reviews memory/saved forget and disconnect, never
 remote revocation. Existing tool approvals,
-Claw allow_tools/planning and child/model rules remain active. Parent drafts/caret and
+Claw allow_tools/read-only and child/model rules remain active. Parent drafts/caret and
 terminal modes survive. Tokens remain private in memory until a separate explicit
 save to the selected Linux credential backend. Refresh/restore are explicit, with
 no automatic retry or replay.
@@ -1042,7 +1032,7 @@ object-root intersection while validation keeps all raw advertised constraints.
 MCP uses an optional sync/async AgentTool argument validator before permission hooks
 and validates effective arguments again immediately before the remote call. Coding
 and Claw extension pre-hooks use the same check when they rewrite arguments. Existing
-permission/planning/allow_tools rules still decide execution; a schema/readOnly hint
+permission/read-only/allow_tools rules still decide execution; a schema/readOnly hint
 never approves a call. Coding's parameter prompt formatter now handles boolean/union
 property declarations rather than crashing on a valid schema.
 
@@ -1063,7 +1053,7 @@ legacy peers, both app permission paths and Linux/private-tmux inspectors are ve
 provider-specific full-schema acceptance and mixed-dialect/native-platform
 interoperability are not inferred. Format-assertion/custom required vocabularies,
 ambiguous HTTP header mappings through schema composition, richer content/client
-capabilities, subscriptions, credential persistence and extension/platform gaps remain
+capabilities and external credential/provider interoperability gaps remain
 open. Earlier object-only/current structured-result limits are superseded by this pass.
 
 Schema packaging includes a direct `referencing` dependency and the portable SDK
@@ -1105,7 +1095,7 @@ No file/URI is implicitly opened and no image is automatically saved or attached
 as a new user prompt. Raise an exception for tool errors; rich isError/audio/resource
 payloads are not silently guessed in this API version. Commands remain bounded text.
 
-Coding approvals, Claw extension_allow_tools, planning and child inherited permission
+Coding approvals, Claw extension_allow_tools, read-only and child inherited permission
 restrictions still gate execution. Text-only post-hooks do not replace or drop a
 result containing images. Legacy text callbacks/post-hooks retain their behavior.
 Both UIs display tool images without printing base64. Claw now forwards final tool
@@ -1145,7 +1135,7 @@ this does not pretend a text-only transcript export includes binary images.
 
 Returning `/quit`, a URI or other command-looking text is data, never executed.
 Rich artifacts cannot trigger a model prompt, mutate the main draft, approve tools
-or change planning/permission modes. The prior draft/focus and normal approval
+or change host read-only scope or permission modes. The prior draft/focus and normal approval
 priority remain; callbacks still require trusted activation/idle ownership. Results
 are fenced by command/session/connection identity; canceled/stale/foreign output is
 not appended to a new owner and callbacks are not replayed. Artifacts are local UI
@@ -1186,7 +1176,7 @@ semantics and are not falsely labelled binary exports.
 
 `/artifact PATH` explicitly reads a bounded regular artifact file off the UI thread
 and appends a read-only image/JSON command display. It does not activate extensions,
-execute stored command names/text/URIs, change permissions/planning or send input to
+execute stored command names/text/URIs, change permissions or host read-only scope, or send input to
 the model. The 4 MiB file envelope is versioned as xdog.extension-command/v1; its
 SHA-256 covers canonical validated identity/content/metadata. Checksums detect
 corruption, NOT authenticity: treat files as untrusted data. Unsupported versions,
@@ -1423,7 +1413,7 @@ authority. Tools/hooks/context/child/unattended callbacks return None; original 
 invocation and host extension/command/group/session ownership are independently
 checked. Missing/foreign/unreadable targets or membership changes yield unavailable
 without disabling the extension or replaying reads. Invalid plugin request/response
-codecs still fail closed. No model turn, permission/planning mutation or session activation is introduced.
+codecs still fail closed. No model turn, permission/read-only mutation or session activation is introduced.
 
 Real workers, both live hosts' 61-entry multi-page catalogs, search/tree/branch
 previews, revision ordering/changed membership, foreign-group refusal, cancellation
@@ -1473,7 +1463,7 @@ some Ctrl/Alt combinations indistinguishable from Enter/Tab; choose an unambiguo
 key or a terminal with extended keyboard support. Alt+K/Alt+X are physically tested.
 
 Dispatch is confined to the ready idle prompt: approvals, extension dialogs,
-viewers, completion pickers, child/MCP/plan panels, overlays, output reviews,
+viewers, completion pickers, child/MCP panels, overlays, output reviews,
 active commands/model work and closing/disconnected owners retain priority. Unload/
 failure/reload updates registrations; stale keys cannot adopt a new callback. Coding
 now refreshes actual registration snapshots after extension commands even if a plugin
@@ -1525,7 +1515,7 @@ hooks are composed rather than replaced.
 The extension API sees text plus image MIME/encoded-size metadata, never original
 base64. Its output cannot silently remove/replace images: transformed messages keep
 original typed attachments/timestamps. All later model capability, tool argument,
-approval, planning and child permission gates remain authoritative. A transformed
+approval, host read-only and child permission gates remain authoritative. A transformed
 string resembling `/quit`/a URI stays model input data, not a reparsed host command.
 Editor/session/navigation mutation authority is absent from both hook and command APIs.
 
@@ -1591,7 +1581,7 @@ Original image bytes are never given to the hook, and handled decisions cannot
 silently discard attachments. Both interactive clients retain them in the editable
 composer without restoring/replaying the consumed text. Queue/run/connection ID
 fences apply to the handled receipt too. Feedback is labelled system/extension data,
-not fabricated assistant prose or tool approval. Permissions/planning/tool/model
+not fabricated assistant prose or tool approval. Permission, host read-only, tool and model
 capability gates are unchanged; returned command-looking feedback is never executed.
 
 Print mode outputs explicit feedback and returns success for handled-only input;
@@ -1615,46 +1605,21 @@ host mutations. Handled outcomes preserve the ordinary permission and ownership
 boundaries; remaining MCP/credential/platform interoperability is separate.
 
 
-### Explicit MCP resource watches
+### MCP browsing and manual refresh
 
-In the MCP resource catalog (`/mcp`, select a server, **u**), press **w** on an
-advertised resource to watch or stop watching that exact URI. Change notices show
-state and a coalesced change counter. They remain visible over a resource preview
-without replacing its immutable contents. Watching **never** fetches the resource,
-inserts text into the composer, submits a model turn or grants a tool permission;
-resource retrieval still requires an explicit operator action.
+Active resource/catalog/combined notification watches are removed from the SDK,
+transports and native UI. There are no watch/unwatch methods, editable subscription
+filters, watch jobs or background subscription listeners. Former **w** resource
+watch and **Alt+T/P/U/W** catalog/combined controls are not supported.
 
-Watches belong to the actual panel/session/connection and selected MCP client.
-Closing the panel, losing that owner, disconnecting or shutting down removes local
-ownership and closes/unsubscribes the original transport. Late notices cannot
-update another view. No watch is automatically recreated after reconnect, and no
-uncertain subscribe/unsubscribe operation is replayed. Repeated same-view watch
-requests reuse the existing handle; legacy shared-URI watches keep their own view
-sinks and unsubscribe remotely only when the last local owner leaves.
-
-The SDK has explicit `watch_resource`, `unwatch_resource`, and
-`detach_resource_watches` methods. Resource capability must advertise an exact
-boolean `subscribe: true`. The current-dialect path uses a dedicated correlated
-`subscriptions/listen` lifetime with an acknowledged resource filter, update
-notifications and a terminal complete/error; stateless HTTP keeps the original
-POST SSE stream (no GET resumption or POST retry), and stdio retires request IDs on
-cancel. Legacy transports use resources/subscribe/unsubscribe and the existing
-notification channel. ACK omission, foreign URI/identity, unexpected ordering,
-stream/auth/redirect errors and capacity limits fail explicitly.
-
-Bounds: 16 transport watches/client, 32 SDK view watches/manager, finite UI/gateway
-view/job maps, 8,192-byte URIs and coalesced notices at most 20 Hz/watch. HTTP reserves
-connection capacity for ordinary MCP operations rather than letting watch streams
-consume every connection. Payloads are change metadata only, not server content.
-
-Owned offline peers exercise stdio and HTTP in both dialects; both real clients
-and four Linux/private-tmux paths verify visible notices, explicit stop, cleanup,
-zero automatic resource reads/model calls and native terminal recovery. Official
-source retrieval during this pass failed (connection reset), so third-party/current
-protocol conformance, additional subscription filters/capabilities, authorization
-interop and native-platform checks remain OPEN. This is implemented/tested local
-behavior, not a claim that the full MCP interoperability audit is complete.
-
+Ordinary MCP tools, resource/prompt catalogs, explicit reads/completions and manual
+refresh remain. Passive tool-catalog invalidation on supported legacy notices only
+marks cached definitions dirty; it does not fetch a catalog/resource, register tools
+or start a model turn. Configured Roots and exact request-state continuations,
+response-scoped SSE, cancellation and bounded legacy GET recovery remain separate
+transport features. They never authorize uncertain tool POST replay or automatic
+reconnect. Normal MCP chat/tool traffic and private extension-worker JSON-RPC are
+not removed by this simplification.
 
 ### Explicit saved MCP OAuth credentials
 
@@ -1805,6 +1770,11 @@ model history or a replacement question. Cancellation/reload/disconnect retires
 that owner without automatic callback replay. Login/refresh does not grant tools,
 select a model or change permissions. Logout clears worker memory, not saved data.
 
+Provider-defined OAuth callbacks are independent of MCP's public-PKCE profile.
+Env/resolver credentials remain private and lazy. A grant that expires while an
+async key callback is suspended cannot admit a business stream; failure does not
+silently log in, refresh, replay a callback or choose another provider.
+
 Provider credential persistence is retained through explicit
 `/extensions auth save ID secret-service /ABSOLUTE/NAMESPACE`, with equivalent
 `restore` and `forget` actions. This is **Linux Secret Service vault only**, with
@@ -1863,7 +1833,7 @@ post-commit acknowledgement may leave a committed effect, so live/persisted sett
 stay aligned on the same owner without retry. Inspect `/thinking` after an uncertain
 connection outcome rather than automatically resending the command.
 
-The parent setting does not grant tools, change planning/approval restrictions or
+The parent setting does not grant tools, change read-only/approval restrictions or
 start/replay child work. Reasoning appears in the status row, and the existing
 native-scrollback terminal mode remains the default. Older gateways reject this
 control visibly instead of sending the command as agent input.
@@ -1882,7 +1852,7 @@ restores on restart only if the configured adapter still provides that model.
 New conversations begin with the group's configured choice, not the prior
 conversation's mutable selection. Reasoning remains model-bound. Cancellation
 settles admitted disk work; uncertain committed settings are not automatically
-replayed or rolled back. Existing parent/child/planning/tool permission gates apply.
+replayed or rolled back. Existing parent/child/read-only/tool permission gates apply.
 
 Catalog transport uses an allowlisted public summary rather than serializing whole
 `Model` objects: authentication headers, endpoint URLs and protocol internals are
@@ -1890,28 +1860,6 @@ not exposed through model inspection. Cached catalogs are bounded and duplicate 
 reserved-namespace native identities fail explicitly rather than silently shadowing
 extension models. These controls do not submit a turn; only a subsequent explicit
 prompt invokes the selected model.
-
-
-### Combined MCP notification watches
-
-From the focused MCP server list, **Alt+W** opens an editable JSON notification
-filter. Choose exact boolean `toolsListChanged`, `promptsListChanged`,
-`resourcesListChanged` flags and/or a `resourceSubscriptions` array of explicit
-resource URIs. **Enter** starts one current-protocol stream for the selected set;
-Enter again stops that same active set. Editing the JSON selects a different set.
-The draft survives submission/errors; Escape goes back and closing the MCP view
-stops all its watches. Alt+T/P/U singleton catalog watches and w resource watches
-remain separate.
-
-Empty/invalid/duplicate filters are refused, not inferred. Bounds are 16 URI entries,
-8 KiB per URI and 64 KiB total; URI order is canonicalized. Exact full ACK matching,
-view/session/connection ownership and no replay apply. These are notice-only
-subscriptions: no automatic reads, catalog refresh, tool registration or model input.
-Legacy combined streams are explicitly unavailable (legacy singleton watches still
-work). Claw requires independently negotiated `mcp_combined_watch:1`; withdrawing it
-settles combined watches without stopping unrelated singleton watches. Independent
-serving-SDK stdio/HTTP and actual both-client/terminal paths are verified; broader
-client-capability, external interoperability and native-platform gaps remain open.
 
 
 ### Configured tool browser
@@ -1982,7 +1930,7 @@ Small histories report a no-op without a summary request.
 
 The summary request uses the selected session adapter/model, including registered
 extension providers, and exposes no tools. Claw's existing best-effort durable-memory
-flush remains governed by the normal compaction tool/planning hooks. Failed, empty,
+flush remains governed by the normal compaction tool/read-only hooks. Failed, empty,
 incomplete, or unavailable summaries preserve the original context instead of
 replacing it with an unavailable-summary placeholder. Archives are written off-loop,
 and committed summary metadata restores as clean conversation context.
@@ -2016,7 +1964,7 @@ a successful compaction receipt. Admitted writes and publication remain owned
 through repeated cancellation, with no automatic replay.
 
 Use `/tree` to find and explicitly restore the checkpoint. Normal navigation
-retains a return head and restores planning/extension-entry context, without
+retains a return head and restores access/extension-entry context, without
 submitting a model turn or changing tool permissions. The transcript viewer can
 then search/copy/export the restored source. Restoration is conversation-only;
 workspace files are not reverted, and normal idle/group/session/tool-boundary
@@ -2058,15 +2006,15 @@ not an automatically merged/deduplicated timeline of every branch.
 
 Resume, branch restore, and checkpoint navigation now prepare a target AgentSession
 before retiring the current cached owner or changing the active pointer. The stage
-uses the target's saved model, reasoning, transcript, planning, extension entries,
+uses the target's saved model, reasoning, transcript, access state, extension entries,
 branch child scope, and the group's existing tools/permission configuration. Startup
-entry/plan writes are buffered and target UI is not published during validation.
+entry/access writes are buffered and target UI is not published during validation.
 Missing providers, failed startup, unsupported saved effort, and canceled preparation
 leave the current owner intact; no provider/model fallback is attempted.
 
 A successful admission commits target managed state, then adopts the prepared Agent
 and worker once—startup is not replayed against the live target. Buffered entry writers
-and planning/inspection/child-service context are rebound to the owning group and
+and access/inspection/child-service context are rebound to the owning group and
 its real gateway loop. Follow-on entries and plans persist to the active target.
 
 Navigation is a connection-owned job rather than a blocked gateway reader operation.
@@ -2087,10 +2035,10 @@ filesystem/network side effects are likewise not rollbackable or OS-sandboxed.
 ### Interrupted navigation recovery
 
 Claw navigation now writes a durable undo journal before changing managed session,
-branch, entry, planning, catalog, and active-pointer files. Private checksummed backups
+branch, entry, access, catalog, and active-pointer files. Private checksummed backups
 are flushed before the prepared manifest is published. Managed replacement names are
 synced before a committed marker is published. The store recovers interrupted work
-**before** loading any session index or exposing planning/extension state:
+**before** loading any session index or exposing access/extension state:
 
 - A prepared transaction restores the prior complete files and removes newly created
   targets. Backup copies remain intact throughout replay, so another interruption
@@ -2177,79 +2125,49 @@ contract/validation. Native/registered metadata-backed app paths are exercised;
 unknown-provider/raster/native-platform interoperability remains open.
 
 
-### Editable live child input queues
+### Read-only child input inspection
 
-The child roster now offers `q` (or Ctrl+Q from transcript preview) to inspect the
-actual owning agent's pending steering/follow-up inputs. `e` edits, `x` removes,
-`k`/`j` reorders one step within the original delivery lane, and `u` returns text to
-the CHILD steering/follow-up draft. Return is not submission and never overwrites
-the parent editor. Every change requires complete painted target/content/revision
-review and a fresh physical Enter; paste, repeat events and narrow/unpainted frames
-cannot confirm it. Failed edits keep the local draft. An exact owner removal receipt,
-matching the reviewed input, is required before draft restoration.
+The child roster's **q** (or **Ctrl+Q** from its transcript view) opens a bounded
+snapshot of the owning child's pending inputs or stopped recovery metadata.
+**Up/Down** selects a row, **Enter** inspects its full metadata, **r** explicitly
+refreshes, and **Escape** returns. Delivery lane, checkpoint selection, attachment
+count and `initial-task`/`crash-snapshot`/`durable-return` uncertainty are visible.
+This native view has no editor, reorder/remove/return control, recovery-copy button
+or permission-confirmation action. Paste cannot submit or adopt a draft.
 
-Hosts read/change the existing Agent queue on the child owner loop, not a mirrored
-UI FIFO. The captured revision covers identity/order/content/delivery/checkpoint
-selection and image identity. Changed/stopped queues and selected/consumed inputs
-refuse mutation without automatic replay. Explicit refresh is required. Image parts
-stay attached during an edit; native live return deliberately refuses image-bearing
-input rather than losing attachments. Live queued-image return is Agent-tool-only;
-stopped image/task recovery remains available as described below. These are live input
-controls, not permission approval or conversation/model-context replacement.
+The ordinary main-Agent `agent_control` tool retains `action="queue"` with a typed
+JSON `text` request. SDK `ChildSupervisor.control("queue", ...)` also remains.
+Their edit/remove/move/text-return and explicit stopped recovery operations use the
+real owner loop and existing identity, revision, selected-input, image-byte and
+write-before-publication safeguards. They are not native UI actions and do not
+bypass the host's normal tool policy or host read-only scope.
 
-Claw advertises exact `child_queues:1`; older/unready/withdrawn peers cannot dispatch
-queue controls. Its native Unix-socket `child_control` action `queue` carries the
-typed JSON request in `text`, for example `{"action":"list"}` or
-`{"action":"edit","id":"INPUT","revision":"CAPTURED_SHA256","content":"TEXT"}`.
-Remove/return omit content; move uses exact integer direction -1/+1. Existing
-parent/revision/UI-owner fences remain. Responses contain a `queue` with
-child_id/revision/inputs and an optional exact `returned` removal receipt. Metadata
-is bounded to 32 inputs/16 KiB text each, refusing rather than truncating. Coding's
-native client uses its local session owner, not a frontend RPC transport.
+Claw's `child_queues:1` now exposes list-only native inspection. Native queue packets
+other than `{"action":"list"}` and retired recovery/binary-transfer packets are
+refused before backend mutation or image work. No capability implies queue-writing
+authority. Necessary child cancel/wait/lifecycle controls remain separate.
 
-Gracefully completed/canceled-child undelivered input recovery and reviewed image
-drafts are described below. Queue controls imply no automatic mutation/model call,
-OS sandbox or full child-surface parity. Removed raw-terminal/custom extension APIs
-are not prerequisites for native queue controls; platform/crash guarantees retain
-their separately documented limits.
+### Explicit stopped-child recovery through Agent/SDK
 
+After a child settles, only identified inputs not admitted to canonical history
+are retained with its durable record; consumed follow-ups are not offered again.
+Loading records does not construct an Agent or restart work. Malformed, duplicate,
+oversized or invalid typed attachments refuse load rather than silently disappear.
+Existing bounds remain 32 inputs, 16 KiB text each and bounded aggregate/record/image
+retention. Persistence failure is visible, not a truncated success receipt.
 
-### Saved stopped-child input recovery
+The native **q** view is inspection only. Explicit main-Agent/SDK queue action
+`recover` uses the original child/input ID and queue revision to return a
+non-destructive text copy; `recover_images` handles typed image copies, and
+`recover_task` handles an unadmitted initial task. A lost/canceled copy receipt
+cannot erase the durable source or automatically resubmit it. `remove`/`remove_task`
+are distinct explicit discard operations, persisted before publishing removal;
+cancellation waits for actual writer settlement, without claiming rollback.
 
-After a child actually settles, the supervisor drains only identified inputs not
-admitted to canonical history, releases the live agent, and persists those inputs
-with the canceled/completed child record. Already consumed follow-ups are not copied
-again. Existing records without this field load unchanged; malformed, duplicate,
-oversized or invalid typed images refuse load rather than silently disappear or
-restart a child. Recovery JSON is bounded to 32 inputs/16KiB text each and 512KiB
-aggregate, plus the existing complete child-record persistence budget. Save failure
-is explicitly reported; no partial/truncated recovery is advertised as durable.
-
-The same `q` child input viewer now identifies saved recovery. `u` reviews a
-`recover` request, then copies the exact retained text into a NEW read-only child
-TASK draft after a matching recovery receipt. This does not steer a dead agent,
-restore its approvals/model context, submit the draft, restart work or change the
-parent editor. The backing saved input remains: a lost or canceled copy receipt
-cannot erase the only durable copy. Starting a replacement task still requires the
-normal whole configuration/task/access review and fresh explicit submission.
-
-`x` is separate reviewed permanent discard. Its revision-checked removal saves the
-candidate record before publishing the removed input. Failed save leaves both
-memory and disk intact; admitted cancellation/shutdown settles the actual write
-without inventing rollback or allowing overlapping close/discard operations.
-Stopped inputs are not editable/reorderable live state; make edits in the new draft.
-The API uses queue action `recover`, original input ID/revision and original parent/
-child scope. The response has `stopped:true`, unchanged `inputs`, and an exact
-`recovered` row. This is distinct from live `return`, which actually removes an
-input and yields `returned`. Explicit consent to child queue data remains required.
-
-Typed image parts are retained privately in saved recovery, omitted from queue
-metadata except image_count. The text-only `recover` action refuses image-bearing
-input rather than losing attachments; native `recover_images` and `recover_task`
-provide the separate reviewed copies described below. Settlement persistence is
-not proof of every active-run SIGKILL/power-loss boundary. No auto-replay, paid
-provider call or OS sandbox is implied.
-
+The main-Agent tool returns image parts as `ImageContent` with bounded receipt
+metadata, never raw base64 in model-facing text or a silently lossy text fallback.
+An embedder owns later adoption/submission and its policy. Inspect prior history
+and workspace effects before deciding whether to run a recovered copy.
 
 ### Child rendered-image admission
 
@@ -2326,9 +2244,9 @@ and both private-tmux file/preview/review-cancel/terminal-recovery paths. Large 
 payloads exercise bounded byte transport with a valid PNG header, not a hosted
 pixel decoder or general model-provider interoperability.
 
-Live queued-image return has no native UI preparation/commit controls; it is an
-Agent-tool-only operation. Stopped-input image copy, saved initial-task recovery
-and current-session transient input recovery remain explicit native controls below.
+Live queued-image return and stopped initial-task/input copies are retained only
+through the permissioned main-Agent/SDK path. Native queues are read-only; ordinary
+new child image submission and same-session transient child drafts remain separate.
 Memory caches are bounded and never automatically adopted by another owner;
 only primary drafts have the separate reviewed local snapshot flow. Child editor
 inputs remain same-session transient, not cross-process disk recovery. Native desktop
@@ -2336,47 +2254,25 @@ clipboard/provider/decoder interoperability and uncommitted edits retain their
 existing limitations.
 
 
-### Non-destructive stopped-child image recovery
+### Typed stopped-child image recovery through Agent/SDK
 
-In a stopped child's input queue (**q** in the roster), **u** now prepares a
-reviewed image-aware copy. The source input and its exact revision are reviewed
-before Enter. A complete, scope-bound, checksummed binary transfer and matching
-owner receipt are required before the UI creates a **separate read-only child
-start draft**, with `inherit_context: false`. Images, text and MIME types are kept;
-no agent is constructed, model/compaction request sent, original input erased or
-parent draft altered. Existing local child drafts are not overwritten. Each copy
-has its own local editing slot; current-session recovery makes unsent slots
-accessible, but these memory caches are not cross-process editor recovery.
+`recover_images` remains an explicit SDK/main-Agent queue operation with exact
+input `id` and queue `revision`. `ChildSupervisor.control` returns the verified
+non-destructive `image_recovery` payload and `queue.image_receipt`; the ordinary
+`agent_control` wrapper returns typed images plus receipt/count metadata. The
+text-only `recover` action refuses image-bearing inputs rather than dropping bytes.
+Running children use the separate owned live-return protocol, not stopped recovery.
 
-The SDK queue action is `recover_images`, with the exact input `id` and queue
-`revision`. Its Python result contains the non-destructive `image_recovery` payload
-and `queue.image_receipt`. The legacy text-only `recover` action still refuses
-image inputs instead of dropping bytes. Running children are not recovered by this
-action. The retained live queued-image prepare/commit/cancel protocol belongs to
-the main Agent's permissioned tool, not these native recovery controls.
+The original record and its exact text/images/MIME types remain unchanged on copy.
+Owner/revision changes during byte preparation refuse delivery; cancellation waits
+for the actual owned decoder/hash worker. Image count, context and retained-byte
+limits remain enforced. No child Agent/model is constructed, no old approvals are
+restored and no queue input is automatically replayed.
 
-Claw advertises exact `child_image_recovery: 1`; older gateways do not silently
-receive a text fallback. The native gateway requires
-`child_image_recovery:1` **and** `child_queues:1`. This read/copy capability is
-separate from sending new image prompts. Claw socket replies stream
-`child_recovery_begin`, ordered `child_recovery_chunk` frames (at most 64 KiB raw),
-then `child_recovery_end`; final control metadata contains no base64 image bodies.
-The manifest binds content, image sizes, digests and MIME types to the requested
-session/connection child lease, child ID, input ID and queue revision. Receivers
-reject foreign/out-of-order/oversized/truncated/checksum/MIME mismatches, close
-private spools on failure/cancel, and never manufacture a draft from partial data.
-Transfers are bounded to four images, 10 MiB each / 40 MiB total, and a ten-second
-sender deadline. Owner/revision changes or gateway capability withdrawal stop the copy.
-The original durable input remains available for explicit fresh review/retry.
-
-Evidence includes both actual native client owners with 10 MiB stopped-image copies,
-real Claw socket framing, multi-MiB copies, revocation and malformed-frame checks,
-and both private-tmux review,
-preview, no-execution and native terminal/cursor recovery paths. This is offline
-Linux evidence, not general hosted image-provider or native desktop conformance.
-Live queued-image return is Agent-tool-only; native stopped recovery and same-session
-transient child recovery retain separate contracts. This evidence does not establish every active-run crash boundary or platform/API interoperability.
-
+There is no native **u** recovery action, stopped-image copy form or Claw
+`child_recovery_begin/chunk/end` UI transport. The native queue view receives only
+scoped metadata. Ordinary new child image submission, same-session transient child
+editor drafts and primary draft recovery keep their separate contracts.
 
 ### Same-session transient child input recovery
 
@@ -2404,58 +2300,39 @@ Text/images stay within existing retention limits; closing a view does not inven
 durability or silently truncate data.
 
 This removes only child editor disk/management controls. Actual Agent child input
-journals, initial-task records, stopped `recover_images`/`recover_task` and durable
+journals, initial-task records, stopped Agent/SDK `recover_images`/`recover_task` and durable
 returned-image backups remain separate explicit recovery paths described above.
 Primary `/draft save`/restore, primary autosave, disk receipts and quit safeguards
 remain separate and are described below.
 
 
-### Initial child task recovery after setup failure
+### Explicit initial-task recovery after setup failure
 
-The stopped child input queue now includes a distinct **initial-task** source when
-setup fails before the original task is admitted. Text and initial images remain
-available even if no child history was created. **u** prepares an explicit copy;
-**x** prepares discarding that retained initial input only. Both actions require
-the exact source/revision and full physical review. Image copies use the existing
-verified binary recovery transfer and open a separate fresh read-only start draft
-with `inherit_context: false`. No model, agent restart or original rewrite occurs
-on copy, and parent/local sibling drafts remain untouched.
+A stopped child exposes a distinct `initial-task` row when setup failed before
+original task admission. Text and attachments remain available even with no child
+history. Pending/admitted/handled/uncertain/discarded state is recorded separately;
+a provider failure after admission does not relabel the task as unsent. Legacy or
+interrupted records without sufficient evidence are **uncertain**, not proof that
+no model/tool effects occurred.
 
-The runtime records initial admission separately: pending, admitted, handled,
-uncertain or discarded. Actual user-message admission marks the initial task
-admitted; an initial prompt handled by an extension is not offered as unadmitted.
-A provider failure after actual admission does not reclassify that task as unsent.
-Interrupted/legacy records without sufficient admission evidence are explicitly
-**uncertain**, not proof of zero tool/model effects. Review the old history before
-choosing to submit a recovered copy. This is not active-run power-loss queue
-journaling or automatic retry.
+The native queue is read-only and cannot copy/discard that row. The retained
+main-Agent/SDK queue actions `recover_task` and `remove_task` require its original
+ID/revision. Copy is non-destructive and returns typed image content when needed;
+discard commits the record before publishing removal and releases initial image
+bytes only after committed discard. Failed writes retain recovery, and cancellation
+waits for the actual writer. Neither operation restores approvals, restarts a child
+or rewrites canonical history. Ordinary edit/remove/return cannot reinterpret the
+initial-task row as live queued input.
 
-SDK queue actions `recover_task` / `remove_task` identify the initial-task row;
-ordinary edit/remove/return actions cannot accidentally reinterpret it as a live
-queued message. Copy is non-destructive. Discard publishes only after the actual
-persisted state change settles; failed writes leave it available, and cancellation
-waits for the writer before reporting an uncertain committed outcome. Image bytes
-are released from the retained initial field after explicit committed discard.
-
-Claw advertises exact `child_task_recovery:1`, alongside `child_queues:1`.
-Initial-image copy additionally needs `child_image_recovery:1`. Final socket
-control frames omit binary bodies and
-use the existing manifest/chunk/end receiver plus exact task receipt. Capability
-withdrawal or owner/revision change stops copy work, not the original durable task.
-
-Offline tests cover real setup failures with/without images in both native owners,
-legacy interrupted records, admitted-provider failure, failed/canceled discard,
-gateway capability isolation, and both private-tmux image recovery/review/preview/draft
-browse/native-terminal restoration paths. Live queued-image return remains
-Agent-tool-only; same-session transient child recovery is documented below. Removed Coding
-frontend RPC/raw-terminal/custom extension APIs are not pending native features;
-platform/provider/credential interoperability has its own scope and limits.
-
+Review old history and effects before explicitly starting any replacement task.
+No native task-recovery capability or binary copy transport is advertised; existing
+SDK journaling and same-session transient editor recovery are not removed.
 
 ### Agent-tool-only live queued-image return
 
-The native user interface no longer offers two-phase live queued-image return.
-Text queue edit/remove/move/return and stopped image/task recovery remain.
+The native user interface offers neither manual live queue edit/reorder/remove/
+return nor stopped task/input copy controls. Those queue operations remain in the
+permissioned main-Agent/SDK backend; native queue inspection is read-only.
 The main Agent can use its ordinary permissioned `agent_control` tool with
 `action="queue"` and a JSON `text` request containing `return_prepare`,
 `return_commit` or `return_cancel` plus the required input/revision/receipt fields.
@@ -2479,10 +2356,10 @@ cannot each pass the limit and create unbounded image copies. This does not add
 crash durability or restore the removed native two-review return workflow.
 Preparation/commit ownership remains in the permissioned Agent tool/backend.
 
-Claw validates typed queue request shape before examining return-specific fields.
-Malformed arrays/null/scalars/missing fields or invalid JSON produce a failed
-control receipt while the owned socket remains responsive; they do not disconnect
-the client or admit queue/agent work.
+Claw's native queue boundary accepts only the exact list request. Retired mutation/
+recovery packets and malformed JSON fail without reaching backend mutation or byte
+preparation. The retained Agent/SDK queue validator still checks exact action fields;
+normal internal JSON-RPC and unrelated child controls are not removed.
 
 
 ### Image worker cancellation settlement
@@ -2524,10 +2401,10 @@ terminal settlement waits too, so an old writer cannot overwrite a later settled
 record. No blocking filesystem writes are added to the agent event loop.
 
 After an unclean restart, an interrupted child with a valid snapshot exposes those
-inputs as **crash-snapshot / uncertain** recovery rows. Copy still needs explicit
-review and a fresh read-only child draft; no Agent is constructed or restarted on
-load. Snapshots may contain inputs already consumed before the crash, and may
-precede subsequent edits/removals. Inspect history/workspace effects before any
+inputs as **crash-snapshot / uncertain** recovery rows. Recovery still requires an
+explicit permissioned Agent/SDK copy; the native view is metadata-only, and no Agent
+is constructed or restarted on load. Snapshots may contain inputs already consumed
+before the crash, and may precede subsequent edits/removals. Inspect history/workspace effects before any
 explicit resubmission. This is conservative data retention, NOT an exact once-only
 consumption journal or a claim that recovered inputs were never executed.
 
@@ -2544,7 +2421,7 @@ replay or permission escalation is introduced.
 
 ### Write-ahead live queue changes
 
-Live child **edit**, **remove**, **move** and text-only **return** now write their
+Agent/SDK live **edit**, **remove**, **move** and text-only **return** write their
 prospective queue snapshot before acknowledging the change. The runtime validates
 the input/revision and delivery lane first, writes off the agent loop, then checks
 the exact queue lease again before applying the live mutation. Failed writes leave
@@ -2583,37 +2460,27 @@ replays work or restores old execution permissions.
 
 ### Durable returned-image handoff
 
-The child host/backend persists an exact conservative image/text backup **before**
-an Agent-tool-owned live image-return commit can remove the queued input. Neither
-native client prepares or commits this live return. A bounded `.returns.json`
-sidecar is flushed through the child store, then the prospective queue-removal
-snapshot is saved, and only then can the same live lease commit removal. Failed
-backup or queue writes refuse removal; uncertain write outcomes retain a conservative
-copy for settlement. No permission, model or automatic resubmission is introduced.
+Before a permissioned Agent-tool/SDK live image-return commit removes a queued
+input, the child backend persists an exact conservative text/image backup in the
+bounded `.returns.json` sidecar, then the prospective queue-removal snapshot.
+The same owner/token/input/revision/byte receipt is rechecked before actual removal.
+Failed or uncertain writes refuse removal or retain the conservative backup for
+settlement. Neither native client prepares or commits a live queue return.
 
-After SIGKILL/restart, interrupted child records merge validated return backups.
-On normal settlement, backups are included in the durable terminal record before
-sidecars are removed. The stopped input browser exposes **durable-return / uncertain**
-rows: explicitly copy (**u**) into a separate fresh read-only task, or explicitly
-discard (**x**) after review. Copy is non-destructive, preserves exact image bytes,
-and never restarts a child. Discard publishes only after its actual record write.
-The source is deliberately uncertain: a backup can exist even when removal failed,
-and prior tool effects are not undone. Inspect history/workspace before resending.
+After interruption, validated backups appear as `durable-return / uncertain`
+metadata. Terminal settlement writes them into the authoritative child record
+before sidecar cleanup. Native inspection cannot copy/discard them. Explicit
+main-Agent/SDK `recover_images` returns a non-destructive exact typed copy, while
+`remove` is a separate revision-checked durable discard. A backup may exist even if
+removal failed; previous effects are not undone. Inspect history/workspace before
+explicit resubmission. Startup never reinserts backups into a live queue.
 
-Backups have their own bounded collection (32 rows / 40 MiB images), separate from
-queued-input retention. Capacity exhaustion refuses new return commits instead of
-losing input. Record capacity accounts for the bounded canonical, queue and return
-collections. No binary backup bodies are embedded in Claw control response frames;
-explicit recovery uses the existing verified transfer. Returned data is not silently
-reinserted into a live queue on startup.
-
-Evidence includes actual owned SIGKILL after acknowledged image removal, exact
-returned-byte recovery without Agent construction, backup/queue failure tests,
-backend return ownership and native durable-row recovery. This retained backend
-protection is not a live image-return UI. Edited native child copies remain
-same-session transient with no child disk-save command. Physical-power-loss/
-filesystem and uncertain admission boundaries do not become exactly-once guarantees.
-
+Existing bounds remain 32 backup rows / 40 MiB images, separate from pending-input
+retention. Capacity exhaustion refuses new commits rather than dropping bytes.
+The main-Agent wrapper emits typed images and bounded receipts; an SDK embedder
+owns retention and adoption. Native child edits remain same-session transient;
+this backend durability is not a child disk-save UI or an exactly-once/power-loss
+guarantee.
 
 ### Return retry after partial write failure
 

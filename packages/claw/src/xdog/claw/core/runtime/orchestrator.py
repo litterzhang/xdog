@@ -370,32 +370,29 @@ class Orchestrator:
             if runtime._active_session is not None:
                 runtime._active_session.children.extensions.detach(token)
 
-    async def manage_plan(self, group_id: str, action: str, revision: int, objective: str,
-                          expected_session: str) -> dict[str, Any]:
+    async def manage_access(self, group_id: str, action: str, expected_session: str) -> dict[str, Any]:
+        from xdog.agent.access import AccessState
+        from xdog.agent.extensions.runtime import _owned_disk
         runtime = self._runtimes.get(group_id)
         if runtime is None:
             raise ValueError("Unknown group")
         if (runtime.get_new_session_id() or "") != expected_session:
-            raise ValueError("Plan session changed; refresh before retrying")
-        if action == "start" and (not objective.strip() or len(objective.encode("utf-8")) > 4000):
-            raise ValueError("Plan start requires a bounded objective")
-        if action != "show" and not expected_session and (action != "start" or revision != 0):
-            raise ValueError("Start a new plan at revision zero before changing mode")
-        if action == "show":
-            from xdog.agent.planning import PlanState
-            state = (runtime._active_session.plan.state if runtime._active_session is not None else
-                     PlanState.from_dict(runtime.transcript_store.get_plan(expected_session)) if expected_session else
-                     PlanState())
-        else:
+            raise ValueError("Access session changed; refresh before retrying")
+        if action == "status":
+            state = (runtime._active_session.access.state if runtime._active_session is not None else
+                     AccessState.from_dict(runtime.transcript_store.get_access(expected_session))
+                     if expected_session else AccessState())
+        elif action in {"restrict", "release"}:
             async with self._queue.acquire(group_id, is_user=True):
+                if (runtime.get_new_session_id() or "") != expected_session:
+                    raise ValueError("Access session changed; refresh before retrying")
                 session = runtime.get_or_create_session(allow_reset=False)
                 session._children_idle()
-                state = await session.plan.apply(action, revision, objective)
+                state = await _owned_disk(lambda: session.access.set_read_only(action == "restrict"))
                 runtime._source_revision += 1
-        return {"session_id": runtime.get_new_session_id() or "", "plan": state.to_dict()}
-
-
-
+        else:
+            raise ValueError("Unknown access action")
+        return {"session_id": runtime.get_new_session_id() or "", "access": state.to_dict()}
 
     async def compact_session(self, group_id: str, expected_session: str, instructions: str,
                               alive: Callable[[], bool]) -> dict[str, Any]:
@@ -769,7 +766,7 @@ class Orchestrator:
                 runtime._active_session._children_idle()
             result = await runtime.mcp.manage_auth(server, action, receipt, lease=lease, alive=alive)
             if action == "forget" and runtime._active_session is not None:
-                runtime._active_session.agent.set_tools((*runtime.tools, runtime._active_session.plan.tool(),
+                runtime._active_session.agent.set_tools((*runtime.tools,
                     *runtime._active_session.extensions.tools(), *runtime._active_session.children.supervisor.tools()))
                 await runtime._active_session._persist_tool_retirement()
             return result

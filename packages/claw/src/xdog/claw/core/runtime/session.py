@@ -32,11 +32,11 @@ from xdog.agent import (
     ToolExecutionStartEvent,
     ToolExecutionUpdateEvent,
 )
+from xdog.agent.access import AccessScope, AccessState, read_only_call
 from xdog.agent.context_messages import ContextMessages
 from xdog.agent.extensions.dialogs import DialogBroker
 from xdog.agent.extensions.runtime import ExtensionRuntime
 from xdog.agent.extensions.state import ExtensionEntries, validate_entries
-from xdog.agent.planning import PlanOwner, PlanState
 from xdog.agent.types import HandledInput
 from xdog.ai.types import (
     AssistantMessage,
@@ -126,12 +126,12 @@ class AgentSession:
         except RuntimeError:
             self._host_loop = None
 
-        self.plan = PlanOwner(PlanState.from_dict(runtime.transcript_store.get_plan(session_meta.session_id)),
-                              lambda state: runtime.transcript_store.save_plan(
+        self.access = AccessScope(AccessState.from_dict(runtime.transcript_store.get_access(session_meta.session_id)),
+                              lambda state: runtime.transcript_store.save_access(
                                   session_meta.session_id, state.to_dict()))
         from xdog.agent.supervision import RESERVED_TOOLS
         if any(tool.name in RESERVED_TOOLS for tool in runtime.tools):
-            raise ValueError("update_plan/agent_spawn/agent_control are reserved for session-owned metadata")
+            raise ValueError("agent_spawn/agent_control are reserved for session-owned metadata")
         self._load_extensions()
         # Create the long-lived Agent
         effective_stream_fn = runtime.stream_fn
@@ -182,7 +182,7 @@ class AgentSession:
                 max_prompt_tokens=runtime.max_prompt_tokens,
                 options=options,
             ),
-            tools=[*runtime.tools, self.plan.tool()],
+            tools=list(runtime.tools),
             # The index goes in the system prompt and a loaded body goes after
             # it; the Agent decides both, so the group's prompt builder no
             # longer carries a skills summary of its own.
@@ -273,7 +273,7 @@ class AgentSession:
         self.children.supervisor.close()
         self.extension_dialogs.close()
         self.extensions.close()
-        self.plan.close()
+        self.access.close()
         pass
 
     def _persist(self) -> None:
@@ -332,7 +332,7 @@ class AgentSession:
             self._runtime.extension_names, self._runtime.extension_root, self._runtime.workspace_dir,
             settings=self._runtime.extension_settings, context=lambda: {"session_id": self._meta.session_id,
                 "group_id": self._group_id, "cwd": str(self._runtime.workspace_dir), "model": self._runtime.model,
-                "planning_mode": self.plan.state.mode, "permission_mode": "configured"}, entries=entries,
+                "read_only": self.access.state.read_only, "permission_mode": "configured"}, entries=entries,
             inspection=self._extension_inspection)
         self.extensions.tool_inventory = self._extension_tools
         self.extensions.session_name = self._extension_session_name
@@ -491,6 +491,8 @@ class AgentSession:
         self, ctx: BeforeToolCallContext, cancel: asyncio.Event | None = None,
     ) -> BeforeToolCallResult | None:
         try:
+            if self.access.state.read_only and not read_only_call(ctx.tool_call.name, ctx.args):
+                return BeforeToolCallResult(block=True, reason="Host access scope is read-only")
             if self.extensions.enabled:
                 await self.extensions.event("tool_start", {"tool_name": ctx.tool_call.name})
                 from xdog.ai.utils.validation import validate_tool_arguments
@@ -509,15 +511,8 @@ class AgentSession:
                     ctx.args.update(effective)
                 except Exception as exc:
                     return BeforeToolCallResult(block=True, reason=str(exc))
-            if self.plan.state.mode == "planning":
-                safe = (ctx.tool_call.name in {"current_time", "update_plan"}
-                        or ctx.tool_call.name == "filesystem"
-                        and ctx.args.get("action") in {"read", "ls", "grep", "find"})
-                if not safe:
-                    return BeforeToolCallResult(
-                        block=True, reason="Planning is read-only; tool blocked until explicit execution")
-            if ctx.tool_call.name == "update_plan":
-                return None
+            if self.access.state.read_only and not read_only_call(ctx.tool_call.name, ctx.args):
+                return BeforeToolCallResult(block=True, reason="Host access scope is read-only")
             if ctx.tool_call.name in self.extensions.aliases:
                 owner = self.extensions.tool_owner(ctx.tool_call.name)
                 if owner not in self._runtime.extension_allow_tools:
@@ -676,7 +671,8 @@ class AgentSession:
         transcript = self._store.load_branch(self._meta.session_id, branch_id)
         if transcript is None:
             return False
-        state = PlanState.from_dict(self._store.branch_plan(self._meta.session_id, branch_id))
+        state = AccessState.from_dict(self._store.branch_access(
+            self._meta.session_id, branch_id)).retain_restriction(self.access.state)
         entries = self._store.get_extension_entries(self._meta.session_id, branch_id)
         validate_entries(entries)
         from xdog.agent.extensions.compaction import saved_record
@@ -705,10 +701,8 @@ class AgentSession:
         old_aliases = self.extensions.aliases
         self._agent.set_tools(tuple(tool for tool in self._agent.state.tools if tool.name not in old_aliases))
         self._load_extensions()
-        self.plan.close()
-        self.plan = PlanOwner(state, lambda value: self._store.save_plan(self._meta.session_id, value.to_dict()))
-        self._agent.set_tools((*[tool for tool in self._agent.state.tools if tool.name != "update_plan"],
-                               self.plan.tool()))
+        self.access.close()
+        self.access = AccessScope(state, lambda value: self._store.save_access(self._meta.session_id, value.to_dict()))
         self.children = ClawChildren(self)
         base = tuple(tool for tool in self._agent.state.tools if tool.name not in {"agent_spawn", "agent_control"})
         self._agent.set_tools((*base, *self.children.supervisor.tools()))
@@ -874,8 +868,8 @@ class AgentSession:
             bootstrap_content=bootstrap_content,
         )
 
-        if self.plan.state.mode != "off":
-            blocks = (*blocks, SystemPromptBlock(text=self.plan.state.prompt(), cache=False))
+        if self.access.state.read_only:
+            blocks = (*blocks, SystemPromptBlock(text=self.access.state.prompt(), cache=False))
         self._agent.set_system_prompt(blocks)
         # Return plain text for usage estimation
         from xdog.ai.types import system_prompt_text
@@ -1037,7 +1031,7 @@ class AgentSession:
                 async def execute(call_id: str, params: dict[str, Any], *args: Any, **kwargs: Any) -> AgentToolResult:
                     # Managed durable-memory writes are compaction metadata, not
                     # permission to run shell/workspace mutations in planning.
-                    metadata = (self.plan.state.mode == "planning" and original.name == "memory"
+                    metadata = (self.access.state.read_only and original.name == "memory"
                                 and params.get("action") == "write" and params.get("target") in {"daily", "memory"})
                     ctx = BeforeToolCallContext(assistant_message=AssistantMessage(), args=params,
                         tool_call=ToolCall(id=call_id, name=original.name, arguments=params), context=AgentContext())
@@ -1148,7 +1142,7 @@ class AgentSession:
                              for branch in self._store.branch_metadata(self._meta.session_id))
             recovery = {'label': f"Before compaction #{number} ({'manual' if force else 'automatic'})",
                         'recovery_kind': 'compaction', 'branch_point': len(original) - 1,
-                        'model': self._agent.state.model, 'plan': self.plan.state.to_dict(),
+                        'model': self._agent.state.model, 'access': self.access.state.to_dict(),
                         'extension_entries': self.extensions.entries.snapshot(),
                         'active_tools': (list(self._agent.active_tool_selection)
                                          if self._agent.active_tool_selection is not None else None)}

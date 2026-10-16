@@ -47,9 +47,9 @@ async def receive(reader):
         return json.loads(await reader.readline())
 
 
-@pytest.mark.parametrize("access,planning,writes", [("read-only", False, False), ("inherit", False, True),
+@pytest.mark.parametrize("access,restricted,writes", [("read-only", False, False), ("inherit", False, True),
                                                    ("inherit", True, False)])
-async def test_real_gateway_child_access_and_replayed_start_receipts(tmp_path, access, planning, writes):
+async def test_real_gateway_child_access_and_replayed_start_receipts(tmp_path, access, restricted, writes):
     contexts = []
     server, config = await setup(tmp_path, contexts)
     reader, writer = await asyncio.open_unix_connection(config.socket_path, limit=4 * 1024 * 1024)
@@ -61,8 +61,8 @@ async def test_real_gateway_child_access_and_replayed_start_receipts(tmp_path, a
         runtime = server._orchestrator._runtimes["main"]
         session = runtime.get_or_create_session(allow_reset=False)
         sid = session.meta.session_id
-        if planning:
-            session.plan.change("start", 0, "Inspect only")
+        if restricted:
+            session.access.set_read_only(True)
         request = {"type": "child_control", "request_id": "start", "group_id": "main", "session_id": sid,
                    "action": "start", "text": "write", "access": access}
         result = await send(request)
@@ -512,17 +512,14 @@ def test_old_config_gateways_receive_only_their_supported_inherited_fields():
         ui._request_exit()
 
 
-@pytest.mark.parametrize('fault', ['foreign-view', 'reenable', 'disconnect'])
-async def test_socket_live_return_view_lease_revocation_and_disconnect_keep_unremoved_images(tmp_path, fault):
-    import base64
+@pytest.mark.parametrize('command', ['return_prepare', 'return_commit', 'recover'])
+async def test_retired_socket_recovery_commands_refuse_before_backend_and_keep_queued_images(tmp_path, command):
+    from unittest.mock import AsyncMock
 
     from xdog.ai.types import ImageContent
-    from xdog.tui.child_recovery import ChildRecoveryReceiver
     contexts = []
     server, config = await setup(tmp_path, contexts, block=True)
     reader, writer = await asyncio.open_unix_connection(config.socket_path, limit=1024 * 1024)
-    receiver = ChildRecoveryReceiver(lambda event: received.append(event))
-    received = []
     async def send(request):
         writer.write((json.dumps(request) + '\n').encode())
         await writer.drain()
@@ -537,50 +534,36 @@ async def test_socket_live_return_view_lease_revocation_and_disconnect_keep_unre
         image = ImageContent(data=('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lE'
                                   'QVR42mP8/x8AAwMCAO+j5ioAAAAASUVORK5CYII='), mime_type='image/png')
         await session.children.supervisor.control('steer', child, 'UNREMOVED RETURN', images=(image,))
-        caps = await send({'type': 'ping', 'group_id': 'main', 'child_image_return': 1})
-        lease = caps['child_return_owner']
-        assert caps['child_image_return'] == 1
+        caps = await send({'type': 'ping', 'group_id': 'main', 'child_image_return': 1, 'child_recovery': 1})
+        assert caps['child_controls'] == caps['child_images'] == 1
+        assert not any(name in caps for name in ('child_image_return', 'child_return_owner', 'child_recovery'))
         before = (await session.children.supervisor.control('queue', child, '{"action":"list"}'))['queue']
+        snapshot = json.dumps(before, sort_keys=True).encode()
+        pending = session.children.supervisor._children[child].agent.pending_inputs()
+        assert len(pending) == 1 and pending[0].images[0].data == image.data
         item = before['inputs'][0]
-        def packet(key, command, view='a' * 32, owner=lease):
-            return {'type': 'child_control', 'request_id': key, 'group_id': 'main', 'session_id': sid,
-                    'action': 'queue', 'child_id': child, 'child_return_owner': owner, 'queue_view': view,
-                    'text': json.dumps(command)}
-        scope = {'request_id': 'prepare', 'group_id': 'main', 'session_id': sid, 'child_id': child,
-                 'input_id': item['id'], 'queue_revision': before['revision'],
-                 'child_return_owner': lease, 'queue_view': 'a' * 32}
-        receiver.expect(scope)
-        prepare = {'action': 'return_prepare', 'id': item['id'], 'revision': before['revision']}
-        event = await send(packet('prepare', prepare))
-        while event['type'] != 'child_result':
-            receiver.feed(event)
-            event = await receive(reader)
-        assert event['success'] and received[0]['images'][0].data == base64.b64decode(image.data)
-        assert (await session.children.supervisor.control('queue', child, '{"action":"list"}'))['queue'] == before
-        command = {'action': 'return_commit', 'id': item['id'], 'revision': before['revision'],
-                   'token': event['data']['queue']['return_token'], 'receipt': received[0]['receipt']}
-        if fault == 'foreign-view':
-            result = await send(packet('commit', command, view='b' * 32))
-            assert not result['success']
-        elif fault == 'reenable':
-            off = await send({'type': 'ping', 'group_id': 'main', 'child_image_return': 0})
-            assert off['child_image_return'] == 0
-            on = await send({'type': 'ping', 'group_id': 'main', 'child_image_return': 1})
-            assert on['child_return_owner'] != lease
-            result = await send(packet('old-lease', command))
-            assert not result['success']
-            result = await send(packet('old-token', command, owner=on['child_return_owner']))
-            assert not result['success']
-        else:
-            writer.close()
-            await writer.wait_closed()
-            await asyncio.sleep(0.05)
-        assert len(session.children.supervisor._children[child].agent.pending_inputs()) == 1
+        packet = {'type': 'child_control', 'request_id': 'retired', 'group_id': 'main', 'session_id': sid,
+                  'action': 'queue', 'child_id': child, 'text': json.dumps({
+                      'action': command, 'id': item['id'], 'revision': before['revision']})}
+        backend = AsyncMock(side_effect=AssertionError('Retired frontend command reached backend'))
+        with patch.object(server._orchestrator, 'manage_children', backend):
+            for _ in range(2):
+                rejected = await send(packet)
+                assert rejected['type'] == 'child_result' and not rejected['success']
+                assert rejected['request_id'] == 'retired' and 'read-only' in rejected['error']
+            backend.assert_not_awaited()
+        after = (await session.children.supervisor.control('queue', child, '{"action":"list"}'))['queue']
+        assert json.dumps(after, sort_keys=True).encode() == snapshot
+        assert session.children.supervisor._children[child].agent.pending_inputs() == pending
+        listed = await send({**packet, 'request_id': 'list', 'text': '{"action":"list"}'})
+        assert listed['success'] and listed['data']['queue'] == before
+        pong = await send({'type': 'ping', 'group_id': 'main'})
+        assert pong['type'] == 'pong' and pong['child_controls'] == 1
         assert not session.agent.messages and len(contexts) == 1
         await session.children.supervisor.control('cancel', child)
         assert session.children.store.load()[0]['undelivered_inputs'][0]['images'][0]['data'] == image.data
+        assert len(contexts) == 1  # Neither denial nor cancellation replays queued content.
     finally:
-        receiver.close()
         writer.close()
         await writer.wait_closed()
         await server.stop()

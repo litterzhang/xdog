@@ -54,7 +54,7 @@ async def test_actual_coding_navigation_stages_target_entries_and_preserves_orig
         session.agent.replace_messages([UserMessage(content='ORIGINAL-LIVE-CONTEXT'), AssistantMessage()])
         session._persist()
         original_id, original_data, original_ext = session.session_id, session.session_data, session.extensions
-        original_mcp, original_plan, original_children = session.mcp, session.plan, session.children
+        original_mcp, original_access, original_children = session.mcp, session.access, session.children
         original_state = session.agent.state
         old_process = original_ext._manager._clients['stagedprovider'].process
         if operation == 'resume':
@@ -118,7 +118,7 @@ async def test_actual_coding_navigation_stages_target_entries_and_preserves_orig
         else:
             assert session.session_id == original_id and session.session_data is original_data
             assert session.agent.state == original_state and session.extensions is original_ext
-            assert session.mcp is original_mcp and session.plan is original_plan
+            assert session.mcp is original_mcp and session.access is original_access
             assert session.children is original_children
             assert not original_ext._closed and old_process.returncode is None
             assert session.extensions.entries.snapshot() == before_entries

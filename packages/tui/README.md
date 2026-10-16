@@ -103,6 +103,8 @@ ID bookkeeping and `/queue` command parsing; it does not route agent work or
 choose application permissions. Hosts show bounded previews and own queue locks,
 worker-loop acknowledgements, transport generations and draft recovery. The live
 prompt keymap exposes `steer` (Alt+S), `follow_up` (Alt+F) and `queue` (Ctrl+Q).
+This vocabulary serves the primary composer/run; `ChildQueuePanel` below is a
+separate read-only child-input inspector.
 
 ### Session/branch navigation surfaces
 
@@ -200,6 +202,15 @@ coalesces local conversion; child JSON conversion preserves complete retained te
 redacts sensitive fields heuristically and omits binary bodies/signatures. Search,
 selection, fullscreen and explicit reviewed outputs reuse `TranscriptPanel` and
 `TranscriptActions`. Child dialogs/configuration/tool-progress policy stays in hosts.
+
+`ChildQueuePanel` is a read-only metadata inspector, not a queue editor. It shows
+pending/selected inputs, attachment counts and stopped/uncertain recovery provenance.
+Up/Down selects, Enter expands metadata, r refreshes and Escape returns. There are
+no edit/reorder/remove/return, stopped-copy or binary-recovery controls, and pasted
+input cannot become a command or draft. Hosts bind list-only requests to the exact
+child/session/view. Main-Agent/SDK queue mutation and explicit durable recovery stay
+in their own backend and normal permission policy; this component grants neither.
+Ordinary child cancel/wait controls and transient child task editors are separate.
 
 
 `OAuthPanel` is a policy-free bounded full-page consent/status surface composed by

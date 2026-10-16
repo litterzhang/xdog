@@ -9,6 +9,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from xdog.agent import Agent, AgentConfig, AgentMessage, BeforeToolCallContext, BeforeToolCallResult
+from xdog.agent.access import read_only_call
 from xdog.agent.core import AgentState
 from xdog.agent.history import history_points
 from xdog.agent.messages import dicts_to_messages, messages_to_dicts
@@ -24,9 +25,6 @@ from xdog.coding.core.permissions import PermissionDecision, PermissionManager, 
 if TYPE_CHECKING:
     from xdog.coding.core.agent_session import AgentSession
 
-
-def read_only_call(name: str, arguments: dict[str, Any]) -> bool:
-    return name == "current_time" or name == "filesystem" and arguments.get("action") in {"read", "ls", "grep", "find"}
 
 
 class CodingChildren:
@@ -106,12 +104,15 @@ class CodingChildren:
         async def before(ctx: BeforeToolCallContext, cancel: asyncio.Event | None = None
                          ) -> BeforeToolCallResult | None:
             try:
+                if (spec.access == "read-only" or session.access.state.read_only) and not read_only_call(
+                        ctx.tool_call.name, ctx.args):
+                    return BeforeToolCallResult(block=True, reason="Child/parent access is read-only")
                 blocked = await self.extensions.pre(extension, ctx)
                 if blocked is not None:
                     return blocked
-                if (spec.access == "read-only" or session.plan.state.mode == "planning") and not read_only_call(
+                if (spec.access == "read-only" or session.access.state.read_only) and not read_only_call(
                         ctx.tool_call.name, ctx.args):
-                    return BeforeToolCallResult(block=True, reason="Child/parent planning access is read-only")
+                    return BeforeToolCallResult(block=True, reason="Child/parent access is read-only")
                 manager.set_mode(session.permissions.mode)
                 approval_alive = self.approval_alive
                 result = await manager.before_tool_call(ctx, cancel)
@@ -122,8 +123,8 @@ class CodingChildren:
                     return BeforeToolCallResult(block=True, reason="Child approval UI owner changed during review")
                 if session.permissions.mode == "deny" and not read_only_call(ctx.tool_call.name, ctx.args):
                     return BeforeToolCallResult(block=True, reason="Parent permission policy changed to deny")
-                if session.plan.state.mode == "planning" and not read_only_call(ctx.tool_call.name, ctx.args):
-                    return BeforeToolCallResult(block=True, reason="Parent entered read-only planning during approval")
+                if session.access.state.read_only and not read_only_call(ctx.tool_call.name, ctx.args):
+                    return BeforeToolCallResult(block=True, reason="Parent entered read-only scope during approval")
                 return result
             finally:
                 extension.sync_tools(agent, allowed=allowed_tools)

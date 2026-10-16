@@ -52,17 +52,17 @@ class TranscriptStore:
                 self._extension_entries[path.name] = value
             except (ValueError, OSError, UnicodeError):
                 self._extension_entries[path.name] = {"invalid_saved_entries": None}
-        self._plans: dict[str, Any] = {}
-        for path in self._sessions_dir.glob("*.plan.json"):
+        self._access: dict[str, Any] = {}
+        for path in [*self._sessions_dir.glob("*.plan.json"), *self._sessions_dir.glob("*.access.json")]:
             try:
                 if path.is_symlink() or not path.is_file() or path.stat().st_size > 512 * 1024:
-                    raise ValueError("Invalid plan sidecar")
+                    raise ValueError("Invalid access sidecar")
                 value = json.loads(path.read_text(encoding="utf-8"))
                 if not isinstance(value, dict):
-                    raise ValueError("Invalid plan sidecar object")
-                self._plans[path.name] = value
+                    raise ValueError("Invalid access sidecar object")
+                self._access[path.name] = value
             except (ValueError, OSError, UnicodeError):
-                self._plans[path.name] = {"invalid_saved_plan": True}
+                self._access[path.name] = {"invalid_saved_plan": True}
 
     def _require_navigation_ready(self) -> None:
         if self._navigation_recovery_required:
@@ -537,32 +537,43 @@ class TranscriptStore:
             self._atomic(path, value)
             self._extension_entries[path.name] = value
 
-    def get_plan(self, session_id: str) -> Any:
-        key = self._path(session_id).with_suffix(".plan.json").name
-        return self._plans[key] if key in self._plans else self._catalog["sessions"].get(session_id, {}).get("plan")
+    def _saved_access(self, session_id: str, branch_id: str = "") -> dict[str, Any]:
+        from xdog.agent.access import AccessState
+        path = self._path(session_id, branch_id)
+        key = path.with_suffix(".access.json").name
+        if key in self._access:
+            return AccessState.from_dict(self._access[key]).to_dict()
+        legacy_key = path.with_suffix(".plan.json").name
+        if legacy_key in self._access:
+            return AccessState.legacy(self._access[legacy_key]).to_dict()
+        record = (self._catalog["branches"].get(session_id, {}).get(branch_id, {}) if branch_id else
+                  self._catalog["sessions"].get(session_id, {}))
+        return AccessState.saved(record).to_dict()
 
-    def save_plan(self, session_id: str, plan: dict[str, Any]) -> None:
-        if not isinstance(plan, dict):
-            raise ValueError("Plan persistence requires an object")
+    def get_access(self, session_id: str) -> dict[str, Any]:
+        return self._saved_access(session_id)
+
+    def save_access(self, session_id: str, access: dict[str, Any]) -> None:
+        from xdog.agent.access import AccessState
+        access = AccessState.from_dict(access).to_dict()
         with self._lock:
             if session_id not in self._catalog["sessions"]:
-                raise ValueError("Unknown plan session")
-            path = self._path(session_id).with_suffix(".plan.json")
-            self._atomic(path, plan)
-            self._plans[path.name] = plan
+                raise ValueError("Unknown access session")
+            path = self._path(session_id).with_suffix(".access.json")
+            self._atomic(path, access)
+            self._access[path.name] = access
 
-    def branch_plan(self, session_id: str, branch_id: str) -> Any:
-        key = self._path(session_id, branch_id).with_suffix(".plan.json").name
-        if key in self._plans:
-            return self._plans[key]
-        return self._catalog["branches"].get(session_id, {}).get(branch_id, {}).get("plan")
+    def branch_access(self, session_id: str, branch_id: str) -> dict[str, Any]:
+        return self._saved_access(session_id, branch_id)
 
     def save_branch(self, session_id: str, branch_id: str, transcript: list[dict[str, Any]],
                     *, metadata: dict[str, Any] | None = None) -> None:
         with self._lock:
-            plan = (metadata or {}).get("plan", self.get_plan(session_id))
-            if plan is None:
-                plan = {"mode": "off", "revision": 0, "objective": "", "explanation": "", "steps": []}
+            from xdog.agent.access import AccessState
+            access = (AccessState.saved(metadata).to_dict() if metadata is not None
+                      and ("access" in metadata or "plan" in metadata) else self.get_access(session_id))
+            if access is None:
+                access = {"read_only": False, "revision": 0}
             from xdog.agent.extensions.active_tools import names
             selected = (names(metadata['active_tools']) if metadata is not None and 'active_tools' in metadata
                         else self.get_active_tools(session_id))
@@ -572,36 +583,37 @@ class TranscriptStore:
             entries_path = self._path(session_id, branch_id).with_suffix(".extensions.json")
             self._atomic(entries_path, entries)
             self._extension_entries[entries_path.name] = entries
-            plan_path = self._path(session_id, branch_id).with_suffix(".plan.json")
-            # Plan intent must be durable before the branch becomes discoverable.
-            self._atomic(plan_path, plan)
-            self._plans[plan_path.name] = plan
+            access_path = self._path(session_id, branch_id).with_suffix(".access.json")
+            # Access scope must be durable before the branch becomes discoverable.
+            self._atomic(access_path, access)
+            self._access[access_path.name] = access
             self._atomic(self._path(session_id, branch_id), transcript, jsonl=True)
             self._catalog["branches"].setdefault(session_id, {})[branch_id] = {
                 "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "message_count": len(transcript), "parent_branch": self.active_branch(session_id),
-                "plan": self.get_plan(session_id),
-                **(metadata or {}),
+                **{key: value for key, value in (metadata or {}).items() if key not in {"plan", "access"}},
+                **({"legacy_plan": metadata["plan"]} if metadata is not None and "plan" in metadata else {}),
+                "access": access,
             }
             self._save_catalog()
 
     def commit_navigation(self, group_id: str, session_id: str, branch_id: str, source: list[dict[str, Any]],
-                          plan: dict[str, Any], entries: dict[str, Any], *,
+                          access: dict[str, Any], entries: dict[str, Any], *,
                           branches: list[tuple[str, list[dict[str, Any]], dict[str, Any]]],
                           resume: bool = False, active_tools: tuple[str, ...] | None = None) -> None:
         """Journal managed files before writes; recover interrupted commits before opening sessions."""
         from xdog.claw.core.persistence.navigation_journal import JOURNAL, NavigationJournal, ownership
         with self._lock:
             paths = {self._catalog_file, self._index_file, self._path(session_id),
-                     self._path(session_id).with_suffix('.plan.json'),
+                     self._path(session_id).with_suffix('.access.json'),
                      self._path(session_id).with_suffix('.extensions.json'),
                      self._path(session_id).with_suffix('.tools.json')}
             for key, _, _ in branches:
-                paths.update({self._path(session_id, key), self._path(session_id, key).with_suffix('.plan.json'),
+                paths.update({self._path(session_id, key), self._path(session_id, key).with_suffix('.access.json'),
                               self._path(session_id, key).with_suffix('.extensions.json'),
                               self._path(session_id, key).with_suffix('.tools.json')})
             cached = (copy.deepcopy(self._catalog), copy.deepcopy(self._index),
-                      copy.deepcopy(self._plans), copy.deepcopy(self._extension_entries))
+                      copy.deepcopy(self._access), copy.deepcopy(self._extension_entries))
             self._require_navigation_ready()
             with ownership(self._sessions_dir):
                 try:
@@ -613,7 +625,7 @@ class TranscriptStore:
                     for key, transcript, metadata in branches:
                         self.save_branch(session_id, key, transcript, metadata=metadata)
                     self.save_extension_entries(session_id, entries)
-                    self.save_plan(session_id, plan)
+                    self.save_access(session_id, access)
                     self.save_active_tools(session_id, active_tools)
                     if not resume:
                         self.replace_transcript(session_id, source)
@@ -627,7 +639,7 @@ class TranscriptStore:
                         self._navigation_recovery_required = True
                         raise
                     finally:
-                        self._catalog, self._index, self._plans, self._extension_entries = cached
+                        self._catalog, self._index, self._access, self._extension_entries = cached
                     raise
 
     def save_compaction_checkpoint(self, session_id: str, branch_id: str, transcript: list[dict[str, Any]],

@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import signal
+import socket
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -306,6 +307,9 @@ class ObserverRuntime:
             raise RuntimeError('An Eyes runtime already owns this project') from exc
         writers: set[asyncio.StreamWriter] = set()
         server = None
+        listener = None
+        staged = self.location.directory / ('.eyes-' + uuid.uuid4().hex[:12] + '.sock')
+        staged_identity = None
         monitor = None
 
         async def connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -376,10 +380,14 @@ class ObserverRuntime:
                     writer.close()
                     await writer.wait_closed()
                     raise RuntimeError('Eyes address still has a live listener; refusing replacement')
-            server = await asyncio.start_unix_server(accept, path=str(path), limit=MAX_FRAME, start_serving=False)
-            info = path.lstat()
-            self._socket_identity = info.st_dev, info.st_ino
-            os.chmod(path, 0o600)
+            # Never expose the canonical address with bind's umask-derived mode.
+            # Configure the inode under the existing 0700 directory before any await.
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            listener.bind(str(staged))
+            info = staged.lstat()
+            staged_identity = info.st_dev, info.st_ino
+            os.chmod(staged, 0o600)
+            server = await asyncio.start_unix_server(accept, sock=listener, limit=MAX_FRAME, start_serving=False)
             publish = asyncio.create_task(asyncio.to_thread(publish_location, self.location))
             cancelled = False
             while not publish.done():
@@ -391,6 +399,11 @@ class ObserverRuntime:
             if cancelled:
                 raise asyncio.CancelledError
             await server.start_serving()
+            # Same-directory link publication is atomic and refuses an occupied path.
+            # The linked socket is already private, listening and generation-bound.
+            os.link(staged, path)
+            self._socket_identity = staged_identity
+            unlink_owned(staged, staged_identity)
             monitor = asyncio.create_task(self.monitor())
             await self.stop.wait()
         finally:
@@ -419,6 +432,9 @@ class ObserverRuntime:
                     if failures:
                         raise failures[0]
                 finally:
+                    if listener is not None:
+                        listener.close()
+                    unlink_owned(staged, staged_identity)
                     unlink_owned(self.location.socket, self._socket_identity)
                     unlink_owned(self.location.directory / 'owner.json', self._record_identity)
                     if self._lease >= 0:

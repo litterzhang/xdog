@@ -1,115 +1,58 @@
+"""Removed combined-filter receipts are inert legacy data or explicit current errors."""
 from __future__ import annotations
 
+import json
+import sys
 from pathlib import Path
 
+import httpx
 import pytest
-from xdog.agent.mcp.subscriptions import ResourceSubscriptions, SubscriptionError, filter_key, notification_filters
-from xdog.tui.mcp_subscription import filter_text, notification_filter
+from xdog.agent.mcp import McpError, McpManager
+from xdog.agent.mcp.config import McpServerConfig
+from xdog.agent.mcp.http import HttpClient
 
 PEER = Path(__file__).parent / 'fixtures/mcp_subscription_peer.py'
-SELECTED = {'toolsListChanged': True, 'promptsListChanged': True, 'resourcesListChanged': True,
-            'resourceSubscriptions': ['test://two', 'test://one']}
 
 
-@pytest.mark.parametrize('value', [None, {}, {'toolsListChanged': False}, {'toolsListChanged': 1},
-    {'foreign': True}, {'resourceSubscriptions': 'test://one'}, {'resourceSubscriptions': [None]},
-    {'resourceSubscriptions': ['test://one', 'test://one']}, {'resourceSubscriptions': ['']},
-    {'resourceSubscriptions': ['test://one\n']}, {'resourceSubscriptions': ['x' * 8193]},
-    {'resourceSubscriptions': [str(i) for i in range(17)]},
-    {'resourceSubscriptions': [str(i) + 'x' * 8191 for i in range(9)]}])
-def test_agent_and_ui_reject_invalid_combined_filters(value):
-    with pytest.raises(SubscriptionError):
-        notification_filters(value)
-    with pytest.raises(ValueError):
-        notification_filter(value)
-
-
-def test_filter_snapshots_order_boolean_semantics_and_ui_are_consistent():
-    source = {**SELECTED, 'resourceSubscriptions': list(SELECTED['resourceSubscriptions'])}
-    snapshot = notification_filters(source)
-    assert snapshot == notification_filter(source)
-    assert filter_key(source) == filter_text(source)
-    source['resourceSubscriptions'].append('later')
-    assert snapshot['resourceSubscriptions'] == ['test://one', 'test://two']
-    assert filter_key({'toolsListChanged': True, 'promptsListChanged': False}) == filter_key({'toolsListChanged': True})
-
-
-@pytest.mark.parametrize('bad', [
-    {**SELECTED, 'resourceSubscriptions': ['test://other']},
-    {**SELECTED, 'resourceSubscriptions': ['test://two', 'test://one']},
-    {**SELECTED, 'toolsListChanged': 1}, {**SELECTED, 'foreign': True},
-])
-async def test_exact_combined_ack_filters_and_notice_routing(bad):
-    router = ResourceSubscriptions()
-    async def stop(watch):
-        router.remove(watch)
-    watch = router.add_notifications(SELECTED, lambda _: None, stop)
-    def notice(method, **params):
-        return {'jsonrpc': '2.0', 'method': method, 'params': {
-            '_meta': {'io.modelcontextprotocol/subscriptionId': watch.id}, **params}}
+@pytest.mark.parametrize('mode', ['modern', 'legacy'])
+async def test_old_negative_receipt_identity_cannot_settle_or_poison_an_ordinary_successor(tmp_path, mode):
+    log = tmp_path / 'frames'
+    manager = McpManager({'peer': {'command': sys.executable, 'args': [str(PEER), mode, str(log)]}}, tmp_path)
     try:
-        with pytest.raises(SubscriptionError):
-            router.modern_frame(notice('notifications/subscriptions/acknowledged', notifications=bad))
-        assert router.modern_frame(notice('notifications/subscriptions/acknowledged', notifications=watch.filters()))
-        copied = watch.filters()
-        copied['resourceSubscriptions'].append('mutated')
-        assert len(watch.filters()['resourceSubscriptions']) == 2
-        for kind in ('tools', 'prompts', 'resources'):
-            router.modern_frame(notice('notifications/' + kind + '/list_changed'))
-        for uri in ('test://one', 'test://two'):
-            router.modern_frame(notice('notifications/resources/updated', uri=uri))
-        assert watch.changes == 5
-        with pytest.raises(SubscriptionError):
-            router.modern_frame(notice('notifications/resources/updated', uri='test://unrequested'))
-        assert watch.changes == 5
-        assert router.modern_frame({'jsonrpc': '2.0', 'id': watch.id, 'result': {}})
-        assert watch.state == 'ended'
-        assert router.modern_frame(notice('notifications/resources/updated', uri='test://one'))
-        assert watch.changes == 5  # Retired stream never targets a successor.
+        await manager.connect('peer')
+        client = manager._clients['peer']
+        assert await manager._bridge(client.request('fixture/old-receipt', {})) == {'value': 'current result'}
+        assert await manager._bridge(client.request('ping', {})) == {}
+        frames = [json.loads(line) for line in log.read_text().splitlines()]
+        assert sum(row.get('method') == 'fixture/old-receipt' for row in frames) == 1
+        assert not any(row.get('method') in {'subscriptions/listen', 'resources/subscribe', 'resources/read'}
+                       for row in frames)
+        assert not client._pending and not hasattr(client, 'resources')
     finally:
-        router.close()
+        await manager.aclose()
 
 
-async def test_partial_ack_is_not_accepted_or_retried():
-    router = ResourceSubscriptions()
-    async def stop(watch):
-        router.remove(watch)
-    watch = router.add_notifications(SELECTED, lambda _: None, stop)
-    assert router.modern_frame({'jsonrpc': '2.0', 'method': 'notifications/subscriptions/acknowledged', 'params': {
-        '_meta': {'io.modelcontextprotocol/subscriptionId': watch.id}, 'notifications': {'toolsListChanged': True}}})
-    assert watch.state == 'unsupported' and not router.watches
-    with pytest.raises(SubscriptionError):
-        await watch.ready
-
-
-@pytest.mark.parametrize('mask', range(8))
-@pytest.mark.parametrize('uris', [[], ['test://one'], ['test://two', 'test://one']])
-async def test_all_catalog_flag_subsets_and_uri_set_shapes_route_exactly(mask, uris):
-    selected = {kind + 'ListChanged': bool(mask & (1 << bit))
-                for bit, kind in enumerate(('tools', 'prompts', 'resources'))}
-    selected['resourceSubscriptions'] = uris
-    router = ResourceSubscriptions()
-    async def stop(watch):
-        router.remove(watch)
-    if not mask and not uris:
-        with pytest.raises(SubscriptionError):
-            router.add_notifications(selected, lambda _: None, stop)
-        return
-    watch = router.add_notifications(selected, lambda _: None, stop)
-    def notice(method, **params):
-        return {'jsonrpc': '2.0', 'method': method, 'params': {
-            '_meta': {'io.modelcontextprotocol/subscriptionId': watch.id}, **params}}
+@pytest.mark.parametrize('method', ['notifications/subscriptions/acknowledged', 'notifications/resources/updated'])
+@pytest.mark.parametrize('metadata', [None, False, -1, {'io.modelcontextprotocol/subscriptionId': -1}])
+async def test_retired_filter_receipts_cannot_publish_or_trigger_reads_in_mock_http(method, metadata):
+    sent = []
+    def forbidden(request):
+        sent.append(request)
+        raise AssertionError('Removed receipt cannot initiate I/O')
+    client = HttpClient(McpServerConfig.parse('peer', {'transport': 'http', 'url': 'http://127.0.0.1/mcp'}))
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(forbidden))
+    client.state, client.version = 'connected', '2025-11-25'
+    notice = {'jsonrpc': '2.0', 'method': method, 'params': {'_meta': metadata, 'uri': 'test://not-fetched',
+              'notifications': {'toolsListChanged': True, 'resourceSubscriptions': ['test://not-fetched']}}}
     try:
-        assert watch.filters() == notification_filter(selected)
-        router.modern_frame(notice('notifications/subscriptions/acknowledged', notifications=watch.filters()))
-        for kind in ('tools', 'prompts', 'resources'):
-            if selected[kind + 'ListChanged']:
-                router.modern_frame(notice('notifications/' + kind + '/list_changed'))
-            else:
-                with pytest.raises(SubscriptionError):
-                    router.modern_frame(notice('notifications/' + kind + '/list_changed'))
-        for uri in uris:
-            router.modern_frame(notice('notifications/resources/updated', uri=uri))
-        assert watch.changes == mask.bit_count() + len(uris)
+        assert await client._message(notice, None, 200, modern=False) is None
+        assert not client.dirty and not sent and not hasattr(client, '_resource_streams')
+        with pytest.raises(McpError, match='unrelated'):
+            await client._message(notice, None, 200, modern=True)
+        assert not sent
+        with pytest.raises(McpError, match='identity'):
+            await client._message({'jsonrpc': '2.0', 'id': -1, 'result': {}}, 42, 200, modern=False)
+        assert await client._message({'jsonrpc': '2.0', 'id': 42, 'result': {'content': []}},
+                                     42, 200, modern=False) == {'content': []}
     finally:
-        router.close()
+        await client.close()

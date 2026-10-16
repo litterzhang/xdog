@@ -110,3 +110,48 @@ async def owner(tmp_path, monkeypatch, settings=None, *, secret=SECRET):
     runtime = ExtensionRuntime(['providerauth'], root, tmp_path, settings={'providerauth': settings or {}})
     await runtime.initialize()
     return runtime
+
+
+@pytest.mark.parametrize('source', ['env', 'resolver'])
+async def test_real_worker_private_sources_remain_lazy_rotatable_and_unavailable_to_host_dialogs(
+        tmp_path, monkeypatch, source):
+    from xdog.agent.extensions.providers import ExtensionProviderStream
+    from xdog.ai.types import Context, StreamOptions
+
+    runtime = await owner(tmp_path, monkeypatch, {'env': source == 'env'})
+    adapter = ExtensionProviderStream(runtime, lambda *args: pytest.fail('No native-provider fallback'))
+    try:
+        assert await runtime.command('ext-providerauth-count', '') == 'CALLS=0;RESOLUTIONS=0'
+        for index in range(2):
+            result = await adapter(ALIAS, Context(), StreamOptions()).collect()
+            assert result[-1].type == 'done'
+            if index == 0:
+                assert await runtime.command('ext-providerauth-rotate', '') == 'ROTATED'
+        expected = 0 if source == 'env' else 2
+        assert await runtime.command('ext-providerauth-count', '') == f'CALLS=2;RESOLUTIONS={expected}'
+        assert not runtime.provider_auth_catalog()  # Env/resolver credentials do not invent OAuth management.
+        assert SECRET not in json.dumps(runtime.snapshot()) + json.dumps(runtime._infos)
+    finally:
+        await runtime.aclose()
+
+
+@pytest.mark.parametrize('mode', ['fail', 'withdraw', 'callback_fail', 'missing-source'])
+async def test_real_worker_missing_failed_or_withdrawn_credentials_never_fallback_or_leak(tmp_path, monkeypatch, mode):
+    from xdog.agent.extensions.providers import ExtensionProviderStream
+    from xdog.ai.types import Context, StreamOptions
+
+    runtime = await owner(tmp_path, monkeypatch, {'mode': mode}, secret=None if mode == 'missing-source' else SECRET)
+    adapter = ExtensionProviderStream(runtime, lambda *args: pytest.fail('No native-provider fallback'))
+    try:
+        result = await adapter(ALIAS, Context(), StreamOptions()).collect()
+        assert result[-1].type == 'error'
+        public = repr(result) + json.dumps(runtime.snapshot()) + json.dumps(runtime._infos)
+        assert SECRET not in public and 'XDOG_UI044_TEST_KEY' not in public
+        if mode == 'callback_fail':
+            assert 'providerauth' in runtime._failed and runtime.provider_model(ALIAS) is None
+            with pytest.raises(ValueError, match='Unknown extension command'):
+                await runtime.command('ext-providerauth-count', '')
+        elif mode != 'withdraw':
+            assert await runtime.command('ext-providerauth-count', '') == 'CALLS=0;RESOLUTIONS=1'
+    finally:
+        await runtime.aclose()

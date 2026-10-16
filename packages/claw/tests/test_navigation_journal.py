@@ -6,6 +6,7 @@ import subprocess
 import sys
 
 import pytest
+from xdog.agent.access import AccessState
 from xdog.claw.core.persistence.navigation_journal import (
     JOURNAL,
     NavigationJournal,
@@ -36,6 +37,7 @@ def snapshot(directory):
 SCRIPT = r'''
 import os, sys
 from pathlib import Path
+from xdog.agent.access import AccessState
 from xdog.claw.core.persistence.transcript_store import TranscriptStore
 import xdog.claw.core.persistence.navigation_journal as journal
 root, target, kind, point = Path(sys.argv[1]), sys.argv[2], sys.argv[3], int(sys.argv[4])
@@ -60,7 +62,7 @@ elif kind == 'marker':
             os._exit(72)
     journal.write_manifest = marker
 store.commit_navigation('main', target, 'chosen', [{'role': 'user', 'content': 'committed target'}],
-    {'mode':'planning','revision':1,'objective':'committed plan','explanation':'','steps':[]},
+    AccessState(read_only=True, revision=1).to_dict(),
     {'fixture':[{'id':'new','kind':'note','data':'committed entry'}]},
     branches=[('return', [{'role':'user','content':'retained return head'}], {'label':'Return checkpoint'})],
     active_tools=())
@@ -129,7 +131,7 @@ def test_failed_recovery_retains_journal_and_blocks_live_store_until_reopen(tmp_
         faults.setattr(navigation_journal.os, 'replace', fail_restore)
         with pytest.raises(OSError, match='recovery storage'):
             store.commit_navigation('main', target, 'new', [{'role': 'user', 'content': 'new target'}],
-                {'mode': 'off', 'revision': 0, 'objective': '', 'explanation': '', 'steps': []}, {}, branches=[])
+                AccessState(read_only=False, revision=0).to_dict(), {}, branches=[])
         assert (tmp_path / JOURNAL).exists() and list(tmp_path.glob('.navigation-backup-*'))
         with pytest.raises(NavigationRecoveryError, match='recovery incomplete'):
             store.get_active_session('main')
@@ -146,7 +148,7 @@ def test_committed_cleanup_failure_is_not_false_rollback_and_restarts_cleanly(tm
     with monkeypatch.context() as faults:
         faults.setattr(navigation_journal, 'cleanup', lambda *args: (_ for _ in ()).throw(OSError('cleanup only')))
         store.commit_navigation('main', target, 'new', [{'role': 'user', 'content': 'committed state'}],
-            {'mode': 'off', 'revision': 0, 'objective': '', 'explanation': '', 'steps': []}, {}, branches=[])
+            AccessState(read_only=False, revision=0).to_dict(), {}, branches=[])
         assert json.loads((tmp_path / JOURNAL).read_text())['phase'] == 'committed'
         assert store.get_active_session('main').session_id == target
     reopened = TranscriptStore(tmp_path, owner_group='main')

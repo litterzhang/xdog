@@ -1,318 +1,144 @@
+"""Retired subscription APIs cannot open channels; ordinary transport ownership remains."""
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
+import runpy
 import sys
 from pathlib import Path
 
 import pytest
-from xdog.agent.mcp import McpManager
-from xdog.agent.mcp.subscriptions import ResourceSubscriptions, SubscriptionError
+from xdog.agent.mcp import McpError, McpManager
+from xdog.agent.mcp.resource_metadata import ResourceMetadataError, resource_uri
 
-FIXTURE = Path(__file__).parent / 'fixtures/mcp_subscription_peer.py'
-
-
-async def until(predicate):
-    async with asyncio.timeout(3):
-        while not predicate():
-            await asyncio.sleep(0.003)
+PEER = Path(__file__).parent / 'fixtures/mcp_subscription_peer.py'
+ResumePeer = runpy.run_path(str(Path(__file__).parent / 'fixtures/mcp_resume_peer.py'))['ResumePeer']
+METHODS = ('subscriptions/listen', 'resources/subscribe', 'resources/unsubscribe')
 
 
-async def test_modern_unsupported_ack_fails_without_read_or_resubscribe(tmp_path):
-    log = tmp_path / 'messages'
-    manager = McpManager({'peer': {'command': sys.executable, 'args': [str(FIXTURE),
-        'unsupported', str(log)]}}, tmp_path)
+def frames(log):
+    return [json.loads(line) for line in log.read_text().splitlines()]
+
+
+@pytest.mark.parametrize('mode', ['modern', 'legacy'])
+async def test_watch_api_registry_and_streams_absent_while_ordinary_operations_remain(tmp_path, mode):
+    log = tmp_path / 'frames'
+    manager = McpManager({'peer': {'command': sys.executable, 'args': [str(PEER), mode, str(log)]}}, tmp_path)
     try:
+        assert importlib.util.find_spec('xdog.agent.mcp.subscriptions') is None
+        for name in ('watch_resource', 'watch_catalog', 'watch_notifications', 'unwatch_resource', 'unwatch_catalog',
+                     'unwatch_notifications', 'detach_resource_watches', 'detach_catalog_watches',
+                     'detach_notification_watches', '_resource_watches', '_resource_monitor', '_resource_alive'):
+            assert not hasattr(manager, name)
         await manager.connect('peer')
-        with pytest.raises(SubscriptionError):
-            await manager.watch_resource('peer', 'test://watched', lease='one', on_change=lambda _: None,
-                                         alive=lambda: True)
-        assert not manager._resource_watches
-        peer_state = await manager._bridge(manager._clients['peer'].request('fixture/status', {}))
-        assert peer_state == {'modern': 0, 'legacy': 0}
-        methods = [json.loads(line)['method'] for line in log.read_text().splitlines()]
-        assert methods.count('subscriptions/listen') == 1 and 'resources/read' not in methods
-    finally:
-        await manager.aclose()
-
-
-async def test_router_modern_ordering_identity_metadata_and_retired_ids_do_not_replay():
-    router, notices = ResourceSubscriptions(), []
-    async def stop(watch):
-        router.remove(watch)
-    watch = router.add('test://one', notices.append, stop)
-    meta = {'io.modelcontextprotocol/subscriptionId': watch.id}
-    update = {'jsonrpc': '2.0', 'method': 'notifications/resources/updated',
-              'params': {'uri': watch.uri, '_meta': meta}}
-    with pytest.raises(SubscriptionError):
-        router.modern_frame(update)
-    ack = {'jsonrpc': '2.0', 'method': 'notifications/subscriptions/acknowledged', 'params': {
-        '_meta': meta, 'notifications': {'resourceSubscriptions': [watch.uri]}}}
-    assert router.modern_frame(ack)
-    assert router.modern_frame(update)
-    await until(lambda: notices[-1]['changes'] == 1)
-    with pytest.raises(SubscriptionError):
-        router.modern_frame({**update, 'params': {'uri': 'test://foreign', '_meta': meta}})
-    await watch.close()
-    count = len(notices)
-    assert router.modern_frame(update) and len(notices) == count
-    newer = router.add(watch.uri, notices.append, stop)
-    assert newer.id != watch.id and newer.changes == 0
-    router.close()
-
-
-@pytest.mark.parametrize('modern', [True, False])
-async def test_owned_http_stream_subscription_lifetime_and_legacy_get_without_post_replay(
-        tmp_path, monkeypatch, modern):
-    import httpx
-    import xdog.agent.mcp.http as module
-    from xdog.agent.mcp.config import parse_servers
-    from xdog.agent.mcp.http import HttpClient
-    messages, streams, events = [], [], []
-    class Stream(httpx.AsyncByteStream):
-        def __init__(self, sid=None):
-            self.sid, self.queue, self.closed = sid, asyncio.Queue(), False
-            streams.append(self)
-        async def __aiter__(self):
-            if self.sid is not None:
-                yield ('data: ' + json.dumps({'jsonrpc': '2.0',
-                    'method': 'notifications/subscriptions/acknowledged', 'params': {
-                    '_meta': {'io.modelcontextprotocol/subscriptionId': self.sid},
-                    'notifications': {'resourceSubscriptions': ['test://watched']}}})
-                    + '\n\n').encode()
-            while True:
-                message = await self.queue.get()
-                yield ('data: ' + json.dumps(message) + '\n\n').encode()
-        async def aclose(self):
-            self.closed = True
-    async def handler(request):
-        if request.method == 'DELETE':
-            return httpx.Response(204)
-        if request.method == 'GET':
-            assert not modern
-            return httpx.Response(200, headers={'content-type': 'text/event-stream'}, stream=Stream())
-        message = json.loads(request.content)
-        messages.append(message)
-        method, identifier = message['method'], message.get('id')
-        if method == 'server/discover' and not modern:
-            return httpx.Response(200, json={'jsonrpc': '2.0', 'id': identifier,
-                                            'error': {'code': -32601, 'message': 'legacy'}})
-        if method == 'server/discover':
-            result = {'supportedVersions': ['2026-07-28'], 'capabilities': {'resources': {'subscribe': True}}}
-        elif method == 'initialize':
-            result = {'protocolVersion': '2025-11-25', 'capabilities': {'resources': {'subscribe': True}}}
-        elif method == 'subscriptions/listen':
-            return httpx.Response(200, headers={'content-type': 'text/event-stream'}, stream=Stream(identifier))
-        else:
-            result = {}
-        if identifier is None:
-            return httpx.Response(202)
-        return httpx.Response(200, headers={'mcp-session-id': 'owned-session'},
-                              json={'jsonrpc': '2.0', 'id': identifier, 'result': result})
-    factory = httpx.AsyncClient
-    monkeypatch.setattr(module.httpx, 'AsyncClient', lambda **kwargs: factory(transport=httpx.MockTransport(handler),
-                                                                          **kwargs))
-    config = parse_servers({'peer': {'transport': 'http', 'url': 'https://peer.invalid/mcp', 'timeout': 2}})[0]
-    client = HttpClient(config)
-    try:
-        await client.connect()
-        await until(lambda: modern or streams)
-        watch = await client.watch_resource('test://watched', events.append)
-        params = {'uri': 'test://watched'}
-        if modern:
-            params['_meta'] = {'io.modelcontextprotocol/subscriptionId': watch.id}
-        await streams[-1].queue.put({'jsonrpc': '2.0', 'method': 'notifications/resources/updated', 'params': params})
-        await until(lambda: events and events[-1]['changes'] == 1)
-        if modern:
-            await streams[-1].queue.put({'jsonrpc': '2.0', 'id': watch.id,
-                                        'result': {'resultType': 'complete'}})
-            await until(lambda: watch.state == 'ended' and not client._resource_streams)
-            assert not client.resources.watches and streams[-1].closed and client.state == 'connected'
-            assert sum(message['method'] == 'subscriptions/listen' for message in messages) == 1
-            watch = await client.watch_resource('test://watched', events.append)
-            await streams[-1].queue.put({'jsonrpc': '2.0', 'id': watch.id,
-                                        'error': {'code': -32603, 'message': 'private peer error'}})
-            await until(lambda: watch.state == 'failed' and not client._resource_streams)
-            assert client.state == 'connected' and 'private peer error' not in str(events)
-            watch = await client.watch_resource('test://watched', events.append)
-        await watch.close()
-        assert watch.state == 'stopped' and not client.resources.watches
-        assert streams[-1].closed if modern else not streams[-1].closed
-        methods = [message['method'] for message in messages]
-        assert 'resources/read' not in methods
-        assert methods.count('subscriptions/listen') == 3 * int(modern)
-        assert methods.count('resources/subscribe') == methods.count('resources/unsubscribe') == int(not modern)
-    finally:
-        await client.close()
-    assert all(stream.closed for stream in streams)
-
-
-async def test_view_owner_loss_closes_live_subscription_without_a_new_notification(tmp_path):
-    log = tmp_path / 'messages'
-    manager = McpManager({'peer': {'command': sys.executable, 'args': [str(FIXTURE), 'modern', str(log)]}}, tmp_path)
-    alive = [True]
-    try:
-        await manager.connect('peer')
-        await manager.watch_resource('peer', 'test://watched', lease='lost-view', on_change=lambda _: None,
-                                     alive=lambda: alive[0])
-        alive[0] = False
-        await until(lambda: not manager._resource_watches)
-        await until(lambda: 'notifications/cancelled' in log.read_text())
-        assert log.read_text().count('subscriptions/listen') == 1
-    finally:
-        await manager.aclose()
-
-
-@pytest.mark.parametrize('metadata', [False, True])
-@pytest.mark.parametrize('failure', [False, True])
-async def test_terminal_responses_use_rpc_id_and_do_not_end_sibling_or_replay(metadata, failure):
-    router, notices = ResourceSubscriptions(), []
-
-    async def stop(watch):
-        router.remove(watch)
-
-    watch = router.add('test://one', notices.append, stop)
-    sibling = router.add('test://two', notices.append, stop)
-    watch.activate()
-    sibling.activate()
-    payload = {'code': -32603, 'message': 'private peer error'} if failure else {'resultType': 'complete'}
-    if metadata:
-        payload['_meta'] = {'io.modelcontextprotocol/subscriptionId': watch.id}
-    frame = {'jsonrpc': '2.0', 'id': watch.id, 'error' if failure else 'result': payload}
-    assert router.modern_frame(frame)
-    assert watch.state == ('failed' if failure else 'ended')
-    assert sibling.state == 'active' and sibling.id in router.watches
-    count = len(notices)
-    assert router.modern_frame(frame) and len(notices) == count
-    assert 'private peer error' not in str(notices)
-    router.close()
-
-
-@pytest.mark.parametrize('payload', [
-    {'result': {'resultType': 'complete'}, 'error': {'code': -32603, 'message': 'private'}},
-    {'result': {'resultType': 'complete', '_meta': {'io.modelcontextprotocol/subscriptionId': -99}}},
-    {'result': {'resultType': 'complete', '_meta': {'io.modelcontextprotocol/subscriptionId': True}}},
-    {'result': {'resultType': 'complete', '_meta': []}},
-    {'error': {'code': True, 'message': 'private'}},
-    {'error': {'code': -32603, 'message': 123}},
-    {'error': 'private'},
-    {},
-])
-async def test_malformed_terminal_response_cannot_mutate_watch(payload):
-    router, notices = ResourceSubscriptions(), []
-
-    async def stop(watch):
-        router.remove(watch)
-
-    watch = router.add('test://one', notices.append, stop)
-    watch.activate()
-    before = list(notices)
-    with pytest.raises(SubscriptionError):
-        router.modern_frame({'jsonrpc': '2.0', 'id': watch.id, **payload})
-    assert notices == before and watch.state == 'active'
-    router.close()
-
-
-@pytest.mark.parametrize('method, state', [('fixture/end', 'ended'), ('fixture/error', 'failed')])
-async def test_owned_stdio_terminal_response_without_metadata_preserves_connection_and_explicit_rewatch(
-        tmp_path, method, state):
-    log = tmp_path / 'messages'
-    manager = McpManager({'peer': {'command': sys.executable, 'args': [str(FIXTURE), 'modern', str(log)]}}, tmp_path)
-    notices = []
-    try:
-        await manager.connect('peer')
-        await manager.watch_resource('peer', 'test://watched', lease='one', on_change=notices.append,
-                                     alive=lambda: True)
-        await manager._bridge(manager._clients['peer'].request(method, {}))
-        await until(lambda: notices and notices[-1]['state'] == state)
         client = manager._clients['peer']
-        assert client.state == 'connected' and not client.resources.watches
-        assert 'private peer error' not in str(notices)
-        assert len(await manager.catalog('peer', 'resource')) == 1
-        assert log.read_text().count('subscriptions/listen') == 1
-        await manager.watch_resource('peer', 'test://watched', lease='one', on_change=notices.append,
-                                     alive=lambda: True)
-        assert len(client.resources.watches) == 1
-        assert log.read_text().count('subscriptions/listen') == 2
-        assert 'resources/read' not in log.read_text()
+        for name in ('watch_resource', 'watch_catalog', 'watch_notifications', 'stop_resource_watch', 'resources'):
+            assert not hasattr(client, name)
+        assert 'ordinary resource' in (await manager.resource('peer', 'test://explicit')).text
+        assert 'ordinary prompt' in (await manager.prompt('peer', 'review', {})).text
+        assert (await manager.tools()[0].execute('call', {'value': 'explicit tool'})).content[0].text == 'explicit tool'
+        assert not any(row.get('method') in METHODS for row in frames(log))
+        assert not client._pending and not client.inputs._jobs
     finally:
         await manager.aclose()
+    assert client.process is None and not manager._thread.is_alive()
 
 
-async def test_ack_optional_false_filters_and_schema_empty_meta_result_do_not_opt_in_or_read():
-    router, notices = ResourceSubscriptions(), []
-
-    async def stop(watch):
-        router.remove(watch)
-
-    watch = router.add('test://one', notices.append, stop)
-    meta = {'io.modelcontextprotocol/subscriptionId': watch.id}
-    assert router.modern_frame({'jsonrpc': '2.0', 'method': 'notifications/subscriptions/acknowledged', 'params': {
-        '_meta': meta, 'notifications': {'resourceSubscriptions': [watch.uri], 'toolsListChanged': False,
-                                       'promptsListChanged': False, 'resourcesListChanged': False}}})
-    assert watch.state == 'active'
-    assert router.modern_frame({'jsonrpc': '2.0', 'id': watch.id, 'result': {'_meta': meta}})
-    assert watch.state == 'ended' and not router.watches
-
-
-@pytest.mark.parametrize('key, value', [('toolsListChanged', True), ('promptsListChanged', 0),
-                                       ('resourcesListChanged', None), ('unknownFilter', False)])
-async def test_ack_unrequested_true_or_malformed_filters_do_not_activate_a_watch(key, value):
-    router = ResourceSubscriptions()
-
-    async def stop(watch):
-        router.remove(watch)
-
-    watch = router.add('test://one', lambda _: None, stop)
-    with pytest.raises(SubscriptionError):
-        router.modern_frame({'jsonrpc': '2.0', 'method': 'notifications/subscriptions/acknowledged', 'params': {
-            '_meta': {'io.modelcontextprotocol/subscriptionId': watch.id},
-            'notifications': {'resourceSubscriptions': [watch.uri], key: value}}})
-    assert watch.state == 'opening' and not watch.ready.done()
-    router.close()
-
-
-@pytest.mark.parametrize('result', [{}, {'resultType': 'complete'},
-                                   {'_meta': {'io.modelcontextprotocol/subscriptionId': -1}}])
-async def test_completion_before_ack_refuses_only_its_watch_and_never_replays(result):
-    router, notices = ResourceSubscriptions(), []
-
-    async def stop(watch):
-        router.remove(watch)
-
-    watch = router.add('test://one', notices.append, stop)
-    sibling = router.add('test://two', notices.append, stop)
-    sibling.activate()
-    frame = {'jsonrpc': '2.0', 'id': watch.id, 'result': result}
-    assert router.modern_frame(frame)
-    with pytest.raises(SubscriptionError, match='before acknowledgement'):
-        await watch.ready
-    assert watch.state == 'unsupported' and sibling.state == 'active'
-    before = len(notices)
-    assert router.modern_frame(frame) and len(notices) == before
-    router.close()
-
-
-async def test_stdio_pre_ack_completion_does_not_disconnect_sibling_or_replay_the_refused_watch(tmp_path):
-    log = tmp_path / 'messages'
-    manager = McpManager({'peer': {'command': sys.executable, 'args': [str(FIXTURE), 'preclose', str(log)]}}, tmp_path)
-    notices = []
+@pytest.mark.parametrize('mode', ['modern', 'legacy'])
+@pytest.mark.parametrize('method', METHODS)
+async def test_removed_raw_watch_protocol_rejected_before_wire_or_sequence_mutation(tmp_path, mode, method):
+    log = tmp_path / 'frames'
+    manager = McpManager({'peer': {'command': sys.executable, 'args': [str(PEER), mode, str(log)]}}, tmp_path)
     try:
         await manager.connect('peer')
-        await manager.watch_resource('peer', 'test://watched', lease='one', on_change=notices.append,
-                                     alive=lambda: True)
-        with pytest.raises(SubscriptionError, match='before acknowledgement'):
-            await manager.watch_resource('peer', 'test://refused', lease='two', on_change=lambda _: None,
-                                         alive=lambda: True)
         client = manager._clients['peer']
-        assert client.state == 'connected' and len(client.resources.watches) == 1
-        await manager._bridge(client.request('fixture/update', {}))
-        await until(lambda: notices and notices[-1]['changes'] == 1)
-        assert len(await manager.catalog('peer', 'resource')) == 1
-        requests = [json.loads(line) for line in log.read_text().splitlines()]
-        assert sum(message.get('method') == 'subscriptions/listen' and
-                   message['params']['notifications']['resourceSubscriptions'] == ['test://refused']
-                   for message in requests) == 1
-        assert not any(message.get('method') == 'resources/read' for message in requests)
+        before, sequence = frames(log), client._sequence
+        for operation in (client.request, client.notify):
+            with pytest.raises(McpError, match='not supported') as error:
+                await manager._bridge(operation(method, {'notifications': {'toolsListChanged': True}}))
+            assert error.value.code == -32601
+        assert frames(log) == before and client._sequence == sequence and not client._pending
+        assert await manager._bridge(client.request('ping', {})) == {}
     finally:
         await manager.aclose()
+
+
+@pytest.mark.parametrize('value', [None, False, '', 'x' * 8193, 'test://bad\0uri', 'test://bad\nuri', '\ud800'])
+def test_extracted_uri_validation_remains_bounded_and_inert(value):
+    with pytest.raises(ResourceMetadataError):
+        resource_uri(value)
+
+
+def test_uri_is_opaque_metadata_not_a_path_or_fetch_grant():
+    assert resource_uri('opaque://{not-expanded}/../../中文') == 'opaque://{not-expanded}/../../中文'
+    assert resource_uri('https://must-not-fetch.invalid/document') == 'https://must-not-fetch.invalid/document'
+
+
+@pytest.mark.parametrize('initialize_resume', [False, True])
+@pytest.mark.parametrize('value', ['partial', 'broken', 'terminal'])
+async def test_retained_legacy_cursor_get_only_recovers_original_result_without_background_stream(
+    tmp_path, initialize_resume, value,
+):
+    with ResumePeer(initialize_resume=initialize_resume) as peer:
+        manager = McpManager({'http': {'transport': 'http', 'url': peer.url, 'timeout': 2}}, tmp_path)
+        try:
+            await manager.connect('http')
+            client = manager._clients['http']
+            assert not hasattr(client, '_background') and not hasattr(client, '_resource_streams')
+            assert len(peer.gets) == int(initialize_resume)
+            assert (await manager.tools()[0].execute('call', {'value': value})).content[0].text == 'RESUMED-' + value
+            assert len([row for row, _ in peer.requests if row.get('method') == 'tools/call']) == 1
+            assert len(peer.gets) == 1 + int(initialize_resume)
+            assert all('Last-Event-ID' in headers for headers in peer.gets)
+            last = peer.gets[-1]
+            assert last['Mcp-Session-Id'] == 'resume-session' and last['MCP-Protocol-Version'] == '2025-11-25'
+            assert last['Last-Event-ID'].encode('latin-1').decode('utf-8').endswith('界')
+        finally:
+            await manager.aclose()
+        assert peer.deletes == 1 and not manager._thread.is_alive()
+
+
+@pytest.mark.parametrize('value', ['noid', 'emptyid', 'invalid-json', 'auth', 'redirect', 'expired',
+                                 'unavailable', 'exhaust', 'reset', 'mismatch'])
+async def test_retained_response_recovery_refuses_unsafe_or_uncertain_results_without_post_replay(tmp_path, value):
+    with ResumePeer() as peer:
+        manager = McpManager({'http': {'transport': 'http', 'url': peer.url, 'timeout': 2}}, tmp_path)
+        try:
+            await manager.connect('http')
+            assert peer.gets == []
+            with pytest.raises(McpError) as error:
+                await manager.tools()[0].execute('call', {'value': value})
+            assert 'do-not-leak-token' not in str(error.value)
+            assert len([row for row, _ in peer.requests if row.get('method') == 'tools/call']) == 1
+            assert len([row for row, _ in peer.requests if row.get('method') == 'initialize']) == 1
+            assert len(peer.gets) <= 3 and all('Last-Event-ID' in headers for headers in peer.gets)
+        finally:
+            await manager.aclose()
+
+
+@pytest.mark.parametrize('end', ['cancel', 'timeout', 'close'])
+async def test_retained_response_get_cancellation_cleanup_never_replays_call(tmp_path, end):
+    with ResumePeer() as peer:
+        manager = McpManager({'http': {'transport': 'http', 'url': peer.url,
+                                      'timeout': .4 if end == 'timeout' else 2}}, tmp_path)
+        task = None
+        try:
+            await manager.connect('http')
+            client = manager._clients['http']
+            cancel = asyncio.Event()
+            task = asyncio.create_task(manager.tools()[0].execute('call', {'value': 'cancel'}, cancel))
+            assert await asyncio.to_thread(peer.resume_started.wait, 2)
+            if end == 'cancel':
+                cancel.set()
+            elif end == 'close':
+                await manager.aclose()
+            with pytest.raises((asyncio.CancelledError, McpError)):
+                await asyncio.wait_for(task, 3)
+            assert len([row for row, _ in peer.requests if row.get('method') == 'tools/call']) == 1
+            assert len(peer.gets) == 1 and not client._active
+        finally:
+            peer.release.set()
+            await manager.aclose()
+            if task is not None:
+                await asyncio.gather(task, return_exceptions=True)

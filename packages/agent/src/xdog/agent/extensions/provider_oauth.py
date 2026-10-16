@@ -140,6 +140,8 @@ class OAuthBinding:
             return _failure()
         if not self.current() or self._credentials is not value:
             raise ValueError('Provider credentials changed before model admission')
+        if value['expires'] <= time.time() * 1000:
+            return _failure()  # Async key resolution cannot extend a grant or trigger implicit refresh.
         return await invoke(self.callback, model, context, options, selected)
 
     async def _publish(self, value: dict[str, Any] | None) -> None:

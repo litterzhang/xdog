@@ -8,6 +8,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from xdog.agent import Agent, AgentConfig, AgentMessage, BeforeToolCallContext, BeforeToolCallResult
+from xdog.agent.access import read_only_call
 from xdog.agent.core import AgentState, AgentTool, AgentToolResult
 from xdog.agent.history import history_points
 from xdog.agent.messages import dicts_to_messages, messages_to_dicts
@@ -102,13 +103,15 @@ class ClawChildren:
         async def before(ctx: BeforeToolCallContext, cancel: asyncio.Event | None = None
                          ) -> BeforeToolCallResult | None:
             try:
+                if (spec.access == "read-only" or session.access.state.read_only) and not read_only_call(
+                        ctx.tool_call.name, ctx.args):
+                    return BeforeToolCallResult(block=True, reason="Child/parent access is read-only")
                 blocked = await self.extensions.pre(extension, ctx)
                 if blocked is not None:
                     return blocked
-                safe = (ctx.tool_call.name == "current_time" or ctx.tool_call.name == "filesystem"
-                        and ctx.args.get("action") in {"read", "ls", "grep", "find"})
-                if (spec.access == "read-only" or session.plan.state.mode == "planning") and not safe:
-                    return BeforeToolCallResult(block=True, reason="Child/parent planning access is read-only")
+                safe = read_only_call(ctx.tool_call.name, ctx.args)
+                if (spec.access == "read-only" or session.access.state.read_only) and not safe:
+                    return BeforeToolCallResult(block=True, reason="Child/parent access is read-only")
                 if ctx.tool_call.name in extension.aliases:
                     if extension.tool_owner(ctx.tool_call.name) not in runtime.extension_allow_tools:
                         return BeforeToolCallResult(

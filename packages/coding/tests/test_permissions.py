@@ -132,3 +132,54 @@ def test_late_decision_for_closed_loop_fails_closed_without_crashing_ui() -> Non
     manager.close()
     assert not manager._pending
     assert "stale-rule" not in manager._session_rules
+
+
+@pytest.mark.parametrize('name,args', [
+    ('filesystem', {'action': 'write', 'path': 'not-executed', 'content': 'not executed'}),
+    ('bash', {'command': 'not-executed'}),
+    ('extension_tool', {}),
+    ('mcp_tool', {}),
+])
+async def test_deny_overrides_and_revokes_prior_exact_session_approval(name, args):
+    manager = PermissionManager('ask')
+    requests = []
+
+    def approve(request):
+        requests.append(request)
+        manager.resolve(request.id, 'allow_session')
+
+    manager.set_request_handler(approve)
+    try:
+        assert await manager.before_tool_call(_ctx(name, args)) is None
+        manager.set_mode('deny')
+        result = await manager.before_tool_call(_ctx(name, args))
+        assert result is not None and result.block
+        assert len(requests) == 1 and not manager._session_rules
+        assert await manager.before_tool_call(_ctx('filesystem', {'action': 'read'})) is None
+    finally:
+        manager.close()
+
+
+@pytest.mark.parametrize('decision', ['allow_once', 'allow_session'])
+@pytest.mark.parametrize('return_to_ask', [False, True])
+async def test_policy_change_during_pending_approval_cannot_admit_a_stale_allow(decision, return_to_ask):
+    manager = PermissionManager('ask')
+    requests = []
+    manager.set_request_handler(requests.append)
+    work = asyncio.create_task(manager.before_tool_call(_ctx('bash', {'command': 'not-executed'})))
+    try:
+        async with asyncio.timeout(2):
+            while not requests:
+                await asyncio.sleep(0)
+        # Queue an affirmative reply, then change policy before its callback
+        # runs. Even switching back cannot revive this old approval admission.
+        assert manager.resolve(requests[0].id, decision)
+        manager.set_mode('deny')
+        if return_to_ask:
+            manager.set_mode('ask')
+        result = await asyncio.wait_for(work, 2)
+        assert result is not None and result.block
+        assert not manager._session_rules and not manager.has_pending_requests
+    finally:
+        manager.close()
+        await asyncio.gather(work, return_exceptions=True)

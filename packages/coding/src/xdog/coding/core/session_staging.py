@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
 
+from xdog.agent.access import AccessState
 from xdog.agent.extensions.runtime import ExtensionRuntime
 from xdog.agent.extensions.state import ExtensionEntries
-from xdog.agent.planning import PlanState
 from xdog.ai.types import Model, ThinkingLevel
 from xdog.coding.core.model_catalog import validated
 from xdog.coding.core.settings_manager import SettingsManager
@@ -36,13 +36,13 @@ def settle(work: Callable[[], Coroutine[Any, Any, T]]) -> T:
 
 
 def prepare(settings: SettingsManager, directory: Path, session_id: str, model: str,
-            thinking: ThinkingLevel | None, entries: Any, plan: Any, permission: str,
+            thinking: ThinkingLevel | None, entries: Any, access: Any, permission: str,
             native: Model | None, alive: Callable[[], bool]) -> StagedExtensions:
-    state = PlanState.from_dict(plan)
+    state = AccessState.from_dict(access)
     staged = ExtensionRuntime(settings.trusted_extensions, settings.extension_root, directory,
         settings=settings.extension_settings,
         context=lambda: {'session_id': session_id, 'cwd': str(directory), 'model': model,
-                         'planning_mode': state.mode, 'permission_mode': permission, 'staged': True},
+                         'read_only': state.read_only, 'permission_mode': permission, 'staged': True},
         entries=ExtensionEntries(entries, lambda value: None))
     async def initialize() -> StagedExtensions:
         try:

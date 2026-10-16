@@ -163,8 +163,14 @@ class InboxCoordinator:
         try:
             await self._owner(self._activate)
         except Exception as exc:
+            # Navigation publishes SessionData before the generation/lease rebind
+            # settles. A stale startup may fail its fence, but must not poison the
+            # successor controller. Actual failures of the current owner still do.
+            session = self.controller.session
             if (not self._retired and not self._stopping and self.controller.inbox is self
-                    and self.controller.generation == self.generation):
+                    and self.controller.generation == self.generation
+                    and session.session_id == self.session_id and session.working_dir.resolve() == self.cwd
+                    and session.session_data.active_branch == self.branch and session._lease is self.lease):
                 self.controller._broken = exc
                 self.controller._inputs_ready = True
                 self.controller.publish('inbox_error', str(exc))

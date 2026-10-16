@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 from unittest.mock import patch
 
 import pytest
@@ -179,7 +180,8 @@ async def test_actual_app_recovery_rejects_old_context_and_reopens_only_current_
 
 @pytest.mark.parametrize('kind', ['coding', 'claw'])
 @pytest.mark.parametrize('with_image', [False, True])
-async def test_initial_factory_failure_recovers_fresh_without_restarting_or_rewriting(tmp_path, kind, with_image):
+async def test_initial_factory_failure_is_inspection_only_and_backend_backup_remains_recoverable(
+        tmp_path, kind, with_image):
     adapter = HeldVision()
     server = io = writer = None
     if kind == 'coding':
@@ -202,7 +204,7 @@ async def test_initial_factory_failure_recovers_fresh_without_restarting_or_rewr
         ui._handle_response({'type': '_connection_opened', 'generation': 1})
         reader, writer = await asyncio.open_unix_connection(config.socket_path, limit=1024 * 1024)
         io = asyncio.create_task(ui._run_connection(reader, writer))
-        await wait(ui, lambda: ui._connection_ready and ui._child_task_recovery_supported)
+        await wait(ui, lambda: ui._connection_ready and ui._child_queues_supported)
     def fail(spec, publish):
         raise ValueError('Owned failure before child agent initialization')
     session.children.supervisor.factory = fail
@@ -219,21 +221,19 @@ async def test_initial_factory_failure_recovers_fresh_without_restarting_or_rewr
         await wait(ui, lambda: panel.queue is not None and panel.queue._rows and not panel.queue._busy)
         row = panel.queue._rows[0]
         assert row['source'] == 'initial-task' and row['uncertain'] is False
-        panel.queue.render(120)
-        panel.queue.handle_input(KeyEvent('u'))
-        assert panel.queue._confirm['action'] == 'recover_task'
-        for _ in range(40):
-            panel.queue.render(120)
-            if panel.queue._visible:
-                panel.queue.handle_input(KeyEvent('enter'))
-                break
-            panel.queue.handle_input(KeyEvent('pagedown'))
-        await wait(ui, lambda: panel._mode == 'form' and panel.queue is None)
-        assert panel._input.get_text() == 'ORIGINAL INITIAL /quit'
-        assert panel._access == 'read-only' and panel._config == {'inherit_context': False}
-        assert bool(panel.composer.items) is with_image
+        queue = panel.queue
+        queue.render(120)
+        for key in ('u', 'e', 'delete', 'enter'):
+            queue.handle_input(KeyEvent(key))
+        assert panel.queue is queue and panel._mode != 'form'
+        assert not hasattr(queue, '_confirm') and (panel.composer is None or not panel.composer.items)
+        # Explicit recovery remains an Agent/SDK operation, never a user UI callback.
+        recovered = await session.children.supervisor.control('queue', child, json.dumps({
+            'action': 'recover_task', 'id': row['id'], 'revision': queue._revision}))
+        assert recovered['queue']['recovered']['content'] == 'ORIGINAL INITIAL /quit'
+        assert ('image_recovery' in recovered) is with_image
         if with_image:
-            assert next(iter(panel.composer.items.values())).data == PNG
+            assert recovered['image_recovery']['receipt']
         assert session.children.store.load()[0] == saved and not adapter.calls
         assert ui._editor.get_text() == 'PARENT-INITIAL-RECOVERY-DRAFT' and not session.agent.messages
     finally:

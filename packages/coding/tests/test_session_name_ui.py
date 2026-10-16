@@ -38,11 +38,11 @@ async def wait(ui, predicate):
             await asyncio.sleep(0.003)
 
 
-async def test_actual_name_commands_browser_search_restart_and_plan_entry_persistence_keep_same_owner(tmp_path):
+async def test_actual_name_commands_browser_search_restart_and_access_entry_persistence_keep_same_owner(tmp_path):
     ui, session, manager = app(tmp_path)
     state, data = session.agent.state, session.session_data
     history = json.loads(manager._session_path(session.session_id).read_text())["messages"]
-    plan, extensions, children = session.plan, session.extensions, session.children
+    access, extensions, children = session.access, session.extensions, session.children
     try:
         ui._editor.set_text('RETAINED-NAME-DRAFT')
         ui._handle_slash_command('name', '开发 release review')
@@ -50,7 +50,7 @@ async def test_actual_name_commands_browser_search_restart_and_plan_entry_persis
         saved = manager.load_session(session.session_id)
         assert saved.name == '开发 release review' and saved.summary == 'ORIGINAL-ANSWER'
         assert saved.to_dict()["messages"] == history and session.agent.state is state
-        assert session.session_data is data and session.plan is plan and session.extensions is extensions
+        assert session.session_data is data and session.access is access and session.extensions is extensions
         assert session.children is children and session.permissions.mode == 'deny'
         assert ui._editor.get_text() == 'RETAINED-NAME-DRAFT'
         ui._open_navigation('sessions')
@@ -59,8 +59,8 @@ async def test_actual_name_commands_browser_search_restart_and_plan_entry_persis
         rows = ui._navigation_provider.snapshot().entries
         assert len(rows) == 1 and rows[0].title == '开发 release review' and rows[0].active
         ui._close_navigation()
-        # Captured plan/entry persistence owners must not overwrite the newly saved name.
-        session.plan.change('start', session.plan.state.revision, 'next plan')
+        # Captured access/entry persistence owners must not overwrite the newly saved name.
+        session.access_control(True)
         session.extensions.entries.append('named', [{'kind': 'note', 'data': {'named': True}}])
         assert manager.load_session(session.session_id).name == '开发 release review'
         assert SessionManager(manager._dir).get_most_recent().name == '开发 release review'

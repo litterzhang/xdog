@@ -142,6 +142,7 @@ class PermissionManager:
         self._lock = threading.RLock()
         self._closed = False
         self._admission_revision = 0
+        self._policy_revision = 0
 
     @property
     def mode(self) -> PermissionMode:
@@ -153,7 +154,19 @@ class PermissionManager:
             return self._handler is not None and not self._closed
 
     def set_mode(self, mode: object) -> None:
-        self._mode = normalize_permission_mode(mode)
+        selected = normalize_permission_mode(mode)
+        with self._lock:
+            if selected == self._mode:
+                return
+            self._mode = selected
+            self._policy_revision += 1
+            if selected == "deny":
+                self._session_rules.clear()  # Restriction is not a temporary mask over old grants.
+            pending = tuple(self._pending)
+        # Retire the old approval admissions; never transfer a late affirmative
+        # reply across a policy change, even if the host later switches back.
+        for identifier in pending:
+            self.resolve(identifier, "deny")
 
     def set_request_handler(self, handler: PermissionRequestHandler | None) -> None:
         with self._lock:
@@ -172,21 +185,17 @@ class PermissionManager:
         args = dict(ctx.args) if isinstance(ctx.args, Mapping) else {}
         tool_name = ctx.tool_call.name
 
-        if not tool_call_requires_approval(self._mode, tool_name, args):
-            return None
-
         rule_key = _rule_key(tool_name, args)
         with self._lock:
+            policy_revision = self._policy_revision
+            if not tool_call_requires_approval(self._mode, tool_name, args):
+                return None
+            if self._mode == "deny":
+                return BeforeToolCallResult(block=True, reason="Tool call denied by permission policy")
             if rule_key in self._session_rules:
                 return None
             handler = self._handler
             closed = self._closed
-
-        if self._mode == "deny":
-            return BeforeToolCallResult(
-                block=True,
-                reason="Tool call denied by permission policy",
-            )
         if closed or handler is None:
             return BeforeToolCallResult(
                 block=True,
@@ -205,6 +214,8 @@ class PermissionManager:
         with self._lock:
             if self._closed:
                 return BeforeToolCallResult(block=True, reason="Permission manager is closed")
+            if policy_revision != self._policy_revision:
+                return BeforeToolCallResult(block=True, reason="Permission policy changed before approval admission")
             self._admission_revision += 1
             self._pending[request.id] = pending
 
@@ -239,11 +250,13 @@ class PermissionManager:
             with self._lock:
                 self._pending.pop(request.id, None)
 
-        if decision == "allow_session":
-            with self._lock:
+        with self._lock:
+            if self._closed or self.mode == "deny" or policy_revision != self._policy_revision:
+                return BeforeToolCallResult(block=True, reason="Permission policy changed; old approval is not valid")
+            if decision == "allow_session":
                 self._session_rules.add(rule_key)
-        if decision in _ALLOW_DECISIONS:
-            return None
+            if decision in _ALLOW_DECISIONS:
+                return None
         return BeforeToolCallResult(block=True, reason="User denied this tool call")
 
     def resolve(self, request_id: str, decision: PermissionDecision) -> bool:

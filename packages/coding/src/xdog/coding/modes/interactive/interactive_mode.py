@@ -47,7 +47,6 @@ from xdog.agent.extensions.command_result import ExtensionCommandResult
 from xdog.agent.extensions.runtime import validate_snapshot
 from xdog.agent.mcp.context import McpDocument, McpEntry
 from xdog.agent.mcp.oauth import validate_launch, validate_review
-from xdog.agent.planning import PlanState
 from xdog.agent.supervision_config import ChildConfig
 from xdog.ai.types import (
     AssistantMessage,
@@ -85,7 +84,6 @@ from xdog.tui.components.mcp_panel import McpPanel
 from xdog.tui.components.navigation_panel import NavigationPanel
 from xdog.tui.components.output_panel import OutputPanel
 from xdog.tui.components.parent_draft_panel import ParentDraftPanel
-from xdog.tui.components.plan_panel import PlanPanel
 from xdog.tui.components.text import Text
 from xdog.tui.components.tool_inventory import ToolInventoryPanel, inventory_records
 from xdog.tui.components.transcript_panel import TranscriptPanel
@@ -111,8 +109,6 @@ logger = logging.getLogger(__name__)
 # Native panel operations only; protocol completion remains available to backend callers.
 _MCP_PANEL_ACTIONS = frozenset({
     "list", "connect", "disconnect", "refresh", "resources", "templates", "prompts", "read", "prompt",
-    "watch_resource", "unwatch_resource", "watch_catalog", "unwatch_catalog",
-    "watch_notifications", "unwatch_notifications",
 })
 
 # Waiting phrases for the shimmer animation
@@ -145,8 +141,8 @@ def _command_is_read_only(command: str, args: str) -> bool:
         return True
     if command == "agents":
         return args.strip().partition(" ")[0] != "start"
-    if command == "plan":
-        return args.strip() in {"", "show"}
+    if command == "readonly":
+        return args.strip() in {"", "status"}
     if command == "mcp":
         return not args.strip() or args.strip() in {"list", "status"}
     if command in {"help", "session", "sessions", "skills", "tools"}:
@@ -247,11 +243,7 @@ class InteractiveMode:
         self._child_target = ""
         self._child_roster: dict[str, Any] = {}
         self._child_jobs: set[str] = set()
-        self._plan_panel: PlanPanel | None = None
-        self._plan_context = ""
-        self._plan_revision = -1
         self._mcp_auth_lease = ""
-        self._mcp_watch_lease = ""
         self._mcp_auth_stop = threading.Event()
         self._mcp_auth_review: dict[str, Any] | None = None
         self._mcp_auth_copying = False
@@ -334,7 +326,9 @@ class InteractiveMode:
         self._keymap = PromptKeymap.load(get_config_dir() / "keybindings.json")
         self._editor = CustomEditorComponent(self._theme)
         original_commands = self._editor._command_provider
-        self._editor._command_provider = lambda: {**original_commands(),
+        self._editor._command_provider = lambda: {**{name: text for name, text in original_commands().items()
+                                                                   if name.removeprefix("/") != "plan"},
+            "readonly": "Host access scope: /readonly on|off|status (not tool approval)",
             'draft': 'Parent draft autosave [on|off] and reviewed saved recovery',
             **self._session.extensions.commands()}
         self._editor.set_keymap(self._keymap)
@@ -372,7 +366,6 @@ class InteractiveMode:
         self._status_text: Text | None = None
         self._status_loader = None
         self._hints = CompactText("", 0, 0)
-        self._update_hints()
         self._layout = InlineLayout(
             transcript=self._chat_log,
             work=self._work_container,
@@ -386,6 +379,7 @@ class InteractiveMode:
         self._tui.add_child(self._layout)
         self._tui.set_focus(self._editor)
         self._editor.set_focus(True)
+        self._update_hints()
         self._tui.add_input_listener(self._handle_global_input)
 
         # Wire editor callbacks
@@ -446,10 +440,6 @@ class InteractiveMode:
                 self._child_output("copy", "selection" if preview is not None and preview.selection else "response")
             else:
                 self._child_panel.handle_input(event)
-            self._tui.request_render()
-            return {"consume": True}
-        if self._plan_panel is not None and self._outputs.panel is None:
-            self._plan_panel.handle_input(event)
             self._tui.request_render()
             return {"consume": True}
         if self._mcp_panel is not None and self._outputs.panel is None:
@@ -552,7 +542,7 @@ class InteractiveMode:
                 or self._tui.has_overlay() or self._outputs.pending or self._extension_dialog_panel is not None
                 or self._navigation_panel is not None or self._transcript_panel is not None
                 or self._details_open or self._child_panel is not None
-                or self._plan_panel is not None or self._mcp_panel is not None or self._attachment_panel is not None):
+                 is not None or self._mcp_panel is not None or self._attachment_panel is not None):
             return False
         if self._permission_prompt is not None or self._command is not None or self._worker_active or self._is_busy:
             return False
@@ -759,7 +749,7 @@ class InteractiveMode:
                 self._layout.details = self._extension_dialog_panel
                 self._tui.set_focus(self._extension_dialog_panel)
             elif isinstance(self._layout.details, ExtensionDialog):
-                self._layout.details = (self._parent_draft_panel or self._child_panel or self._plan_panel
+                self._layout.details = (self._parent_draft_panel or self._child_panel
                                        or self._mcp_panel
                                        or self._transcript_panel or (
                                            self._details_panel if self._details_open else None))
@@ -777,44 +767,6 @@ class InteractiveMode:
         self._extension_dialog_queue = [item for item in self._extension_dialog_queue if item["id"] != key]
         self._extension_dialog_panel = None
         self._sync_extension_dialog()
-        self._update_hints()
-        self._tui.request_render()
-
-    def _open_plan(self) -> None:
-        if self._parent_draft_panel is not None:
-            self._close_parent_drafts()
-        if self._child_panel is not None:
-            self._close_children()
-        if self._exit_requested or self._permission_prompt is not None or self._tui.has_overlay():
-            return
-        if self._plan_panel is not None:
-            return
-        for panel, close in ((self._mcp_panel, self._close_mcp), (self._transcript_panel, self._close_transcript),
-                             (self._attachment_panel, self._close_attachment_preview),
-                             (self._navigation_panel, self._close_navigation)):
-            if panel is not None:
-                close()
-        if self._details_open:
-            self._close_details()
-        self._plan_context = self._mcp_context_key()
-        self._plan_panel = PlanPanel(lambda: {**self._session.plan.state.to_dict(),
-                                    "busy": self._worker_active or self._is_busy or self._command is not None},
-                                    self._plan_action, self._close_plan)
-        self._layout.details = self._plan_panel
-        self._restore_auxiliary_focus()
-        self._update_hints()
-        self._tui.request_render()
-
-    def _plan_action(self, action: str, revision: int) -> None:
-        if self._plan_context != self._mcp_context_key():
-            self._close_plan()
-            return
-        self._handle_slash_command("plan", f"{action} {revision}")
-
-    def _close_plan(self) -> None:
-        self._plan_panel = None
-        self._layout.details = self._outputs.panel or self._mcp_panel or self._transcript_panel
-        self._restore_auxiliary_focus()
         self._update_hints()
         self._tui.request_render()
 
@@ -880,8 +832,6 @@ class InteractiveMode:
             self._close_children()
         if self._exit_requested or self._permission_prompt is not None or self._tui.has_overlay():
             return
-        if self._plan_panel is not None:
-            self._close_plan()
         if self._mcp_panel is not None:
             return
         if self._transcript_panel is not None:
@@ -894,7 +844,6 @@ class InteractiveMode:
             self._close_details()
         self._mcp_document = None
         self._mcp_owner_context = self._mcp_context_key()
-        self._mcp_watch_lease = uuid.uuid4().hex
         self._mcp_auth_lease = uuid.uuid4().hex
         self._mcp_auth_stop = threading.Event()
         self._mcp_auth_review = None
@@ -936,15 +885,6 @@ class InteractiveMode:
     def _close_mcp(self) -> None:
         self._reviewed_url.cancel()
         self._detach_mcp_auth()
-        lease, self._mcp_watch_lease = self._mcp_watch_lease, ""
-        manager = self._session.mcp
-        if lease and manager is not None:
-            def detach_watches() -> None:
-                try:
-                    asyncio.run(manager.detach_resource_watches(lease))
-                except Exception:
-                    pass  # Closed view cannot receive late data; owner close also tears down watches.
-            threading.Thread(target=detach_watches, daemon=True, name="xdog-mcp-watch-detach").start()
         if self._mcp_cancel is not None:
             self._mcp_cancel.set()
         if self._mcp_panel is not None:
@@ -987,6 +927,8 @@ class InteractiveMode:
 
     def _mcp_publish(self, action: str, data: Any = (), error: str = "") -> None:
         if action not in _MCP_PANEL_ACTIONS and not action.startswith('auth_'):
+            return
+        if action not in _MCP_PANEL_ACTIONS and not action.startswith('auth_'):
             return  # Retired/unknown controls cannot invalidate a successor's active view.
         panel = self._mcp_panel
         if panel is None:
@@ -1025,10 +967,7 @@ class InteractiveMode:
                 panel.publish_auth(action, {}, str(exc))
             self._tui.request_render()
             return
-        if action in {"watch_resource", "unwatch_resource", "watch_catalog", "unwatch_catalog",
-                      "watch_notifications", "unwatch_notifications"}:
-            panel.publish_watch(data if isinstance(data, dict) else {}, error, receipt=True)
-        elif error:
+        if error:
             panel.publish(action, error=error)
         elif isinstance(data, McpDocument):
             self._mcp_document = data
@@ -1077,30 +1016,7 @@ class InteractiveMode:
             return (not auth_stop.is_set() and not self._exit_requested and self._session is owner_session
                     and owner_session.mcp is manager and auth_context == self._mcp_context_key()
                     and not owner_session.agent.is_streaming and not owner_session.children.supervisor.active)
-        watch_lease, watch_context = self._mcp_watch_lease, self._mcp_owner_context
-        def watch_alive() -> bool:
-            return (not self._exit_requested and self._mcp_panel is not None
-                    and self._session is owner_session and owner_session.mcp is manager
-                    and self._mcp_watch_lease == watch_lease and watch_context == self._mcp_context_key())
         async def request() -> Any:
-            if action == 'watch_notifications':
-                return await manager.watch_notifications(server, json.loads(name), lease=watch_lease, alive=watch_alive,
-                    on_change=lambda data: self._event_queue.put({"type": "mcp_watch_notice", "lease": watch_lease,
-                                                                "context": watch_context, "data": data}))
-            if action == 'unwatch_notifications':
-                return await manager.unwatch_notifications(server, json.loads(name), lease=watch_lease)
-            if action == "watch_catalog":
-                return await manager.watch_catalog(server, name, lease=watch_lease, alive=watch_alive,
-                    on_change=lambda data: self._event_queue.put({"type": "mcp_watch_notice", "lease": watch_lease,
-                                                                "context": watch_context, "data": data}))
-            if action == "unwatch_catalog":
-                return await manager.unwatch_catalog(server, name, lease=watch_lease)
-            if action == "watch_resource":
-                return await manager.watch_resource(server, name, lease=watch_lease, alive=watch_alive,
-                    on_change=lambda data: self._event_queue.put({"type": "mcp_watch_notice", "lease": watch_lease,
-                                                                "context": watch_context, "data": data}))
-            if action == "unwatch_resource":
-                return await manager.unwatch_resource(server, name, lease=watch_lease)
             if action.startswith("auth_"):
                 return await owner_session.manage_mcp_auth(
                     server, action.removeprefix("auth_"), name, auth_lease, alive)
@@ -1152,7 +1068,7 @@ class InteractiveMode:
             if target:
                 self._child_panel.inspect(target)
             return
-        for panel, close in ((self._plan_panel, self._close_plan), (self._mcp_panel, self._close_mcp),
+        for panel, close in ((self._mcp_panel, self._close_mcp),
                              (self._transcript_panel, self._close_transcript),
                              (self._navigation_panel, self._close_navigation)):
             if panel is not None:
@@ -1173,8 +1089,6 @@ class InteractiveMode:
                                        retained_bytes=self._child_retained_bytes,
 )
         self._child_panel.queue_enabled = True
-        self._child_panel.queue_image_recovery_enabled = True
-        self._child_panel.queue_task_recovery_enabled = True
         self._layout.details = self._child_panel
         self._tui.set_focus(self._child_panel)
         self._child_publish_roster()
@@ -1255,7 +1169,7 @@ class InteractiveMode:
         self._close_parent_drafts()
         # These are native view transitions, not a child-browser dependency.
         for panel, close in ((self._child_panel, self._close_children),
-                             (self._plan_panel, self._close_plan), (self._mcp_panel, self._close_mcp),
+                             (self._mcp_panel, self._close_mcp),
                              (self._transcript_panel, self._close_transcript),
                              (self._attachment_panel, self._close_attachment_preview),
                              (self._navigation_panel, self._close_navigation)):
@@ -1409,11 +1323,10 @@ class InteractiveMode:
         if action == 'queue':
             try:
                 command = json.loads(text)
-            except ValueError:
-                command = None  # Keep malformed native queue errors on the existing owned backend path.
-            if isinstance(command, dict) and command.get('action') in {
-                    'return_prepare', 'return_commit', 'return_cancel'}:
-                return  # Retired UI work cannot touch a current draft, owner or backend lease.
+            except (ValueError, TypeError):
+                return
+            if not isinstance(command, dict) or command != {'action': 'list'}:
+                return  # Native list-only; Agent/SDK queue management stays backend-owned.
         panel = self._child_panel
         if panel is None or self._child_context != self._child_context_key():
             return
@@ -1438,18 +1351,14 @@ class InteractiveMode:
         def work() -> None:
             error = ""
             data: Any = None
-            images: tuple[Attachment, ...] = ()
             try:
                 data = asyncio.run(owner.supervisor.control(action, child, text))
-                if 'image_recovery' in data:
-                    from xdog.tui.child_recovery import decode_recovery
-                    images = decode_recovery(data.pop('image_recovery'))
             except (Exception, asyncio.CancelledError) as exc:
                 error = str(exc) or "Child control canceled after settlement"
             finally:
                 release()
             self._event_queue.put({"type": "child_ui_result", "id": identifier, "action": action,
-                                   "context": context, "error": error, "data": data, 'images': images,
+                                   "context": context, "error": error, "data": data,
                                    'panel_owner': panel.owner_token,
                                    'queue_owner': queue_panel.owner_token if queue_panel is not None else ''})
         threading.Thread(target=work, daemon=True, name="xdog-child-control").start()
@@ -1539,8 +1448,6 @@ class InteractiveMode:
             return
         if self._mcp_panel is not None:
             self._close_mcp()
-        if self._plan_panel is not None:
-            self._close_plan()
         if self._transcript_panel is not None:
             if query:
                 self._transcript_panel.search(query)
@@ -1660,7 +1567,7 @@ class InteractiveMode:
             self._layout.details = panel
             self._tui.set_focus(panel)
         elif isinstance(self._layout.details, OutputPanel):
-            self._layout.details = (self._parent_draft_panel or self._child_panel or self._plan_panel
+            self._layout.details = (self._parent_draft_panel or self._child_panel
                                        or self._mcp_panel
                                        or self._transcript_panel) or (
                 self._details_panel if self._details_open else None)
@@ -1778,8 +1685,6 @@ class InteractiveMode:
             return
         if self._mcp_panel is not None:
             self._close_mcp()
-        if self._plan_panel is not None:
-            self._close_plan()
         self._close_attachment_preview()
         if self._navigation_panel is not None:
             self._close_navigation()
@@ -1816,8 +1721,6 @@ class InteractiveMode:
             return
         if self._mcp_panel is not None:
             self._close_mcp()
-        if self._plan_panel is not None:
-            self._close_plan()
         if self._navigation_panel is not None:
             self._close_navigation()
         if self._details_open:
@@ -1858,7 +1761,7 @@ class InteractiveMode:
             self._permission_prompt or self._outputs.panel
             or (self._extension_dialog_panel if self._extension_dialog_panel is not None
                 else None)
-            or self._parent_draft_panel or self._child_panel or self._plan_panel
+            or self._parent_draft_panel or self._child_panel
                                        or self._mcp_panel
             or self._transcript_panel
             or self._attachment_panel
@@ -1871,8 +1774,6 @@ class InteractiveMode:
             self._close_parent_drafts()
         if self._child_panel is not None:
             self._close_children()
-        if self._plan_panel is not None:
-            self._close_plan()
         if self._mcp_panel is not None:
             self._close_mcp()
         if self._transcript_panel is not None:
@@ -2030,8 +1931,6 @@ class InteractiveMode:
             hint = "Primary draft · explicit save/restore review · p image preview · Esc cancel · NOT sent"
         elif self._child_panel is not None:
             hint = "Children focused · Enter inspect · n new · c cancel · / search · Esc parent draft"
-        elif self._plan_panel is not None:
-            hint = "Plan focused · arrows/scroll · e execution · r revise · s stop · Esc close"
         elif self._mcp_panel is not None:
             hint = "MCP focused · c/d/r servers · u/t/p catalogs · Enter preview · i draft · e export · Esc back"
         elif isinstance(self._transcript_panel, ToolInventoryPanel):
@@ -2056,9 +1955,8 @@ class InteractiveMode:
                 f"{self._keymap.label('send')} send · {self._keymap.label('newline')} newline · "
                 f"{self._keymap.label('details')} details · {self._keymap.label('external_editor')} editor · /keys"
             )
-        state = getattr(getattr(self._session, "plan", None), "state", None)
-        if self._editor.focused and isinstance(state, PlanState) and state.mode != "off":
-            hint = ("READ-ONLY plan · " if state.mode == "planning" else "EXECUTING plan · ") + hint
+        if self._editor.focused and self._session.access.state.read_only:
+            hint = "READ ONLY · " + hint
         self._hints.set_text(hint)
 
     def _activity_label(self) -> str:
@@ -2398,6 +2296,18 @@ class InteractiveMode:
     def _handle_slash_command(self, cmd: str, args: str) -> None:
         if self._exit_requested:
             return
+        if cmd == 'plan':
+            self._chat_log.add_system('Planning mode UI was removed; use /readonly on|off|status')
+            self._tui.request_render()
+            return
+        if cmd == 'readonly':
+            if args.strip() not in {'', 'status', 'on', 'off'}:
+                self._chat_log.add_system('Usage: /readonly on|off|status')
+                return
+            if (self._permission_prompt is not None or self._permission_waiters or self._tui.has_overlay()
+                    or self._extension_dialog_panel is not None or self._extension_dialog_queue):
+                self._chat_log.add_system('Another protected owner has input; access control not admitted')
+                return
         if cmd == 'login':
             from xdog.agent.extensions.provider_oauth_host import login_arguments
             try:
@@ -2426,6 +2336,10 @@ class InteractiveMode:
         """Serialize session commands; mutations require an idle agent."""
         if self._exit_requested:
             return
+        if cmd == 'agents' and args.strip().partition(' ')[0] == 'queue':
+            self._chat_log.add_system('Child queue controls were removed; /agents opens read-only inspection')
+            self._tui.request_render()
+            return
         if cmd == 'agents' and args.strip().partition(' ')[0] == 'saved':
             self._chat_log.add_system('Child draft disk management was removed; '
                                       '/agents drafts recovers this session only')
@@ -2447,9 +2361,6 @@ class InteractiveMode:
             return
         if cmd == "agents" and args.strip().startswith("inspect "):
             self._open_children(args.strip().partition(" ")[2])
-            return
-        if cmd == "plan" and args.strip() in {"", "show"}:
-            self._open_plan()
             return
         if cmd == "mcp" and args.strip().startswith("authorize "):
             self._open_mcp()
@@ -2763,8 +2674,6 @@ class InteractiveMode:
         self._extension_dialog_queue.clear()
         self._extension_stack.clear()
         self._extension_dialog_panel = None
-        if self._plan_panel is not None:
-            self._close_plan()
         if self._mcp_panel is not None:
             self._close_mcp()
         self._outputs.close()
@@ -3044,12 +2953,6 @@ class InteractiveMode:
             changed = True
         if self._transcript_panel is not None:
             changed = self._transcript_panel.poll() or changed
-        if self._plan_panel is not None:
-            if self._plan_context != self._mcp_context_key():
-                self._close_plan()
-            elif self._plan_revision != self._session.plan.state.revision:
-                self._plan_revision = self._session.plan.state.revision
-                changed = True
         if self._mcp_panel is not None:
             if self._mcp_owner_context != self._mcp_context_key():
                 self._close_mcp()
@@ -3315,12 +3218,6 @@ class InteractiveMode:
                 self._extension_snapshot = event["snapshot"]
             self._tui.request_render()
             return
-        if event_type == "mcp_watch_notice":
-            if (self._mcp_panel is not None and event.get("lease") == self._mcp_watch_lease
-                    and event.get("context") == self._mcp_context_key()):
-                self._mcp_panel.publish_watch(event["data"])
-                self._tui.request_render()
-            return
         if event_type == "mcp_view_result":
             if event.get("id") == self._mcp_active:
                 self._mcp_publish(event["action"], event.get("data", ()), str(event.get("error", "")))
@@ -3459,8 +3356,6 @@ class InteractiveMode:
                 self._child_panel.complete("start", str(event.get("output", "")) if event.get("failed") else "")
                 self._child_roster = {}
                 self._child_publish_roster()
-            if command is not None and command.name == "plan" and not event.get("error"):
-                self._open_plan()
             if command is not None and command.name == "mcp" and self._mcp_panel is not None:
                 self._mcp_publish(self._mcp_action,
                                   self._session.mcp.status() if self._session.mcp is not None else (),

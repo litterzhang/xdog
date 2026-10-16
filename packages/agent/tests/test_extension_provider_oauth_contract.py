@@ -166,3 +166,57 @@ async def test_late_get_key_result_cannot_use_replaced_credential_or_registratio
     with pytest.raises(ValueError, match='credentials changed'):
         await task
     assert not calls
+
+
+async def test_worker_rechecks_oauth_expiry_after_async_key_resolution_without_stream_or_refresh(monkeypatch):
+    from types import SimpleNamespace
+
+    from xdog.agent.extensions.provider_worker import ProviderCalls
+
+    from packages.agent.tests.test_extension_provider_worker_contract import upload
+
+    now = [1000.0]
+    monkeypatch.setattr('xdog.agent.extensions.provider_oauth.time', SimpleNamespace(time=lambda: now[0]))
+    api, worker = ExtensionAPI({}), ProviderCalls()
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def key(value):
+        calls.append('key')
+        entered.set()
+        await release.wait()
+        return value['access']
+
+    def login(callbacks):
+        calls.append('login')
+        return {**TOKEN, 'expires': (now[0] + 1) * 1000}
+
+    def refresh(value):
+        calls.append('refresh')
+        pytest.fail('Expired stream admission must not automatically refresh')
+
+    async def stream(*args):
+        calls.append('stream')
+        yield {'type': 'done'}
+
+    api.register_provider('local', [ROW], stream, oauth=ProviderOAuth('Local', login, refresh, key))
+    binding = api.providers['local'][1]
+    await binding.control('login', {})
+    pending = asyncio.create_task(worker.request(api, 'xdog/provider_start', await upload(worker, api)))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        now[0] += 2
+        release.set()
+        started = await pending
+        response = await worker.request(api, 'xdog/provider_next', started)
+        assert response['event'] == {'type': 'error', 'message': 'Extension provider credentials unavailable'}
+        assert calls == ['login', 'key'] and not binding.status()['authenticated']
+        assert not worker.calls and not worker.counts
+        started = await worker.request(api, 'xdog/provider_start', await upload(worker, api))
+        assert (await worker.request(api, 'xdog/provider_next', started))['event']['type'] == 'error'
+        assert calls == ['login', 'key']  # No retry, get-key, login, refresh or native-provider fallback.
+        assert 'private-' not in json.dumps(response)
+    finally:
+        release.set()
+        await asyncio.gather(pending, return_exceptions=True)
+        await worker.close()

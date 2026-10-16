@@ -1,67 +1,67 @@
+"""Passive catalog invalidation remains, without any catalog watch operation."""
 from __future__ import annotations
 
-import asyncio
 import json
 import sys
 from pathlib import Path
 
 import pytest
-from xdog.agent.mcp import McpManager
-from xdog.agent.mcp.subscriptions import ResourceSubscriptions, SubscriptionError
+from xdog.agent.mcp import McpError, McpManager
+from xdog.agent.mcp.resource_metadata import CATALOGS, ResourceMetadataError, catalog_notice
 
 PEER = Path(__file__).parent / 'fixtures/mcp_subscription_peer.py'
 
 
-@pytest.mark.parametrize('mode', ['modern', 'legacy', 'modern-slow-cancel'])
-@pytest.mark.parametrize('kind', ['tools', 'prompts', 'resources'])
-async def test_catalog_watch_exact_filter_notices_owner_cleanup_and_no_implicit_catalog_reads(tmp_path, mode, kind):
-    log = tmp_path / 'requests'
-    manager = McpManager({'peer': {'command': sys.executable, 'args': [str(PEER), mode, str(log)]}}, tmp_path)
-    events = []
+@pytest.mark.parametrize('kind', sorted(CATALOGS))
+async def test_legacy_unsolicited_catalog_notice_never_reads_or_reregisters_without_explicit_refresh(tmp_path, kind):
+    log = tmp_path / 'frames'
+    manager = McpManager({'peer': {'command': sys.executable, 'args': [str(PEER), 'legacy', str(log)]}}, tmp_path)
     try:
         await manager.connect('peer')
-        before = log.read_text().splitlines()
-        watch = await manager.watch_catalog('peer', kind, lease='view', on_change=events.append, alive=lambda: True)
-        assert watch['state'] == 'active' and watch['catalog'] == kind and watch['uri'] == ''
-        await manager._bridge(manager._clients['peer'].request('fixture/update', {}))
-        async with asyncio.timeout(3):
-            while not events:
-                await asyncio.sleep(0.003)
-        assert events[-1]['changes'] == 1 and events[-1]['catalog'] == kind
-        new = [json.loads(line) for line in log.read_text().splitlines()[len(before):]]
-        assert not any(frame['method'] in ('resources/read', 'tools/list', 'prompts/list', 'resources/list',
-                                            'tools/call', 'resources/subscribe') for frame in new)
-        if not mode.startswith('legacy'):
-            listen = next(frame for frame in new if frame['method'] == 'subscriptions/listen')
-            assert listen['params']['notifications'] == {kind + 'ListChanged': True}
-        stopped = await manager.unwatch_catalog('peer', kind, lease='view')
-        assert stopped['state'] == 'stopped' and stopped['catalog'] == kind
-        assert not manager._resource_watches
-        await manager.detach_resource_watches('view')
-        peer_state = await manager._bridge(manager._clients['peer'].request('fixture/status', {}))
-        assert peer_state == {'modern': 0, 'legacy': 0}
+        client = manager._clients['peer']
+        original = manager._tools
+        before = len(log.read_text().splitlines())
+        assert await manager._bridge(client.request('fixture/update', {'kind': kind})) == {}
+        assert client.dirty is (kind == 'tools')
+        assert manager._tools is original
+        new = [json.loads(line) for line in log.read_text().splitlines()[before:]]
+        assert [row['method'] for row in new] == ['fixture/update']
+        await manager.refresh('peer')
+        assert not client.dirty
+        tail = [json.loads(line) for line in log.read_text().splitlines()[before:]]
+        assert [row['method'] for row in tail] == ['fixture/update', 'tools/list']
     finally:
         await manager.aclose()
 
 
-@pytest.mark.parametrize('unrequested', ['tools', 'prompts', 'resources'])
-async def test_catalog_router_rejects_unrequested_filters_and_unrelated_notifications(unrequested):
-    router = ResourceSubscriptions()
-    kind = 'prompts' if unrequested != 'prompts' else 'tools'
-    async def stop(watch):
-        router.remove(watch)
-    watch = router.add('', lambda _: None, stop, kind=kind)
-    def notice(method, notifications=None):
-        return {'jsonrpc': '2.0', 'method': method, 'params': {
-            '_meta': {'io.modelcontextprotocol/subscriptionId': watch.id},
-            **({'notifications': notifications} if notifications is not None else {})}}
+@pytest.mark.parametrize('kind', sorted(CATALOGS))
+async def test_current_unsolicited_catalog_notice_cannot_create_a_hidden_subscription_or_reconnect(tmp_path, kind):
+    log = tmp_path / 'frames'
+    manager = McpManager({'peer': {'command': sys.executable, 'args': [str(PEER), 'modern', str(log)]}}, tmp_path)
     try:
-        with pytest.raises(SubscriptionError):
-            router.modern_frame(notice('notifications/subscriptions/acknowledged', {
-                kind + 'ListChanged': True, unrequested + 'ListChanged': True}))
-        assert router.modern_frame(notice('notifications/subscriptions/acknowledged', {kind + 'ListChanged': True}))
-        with pytest.raises(SubscriptionError):
-            router.modern_frame(notice('notifications/' + unrequested + '/list_changed'))
-        assert watch.changes == 0
+        await manager.connect('peer')
+        client = manager._clients['peer']
+        with pytest.raises(McpError, match='connection lost'):
+            await manager._bridge(client.request('fixture/update', {'kind': kind}))
+        frames = [json.loads(line) for line in log.read_text().splitlines()]
+        assert [row['method'] for row in frames] == ['server/discover', 'tools/list', 'fixture/update']
+        assert client.state == 'disconnected' and not client.dirty and not client._pending
+        assert not hasattr(client, 'resources')
     finally:
-        router.close()
+        await manager.aclose()
+
+
+@pytest.mark.parametrize('changes', [{'params': []}, {'params': {'_meta': False}}, {'params': {'uri': 'private'}},
+                                    {'id': -1}, {'jsonrpc': 'wrong'}, {'unexpected': 'field'}])
+def test_malformed_passive_catalog_metadata_is_not_coerced_to_refresh_authority(changes):
+    packet = {'jsonrpc': '2.0', 'method': 'notifications/tools/list_changed', 'params': {}}
+    with pytest.raises(ResourceMetadataError):
+        catalog_notice({**packet, **changes})
+
+
+def test_catalog_notice_helper_is_inert_and_carries_no_subscription_filters():
+    assert CATALOGS == {'tools', 'resources', 'prompts'}
+    for kind in CATALOGS:
+        assert catalog_notice({'jsonrpc': '2.0', 'method': 'notifications/' + kind + '/list_changed'}) == kind
+    notice = {'jsonrpc': '2.0', 'method': 'notifications/resources/updated', 'params': {'uri': 'x'}}
+    assert catalog_notice(notice) is None

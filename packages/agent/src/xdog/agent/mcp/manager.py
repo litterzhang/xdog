@@ -28,10 +28,10 @@ from xdog.agent.mcp.oauth_discovery import OAuthChallenge
 from xdog.agent.mcp.oauth_native_store import NativeCredentialStore, storage_backend
 from xdog.agent.mcp.oauth_store import CredentialStore, SavedCredential, capture, restore
 from xdog.agent.mcp.protocol import argument_headers, header_value, schema_headers
+from xdog.agent.mcp.resource_metadata import ResourceMetadataError, resource_uri
 from xdog.agent.mcp.schema import Schema, compile_schema, json_value
 from xdog.agent.mcp.schema_owner import SchemaDocument, SchemaOwner
 from xdog.agent.mcp.stdio import McpError, StdioClient
-from xdog.agent.mcp.subscriptions import CATALOGS, ResourceWatch, resource_uri
 from xdog.ai.types import ImageContent, TextContent
 
 T = TypeVar("T")
@@ -89,10 +89,6 @@ class McpManager:
         self._auth_preparing: dict[str, asyncio.Task[Any]] = {}
         self._tools: tuple[McpTool, ...] = ()
         self._rejected: dict[str, tuple[str, ...]] = {}
-        self._resource_lock = asyncio.Lock()
-        self._resource_alive: dict[tuple[str, str, str, str], Callable[[], bool]] = {}
-        self._resource_monitor: asyncio.Task[None] | None = None
-        self._resource_watches: dict[tuple[str, str, str, str], tuple[StdioClient | HttpClient, ResourceWatch]] = {}
         self._completion_at: dict[str, float] = {}
         self._schemas = SchemaOwner()
         self._completion_locks: dict[str, asyncio.Lock] = {}
@@ -215,122 +211,6 @@ class McpManager:
 
 
 
-
-    async def watch_notifications(self, server: str, selected: dict[str, Any], *, lease: str,
-                                  on_change: Callable[[dict[str, Any]], None],
-                                  alive: Callable[[], bool]) -> dict[str, Any]:
-        from xdog.agent.mcp.subscriptions import filter_key
-        return await self._bridge(self._watch_resource(server, filter_key(selected), lease, on_change, alive,
-                                                       kind='notifications'))
-
-    async def unwatch_notifications(self, server: str, selected: dict[str, Any], *, lease: str) -> dict[str, Any]:
-        from xdog.agent.mcp.subscriptions import filter_key
-        return await self._bridge(self._unwatch_resource((lease, server, 'notifications', filter_key(selected))))
-
-    async def detach_notification_watches(self, lease: str) -> None:
-        async def detach() -> None:
-            for key in tuple(self._resource_watches):
-                if key[0] == lease and key[2] == 'notifications':
-                    await self._unwatch_resource(key)
-        await self._bridge(detach())
-
-    async def watch_catalog(self, server: str, kind: str, *, lease: str,
-                            on_change: Callable[[dict[str, Any]], None], alive: Callable[[], bool]) -> dict[str, Any]:
-        if kind not in CATALOGS:
-            raise McpError("Catalog watch kind must be tools, prompts or resources")
-        return await self._bridge(self._watch_resource(server, '', lease, on_change, alive, kind=kind))
-
-    async def unwatch_catalog(self, server: str, kind: str, *, lease: str) -> dict[str, Any]:
-        if kind not in CATALOGS:
-            raise McpError("Unknown catalog watch kind")
-        return await self._bridge(self._unwatch_resource((lease, server, kind, '')))
-
-    async def watch_resource(self, server: str, uri: str, *, lease: str,
-                             on_change: Callable[[dict[str, Any]], None],
-                             alive: Callable[[], bool]) -> dict[str, Any]:
-        return await self._bridge(self._watch_resource(server, resource_uri(uri), lease, on_change, alive))
-
-    async def _watch_resource(self, server: str, uri: str, lease: str,
-                              on_change: Callable[[dict[str, Any]], None],
-                              alive: Callable[[], bool], *, kind: str = 'resource') -> dict[str, Any]:
-        async with self._resource_lock:
-            return await self._watch_resource_owned(server, uri, lease, on_change, alive, kind=kind)
-
-    async def _watch_resource_owned(self, server: str, uri: str, lease: str,
-                                    on_change: Callable[[dict[str, Any]], None],
-                                    alive: Callable[[], bool], *, kind: str = 'resource') -> dict[str, Any]:
-        if not isinstance(lease, str) or not 0 < len(lease.encode()) <= 256 or not alive():
-            raise McpError('Resource subscription view owner unavailable')
-        client = self._clients.get(server)
-        if client is None or client.state != 'connected':
-            raise McpError('Connect this resource server explicitly before watching')
-        key = lease, server, kind, uri
-        existing = self._resource_watches.get(key)
-        if existing is not None and existing[1].state in {'opening', 'active'}:
-            return {'server': server, **existing[1].snapshot()}
-        if existing is not None:
-            await self._unwatch_resource_owned(key)
-        if len(self._resource_watches) >= 32:
-            raise McpError('Resource watch view capacity reached')
-        def publish(value: dict[str, Any]) -> None:
-            current = self._resource_watches.get(key)
-            if current is not None and current[0] is client and self._clients.get(server) is client and alive():
-                on_change({'server': server, **value})
-        watch = (await client.watch_resource(uri, publish) if kind == 'resource'
-                 else await client.watch_notifications(json.loads(uri), publish) if kind == 'notifications'
-                 else await client.watch_catalog(kind, publish))
-        if not alive() or self._clients.get(server) is not client:
-            await watch.close()
-            raise McpError('Resource watch owner changed before acknowledgement')
-        with self._lock:
-            self._resource_watches[key] = client, watch
-            self._resource_alive[key] = alive
-        if self._resource_monitor is None or self._resource_monitor.done():
-            self._resource_monitor = asyncio.create_task(self._monitor_resources())
-        return {'server': server, **watch.snapshot()}
-
-    async def _monitor_resources(self) -> None:
-        while self._resource_watches and not self._closed:
-            await asyncio.sleep(0.1)
-            for key, alive in tuple(self._resource_alive.items()):
-                if not alive():
-                    try:
-                        await self._unwatch_resource(key)
-                    except Exception:
-                        pass  # Local ownership was already removed; no retry of uncertain remote effects.
-
-    async def unwatch_resource(self, server: str, uri: str, *, lease: str) -> dict[str, Any]:
-        return await self._bridge(self._unwatch_resource((lease, server, "resource", resource_uri(uri))))
-
-    async def _unwatch_resource(self, key: tuple[str, str, str, str]) -> dict[str, Any]:
-        async with self._resource_lock:
-            return await self._unwatch_resource_owned(key)
-
-    async def _unwatch_resource_owned(self, key: tuple[str, str, str, str]) -> dict[str, Any]:
-        with self._lock:
-            pair = self._resource_watches.pop(key, None)
-            self._resource_alive.pop(key, None)
-        if pair is not None:
-            await pair[1].close()
-        if key[2] == 'notifications':
-            return {'server': key[1], 'uri': '', 'state': 'stopped', 'changes': pair[1].changes if pair else 0,
-                    'notifications': json.loads(key[3])}
-        return {'server': key[1], 'uri': key[3], 'state': 'stopped', 'changes': pair[1].changes if pair else 0,
-                **({'catalog': key[2]} if key[2] != 'resource' else {})}
-
-    async def detach_catalog_watches(self, lease: str) -> None:
-        async def detach() -> None:
-            for key in tuple(self._resource_watches):
-                if key[0] == lease and key[2] in CATALOGS:
-                    await self._unwatch_resource(key)
-        await self._bridge(detach())
-
-    async def detach_resource_watches(self, lease: str) -> None:
-        async def detach() -> None:
-            for key in tuple(self._resource_watches):
-                if key[0] == lease:
-                    await self._unwatch_resource(key)
-        await self._bridge(detach())
 
     async def _credential_disk(self, action: Callable[[Callable[[], bool]], Any],
                                alive: Callable[[], bool]) -> Any:
@@ -695,8 +575,10 @@ class McpManager:
         client = self._clients.get(server)
         if client is None or client.state != "connected" or "resources" not in client.capabilities:
             raise McpError("Server resources are unavailable")
-        if not isinstance(uri, str) or not uri or len(uri) > 8192:
-            raise McpError("Invalid resource URI")
+        try:
+            uri = resource_uri(uri)
+        except ResourceMetadataError as exc:
+            raise McpError(str(exc)) from None
         if isinstance(client, HttpClient):
             result = await client.request("resources/read", {"uri": uri}, mirrors={"Mcp-Name": header_value(uri)})
         else:
@@ -804,10 +686,6 @@ class McpManager:
             return
         await client.close()
         with self._lock:
-            self._resource_watches = {key: pair for key, pair in self._resource_watches.items()
-                                     if pair[0] is not client}
-            self._resource_alive = {key: alive for key, alive in self._resource_alive.items()
-                                    if key in self._resource_watches}
             # A concurrent close/reload may already have installed a new worker.
             # Retiring the old connection must not remove its successor/tools.
             if self._clients.get(name) is client:
@@ -944,9 +822,6 @@ class McpManager:
             await asyncio.to_thread(self._thread.join, 2)
 
     async def _close_clients(self) -> None:
-        if self._resource_monitor is not None:
-            self._resource_monitor.cancel()
-            await asyncio.gather(self._resource_monitor, return_exceptions=True)
         await self._schemas.close()
         self._auth_leases.clear()
         self._credential_consents.clear()
@@ -959,8 +834,6 @@ class McpManager:
         await asyncio.gather(*(client.close() for client in tuple(self._clients.values())))
         with self._lock:
             self._clients.clear()
-            self._resource_watches.clear()
-            self._resource_alive.clear()
             self._tools = ()
 
     def close(self) -> None:

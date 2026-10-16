@@ -14,10 +14,10 @@ from pathlib import Path
 from typing import Any
 
 from xdog.agent import AgentMessage
+from xdog.agent.access import AccessState
 from xdog.agent.extensions.active_tools import names as active_tool_names
 from xdog.agent.extensions.compaction import saved_record
 from xdog.agent.extensions.state import validate_entries
-from xdog.agent.planning import PlanState
 from xdog.agent.session_name import session_name
 from xdog.coding.config import get_sessions_dir
 from xdog.coding.core.defaults import SESSION_FILE_PREFIX, SESSION_FILE_SUFFIX
@@ -52,7 +52,8 @@ class SessionData:
     branches: list[dict[str, Any]] = field(default_factory=list)
     working_dir: str = ""
     active_branch: str = ""
-    plan: dict[str, Any] | None = None
+    access: dict[str, Any] = field(default_factory=lambda: AccessState().to_dict())
+    legacy_plan: dict[str, Any] | None = None
     extension_entries: dict[str, Any] = field(default_factory=dict)
     compaction: dict[str, Any] | None = None
     name: str = ""
@@ -71,7 +72,8 @@ class SessionData:
             "settings": self.settings,
             "branches": self.branches,
             "active_branch": self.active_branch,
-            "plan": self.plan,
+            "access": self.access,
+            "legacy_plan": self.legacy_plan,
             "extension_entries": self.extension_entries,
             "compaction": self.compaction,
             "active_tools": list(self.active_tools) if self.active_tools is not None else None,
@@ -80,8 +82,7 @@ class SessionData:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SessionData:
         validate_entries(data.get("extension_entries", {}))
-        if data.get("plan") is not None:
-            PlanState.from_dict(data["plan"])
+        access = AccessState.saved(data)
         return cls(
             session_id=data["session_id"],
             created_at=data.get("created_at", 0.0),
@@ -94,7 +95,8 @@ class SessionData:
             branches=data.get("branches", []),
             working_dir=data.get("working_dir", ""),
             active_branch=data.get("active_branch", ""),
-            plan=data.get("plan"),
+            access=access.to_dict(),
+            legacy_plan=data.get("legacy_plan") if data.get("legacy_plan") is not None else data.get("plan"),
             extension_entries=data.get("extension_entries", {}),
             compaction=saved_record(data.get("compaction")),
             active_tools=active_tool_names(data.get("active_tools")),

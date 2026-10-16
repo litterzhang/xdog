@@ -84,8 +84,6 @@ class ChildPanel(Component):
         self._last_refresh = 0.0
         self.preview: TranscriptPanel | None = None
         self.queue_enabled = False
-        self.queue_image_recovery_enabled = False
-        self.queue_task_recovery_enabled = False
         self.queue: ChildQueuePanel | None = None
         self._input = InputPanel(_Theme(), max_rows=3)
         self._input.on_submit = self._submit
@@ -166,7 +164,9 @@ class ChildPanel(Component):
                 self.queue.fail(error)
             else:
                 try:
-                    self.queue.publish(data['queue'], images)
+                    if images or not isinstance(data, dict) or set(data) != {'queue'}:
+                        raise ValueError('Queue inspection refuses binary data and recovery/mutation receipts')
+                    self.queue.publish(data['queue'])
                 except (ValueError, TypeError, KeyError) as exc:
                     self.queue.fail(str(exc))
             return
@@ -355,46 +355,27 @@ class ChildPanel(Component):
 
     def open_queue(self) -> None:
         if not self.queue_enabled or not self._selected_id:
-            self._error = 'Updated child queue host required; no local replica or fallback'
+            self._error = 'Updated read-only child queue host required; no local replica or fallback'
             return
-        child = self._selected_id
-        self._mode = 'queue'
-        self.queue = ChildQueuePanel(child,
-            lambda request: self.send('queue', child, json.dumps(request), 'read-only'), self.back,
-            lambda item: self._returned_input(child, item))
-        self.queue.focused = self.focused
-        self.queue.image_recovery_enabled = self.queue_image_recovery_enabled
-        self.queue.task_recovery_enabled = self.queue_task_recovery_enabled
-        self.send('queue', child, json.dumps({'action': 'list'}), 'read-only')
-
-    def _returned_input(self, child: str, item: dict[str, Any]) -> None:
-        self._selected_id = child
-        images = item.get('images', ())
-        if images:
-            if not item.get('stopped'):
-                raise ValueError('Live queued image return has no user UI entry')
-            if self.image_send is None or not isinstance(images, tuple) or any(
-                    not isinstance(image, Attachment) for image in images):
-                raise ValueError('Image-capable child draft owner required for stopped recovery')
-            retained = self._retained_bytes() if self._retained_bytes is not None else sum(
-                len(image.data) for draft in self._drafts.values() for image in draft.images)
-            if item.get('stopped') and sum(len(image.data) for image in images) + retained > 40 * 1024 * 1024:
-                raise ValueError('Recovered image copy exceeds local retention budget; durable original untouched')
-        self.queue = None
-        slot = (('recovered/' + child + '/' + item['id'] + '/' + uuid.uuid4().hex)
-                if item.get('stopped') or images else None)
-        self._form('start' if item.get('stopped') else 'steer' if item['delivery'] == 'steer' else 'follow-up',
-                   draft_slot=slot)
-        self._input.set_text(item['content'])
-        if item.get('uncertain'):
-            self._error = 'Recovered task/input admission uncertain; inspect history/effects before submitting'
-            self._drafts[self._form_action, self._draft_slot] = ChildDraft(uncertain=True)
-        if item.get('stopped'):
-            self._config = {'inherit_context': False}
-        if images and self.composer is not None:
-            self.composer.restore(images)
         self._save_draft()
-        self._visible = False
+        self._close_draft_recovery()
+        if self.queue is not None:
+            self.queue.close()
+        child = self._selected_id
+        self._terminal_epoch += 1
+        self._mode = 'queue'
+        self._input.focused = False
+        lease = self.terminal_lease
+        def refresh() -> None:
+            if (not self.focused or not self.queue_enabled or self._mode != 'queue'
+                    or self.queue is not inspector or self.terminal_lease != lease
+                    or inspector._closed or not inspector.focused or not inspector.enabled):
+                raise ValueError('Child queue inspection owner changed; explicitly refresh current view')
+            self.send('queue', child, json.dumps({'action': 'list'}), 'read-only')
+        inspector = ChildQueuePanel(child, refresh, self.back)
+        self.queue = inspector
+        inspector.focused = self.focused
+        inspector.refresh()  # Only list metadata; Agent/SDK recovery and mutation are not UI actions.
 
     def _form(self, action: str, *, draft_slot: str | None = None) -> None:
         self._close_draft_recovery()
@@ -843,7 +824,7 @@ class ChildPanel(Component):
                 rows.append("No matching children · n starts read-only work")
             if self._error:
                 rows.append("Child error: " + self._error)
-            rows.append("Enter inspect · / filter · n new · s steer · t follow-up · q inputs · d recover unsent · "
-                        "c cancel · x close · Esc back")
+            rows.append("Enter inspect · / filter · n new · s steer · t follow-up · q inspect inputs · "
+                        "d recover unsent · c cancel · x close · Esc back")
             self._visible = self._budget >= 3 and width >= 24 and bool(entries)
         return [truncate_to_width(row, max(0, width), "") for row in rows[:self._budget]]

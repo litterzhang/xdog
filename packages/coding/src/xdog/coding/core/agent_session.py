@@ -25,6 +25,7 @@ from xdog.agent import (
     MessageEndEvent,
     ToolExecutionEndEvent,
 )
+from xdog.agent.access import AccessScope, AccessState, read_only_call
 from xdog.agent.agent import Agent
 from xdog.agent.extensions.command_result import ExtensionCommandResult
 from xdog.agent.extensions.dialogs import DialogBroker
@@ -32,7 +33,6 @@ from xdog.agent.extensions.runtime import ExtensionRuntime
 from xdog.agent.extensions.state import ExtensionEntries, validate_entries
 from xdog.agent.history import history_points, validate_checkpoint
 from xdog.agent.mcp import McpManager
-from xdog.agent.planning import PlanOwner, PlanState
 from xdog.agent.supervision_config import parse_child_start
 from xdog.agent.types import HandledInput, InputTransformFn, TransformContextFn
 from xdog.ai.types import (
@@ -178,7 +178,7 @@ class AgentSession:
     permissions: PermissionManager = field(default_factory=PermissionManager)
     mcp: McpManager | None = None
     event_bus: EventBus = field(default_factory=get_event_bus)
-    plan: PlanOwner = field(init=False)
+    access: AccessScope = field(init=False)
     children: CodingChildren = field(init=False)
     context_messages: Any = field(init=False, repr=False)
     extensions: ExtensionRuntime = field(init=False)
@@ -219,10 +219,10 @@ class AgentSession:
 
         from xdog.agent.supervision import RESERVED_TOOLS
         if any(tool.name in RESERVED_TOOLS for tool in self.agent.state.tools):
-            raise ValueError("update_plan/agent_spawn/agent_control are reserved for session-owned metadata")
+            raise ValueError("agent_spawn/agent_control are reserved for session-owned metadata")
         # Sessions constructed outside the SDK still receive enforcement.
         self.agent.set_before_tool_call(self._before_tool_call)
-        self._load_plan()
+        self._load_access()
         self._base_context_transform = self.agent.context_transform
         self._base_input_transform = self.agent.input_transform
         self._load_extensions()
@@ -245,19 +245,17 @@ class AgentSession:
         from xdog.coding.core.context_messages import create
         self.context_messages = create(self)
 
-    def _load_plan(self) -> None:
+    def _load_access(self) -> None:
         data = self.session_data
-        def persist(state: PlanState) -> None:
-            previous = data.plan
-            data.plan = state.to_dict()
+        def persist(state: AccessState) -> None:
+            previous = data.access
+            data.access = state.to_dict()
             try:
                 self.session_manager.save_session(data)
             except BaseException:
-                data.plan = previous
+                data.access = previous
                 raise
-        self.plan = PlanOwner(PlanState.from_dict(data.plan), persist)
-        self.agent.set_tools((*[tool for tool in self.agent.state.tools if tool.name != "update_plan"],
-                              self.plan.tool()))
+        self.access = AccessScope(AccessState.from_dict(data.access), persist)
 
     async def _transform_user_input(self, message: UserMessage, source: str,
                                     cancel: asyncio.Event | None = None) -> UserMessage | HandledInput:
@@ -287,7 +285,7 @@ class AgentSession:
         self.extension_dialogs = DialogBroker()
         def context() -> dict[str, Any]:
             return {"session_id": self.session_id, "cwd": str(self.working_dir), "model": self.model,
-                    "planning_mode": self.plan.state.mode, "permission_mode": self.permissions.mode}
+                    "read_only": self.access.state.read_only, "permission_mode": self.permissions.mode}
         self.extensions = prepared or ExtensionRuntime(self.settings.trusted_extensions, self.settings.extension_root,
             self.working_dir, settings=self.settings.extension_settings, context=context, entries=entries,
             inspection=self._extension_inspection)
@@ -352,6 +350,8 @@ class AgentSession:
                                                               config=config.to_dict(), images=images)
             return f"Child {identifier} started ({access}); /agents inspect {identifier}"
         identifier, _, message = text.partition(" ")
+        if action == "queue" and json.loads(message) != {"action": "list"}:
+            raise ValueError("Native child queue is read-only; only exact list is accepted")
         result = await self.children.supervisor.control(action, identifier, message, images=images)
         return json.dumps(result, indent=2)
 
@@ -506,6 +506,8 @@ class AgentSession:
     async def _before_tool_call(self, ctx: BeforeToolCallContext,
                                 cancel: asyncio.Event | None = None) -> BeforeToolCallResult | None:
         try:
+            if self.access.state.read_only and not read_only_call(ctx.tool_call.name, ctx.args):
+                return BeforeToolCallResult(block=True, reason="Host access scope is read-only")
             if self.extensions.enabled:
                 await self.extensions.event("tool_start", {"tool_name": ctx.tool_call.name})
                 from xdog.ai.utils.validation import validate_tool_arguments
@@ -524,25 +526,22 @@ class AgentSession:
                     ctx.args.update(effective)
                 except Exception as exc:
                     return BeforeToolCallResult(block=True, reason=str(exc))
-            if self.plan.state.mode == "planning":
-                safe = (ctx.tool_call.name == "current_time" or ctx.tool_call.name == "update_plan"
-                        or ctx.tool_call.name == "filesystem"
-                        and ctx.args.get("action") in {"read", "ls", "grep", "find"})
-                if not safe:
-                    return BeforeToolCallResult(
-                        block=True, reason="Planning is read-only; tool blocked until explicit execution")
-            if ctx.tool_call.name == "update_plan":
-                return None
-            return await self.permissions.before_tool_call(ctx, cancel)
+            if self.access.state.read_only and not read_only_call(ctx.tool_call.name, ctx.args):
+                return BeforeToolCallResult(block=True, reason="Host access scope is read-only")
+            result = await self.permissions.before_tool_call(ctx, cancel)
+            if self.access.state.read_only and not read_only_call(ctx.tool_call.name, ctx.args):
+                return BeforeToolCallResult(block=True, reason="Host access became read-only during approval")
+            return result
         finally:
             await self._sync_extension_tools()
 
     @_idle_change
-    def plan_control(self, action: str, revision: int, objective: str = "") -> PlanState:
+    def access_control(self, read_only: bool) -> AccessState:
+        """Explicit native user control, never registered as an Agent/extension tool."""
         self._children_idle()
         if self.agent.state.is_streaming:
-            raise RuntimeError("Planning transitions require an idle agent")
-        result = self.plan.change(action, revision, objective)
+            raise RuntimeError("Access changes require an idle agent")
+        result = self.access.set_read_only(read_only)
         self._rebuild_system_prompt()
         return result
 
@@ -558,7 +557,7 @@ class AgentSession:
 
     def rename_session(self, name: str, *, expected_name: str | None = None,
                        alive: Callable[[], bool] | None = None) -> str:
-        """Save metadata before publishing, retaining the data owner used by plan/extensions."""
+        """Save metadata before publishing, retaining the data owner used by access/extensions."""
         from dataclasses import replace
 
         from xdog.agent.session_name import session_name
@@ -1023,15 +1022,14 @@ class AgentSession:
             if any(branch.get('branch_id') == recovery_id for branch in self.session_data.branches):
                 raise ValueError('Compaction recovery checkpoint already exists; no overwrite')
             number = 1 + sum(branch.get('recovery_kind') == 'compaction' for branch in self.session_data.branches)
-            recovery_plan = self.plan.state.to_dict()
-            recovery_plan['steps'] = list(recovery_plan['steps'])
+            recovery_access = self.access.state.to_dict()
             recovery = {
                 'branch_id': recovery_id, 'branch_point': len(current_messages) - 1,
                 'messages': messages_to_dicts(current_messages), 'parent_branch': self.session_data.active_branch,
                 'created_at': time.time(),
                 'label': f"Before compaction #{number} ({'manual' if force else 'automatic'})",
                 'recovery_kind': 'compaction', 'model': self.model, 'settings': self.settings.session_to_dict(),
-                'plan': recovery_plan, 'extension_entries': self.extensions.entries.snapshot(),
+                'access': recovery_access, 'extension_entries': self.extensions.entries.snapshot(),
                 'compaction': self.session_data.compaction,
                 'active_tools': (list(self.agent.active_tool_selection)
                                  if self.agent.active_tool_selection is not None else None),
@@ -1080,12 +1078,12 @@ class AgentSession:
 
 
     def _stage_navigation(self, settings: SettingsManager, directory: Path, session_id: str, model: str,
-                          entries: Any, plan: Any) -> StagedExtensions:
+                          entries: Any, access: Any) -> StagedExtensions:
         from xdog.coding.core.sdk import _as_thinking_level
         from xdog.coding.core.session_staging import prepare
         native = self._resolve_selected_model(model) if not model.startswith('ext-') else None
         return prepare(settings, directory, session_id, model, _as_thinking_level(settings.thinking_level),
-                       entries, plan, self.permissions.mode, native,
+                       entries, access, self.permissions.mode, native,
                        lambda: self._navigation_alive() and not self._navigation_cancel.is_set())
 
     def _publish_navigation_model(self, model: str, metadata: Model | None, thinking: ThinkingLevel | None) -> None:
@@ -1152,7 +1150,7 @@ class AgentSession:
             tools = tuple(defaults.get(tool.name, tool) for tool in tools)
         try:
             staged = self._stage_navigation(settings, directory, loaded.session_id, selected_model,
-                                             loaded.extension_entries, loaded.plan)
+                                             loaded.extension_entries, loaded.access)
             selected_model = staged.model.id if staged.model is not None else selected_model
             loaded.extension_entries = staged.runtime.entries.snapshot()
             if loaded.active_tools is not None:
@@ -1183,7 +1181,7 @@ class AgentSession:
         self.extensions.close()
         old_ext = self.extensions.aliases
         tools = tuple(tool for tool in tools if tool.name not in old_ext)
-        self.plan.close()
+        self.access.close()
         self.session_data = loaded
         self.working_dir = directory
         self.settings = settings
@@ -1193,7 +1191,7 @@ class AgentSession:
         self._push_skills()
         self.agent.replace_messages(list(loaded.messages))
         self.agent.set_tools(tools)
-        self._load_plan()
+        self._load_access()
         self._load_extensions(staged.runtime)
         self._load_children()
         self.agent.set_tool_context({**self.agent.tool_context, "fs_workspace": str(directory)})
@@ -1250,7 +1248,7 @@ class AgentSession:
             "branch_id": branch_id, "branch_point": point,
             "messages": messages_to_dicts(messages[:point + 1]),
             "parent_branch": self.session_data.active_branch, "created_at": time.time(), "label": label,
-            "model": self.model, "settings": self.settings.session_to_dict(), "plan": self.plan.state.to_dict(),
+            "model": self.model, "settings": self.settings.session_to_dict(), "access": self.access.state.to_dict(),
             "extension_entries": self.extensions.entries.snapshot(),
             "compaction": self.session_data.compaction,
             "active_tools": (list(self.agent.active_tool_selection)
@@ -1293,7 +1291,7 @@ class AgentSession:
                 raise ValueError('Branch model does not advertise saved thinking level; no fallback')
         from xdog.agent.extensions.active_tools import names as active_tool_names
         restored_tools = active_tool_names(branch.get("active_tools"))
-        restored_plan = PlanState.from_dict(branch.get("plan"))
+        restored_access = AccessState.saved(branch).retain_restriction(self.access.state)
         validate_entries(branch.get("extension_entries", {}))
         restored = dicts_to_messages(branch["messages"])
         if restored:
@@ -1301,7 +1299,7 @@ class AgentSession:
         target_settings = SettingsManager(global_path=self.settings._global_path, project_dir=self.working_dir)
         target_settings.load_session_settings(branch.get('settings', self.settings.session_to_dict()))
         staged: StagedExtensions = self._stage_navigation(target_settings, self.working_dir, self.session_id,
-            selected_model, branch.get('extension_entries', {}), branch.get('plan'))
+            selected_model, branch.get('extension_entries', {}), restored_access.to_dict())
         if restored_tools is not None:
             available = {tool.name for tool in self.agent.state.tools if tool.name not in self.extensions.aliases}
             available.update(tool.name for tool in staged.runtime.tools())
@@ -1315,12 +1313,12 @@ class AgentSession:
         return_branch = {'branch_id': uuid.uuid4().hex[:8], 'branch_point': point,
             'messages': messages_to_dicts(self.messages[:point + 1]), 'parent_branch': self.session_data.active_branch,
             'created_at': time.time(), 'label': 'Return checkpoint before branch navigation', 'model': self.model,
-            'settings': self.settings.session_to_dict(), 'plan': self.plan.state.to_dict(),
+            'settings': self.settings.session_to_dict(), 'access': self.access.state.to_dict(),
             'extension_entries': self.extensions.entries.snapshot(), 'compaction': self.session_data.compaction,
             'active_tools': (list(self.agent.active_tool_selection)
                              if self.agent.active_tool_selection is not None else None)}
         committed = replace(self.session_data, messages=restored, model=selected_model,
-            settings=target_settings.session_to_dict(), plan=restored_plan.to_dict(),
+            settings=target_settings.session_to_dict(), access=restored_access.to_dict(),
             extension_entries=staged.runtime.entries.snapshot(), compaction=restored_compaction,
             active_branch=branch_id, branches=[*self.session_data.branches, return_branch], active_tools=restored_tools)
         try:
@@ -1339,8 +1337,8 @@ class AgentSession:
         self.agent.clear_all_queues()
         self.permissions.clear_session_rules()
         self.agent.replace_messages(restored)
-        self.plan.close()
-        self.session_data.plan = restored_plan.to_dict()
+        self.access.close()
+        self.session_data.access = restored_access.to_dict()
         self.children.close()
         self.extension_dialogs.close()
         self.extensions.close()
@@ -1349,7 +1347,7 @@ class AgentSession:
         self.session_data.compaction = restored_compaction
         self.session_data.extension_entries = committed.extension_entries
         self._load_extensions(staged.runtime)
-        self._load_plan()
+        self._load_access()
         self.session_data.active_branch = branch_id
         self.session_data.active_tools = committed.active_tools
         self._load_children()
@@ -1369,7 +1367,7 @@ class AgentSession:
             raise ValueError("Invalid zero-based checkpoint index")
         if session_id == self.session_id:
             loaded = replace(self.session_data, messages=list(self.messages), model=self.model,
-                settings=self.settings.session_to_dict(), plan=self.plan.state.to_dict(),
+                settings=self.settings.session_to_dict(), access=self.access.state.to_dict(),
                 extension_entries=self.extensions.entries.snapshot())
         else:
             saved = self.session_manager.load_session(session_id)
@@ -1405,11 +1403,11 @@ class AgentSession:
             raise ValueError("Invalid saved branch model/settings")
         from xdog.agent.extensions.active_tools import names as active_tool_names
         active_tools = active_tool_names(source.get('active_tools')) if source is not None else loaded.active_tools
-        plan = source.get("plan") if source is not None else loaded.plan
+        access = AccessState.saved(source).to_dict() if source is not None else loaded.access
         entries = source.get("extension_entries", {}) if source is not None else loaded.extension_entries
         from xdog.agent.extensions.compaction import saved_record
         compaction = saved_record(source.get("compaction") if source is not None else loaded.compaction)
-        PlanState.from_dict(plan)
+        access = AccessState.from_dict(access).retain_restriction(self.access.state).to_dict()
         validate_entries(entries)
         import time
         created_at = time.time()
@@ -1420,7 +1418,7 @@ class AgentSession:
             branches.append({"branch_id": active_branch, "branch_point": index,
                 "messages": messages_to_dicts(selected), "parent_branch": branch_id or loaded.active_branch,
                 "created_at": created_at, "label": f"Checkpoint at message {index + 1}",
-                "model": model, "settings": settings, "plan": plan, "extension_entries": entries,
+                "model": model, "settings": settings, "access": access, "extension_entries": entries,
                 "compaction": compaction, "active_tools": list(active_tools) if active_tools is not None else None})
         points = history_points(loaded.messages)
         return_point = points[-1].index if points else -1
@@ -1428,10 +1426,10 @@ class AgentSession:
             "messages": messages_to_dicts(loaded.messages[:return_point + 1]),
             "parent_branch": loaded.active_branch, "created_at": created_at,
             "label": "Return checkpoint before branch navigation", "model": loaded.model,
-            "settings": loaded.settings, "plan": loaded.plan,
+            "settings": loaded.settings, "access": loaded.access,
             "extension_entries": loaded.extension_entries, "compaction": loaded.compaction,
             "active_tools": list(loaded.active_tools) if loaded.active_tools is not None else None})
-        return replace(loaded, messages=list(selected), model=model, settings=dict(settings), plan=plan,
+        return replace(loaded, messages=list(selected), model=model, settings=dict(settings), access=access,
             extension_entries=entries, compaction=compaction, active_branch=active_branch, branches=branches,
             active_tools=active_tools)
 
@@ -1517,7 +1515,7 @@ class AgentSession:
             extra_context=_skills_context(self._active_skills),
             native_tool_calls=self._native_tool_calls(),
         )
-        self.agent.set_system_prompt(prompt + self.plan.state.prompt())
+        self.agent.set_system_prompt(prompt + self.access.state.prompt())
     def _on_agent_event(self, event: AgentEvent) -> None:
         """Handle agent lifecycle events."""
         if isinstance(event, AgentEndEvent):
@@ -1634,7 +1632,7 @@ class AgentSession:
         self.children.close()
         self.extension_dialogs.close()
         self.extensions.close()
-        self.plan.close()
+        self.access.close()
         self.permissions.close()
         if self.mcp is not None:
             self.mcp.close()

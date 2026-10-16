@@ -1,68 +1,38 @@
+"""Watch gestures are inert; retained native browse requires explicit requests."""
 from __future__ import annotations
 
-import asyncio
-import json
-import sys
-from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
-from xdog.ai.types import AssistantMessage
-from xdog.ai.utils.event_stream import EventStream
-from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
+from xdog.agent.mcp.context import McpEntry
+from xdog.tui.keys import KeyEvent, KeyEventType
 
-PEER = Path(__file__).parents[2] / 'agent/tests/fixtures/mcp_subscription_peer.py'
+from packages.coding.tests.test_mcp_manual_picker_ui import native_mcp as native_mcp
 
 
-async def test_claw_combined_capability_withdrawal_preserves_resource_watch_and_refuses_old_viewer(tmp_path):
-    log = tmp_path / 'requests'
-    config = ClawConfig(model='test/model', data_dir=str(tmp_path / 'data'),
-        socket_path=str(tmp_path / 'caps.sock'), pid_file=str(tmp_path / 'caps.pid'),
-        groups=(GroupDef(id='main', is_main=True),), mcp_servers={'peer': {
-            'command': sys.executable, 'args': [str(PEER), 'modern', str(log)]}})
-    server = GatewayServer(config)
-    with patch('xdog.claw.core.runtime.gateway._build_model_and_options',
-               return_value=('test/model', lambda *args: EventStream.empty(AssistantMessage()))):
-        await server.start()
-    await server._orchestrator.manage_mcp('main', 'connect', 'peer')
-    manager = server._orchestrator._runtimes['main'].mcp
-    reader, writer = await asyncio.open_unix_connection(config.socket_path)
-    async def send(value):
-        writer.write((json.dumps(value) + '\n').encode())
-        await writer.drain()
-    async def receive(kind):
-        async with asyncio.timeout(5):
-            while True:
-                value = json.loads(await reader.readline())
-                if value['type'] == kind:
-                    return value
-    try:
-        await send({'type': 'ping', 'group_id': 'main'})
-        state = await receive('pong')
-        view = 'a' * 32
-        base = {'type': 'mcp_resource_watch', 'group_id': 'main', 'session_id': state.get('session_id', ''),
-                'view': view, 'server': 'peer', 'action': 'watch'}
-        await send({**base, 'request_id': 'resource', 'uri': 'test://watched'})
-        assert (await receive('mcp_resource_watch_result'))['success']
-        await send({**base, 'request_id': 'old-first', 'uri': '', 'notifications': {'toolsListChanged': True}})
-        assert not (await receive('mcp_resource_watch_result'))['success']
-        await send({'type': 'ping', 'mcp_combined_watch': 1})
-        await receive('pong')
-        await send({**base, 'request_id': 'combined', 'uri': '', 'notifications': {
-            'toolsListChanged': True, 'resourceSubscriptions': ['test://watched']}})
-        assert (await receive('mcp_resource_watch_result'))['success']
-        assert len(manager._resource_watches) == 2
-        await send({'type': 'ping', 'mcp_combined_watch': 0})
-        await receive('pong')
-        async with asyncio.timeout(5):
-            while len(manager._resource_watches) != 1:
-                await asyncio.sleep(0.003)
-        assert next(iter(manager._resource_watches))[2] == 'resource'
-        await send({**base, 'request_id': 'old', 'uri': '', 'notifications': {'promptsListChanged': True}})
-        assert not (await receive('mcp_resource_watch_result'))['success']
-        await send({**base, 'request_id': 'null-no-downgrade', 'uri': 'test://watched', 'notifications': None})
-        assert not (await receive('mcp_resource_watch_result'))['success']
-    finally:
-        writer.close()
-        await writer.wait_closed()
-        await server.stop()
+def test_retired_watch_keys_never_wire_or_arm_an_editor(native_mcp):
+    host, ui, panel, sent, session, calls = native_mcp
+    ui._editor.set_text('PRIMARY DRAFT /quit')
+    before = list(sent)
+    for event_type in KeyEventType:
+        for event in (KeyEvent('w', event_type=event_type), KeyEvent('w', alt=True, event_type=event_type),
+                      KeyEvent('t', alt=True, event_type=event_type),
+                      KeyEvent('p', alt=True, event_type=event_type),
+                      KeyEvent('u', alt=True, event_type=event_type)):
+            panel.handle_input(event)
+    panel.handle_paste('{"toolsListChanged":true}')
+    assert sent == before and panel._mode == 'servers' and not panel._busy
+    assert not hasattr(panel, 'publish_watch') and not hasattr(panel, '_subscription_form')
+    assert ui._editor.get_text() == 'PRIMARY DRAFT /quit' and not calls
+    assert 'watch' not in '\n'.join(panel.render(160)).lower()
+    if host == 'coding':
+        from packages.coding.tests.test_mcp_browser import wait_ui
+        with patch.object(session.mcp, 'catalog', AsyncMock(return_value=(
+                McpEntry('fixture', 'resource', 'test://manual', 'Manual'),))) as catalog:
+            panel.handle_input(KeyEvent('u'))
+            wait_ui(ui, lambda: not panel._busy)
+            catalog.assert_awaited_once_with('fixture', 'resource')
+        assert panel._mode == 'catalog'
+    else:
+        panel.handle_input(KeyEvent('u'))
+        assert sent[-1]['type'] == 'mcp_context' and sent[-1]['action'] == 'resources'
+        assert not any('watch' in key for request in sent for key in request)

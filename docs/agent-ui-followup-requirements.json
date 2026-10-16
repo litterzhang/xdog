@@ -1,0 +1,125 @@
+{
+  "date": "2026-10-16",
+  "base_commit": "c647573e0f792a8def26a462b628017c7f28054b",
+  "status": "complete",
+  "counts": {
+    "top_level": 6,
+    "待实现": 0,
+    "待验证": 0,
+    "缺外部环境": 0,
+    "已完成": 6,
+    "延期": 0
+  },
+  "protected_invariants": [
+    "UI-030 dynamic trusted worker/hooks/tools/commands",
+    "UI-033 model providers",
+    "UI-046 child crash consistency",
+    "UI-029 explicit file/SecretService MCP stores and provider vault",
+    "normalClawchat/MCP/privateworkerJSONRPC",
+    "ACP/Eyes solecontroller/inbox/writerlease/no replay",
+    "SDK lifecycle/skills/snapshots/optionalcompaction, Linuxrendering,Flowparity/licensing"
+  ],
+  "requirements": [
+    {
+      "id": "UI-013",
+      "title": "独立计划系统替换",
+      "status": "已完成",
+      "scope": "用built-in planning skill和普通任务材料替换PlanOwner/PlanState/update_plan/专用计划模式UI；先修正并迁移真正的宿主只读门禁。",
+      "acceptance": "旧allow_session、allow-all、延迟批准不绕过硬只读；Coding/Claw等价、扩展/MCP/子任务受限；旧planning恢复不变可写；显式用户解除；无第二planner/Agent loop。",
+      "decision": "已用 xdog-planning packaged skill 替换独立计划状态、工具和面板；共享宿主 AccessScope 在批准/allow-all 前后拦截非只读调用，含扩展改写、MCP 和子任务；旧 planning 与导航恢复 fail-closed，只有显式宿主解除可放宽。",
+      "evidence": [
+        "/tmp/xdog-ui-followup/ui013/access-core-green.log:61passed including real fresh-process restore, stale approval, external/child blocks and read-to-write rewrite",
+        "/tmp/xdog-ui-followup/ui013/host-access-tests/final.log:83passed",
+        "/tmp/xdog-ui-followup/ui013/navigation-journal/tests.log:9passed exact process-death/cleanup assertions",
+        "/tmp/xdog-ui-followup/native-013-016-027/compact-layout/report.json:typed readonly startup red->green;45passed",
+        "/tmp/xdog-ui-followup/final-integration/summary.json:final frozen all8tests+Ruff+strictmypy+examples+lock+18freshartifact gates passed"
+      ]
+    },
+    {
+      "id": "UI-016",
+      "title": "子任务队列主Agent优先",
+      "status": "已完成",
+      "scope": "移除用户手工编辑/排序/删除/取回队列UI，只读检查/状态及必要停止保留；主Agent与SDK队列管理保留。",
+      "acceptance": "只读界面及旧mutation包不调用backend写控制；实际agent_control(queue)仍可在权限下操作；owner/revision/selected/delivery/image receipt/写前持久化/取消及并发保护验证。",
+      "decision": "用户队列界面及 slash/socket 入口仅接受精确 list，保留本地 reply-owner fences、只读检查和停止；所有主 Agent/SDK 队列变更、恢复和持久化保护保留。",
+      "evidence": [
+        "/tmp/xdog-ui-followup/native-013-016-027/report.json:398passed scoped native/TUI/OAuth/transport gates; exact list and11retired mutation refusals+6reply fences",
+        "/tmp/xdog-ui-followup/ui016/report.json:106readonly panel+retaineddraft tests passed",
+        "/tmp/xdog-ui-followup/final-integration/summary.json:final frozen all8tests+Ruff+strictmypy+examples+lock+18freshartifact gates passed"
+      ]
+    },
+    {
+      "id": "UI-017",
+      "title": "最小输入日志与显式恢复",
+      "status": "已完成",
+      "scope": "与保留的46共同验证输入/初始任务/附件日志、history准入与settlement及uncertain恢复；不新建日志管理产品。",
+      "acceptance": "当前Linux进程崩溃边界下可恢复数据一致或明确uncertain；没有自动重放/重启或exactly-once声称；主Agent显式恢复入口可用且受权限/owner保护。",
+      "decision": "验证既有最小输入/初始任务/附件日志、准入与结算、uncertain 显式恢复；添加真实 main-Agent agent_control(queue) 权限与 typed image 恢复覆盖，无自动重启/重放，保留46。",
+      "evidence": [
+        "/tmp/xdog-ui-followup/ui017/report.json:17actualLinuxSIGKILL+7actualmainAgentrecovery cases",
+        "packages/agent/tests/test_main_agent_child_recovery.py",
+        "/tmp/xdog-ui-followup/final-integration/tests.log:all retained migrated host/SDK child crash and concurrency cases pass",
+        "/tmp/xdog-ui-followup/final-integration/summary.json:final frozen all8tests+Ruff+strictmypy+examples+lock+18freshartifact gates passed"
+      ]
+    },
+    {
+      "id": "UI-027",
+      "title": "主动MCP订阅移除",
+      "status": "已完成",
+      "scope": "移除resource/catalog/combined主动watch SDK/UI/任务和订阅专用协议；分离共享URI校验。",
+      "acceptance": "无watch入口/订阅后台工作或隐式read/model调用；普通tools/resources/prompts/手动refresh/最小目录失效、Roots精确续接及SSE/GET恢复/取消/noPOSTreplay保持。",
+      "decision": "主动 resource/catalog/combined watch 的 SDK、客户端、原生 UI、gateway 协议和后台 listener 已移除；共享 URI/metadata 校验分离，普通 MCP、显式刷新、Roots、response SSE/cursor GET、取消与 noPOSTreplay 保留。",
+      "evidence": [
+        "/tmp/xdog-ui-followup/ui027/summary.json:291SDKtests including15independentNodeSDK cases",
+        "/tmp/xdog-ui-followup/native-013-016-027/report.json:native no-wire/removal and ordinary browser/OAuth/transport checks",
+        "/tmp/xdog-ui-followup/final-integration/artifacts.json:retired subscription imports/APIs absent in fresh artifacts",
+        "/tmp/xdog-ui-followup/final-integration/summary.json:final frozen all8tests+Ruff+strictmypy+examples+lock+18freshartifact gates passed"
+      ]
+    },
+    {
+      "id": "UI-043",
+      "title": "扩展宿主控制残留审计",
+      "status": "已完成",
+      "scope": "以当前exports审计残留；保留必要controller/只读查询/原生用户控制/基础问答；不重建或重复计数已移除插件写控制。",
+      "acceptance": "有当前公开API对应矩阵和拒绝测试；30注册/hook/worker、33provider及正常内部JSONRPC仍可用；插件不能借旧包恢复会话/输入/队列/compaction控制。",
+      "decision": "完成当前真实 exports 审计；历史11项 mutation API 仍缺席，不重建或重复计数；只读查询、基础对话、原生用户控制、controller/privateworker 必需通信和30/33保留。",
+      "evidence": [
+        "/tmp/xdog-ui-followup/ui043-044/ui043-export-audit.json",
+        "/tmp/xdog-ui-followup/ui043-044/report.json:111readonly/registration/dialog and78crosshost tests",
+        "/tmp/xdog-ui-followup/final-integration/artifacts.json:retained/retired ExtensionAPI matrix passed",
+        "/tmp/xdog-ui-followup/final-integration/summary.json:final frozen all8tests+Ruff+strictmypy+examples+lock+18freshartifact gates passed"
+      ]
+    },
+    {
+      "id": "UI-044",
+      "title": "模型认证底层与OAuth入口精简",
+      "status": "已完成",
+      "scope": "保留env/resolver私有凭据与模型调用正确性；仅显式注册provider可用其OAuth回调，统一薄的login/refresh/logout入口，不扩建通用认证平台。",
+      "acceptance": "秘密不进catalog/log/快照；cancel/expiry/withdrawal/路由capabilities与no fallback验证；ProviderOAuth与MCP PKCE区分；29两LinuxMCP后端及provider vault显式操作保留，无自动写入/迁移/降级。",
+      "decision": "复核并保留唯一薄的显式 provider callback login/refresh/logout 路径，未删必要认证模块；修复 async get_api_key 期间凭据过期仍准入模型调用的竞态，保留29显式两种LinuxMCP后端和provider vault，无隐式刷新/写入/迁移/降级。",
+      "evidence": [
+        "/tmp/xdog-ui-followup/ui043-044/report.json:expiry race red1->green1;81provider/50credentialstore/78crosshost cases",
+        "/tmp/xdog-ui-followup/final-integration/tests.log:all retained auth/cancel/expiry/no-fallback cases pass",
+        "/tmp/xdog-ui-followup/final-integration/summary.json:final frozen all8tests+Ruff+strictmypy+examples+lock+18freshartifact gates passed"
+      ]
+    }
+  ],
+  "integration": {
+    "status": "已完成",
+    "final_summary": "/tmp/xdog-ui-followup/final-integration/summary.json",
+    "first_full_regression": "/tmp/xdog-ui-followup/final-integration/tests-initial-failure.log:6failures retained as evidence; fixed without security deselection",
+    "additional_requirement_count": 0,
+    "protected_linux_lifecycle_repairs": [
+      "stale inbox activation must not poison successor owner",
+      "Eyes socket canonical publication is private/listening before visibility"
+    ],
+    "final_package_tests": {
+      "passed": 5932,
+      "failed": 0,
+      "optional_external_cli_skipped": 7
+    },
+    "non_linux_native_validation": "outside approved scope, not claimed passed",
+    "release": "No commit/push/tag/version bump/release/service restart authorized or performed"
+  },
+  "remaining": 0
+}

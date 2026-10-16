@@ -12,11 +12,10 @@ const stdio = await import(pathToFileURL(join(root,pkg.exports['./stdio'].import
 const {z} = createRequire(join(process.env.XDOG_MCP_OFFICIAL_SDK_ROOT,'package.json'))('zod');
 const mode = process.argv[2], log = process.argv[3];
 const record = (type, details={}) => appendFileSync(log,JSON.stringify({type,...details})+'\n');
-let handle, http, liveServer;
+let handle, http;
 function factory() {
   const server = new sdk.McpServer({name:'official-sdk-peer',version:'1.0.0'},
     {capabilities:{resources:{subscribe:true}}});
-  liveServer = server;
   server.registerResource('watched','test://watched',{mimeType:'text/plain'}, async uri => {
     record('resource-read');
     return {contents:[{uri:uri.href,text:'must-not-read'}]};
@@ -51,30 +50,6 @@ function factory() {
       {type:'resource_link',name:'linked data',uri:'https://must-not-fetch.invalid/document',
         _meta:{'fixture/link':'SDK-CONTENT-LINK'}}]};
   });
-  server.registerTool('catalogTick',{inputSchema:{kind:z.enum(['tools','prompts','resources'])}},async ({kind}) => {
-    record('catalog-tick',{kind});
-    if(mode==='http') handle.notify[kind+'Changed']();
-    else await server.server[{tools:'sendToolListChanged',prompts:'sendPromptListChanged',
-      resources:'sendResourceListChanged'}[kind]]();
-    return {content:[{type:'text',text:'catalog notice only'}]};
-  });
-  server.registerTool('resourceTick',{inputSchema:{uri:z.string()}},async ({uri}) => {
-    record('resource-tick',{uri});
-    if(mode==='http') handle.notify.resourceUpdated(uri);
-    else await server.server.sendResourceUpdated({uri});
-    return {content:[{type:'text',text:'explicit resource notice only'}]};
-  });
-  server.registerTool('tick',{inputSchema:{}}, async () => {
-    record('tick');
-    if (mode === 'http') handle.notify.resourceUpdated('test://watched');
-    else await server.server.sendResourceUpdated({uri:'test://watched'});
-    return {content:[{type:'text',text:'tick'}]};
-  });
-  server.registerTool('finish',{inputSchema:{}}, async () => {
-    record('finish');
-    setTimeout(async () => {await handle.close(); if (http) http.close();},100);
-    return {content:[{type:'text',text:'closing'}]};
-  });
   return server;
 }
 if (mode === 'stdio') {
@@ -82,13 +57,17 @@ if (mode === 'stdio') {
   const send = transport.send.bind(transport);
   transport.send = async message => {
     record('outbound',{message}); await send(message);
-    if (process.env.XDOG_MCP_SDK_AUTO_NOTICE === '1' && message.method === 'notifications/subscriptions/acknowledged')
-      setTimeout(()=>liveServer.server.sendResourceUpdated({uri:'test://watched'}).catch(()=>{}),40);
   };
   handle = stdio.serveStdio(factory,{transport});
+  const previous = transport.onmessage;
+  transport.onmessage = (...args) => {
+    record('inbound',{method:args[0].method,params:args[0].params});
+    return previous?.(...args);
+  };
 } else {
   handle = sdk.createMcpHandler(factory,{keepAliveMs:0});
   http = createServer(async (req,res) => {
+    record('http-request',{method:req.method});
     const chunks=[];
     for await (const chunk of req) chunks.push(chunk);
     const body=Buffer.concat(chunks);

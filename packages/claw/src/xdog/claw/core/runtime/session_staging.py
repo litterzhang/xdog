@@ -1,4 +1,4 @@
-"""A prepared target AgentSession with buffered entry/plan persistence, never an active owner."""
+"""A prepared target AgentSession with buffered entry/access persistence, never an active owner."""
 from __future__ import annotations
 
 import asyncio
@@ -27,7 +27,7 @@ def owned_run(work: Callable[[], Coroutine[Any, Any, T]]) -> T:
 
 class BufferedTranscriptStore(TranscriptStore):
     def __init__(self, original: TranscriptStore, session_id: str, source: list[dict[str, Any]],
-                 plan: Any, entries: Any, branch_id: str, active_tools: tuple[str, ...] | None = None) -> None:
+                 access: Any, entries: Any, branch_id: str, active_tools: tuple[str, ...] | None = None) -> None:
         self.__dict__.update(original.__dict__)
         self._original = original
         self._target = session_id
@@ -37,9 +37,9 @@ class BufferedTranscriptStore(TranscriptStore):
         self._lock = threading.RLock()
         self._catalog = copy.deepcopy(original._catalog)
         self._index = copy.deepcopy(original._index)
-        self._plans = copy.deepcopy(original._plans)
+        self._access = copy.deepcopy(original._access)
         self._extension_entries = copy.deepcopy(original._extension_entries)
-        self._plans[self._path(session_id).with_suffix('.plan.json').name] = copy.deepcopy(plan)
+        self._access[self._path(session_id).with_suffix('.access.json').name] = copy.deepcopy(access)
         self._extension_entries[self._path(session_id).with_suffix('.extensions.json').name] = copy.deepcopy(entries)
         self._catalog['active_branches'][session_id] = branch_id
 
@@ -67,13 +67,13 @@ class BufferedTranscriptStore(TranscriptStore):
         else:
             raise ValueError('Staged entry owner mismatch')
 
-    def save_plan(self, session_id: str, plan: dict[str, Any]) -> None:
+    def save_access(self, session_id: str, access: dict[str, Any]) -> None:
         if self._promoted:
-            self._original.save_plan(session_id, plan)
+            self._original.save_access(session_id, access)
         elif session_id == self._target:
-            self._plans[self._path(session_id).with_suffix('.plan.json').name] = copy.deepcopy(plan)
+            self._access[self._path(session_id).with_suffix('.access.json').name] = copy.deepcopy(access)
         else:
-            raise ValueError('Staged plan owner mismatch')
+            raise ValueError('Staged access owner mismatch')
 
     def _atomic(self, *args: Any, **kwargs: Any) -> None:
         raise ValueError('Unadmitted staged persistence operation')
@@ -98,7 +98,7 @@ class PreparedSession:
         owned_run(self.aclose)
 
 
-def prepare(runtime: GroupRuntime, session_id: str, source: list[dict[str, Any]], plan: Any,
+def prepare(runtime: GroupRuntime, session_id: str, source: list[dict[str, Any]], access: Any,
             entries: Any, branch_id: str, alive: Callable[[], bool], *,
             active_tools: tuple[str, ...] | None = None) -> PreparedSession:
     from xdog.claw.core.runtime.session import AgentSession
@@ -106,7 +106,7 @@ def prepare(runtime: GroupRuntime, session_id: str, source: list[dict[str, Any]]
     if not alive():
         raise asyncio.CancelledError
     original = runtime.transcript_store
-    buffered = BufferedTranscriptStore(original, session_id, source, plan, entries, branch_id, active_tools)
+    buffered = BufferedTranscriptStore(original, session_id, source, access, entries, branch_id, active_tools)
     shadow = copy.copy(runtime)
     shadow.transcript_store = buffered
     shadow._active_session = None
@@ -124,7 +124,7 @@ def prepare(runtime: GroupRuntime, session_id: str, source: list[dict[str, Any]]
         try:
             staged.extensions.context = lambda: {
                 'session_id': session_id, 'group_id': runtime.group.id, 'cwd': str(runtime.workspace_dir),
-                'model': shadow.model, 'planning_mode': staged.plan.state.mode, 'permission_mode': 'configured',
+                'model': shadow.model, 'read_only': staged.access.state.read_only, 'permission_mode': 'configured',
                 'staged': True}
             await staged.initialize_extensions(require_model=True)
             if not alive():

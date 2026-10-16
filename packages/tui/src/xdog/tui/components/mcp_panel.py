@@ -8,7 +8,6 @@ from xdog.tui.components.input_panel import InputPanel
 from xdog.tui.components.oauth_panel import OAuthPanel
 from xdog.tui.components.transcript_panel import TranscriptPanel
 from xdog.tui.keys import KeyEvent, KeyEventType
-from xdog.tui.mcp_subscription import filter_text
 from xdog.tui.transcript_browser import TranscriptRecord
 from xdog.tui.tui import Component
 from xdog.tui.utils import sanitize_terminal_text, truncate_to_width
@@ -38,7 +37,6 @@ class McpPanel(Component):
         self._busy = False
         self._message = ""
         self._review_ended_notice = ""
-        self._watches: dict[tuple[str, str, str], dict[str, Any]] = {}
         self._query = ""
         self._filtering = False
         self._preview: TranscriptPanel | None = None
@@ -59,62 +57,8 @@ class McpPanel(Component):
         if self.auth is not None:
             self.auth.focused = value
         self._arguments.focused = value and self._mode in {
-            'arguments', 'uri', 'subscriptions'}
+            'arguments', 'uri'}
 
-
-
-
-
-
-
-
-
-
-
-
-    def publish_watch(self, data: dict[str, Any], error: str = "", *, receipt: bool = False) -> None:
-        if receipt:
-            self._busy = False
-        if error:
-            self._message = sanitize_terminal_text(error)
-            return
-        server, uri, state, changes = (data.get(key) for key in ('server', 'uri', 'state', 'changes'))
-        if (not isinstance(server, str) or not isinstance(uri, str) or not isinstance(state, str)
-                or state not in {'active', 'opening', 'stopped', 'ended', 'failed', 'interrupted', 'disconnected'}
-                or type(changes) is not int or not 0 <= changes <= 2**53):
-            self._message = 'Invalid resource watch update ignored'
-            return
-        catalog = data.get('catalog', '')
-        if catalog not in ('', 'tools', 'prompts', 'resources'):
-            self._message = 'Invalid catalog watch kind ignored'
-            return
-        filters = data.get('notifications')
-        if filters is not None:
-            try:
-                selected = filter_text(filters)
-            except (ValueError, UnicodeError):
-                self._message = 'Invalid combined notification filter ignored'
-                return
-            if catalog or uri:
-                self._message = 'Mixed resource/catalog/combined watch update ignored'
-                return
-            key = server, 'notifications', selected
-        else:
-            key = server, catalog, uri
-        if len(self._watches) >= 16 and key not in self._watches:
-            retired = next((key for key, value in self._watches.items()
-                            if value.get('state') not in {'opening', 'active'}), None)
-            if retired is None:
-                self._message = 'Resource watch view capacity reached'
-                return
-            self._watches.pop(retired)
-        self._watches[key] = dict(data)
-        from xdog.tui.utils import redact_sensitive_text
-        self._message = (f'Watch {state} · {changes} change notice(s) · '
-                         + ('combined notification filters' if filters is not None else
-                            catalog + ' catalog' if catalog else redact_sensitive_text(uri))
-                         + (' · no automatic read/registration/prompt insertion' if catalog or filters is not None
-                            else ' · no automatic read/prompt insertion'))
 
     def authorize_server(self, server: str) -> None:
         if self._busy:
@@ -154,28 +98,12 @@ class McpPanel(Component):
             else:
                 self._message = "Authorization state: " + str(data.get("state", "unknown"))
 
-    def _subscription_form(self) -> None:
-        self._mode = 'subscriptions'
-        self._arguments.focused = self.focused
-        self._arguments.set_text('{"toolsListChanged":true,"promptsListChanged":true,'
-                                 '"resourcesListChanged":true,"resourceSubscriptions":[]}')
-        self._message = 'Edit exact catalog flags/URI array; Enter starts/stops this filter only (no reads)'
-
     def _submit_arguments(self, value: str) -> None:
+        if self._mode not in {"arguments", "uri"}:
+            return
         # InputPanel clears on submit; keep explicit input available after a failed/canceled request.
         self._arguments.set_text(value)
         if self._busy:
-            return
-        if self._mode == 'subscriptions':
-            import json
-            self._arguments.set_text(value)
-            try:
-                selected = filter_text(json.loads(value))
-            except (ValueError, UnicodeError) as exc:
-                self._message = str(exc)
-                return
-            state = self._watches.get((self._server, 'notifications', selected), {}).get('state')
-            self.request('unwatch_notifications' if state == 'active' else 'watch_notifications', selected)
             return
         if self._mode == "uri":
             uri = value.strip()
@@ -200,6 +128,9 @@ class McpPanel(Component):
         self.send("prompt", self._server, self._argument_name, args)
 
     def request(self, action: str, name: str = "", args: dict[str, str] | None = None) -> None:
+        if action not in {'list', 'connect', 'disconnect', 'refresh', 'resources', 'templates',
+                          'prompts', 'read', 'prompt'} and not action.startswith('auth_'):
+            return  # Retired controls cannot change a newer request/view or its busy/message state.
         if self._busy:
             return
         self._busy = True
@@ -291,7 +222,7 @@ class McpPanel(Component):
         self.send("list", "", "", {})
 
     def handle_paste(self, text: str) -> bool:
-        if self._mode in {"arguments", "uri", "subscriptions"}:
+        if self._mode in {"arguments", "uri"}:
             self._arguments.handle_paste(text)
         elif self._filtering:
             self._query += sanitize_terminal_text(text).replace("\n", " ")
@@ -314,7 +245,7 @@ class McpPanel(Component):
                 self._back()
             else:
                 self.on_close()
-        elif self._mode in {"arguments", "uri", "subscriptions"}:
+        elif self._mode in {"arguments", "uri"}:
             if not event.matches("enter") or not self._busy:
                 self._arguments.handle_input(event)
         elif self._filtering:
@@ -352,19 +283,8 @@ class McpPanel(Component):
                                "x": "auth_credentials_forget_prepare", "c": "connect", "d": "disconnect",
                                "r": "refresh", "u": "resources",
                                "t": "templates", "p": "prompts"}
-                    catalogs = {'t': 'tools', 'p': 'prompts', 'u': 'resources'}
-                    if event.matches('alt+w'):
-                        self._subscription_form()
-                    elif any(event.matches('alt+' + key) for key in catalogs):
-                        kind = catalogs[event.key]
-                        state = self._watches.get((self._server, kind, ''), {}).get('state')
-                        self.request('unwatch_catalog' if state == 'active' else 'watch_catalog', kind)
-                    elif any(event.matches(key) for key in actions):
+                    if any(event.matches(key) for key in actions):
                         self.request(actions[event.key])
-                elif event.matches("w") and self._kind == "resources":
-                    uri = str(row['name'])
-                    state = self._watches.get((self._server, '', uri), {}).get('state')
-                    self.request('unwatch_resource' if state == 'active' else 'watch_resource', uri)
                 elif event.matches("enter"):
                     if self._kind == "resources":
                         self.request("read", str(row["name"]))
@@ -393,10 +313,9 @@ class McpPanel(Component):
             self._preview.set_render_budget(max(0, self._budget - 2 - int(bool(self._message))))
             rows = [title, *([self._message] if self._message else []), *self._preview.render(width),
                     "Untrusted data · i inserts into editable draft · e raw export · Esc back"]
-        elif self._mode in {"arguments", "uri", "subscriptions"}:
+        elif self._mode in {"arguments", "uri"}:
             self._arguments.set_render_budget(max(1, min(3, self._budget - 3)), show_borders=False)
-            hint = ("Enter starts/stops exact notification watch · Esc back" if self._mode == 'subscriptions' else
-                    "Enter retrieves preview only · Esc back")
+            hint = "Enter retrieves preview only · Esc back"
             rows = [title, self._message, *self._arguments.render(width), hint]
         else:
             visible = self._visible()
@@ -406,12 +325,8 @@ class McpPanel(Component):
             for index, row in enumerate(visible[top:top + budget], top):
                 name = str(row.get("server", "") if self._mode == "servers" else row.get("name", ""))
                 detail = str(row.get("state", row.get("title", "")))
-                if self._mode != "servers" and self._kind == "resources":
-                    watch = self._watches.get((self._server, '', name))
-                    if watch is not None:
-                        detail += f" · watch {watch['state']} · {watch['changes']} change notice(s)"
                 body.append(f"{'▶' if index == self._selected else ' '} {name} · {detail}")
             rows = [title, *(body or ["No entries"]), self._message or f"Filter /{self._query}",
-                    "Alt+t/p/u catalog watch · w resource watch · Esc"]
+                    "c/d/r connection/refresh · u/t/p catalogs · Enter preview · Esc"]
         return [truncate_to_width(sanitize_terminal_text(row) if "\x1b_pi:c" not in row else row,
                                   max(0, width), "") for row in rows[:self._budget]]

@@ -236,7 +236,7 @@ async def test_claw_manual_compaction_keeps_memory_flush_archive_and_transcript_
     assert runtime.get_or_create_session(allow_reset=False) is session and not session.agent.closed
 
 
-async def test_versioned_sdk_restore_keeps_claw_planning_permission_gate(owner):
+async def test_versioned_sdk_restore_keeps_claw_read_only_access_gate(owner):
     session, runtime, stream = owner
     executed: list[str] = []
 
@@ -249,7 +249,7 @@ async def test_versioned_sdk_restore_keeps_claw_planning_permission_gate(owner):
     })
     runtime._tools = [tool]
     session.agent.set_tools([*session.agent.state.tools, tool])
-    session.plan.change("start", session.plan.state.revision, "Read only review")
+    session.access.set_read_only(True)
     for turn in range(2):
         stream.responses = [AssistantMessage(content=(
             ToolCall(id=f"read-{turn}", name="filesystem", arguments={"action": "read"}),
@@ -267,4 +267,4 @@ async def test_versioned_sdk_restore_keeps_claw_planning_permission_gate(owner):
     blocked = [message for message in session.agent.messages if isinstance(message, ToolResultMessage)
                and message.tool_call_id.startswith("write-")]
     assert len(blocked) == 2 and all(message.is_error for message in blocked)
-    assert session.plan.state.mode == "planning" and not session.agent.closed
+    assert session.access.state.read_only and not session.agent.closed

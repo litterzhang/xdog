@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from xdog.agent.access import AccessScope, AccessState
 from xdog.coding.modes.interactive.components.footer import FooterComponent
 from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
 from xdog.coding.modes.interactive.run_status import RunStatus
@@ -113,8 +114,9 @@ def test_footer_is_one_stable_width_bounded_activity_metadata_row() -> None:
     assert "thinking" in first[0]
 
 
-def _session() -> MagicMock:
+def _session(*, read_only: bool = False) -> MagicMock:
     session = MagicMock()
+    session.access = AccessScope(AccessState(read_only=read_only), lambda state: None)
     session.agent.subscribe.return_value = lambda: None
     session.agent.options.thinking = None
     session.permissions.mode = "ask"
@@ -465,7 +467,8 @@ def test_small_multiline_editor_suppresses_borders_before_text() -> None:
     assert any("third" in row for row in rows)
 
 
-def test_idle_polls_emit_no_bytes_and_draft_update_emits_one_frame(monkeypatch) -> None:
+@pytest.mark.parametrize("read_only", [False, True])
+def test_idle_polls_emit_no_bytes_and_draft_update_emits_one_frame(monkeypatch, read_only: bool) -> None:
     import io
 
     import xdog.tui.tui as module
@@ -473,7 +476,7 @@ def test_idle_polls_emit_no_bytes_and_draft_update_emits_one_frame(monkeypatch) 
     monkeypatch.setattr(module.sys, "stdout", output)
     monkeypatch.setattr(module, "_terminal_width", lambda: 80)
     monkeypatch.setattr(module, "_terminal_height", lambda: 24)
-    mode = InteractiveMode(_session())
+    mode = InteractiveMode(_session(read_only=read_only))
     mode._tui._do_render()
     output.seek(0)
     output.truncate()

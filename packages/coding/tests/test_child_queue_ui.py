@@ -23,7 +23,7 @@ from xdog.tui.keys import KeyEvent
 
 @pytest.mark.parametrize('kind', ['coding', 'claw'])
 @pytest.mark.parametrize('action', ['edit', 'return', 'recover'])
-async def test_actual_native_child_queue_edit_or_return_keeps_parent_draft_and_never_submits_it(tmp_path, kind, action):
+async def test_actual_native_child_queue_is_list_only_and_keeps_parent_draft_and_backend_inputs(tmp_path, kind, action):
     entered = threading.Event()
     calls = []
     def stream(*args):
@@ -76,31 +76,23 @@ async def test_actual_native_child_queue_edit_or_return_keeps_parent_draft_and_n
         queue = panel.queue
         assert queue._rows[0]['content'] == 'QUEUED-DRAFT /quit literal'
         queue.render(80)
-        if action == 'edit':
-            panel.handle_input(KeyEvent('e'))
-            queue.render(80)
-            queue._input.set_text('EDITED-CHILD-DRAFT')
-            panel.handle_input(KeyEvent('enter'))
-        else:
-            panel.handle_input(KeyEvent('u'))
-        for _ in range(100):
-            queue.render(80)
-            if queue._visible:
-                break
-            queue.handle_input(KeyEvent('pagedown'))
-        assert queue._visible
-        panel.handle_input(KeyEvent('enter'))
-        await wait(lambda: panel.queue is None if action in {'return', 'recover'} else not queue._busy)
-        actual = (await session.children.supervisor.control('queue', child, json.dumps({'action': 'list'})))['queue']
-        if action == 'edit':
-            assert actual['inputs'][0]['content'] == 'EDITED-CHILD-DRAFT'
-        elif action == 'return':
-            assert not actual['inputs'] and panel._mode == 'form' and panel._form_action == 'steer'
-            assert panel._input.get_text() == 'QUEUED-DRAFT /quit literal'
-        else:
-            assert actual['inputs'] and actual['stopped']
-            assert panel._mode == 'form' and panel._form_action == 'start' and panel._access == 'read-only'
-            assert panel._input.get_text() == 'QUEUED-DRAFT /quit literal'
+        before = await session.children.supervisor.control('queue', child, json.dumps({'action': 'list'}))
+        for key in ('e', 'u', 'x', 'delete', 'enter', 'up', 'down'):
+            panel.handle_input(KeyEvent(key))
+        panel.handle_paste('UNTRUSTED QUEUE EDIT /quit')
+        assert not hasattr(queue, '_input') and not hasattr(queue, '_confirm')
+        for retired in ('edit', 'return', 'recover', 'remove', 'move', 'recover_images', 'recover_task',
+                        'return_prepare', 'return_commit', 'return_cancel'):
+            ui._child_send('queue', child, json.dumps({'action': retired}), 'read-only')
+        await asyncio.sleep(0.04)
+        ui._poll()
+        actual = await session.children.supervisor.control('queue', child, json.dumps({'action': 'list'}))
+        assert actual == before and panel.queue is queue
+        assert actual['queue']['inputs'][0]['content'] == 'QUEUED-DRAFT /quit literal'
+        assert actual['queue'].get('stopped', False) is (action == 'recover')
+        panel.handle_input(KeyEvent('escape'))  # Leave metadata details first.
+        panel.handle_input(KeyEvent('escape'))
+        assert panel.queue is None  # Return to inspection, not to a recovered/editable draft.
         assert ui._editor.get_text() == 'PARENT-DRAFT-UNTOUCHED'
         assert len(calls) == 1 and len(session.agent.messages) == 0
         await session.children.supervisor.control('cancel', child)
@@ -116,3 +108,65 @@ async def test_actual_native_child_queue_edit_or_return_keeps_parent_draft_and_n
             writer.close()
             await writer.wait_closed()
             await server.stop()
+
+
+async def test_direct_native_agents_queue_command_rejects_mutations_before_backend_dispatch(coding_session):
+    from unittest.mock import AsyncMock
+
+    from xdog.coding.core.slash_commands import execute_command
+    control = AsyncMock(return_value={'queue': {'inspection': 'native list'}})
+    with patch.object(coding_session.children.supervisor, 'control', control):
+        for action in ('edit', 'remove', 'move', 'return', 'recover', 'recover_images', 'recover_task',
+                       'remove_task', 'return_prepare', 'return_commit', 'return_cancel'):
+            with pytest.raises(ValueError, match='read-only'):
+                await execute_command('agents', 'queue child ' + json.dumps({'action': action}), coding_session)
+        control.assert_not_awaited()
+        result = await execute_command('agents', 'queue child {"action":"list"}', coding_session)
+        assert json.loads(result.output) == {'queue': {'inspection': 'native list'}}
+        control.assert_awaited_once_with('queue', 'child', '{"action":"list"}', images=())
+        assert not coding_session.agent.messages
+
+
+@pytest.mark.parametrize('fence', ['view', 'panel', 'group', 'session', 'child', 'context'])
+def test_claw_queue_reply_is_locally_fenced_without_old_wire_metadata(monkeypatch, fence):
+    from xdog.tui.child_browser import child_entries
+
+    ui = ChatApp('/unused-child-queue-fences.sock')
+    sent = []
+    monkeypatch.setattr(ui, '_queue_request', lambda value, *images: sent.append(value))
+    ui._connection_ready = ui._children_supported = ui._child_queues_supported = True
+    ui._gateway_session_id = 'session'
+    try:
+        ui._open_children()
+        panel = ui._child_panel
+        panel.publish(child_entries({'children': [{'id': '0123456789ab', 'task': 'inspect', 'status': 'running',
+            'access': 'read-only', 'calls': 0, 'tokens': 0, 'revision': 1, 'settling': False}]}))
+        panel.open_queue()
+        queue = panel.queue
+        request = sent[-1]
+        assert request['action'] == 'queue' and json.loads(request['text']) == {'action': 'list'}
+        assert not {'queue_view', 'child_return_owner'} & request.keys()
+        identifier = request['request_id']
+        assert ui._child_queue_owners[identifier] == (queue.owner_token, panel.owner_token, 'main',
+                                                    'session', '0123456789ab')
+        queue._error = 'successor state'
+        if fence == 'view':
+            queue.owner_token = 'newer-view'
+        elif fence == 'panel':
+            panel.owner_token = 'newer-panel'
+        elif fence == 'group':
+            ui.group_id = 'newer-group'
+        elif fence == 'session':
+            ui._gateway_session_id = 'newer-session'
+        elif fence == 'child':
+            queue.child = 'newer-child'
+        else:
+            ui._child_context = 'newer-context'
+        ui._handle_response({'type': 'child_result', 'request_id': identifier, 'group_id': 'main',
+                             'session_id': 'session', 'success': True,
+                             'data': {'queue': {'child_id': '0123456789ab', 'revision': 'a' * 64, 'inputs': []}}})
+        assert queue._busy and queue._error == 'successor state' and not queue._rows
+        assert ui._child_panel is panel and len(sent) == 2
+        assert ui._editor.get_text() == '' and ui._active_run_id is None
+    finally:
+        ui._request_exit()

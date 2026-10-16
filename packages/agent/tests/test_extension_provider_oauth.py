@@ -85,3 +85,38 @@ async def test_denial_before_login_does_not_call_worker_and_missing_or_foreign_o
                 'provideroauth', 'xdog/provider_auth', {'provider': 'local', 'action': 'login'}))
     finally:
         await runtime.aclose()
+
+
+@pytest.mark.parametrize('condition', ['expired', 'bad_refresh', 'withdraw_login'])
+async def test_real_callback_failure_expiry_or_withdrawal_never_replays_or_falls_back(tmp_path, condition):
+    runtime = await owner(tmp_path, {condition: True})
+    reviews = []
+
+    async def ask(request):
+        reviews.append(request)
+        return CODE if request['phase'] == 'on_prompt' else True
+
+    adapter = ExtensionProviderStream(runtime, lambda *args: pytest.fail('No native-provider fallback'))
+    try:
+        if condition == 'withdraw_login':
+            with pytest.raises(ValueError, match='no replay'):
+                await runtime.provider_auth_control(PROVIDER, 'login', ask=ask, alive=lambda: True)
+            assert runtime.provider_model(ALIAS) is None
+        else:
+            result = await runtime.provider_auth_control(PROVIDER, 'login', ask=ask, alive=lambda: True)
+            assert result['ok'] and result['authenticated'] is (condition != 'expired')
+            if condition == 'bad_refresh':
+                with pytest.raises(ValueError, match='no replay'):
+                    await runtime.provider_auth_control(PROVIDER, 'refresh', ask=ask, alive=lambda: True)
+        count = len(reviews)
+        for _ in range(2):
+            events = await adapter(ALIAS, Context(), StreamOptions()).collect()
+            assert events[-1].type == 'error'
+        assert len(reviews) == count and not runtime._provider_lock.locked()
+        assert not any(row['authenticated'] for row in runtime.provider_auth_catalog())
+        public = json.dumps(runtime.snapshot()) + json.dumps(runtime._infos) + repr(events) + repr(reviews)
+        assert all(value not in public for value in (ACCESS, REFRESH, CODE, 'private-account'))
+        if condition == 'expired':
+            assert await runtime.command('ext-provideroauth-count', '') == 'login=1;refresh=0;key=0;models=1;stream=0'
+    finally:
+        await runtime.aclose()

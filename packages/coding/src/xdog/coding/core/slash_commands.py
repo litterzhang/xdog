@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import cast
@@ -36,7 +37,7 @@ BUILTIN_COMMANDS: dict[str, str] = {
     "login": "Extension-provider authentication menu: /login [EXTENSION_PROVIDER_ID]; native auth uses xdog-ai",
     "extensions": "Trusted extensions: /extensions [list|reload NAME|unload NAME|auth list|auth menu]",
     "agents": "Child browser/controls; start supports --model/--thinking and reviewed specialization settings",
-    "plan": "Session plan: /plan start OBJECTIVE | show | execute REVISION | revise | stop",
+    "readonly": "Host read-only scope: /readonly on | off | status",
     "tools": "Read-only configured/active tool/schema browser: /tools [QUERY]",
     "mcp": "Manage explicit MCP connections: /mcp [list|connect|disconnect|refresh] [server]",
     "skills": "List available skills: /skills",
@@ -113,7 +114,6 @@ async def execute_command(
         return await inbox_command(session, args)
     if cmd == 'tools':
         import asyncio
-        import json
 
         from xdog.agent.extensions.tool_inventory import page
         snapshot = await asyncio.to_thread(session._extension_tools)
@@ -137,20 +137,13 @@ async def execute_command(
             ensure_ascii=False))
     if cmd == "agents":
         return CommandResult(output=await session.agents_command(args))
-    if cmd == "plan":
-        import json
-        action, _, text = args.strip().partition(" ")
-        if action in {"", "show"}:
-            return CommandResult(output=json.dumps(session.plan.state.to_dict(), indent=2))
-        if action == "execute" or action in {"revise", "stop"} and text:
-            if not text.isdigit():
-                return CommandResult(output="Usage: /plan execute REVISION (inspect /plan first)")
-            revision = int(text)
-        else:
-            revision = session.plan.state.revision
-        state = session.plan_control(action, revision, text if action == "start" else "")
-        return CommandResult(output=(
-            f"Plan {state.mode} · revision {state.revision}; existing permission policy retained"))
+    if cmd == "readonly":
+        action = args.strip() or "status"
+        if action not in {"on", "off", "status"}:
+            return CommandResult(output="Usage: /readonly on | off | status")
+        state = session.access.state if action == "status" else session.access_control(action == "on")
+        return CommandResult(output=json.dumps(state.to_dict(), indent=2))
+
     if cmd == "mcp":
         parts = args.split()
         if len(parts) > 2:
