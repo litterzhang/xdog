@@ -698,6 +698,14 @@ class GroupRuntime:
 def _display_history_entry(entry: dict[str, Any]) -> dict[str, Any] | None:
     """Build a bounded, redacted display projection from a transcript entry."""
     role = entry.get("role")
+    if role == "custom" and entry.get("type") == "xdog.session_input.v1":
+        from xdog.agent.session_input import decode_input
+        try:
+            value = decode_input(entry.get("data"))
+        except ValueError:
+            return None
+        return {"role": "user", "channel": "acp", "message_id": value.id,
+                "content": display_result(f"[External: {value.source}]\n{value.instruction}")}
     if role not in ("user", "assistant", TOOL_RESULT_ROLE):
         return None
     content = entry.get("content")

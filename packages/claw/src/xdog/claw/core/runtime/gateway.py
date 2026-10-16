@@ -16,10 +16,10 @@ import stat
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from xdog.agent import AgentConfig
 from xdog.agent.mcp.completion import McpCompletion
@@ -33,6 +33,10 @@ from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.runtime.source_protocol import SourceSender
 from xdog.claw.core.runtime.transcript_source import SourceCapture
 from xdog.claw.core.types import Group, UserInput
+
+if TYPE_CHECKING:
+    from xdog.claw.acp.inbox import InboxRecord
+    from xdog.claw.acp.server import ClawAcpServer
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +142,8 @@ class GatewayServer:
         self._socket_path = Path(config.socket_path)
         self._pid_path = Path(config.pid_file)
         self._server: asyncio.Server | None = None
+        self._acp_server: ClawAcpServer | None = None
+        self._acp_viewers: dict[int, tuple[str, Callable[[dict[str, Any]], Awaitable[None]]]] = {}
         self._orchestrator: Orchestrator | None = None
         self._scheduler_task: asyncio.Task[Any] | None = None
         self._client_tasks: set[asyncio.Task[Any]] = set()
@@ -178,6 +184,11 @@ class GatewayServer:
                     session = runtime.get_or_create_session(allow_reset=False)
                     await session.initialize_extensions(require_model=True)
             await self._orchestrator.start()
+            if self._config.acp_socket_path:
+                from xdog.claw.acp.server import ClawAcpServer
+                self._acp_server = await ClawAcpServer.start(
+                    self._orchestrator, Path(self._config.acp_socket_path),
+                    data_dir / "acp" / "inbox.sqlite3", on_complete=self._acp_completed)
         except BaseException:
             await self._orchestrator.stop()
             raise
@@ -191,28 +202,47 @@ class GatewayServer:
                     "Failed to start WeChat channel — gateway continues without it"
                 )
 
-        # Clean up stale socket
-        if self._socket_path.exists():
-            self._socket_path.unlink()
+        try:
+            # Clean up stale socket
+            if self._socket_path.exists():
+                self._socket_path.unlink()
 
-        # Ensure parent directory exists
-        self._socket_path.parent.mkdir(parents=True, exist_ok=True)
+            # Ensure parent directory exists
+            self._socket_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Start Unix socket server
-        self._server = await asyncio.start_unix_server(
-            self._on_client_connect, path=str(self._socket_path), limit=_MAX_LINE_LENGTH
-        )
+            # Start Unix socket server
+            self._server = await asyncio.start_unix_server(
+                self._on_client_connect, path=str(self._socket_path), limit=_MAX_LINE_LENGTH
+            )
 
-        # Restrict socket permissions to owner only (0600)
-        os.chmod(str(self._socket_path), stat.S_IRUSR | stat.S_IWUSR)
+            # Restrict socket permissions to owner only (0600)
+            os.chmod(str(self._socket_path), stat.S_IRUSR | stat.S_IWUSR)
 
-        # Write PID file
-        self._write_pid()
+            # Write PID file
+            self._write_pid()
 
-        # Start scheduler polling loop
-        self._scheduler_task = asyncio.create_task(self._scheduler_loop())
+            # Start scheduler polling loop
+            self._scheduler_task = asyncio.create_task(self._scheduler_loop())
 
-        logger.info("Gateway listening on %s (PID: %d)", self._socket_path, os.getpid())
+            logger.info("Gateway listening on %s (PID: %d)", self._socket_path, os.getpid())
+        except BaseException:
+            await self.stop()
+            raise
+
+    async def _acp_completed(self, record: InboxRecord) -> None:
+        from xdog.claw.core.runtime.display_events import display_result
+        payload = {"type": "acp_input_completed", "group_id": record.group_id, "session_id": record.session_id,
+                   "message_id": record.message.id, "source": display_result(record.message.source),
+                   "instruction": display_result(record.message.instruction), "status": record.status,
+                   "response": display_result(record.response), "error": display_result(record.error)}
+        async def notify(write: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
+            try:
+                async with asyncio.timeout(2):
+                    await write(payload)
+            except (OSError, TimeoutError):
+                pass  # Display failure cannot change the durable execution result.
+        await asyncio.gather(*(notify(write) for group, write in tuple(self._acp_viewers.values())
+                               if group == record.group_id))
 
     def _on_client_connect(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -531,6 +561,14 @@ class GatewayServer:
                     })
                     continue
                 msg_type = request.get("type", "")
+                if msg_type == "ping" and "acp_updates" in request:
+                    value, group = request["acp_updates"], request.get("group_id", "main")
+                    if type(value) is not int or value not in (0, 1) or not isinstance(group, str):
+                        await write({"type": "protocol_error", "message": "Invalid ACP display subscription"})
+                        continue
+                    self._acp_viewers.pop(client_id, None)
+                    if value == 1:
+                        self._acp_viewers[client_id] = group, write
                 if msg_type == 'ping' and 'saved_source' in request:
                     saved_source_supported = type(request['saved_source']) is int and request['saved_source'] == 1
                     if not saved_source_supported:
@@ -1833,6 +1871,7 @@ class GatewayServer:
         except Exception:
             logger.exception("Error handling client %s", peer)
         finally:
+            self._acp_viewers.pop(client_id, None)
             async def cleanup_client() -> None:
                 nonlocal child_ui_connected
                 try:
@@ -2312,6 +2351,11 @@ class GatewayServer:
         server = self._server
         if server is not None:
             server.close()
+
+        # Stop ACP intake and settle its sole group workers before closing runtimes.
+        if self._acp_server is not None:
+            await self._acp_server.close()
+            self._acp_server = None
 
         # Cancel handlers while their cleanup still owns and can close writers.
         # Late accept callbacks see _shutdown_event and close without spawning work.

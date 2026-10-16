@@ -24,6 +24,7 @@ from xdog.claw.core.runtime.group import GroupRuntime
 from xdog.claw.core.runtime.session import AgentSession, TurnResult
 from xdog.claw.core.runtime.transcript_source import SourceCapture
 from xdog.claw.core.types import (
+    ExternalInput,
     Group,
     GroupInput,
     QueueMode,
@@ -208,7 +209,7 @@ class Orchestrator:
         if not runtime:
             return None
 
-        is_user = isinstance(message, UserInput)
+        is_user = isinstance(message, UserInput) and not isinstance(message, ExternalInput)
         async with self._queue.acquire(group_id, is_user=is_user):
             if isinstance(message, SystemInput) and message.kind == SystemInputKind.SCHEDULER:
                 task_id = message.metadata.get("task_id")
@@ -232,7 +233,7 @@ class Orchestrator:
                     on_assistant_message=on_assistant_message,
                     child_ui=child_ui,
                 )
-                return result
+                return replace(result, session_id=session.meta.session_id) if result is not None else None
             finally:
                 session.extensions.pending_messages = previous_pending
                 if session.extensions.command_menu_handler is menu_handler:
@@ -888,6 +889,11 @@ class Orchestrator:
 
     def get_group_ids(self) -> list[str]:
         return list(self._runtimes.keys())
+
+    def get_group_workspace(self, group_id: str) -> Path | None:
+        """Resolve a registered group without constructing/loading its agent session."""
+        runtime = self._runtimes.get(group_id)
+        return runtime.workspace_dir.resolve() if runtime is not None else None
 
     def get_session_info(self, group_id: str) -> dict[str, Any]:
         """Session metadata + history for a group (delegates to runtime)."""

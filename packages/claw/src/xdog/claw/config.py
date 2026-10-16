@@ -110,6 +110,7 @@ class ClawConfig:
     data_dir: str = ""
     tasks_file: str = ""  # defaults to {data_dir}/scheduled_tasks.json
     socket_path: str = ""
+    acp_socket_path: str = ""  # explicit opt-in private Unix ACP endpoint
     pid_file: str = ""
 
     # Gateway settings (flattened from gateway: section)
@@ -158,6 +159,9 @@ class ClawConfig:
         if self.extension_dir:
             root = Path(self.extension_dir).expanduser()
             object.__setattr__(self, "extension_dir", str(root if root.is_absolute() else get_config_dir() / root))
+        if not isinstance(self.acp_socket_path, str) or (self.acp_socket_path and (
+                not Path(self.acp_socket_path).is_absolute() or "\x00" in self.acp_socket_path)):
+            raise ToolConfigError("acp_socket_path must be an absolute Unix socket path or empty")
         if not self.data_dir:
             object.__setattr__(self, "data_dir", str(get_data_dir()))
         if not self.tasks_file:
@@ -166,6 +170,8 @@ class ClawConfig:
             object.__setattr__(self, "socket_path", str(get_state_dir() / "gateway.sock"))
         if not self.pid_file:
             object.__setattr__(self, "pid_file", str(get_state_dir() / "gateway.pid"))
+        if self.acp_socket_path and Path(self.acp_socket_path).resolve() == Path(self.socket_path).resolve():
+            raise ToolConfigError("ACP and TUI sockets must use different paths")
 
 
 class ToolConfigError(ValueError):
@@ -261,7 +267,9 @@ def load_config(path: Path | None = None) -> ClawConfig:
         filtered = _filter_known_fields(flat)
 
         # Expand paths
-        for path_field in ("data_dir", "socket_path", "pid_file"):
+        for path_field in ("data_dir", "socket_path", "pid_file", "acp_socket_path"):
+            if path_field == "acp_socket_path" and not filtered.get(path_field):
+                continue  # Empty means disabled, not the relative path ".".
             if path_field in filtered and isinstance(filtered[path_field], str):
                 filtered[path_field] = _expand_path(filtered[path_field])
 

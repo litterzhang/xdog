@@ -41,6 +41,27 @@ snapshots are local client save/recovery operations, not gateway requests. Codin
 former `--rpc` JSON-lines frontend is removed too; this does not remove the private
 extension-worker protocol, MCP JSON-RPC or Coding's separate ACP session ingress.
 
+## Eyes and ACP callbacks
+
+Opt in to a private Unix ACP endpoint on the existing gateway:
+
+```bash
+xdog-claw gateway start --foreground \
+  --acp-socket "$HOME/.local/state/xdog/claw/acp/agent.sock"
+```
+
+Point Eyes' **generic ACP handler** at that socket with `session: "group:main"`
+and `delivery: "enqueue"`, from the group's exact workspace. The stable group
+address follows its current AgentSession; it is not a TUI or exact transcript
+address. Inputs first enter a durable inbox, then automatically use the existing
+Orchestrator queue and tool policies. No message approval, second Agent loop, or
+TUI connection is needed. Standard ACP prompt is also supported and waits for
+its actual result. Interrupted execution is not automatically replayed.
+
+See [Claw/Eyes ACP design and setup](../../docs/claw-eyes-acp.md) for definition
+examples, scope/receipt/cancel semantics, recovery and limits. ACP is disabled by
+default; stopping Eyes does not stop Claw or retract accepted messages.
+
 ## Messaging replies
 
 Messaging channels such as WeChat send each completed assistant text message as

@@ -8,6 +8,17 @@ ACP SDK adapter/backend boundary; coding supplies its permission, persistence an
 session-owner policy. Eyes is an independent ACP client and never imports a
 harness or runs a tool loop. Coding does not import Eyes or a concrete source.
 
+## Claw integration
+
+Claw also implements the same Agent ACP backend boundary, behind an explicitly
+enabled gateway Unix endpoint. Its address is `group:<id>` and follows the
+registered group's current AgentSession, rather than coding's exact session/
+branch semantics. Both prompt and enqueue persist before execution through the
+existing Orchestrator queue. TUI is only a viewer, never the callback host.
+See [Claw/Eyes ACP design and setup](claw-eyes-acp.md) for the distinct group inbox
+scope, startup, cancellation/recovery behavior and limits. The coding-specific
+ownership and batch details below do not describe Claw's queue policy.
+
 ## Entry points and lifetimes
 
 ```text

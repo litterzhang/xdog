@@ -142,6 +142,11 @@ def entry_text(entry: dict[str, Any]) -> str:
     if entry.get('role') == 'custom' and entry.get('type') == 'xdog.extension_context.v1':
         from xdog.agent.extensions.context_message import display_text
         return display_text(entry.get('data', {}))
+    if entry.get("role") == "custom" and entry.get("type") == "xdog.session_input.v1":
+        from xdog.agent.session_input import decode_input, encode_input, llm_message
+        value = llm_message(encode_input(decode_input(entry.get("data"))))
+        assert value is not None
+        return "".join(part.text for part in value.content if isinstance(part, TextContent))
     content = entry.get("content")
     if isinstance(content, str):
         return content

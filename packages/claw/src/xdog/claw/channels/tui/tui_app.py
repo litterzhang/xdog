@@ -841,6 +841,8 @@ class ChatApp:
         self._attachment_transport = False
         self._history_format = 1
         self._history_tools: dict[str, ToolMessage] = {}
+        self._acp_seen_session = ""
+        self._acp_seen: set[str] = set()
         self._replaying_history = False
 
         # Token usage tracking (matching OpenClaw's footer)
@@ -3836,8 +3838,16 @@ class ChatApp:
             if role == "user" and (content or entry.get("image_count")):
                 if entry.get("image_count"):
                     content += f"\n[Images: {entry['image_count']}]"
-                self._chat_log.add_user(content)
-                self._editor.add_to_history(content)
+                if channel == "acp":
+                    if self._acp_seen_session != self._gateway_session_id:
+                        self._acp_seen_session = self._gateway_session_id
+                        self._acp_seen.clear()
+                    if isinstance(entry.get("message_id"), str):
+                        self._acp_seen.add(entry["message_id"])
+                    self._chat_log.add_system(content)
+                else:
+                    self._chat_log.add_user(content)
+                    self._editor.add_to_history(content)
             elif role == "assistant":
                 thinking = "".join(
                     str(part.get("thinking", ""))
@@ -3877,6 +3887,30 @@ class ChatApp:
             question = msg.get('dialog')
             if not isinstance(question, dict) or not self._extension_stack.accepts(question, []):
                 return  # Removed extension controls cannot touch a successor owner or draft.
+        if msg_type == "acp_input_completed":
+            if (msg.get("group_id") != self.group_id or not isinstance(msg.get("session_id"), str)
+                    or not msg.get("session_id") or self._gateway_session_id
+                    and msg.get("session_id") != self._gateway_session_id):
+                return
+            if not all(isinstance(msg.get(key), str) for key in
+                       ("message_id", "source", "instruction", "response", "error")):
+                return
+            if self._acp_seen_session != msg["session_id"]:
+                self._acp_seen_session = msg["session_id"]
+                self._acp_seen.clear()
+            identifier = msg["message_id"]
+            if not identifier or identifier in self._acp_seen:
+                return
+            self._acp_seen.add(identifier)
+            if not self._gateway_session_id:
+                self._chat_log.add_system("ACP group session: " + msg["session_id"])
+            self._chat_log.add_system(f"[External: {msg['source']}]\n{msg['instruction']}")
+            if msg["response"]:
+                self._chat_log.add_assistant(msg["response"])
+            if msg["error"]:
+                self._chat_log.add_system("External input failed: " + msg["error"])
+            self._tui.request_render()
+            return
         if msg_type in {"output_prepared", "output_done", "output_failed"}:
             self._outputs.handle(msg)
             self._sync_output_panel()
@@ -5207,7 +5241,8 @@ class ChatApp:
                          "mcp_content_types": 1, "access_controls": 1,
 
                          "tool_inventory": 1,
-                         "skill_controls": 1, "session_compaction": 1, "saved_source": 1, "saved_timeline": 1}
+                         "skill_controls": 1, "session_compaction": 1, "saved_source": 1, "saved_timeline": 1,
+                         "acp_updates": 1}
                 writer.write((json.dumps(hello) + "\n").encode("utf-8"))
                 await asyncio.wait_for(writer.drain(), timeout=self._TRANSPORT_TIMEOUT)
                 await asyncio.wait_for(ready.wait(), timeout=self._TRANSPORT_TIMEOUT)
