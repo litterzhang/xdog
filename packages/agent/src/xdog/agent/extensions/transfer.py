@@ -1,11 +1,16 @@
 """Owned checksummed context transfer, outside bounded individual RPC frames."""
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
 import tempfile
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any, BinaryIO
+
+from xdog.agent.async_work import wait_owned
 
 BLOCK = 64 * 1024
 MAX_CONTEXT_BYTES = 128 * 1024 * 1024
@@ -29,6 +34,34 @@ def spool(value: Any) -> tuple[BinaryIO, int, str]:
     except BaseException:
         file.close()
         raise
+
+
+@asynccontextmanager
+async def owned_spool(value: Any) -> AsyncIterator[tuple[BinaryIO, int, str]]:
+    """Own resource creation as well as delivery, including late canceled results.
+
+    A generic canceled thread helper cannot return its late tempfile to close it.
+    Keep the task receipt here, join through repeated cancellation, then reclaim
+    the actual result before allowing the transfer/provider owner to settle.
+    """
+    preparing = asyncio.create_task(asyncio.to_thread(spool, value))
+    result: tuple[BinaryIO, int, str] | None = None
+    try:
+        result = await asyncio.shield(preparing)
+        yield result
+    finally:
+        if result is None:
+            try:
+                await wait_owned(preparing)
+            except (Exception, asyncio.CancelledError):
+                pass  # The original entry failure/cancellation still owns delivery.
+            if not preparing.cancelled():
+                try:
+                    result = preparing.result()  # Retrieve even when the join deferred a second cancel.
+                except Exception:
+                    pass  # Failed construction closes its own partially created file.
+        if result is not None and not result[0].closed:
+            result[0].close()
 
 
 class ContextTransfer:

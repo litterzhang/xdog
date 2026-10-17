@@ -19,6 +19,9 @@ jobs:
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@v2
         env:
+          # Authenticate the owner lookup too: shared runner IPs hit the public
+          # API limit and otherwise trigger a spurious license failure.
+          GITHUB_TOKEN: ${{ github.token }}
           GITLEAKS_CONFIG: .gitleaks.toml
 
   test:

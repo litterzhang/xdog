@@ -10,6 +10,7 @@ from typing import Any, TypeVar, cast
 from acp import PromptResponse, RequestError
 from acp.schema import TextContentBlock
 from xdog.agent.acp.contracts import AcpUpdate, JsonValue, Peer, SessionRef, UpdateSink, finite_json, invalid
+from xdog.agent.async_work import wait_owned
 from xdog.coding.acp.client import AcpAttachment
 from xdog.coding.core.sessions.inbox_models import label, message_from_data
 from xdog.coding.core.sessions.inbox_store import InboxStore
@@ -39,16 +40,7 @@ class IngressBackend:
         worker = asyncio.create_task(asyncio.to_thread(operation, *args))
         self._workers.add(worker)
         worker.add_done_callback(self._workers.discard)
-        cancelled = False
-        while not worker.done():
-            try:
-                await asyncio.shield(worker)
-            except asyncio.CancelledError:
-                cancelled = True
-        result = worker.result()
-        if cancelled:
-            raise asyncio.CancelledError
-        return result
+        return await wait_owned(worker)
 
     async def new_session(self, cwd: Path, peer: Peer) -> SessionRef:
         raise invalid('ACP ingress never creates or restores an Agent/session owner')
@@ -183,15 +175,7 @@ class IngressBackend:
         self._shutting_down = True
         if self._workers:
             settlement = asyncio.gather(*tuple(self._workers), return_exceptions=True)
-            cancelled = False
-            while not settlement.done():
-                try:
-                    await asyncio.shield(settlement)
-                except asyncio.CancelledError:
-                    cancelled = True
-            settlement.result()
-            if cancelled:
-                raise asyncio.CancelledError
+            await wait_owned(settlement)
         for key, remote in tuple(self._remote.items()):
             if key[0] == peer.id:
                 self._remote.pop(key, None)

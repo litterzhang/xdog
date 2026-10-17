@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from xdog.agent import AgentConfig
+from xdog.agent.async_work import wait_owned
 from xdog.agent.mcp.completion import McpCompletion
 from xdog.agent.mcp.context import McpDocument, McpEntry
 from xdog.agent.supervision_config import ChildConfig
@@ -1946,15 +1947,7 @@ class GatewayServer:
             # otherwise an interrupted detach skips writer.close() and deadlocks
             # server.wait_closed(). Never detach resource cleanup in the background.
             cleanup = asyncio.create_task(cleanup_client(), name=f"claw-client-{client_id}-cleanup")
-            cancelled = False
-            while not cleanup.done():
-                try:
-                    await asyncio.shield(cleanup)
-                except asyncio.CancelledError:
-                    cancelled = True
-            cleanup.result()
-            if cancelled:
-                raise asyncio.CancelledError
+            await wait_owned(cleanup)
 
     async def _dispatch(
         self, request: dict[str, Any], writer: asyncio.StreamWriter, *,
@@ -2325,15 +2318,7 @@ class GatewayServer:
         if self._stop_task is None:
             self._stop_task = asyncio.create_task(self._stop(), name="claw-gateway-stop")
         task = self._stop_task
-        cancelled = False
-        while not task.done():
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                cancelled = True
-        task.result()
-        if cancelled:
-            raise asyncio.CancelledError
+        await wait_owned(task)
 
     async def _stop(self) -> None:
         logger.info("Shutting down gateway...")

@@ -626,6 +626,41 @@ def validate_review(value: Any, *, prepared: bool = False) -> dict[str, Any]:
     return {**value, "scopes": list(chosen), "tls_trust": trust}
 
 
+def normalize_auth_reply(
+    action: str, data: Any, *, review: dict[str, Any] | None, error: str = "",
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Validate a native consent reply without changing host ownership or credentials.
+
+    The returned review replaces the host cache only after successful validation.
+    Reported operation errors remain displayable even without a structured reply.
+    """
+    if not isinstance(data, dict) and not error:
+        raise ValueError("Invalid authorization response")
+    if error:
+        return data if isinstance(data, dict) else {}, review
+    if action.startswith("auth_credentials_") and action.endswith("_prepare"):
+        expected = action.removeprefix("auth_").removesuffix("_prepare")
+        if data.get("operation") != expected or not isinstance(data.get("storage_notice"), str):
+            raise ValueError("Missing explicit credential storage consent")
+        review = validate_review(data)
+        data = review
+    elif action == "auth_prepare":
+        review = validate_review(data, prepared=True)
+        data = review
+    elif action == "auth_refresh_prepare":
+        if data.get("operation") != "refresh":
+            raise ValueError("Missing explicit refresh operation")
+        review = validate_review(data)
+        data = review
+    elif action == "auth_status" and isinstance(data.get("review"), dict):
+        data = {**data, "review": validate_review(data["review"])}
+    elif action == "auth_start":
+        if review is None:
+            raise ValueError("Missing reviewed authorization scope")
+        data = validate_launch(data, review)
+    return data, review
+
+
 def validate_launch(value: Any, review: dict[str, Any]) -> dict[str, Any]:
     review = validate_review(review, prepared=True)
     if not isinstance(value, dict) or value.get("review_id") != review["review_id"]:

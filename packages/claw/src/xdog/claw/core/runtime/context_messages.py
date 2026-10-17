@@ -5,9 +5,9 @@ import threading
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from xdog.agent.async_work import run_owned
 from xdog.agent.context_messages import ContextAdmissionRejected, ContextMessages
 from xdog.agent.core import AgentMessage
-from xdog.agent.supervision_transfer import settled_image_work
 from xdog.claw.core.persistence.transcript_convert import live_transcript_snapshot
 
 if TYPE_CHECKING:
@@ -23,7 +23,7 @@ def create(session: AgentSession) -> ContextMessages:
         from xdog.agent.extensions.context_message import images
         pending_images = images(history[len(session.agent.messages):])
         try:
-            await settled_image_work(lambda: session._runtime.validate_images(pending_images))
+            await run_owned(lambda: session._runtime.validate_images(pending_images))
         except ValueError as exc:
             raise ContextAdmissionRejected(str(exc)) from exc
         written = threading.Event()
@@ -34,7 +34,7 @@ def create(session: AgentSession) -> ContextMessages:
             store.replace_transcript(owner[0], rows)
             written.set()
         try:
-            await settled_image_work(save)
+            await run_owned(save)
         finally:
             if written.is_set() and scope() == owner and session._runtime._active_session is session:
                 previous = len(session.agent.messages)
@@ -63,7 +63,7 @@ def create(session: AgentSession) -> ContextMessages:
                 await settle_on(session._host_loop, restore())
             else:
                 session._restore_messages()
-        await settled_image_work(lambda: session._runtime.validate_images(images((message,))))
+        await run_owned(lambda: session._runtime.validate_images(images((message,))))
     bind(store_owner, session.agent, validate)
     return store_owner
 

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from xdog.agent.core import AgentTool, AgentToolResult
+from xdog.agent.cross_loop import submit_remote
 from xdog.agent.mcp.client_capabilities import advertised, inventory
 from xdog.agent.mcp.completion import McpCompletion, bounded, values
 from xdog.agent.mcp.completion import arguments as completion_arguments
@@ -132,55 +133,12 @@ class McpManager:
         except BaseException:
             coroutine.close()
             raise
-        result: concurrent.futures.Future[T] = concurrent.futures.Future()
-        settled: concurrent.futures.Future[None] = concurrent.futures.Future()
-        canceled = threading.Event()
-        task_ref: list[asyncio.Task[T]] = []
-        def start() -> None:
-            if canceled.is_set():
-                coroutine.close()
-                result.cancel()
-                settled.set_result(None)
-                return
-            task = loop.create_task(coroutine)
-            task_ref.append(task)
-            def done(completed: asyncio.Task[T]) -> None:
-                if completed.cancelled():
-                    result.cancel()
-                else:
-                    error = completed.exception()
-                    if error is not None:
-                        result.set_exception(error)
-                    else:
-                        result.set_result(completed.result())
-                settled.set_result(None)
-            task.add_done_callback(done)
         with self._start_lock:
             if self._closed:
                 coroutine.close()
                 raise McpError("MCP manager is closed")
-            loop.call_soon_threadsafe(start)
-        wrapped = asyncio.wrap_future(result)
-        try:
-            return await asyncio.shield(wrapped)
-        except asyncio.CancelledError:
-            canceled.set()
-            def cancel() -> None:
-                if task_ref and not task_ref[0].cancelling():
-                    task_ref[0].cancel()
-            loop.call_soon_threadsafe(cancel)
-            # Remote cancellation is not rollback. Settle the metadata/file owner
-            # before Agent/session/group lifecycle can release its reservation.
-            while not settled.done():
-                try:
-                    await asyncio.shield(asyncio.wrap_future(settled))
-                except asyncio.CancelledError:
-                    continue
-            if wrapped.done() and not wrapped.cancelled():
-                wrapped.exception()
-            else:
-                wrapped.cancel()
-            raise
+            pending = submit_remote(loop, coroutine)
+        return await pending
 
     def status(self) -> tuple[dict[str, Any], ...]:
         with self._lock:

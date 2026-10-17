@@ -5,9 +5,9 @@ import threading
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
+from xdog.agent.async_work import run_owned
 from xdog.agent.context_messages import ContextAdmissionRejected, ContextMessages
 from xdog.agent.core import AgentMessage
-from xdog.agent.supervision_transfer import settled_image_work
 
 if TYPE_CHECKING:
     from xdog.coding.core.agent_session import AgentSession
@@ -22,7 +22,7 @@ def create(session: AgentSession) -> ContextMessages:
         from xdog.ai.utils.image_files import validate_references
         pending_images = images(history[len(session.agent.messages):])
         try:
-            await settled_image_work(lambda: validate_references(pending_images, session.model_info))
+            await run_owned(lambda: validate_references(pending_images, session.model_info))
         except ValueError as exc:
             raise ContextAdmissionRejected(str(exc)) from exc
         staged = replace(data, messages=list(history))
@@ -33,7 +33,7 @@ def create(session: AgentSession) -> ContextMessages:
             session.session_manager.save_session(staged)
             written.set()
         try:
-            await settled_image_work(save)
+            await run_owned(save)
         finally:
             if written.is_set() and session.session_data is data and scope() == original:
                 data.messages = list(history)

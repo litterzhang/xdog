@@ -14,8 +14,8 @@ try:
 except ImportError as exc:
     raise ImportError("Claw ACP requires Python 3.12–3.14 and agent-client-protocol>=0.12.1,<0.13") from exc
 from xdog.agent.acp.contracts import JsonValue, Peer, SessionRef, UpdateSink, finite_json, invalid
-from xdog.agent.session_input import SessionInput, decode_input, encode_input, llm_message
-from xdog.ai.types import TextContent
+from xdog.agent.async_work import wait_owned
+from xdog.agent.session_input import SessionInput, decode_input, render_input
 from xdog.claw.acp.inbox import GroupInbox, InboxRecord
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.types import ExternalInput
@@ -119,9 +119,7 @@ class ClawBackend:
                     return
                 while not self._closing and (record := await self.inbox.claim(group, cwd)) is not None:
                     try:
-                        rendered = llm_message(encode_input(record.message))
-                        assert rendered is not None
-                        content = "".join(part.text for part in rendered.content if isinstance(part, TextContent))
+                        content = render_input(record.message)
                         message = ExternalInput(group_id=group, content=content, sender="acp", channel="acp",
                                                 metadata={"input_origin": "external"}, canonical=record.message)
                         # Receipt-owning callbacks must never be steered/folded into
@@ -272,15 +270,7 @@ class ClawBackend:
         if self._close_task is None:
             self._closing = True
             self._close_task = asyncio.create_task(self._close())
-        cancelled = False
-        while not self._close_task.done():
-            try:
-                await asyncio.shield(self._close_task)
-            except asyncio.CancelledError:
-                cancelled = True
-        self._close_task.result()
-        if cancelled:
-            raise asyncio.CancelledError
+        await wait_owned(self._close_task)
 
     async def _close(self) -> None:
         prompts = list(self._prompts.values())

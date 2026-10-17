@@ -15,7 +15,6 @@ Key differences from openai-completions:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -25,6 +24,7 @@ import httpx
 from xdog.ai.core import AuthResult, BaseProtocol
 from xdog.ai.native import NativeEventStream, NativeResponse, ProtocolRequest
 from xdog.ai.protocols._message_builder import MessageBuilder
+from xdog.ai.protocols._message_stream import message_stream
 from xdog.ai.types import (
     AssistantMessage,
     AssistantMessageEvent,
@@ -808,35 +808,7 @@ def stream(
     auth: AuthResult,
 ) -> EventStream[AssistantMessage]:
     """Stream a response using the OpenAI Responses API protocol."""
-    result_future: asyncio.Future[AssistantMessage] = (
-        asyncio.get_event_loop().create_future()
-    )
-
-    async def _generate() -> AsyncIterator[AssistantMessageEvent]:
-        last_event: AssistantMessageEvent | None = None
-        async for event in _stream_impl(model, context, options, auth):
-            last_event = event
-            yield event
-
-        if last_event is not None:
-            if isinstance(last_event, DoneEvent) and last_event.message:
-                result_future.set_result(last_event.message)
-            elif isinstance(last_event, ErrorEvent) and last_event.message:
-                result_future.set_result(last_event.message)
-            else:
-                result_future.set_result(AssistantMessage(
-                    content=(),
-                    stop_reason="error",
-                    error_message="Stream ended without done event",
-                ))
-        else:
-            result_future.set_result(AssistantMessage(
-                content=(),
-                stop_reason="error",
-                error_message="Empty stream",
-            ))
-
-    return EventStream.from_async_generator(_generate(), result_future)
+    return message_stream(lambda: _stream_impl(model, context, options, auth))
 
 
 # ---------------------------------------------------------------------------

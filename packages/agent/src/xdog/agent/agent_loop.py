@@ -48,6 +48,7 @@ from xdog.agent.events import (
     TurnEndEvent,
     TurnStartEvent,
 )
+from xdog.agent.messages import default_convert_to_llm
 from xdog.agent.types import (
     AfterToolCallContext,
     AgentEventSink,
@@ -945,23 +946,8 @@ async def _convert_messages(
 
 
 def _default_convert(messages: list[AgentMessage]) -> list[Message]:
-    """Project named canonical context content; keep unknown custom metadata out of the LLM."""
-    from xdog.agent.extensions.context_message import llm_message
-    from xdog.agent.external_event import llm_message as external_message
-    from xdog.agent.session_input import llm_message as session_message
-    from xdog.ai.types import AssistantMessage, ToolResultMessage, UserMessage
-
-    result: list[Message] = []
-    for message in messages:
-        if isinstance(message, (UserMessage, AssistantMessage, ToolResultMessage)):
-            result.append(message)
-        elif (projected := llm_message(message)) is not None:
-            result.append(projected)
-        elif (external := external_message(message)) is not None:
-            result.append(external)
-        elif (session_input := session_message(message)) is not None:
-            result.append(session_input)
-    return result
+    """Compatibility entry point; standalone and stateful Agents share one policy."""
+    return default_convert_to_llm(messages)
 
 
 def _extract_tool_calls(message: AgentMessage) -> list[ToolCall]:

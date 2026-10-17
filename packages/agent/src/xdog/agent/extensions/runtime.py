@@ -3,13 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import concurrent.futures
 import contextvars
 import inspect
 import json
 import re
 import sys
-import threading
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Mapping
 from contextlib import contextmanager
@@ -17,7 +15,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
+from xdog.agent.async_work import run_owned
 from xdog.agent.core import AgentMessage, AgentTool, AgentToolResult
+from xdog.agent.cross_loop import submit_remote
 from xdog.agent.extensions.command_result import ExtensionCommandResult
 from xdog.agent.extensions.commands import declaration as command_declaration
 from xdog.agent.extensions.context import decode_context
@@ -29,7 +29,7 @@ from xdog.agent.extensions.shortcuts import registrations, snapshot_rows
 from xdog.agent.extensions.state import ExtensionEntries
 from xdog.agent.extensions.tool_result import details_snapshot, host_result
 from xdog.agent.extensions.tools import declaration as tool_declaration
-from xdog.agent.extensions.transfer import BLOCK, ContextTransfer, spool
+from xdog.agent.extensions.transfer import BLOCK, ContextTransfer, owned_spool
 from xdog.agent.extensions.worker import manifest
 from xdog.agent.mcp import McpManager
 from xdog.agent.mcp.config import McpServerConfig
@@ -55,23 +55,6 @@ def silent_extension_ui() -> Iterator[None]:
         yield
     finally:
         _dialogs_allowed.reset(token)
-
-
-async def _owned_disk(function: Callable[..., Any], *args: Any) -> Any:
-    task = asyncio.create_task(asyncio.to_thread(function, *args))
-    try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError:
-        while not task.done():
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                continue
-            except Exception:
-                break
-        if task.done() and not task.cancelled():
-            task.exception()
-        raise
 
 
 def names(value: Any) -> tuple[str, ...]:
@@ -366,51 +349,14 @@ class _Manager(McpManager):
         except BaseException:
             coroutine.close()
             raise
-        result: concurrent.futures.Future[T] = concurrent.futures.Future()
-        settled: concurrent.futures.Future[None] = concurrent.futures.Future()
-        canceled = threading.Event()
-        task_ref: list[asyncio.Task[T]] = []
-        def start() -> None:
-            if canceled.is_set():
+        # Extension callbacks share MCP's owner lifecycle. In particular, close
+        # can win after loop acquisition but before callback admission.
+        with self._start_lock:
+            if self._closed:
                 coroutine.close()
-                result.cancel()
-                settled.set_result(None)
-                return
-            task = loop.create_task(coroutine)
-            task_ref.append(task)
-            def done(completed: asyncio.Task[T]) -> None:
-                if completed.cancelled():
-                    result.cancel()
-                else:
-                    error = completed.exception()
-                    if error is not None:
-                        result.set_exception(error)
-                    else:
-                        result.set_result(completed.result())
-                settled.set_result(None)
-            task.add_done_callback(done)
-        loop.call_soon_threadsafe(start)
-        wrapped = asyncio.wrap_future(result)
-        try:
-            return await asyncio.shield(wrapped)
-        except asyncio.CancelledError:
-            canceled.set()
-            def cancel() -> None:
-                if task_ref and not task_ref[0].cancelling():
-                    task_ref[0].cancel()
-            loop.call_soon_threadsafe(cancel)
-            # Remote cancellation is not rollback. Settle the metadata/file owner
-            # before Agent/session/group lifecycle can release its reservation.
-            while not settled.done():
-                try:
-                    await asyncio.shield(asyncio.wrap_future(settled))
-                except asyncio.CancelledError:
-                    continue
-            if wrapped.done() and not wrapped.cancelled():
-                wrapped.exception()
-            else:
-                wrapped.cancel()
-            raise
+                raise McpError("MCP manager is closed")
+            pending = submit_remote(loop, coroutine)
+        return await pending
 
     async def _connect(self, name: str) -> None:
         if name in self._clients:
@@ -518,20 +464,7 @@ class ExtensionRuntime:
     async def commit_entries(self, name: str, contributions: Any) -> None:
         if self._closed:
             raise RuntimeError("Extension entry owner closed; late state was not written")
-        task = asyncio.create_task(asyncio.to_thread(self.entries.append, name, contributions))
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            while not task.done():
-                try:
-                    await asyncio.shield(task)
-                except asyncio.CancelledError:
-                    continue
-                except Exception:
-                    break
-            if task.done() and not task.cancelled():
-                task.exception()
-            raise
+        await run_owned(self.entries.append, name, contributions)
 
     async def transform(self, messages: list[AgentMessage]) -> list[AgentMessage]:
         if not self.enabled:
@@ -548,7 +481,7 @@ class ExtensionRuntime:
                     try:
                         async with asyncio.timeout(max(30, self._manager.configs[name].timeout)):
                             value = await self._transfer_context(name, messages_to_dicts(current))
-                            current = await _owned_disk(decode_context, value, current)
+                            current = await run_owned(decode_context, value, current)
                     except BaseException:
                         self.fail(name)
                         await self._manager._disconnect(name)
@@ -560,39 +493,30 @@ class ExtensionRuntime:
         return await self._transfer_value(name, messages)
 
     async def _transfer_value(self, name: str, value: Any, *, operation: str = 'context') -> Any:
-        preparing = asyncio.create_task(asyncio.to_thread(spool, value))
-        file = None
         receiver = ContextTransfer()
         try:
-            file, size, checksum = await asyncio.shield(preparing)
-            identifier = uuid.uuid4().hex
-            await self._rpc(name, "xdog/context_begin", {"id": identifier, "bytes": size, "sha256": checksum})
-            index = 0
-            while block := await _owned_disk(file.read, BLOCK):
-                await self._rpc(name, "xdog/context_chunk", {"id": identifier, "index": index,
-                                "data": base64.b64encode(block).decode("ascii")})
-                index += 1
-            result = await self._rpc(name, "xdog/context_finish", {"id": identifier, "chunks": index,
-                                                                    "operation": operation})
-            if result.get("id") != identifier:
-                raise ValueError("Extension context result identity mismatch")
-            await _owned_disk(receiver.begin, result)
-            index = 0
-            while receiver.received < receiver.size:
-                block_result = await self._rpc(name, "xdog/context_read", {"id": identifier, "index": index})
-                await _owned_disk(receiver.chunk, block_result)
-                index += 1
-            value = await _owned_disk(receiver.finish, {"id": identifier, "chunks": index})
-            await self._rpc(name, "xdog/context_close", {"id": identifier})
-            return value
+            async with owned_spool(value) as (file, size, checksum):
+                identifier = uuid.uuid4().hex
+                await self._rpc(name, "xdog/context_begin", {"id": identifier, "bytes": size, "sha256": checksum})
+                index = 0
+                while block := await run_owned(file.read, BLOCK):
+                    await self._rpc(name, "xdog/context_chunk", {"id": identifier, "index": index,
+                                    "data": base64.b64encode(block).decode("ascii")})
+                    index += 1
+                result = await self._rpc(name, "xdog/context_finish", {"id": identifier, "chunks": index,
+                                                                        "operation": operation})
+                if result.get("id") != identifier:
+                    raise ValueError("Extension context result identity mismatch")
+                await run_owned(receiver.begin, result)
+                index = 0
+                while receiver.received < receiver.size:
+                    block_result = await self._rpc(name, "xdog/context_read", {"id": identifier, "index": index})
+                    await run_owned(receiver.chunk, block_result)
+                    index += 1
+                value = await run_owned(receiver.finish, {"id": identifier, "chunks": index})
+                await self._rpc(name, "xdog/context_close", {"id": identifier})
+                return value
         finally:
-            if file is None:
-                try:
-                    file, _size, _checksum = await asyncio.shield(preparing)
-                except Exception:
-                    pass
-            if file is not None:
-                file.close()
             receiver.close()
 
     def fail(self, name: str) -> None:
@@ -919,59 +843,59 @@ class ExtensionRuntime:
         name, declaration, short = selected
         provider, registration_id = declaration['name'], declaration.get('registration_id')
         generation, client = self.generation, self._manager._clients.get(name)
-        file, size, checksum = await _owned_disk(spool, request)
-        token = ''
-        def owner_alive() -> bool:
-            return (not self._closed and self.generation == generation
-                    and self._manager._clients.get(name) is client)
-        def alive() -> bool:
-            current = next((row for row in self._infos.get(name, {}).get('providers', [])
-                            if row['name'] == provider), None)
-            return (owner_alive() and current is not None and current.get('registration_id') == registration_id
-                    and self.provider_model(identifier) == model)
-        async def rpc(method: str, params: dict[str, Any], *, closing: bool = False) -> dict[str, Any]:
-            if not (owner_alive() if closing else alive()):
-                raise ValueError("Extension provider selection changed")
-            with silent_extension_ui():
-                return await self._manager._bridge(self._rpc(name, method, params))
-        locked = [False]
-        async def lock() -> None:
-            await self._provider_lock.acquire()
-            locked[0] = True
-        try:
-            await self._manager._bridge(lock())
-            transfer = uuid.uuid4().hex
-            await rpc('xdog/provider_begin', {'id': transfer, 'bytes': size, 'sha256': checksum})
-            index = 0
-            while data := await _owned_disk(file.read, BLOCK):
-                await rpc('xdog/provider_chunk', {'id': transfer, 'index': index,
-                                                'data': base64.b64encode(data).decode('ascii')})
-                index += 1
-            started = await rpc('xdog/provider_start', {'id': transfer, 'chunks': index,
-                                                       'provider': provider, 'model': short,
-                                                       'registration_id': registration_id})
-            token = started.get('id', '')
-            if not isinstance(token, str) or re.fullmatch(r'[a-f0-9]{32}', token) is None:
-                raise ValueError("Invalid extension provider stream identity")
-            while True:
-                result = await rpc('xdog/provider_next', {'id': token})
-                from xdog.agent.extensions.providers import wire_event
-                event = wire_event(result.get('event'))
-                if not alive():
-                    raise ValueError("Extension provider owner changed before delivery")
-                yield event
-                if event['type'] in {'done', 'error'}:
-                    return
-        finally:
-            file.close()
+        async with owned_spool(request) as (file, size, checksum):
+            token = ''
+            def owner_alive() -> bool:
+                return (not self._closed and self.generation == generation
+                        and self._manager._clients.get(name) is client)
+            def alive() -> bool:
+                current = next((row for row in self._infos.get(name, {}).get('providers', [])
+                                if row['name'] == provider), None)
+                return (owner_alive() and current is not None and current.get('registration_id') == registration_id
+                        and self.provider_model(identifier) == model)
+            async def rpc(method: str, params: dict[str, Any], *, closing: bool = False) -> dict[str, Any]:
+                if not (owner_alive() if closing else alive()):
+                    raise ValueError("Extension provider selection changed")
+                with silent_extension_ui():
+                    return await self._manager._bridge(self._rpc(name, method, params))
+            locked = [False]
+            async def lock() -> None:
+                await self._provider_lock.acquire()
+                locked[0] = True
             try:
-                if token and owner_alive():
-                    await rpc('xdog/provider_close', {'id': token}, closing=True)
+                await self._manager._bridge(lock())
+                transfer = uuid.uuid4().hex
+                await rpc('xdog/provider_begin', {'id': transfer, 'bytes': size, 'sha256': checksum})
+                index = 0
+                while data := await run_owned(file.read, BLOCK):
+                    await rpc('xdog/provider_chunk', {'id': transfer, 'index': index,
+                                                    'data': base64.b64encode(data).decode('ascii')})
+                    index += 1
+                started = await rpc('xdog/provider_start', {'id': transfer, 'chunks': index,
+                                                           'provider': provider, 'model': short,
+                                                           'registration_id': registration_id})
+                token = started.get('id', '')
+                if not isinstance(token, str) or re.fullmatch(r'[a-f0-9]{32}', token) is None:
+                    raise ValueError("Invalid extension provider stream identity")
+                while True:
+                    result = await rpc('xdog/provider_next', {'id': token})
+                    from xdog.agent.extensions.providers import wire_event
+                    event = wire_event(result.get('event'))
+                    if not alive():
+                        raise ValueError("Extension provider owner changed before delivery")
+                    yield event
+                    if event['type'] in {'done', 'error'}:
+                        return
             finally:
-                if locked[0] and not self._manager._closed:
-                    async def unlock() -> None:
-                        self._provider_lock.release()
-                    await self._manager._bridge(unlock())
+                file.close()
+                try:
+                    if token and owner_alive():
+                        await rpc('xdog/provider_close', {'id': token}, closing=True)
+                finally:
+                    if locked[0] and not self._manager._closed:
+                        async def unlock() -> None:
+                            self._provider_lock.release()
+                        await self._manager._bridge(unlock())
 
     @property
     def aliases(self) -> set[str]:

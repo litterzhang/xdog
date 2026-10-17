@@ -398,7 +398,7 @@ class AgentSession:
 
     async def _persist_tool_retirement(self) -> None:
         """Persist only narrowing after inventory changes; never grant a new selection."""
-        from xdog.agent.extensions.runtime import _owned_disk
+        from xdog.agent.async_work import run_owned
         if self._tool_selection_restore_pending:
             return  # Temporary startup mask is not retirement of the saved extension inventory.
         selected, data = self.agent.active_tool_selection, self.session_data
@@ -421,7 +421,7 @@ class AgentSession:
         self._tool_selection_retiring = True
         self._context_changes += 1
         try:
-            await _owned_disk(commit)  # Narrowed runtime stays fail-closed if storage fails.
+            await run_owned(commit)  # Narrowed runtime stays fail-closed if storage fails.
         finally:
             self._context_changes -= 1
             self._tool_selection_retiring = False
@@ -786,10 +786,10 @@ class AgentSession:
                 if (images or not self.agent.messages or not isinstance(self.agent.messages[-1], CustomAgentMessage)
                         or self.agent.messages[-1].type != TYPE):
                     raise ValueError('Canonical continuation requires the reviewed custom tail')
+                from xdog.agent.async_work import run_owned
                 from xdog.agent.extensions.context_message import images as context_images
-                from xdog.agent.supervision_transfer import settled_image_work
                 from xdog.ai.utils.image_files import validate_references
-                await settled_image_work(lambda: validate_references(
+                await run_owned(lambda: validate_references(
                     context_images((self.agent.messages[-1],)), self.model_info))
                 event_stream = await self.agent.continue_()
             else:

@@ -1,0 +1,125 @@
+{
+  "date": "2026-10-16",
+  "base_commit": "b6492827fbf8812052a12775a65aba974e4aad7a",
+  "status": "complete",
+  "remaining": 0,
+  "counts": {
+    "total": 3,
+    "待实现": 0,
+    "待验证": 0,
+    "缺外部环境": 0,
+    "已完成": 3,
+    "延期": 0
+  },
+  "requirements": [
+    {
+      "id": "RF-001",
+      "title": "Owned thread work without feature-layer coupling",
+      "status": "已完成",
+      "scope": "Extract a typed stdlib-only Agent owned-thread primitive; migrate extension-owned disk work, image decode/hash work and generic Coding/Claw persistence/validation consumers away from extensions.runtime and supervision_transfer private coupling. Keep existing settled_image_work callable contract.",
+      "acceptance": "Caller cancellation never releases the owned thread early; repeated cancellation joins it; late worker failure is consumed and cancellation wins; normal return/failure/contextvars/type signatures preserved; no extension/image internals imported solely for generic disk settlement.",
+      "evidence": [
+        "/tmp/xdog-reuse-refactor/ownership-baseline.log:16passed before extraction",
+        "/tmp/xdog-reuse-refactor/extracted-unit.log:48passed across ownership/rendering suites",
+        "/tmp/xdog-reuse-refactor/type-probe.log:ParamSpec args/keyword-only arguments and Future/result types checked",
+        "/tmp/xdog-reuse-refactor/reuse-audit.json:32run_owned directcall sites;0generic feature-layer helper imports",
+        "/tmp/xdog-reuse-refactor/compatibility-signature.log:legacy name/exact work-only signature, cancellation/context/close contracts verified after final audit",
+        "/tmp/xdog-reuse-refactor/final/summary.json:current frozen all8tests,Ruff,strictmypy,examples,offline lock,fresh18artifacts passed after exact callable-signature audit"
+      ],
+      "result": "Typed stdlib-only run_owned now serves32direct call sites without generic extension/image imports. Normal results/errors/contextvars preserved; canceled delivery joins actual work and consumes late failure. Exact legacy image helper name/module/work-only signature retained by thin forwarder.",
+      "acceptance_evidence": {
+        "caller_cancellation_and_late_thread_failure": [
+          "/tmp/xdog-reuse-refactor/ownership-baseline.log:before16passed",
+          "/tmp/xdog-reuse-refactor/extracted-unit.log:48passed",
+          "/tmp/xdog-reuse-refactor/compatibility-signature.log:21passed after final signature tightening"
+        ],
+        "typing_and_dependency_boundary": [
+          "/tmp/xdog-reuse-refactor/type-probe.log:strict ParamSpec/Future result typing",
+          "/tmp/xdog-reuse-refactor/reuse-audit.json:32direct calls,0genericfeature-layer imports,stdlib-only module"
+        ],
+        "legacy_callable_and_installed_code": [
+          "/tmp/xdog-reuse-refactor/final/artifacts.json:wheel-only exact helper signature and real worker probes passed"
+        ]
+      }
+    },
+    {
+      "id": "RF-002",
+      "title": "Shared cancellation-safe task joins with explicit precedence",
+      "status": "已完成",
+      "scope": "Extract error-first owned Future/Task settlement into the same lightweight module and replace equivalent repeated shield/join loops in Claw ACP backend/server/inbox, Claw gateway and Coding ACP ingress work/close paths. Keep operation-specific locks/task registries/peer ownership and cleanup order at call sites; do not merge non-equivalent drains or Eyes dependencies.",
+      "acceptance": "Inner task not canceled by callers; all concurrent/repeated cancel waiters settle; worker error wins over pending caller cancellation in transaction/close contract; inner cancellation/normal return/already-done cases unchanged; exactly one close task remains per owner; receipts/locks held until actual work stops, Linux gateway/ACP/inbox/crash regressions pass.",
+      "evidence": [
+        "/tmp/xdog-reuse-refactor/ownership-baseline.log:baseline Claw inbox/close cancellation and error-priority contracts passed",
+        "/tmp/xdog-reuse-refactor/reuse-audit.json:8equivalent owner loops replaced+1internal settlement use;non-equivalent drains explicitly excluded",
+        "/tmp/xdog-reuse-refactor/focused-integration.log:178passed including real gateway shutdown/ACP/inbox/crash/image/MCP cases",
+        "/tmp/xdog-reuse-refactor/final/summary.json:current frozen all8tests,Ruff,strictmypy,examples,offline lock,fresh18artifacts passed after exact callable-signature audit"
+      ],
+      "result": "Replaced8equivalent shield/join loops with wait_owned while keeping single close-task creation, locks, worker registries and cleanup order at each actual owner. Error-first precedence, repeated cancellation and multiple waiters preserved. Non-equivalent error-consuming drains, Eyes dependencies and distinct route policies were not merged.",
+      "acceptance_evidence": {
+        "transaction_error_priority_and_locks": [
+          "/tmp/xdog-reuse-refactor/ownership-baseline.log:old inbox+two close-owner contracts characterized",
+          "/tmp/xdog-reuse-refactor/extracted-unit.log:shared Future/inner cancellation/completed errors/multiwaiter cases",
+          "/tmp/xdog-reuse-refactor/compatibility-signature.log:real thread+lock/close contracts retained"
+        ],
+        "actual_owner_and_transport_regressions": [
+          "/tmp/xdog-reuse-refactor/focused-integration.log:178passed including gateway shutdown/ACP/inbox/crash/image/MCP",
+          "/tmp/xdog-reuse-refactor/final/tests.log:all eight paths passed"
+        ],
+        "source_ownership_audit": [
+          "/tmp/xdog-reuse-refactor/reuse-audit.json:8migrated owner call sites+1thread internal drain,non-equivalent boundaries listed"
+        ]
+      }
+    },
+    {
+      "id": "RF-003",
+      "title": "Canonical session-input rendering reused without encode/decode round trips",
+      "status": "已完成",
+      "scope": "Extract one validated, pure canonical-input text renderer in xdog.agent.session_input; reuse in llm_message, Claw ACP ingress rendering and transcript entry_text. Keep each UI projection, redaction and group/session routing policy separate.",
+      "acceptance": "Byte-for-byte model-facing input text for human/acp/automatic origins and evidence/provenance preserved; same strict JSON/capacity validation and defensive copying, no permission elevation, no serialization format or snapshot changes; malformed input still fails rather than repr/flatten fallback; typed/plain canonical paths and real ACP persistence/display/owner tests pass.",
+      "evidence": [
+        "/tmp/xdog-reuse-refactor/rf003/rendering-baseline.log:19passed before extraction",
+        "/tmp/xdog-reuse-refactor/extracted-unit.log:strict typed/raw separation,mutation revalidation,one decode per projection,exact byte banners,distinct UI redaction tests passed",
+        "/tmp/xdog-reuse-refactor/focused-integration.log:178passed including real ACP canonical transcript/readonly/dedup cases",
+        "/tmp/xdog-reuse-refactor/final/summary.json:current frozen all8tests,Ruff,strictmypy,examples,offline lock,fresh18artifacts passed after exact callable-signature audit"
+      ],
+      "result": "One validated canonical formatter now serves model projection, Claw ACP intake and transcript reading through separate strict typed/raw entry points. No re-encoding round trips, snapshot shape changes or permission changes; each render validates once, model-facing bytes stay identical and compact/full UI redaction stays separate.",
+      "acceptance_evidence": {
+        "byte_exact_model_projection": [
+          "/tmp/xdog-reuse-refactor/rf003/rendering-baseline.log:19baseline cases passed before extraction",
+          "/tmp/xdog-reuse-refactor/extracted-unit.log:three origins,nestedJSON/untrusted banner/exact text,one-decode spies"
+        ],
+        "strict_validation_and_distinct_display_policy": [
+          "packages/agent/tests/test_session_input_rendering.py:malformed/oversize/nonfinite/mutated typed JSON and runtime-object snapshot rejection",
+          "packages/claw/tests/test_session_input_projection.py:no encode fallback,model text equality,independent redaction/full source/compact history policies"
+        ],
+        "real_ACP_persistence_and_artifacts": [
+          "/tmp/xdog-reuse-refactor/focused-integration.log:canonical transcript and readonly/no-elevation tests",
+          "/tmp/xdog-reuse-refactor/final/artifacts.json:isolated typed/raw/model rendering equivalence"
+        ]
+      }
+    }
+  ],
+  "scope_notes": [
+    "Finite first refactoring pass; this is not a promise to eliminate every possible future cleanup.",
+    "Separate from previous completed UI goals; no feature deletions or double counting.",
+    "User authorizes autonomous local work, no routine approval requests.",
+    "No dependency install, live credentials/providers, service restart, version/tag/release or auto-commit/push for new refactor.",
+    "Eyes dependency independence, Linux scope, permission/readonly/durable no-replay behavior retained."
+  ],
+  "final_verification": {
+    "summary": "/tmp/xdog-reuse-refactor/final/summary.json",
+    "tests_passed": 6002,
+    "failed": 0,
+    "optional_external_cli_skipped": 7,
+    "strict_source_files": 547,
+    "flow_examples": 17,
+    "artifacts": 18,
+    "frozen_package_inputs_verified": 1335,
+    "existing_test_sources_modified": 0,
+    "original_unrelated_hashes_preserved": 9,
+    "new_dependencies": 0,
+    "supported_features_removed": 0,
+    "new_refactor_committed_or_pushed": false,
+    "non_linux_native_validation": "outside scope;not claimed passed"
+  }
+}

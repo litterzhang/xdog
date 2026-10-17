@@ -79,7 +79,7 @@ from xdog.agent.events import (
     UsageEvent,
 )
 from xdog.agent.input_queue import Delivery, QueuedInput
-from xdog.agent.messages import dicts_to_messages
+from xdog.agent.messages import default_convert_to_llm, dicts_to_messages
 from xdog.agent.snapshots import (
     CompactionSnapshot,
     InterruptedTool,
@@ -1778,20 +1778,5 @@ class Agent:
 # ---------------------------------------------------------------------------
 
 def _default_convert_to_llm(messages: list[AgentMessage]) -> list[Message]:
-    """Project named canonical context content; keep unknown custom metadata out of the LLM."""
-    from xdog.agent.extensions.context_message import llm_message
-    from xdog.agent.external_event import llm_message as external_message
-    from xdog.agent.session_input import llm_message as session_message
-    from xdog.ai.types import AssistantMessage, ToolResultMessage, UserMessage
-
-    result: list[Message] = []
-    for message in messages:
-        if isinstance(message, (UserMessage, AssistantMessage, ToolResultMessage)):
-            result.append(message)
-        elif (projected := llm_message(message)) is not None:
-            result.append(projected)
-        elif (external := external_message(message)) is not None:
-            result.append(external)
-        elif (session_input := session_message(message)) is not None:
-            result.append(session_input)
-    return result
+    """Compatibility entry point; default projection policy lives in messages."""
+    return default_convert_to_llm(messages)

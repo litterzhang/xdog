@@ -46,7 +46,7 @@ from xdog.agent.extensions.artifact_export import ArtifactLoader, export_snapsho
 from xdog.agent.extensions.command_result import ExtensionCommandResult
 from xdog.agent.extensions.runtime import validate_snapshot
 from xdog.agent.mcp.context import McpDocument, McpEntry
-from xdog.agent.mcp.oauth import validate_launch, validate_review
+from xdog.agent.mcp.oauth import normalize_auth_reply
 from xdog.agent.supervision_config import ChildConfig
 from xdog.ai.types import (
     AssistantMessage,
@@ -72,7 +72,6 @@ from xdog.tui.attachments import Attachment, AttachmentComposer
 from xdog.tui.child_browser import ChildSourceWorker, child_entries
 from xdog.tui.child_drafts import ChildDraft
 from xdog.tui.components.attachment_panel import AttachmentPanel
-from xdog.tui.components.child_draft_panel import DraftEntry
 from xdog.tui.components.child_panel import ChildPanel
 from xdog.tui.components.details_panel import DetailsPanel
 from xdog.tui.components.extension_command import ExtensionCommand
@@ -93,6 +92,7 @@ from xdog.tui.external_editor import edit_draft
 from xdog.tui.file_completion import WorkspaceFileCompletionProvider
 from xdog.tui.keys import KeyEvent, KeyEventType
 from xdog.tui.navigation import NavigationEntry, NavigationWorker
+from xdog.tui.parent_draft_presenter import ParentDraftPresenter
 from xdog.tui.parent_drafts import ParentDrafts
 from xdog.tui.prompt_keymap import PromptKeymap
 from xdog.tui.queue_controls import QUEUE_HELP, LocalQueueIds, QueueEntry, parse_queue_command
@@ -235,7 +235,6 @@ class InteractiveMode:
         self._navigation_panel: NavigationPanel | None = None
         self._navigation_provider: NavigationWorker | None = None
         self._child_ui_lease = uuid.uuid4().hex
-        self._parent_draft_panel: ParentDraftPanel | None = None
         self._child_panel: ChildPanel | None = None
         self._child_context = ""
         self._child_source_worker: ChildSourceWorker | None = None
@@ -273,6 +272,10 @@ class InteractiveMode:
             lambda: self._session.session_manager._dir / 'saved-parent-drafts', self._parent_draft_snapshot,
                                            self._mcp_context_key, lambda text: self._chat_log.add_system(text),
             self._parent_draft_capacity)
+        self._parent_draft_ui = ParentDraftPresenter(
+            self._parent_drafts, available=self._parent_draft_ui_available, prepare=self._prepare_parent_draft_view,
+            mount=self._mount_parent_draft_view, unmount=self._unmount_parent_draft_view,
+            restore=self._restore_parent_draft_composer, changed=self._parent_draft_changed)
         self._local_images: dict[str, tuple[Attachment, ...]] = {}
         self._routed_images: dict[str, tuple[Attachment, ...]] = {}
         self._active_images: tuple[Attachment, ...] = ()
@@ -927,8 +930,6 @@ class InteractiveMode:
 
     def _mcp_publish(self, action: str, data: Any = (), error: str = "") -> None:
         if action not in _MCP_PANEL_ACTIONS and not action.startswith('auth_'):
-            return
-        if action not in _MCP_PANEL_ACTIONS and not action.startswith('auth_'):
             return  # Retired/unknown controls cannot invalidate a successor's active view.
         panel = self._mcp_panel
         if panel is None:
@@ -939,29 +940,10 @@ class InteractiveMode:
         from dataclasses import asdict
         if action.startswith("auth_"):
             try:
-                if not isinstance(data, dict) and not error:
-                    raise ValueError("Invalid authorization response")
-                if action.startswith("auth_credentials_") and action.endswith("_prepare") and not error:
-                    expected = action.removeprefix("auth_").removesuffix("_prepare")
-                    if data.get("operation") != expected or not isinstance(data.get("storage_notice"), str):
-                        raise ValueError("Missing explicit credential storage consent")
-                    self._mcp_auth_review = validate_review(data)
-                    data = self._mcp_auth_review
-                elif action == "auth_prepare" and not error:
-                    self._mcp_auth_review = validate_review(data, prepared=True)
-                    data = self._mcp_auth_review
-                elif action == "auth_refresh_prepare" and not error:
-                    if data.get("operation") != "refresh":
-                        raise ValueError("Missing explicit refresh operation")
-                    self._mcp_auth_review = validate_review(data)
-                    data = self._mcp_auth_review
-                elif action == "auth_status" and not error and isinstance(data.get("review"), dict):
-                    data = {**data, "review": validate_review(data["review"])}
-                elif action == "auth_start" and not error:
-                    if self._mcp_auth_review is None:
-                        raise ValueError("Missing reviewed authorization scope")
-                    data = validate_launch(data, self._mcp_auth_review)
-                panel.publish_auth(action, data if isinstance(data, dict) else {}, error)
+                data, self._mcp_auth_review = normalize_auth_reply(
+                    action, data, review=self._mcp_auth_review, error=error,
+                )
+                panel.publish_auth(action, data, error)
             except ValueError as exc:
                 self._detach_mcp_auth()
                 panel.publish_auth(action, {}, str(exc))
@@ -1129,44 +1111,35 @@ class InteractiveMode:
         return ChildDraft(self._editor.get_text(), images=tuple(self._composer.items.values()),
                           cursor=self._editor._cursor)
 
+    @property
+    def _parent_draft_panel(self) -> ParentDraftPanel | None:
+        return self._parent_draft_ui.panel
+
     def _parent_view_alive(self, panel: ParentDraftPanel, lease: int) -> bool:
-        return (self._parent_draft_panel is panel and panel.focused and panel.view_lease == lease
-                and panel.context == self._mcp_context_key() and self._parent_draft_ui_available())
+        return self._parent_draft_ui.alive(panel, lease)
 
     def _close_parent_drafts(self) -> None:
-        panel, self._parent_draft_panel = self._parent_draft_panel, None
-        self._parent_drafts.invalidate_read()
-        if panel is not None:
-            panel.close()
-            if self._tui._overlay_base_focus is panel:
-                # Retire only the dismissed base view; leave a protected overlay focused.
-                self._tui._overlay_base_focus = self._editor
-            if self._layout.details is panel:
-                self._layout.details = None
-            if self._tui._focused is panel:
-                self._tui.set_focus(self._editor)
-        self._update_hints()
-        self._tui.request_render()
+        self._parent_draft_ui.close()
 
     def _attach_parent_drafts(self, panel: ParentDraftPanel) -> None:
-        # Replacing a successful loading view must not clear the adopted records.
-        prior = self._parent_draft_panel
-        if prior is not None:
-            prior.close()
-        self._parent_draft_panel = panel
-        self._layout.details = panel
-        self._tui.set_focus(panel)
-        lease = panel.view_lease
-        self._parent_drafts.bind_read_view(lambda: self._parent_view_alive(panel, lease))
-        self._update_hints()
-        self._tui.request_render()
+        self._parent_draft_ui.attach(panel)
 
     def _begin_parent_drafts(self) -> None:
-        if not self._parent_draft_ui_available():
-            raise ValueError('Another modal UI owns input; parent draft unchanged')
-        if self._parent_drafts.io.busy:
-            raise ValueError('Parent draft disk work still settling')
-        self._close_parent_drafts()
+        self._parent_draft_ui.begin()
+
+    def _parent_draft_command(self, args: str) -> None:
+        self._parent_draft_ui.command(args)
+
+    def _show_parent_save(self) -> None:
+        self._parent_draft_ui.show_save()
+
+    def _show_parent_drafts(self) -> None:
+        self._parent_draft_ui.show_restore()
+
+    def _poll_parent_drafts(self) -> None:
+        self._parent_draft_ui.poll()
+
+    def _prepare_parent_draft_view(self) -> None:
         # These are native view transitions, not a child-browser dependency.
         for panel, close in ((self._child_panel, self._close_children),
                              (self._mcp_panel, self._close_mcp),
@@ -1178,79 +1151,30 @@ class InteractiveMode:
         if self._details_open:
             self._close_details()
 
-    def _parent_draft_command(self, args: str) -> None:
-        try:
-            if args.strip() == 'save':
-                self._show_parent_save()
-            elif args.strip().partition(' ')[0] in {'restore', 'saved'}:
-                self._begin_parent_drafts()
-                panel = ParentDraftPanel(lambda: (), lambda *_: None, self._close_parent_drafts,
-                                         context=self._mcp_context_key(), mode='loading')
-                self._attach_parent_drafts(panel)
-                lease = panel.view_lease
-                try:
-                    self._parent_drafts.command(args, alive=lambda: self._parent_view_alive(panel, lease))
-                except ValueError:
-                    self._close_parent_drafts()
-                    raise
-            else:
-                self._parent_drafts.command(args)
-        except ValueError as exc:
-            self._chat_log.add_system(str(exc))
+
+    def _mount_parent_draft_view(self, panel: ParentDraftPanel) -> None:
+        self._layout.details = panel
+        self._tui.set_focus(panel)
+
+    def _unmount_parent_draft_view(self, panel: ParentDraftPanel) -> None:
+        if self._tui._overlay_base_focus is panel:
+            self._tui._overlay_base_focus = self._editor
+        if self._layout.details is panel:
+            self._layout.details = None
+        if self._tui._focused is panel:
+            self._tui.set_focus(self._editor)
+
+    def _restore_parent_draft_composer(self, draft: ChildDraft) -> None:
+        retained = self._retained_image_bytes() - self._parent_saved_bytes() + self._composer.bytes
+        if retained + sum(len(item.data) for item in draft.images) > 40 * 1024 * 1024:
+            raise ValueError('Parent recovery exceeds local retention; existing draft preserved')
+        # Persisted cursor/config/access never become restore authority.
+        self._editor.set_text(draft.text)
+        self._composer.restore(draft.images)
+
+    def _parent_draft_changed(self) -> None:
+        self._update_hints()
         self._tui.request_render()
-
-    def _show_parent_save(self) -> None:
-        self._begin_parent_drafts()
-        self._parent_drafts.prepare_save(alive=lambda: False)
-        entry = self._parent_drafts.save_entry()
-        def act(action: str, reviewed: DraftEntry) -> None:
-            if action != 'save' or not self._parent_view_alive(panel, lease):
-                raise ValueError('Parent save view changed; reopen full review')
-            self._parent_drafts.confirm_save(reviewed)
-            self._close_parent_drafts()  # Admitted disk work still owns its quit barrier.
-        panel = ParentDraftPanel(lambda: (entry,), act, self._close_parent_drafts,
-                                 context=self._mcp_context_key(), mode='save')
-        panel.prepare_save(entry)
-        self._attach_parent_drafts(panel)
-        lease = panel.view_lease
-
-    def _show_parent_drafts(self) -> None:
-        if not self._parent_draft_ui_available():
-            self._close_parent_drafts()
-            self._chat_log.add_system('Parent recovery blocked by modal owner; explicitly reload after it settles')
-            return
-        def act(action: str, entry: DraftEntry) -> None:
-            if not self._parent_view_alive(panel, lease):
-                raise ValueError('Parent recovery view changed; reopen and review')
-            def restore(draft: ChildDraft) -> None:
-                retained = self._retained_image_bytes() - self._parent_saved_bytes() + self._composer.bytes
-                if retained + sum(len(item.data) for item in draft.images) > 40 * 1024 * 1024:
-                    raise ValueError('Parent recovery exceeds local retention; existing draft preserved')
-                # Text/images only. Native set_text places the editing cursor at the end;
-                # persisted cursor/config/access never become restore authority.
-                self._editor.set_text(draft.text)
-                self._composer.restore(draft.images)
-                self._close_parent_drafts()
-                self._chat_log.add_system('Parent draft recovered; NOT sent · inspect before explicit submission')
-            self._parent_drafts.action(action, entry, restore)
-        panel = ParentDraftPanel(self._parent_drafts.entries, act, self._close_parent_drafts,
-                                 context=self._mcp_context_key(), mode='restore')
-        self._attach_parent_drafts(panel)
-        lease = panel.view_lease
-
-    def _poll_parent_drafts(self) -> None:
-        panel = self._parent_draft_panel
-        if panel is not None and (not panel.focused or panel.context != self._mcp_context_key()
-                                  or not self._parent_draft_ui_available()):
-            self._close_parent_drafts()
-        self._parent_drafts.poll(self._show_parent_drafts)
-        panel = self._parent_draft_panel
-        if panel is not None and panel.mode == 'loading' and not self._parent_drafts.io.busy:
-            self._close_parent_drafts()  # Failed/revoked reads never keep a dead loading surface.
-
-
-
-
 
 
     def _child_image_send(self, action: str, child: str, text: str, access: str,
@@ -2455,8 +2379,8 @@ class InteractiveMode:
         async def catalog(extension: str, request: dict[str, Any]) -> dict[str, Any] | None:
             from dataclasses import asdict
 
+            from xdog.agent.async_work import run_owned
             from xdog.agent.extensions.catalog import page
-            from xdog.agent.extensions.runtime import _owned_disk
             def alive() -> bool:
                 return (not self._exit_requested and self._session is captured and self._command is not None
                         and self._command.id == command.id and not self._command.cancel_requested
@@ -2466,8 +2390,8 @@ class InteractiveMode:
                 return None
             scope = ("sessions" if request["scope"] == "sessions" else
                      "tree|" + (request["session_id"] or session_id) + "|" + request["branch_id"])
-            entries = await _owned_disk(self._navigation_entries, scope)
-            result = await _owned_disk(page, (asdict(entry) for entry in entries), request, session_id)
+            entries = await run_owned(self._navigation_entries, scope)
+            result = await run_owned(page, (asdict(entry) for entry in entries), request, session_id)
             return result if alive() else None
         captured.extensions.catalog_handler = catalog
         self._bind_extension_dialogs()

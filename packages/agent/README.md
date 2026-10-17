@@ -215,6 +215,25 @@ SDK embedders still supply pre-tool policy. The native read-only allowlist is lo
 filesystem read/ls/grep/find and current time; shell, external/extension and child
 control calls are not inferred safe. Permission gates are not an OS sandbox.
 
+### Cancellation-safe owned work
+
+`xdog.agent.async_work` contains lightweight shared primitives, not another runtime
+or permission layer:
+
+- `run_owned(callable, *args, **kwargs)` offloads synchronous work with caller
+  contextvars. Cancellation waits for the actual thread and consumes a late
+  failure; a canceled delivery is never replaced by a successful return value.
+- `wait_owned(future_or_task)` joins an **already-owned** Future/Task without
+  propagating caller cancellation to it. Its actual error takes precedence;
+  otherwise deferred caller cancellation is raised after successful settlement.
+
+These contracts intentionally differ. Keep locks, capacity slots, writer leases,
+transaction receipts and the single shared close task at the calling owner until
+its helper settles. Neither helper retries, replays effects, creates an Agent,
+changes tool permissions, or owns a service lifecycle. The existing
+`supervision_transfer.settled_image_work(work=...)` import, name and one-argument
+signature remain compatible.
+
 ### Explicit extension process owners
 
 `xdog.agent.extensions.ExtensionAPI` exposes the trusted Python registration API;

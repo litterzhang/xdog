@@ -423,7 +423,7 @@ class AgentSession:
 
     async def _persist_tool_retirement(self) -> None:
         """Await durable narrowing before a callback/turn can acknowledge inventory retirement."""
-        from xdog.agent.extensions.runtime import _owned_disk
+        from xdog.agent.async_work import run_owned
         if self._tool_selection_restore_pending or self._runtime._active_session is not self:
             return  # Unadmitted prepared sessions publish their narrowed choice in the navigation journal.
         selected, saved = self._agent.active_tool_selection, self._saved_active_tools
@@ -443,15 +443,15 @@ class AgentSession:
             self._saved_active_tools = selected
         self._tool_selection_retiring = True
         try:
-            await _owned_disk(commit)  # Cancellation settles actual restriction, never restores retired tools.
+            await run_owned(commit)  # Cancellation settles actual restriction, never restores retired tools.
         finally:
             self._tool_selection_retiring = False
 
     async def select_active_tools(self, names: list[str] | tuple[str, ...] | None, *, expected_revision: int,
                                   alive: Callable[[], bool] = lambda: True) -> None:
         """Owned disk commit; keep the group reserved until the real worker settles."""
+        from xdog.agent.async_work import run_owned
         from xdog.agent.extensions.active_tools import names as validate_names
-        from xdog.agent.extensions.runtime import _owned_disk
         self._children_idle()
         if self._tool_selection_restore_pending:
             raise ValueError('Tool selection requires initialized inventory')
@@ -473,7 +473,7 @@ class AgentSession:
                 self._saved_active_tools = selected
         self._tool_selection_changing = True
         try:
-            await _owned_disk(commit)
+            await run_owned(commit)
         finally:
             self._tool_selection_changing = False
 
@@ -781,8 +781,8 @@ class AgentSession:
                 if (not history or not isinstance(history[-1], CustomAgentMessage) or history[-1].type != TYPE
                         or history[-1].data.get('id') != input.record_id):
                     raise ValueError('Canonical continuation tail changed; no new user input fabricated')
-                from xdog.agent.supervision_transfer import settled_image_work
-                await settled_image_work(lambda: self._runtime.validate_images(context_images((history[-1],))))
+                from xdog.agent.async_work import run_owned
+                await run_owned(lambda: self._runtime.validate_images(context_images((history[-1],))))
                 event_stream = await self._agent.continue_()
             elif isinstance(input, ExternalInput):
                 from xdog.agent.session_input import encode_input

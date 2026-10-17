@@ -373,7 +373,7 @@ class Orchestrator:
 
     async def manage_access(self, group_id: str, action: str, expected_session: str) -> dict[str, Any]:
         from xdog.agent.access import AccessState
-        from xdog.agent.extensions.runtime import _owned_disk
+        from xdog.agent.async_work import run_owned
         runtime = self._runtimes.get(group_id)
         if runtime is None:
             raise ValueError("Unknown group")
@@ -389,7 +389,7 @@ class Orchestrator:
                     raise ValueError("Access session changed; refresh before retrying")
                 session = runtime.get_or_create_session(allow_reset=False)
                 session._children_idle()
-                state = await _owned_disk(lambda: session.access.set_read_only(action == "restrict"))
+                state = await run_owned(lambda: session.access.set_read_only(action == "restrict"))
                 runtime._source_revision += 1
         else:
             raise ValueError("Unknown access action")
@@ -455,9 +455,9 @@ class Orchestrator:
                 session.agent.set_options(replace(session.agent.options,
                     thinking=None if level == "off" else cast(ThinkingLevel, level)))
                 runtime._source_revision += 1
-            from xdog.agent.extensions.runtime import _owned_disk
+            from xdog.agent.async_work import run_owned
             try:
-                await _owned_disk(persist)
+                await run_owned(persist)
             except asyncio.CancelledError:
                 # A lost acknowledgement does not roll back an already admitted
                 # atomic commit. Keep live/persisted options aligned on this owner;
@@ -529,9 +529,9 @@ class Orchestrator:
                 runtime.model, runtime.context_window = selected, model.context_window
                 runtime.max_prompt_tokens = model.max_prompt_tokens
                 runtime._source_revision += 1
-            from xdog.agent.extensions.runtime import _owned_disk
+            from xdog.agent.async_work import run_owned
             try:
-                await _owned_disk(persist)
+                await run_owned(persist)
             except asyncio.CancelledError:
                 if committed[0] and owner_alive():
                     apply()  # Lost acknowledgement is not a rollback/replay of the admitted atomic setting.
@@ -614,16 +614,16 @@ class Orchestrator:
                 if event.get("type") == "extension_notice" and len(notices) < 8 and owned():
                     notices.append(str(event.get("text", ""))[:4000])
             async def catalog(extension: str, request: dict[str, Any]) -> dict[str, Any] | None:
+                from xdog.agent.async_work import run_owned
                 from xdog.agent.extensions.catalog import page
-                from xdog.agent.extensions.runtime import _owned_disk
                 if (action != "command" or not name.lower().startswith("ext-" + extension.lower() + "-")
                         or not owner_session or not owned()):
                     return None
                 scope = ("sessions" if request["scope"] == "sessions" else
                          "tree|" + (request["session_id"] or owner_session) + "|" + request["branch_id"])
-                rows = await _owned_disk(runtime.navigation_entries, scope)
-                result = await _owned_disk(page, rows, request, owner_session)
-                return cast(dict[str, Any], result) if owned() else None
+                rows = await run_owned(runtime.navigation_entries, scope)
+                result = await run_owned(page, rows, request, owner_session)
+                return result if owned() else None
             async def host_dialog(extension: str, dialog: dict[str, Any]) -> Any:
                 from xdog.agent.extensions.dialogs import validate_sdk_dialog
                 from xdog.agent.supervision import settle_on

@@ -19,6 +19,7 @@ from xdog.ai.types import (
     AssistantMessage,
     CostBreakdown,
     ImageContent,
+    Message,
     TextContent,
     ThinkingContent,
     ToolCall,
@@ -282,3 +283,22 @@ def dict_to_message(d: dict[str, Any]) -> AgentMessage:
 def dicts_to_messages(dicts: list[dict[str, Any]]) -> list[AgentMessage]:
     """Deserialize plain dicts back into agent messages."""
     return [dict_to_message(d) for d in dicts]
+
+
+def default_convert_to_llm(messages: list[AgentMessage]) -> list[Message]:
+    """Project named canonical context content; keep unknown custom metadata out of the LLM."""
+    from xdog.agent.extensions.context_message import llm_message
+    from xdog.agent.external_event import llm_message as external_message
+    from xdog.agent.session_input import llm_message as session_message
+
+    result: list[Message] = []
+    for message in messages:
+        if isinstance(message, (UserMessage, AssistantMessage, ToolResultMessage)):
+            result.append(message)
+        elif (projected := llm_message(message)) is not None:
+            result.append(projected)
+        elif (external := external_message(message)) is not None:
+            result.append(external)
+        elif (session_input := session_message(message)) is not None:
+            result.append(session_input)
+    return result

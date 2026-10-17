@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
 
+from xdog.agent.async_work import wait_owned
 from xdog.agent.session_input import SessionInput, decode_input, input_data
 
 T = TypeVar("T")
@@ -66,16 +67,7 @@ class GroupInbox:
             if self._closed:
                 raise RuntimeError("Inbox is closed")
             task = asyncio.create_task(asyncio.to_thread(operation))
-            cancelled = False
-            while not task.done():
-                try:
-                    await asyncio.shield(task)
-                except asyncio.CancelledError:
-                    cancelled = True
-            result = task.result()
-            if cancelled:
-                raise asyncio.CancelledError
-            return result
+            return await wait_owned(task)
 
     def _transaction(self, operation: Callable[[sqlite3.Connection], T]) -> T:
         with closing(sqlite3.connect(self.path, timeout=5)) as db, db:

@@ -14,6 +14,7 @@ from pathlib import Path
 
 from xdog.agent.acp.adapter import AcpAdapter
 from xdog.agent.acp.transport import serve
+from xdog.agent.async_work import wait_owned
 from xdog.coding.acp.ingress_backend import IngressBackend
 from xdog.coding.core.sessions.inbox_store import InboxStore
 from xdog.coding.core.sessions.ownership import OwnerRegistry, private_directory, private_open, runtime_directory
@@ -163,15 +164,7 @@ class IngressServer:
     async def aclose(self) -> None:
         if self._closing is None:
             self._closing = asyncio.create_task(self._close())
-        cancelled = False
-        while not self._closing.done():
-            try:
-                await asyncio.shield(self._closing)
-            except asyncio.CancelledError:
-                cancelled = True
-        self._closing.result()
-        if cancelled:
-            raise asyncio.CancelledError
+        await wait_owned(self._closing)
 
     async def _close(self) -> None:
         try:

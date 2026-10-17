@@ -7,6 +7,7 @@ import inspect
 from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
 
+from xdog.agent.async_work import run_owned
 from xdog.agent.input_queue import QueuedInput
 from xdog.agent.supervision_images import images_to_dicts, input_receipt, validate_images
 from xdog.ai.utils.image_files import decode_image
@@ -15,26 +16,8 @@ T = TypeVar('T')
 
 
 async def settled_image_work(work: Callable[[], T]) -> T:
-    """Cancellation revokes delivery, but waits for the actual owned thread to exit.
-
-    Python cannot forcibly stop an executing thread. Do not release a caller's
-    capacity slot or allow another copy to replace it while decode/hash still runs.
-    Worker failure during cancellation is consumed; cancellation remains the result.
-    """
-    task = asyncio.create_task(asyncio.to_thread(work))
-    try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError:
-        while not task.done():
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                continue
-            except Exception:
-                break
-        if not task.cancelled():
-            task.exception()  # Retrieve a late worker failure without publishing a receipt.
-        raise
+    """Preserve the image helper's name and signature without another worker loop."""
+    return await run_owned(work)
 
 
 async def prepare_recovery(row: QueuedInput) -> dict[str, Any]:

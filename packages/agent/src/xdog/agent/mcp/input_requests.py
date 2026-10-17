@@ -40,9 +40,9 @@ class InputRequests:
 
     async def run(self, method: str, params: dict[str, Any],
                   send: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]) -> dict[str, Any]:
+        from xdog.agent.async_work import run_owned
         from xdog.agent.mcp.schema import json_value
         from xdog.agent.mcp.stdio import McpError
-        from xdog.agent.supervision_transfer import settled_image_work
 
         if not self.active or method not in INPUT_METHODS:
             raise McpError('Input continuation requires an owned modern request')
@@ -64,7 +64,7 @@ class InputRequests:
                     (not self.roots.active or self.roots.revision != root_revision)):
                 raise McpError('Input continuation owner withdrawn; no replay')
         try:
-            original = await settled_image_work(lambda: json.loads(json_value(params, maximum=8 * 1024 * 1024)))
+            original = await run_owned(lambda: json.loads(json_value(params, maximum=8 * 1024 * 1024)))
             payload = original
             async with asyncio.timeout(self.timeout):
                 for round_index in range(self.max_rounds + 1):
@@ -78,7 +78,7 @@ class InputRequests:
                         raise McpError('Unsupported MCP result type; not treated as completion')
                     if round_index == self.max_rounds:
                         raise McpError('Modern input continuation round ceiling reached; no replay')
-                    frozen = await settled_image_work(lambda: self._validate(response, declared))
+                    frozen = await run_owned(lambda: self._validate(response, declared))
                     requests = frozen.get('inputRequests', {})
                     responses: dict[str, Any] = {}
                     # Validate every sibling before disclosing even configured
@@ -102,7 +102,7 @@ class InputRequests:
                         await asyncio.sleep(.25)  # Bounded requestState-only load shedding.
                     if 'requestState' in frozen:
                         payload['requestState'] = frozen['requestState']
-                    await settled_image_work(lambda: json_value(payload, maximum=8 * 1024 * 1024))
+                    await run_owned(lambda: json_value(payload, maximum=8 * 1024 * 1024))
                     current()
         except asyncio.CancelledError:
             if self._failed:

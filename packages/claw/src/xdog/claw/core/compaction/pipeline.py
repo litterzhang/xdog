@@ -12,8 +12,8 @@ import logging
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from xdog.agent.async_work import run_owned
 from xdog.agent.core import AgentMessage, AgentTool
-from xdog.agent.extensions.runtime import _owned_disk
 from xdog.agent.summarization import summary_instructions
 from xdog.claw.core.compaction.transcript import (
     archive_transcript,
@@ -77,7 +77,7 @@ async def run_compaction(
     # 3. Archive
     if conversations_dir is not None:
         try:
-            archive_path = await _owned_disk(archive_transcript, transcript, conversations_dir)
+            archive_path = await run_owned(archive_transcript, transcript, conversations_dir)
             if reindex_fn is not None:
                 try:
                     await reindex_fn(archive_path, archive_path.name)

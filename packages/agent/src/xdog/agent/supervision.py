@@ -23,6 +23,7 @@ from typing import Any, TypeVar
 
 from xdog.agent.agent import Agent
 from xdog.agent.core import AgentMessage, AgentTool, AgentToolResult
+from xdog.agent.cross_loop import submit_remote
 from xdog.agent.events import (
     AgentEvent,
     InputHandledEvent,
@@ -78,47 +79,7 @@ async def settle_on(loop: asyncio.AbstractEventLoop, coroutine: Coroutine[Any, A
     if loop.is_closed():
         coroutine.close()
         raise RuntimeError("Host service loop closed")
-    result: concurrent.futures.Future[T] = concurrent.futures.Future()
-    settled: concurrent.futures.Future[None] = concurrent.futures.Future()
-    canceled = threading.Event()
-    task_ref: list[asyncio.Task[T]] = []
-    def start() -> None:
-        if canceled.is_set():
-            coroutine.close()
-            result.cancel()
-            settled.set_result(None)
-            return
-        task = loop.create_task(coroutine)
-        task_ref.append(task)
-        def done(completed: asyncio.Task[T]) -> None:
-            if completed.cancelled():
-                result.cancel()
-            elif (error := completed.exception()) is not None:
-                result.set_exception(error)
-            else:
-                result.set_result(completed.result())
-            settled.set_result(None)
-        task.add_done_callback(done)
-    loop.call_soon_threadsafe(start)
-    wrapped = asyncio.wrap_future(result)
-    try:
-        return await asyncio.shield(wrapped)
-    except asyncio.CancelledError:
-        canceled.set()
-        def cancel() -> None:
-            if task_ref and not task_ref[0].cancelling():
-                task_ref[0].cancel()
-        loop.call_soon_threadsafe(cancel)
-        while not settled.done():
-            try:
-                await asyncio.shield(asyncio.wrap_future(settled))
-            except asyncio.CancelledError:
-                continue
-        if wrapped.done() and not wrapped.cancelled():
-            wrapped.exception()
-        else:
-            wrapped.cancel()
-        raise
+    return await submit_remote(loop, coroutine)
 
 
 
@@ -327,51 +288,12 @@ class ChildSupervisor:
         except BaseException:
             coroutine.close()
             raise
-        result: concurrent.futures.Future[T] = concurrent.futures.Future()
-        settled: concurrent.futures.Future[None] = concurrent.futures.Future()
-        canceled = threading.Event()
-        task_ref: list[asyncio.Task[T]] = []
-        def start() -> None:
-            if canceled.is_set():
-                coroutine.close()
-                result.cancel()
-                settled.set_result(None)
-                return
-            task = loop.create_task(coroutine)
-            task_ref.append(task)
-            def done(completed: asyncio.Task[T]) -> None:
-                if completed.cancelled():
-                    result.cancel()
-                elif (error := completed.exception()) is not None:
-                    result.set_exception(error)
-                else:
-                    result.set_result(completed.result())
-                settled.set_result(None)
-            task.add_done_callback(done)
         with self._start_lock:
             if self._closed:
                 coroutine.close()
                 raise RuntimeError("Child supervisor closed")
-            loop.call_soon_threadsafe(start)
-        wrapped = asyncio.wrap_future(result)
-        try:
-            return await asyncio.shield(wrapped)
-        except asyncio.CancelledError:
-            canceled.set()
-            def cancel() -> None:
-                if task_ref and not task_ref[0].cancelling():
-                    task_ref[0].cancel()
-            loop.call_soon_threadsafe(cancel)
-            while not settled.done():
-                try:
-                    await asyncio.shield(asyncio.wrap_future(settled))
-                except asyncio.CancelledError:
-                    continue
-            if wrapped.done() and not wrapped.cancelled():
-                wrapped.exception()
-            else:
-                wrapped.cancel()
-            raise
+            pending = submit_remote(loop, coroutine)
+        return await pending
 
     @contextmanager
     def idle_scope(self) -> Iterator[None]:
@@ -634,7 +556,7 @@ class ChildSupervisor:
                     while child.queue_work:
                         await asyncio.sleep(0.005)
                     child.queue_work = True
-                    from xdog.agent.supervision_transfer import settled_image_work
+                    from xdog.agent.async_work import run_owned
                     try:
                         self._capture(child)
                         record = self._record(child, transcript=True)
@@ -662,7 +584,7 @@ class ChildSupervisor:
                         record['checkpoint'] = points[-1].index if points else -1
                         persist_admission = self.persist_admission
                         assert persist_admission is not None
-                        await settled_image_work(lambda: persist_admission(record))
+                        await run_owned(lambda: persist_admission(record))
                     except BaseException:
                         # Callback effects or rename may already have happened.
                         # Terminal cleanup must not downgrade that recovery to
@@ -682,14 +604,14 @@ class ChildSupervisor:
                     while child.queue_work:
                         await asyncio.sleep(0.005)
                     child.queue_work = True
-                    from xdog.agent.supervision_transfer import settled_image_work
+                    from xdog.agent.async_work import run_owned
                     try:
                         # Capture after any prior journal writer: it may have
                         # admitted another input while this checkpoint waited.
                         pending = tuple(replace(row, selected=False) for row in agent.pending_inputs())
                         persist = self.persist_inputs
                         assert persist is not None
-                        await settled_image_work(lambda: persist(child.spec.id, pending))
+                        await run_owned(lambda: persist(child.spec.id, pending))
                     finally:
                         child.queue_work = False
                 agent.set_input_settled(persist_settled)

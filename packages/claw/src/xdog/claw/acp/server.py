@@ -9,6 +9,7 @@ from pathlib import Path
 
 from xdog.agent.acp.adapter import AcpAdapter
 from xdog.agent.acp.transport import serve
+from xdog.agent.async_work import wait_owned
 from xdog.claw.acp.backend import ClawBackend, CompletionSink
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 
@@ -76,15 +77,7 @@ class ClawAcpServer:
         if self._close_task is None:
             self._closing = True
             self._close_task = asyncio.create_task(self._close())
-        cancelled = False
-        while not self._close_task.done():
-            try:
-                await asyncio.shield(self._close_task)
-            except asyncio.CancelledError:
-                cancelled = True
-        self._close_task.result()
-        if cancelled:
-            raise asyncio.CancelledError
+        await wait_owned(self._close_task)
 
     async def _close(self) -> None:
         if self._server is not None:
