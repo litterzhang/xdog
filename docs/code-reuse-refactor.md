@@ -100,3 +100,14 @@ Per-item evidence: `code-reuse-requirements.json`. Full command outputs, frozen
 hashes, reuse audit and artifact manifest: `/tmp/xdog-reuse-refactor/final/summary.json`
 and adjacent files. This completes the frozen first pass, not every possible
 future cleanup in XDOG.
+
+## Authorized delivery update — 2026-10-17
+
+The later explicit commit/push authorization supersedes the historical local-only
+restriction above. Related RF+RR implementation was committed in16b8737 and pushed
+to main. The integrated corrections at82a0f9876f39eab3afd2ac2a51e862d33689fbe9
+passed exact-commit GitHub run39033187499 (test and secrets,all build/test/static/
+example/artifact steps). Full latest local regression:6177passed+7optional CLI
+skips,strict550sourcefiles,17examples,18artifacts. See the follow-up ledger for
+latest counts and evidence;this does not reopen/double-count completed RF items.
+Unrelated features/workflows remain uncommitted;no version/tag/release/restart.

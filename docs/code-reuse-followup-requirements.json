@@ -1,15 +1,15 @@
 {
   "date": "2026-10-17",
-  "status": "active",
+  "status": "complete",
   "base_commit": "b6492827fbf8812052a12775a65aba974e4aad7a",
   "baseline": "HEAD plus completed uncommitted RF-001..003;private initial patch/tar/hashes preserve preexisting work",
-  "remaining": 6,
+  "remaining": 0,
   "counts": {
     "total": 6,
     "待实现": 0,
-    "待验证": 6,
+    "待验证": 0,
     "缺外部环境": 0,
-    "已完成": 0,
+    "已完成": 6,
     "延期": 0
   },
   "requirements": [
@@ -26,10 +26,12 @@
         "/tmp/xdog-reuse-review-20261017/spool-probe-result.json",
         "/tmp/xdog-reuse-followup/rr01/red.log:3deterministic failures before fix",
         "/tmp/xdog-reuse-followup/rr01/focused.log:43passed (13newcases)",
-        "/tmp/xdog-reuse-followup/rr01/report.json:actual callers,resource ownership/order/hash preservation;targeted Ruff+mypy pass"
+        "/tmp/xdog-reuse-followup/rr01/report.json:actual callers,resource ownership/order/hash preservation;targeted Ruff+mypy pass",
+        "/tmp/xdog-reuse-followup/final/:all8paths6177passed+7optionalCLI skips;strict550;17examples;18artifacts;all6isolatedAPI/behaviorchecks",
+        "GitHub ci run39033187499:exact commit82a0f9876f39eab3afd2ac2a51e862d33689fbe9;test+secrets all steps success"
       ],
       "scope": "Separate cancellation-safe resource-producing spool context manager;settle and reclaim/close late result before releasing owner, then reuse transfer/upload mechanics without merging policies.",
-      "status": "待验证",
+      "status": "已完成",
       "acceptance": "Deterministic red before fix for repeated cancel while context spool is held and canceled provider spool resource; worker joined before caller settles, real tempfile explicitly closed after late return; normal/error/upload/consumer-close paths close exactly once; both actual callers use owned spool; limits/checksum/order/IDs/provider gates unchanged.",
       "review_finding": "Second cancellation interrupts finally while preparing spool still runs; caller finishes and explicit cleanup is skipped. Related provider path receives closeable spool result before try/finally."
     },
@@ -44,10 +46,12 @@
       "evidence": [
         "/tmp/xdog-reuse-review-20261017/confirmed-duplicates.json",
         "/tmp/xdog-reuse-followup/rr02/baseline.log:23passed",
-        "/tmp/xdog-reuse-followup/rr02/focused.log:56passed"
+        "/tmp/xdog-reuse-followup/rr02/focused.log:56passed",
+        "/tmp/xdog-reuse-followup/final/:all8paths6177passed+7optionalCLI skips;strict550;17examples;18artifacts;all6isolatedAPI/behaviorchecks",
+        "GitHub ci run39033187499:exact commit82a0f9876f39eab3afd2ac2a51e862d33689fbe9;test+secrets all steps success"
       ],
       "scope": "One shared converter in existing message/projection layer;preserve custom convert_to_llm override and filtering semantics.",
-      "status": "待验证",
+      "status": "已完成",
       "acceptance": "Agent and standalone loop use one actual converter; same standard objects/order and named extension/external/canonical text,unknown custom filtered;custom sync/async overrides and compaction/capacity/snapshot regressions retained;no circular dependencies.",
       "review_finding": "18-line default custom-message conversion is duplicated;projection changes must be made twice."
     },
@@ -62,10 +66,12 @@
       "evidence": [
         "/tmp/xdog-reuse-review-20261017/confirmed-duplicates.json",
         "/tmp/xdog-reuse-followup/rr03/baseline.log:2early-close failures,36passed",
-        "/tmp/xdog-reuse-followup/rr03/focused.log:47passed"
+        "/tmp/xdog-reuse-followup/rr03/focused.log:47passed",
+        "/tmp/xdog-reuse-followup/final/:all8paths6177passed+7optionalCLI skips;strict550;17examples;18artifacts;all6isolatedAPI/behaviorchecks",
+        "GitHub ci run39033187499:exact commit82a0f9876f39eab3afd2ac2a51e862d33689fbe9;test+secrets all steps success"
       ],
       "scope": "AI-layer helper around per-protocol iterator;keep auth/SSE/wire parsing separate;characterize empty/error/early close/result behavior.",
-      "status": "待验证",
+      "status": "已完成",
       "acceptance": "Both protocol stream public signatures delegate to one AI-only terminal wrapper;Done/Error/empty/missing terminal/exception/cancel/earlyclose/result semantics characterized and unchanged,protocol auth/SSE parsers untouched;never close shared clients.",
       "review_finding": "36-line stream factory/terminal-result settlement bodies match."
     },
@@ -80,10 +86,12 @@
       "evidence": [
         "/tmp/xdog-reuse-followup/rr04/baseline-primary.log:30passed",
         "/tmp/xdog-reuse-followup/rr04/focused.log:143passed",
-        "/tmp/xdog-reuse-followup/rr04/mypy.log:267sourcefiles"
+        "/tmp/xdog-reuse-followup/rr04/mypy.log:267sourcefiles",
+        "/tmp/xdog-reuse-followup/final/:all8paths6177passed+7optionalCLI skips;strict550;17examples;18artifacts;all6isolatedAPI/behaviorchecks",
+        "GitHub ci run39033187499:exact commit82a0f9876f39eab3afd2ac2a51e862d33689fbe9;test+secrets all steps success"
       ],
       "scope": "One parent-draft presenter;leave host-specific context,approval availability,capacity and exit barriers in small adapters.",
-      "status": "待验证",
+      "status": "已完成",
       "acceptance": "Both native clients consume one presenter rather than copy save/restore/view logic;host approval/modal/context/image budgets/quit barriers retained;exact lease/focus/context and noauto-send/no privilege restoration tests;local image and durable/crash receipts pass;TUI independent.",
       "review_finding": "Multiple identical parent-draft close/attach/review/save/restore methods remain despite common ParentDrafts service."
     },
@@ -100,10 +108,12 @@
         "/tmp/xdog-reuse-followup/rr05/baseline.log:52passed",
         "/tmp/xdog-reuse-followup/rr05/focused.log:52passed",
         "/tmp/xdog-reuse-followup/rr05/focused-expanded.log:118passed incl pure helper/OAuth/storage regressions",
-        "/tmp/xdog-reuse-followup/rr05/mypy.log:436sourcefiles"
+        "/tmp/xdog-reuse-followup/rr05/mypy.log:436sourcefiles",
+        "/tmp/xdog-reuse-followup/final/:all8paths6177passed+7optionalCLI skips;strict550;17examples;18artifacts;all6isolatedAPI/behaviorchecks",
+        "GitHub ci run39033187499:exact commit82a0f9876f39eab3afd2ac2a51e862d33689fbe9;test+secrets all steps success"
       ],
       "scope": "Pure consent-response normalizer by existing OAuth validators;keep transport,review ownership,focus and detach lifecycle in each client.",
-      "status": "待验证",
+      "status": "已完成",
       "acceptance": "Both publishers share pure consent response normalization;all prepare/refresh/storage/status/start/error cases match;review invalidation and explicitconsent preserved;owner/focus/transport/detach remain host;duplicate Coding guard gone;private credentials remain private,no fallback.",
       "review_finding": "MCP publish/auth consent response branching is near identical;Coding repeats same entry guard twice."
     },
@@ -121,10 +131,12 @@
         "/tmp/xdog-reuse-followup/rr06/before-tests.txt:28passed,5failed admission/disposal characterization",
         "/tmp/xdog-reuse-followup/rr06/after-tests.txt:58passed",
         "/tmp/xdog-reuse-followup/rr06:329selected regression passed;120sourcefiles strict mypy",
-        "/tmp/xdog-reuse-followup/ci/mcp/REPORT.md:retained actual MCP timeout/cancel harness hardened after remote scheduling failure"
+        "/tmp/xdog-reuse-followup/ci/mcp/REPORT.md:retained actual MCP timeout/cancel harness hardened after remote scheduling failure",
+        "/tmp/xdog-reuse-followup/final/:all8paths6177passed+7optionalCLI skips;strict550;17examples;18artifacts;all6isolatedAPI/behaviorchecks",
+        "GitHub ci run39033187499:exact commit82a0f9876f39eab3afd2ac2a51e862d33689fbe9;test+secrets all steps success"
       ],
       "scope": "Share only cross-loop submission/settlement mechanism;retain per-owner admission,lock,close and same-loop policy. Not equivalent to wait_owned.",
-      "status": "待验证",
+      "status": "已完成",
       "acceptance": "All selected MCP/extension/supervision dispatchers use shared actual submission/settlement mechanism;per-owner admission guards/start locks and startup errors retained or deliberately hardened with proof;cancel-before-start disposes coroutine,no wrongloop work;remote cancel and repeated callercancel join actualcleanup;same-loop/concurrent calls/threadshutdown regressions pass;no extra Agent/controller.",
       "review_finding": "Repeated result+settled futures/cancel Event/task_ref/done callback code;parent and extension subclass already differ in admission lock guard."
     }
@@ -160,21 +172,21 @@
     {
       "id": "CI-D02",
       "scope": "Investigate baseline Eyes online batch final-settlement timeout without weakening retained test",
-      "status": "待验证",
+      "status": "已完成",
       "evidence": "/tmp/xdog-reuse-followup/ci/eyes/REPORT.md",
       "result": "91targeted runs+full suite pass;no proven cause,no speculative code/test changes;fresh exactSHA GitHub CI required;16b8737 actual GitHub Tests step green"
     },
     {
       "id": "CI-D03",
       "scope": "Replace obsolete zero-dependency Eyes wheel assertion with exact approved ACP SDK-only metadata assertion; preserve XDOG harness independence",
-      "status": "待验证",
+      "status": "已完成",
       "evidence": "/tmp/xdog-reuse-followup/ci/implementation-failure.log;eyes-metadata-assertion.log",
       "fix": ".github/workflows/ci.yml requires exact version/compatibility-bounded ACP dependency and rejects extras"
     },
     {
       "id": "CI-D04",
       "scope": "Deterministic retained MCP timeout/cancel/late-response test peer; no production deadline or retry changes",
-      "status": "待验证",
+      "status": "已完成",
       "evidence": "/tmp/xdog-reuse-followup/ci/mcp/REPORT.md;focused.log:67passed",
       "fix": "Gate delayed responses and await admission/late-ID receipts;0.2s only on intentionally held call,ordinary2s for healthy IPC;stronger exact IDs,pending cleanup and no-replay assertions"
     }
@@ -204,6 +216,22 @@
     "implementation_commit": "16b8737b50be1d8ac5d90ccd082e77e663e8f285",
     "implementation_ci_run": 39031103173,
     "implementation_ci_result": "tests/lint/types/examples/secrets passed;obsolete Eyes zero-dependency wheel assertion failed;corrected exact whitelist locally verified",
-    "status": "MCP deterministic harness frozen;full local gates rerunning before next push"
+    "status": "implementation and corrections pushed;exact code commit CI green;final evidence-only commit will also be monitored",
+    "verified_commit": "82a0f9876f39eab3afd2ac2a51e862d33689fbe9",
+    "verified_ci_run": 39033187499,
+    "verified_ci_conclusion": "success",
+    "all_ci_test_build_and_security_steps": "success"
+  },
+  "final_scope_metrics": {
+    "production_files": 32,
+    "source_lines_before": 26087,
+    "source_lines_after": 25976,
+    "net_source_lines_removed": 111,
+    "new_test_files": 11,
+    "retained_test_files_hardened": 1,
+    "retained_peer_fixtures_hardened": 1,
+    "new_runtime_dependencies": 0,
+    "new_feature_deletions": 0,
+    "version_tag_release_service_changes": false
   }
 }

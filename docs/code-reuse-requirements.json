@@ -119,7 +119,15 @@
     "original_unrelated_hashes_preserved": 9,
     "new_dependencies": 0,
     "supported_features_removed": 0,
-    "new_refactor_committed_or_pushed": false,
+    "new_refactor_committed_or_pushed": true,
     "non_linux_native_validation": "outside scope;not claimed passed"
+  },
+  "delivery_authorization": "2026-10-17 user explicitly authorized committing/pushing related RF+RR work to main and tracking exactSHA CI;supersedes earlier no-auto-push wording",
+  "delivery": {
+    "implementation_commit": "16b8737b50be1d8ac5d90ccd082e77e663e8f285",
+    "verified_integration_commit": "82a0f9876f39eab3afd2ac2a51e862d33689fbe9",
+    "ci_run": 39033187499,
+    "ci_result": "success",
+    "version_tag_release_or_service_restart": false
   }
 }

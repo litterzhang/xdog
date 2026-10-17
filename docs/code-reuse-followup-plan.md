@@ -1,6 +1,6 @@
 # Code reuse follow-up: all six review findings
 
-Date: 2026-10-17. **Active; 6 remaining: 0待实现,6待验证,0缺外部环境,0已完成,0延期.**
+Date: 2026-10-17. **Complete; 0 remaining: 0待实现,0待验证,0缺外部环境,6已完成,0延期.**
 This is a new six-item goal. Do not reopen or double-count the completed RF-001..003/UI goals.
 Baseline main `b649282` includes the completed but uncommitted previous refactor.
 Its dirty files are privately backed up before any new edits in
@@ -164,3 +164,44 @@ The post-harness frozen gates all pass again:6177tests+7optional CLI skips
 (all8paths,independent MCP SDK enabled;120.34seconds),Ruff,strict mypy550files,
 17Flow examples,offline lock,18fresh artifacts and22isolated wheel imports plus
 all shared API/behavior probes.1345package inputs remained frozen throughout.
+
+## Final acceptance — 2026-10-17
+
+**Exactly6completed requirements,0remaining.** Pending implementation0,pending
+verification0,missing external environment0,deferred0. Historical checkpoints
+above are superseded by this acceptance and the authoritative JSON ledger.
+
+| ID | Accepted reusable implementation |
+| --- | --- |
+| RR-01 | Owned spool resource context manager shared by real context/provider transfers;repeated cancellation joins work and closes late resources. |
+| RR-02 | One default structured/custom message projection for Agent and standalone loop;sync/async overrides remain. |
+| RR-03 | One AI-only protocol terminal-message wrapper;wire/auth remain separate;explicit early-close iterator cleanup. |
+| RR-04 | One native parent-draft presenter;Coding/Claw retain host permission,focus,scope,retention and quit policies. |
+| RR-05 | One pure consent-reply normalizer;both native publishers retain host ownership/detach and credential boundaries. |
+| RR-06 | One remote dispatch/actual-cleanup settlement helper;all four owners retain admission/start/close policies,with tested disposal/admission hardening. |
+
+Final local frozen gates:6177passed,7existing optional external CLI skips,
+Ruff,strict typing550sourcefiles,17Flow examples,offline lock,18fresh artifacts,
+22isolated wheel imports plus all shared API/behavior checks.1345package files
+remained frozen. Existing independent MCP SDK was enabled locally. Test harness
+hardening retains all existing timeout/cancel/late-ID/no-replay assertions;
+exact receipt checks are stronger,not retries/deselection. No production deadline
+was changed. Seven initially recorded unrelated dirty file hashes are preserved.
+
+Implementation `16b8737`,CI metadata correction `c37bf07`,and deterministic test
+harness `82a0f98` were normally pushed to main. **GitHub run39033187499 on exact
+commit82a0f9876f39eab3afd2ac2a51e862d33689fbe9 is successful:** both `test` and
+`secrets`,including every test,lint,type,example,Flow/Eyes build/data/metadata,
+inter-package requirement and full-history secret-scan step. No pending/skipped
+job was reported as passed. The baseline Eyes timeout did not recur;no unproven
+production fix was claimed. Final evidence-only commit is monitored separately.
+
+Production touches32sourcefiles with111net fewer lines;11new test files cover
+shared contracts. No runtime dependency,new feature deletion,second Agent/service,
+permission expansion,version bump,tag,release or service restart. Non-Linux native
+validation remains outside scope and is not claimed passed. Unrelated
+`docs/agent-ui-features.md` and `workflows/` were never staged.
+
+Evidence: `/tmp/xdog-reuse-followup/final/`,
+`/tmp/xdog-reuse-followup/ci/harness-result.json`;per-item scopes,acceptance and
+classification counts are in `code-reuse-followup-requirements.json`.
