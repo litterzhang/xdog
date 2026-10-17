@@ -10,6 +10,7 @@ from xdog.coding.core.prompt_templates import (
     CUSTOM_INSTRUCTIONS_SECTION,
     ENVIRONMENT_SECTION,
     FILE_CONTEXT_SECTION,
+    RUNTIME_SECTION,
     SYSTEM_PROMPT_HEADER,
     TOOL_DESCRIPTION_TEMPLATE,
     TOOL_SECTION_HEADER,
@@ -47,6 +48,16 @@ def build_tool_section(tools: list[dict[str, Any]]) -> str:
             )
         )
     return "\n".join(parts)
+
+
+def build_runtime_section(config: RuntimeConfig, *, session_id: str | None = None) -> str:
+    """Describe live host settings without claiming verified provider internals."""
+    return RUNTIME_SECTION.format(
+        model=config.model,
+        thinking_level=config.thinking_level,
+        permission_mode=config.permission_mode,
+        session_line=f"\n- Session ID: {session_id}" if session_id is not None else "",
+    )
 
 
 def build_environment_section(config: RuntimeConfig) -> str:
@@ -88,6 +99,7 @@ def build_system_prompt(
     file_entries: list[dict[str, Any]] | None = None,
     extra_context: str = "",
     native_tool_calls: bool = False,
+    session_id: str | None = None,
 ) -> str:
     """Assemble the complete system prompt.
 
@@ -101,6 +113,8 @@ def build_system_prompt(
         Optional processed file context entries.
     extra_context:
         Optional extra text appended at the end.
+    session_id:
+        Optional host session identity; omitted for standalone prompt builders.
     native_tool_calls:
         True when the model receives tool definitions through the API, in which
         case describing them again in the prompt sends every name, description
@@ -115,6 +129,7 @@ def build_system_prompt(
     sections: list[str] = [
         SYSTEM_PROMPT_HEADER,
         build_environment_section(config),
+        build_runtime_section(config, session_id=session_id),
     ]
     if not native_tool_calls:
         sections.append(build_tool_section(tools))

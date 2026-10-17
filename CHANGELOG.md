@@ -1,7 +1,7 @@
 # Changelog
 
-Notable changes from 1.0.0 onwards. All seven packages share one version number
-and are released together.
+Notable changes from 1.0.0 onwards. All eight workspace packages and the umbrella project share one
+version number.
 
 The format is loosely [Keep a Changelog](https://keepachangelog.com/), and the
 project follows [semantic versioning](https://semver.org/).
@@ -9,6 +9,44 @@ project follows [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 Nothing yet.
+
+---
+
+## [2.4.2] — 2026-10-17
+
+### Fixed
+
+- Coding now supplies current model and runtime metadata in its system prompt:
+  application/runtime names, selected provider/model, effective thinking level,
+  permission mode and session ID. Values refresh before each turn, including
+  after model changes; disabled thinking is reported as `off`. Configured model
+  identity is distinguished from independently verified provider internals.
+  Tool names and display are unchanged.
+- Cancellation-safe ownership and cleanup are shared across extension spool
+  transfers and cross-loop dispatch. Late resources are closed, unadmitted
+  coroutines are disposed, and repeated cancellation waits for actual cleanup.
+- Shared message projection, protocol stream completion, primary-draft
+  presentation and OAuth reply validation preserve their existing host policies.
+- CI authenticates secret-scanner API requests, validates Eyes' exact bounded
+  ACP-only dependency, and synchronizes MCP cancellation/late-response tests on
+  peer receipts instead of timing assumptions.
+
+### Added
+
+- Eyes observation and direct ACP activation, with durable Coding session and
+  Claw group ingress. Automatically consumed inputs retain independent message
+  identities and execute in fixed batches through the single session owner.
+
+### Changed
+
+- Includes the already-merged Linux-focused UI/API simplification: retired
+  Coding RPC controls, repository-diff UI, active MCP subscriptions and other
+  reviewed extension/MCP interfaces. This includes compatibility removals;
+  consult `docs/agent-ui-simplification-plan.md` and
+  `docs/agent-ui-rpc-host-scope-audit.md` before upgrading integrations.
+- Synchronized all workspace package versions, internal requirements, lockfile
+  and runtime/client version identifiers to 2.4.2. Snapshot and protocol format
+  versions are unchanged.
 
 ---
 

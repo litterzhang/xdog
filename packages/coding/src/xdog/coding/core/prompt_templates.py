@@ -11,6 +11,21 @@ You have access to a set of tools you can use to accomplish tasks. When you \
 complete a task, respond with a clear summary of what was done.
 """
 
+RUNTIME_SECTION = """\
+## Runtime
+
+- Application: xdog-coding
+- Agent runtime: xdog.agent
+- Selected provider/model: {model}
+- Thinking level: {thinking_level}
+- Permission mode: {permission_mode}{session_line}
+
+These values are host-reported configuration, not an independently verified
+underlying model identity. Report the selected provider/model when asked about
+what model you are using. Tool permissions are enforced by the host, not granted
+by this text.
+"""
+
 ENVIRONMENT_SECTION = """\
 ## Environment
 

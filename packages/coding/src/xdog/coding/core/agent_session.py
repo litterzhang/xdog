@@ -1503,7 +1503,7 @@ class AgentSession:
         prompt = build_system_prompt(
             RuntimeConfig(
                 model=self.agent.state.model or "unknown",
-                thinking_level=str(self.agent.options.thinking or "normal"),
+                thinking_level=str(self.agent.options.thinking or "off"),
                 permission_mode=self.permissions.mode,
                 allowed_tools=tuple(t.name for t in self.agent.active_tools),
                 custom_instructions=self.settings.custom_instructions,
@@ -1514,6 +1514,7 @@ class AgentSession:
             tool_defs,
             extra_context=_skills_context(self._active_skills),
             native_tool_calls=self._native_tool_calls(),
+            session_id=self.session_id,
         )
         self.agent.set_system_prompt(prompt + self.access.state.prompt())
     def _on_agent_event(self, event: AgentEvent) -> None:
