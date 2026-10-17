@@ -131,3 +131,15 @@ scanning and existing rules. Evidence:
 All6remain待验证 until authorized main delivery and exact-SHA CI succeed. No
 version bump,tag,release or service restart is included. Unrelated
 `docs/agent-ui-features.md` and `workflows/` remain outside the staged changes.
+
+## First remote CI checkpoint
+
+Implementation committed/pushed as `16b8737b50be1d8ac5d90ccd082e77e663e8f285`.
+GitHub run39031103173 passed Tests,Lint,Types,Example suites,Flow wheel and secrets.
+The next Eyes artifact check failed because it still demanded zero dependencies,
+contradicting the already-merged ACP SDK dependency. The assertion now requires
+exactly the approved SDK version/compatibility bounds and rejects any extra
+requirements,including XDOG harness dependencies. The frozen wheel passes this
+check locally;no dependency or runtime code was changed. The original Eyes
+end-to-end timeout did not recur remotely. Complete green exact-SHA CI remains
+required;these are delivery corrections,not additional refactoring requirements.

@@ -152,8 +152,8 @@
     {
       "id": "CI-D01",
       "scope": "CI secret scanner API authentication; do not disable scanning",
-      "status": "待验证",
-      "evidence": "/tmp/xdog-reuse-followup/ci/base-failure.log: unauthenticated owner API rate limit incorrectly enforces organization license",
+      "status": "已完成",
+      "evidence": "/tmp/xdog-reuse-followup/ci/implementation-result.json:secrets green on16b8737",
       "fix": ".github/workflows/ci.yml passes job-scoped read-only github.token to existing scanner"
     },
     {
@@ -161,7 +161,14 @@
       "scope": "Investigate baseline Eyes online batch final-settlement timeout without weakening retained test",
       "status": "待验证",
       "evidence": "/tmp/xdog-reuse-followup/ci/eyes/REPORT.md",
-      "result": "91targeted runs+full suite pass;no proven cause,no speculative code/test changes;fresh exactSHA GitHub CI required"
+      "result": "91targeted runs+full suite pass;no proven cause,no speculative code/test changes;fresh exactSHA GitHub CI required;16b8737 actual GitHub Tests step green"
+    },
+    {
+      "id": "CI-D03",
+      "scope": "Replace obsolete zero-dependency Eyes wheel assertion with exact approved ACP SDK-only metadata assertion; preserve XDOG harness independence",
+      "status": "待验证",
+      "evidence": "/tmp/xdog-reuse-followup/ci/implementation-failure.log;eyes-metadata-assertion.log",
+      "fix": ".github/workflows/ci.yml requires exact version/compatibility-bounded ACP dependency and rejects extras"
     }
   ],
   "local_validation": {
@@ -180,5 +187,11 @@
     "unrelated_dirty_hashes_preserved": 7,
     "evidence": "/tmp/xdog-reuse-followup/final/",
     "artifact_verification": "passed: all6 shared APIs,real owner wiring,isolated behavior incl cross-loop repeated-cancel settlement; source/README parity"
+  },
+  "delivery": {
+    "implementation_commit": "16b8737b50be1d8ac5d90ccd082e77e663e8f285",
+    "implementation_ci_run": 39031103173,
+    "implementation_ci_result": "tests/lint/types/examples/secrets passed;obsolete Eyes zero-dependency wheel assertion failed;corrected exact whitelist locally verified",
+    "status": "CI correction push and exactSHA green pending"
   }
 }
