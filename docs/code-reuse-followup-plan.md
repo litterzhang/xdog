@@ -143,3 +143,24 @@ requirements,including XDOG harness dependencies. The frozen wheel passes this
 check locally;no dependency or runtime code was changed. The original Eyes
 end-to-end timeout did not recur remotely. Complete green exact-SHA CI remains
 required;these are delivery corrections,not additional refactoring requirements.
+
+## Remote timing-sensitive MCP test correction
+
+Run39031655542 failed the retained MCP timeout/cancel test at an ordinary final
+reply under the same200ms deadline as its deliberately delayed call. No source
+changed between the preceding green Tests step and this run. No production
+cross-loop defect was established. The single retained test and offline peer
+now use explicit admission/release/late-response-ID receipts instead of sleeps;
+the real200ms timeout remains around the held call,with the usual2s for healthy
+IPC. Exactly two original delayed calls,two exact cancellation IDs,late-ID
+isolation,empty pending state and owned close are asserted. Other peer modes
+are unchanged. This is deterministic harness hardening,not a dropped or weakened
+requirement. Focused MCP stdio+cross-loop67passed;all final gates are rerun after
+this new source/test freeze. See `/tmp/xdog-reuse-followup/ci/mcp/REPORT.md`.
+The previous assertion that existing test files were unmodified described the
+first frozen candidate only;this correction changes1retained test file+1fixture.
+
+The post-harness frozen gates all pass again:6177tests+7optional CLI skips
+(all8paths,independent MCP SDK enabled;120.34seconds),Ruff,strict mypy550files,
+17Flow examples,offline lock,18fresh artifacts and22isolated wheel imports plus
+all shared API/behavior probes.1345package inputs remained frozen throughout.

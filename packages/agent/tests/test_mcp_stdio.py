@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -72,26 +73,56 @@ async def test_rejected_negotiation_or_external_schema_is_not_fetched_or_fallbac
 
 
 async def test_timeout_late_response_and_explicit_cancel_do_not_replay_calls(tmp_path):
-    client = manager(tmp_path, "legacy", timeout=0.2)
+    # A 200ms deadline belongs only to the deliberately held request, not to
+    # startup/healthy IPC on a loaded runner. Peer receipts replace timing guesses.
+    client = manager(tmp_path, "legacy-gated")
+
+    async def until(predicate):
+        async with asyncio.timeout(5):
+            while not predicate():
+                await asyncio.sleep(0.005)
+
+    async def timeout(value):
+        transport = client._clients["fixture"]
+        transport.config = replace(transport.config, timeout=value)
+
+    async def pending():
+        return tuple(client._clients["fixture"]._pending)
+
     try:
         await client.connect("fixture")
         tool = client.tools()[0]
-        with pytest.raises(TimeoutError):
-            await tool.execute("slow", {"value": "delay"})
+        await client._bridge(timeout(0.2))
+        try:
+            with pytest.raises(TimeoutError):
+                await tool.execute("slow", {"value": "delay"})
+        finally:
+            await client._bridge(timeout(2))
+        assert not await client._bridge(pending())
         assert (await tool.execute("next", {"value": "success"})).content[0].text == "success"
         cancel = asyncio.Event()
         task = asyncio.create_task(tool.execute("cancel", {"value": "delay"}, cancel))
-        await asyncio.sleep(0.05)
+        await until(lambda: sum(frame["method"] == "tools/call"
+                    and frame["params"]["arguments"].get("value") == "delay" for frame in logged(tmp_path)) == 2)
         cancel.set()
         with pytest.raises(asyncio.CancelledError):
             await task
-        await asyncio.sleep(0.7)
+        assert not await client._bridge(pending())  # Actual request cleanup, not just a canceled bridge receipt.
+        late = tmp_path / "requests.late"
+        assert not late.exists()
+        (tmp_path / "requests.release").touch()
+        await until(lambda: late.exists() and len(late.read_text().splitlines()) == 2)
         assert (await tool.execute("next2", {"value": "still owned"})).content[0].text == "still owned"
         frames = logged(tmp_path)
         delayed = [frame for frame in frames if frame["method"] == "tools/call"
                    and frame["params"]["arguments"].get("value") == "delay"]
         assert len(delayed) == 2
-        assert any(frame["method"] == "notifications/cancelled" for frame in frames)
+        identifiers = {frame["id"] for frame in delayed}
+        assert {int(value) for value in late.read_text().splitlines()} == identifiers
+        cancelled = [frame["params"]["requestId"] for frame in frames
+                     if frame["method"] == "notifications/cancelled"]
+        assert len(cancelled) == 2 and set(cancelled) == identifiers
+        assert not await client._bridge(pending())
     finally:
         await client.aclose()
 

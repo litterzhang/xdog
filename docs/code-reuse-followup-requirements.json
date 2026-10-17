@@ -120,7 +120,8 @@
       "evidence": [
         "/tmp/xdog-reuse-followup/rr06/before-tests.txt:28passed,5failed admission/disposal characterization",
         "/tmp/xdog-reuse-followup/rr06/after-tests.txt:58passed",
-        "/tmp/xdog-reuse-followup/rr06:329selected regression passed;120sourcefiles strict mypy"
+        "/tmp/xdog-reuse-followup/rr06:329selected regression passed;120sourcefiles strict mypy",
+        "/tmp/xdog-reuse-followup/ci/mcp/REPORT.md:retained actual MCP timeout/cancel harness hardened after remote scheduling failure"
       ],
       "scope": "Share only cross-loop submission/settlement mechanism;retain per-owner admission,lock,close and same-loop policy. Not equivalent to wait_owned.",
       "status": "待验证",
@@ -169,6 +170,13 @@
       "status": "待验证",
       "evidence": "/tmp/xdog-reuse-followup/ci/implementation-failure.log;eyes-metadata-assertion.log",
       "fix": ".github/workflows/ci.yml requires exact version/compatibility-bounded ACP dependency and rejects extras"
+    },
+    {
+      "id": "CI-D04",
+      "scope": "Deterministic retained MCP timeout/cancel/late-response test peer; no production deadline or retry changes",
+      "status": "待验证",
+      "evidence": "/tmp/xdog-reuse-followup/ci/mcp/REPORT.md;focused.log:67passed",
+      "fix": "Gate delayed responses and await admission/late-ID receipts;0.2s only on intentionally held call,ordinary2s for healthy IPC;stronger exact IDs,pending cleanup and no-replay assertions"
     }
   ],
   "local_validation": {
@@ -186,12 +194,16 @@
     "frozen_package_files_unchanged": 1345,
     "unrelated_dirty_hashes_preserved": 7,
     "evidence": "/tmp/xdog-reuse-followup/final/",
-    "artifact_verification": "passed: all6 shared APIs,real owner wiring,isolated behavior incl cross-loop repeated-cancel settlement; source/README parity"
+    "artifact_verification": "passed: all6 shared APIs,real owner wiring,isolated behavior incl cross-loop repeated-cancel settlement; source/README parity",
+    "test_seconds": 120.34,
+    "rerun_after_ci_harness_hardening": true,
+    "retained_test_files_hardened": 1,
+    "retained_peer_fixtures_hardened": 1
   },
   "delivery": {
     "implementation_commit": "16b8737b50be1d8ac5d90ccd082e77e663e8f285",
     "implementation_ci_run": 39031103173,
     "implementation_ci_result": "tests/lint/types/examples/secrets passed;obsolete Eyes zero-dependency wheel assertion failed;corrected exact whitelist locally verified",
-    "status": "CI correction push and exactSHA green pending"
+    "status": "MCP deterministic harness frozen;full local gates rerunning before next push"
   }
 }

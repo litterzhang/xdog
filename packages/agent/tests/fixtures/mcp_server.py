@@ -6,6 +6,9 @@ import time
 from pathlib import Path
 
 MODE, LOG = sys.argv[1:]
+GATED = MODE == "legacy-gated"
+if GATED:
+    MODE = "legacy"
 lock = threading.Lock()
 
 def write(value):
@@ -100,8 +103,19 @@ for raw in sys.stdin:
             continue
         if value == "delay":
             def later(id=identifier):
-                time.sleep(0.6)
+                if GATED:
+                    deadline = time.monotonic() + 10
+                    while not Path(LOG + ".release").exists():
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError("Test did not release the delayed MCP reply")
+                        time.sleep(0.005)
+                else:
+                    time.sleep(0.6)
                 answer(id, {"content": [{"type": "text", "text": "late response"}]})
+                if GATED:
+                    with lock:
+                        with Path(LOG + ".late").open("a") as receipts:
+                            receipts.write(str(id) + "\n")
             threading.Thread(target=later, daemon=True).start()
             continue
         if request["params"]["name"] == "structured":
