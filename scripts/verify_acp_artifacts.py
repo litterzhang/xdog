@@ -119,19 +119,54 @@ asyncio.run(main())
 CODING_OWNER = r'''
 import asyncio,json,sys
 from pathlib import Path
+from dataclasses import replace
 from xdog.agent import Agent,AgentConfig
 from xdog.agent.session_input import TYPE,decode_input
 from xdog.ai.types import AssistantMessage,TextContent,UserMessage
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core.agent_session import AgentSession
 from xdog.coding.core.session_manager import SessionManager
-from xdog.coding.core.sessions.inbox_models import InboxMessage
+from xdog.coding.core.sessions.inbox_models import InboxMessage,MAX_MESSAGE_BYTES,encoded,message_data
 from xdog.coding.core.sessions.inbox_store import InboxStore
 from xdog.coding.core.sessions.ownership import SessionLease,runtime_directory
 from xdog.coding.core.sessions.store import InputStore
+from xdog.coding.core.sessions.runtime import SessionRuntime
 from xdog.coding.core.settings_manager import SettingsManager
 import xdog.coding.core.agent_session as module
 assert Path(module.__file__).is_relative_to(Path(sys.prefix))
+async def maximum_input(manager,root):
+ data=manager.create_session(model='test',working_dir=root)
+ store=InboxStore(manager._dir,root/'inbox');calls=[]
+ value=InboxMessage(data.session_id,root,'wheel-maximum','',(),'wheel observer',{})
+ overhead=len(encoded(message_data(value),MAX_MESSAGE_BYTES))
+ value=replace(value,instruction='x'*(MAX_MESSAGE_BYTES-overhead))
+ assert len(encoded(message_data(value),MAX_MESSAGE_BYTES))==MAX_MESSAGE_BYTES
+ store.enqueue(value)
+ store.enqueue(replace(value,message_id='wheel-following',instruction='After the maximum message'))
+ def model(*args):
+  calls.append(args)
+  return EventStream.empty(AssistantMessage(content=(TextContent(text='maximum handled'),)))
+ session=AgentSession(agent=Agent(model,config=AgentConfig(model='test')),
+  session_data=manager.load_session(data.session_id),session_manager=manager,
+  settings=SettingsManager(global_path=root/'settings.json'),working_dir=root,tool_registry=None,bash=None)
+ runtime=SessionRuntime(session,bound=True,inbox_store=store)
+ runtime.start(setup_pending=True)
+ try:
+  await runtime.activate_inputs()
+  async with asyncio.timeout(15):
+   while True:
+    rows=store.records(data.session_id,root)
+    assert runtime.controller._broken is None
+    assert not any(row.status=='failed' for row in rows),[(r.status,r.error) for r in rows]
+    if all(row.status=='succeeded' for row in rows) and not runtime.controller._jobs:break
+    await asyncio.sleep(.01)
+  assert len(calls)==2 and len(runtime.controller.store.records())==2
+  assert runtime.controller.store.records()[0].input.instruction==value.instruction
+ finally:
+  await asyncio.wrap_future(runtime.close())
+  session.dispose()
+ return {'message_bytes':MAX_MESSAGE_BYTES,'model_calls':len(calls),'owner_healthy':True}
+
 async def main():
  root=Path.cwd();manager=SessionManager(root/'sessions');data=manager.create_session(model='test',working_dir=root)
  store=InboxStore(manager._dir,root/'inbox');calls=[]
@@ -164,9 +199,10 @@ async def main():
  assert session._lease is None
  replacement=SessionLease.acquire(runtime_directory(manager._dir),data.session_id)
  replacement.close()
+ boundary=await maximum_input(manager,root)
  print(json.dumps({'coding_owner':'wheel-only SDK owner, five durable callbacks plus independent human input',
                    'model_calls':len(calls),'inputs':len(calls[0].messages),'message_approval':False,
-                   'lease_reusable_after_dispose':True}))
+                   'lease_reusable_after_dispose':True,'maximum_intake':boundary}))
 asyncio.run(main())
 '''
 

@@ -289,7 +289,18 @@ for a client to impose a one-turn gate. All actual tool calls still use the targ
 permission policy; receipt, source labels and connection recovery never change it.
 
 Initial limits: 128 unresolved inbox messages/session, 1 MiB/message, 4096 retained
-identity records, 2 MiB encoded record including attempt history. No automatic ID
+identity records, 2 MiB encoded record including attempt history. Submitted input
+keeps its full byte/nesting budget: the canonical XDOG inbox correlation wrapper
+may add at most 2048 encoded bytes and one JSON level. This allowance is formatting,
+not authority. Raw intake validates without it, and only a real coordinator-bound
+singleton receives it at controller/turn admission; unbound peers/human input and
+all multi-input batches retain the existing byte cap. Model/context/image limits
+still apply. A trusted Native Escape aborts the actual batch producer, including
+pre-turn preparation, whereas remote cancellation can detach only its own waiter.
+Partial claim failures release only the exact unstarted attempts they published;
+failed rollback is visible and stops that owner. Operator withdrawal fences the
+claim-to-ticket handoff before asynchronous cancel IO, never turning a normal
+cancel into an owner-wide persistence failure. No automatic ID
 eviction, evidence truncation or side-effect replay. Observation has 128 pending
 batches and 256 unique evidence paths/batch plus frame limits. Overflow pauses
 with diagnostics. Explicit manual archive/deletion invalidates retention/dedup

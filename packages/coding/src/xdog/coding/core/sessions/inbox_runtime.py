@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from xdog.agent.session_input import SessionInput
 from xdog.coding.core.sessions.batches import TurnBatch
 from xdog.coding.core.sessions.inbox_models import InboxMessage, InboxRecord
-from xdog.coding.core.sessions.inbox_store import InboxStore
+from xdog.coding.core.sessions.inbox_store import InboxReservationRollbackError, InboxStore
 from xdog.coding.core.sessions.models import Submission, TurnResult
 
 if TYPE_CHECKING:
@@ -240,13 +240,29 @@ class InboxCoordinator:
         selected = tuple(row for row in rows if row.status == 'pending' and row.branch_id == self.branch)[:available]
         if not selected:
             return ()
-        claimed = await self._disk(lambda: self.store.reserve(self.session_id,
-            tuple(row.message.message_id for row in selected), cwd=self.cwd, branch_id=self.branch,
-            generation=self.generation, expected=selected))
-        self._context()
+        claimed: tuple[InboxRecord, ...] = ()
+        reservation_error: InboxReservationRollbackError | None = None
         tickets = []
+
+        def reserve() -> None:
+            nonlocal claimed, reservation_error
+            # The disk worker settles before cancellation propagates, so retain
+            # its receipts even if its awaiting control never receives a result.
+            try:
+                claimed = self.store.reserve(self.session_id,
+                    tuple(row.message.message_id for row in selected), cwd=self.cwd, branch_id=self.branch,
+                    generation=self.generation, expected=selected)
+            except InboxReservationRollbackError as error:
+                reservation_error = error
+                raise
+
         try:
+            await self._disk(reserve)
+            self._context()
             for row in claimed:
+                withdrawn = self._withdrawals.get(row.message.message_id)
+                if withdrawn is not None and withdrawn.is_set():
+                    continue  # Operator withdrawal won before ticket handoff.
                 self._bindings[row.request_id] = row
                 message = row.message
                 value = SessionInput(row.request_id, 'acp', message.source, message.instruction, message.evidence,
@@ -261,12 +277,27 @@ class InboxCoordinator:
             self._context()
             await self._snapshot()
             return tuple(tickets)
-        except BaseException:
-            for ticket in tickets:
-                await asyncio.wrap_future(controller.cancel(ticket.id,
-                    peer_id=self._message_peers.get(self.message_id(ticket.id) or '', 'inbox'), wait=True))
-            await self._disk(lambda: self.store.release_unstarted(self.session_id,
-                tuple(row.message.message_id for row in claimed), generation=self.generation))
+        except BaseException as cause:
+            try:
+                for ticket in tickets:
+                    await asyncio.wrap_future(controller.cancel(ticket.id,
+                        peer_id=self._message_peers.get(self.message_id(ticket.id) or '', 'inbox'), wait=True))
+                if claimed:
+                    await self._disk(lambda: self.store.release_unstarted(self.session_id,
+                        tuple(row.message.message_id for row in claimed), generation=self.generation, expected=claimed))
+            except BaseException as cleanup:
+                controller._broken = cleanup
+                controller.publish('inbox_error', 'Inbox claim cleanup failed: ' + str(cleanup))
+                raise
+            finally:
+                for row in claimed:
+                    self._bindings.pop(row.request_id, None)
+                    registered_ticket = self._tickets.get(row.message.message_id)
+                    if registered_ticket is not None and registered_ticket.id == row.request_id:
+                        self._tickets.pop(row.message.message_id, None)
+            if isinstance(cause, InboxReservationRollbackError) or reservation_error is not None:
+                controller._broken = reservation_error or cause
+                controller.publish('inbox_error', str(controller._broken))
             raise
 
     async def submit_prompt(self, message: InboxMessage, *, peer_id: str) -> Submission:
@@ -349,9 +380,20 @@ class InboxCoordinator:
                 job = self.controller._jobs[ticket.id]
                 if self.controller._in_active(job):
                     return await asyncio.wrap_future(self.controller.cancel(ticket.id, peer_id=job.peer, wait=True))
-            await self._disk(lambda: self.store.cancel_pending(self.session_id, message_id, cwd=self.cwd,
-                branch_id=self.branch, generation=self.generation))
-            self._withdrawals.setdefault(message_id, asyncio.Event()).set()
+            withdrawal = self._withdrawals.setdefault(message_id, asyncio.Event())
+            already_withdrawn = withdrawal.is_set()
+            withdrawal.set()  # Fence claim→ticket handoff before the asynchronous disk operation.
+            try:
+                await self._disk(lambda: self.store.cancel_pending(self.session_id, message_id, cwd=self.cwd,
+                    branch_id=self.branch, generation=self.generation))
+            except OSError as error:
+                self.controller._broken = error  # Unknown publication is a real storage failure, not a normal cancel.
+                self.controller.publish('inbox_error', str(error))
+                raise
+            except Exception:
+                if not already_withdrawn:
+                    withdrawal.clear()
+                raise
             self._ticket_events.setdefault(message_id, asyncio.Event()).set()
             if ticket is not None:
                 row = self._bindings.pop(ticket.id, None)

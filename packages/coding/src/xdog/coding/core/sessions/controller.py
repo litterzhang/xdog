@@ -13,7 +13,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from xdog.agent.session_input import SessionInput, decode_input, input_data
+from xdog.agent.session_input import MAX_TRANSPORT_OVERHEAD, SessionInput, decode_input, input_data
 from xdog.ai.types import ImageContent
 from xdog.coding.config import validate_max_messages_per_turn
 from xdog.coding.core.sessions.batches import (
@@ -272,6 +272,12 @@ class SessionController:
     def _in_active(self, job: _Job) -> bool:
         return any(member is job for member in self._batch_jobs)
 
+    def input_byte_limit(self, item: TurnInput) -> int:
+        linked = (self.inbox is not None and self.inbox.is_submission(item.value.id)
+                  and item.value.origin == 'acp' and not item.images and item.raw_text is None
+                  and item.input_origin in {None, 'session_input'})
+        return MAX_BATCH_BYTES + (MAX_TRANSPORT_OVERHEAD if linked else 0)
+
     def submit(self, value: SessionInput, *, peer_id: str, images: tuple[ImageContent, ...] = (),
                input_origin: str | None = None, raw_text: str | None = None) -> Submission:
         ticket = Submission(value.id, Future(), Future())
@@ -284,7 +290,8 @@ class SessionController:
             if raw_text is not None and not isinstance(raw_text, str):
                 raise ValueError('Expected message text')
             prepared = TurnInput(snapshot, images=tuple(images), input_origin=input_origin, raw_text=raw_text)
-            if input_size(prepared) > MAX_BATCH_BYTES:
+            count = input_size(prepared)
+            if count > self.input_byte_limit(prepared):
                 raise ValueError('Input exceeds per-turn byte capacity')
             job = _Job(snapshot, peer_id, ticket, self.branch, self.generation,
                        images=prepared.images, input_origin=input_origin, raw_text=raw_text)
@@ -661,13 +668,30 @@ class SessionController:
                     await self._finish(job, TurnResult("discarded", None))
         return self._async(run)
 
-    def abort(self) -> Future[None]:
+    def abort(self, *, pending_ids: tuple[str, ...] = (), peer_id: str = '') -> Future[None]:
+        """Trusted local abort: settle the producer, optionally withdraw local queued work.
+
+        This is deliberately separate from a remote peer detaching one waiter.
+        The pump stays fenced until queued withdrawals and actual cleanup finish.
+        """
         async def run() -> None:
-            if self._active is not None:
-                task = self._active
-                if not task.cancelling():
-                    task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
+            self._queue_changes += 1
+            try:
+                for key in pending_ids:
+                    admitted = self._admitting_jobs.get(key)
+                    if admitted is not None and admitted.peer == peer_id:
+                        admitted.cancelled = True
+                    job = self._jobs.get(key)
+                    if job is not None and job.peer == peer_id and not self._in_active(job):
+                        await self._finish(job, TurnResult('cancelled', None))
+                if self._active is not None:
+                    task = self._active
+                    if not task.cancelling():
+                        task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+            finally:
+                self._queue_changes -= 1
+                self._pump()
         return self._async(run)
 
     def close(self) -> Future[None]:

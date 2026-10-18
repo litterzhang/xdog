@@ -217,12 +217,9 @@ class NativeSessionEvents:
         with self.lock:
             identifiers = tuple(self.local)
             self.cancelled.update(identifiers)
-        for identifier in identifiers:
-            self.runtime.controller.cancel(identifier, peer_id='native')
-        if self.runtime.controller.current_request not in {None, *identifiers}:
-            # Escape is a trusted local session abort, unlike a remote peer's
-            # scoped cancellation. It also owns pre-turn work before Agent.prompt.
-            self.runtime.controller.abort()
+        # Escape owns the actual producer, including pre-turn preparation of a
+        # shared native batch. Peer cancellation would only detach its waiters.
+        self.runtime.controller.abort(pending_ids=identifiers, peer_id='native')
 
     def poll(self) -> bool:
         if self.runtime is None:

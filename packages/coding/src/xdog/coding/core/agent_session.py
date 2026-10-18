@@ -746,7 +746,10 @@ class AgentSession:
             raise ValueError('A turn requires distinct input messages')
         if not isinstance(batch_id, str) or not batch_id.strip() or len(batch_id.encode()) > 256 or '\x00' in batch_id:
             raise ValueError('Invalid batch identity')
-        if sum(input_size(item) for item in inputs) > MAX_BATCH_BYTES:
+        owner = self.runtime.controller if self.runtime is not None else self._sdk_controller
+        maximum = (owner.input_byte_limit(inputs[0])
+                   if len(inputs) == 1 and owner is not None and owner.owns_current_task else MAX_BATCH_BYTES)
+        if sum(input_size(item) for item in inputs) > maximum:
             raise ValueError('Batch input exceeds capacity')
         origins = tuple(item.input_origin or ('user' if item.value.origin == 'human' else 'session_input')
                         for item in inputs)

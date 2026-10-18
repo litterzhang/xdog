@@ -103,7 +103,7 @@ def message_from_data(value: object) -> InboxMessage:
     checked = decode_input({
         'id': data['message_id'], 'origin': 'acp', 'source': data['source'], 'instruction': data['instruction'],
         'evidence': data['evidence'], 'provenance': data['provenance'],
-    })
+    }, transport_envelope=False)
     message = InboxMessage(session_id, cwd.resolve(), checked.id, checked.instruction,
                            checked.evidence, checked.source, checked.provenance)
     encoded(message_data(message), MAX_MESSAGE_BYTES)

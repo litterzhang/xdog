@@ -95,6 +95,10 @@ def _folder(record: InboxRecord) -> str:
     return 'terminal' if record.status in RESOLVED or record.status == 'interrupted' else 'pending'
 
 
+class InboxReservationRollbackError(OSError):
+    """A failed reservation could not safely release all its unstarted claims."""
+
+
 class InboxStore:
     """Owner mutation methods are trusted APIs; only the lease-owning controller uses them."""
 
@@ -314,8 +318,28 @@ class InboxStore:
                                   attempts=row.attempts + (attempt,))
                 encoded(record_data(updated), MAX_RECORD_BYTES)
                 selected.append((path, updated))
-            for path, updated in selected:
-                self._save(directory, updated, path)
+            try:
+                for path, updated in selected:
+                    self._save(directory, updated, path)
+            except Exception as cause:
+                errors = []
+                try:
+                    published = self._scan(directory, working)
+                    for _, expected_row in selected:
+                        location, actual = self._selected(published, expected_row.message.message_id)
+                        if (actual.status == 'claimed' and actual.owner_generation == generation
+                                and actual.attempt_id == expected_row.attempt_id):
+                            try:
+                                self._save(directory, self._transition(actual, 'pending',
+                                    'Unstarted reservation rolled back'), location)
+                            except Exception as error:
+                                errors.append(error)
+                except Exception as error:
+                    errors.append(error)
+                if errors:
+                    raise InboxReservationRollbackError('Inbox claim rollback failed; retire owner before retry') from (
+                        ExceptionGroup('Reservation publication and rollback failed', [cause, *errors]))
+                raise
             return tuple(row for path, row in selected)
 
     def begin_batch(self, session_id: str, records: tuple[InboxRecord, ...], *, batch_id: str,
@@ -342,13 +366,16 @@ class InboxStore:
                 self._save(directory, updated, path)
             return tuple(row for path, row in selected)
 
-    def release_unstarted(self, session_id: str, message_ids: tuple[str, ...], *, generation: str) -> None:
+    def release_unstarted(self, session_id: str, message_ids: tuple[str, ...], *, generation: str,
+                          expected: tuple[InboxRecord, ...] | None = None) -> None:
         label(generation)
+        attempts = {row.message.message_id: row.attempt_id for row in expected} if expected is not None else None
         with self._locked(session_id) as (directory, working, branch):
             rows = self._scan(directory, working)
             for key in message_ids:
                 path, row = self._selected(rows, key)
-                if row.status == 'claimed' and row.owner_generation == generation:
+                if (row.status == 'claimed' and row.owner_generation == generation
+                        and (attempts is None or attempts.get(key) == row.attempt_id)):
                     self._save(directory, self._transition(row, 'pending', 'Unstarted owner claim released'), path)
 
     def retry(self, session_id: str, message_id: str, *, cwd: Path, branch_id: str) -> InboxRecord:
@@ -366,6 +393,12 @@ class InboxStore:
         label(generation)
         with self._locked(session_id, cwd) as (directory, working, branch):
             path, row = self._selected(self._scan(directory, working), message_id)
+            if (row.branch_id == branch_id == branch and row.status == 'cancelled' and not row.batch_id
+                    and row.owner_generation in {'', generation}):
+                # Operator and prompt cleanup may observe the same withdrawal.
+                # Reaffirm durability without inventing another execution attempt.
+                self._save(directory, row, path)
+                return row
             if (row.branch_id != branch or branch_id != branch or row.status not in {'pending', 'claimed'}
                     or row.status == 'claimed' and row.owner_generation != generation):
                 raise ValueError('Inbox message is not cancellable in this owner context')
