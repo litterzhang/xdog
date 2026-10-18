@@ -1,4 +1,153 @@
-# Unified Inbox / EventRouter / batch verification — 2026-10-16
+# Unified Inbox / EventRouter / batch acceptance — 2026-10-18
+
+**Current status: the single resumed independent review is complete; its4 Important
+findings are fixed and verified in runtime commit `eae3486`. Source/installed gates
+passed. This is an author post-fix acceptance, not a fabricated second reviewer
+clean verdict. Final goal accounting follows successful Native task-done.**
+
+## Current scope and provenance
+
+The accepted spec/plan are
+`docs/superpowers/specs/2026-10-16-unified-inbox-batch-routing-design.md` and
+`docs/superpowers/plans/2026-10-16-unified-inbox-batch-routing.md`.
+The original implementation commits are reachable from current base
+`460e8dfd4b46e3b4ace526f81aa70efdf73c682d` (main/release2.4.2). This audit is in the
+original checkout on `feat/eyes-scheduler-source`, with the later user-approved
+scheduler source still uncommitted. It does not create a worktree or authorize
+push/merge/publication.
+
+Subsequent user-approved work removed coding's frontend JSON-lines RPC mode and
+some agent/Claw UI/MCP surfaces. Current root AGENTS and retained native/SDK/ACP
+interfaces supersede the old plan's RPC-adapter assertions. No removed frontend is
+restored merely to satisfy a historical test name. Shared queue, provenance,
+permissions, persistence, cancellation and protocol invariants remain required.
+The old 2.4.1 results below are historical records, not proof of this current tree.
+
+## Requirement-by-requirement evidence for retained interfaces
+
+Paths in this table are under `packages/<package>/tests/` unless explicitly named.
+The current whole-root run executes all retained tests; it is not a deselected
+migration suite. Real transport/process/disk cases supplement deterministic model
+streams and narrow failure injection. Tests demonstrate the named cases; neither
+this author audit nor green tests stand in for independent review.
+
+| Acceptance | Current authoritative evidence |
+|---|---|
+| 1. Generic Router / extensible Handler | Eyes `test_event_router.py`, `test_handler_registry.py`, runtime/executor tests; `handlers/contracts.py`, `handlers/registry.py`, `router.py` and `deliveries.py`. Two handler implementations have type-owned parsers/lifetimes and explicit routes; generic executor does not encode ACP payloads. |
+| 2. Offline model-free Inbox and automatic activation | Coding ACP offline/enqueue/automatic-consumption cases and Eyes `test_end_to_end.py::test_five_offline_callbacks_automatically_form_one_tui_batch_and_survive_owner_exit`. Fresh wheel-only ingress forbids AgentSession/model imports. Five retained inputs become one actual owner turn without message approval. |
+| 3. Online idle/busy automatic intake | Eyes `test_end_to_end.py::test_online_file_callbacks_form_next_five_message_batch_and_freeze_selection`, SDK-only and dual-route cases, coding automatic Inbox tests. Busy/next/late model contexts have input counts1/5/1; no resume or human-credit grant is used. |
+| 4. Independent messages in one turn | Coding `test_batch_turns.py`, `test_session_batches.py`, `test_batch_display.py`. Actual Agent/model contexts retain five ordered independent inputs, canonical origin/provenance, per-input images and transforms; one lifecycle/Agent.prompt(list), not five sends or one concatenated message. |
+| 5. Strict configurable limit | Coding `test_batch_config.py`, `test_count_limit_selects_ordered_batches_without_human_credit` and saved/settings/SDK cases. Default10, strict int1..128, bool rejected,1-at-a-time and3+2, global/project/saved/explicit override layering. |
+| 6. Fixed selection and one owner | Coding session batch/controller/ownership tests, actual second-writer/process-death leases, navigation/generation fences, producer/control/compaction settlement. Late arrivals stay outside a selected batch; human priority/FIFO remains. |
+| 7. Only tools require approval | Coding mixed-batch default ask/no-approver vs explicit allow-all tests, actual native tool approval after a later input, SDK/ACP permission/owner controls. Message admission has no synthetic approval tool, wake credit or authority-bearing resume. Removed RPC reader tests are not claimed as current evidence. |
+| 8. Shared result and scoped cancel | Coding batch/native replay tests and actual direct/forwarded Unix `test_acp_batch_intake.py`: two prompt peers + enqueue share one batch, nonparticipant stays silent, one waiter detaches without retracting a running input, local abort settles the whole run. Message/request/attempt/batch identities remain distinct. |
+| 9. Crash, migration and durable order | Coding `test_inbox_v2.py`, `test_inbox_crash.py`, owner-crash/lease tests. Actual process death exercises pending/claimed/running boundaries; old states retain attempt/history facts, running becomes interrupted and is not automatically replayed; persisted intake order survives reopen/concurrent writers. |
+| 10. Identity, namespace, bounds and context fences | Coding Inbox/ACP ownership/ingress lifecycle and Eyes enqueue/Unix/control tests: same-ID content conflict, ACK loss, replacement namespace at same endpoint, cumulative bytes/model/image limits, UID/mode/type/symlink checks, branch/generation fencing. Rejected intake does not invent lifecycle, authority or a second Agent. |
+| 11. ACP completion vs receipt, real error propagation | Coding actual Unix batch finish-I/O failures and ACK-before-model-completion cases; `test_batch_mode_errors.py` and ACP review regressions. SDK raises and print returns nonzero on finalization failure; handled input is system feedback, not a fabricated assistant response. Native/SDK/ACP replace the intentionally removed frontend RPC surface. |
+| 12. Docs, skills, full gates, installed artifacts, review | Active AGENTS/protocol/READMEs, actual packaged-skill/example consumers, all8 source paths, Ruff/strict typing/Flow examples, four real wheel-only consumers and byte-for-byte source parity. The report, every finding and declined-item ruling, post-fix gates and final audit are recorded in `docs/unified-inbox-batch-review-resolution.md`. |
+
+### Five review-focus mappings
+
+1. **Publication atomicity:** partial-running and last-member-terminal tests plus
+   direct/forwarded Unix `finish_io` cases. No model starts after a partial running
+   publication and no peer is told success before final durable settlement.
+2. **Shared cancellation:** actual multi-peer Unix and controller waiter-detach
+   cases, plus local abort cleanup. Durable facts do not claim that an already
+   observed input was removed from the model context.
+3. **Setup vs authority:** owner activation/setup-barrier tests and native batch
+   permission tests. Handler readiness does not become a user-approval token.
+4. **Legacy/process death/order:** actual killed-owner/process cases, retained
+   migration attempts, persisted counters and namespace/branch fences.
+5. **Transforms/images/provenance/display:** actual mixed Agent contexts, native
+   live/replay, file-to-ACP E2E, all-handled and mode-error cases. Each input and
+   one shared answer remain visible without duplicate tool/assistant streams.
+
+## Current post-review acceptance evidence
+
+Review base: `8626efc`; reviewed pre-fix runtime base `460e8df` plus approved
+scheduler work. The one interrupted review was resumed, returned4 Important
+findings and executed64 targeted cases. Each finding was independently reproduced
+by the author, fixed in **`eae34869ea58daa543a8c205c330931e9c13898f`**, and permanently
+covered. No second reviewer verdict is asserted. Full report/dispositions and every
+Declined-to-judge ruling: `docs/unified-inbox-batch-review-resolution.md`.
+
+The four fixes preserve full submitted payload rather than narrowing the feature:
+Native Escape stops real shared preparation and restores queued native drafts;
+a legal exact1-MiB input executes with bounded internal correlation overhead and
+normal successor work; partial claims are released only by matching attempt;
+pre-ticket withdrawal is fenced and idempotent rather than poisoning the owner.
+Raw intake/frame limits, unbound/human byte limits, tool policy and multi-input
+batch caps remain enforced. Exact code/test evidence is in the resolution notes.
+
+`uv run python scripts/test.py`: **6220 passed,34 skipped**, all8 configured paths
+in76.90s. Log: `/tmp/unified-inbox-final-root.log`.
+
+| Current configured path | Result |
+|---|---|
+| flow | 813 passed in 24.67s |
+| claw | 643 passed in 29.82s |
+| eyes | 239 passed in 62.98s (0:01:02) |
+| ai | 729 passed, 7 skipped in 3.90s |
+| tui | 682 passed in 15.03s |
+| site | 42 passed in 2.47s |
+| coding | 1226 passed, 12 skipped in 75.24s (0:01:15) |
+| agent | 1846 passed, 15 skipped in 76.07s (0:01:16) |
+
+Ruff passed packages + artifact script; strict mypy passed all8 namespaces (554
+files); all17 Flow examples passed; diff checks passed. The final Native task-done
+command repeats the whole-root gate after the documentation commit. Goal completion
+requires that successful ledger entry; no test command is replaced by a status
+restatement or by only the targeted regression subset.
+
+### Exact current skip audit and observed auxiliary failure
+
+Actual post-fix `pytest agent + ai + coding -q -rs -n 0`:
+**3801 passed,34 skipped in145.42s**, log
+`/tmp/unified-inbox-final-skips-serial.log`. The34 are15 agent +12 coding cases
+requiring explicitly installed independent MCP SDK2.3.1, plus7 opt-in external
+Codex/Claude CLI cases. No new routing/Inbox/batch/scheduler test was skipped.
+Real providers/IDE integrations are not inferred from these optional skips.
+
+An earlier parallel auxiliary skip-audit run observed one3-second output-panel
+readiness timeout in
+`test_transcript_output.py::test_live_private_export_and_share_require_review_preserve_draft[coding]`
+(`/tmp/unified-inbox-final-skips.log`). The exact output test file then passed4
+cases in0.33s in isolation, and the complete serial three-package audit passed.
+The balanced whole-root gate also passed. No timeout/assertion was weakened and no
+product fix is claimed for that unreproduced auxiliary timeout; it is disclosed
+rather than omitted or mislabeled as another reviewer finding.
+
+### Final rebuilt/installed payloads
+
+Fresh5 wheels/5 sdists from the fixed runtime passed Twine in
+`/tmp/unified-inbox-reviewed-dist.hR0pRB`. Four fresh wheel-only consumers in
+`/tmp/xdog-acp-isolated.nb7sp8sm` passed: Eyes-only packaged file/scheduler/skill
+validation and a real cron occurrence; independent Agent stdio; model-free coding
+Unix enqueue/status/dedup; and a real SDK six-independent-input one-call owner.
+The owner probe additionally executed an exact1048576-byte durable message and
+its normal successor in two calls, with the owner healthy, outside the checkout.
+The physical same-session writer lease was reusable only after explicit disposal.
+
+`source-parity.json` byte-compares all archived Python members and Eyes'
+skill/two examples to the final source, naming fix commit `eae3486` and explicitly
+including the uncommitted scheduler extension. All10 hashes/counts are in the
+review-resolution notes. Python3.13.9, ACP SDK0.12.1, source croniter6.2.2 and
+isolated croniter6.2.4 were exercised. No paid provider/IDE, physical power failure,
+TCP/Windows transport or OS sandbox was tested/claimed. The independent review
+did not claim exhaustive croniter/timezone coverage or a comprehensive Claw
+storage review. Those bounds do not stand in for untested promised functionality.
+
+---
+
+## Historical 2026-10-16 / 2.4.1 checkpoint (preserved, not current evidence)
+
+The following record predates the user's subsequent frontend removal, Claw
+integration, source refactors and scheduler extension. In particular, references
+to RPC tests, unimplemented Claw integration and a not-yet-requested review describe
+that checkpoint only. Current scope/status and eventual review disposition above
+supersede them without rewriting their original test results or artifact hashes.
+
+### Original verification record — 2026-10-16
 
 **Status: source and installed-artifact gates passed; independent review pending.**
 This is not yet a completed release claim. Final review dispositions, any required
