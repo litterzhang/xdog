@@ -24,11 +24,18 @@ assert Path(loader.__file__).is_relative_to(Path(sys.prefix))
 example=resources.files('xdog.eyes')/'examples'/'source-test-review.json'
 value=loader.load(Path(str(example)))
 assert value.version==2 and value.handlers[0].delivery=='enqueue'
+scheduled=resources.files('xdog.eyes')/'examples'/'scheduled-review.json'
+timed=loader.load(Path(str(scheduled)))
+from xdog.eyes.sources.scheduler import SchedulerSource
+timer=SchedulerSource(timed.sources[0],wall_now=1893456000,monotonic_now=0)
+occurrence,=timer.poll(wall_now=1893459600,monotonic_now=3600).occurrences
+assert occurrence.scheduled_at==1893459600 and occurrence.timezone=='Asia/Shanghai'
+assert 'acp' not in sys.modules
 assert (resources.files('xdog.eyes')/'skills'/'eyes-observers'/'SKILL.md').is_file()
 from xdog.eyes.cli import main
 assert main(['validate',str(example)])==0
 assert not any(n.startswith(('xdog.ai','xdog.agent','xdog.coding')) for n in sys.modules)
-print(json.dumps({'eyes':'wheel validation/skill/example, no harness dependencies',
+print(json.dumps({'eyes':'wheel file/scheduler validation, cron occurrence, skills/examples, no harness dependencies',
                   'sdk':md.version('agent-client-protocol')}))
 '''
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import uuid
 
-from xdog.eyes.models import EVENT_TYPES, DetectorDef, Event, FileEvidence, FileState
+from xdog.eyes.models import FILE_EVENT_TYPES, DetectorDef, Event, FileEvidence, FileState
 from xdog.eyes.sources.file import FileSnapshot
 
 
@@ -39,7 +39,7 @@ class FileChangeDetector:
                     and now - self._first < self.definition.max_batch_delay_ms / 1000)):
             return ()
         before, after = dict(self._baseline.entries), dict(self._latest.entries)
-        groups: dict[str, list[FileEvidence]] = {kind: [] for kind in EVENT_TYPES}
+        groups: dict[str, list[FileEvidence]] = {kind: [] for kind in FILE_EVENT_TYPES}
         for path in sorted(before.keys() | after.keys()):
             old: FileState | None = before.get(path)
             new: FileState | None = after.get(path)
@@ -48,7 +48,7 @@ class FileChangeDetector:
             kind = "file.created" if old is None else "file.deleted" if new is None else "file.modified"
             groups[kind].append(FileEvidence(path, old, new, self._observed.get(path, now), self.source_root))
         result = tuple(Event(uuid.uuid4().hex, self.definition.source, self.definition.id, kind, now,
-                             tuple(groups[kind])) for kind in EVENT_TYPES if groups[kind])
+                             tuple(groups[kind])) for kind in FILE_EVENT_TYPES if groups[kind])
         self._baseline = self._latest
         self._first = None
         self._observed.clear()

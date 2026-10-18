@@ -38,8 +38,9 @@ from xdog.eyes.local_control import (
     validate_location,
     validate_socket,
 )
-from xdog.eyes.models import HandlerDef, ObserverDef, SourceDef
+from xdog.eyes.models import AtSchedule, HandlerDef, ObserverDef, SourceDef
 from xdog.eyes.sources.file import FileSnapshot, scan_async
+from xdog.eyes.sources.scheduler import SchedulerSource, prepare_schedulers
 
 
 @dataclass
@@ -60,10 +61,12 @@ class ObserverRuntime:
                  sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
                  scanner: Callable[[SourceDef], Awaitable[FileSnapshot]] = scan_async,
                  handler_factory: Callable[[HandlerDef], EventHandler] | None = None,
-                 handler_registry: HandlerRegistry | None = None) -> None:
+                 handler_registry: HandlerRegistry | None = None,
+                 wall_clock: Callable[[], float] = time.time) -> None:
         validate_location(location)
         self.location = replace(location, generation=uuid.uuid4().hex)
         self.clock, self.sleep, self.scanner = clock, sleep, scanner
+        self.wall_clock = wall_clock
         self.handler_factory = handler_factory
         self.handler_registry = handler_registry if handler_registry is not None else builtin_handlers()
         self.entries: dict[str, Entry] = {}
@@ -106,12 +109,19 @@ class ObserverRuntime:
                 if self.entries[existing].digest != digest:
                     raise ValueError('Definition name is already active; stop it before changing the definition')
                 return {'registration_id': existing, 'duplicate': True}
+            schedulers = prepare_schedulers(definition, wall_now=self.wall_clock(), monotonic_now=self.clock())
             handlers = {item.id: self._handler(item) for item in definition.handlers}
             connections = [asyncio.create_task(handler.start()) for handler in handlers.values()]
             self._pending_starts += 1
             try:
                 try:
                     await asyncio.gather(*connections)
+                    # Repeating sources begin only after every receiver is ready.
+                    # A timely admitted one-off retains its absolute deadline.
+                    wall, mono = self.wall_clock(), self.clock()
+                    schedulers = {key: source if isinstance(source.definition.schedule, AtSchedule)
+                                  else SchedulerSource(source.definition, wall_now=wall, monotonic_now=mono)
+                                  for key, source in schedulers.items()}
                 except BaseException:
                     for task in connections:
                         task.cancel()
@@ -134,7 +144,8 @@ class ObserverRuntime:
                 task = asyncio.create_task(observe(definition, registration_id=identifier, scanner=self.scanner,
                     deliver=deliver, emit=lambda event: self.emit(identifier, event), clock=self.clock,
                     sleep=self.sleep, cancel=cancel, resume=resume, cwd=self.location.cwd,
-                    suspended=suspended, validate=validate))
+                    suspended=suspended, validate=validate, wall_clock=self.wall_clock,
+                    scheduler_sources=schedulers))
                 registration = Registration(identifier, definition, task, cancel, resume)
                 self.entries[identifier] = Entry(registration, handlers, digest,
                     {item.id: 'baselining' for item in definition.sources},
@@ -151,6 +162,8 @@ class ObserverRuntime:
             return
         if event.kind == 'watching':
             entry.sources[event.source_id] = 'watching'
+        elif event.kind == 'source_completed':
+            entry.sources[event.source_id] = 'completed'
         elif event.kind == 'source_error':
             entry.sources[event.source_id] = 'error'
         route = entry.routes.get(event.route_id)
@@ -191,7 +204,7 @@ class ObserverRuntime:
             return 'stopped' if task.cancelled() or task.exception() is None else 'failed'
         if any(value == 'error' for value in entry.sources.values()):
             return 'degraded'
-        if any(value != 'watching' for value in entry.sources.values()):
+        if any(value not in {'watching', 'completed'} for value in entry.sources.values()):
             return 'baselining'
         return 'watching'
 

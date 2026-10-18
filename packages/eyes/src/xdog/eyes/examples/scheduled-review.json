@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "name": "scheduled-review",
+  "sources": [
+    {
+      "id": "daily",
+      "type": "scheduler",
+      "schedule": {"cron": "0 9 * * *", "timezone": "Asia/Shanghai"}
+    }
+  ],
+  "detectors": [{"id": "due", "type": "scheduler.due", "source": "daily"}],
+  "handlers": [
+    {
+      "id": "review",
+      "type": "acp",
+      "connection": {"transport": "unix", "path": "/tmp/example-private/acp.sock"},
+      "session": "EXPLICIT_SESSION_ID",
+      "delivery": "enqueue",
+      "instruction": "Review the current project and report actionable findings. Follow target tool permissions."
+    }
+  ],
+  "routes": [
+    {"id": "daily-review", "detector": "due", "handler": "review", "event_types": ["scheduler.due"]}
+  ]
+}

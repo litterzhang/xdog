@@ -131,10 +131,15 @@ Like flow, eyes owns a versioned JSON definition, frozen models, whole-definitio
 validation, asynchronous executor, CLI and packaged `eyes-observers` skill.
 Sources collect evidence, detectors emit events, and EventRouter dispatches
 explicit routes to registered EventHandler implementations; ACP is one built-in
-handler. Its connection/payload details stay outside the generic executor/runtime. Regular-file content changes use bounded no-follow polling.
+handler. Its connection/payload details stay outside the generic executor/runtime. Regular-file content changes use bounded no-follow polling. Scheduler sources
+support one-off zoned `at`, monotonic `every_seconds` and five-field `cron` with
+explicit IANA timezone. `scheduler.due` detectors/events reuse the same routing
+and bounded handler delivery; no task/agent execution occurs in a source. Paused
+deadlines are skipped, not replayed; repeating schedules start after all handlers
+are ready. See `docs/eyes-scheduler-source.md` for timing, evidence and lifecycle.
 
-Eyes depends only on the optional version-bounded ACP SDK, never on
-agent/ai/coding/claw/flow, and does not execute tools or an agent loop. A coding
+Eyes depends on the optional version-bounded ACP SDK and bounded-version croniter,
+never on agent/ai/coding/claw/flow, and does not execute tools or an agent loop. A coding
 callback connects directly to an explicitly configured private Unix ACP endpoint
 and exact session ID; it does not launch coding CLI or inspect coding registry.
 Stdio is an optional generic third-party ACP transport. Loading a skill does not

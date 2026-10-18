@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -13,11 +14,20 @@ if TYPE_CHECKING:
 from xdog.eyes.errors import ObserverValidationError
 from xdog.eyes.models import (
     EVENT_TYPES,
+    FILE_EVENT_TYPES,
+    AtSchedule,
+    CronSchedule,
     DetectorDef,
+    DetectorDefinition,
     EventType,
+    IntervalSchedule,
     ObserverDef,
     RouteDef,
+    Schedule,
+    SchedulerDetectorDef,
+    SchedulerSourceDef,
     SourceDef,
+    SourceDefinition,
 )
 
 
@@ -71,12 +81,48 @@ def _patterns(value: object, path: str, *, empty: bool = False) -> tuple[str, ..
     return tuple(result)
 
 
-def _source(value: object, path: str, base_dir: Path) -> SourceDef:
+def _schedule(value: object, path: str) -> Schedule:
+    from xdog.eyes.sources.scheduler import at_timestamp, validate_cron
+
+    data = _object(value, path, {"at", "every_seconds", "cron", "timezone"})
+    modes = data.keys() & {"at", "every_seconds", "cron"}
+    if len(modes) != 1:
+        raise ObserverValidationError("Specify exactly one of at, every_seconds or cron", path=path)
+    try:
+        if "at" in data:
+            if set(data) != {"at"}:
+                raise ValueError("at has its own explicit timezone; extra schedule fields are not allowed")
+            stamp = _text(data["at"], path + ".at", maximum=128)
+            at_timestamp(stamp)
+            return AtSchedule(stamp)
+        if "every_seconds" in data:
+            if set(data) != {"every_seconds"}:
+                raise ValueError("Interval does not accept timezone or extra schedule fields")
+            seconds = data["every_seconds"]
+            if (not isinstance(seconds, (int, float)) or isinstance(seconds, bool)
+                    or not math.isfinite(seconds) or seconds < .001):
+                raise ValueError("every_seconds must be finite and at least 0.001 seconds, not a boolean")
+            return IntervalSchedule(float(seconds))
+        schedule = CronSchedule(_text(data["cron"], path + ".cron"),
+                                _text(data.get("timezone"), path + ".timezone"))
+        validate_cron(schedule)
+        return schedule
+    except (ValueError, OverflowError, OSError, KeyError) as exc:
+        if isinstance(exc, ObserverValidationError):
+            raise
+        raise ObserverValidationError(str(exc), path=path, code="invalid_schedule") from exc
+
+
+def _source(value: object, path: str, base_dir: Path) -> SourceDefinition:
+    if isinstance(value, dict) and value.get("type") == "scheduler":
+        data = _object(value, path, {"id", "type", "schedule"})
+        return SchedulerSourceDef(_text(data.get("id"), path + ".id"), "scheduler",
+                                  _schedule(data.get("schedule"), path + ".schedule"))
     data = _object(
         value, path, {"id", "type", "root", "include", "exclude", "poll_interval_ms", "max_files", "max_file_bytes"}
     )
     if data.get("type") != "file":
-        raise ObserverValidationError("Only file sources are supported", path=path, code="unknown_type")
+        raise ObserverValidationError("Expected file or scheduler source", path=path, code="unknown_type")
     root = Path(_text(data.get("root"), path + ".root", maximum=4096))
     # Absolute lexical roots retain symlink components for the no-follow scanner to reject.
     root = Path(os.path.abspath(base_dir / root))
@@ -92,7 +138,11 @@ def _source(value: object, path: str, base_dir: Path) -> SourceDef:
     )
 
 
-def _detector(value: object, path: str) -> DetectorDef:
+def _detector(value: object, path: str) -> DetectorDefinition:
+    if isinstance(value, dict) and value.get("type") == "scheduler.due":
+        data = _object(value, path, {"id", "type", "source"})
+        return SchedulerDetectorDef(_text(data.get("id"), path + ".id"), "scheduler.due",
+                                    _text(data.get("source"), path + ".source"))
     data = _object(value, path, {"id", "type", "source", "debounce_ms", "max_batch_delay_ms"})
     if data.get("type") != "file.change":
         raise ObserverValidationError("Unknown detector", path=path, code="unknown_type")
@@ -158,12 +208,19 @@ def parse(value: object, *, base_dir: Path, handler_registry: HandlerRegistry | 
         {item.id for item in detectors},
         {item.id for item in handlers},
     )
+    source_by_id = {item.id: item for item in sources}
+    detector_by_id = {item.id: item for item in detectors}
     for detector in detectors:
         if detector.source not in source_ids:
             raise ObserverValidationError(f"Missing source: {detector.source}", code="missing_reference")
+        if (detector.type == "scheduler.due") != (source_by_id[detector.source].type == "scheduler"):
+            raise ObserverValidationError("Detector type does not match its source", code="wrong_shape")
     for route in routes:
         if route.detector not in detector_ids or route.handler not in handler_ids:
             raise ObserverValidationError(f"Missing reference in route: {route.id}", code="missing_reference")
+        expected = (("scheduler.due",) if detector_by_id[route.detector].type == "scheduler.due" else FILE_EVENT_TYPES)
+        if any(kind not in expected for kind in route.event_types):
+            raise ObserverValidationError("Route event types do not match its detector", code="wrong_shape")
     return ObserverDef(2, name, sources, detectors, handlers, routes)
 
 

@@ -3,12 +3,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypeAlias
 
 from xdog.eyes.connections import ConnectionDef
 
-EventType = Literal["file.created", "file.modified", "file.deleted"]
-EVENT_TYPES: tuple[EventType, ...] = ("file.created", "file.modified", "file.deleted")
+EventType = Literal["file.created", "file.modified", "file.deleted", "scheduler.due"]
+FILE_EVENT_TYPES: tuple[EventType, ...] = ("file.created", "file.modified", "file.deleted")
+EVENT_TYPES: tuple[EventType, ...] = (*FILE_EVENT_TYPES, "scheduler.due")
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,43 @@ class DetectorDef:
     source: str
     debounce_ms: int = 500
     max_batch_delay_ms: int = 2000
+
+
+@dataclass(frozen=True)
+class AtSchedule:
+    at: str
+
+
+@dataclass(frozen=True)
+class IntervalSchedule:
+    every_seconds: float
+
+
+@dataclass(frozen=True)
+class CronSchedule:
+    cron: str
+    timezone: str
+
+
+Schedule: TypeAlias = AtSchedule | IntervalSchedule | CronSchedule
+
+
+@dataclass(frozen=True)
+class SchedulerSourceDef:
+    id: str
+    type: Literal["scheduler"]
+    schedule: Schedule
+
+
+@dataclass(frozen=True)
+class SchedulerDetectorDef:
+    id: str
+    type: Literal["scheduler.due"]
+    source: str
+
+
+SourceDefinition: TypeAlias = SourceDef | SchedulerSourceDef
+DetectorDefinition: TypeAlias = DetectorDef | SchedulerDetectorDef
 
 
 @dataclass(frozen=True)
@@ -59,8 +97,8 @@ class RouteDef:
 class ObserverDef:
     version: Literal[2]
     name: str
-    sources: tuple[SourceDef, ...]
-    detectors: tuple[DetectorDef, ...]
+    sources: tuple[SourceDefinition, ...]
+    detectors: tuple[DetectorDefinition, ...]
     handlers: tuple[HandlerDef, ...]
     routes: tuple[RouteDef, ...]
 
@@ -81,10 +119,19 @@ class FileEvidence:
 
 
 @dataclass(frozen=True)
+class SchedulerEvidence:
+    schedule_id: str
+    scheduled_at: float
+    observed_at: float
+    occurrence_id: str
+    timezone: str
+
+
+@dataclass(frozen=True)
 class Event:
     id: str
     source_id: str
     detector_id: str
     type: EventType
     observed_at: float
-    evidence: tuple[FileEvidence, ...]
+    evidence: tuple[FileEvidence | SchedulerEvidence, ...]

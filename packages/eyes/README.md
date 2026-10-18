@@ -62,9 +62,33 @@ A canceled peer cannot withdraw its message from an already running shared batch
 or cancel other members. Tools still require the target's normal permissions;
 unattended restricted tools fail closed without explicit `allow-all`.
 
+## Scheduler sources
+
+Sources can also generate timed observations: one-off `at`, fixed
+`every_seconds`, or five-field `cron` with an explicit IANA `timezone`.
+Exactly one mode is allowed per source. `scheduler.due` detectors emit ordinary
+`scheduler.due` events through the same EventRouter/handlers; no agent or system
+cron is called directly. File and scheduler sources can coexist in one v2 file.
+
+```json
+{"id": "daily", "type": "scheduler", "schedule": {
+  "cron": "0 9 * * *", "timezone": "Asia/Shanghai"
+}}
+```
+
+The packaged `scheduled-review.json` is a complete executable definition. Replace
+its endpoint/session and use the same validate/start/status/stop commands.
+Repeating schedules start after handler readiness; one-off start refuses past
+zoned timestamps. Intervals use monotonic time (finite seconds, minimum0.001),
+cron uses timezone-aware calendar instants, and suspended periods do not generate
+a catch-up burst. A late active poll coalesces to its latest occurrence. Scheduled
+evidence keeps occurrence identity and planned/observed UTC times, not file paths.
+See [scheduler definition, timing and recovery](../../docs/eyes-scheduler-source.md)
+for all modes, DST/clock semantics, mixed-source examples and bounds.
+
 ## Collection and lifetime
 
-First release: regular-file content changes with bounded polling, fingerprints
+Regular-file content changes use bounded polling, fingerprints
 and net-change/debounce detection. No symlink following, mtime-only/unchanged-save
 events or historical file contents. Rename is delete+create; polling can miss
 transient changes. Keep roots/globs narrow and exclude generated/cache trees.
@@ -88,8 +112,9 @@ coding and Claw callbacks.
 
 ## Installation and development
 
-The only runtime dependency is the official `agent-client-protocol` SDK, pinned
-`>=0.12.1,<0.13` for Python 3.12–3.14. It does not depend on ai/agent/coding/claw/flow.
+The runtime dependencies are the official `agent-client-protocol` SDK, pinned
+`>=0.12.1,<0.13` for Python 3.12–3.14, and `croniter>=2.0,<7` for bounded cron
+validation/calendar calculations. Eyes does not depend on ai/agent/coding/claw/flow.
 The marker excludes the currently unsupported ACP SDK on Python 3.15+; definition
 validation remains usable. Workspace development commands run from repo root.
 

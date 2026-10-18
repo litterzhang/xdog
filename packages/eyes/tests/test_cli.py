@@ -3,6 +3,8 @@ import subprocess
 import sys
 from dataclasses import asdict
 
+import pytest
+
 
 def test_validate_is_standalone_and_reports_invalid_definitions(tmp_path, observer_data, capsys):
     from xdog.eyes.cli import main
@@ -17,7 +19,13 @@ def test_validate_is_standalone_and_reports_invalid_definitions(tmp_path, observ
     assert 'Unknown fields' in capsys.readouterr().err
 
 
-def test_validate_imports_no_sdk_or_harness(tmp_path,observer_data):
+@pytest.mark.parametrize('scheduled', [False, True])
+def test_validate_imports_no_sdk_or_harness(tmp_path,observer_data,scheduled):
+    if scheduled:
+        observer_data['sources'] = [{'id': 'timer', 'type': 'scheduler', 'schedule': {
+            'cron': '0 9 * * *', 'timezone': 'Asia/Shanghai'}}]
+        observer_data['detectors'] = [{'id': 'due', 'type': 'scheduler.due', 'source': 'timer'}]
+        observer_data['routes'][0].update(detector='due', event_types=['scheduler.due'])
     path = tmp_path/'eyes.json'
     path.write_text(json.dumps(observer_data))
     script = '''
