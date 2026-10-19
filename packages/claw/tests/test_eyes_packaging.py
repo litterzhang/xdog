@@ -17,7 +17,7 @@ from packaging.version import Version
 REPO = Path(__file__).resolve().parents[3]
 SKILL = Path("packages/eyes/src/xdog/eyes/skills/eyes-observers/SKILL.md")
 PUBLISHED = {
-    "xdog-ai", "xdog-tui", "xdog-agent", "xdog-flow", "xdog-claw", "xdog-coding", "xdog-eyes",
+    "xdog-ai", "xdog-tui", "xdog-agent", "xdog-flow", "xdog-claw", "xdog-coding", "xdog-eyes", "xdog-goal",
 }
 
 

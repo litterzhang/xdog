@@ -226,21 +226,27 @@
       "area": "goal",
       "requirement": "独立 xdog-goal，仅依赖 Agent/标准库，不依赖 Claw/Coding/TUI/Eyes/ACP/Flow",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/goal-storage-verification.md"
+      ]
     },
     {
       "id": "GOAL-02",
       "area": "goal",
       "requirement": "Goal 自行维护全部业务存储/lease/outbox，核心无 Goal 状态表或副本",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/goal-storage-verification.md"
+      ]
     },
     {
       "id": "GOAL-03",
       "area": "goal",
       "requirement": "没有旧格式迁移/双读兼容；明确拒绝且不删除或改写原数据",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/goal-storage-verification.md"
+      ]
     },
     {
       "id": "GOAL-04",
@@ -353,7 +359,8 @@
       "requirement": "所有关键 fsync/阻塞 I/O off-loop 且取消后提交结算；corruption/lease 失败关闭",
       "status": "pending",
       "evidence": [
-        "docs/claw-observer-recipients-verification.md"
+        "docs/claw-observer-recipients-verification.md",
+        "docs/goal-storage-verification.md"
       ]
     },
     {
@@ -377,14 +384,18 @@
       "area": "verification",
       "requirement": "九包源测试、Ruff、九 namespace strict mypy、Flow examples 与 lock 检查实际通过",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/goal-storage-verification.md"
+      ]
     },
     {
       "id": "VERIFY-05",
       "area": "verification",
       "requirement": "Goal-only 和两宿主 fresh wheel-only 执行、资源打包与 Twine 验证通过",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/goal-storage-verification.md"
+      ]
     },
     {
       "id": "VERIFY-06",

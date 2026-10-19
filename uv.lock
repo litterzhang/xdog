@@ -11,6 +11,7 @@ members = [
     "xdog-coding",
     "xdog-eyes",
     "xdog-flow",
+    "xdog-goal",
     "xdog-site",
     "xdog-tui",
 ]
@@ -1943,6 +1944,7 @@ dependencies = [
     { name = "xdog-coding" },
     { name = "xdog-eyes" },
     { name = "xdog-flow" },
+    { name = "xdog-goal" },
     { name = "xdog-site" },
 ]
 
@@ -1966,6 +1968,7 @@ requires-dist = [
     { name = "xdog-coding", editable = "packages/coding" },
     { name = "xdog-eyes", editable = "packages/eyes" },
     { name = "xdog-flow", editable = "packages/flow" },
+    { name = "xdog-goal", editable = "packages/goal" },
     { name = "xdog-site", editable = "packages/site" },
 ]
 
@@ -2148,6 +2151,17 @@ requires-dist = [
     { name = "xdog-ai", editable = "packages/ai" },
     { name = "xdog-tui", editable = "packages/tui" },
 ]
+
+[[package]]
+name = "xdog-goal"
+version = "2.4.2"
+source = { editable = "packages/goal" }
+dependencies = [
+    { name = "xdog-agent" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "xdog-agent", editable = "packages/agent" }]
 
 [[package]]
 name = "xdog-site"

@@ -4,7 +4,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ## Repository and toolchain
 
-XDOG is a local-first Python 3.12+ `uv` workspace; its core tools do not require a hosted control plane or database. Eight distributions share the `xdog.*` namespace under `packages/`: `ai`, `agent`, `flow`, `coding`, `claw`, `tui`, `site`, and `eyes`. Run development commands from the repository root so the root `pyproject.toml` configuration applies.
+XDOG is a local-first Python 3.12+ `uv` workspace; its core tools do not require a hosted control plane or database. Nine distributions share the `xdog.*` namespace under `packages/`: `ai`, `agent`, `flow`, `coding`, `claw`, `tui`, `site`, `eyes`, and `goal`. Run development commands from the repository root so the root `pyproject.toml` configuration applies.
 
 ```bash
 # Create/update the workspace environment
@@ -16,7 +16,7 @@ uv run pytest -q              # direct pytest alternative; supports normal selec
 uv run ruff check packages
 uv run mypy --strict \
   -p xdog.ai -p xdog.agent -p xdog.tui -p xdog.flow \
-  -p xdog.site -p xdog.claw -p xdog.coding -p xdog.eyes
+  -p xdog.site -p xdog.claw -p xdog.coding -p xdog.eyes -p xdog.goal
 
 # Package, file, and individual-test examples
 uv run pytest packages/flow/tests -q
@@ -283,6 +283,18 @@ cursor+whole pending Delivery must persist before send, including original JSON
 number representation. Busy managed schedules skip ticks without overlapping;
 accepted one-offs survive downtime. Claw restores only its managed time observers,
 never automatically restarts ordinary file observation. Eyes still imports no harness.
+
+### `xdog.goal`: optional host-neutral Goal kernel (cutover in progress)
+
+The ninth distribution depends directly only on `xdog-agent` and stdlib. Frozen
+models/codecs and GoalStore own private leased/versioned Goal history, reports,
+review snapshots, evidence artifacts and notification outbox. Owner/workspace is
+host-supplied, not tool JSON/provenance; wrong-owner/old-format/corrupt data is
+refused byte-preserving. Recovery interrupts started/unknown work, never starts
+an Agent or replays side effects. Workspace install/import enables no host/UI.
+The explicit service/role ports, real Claw/Coding adapter cutover and shared UI
+remain part of the active assistant-core goal; legacy Claw Goal is transitional,
+not a compatibility backend for this package.
 
 ### `xdog.tui` and `xdog.site`
 

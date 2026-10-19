@@ -45,7 +45,7 @@ jobs:
           import importlib, sys
           mods = ["xdog.ai", "xdog.agent", "xdog.agent.skills", "xdog.tui",
                   "xdog.flow", "xdog.flow.cli", "xdog.claw.core",
-                  "xdog.coding.core.slash_commands", "xdog.eyes", "xdog.eyes.cli"]
+                  "xdog.coding.core.slash_commands", "xdog.eyes", "xdog.eyes.cli", "xdog.goal"]
           bad = []
           for m in mods:
               try:
@@ -71,7 +71,7 @@ jobs:
         run: >
           uv run mypy --strict
           -p xdog.ai -p xdog.agent -p xdog.tui -p xdog.flow
-          -p xdog.site -p xdog.claw -p xdog.coding -p xdog.eyes
+          -p xdog.site -p xdog.claw -p xdog.coding -p xdog.eyes -p xdog.goal
 
       # The examples are executable artifacts, not decoration: this catches a
       # workflow whose companion suite stopped passing after a kernel change.
