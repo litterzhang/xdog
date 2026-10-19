@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from xdog.agent.skills.manager import SkillManager
-    from xdog.agent.skills.types import Skill
+    from xdog.agent.skills.types import Skill, SkillPlacement
 from dataclasses import replace
 from typing import Any, Callable, TypeVar
 
@@ -249,6 +249,7 @@ class Agent:
         tool_ctx: dict[str, Any] | None = None,
         skills: "SkillManager | None" = None,
         active_skills: "Sequence[str]" = (),
+        prepared_skills: "SkillPlacement | None" = None,
         embed_fn: EmbedFn | None = None,
         web_search_fn: WebSearchFn | None = None,
         convert_to_llm: ConvertToLlmFn | None = None,
@@ -296,7 +297,10 @@ class Agent:
         # beside its workflow and in installed packages, coding looks in its
         # group and shared directories. Placement is the same everywhere.
         _base_prompt = cfg.system_prompt
-        _index, _fixed_preamble, _transient, _resolved = _place_skills(skills, active_skills)
+        if prepared_skills is not None and prepared_skills.slugs != tuple(dict.fromkeys(active_skills)):
+            raise ValueError("Prepared skills do not match the selected slugs")
+        _index, _fixed_preamble, _transient, _resolved = (prepared_skills.unpack() if prepared_skills is not None
+                                                       else _place_skills(skills, active_skills))
         _front = _index + _fixed_preamble
         if _front:
             prompt = ((SystemPromptBlock(text=_front, cache=True), *_base_prompt)
@@ -543,7 +547,7 @@ class Agent:
         """Host-selected skill slugs; used turn skills retire when their run settles."""
         return self._active_skill_slugs
 
-    def set_active_skills(self, slugs: "Sequence[str]") -> None:
+    def set_active_skills(self, slugs: "Sequence[str]", *, prepared_skills: "SkillPlacement | None" = None) -> None:
         """Replace idle skill selection; turn bodies belong to the next user prompt run.
 
         A run includes all its tool rounds and queued continuations. No model entry
@@ -552,7 +556,10 @@ class Agent:
         if self._state.is_streaming or not self._idle_event.is_set():
             raise RuntimeError("Cannot change active skills during an active run")
         selected = tuple(dict.fromkeys(slugs))
-        self._index, self._fixed_preamble, transient, self._resolved_skills = _place_skills(self._skills, selected)
+        if prepared_skills is not None and prepared_skills.slugs != selected:
+            raise ValueError("Prepared skills do not match the selected slugs")
+        self._index, self._fixed_preamble, transient, self._resolved_skills = (
+            prepared_skills.unpack() if prepared_skills is not None else _place_skills(self._skills, selected))
         self._active_skill_slugs = selected
         self._turn_skills = tuple(transient)
         self._recompose_system_prompt()

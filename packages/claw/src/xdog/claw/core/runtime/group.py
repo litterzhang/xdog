@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from xdog.claw.core.inputs.consumer import InputService
     from xdog.claw.core.observers.manager import ManagedObservers
     from xdog.claw.core.runtime.goal_adapter import ClawGoalHost
+    from xdog.claw.core.runtime.session import AgentSession
 
 logger = logging.getLogger(__name__)
 
@@ -156,9 +157,9 @@ class GroupRuntime:
         self._retired_extensions: WeakSet[ExtensionRuntime] = WeakSet()
 
         # Session lifecycle state
-        from xdog.claw.core.runtime.session import AgentSession
         self._active_session: AgentSession | None = None
         self._session_last_active: float = 0.0
+        self._session_prepare_lock = asyncio.Lock()
         self._source_revision = 0
 
         # Memory snapshot cache (frozen per-turn, reload on mtime change)
@@ -362,6 +363,49 @@ class GroupRuntime:
         self._active_session = session
         self._session_last_active = time.time()
         return session
+
+    async def prepare_session(self, *, allow_reset: bool = True) -> AgentSession:
+        """Owned preparation IO; publish/construct the Agent only on this loop."""
+        from functools import partial
+
+        from xdog.agent.async_work import run_owned
+        from xdog.claw.core.persistence.session_preparation import check, prepare
+        from xdog.claw.core.runtime.session import AgentSession
+
+        async with self._session_prepare_lock:
+            previous = self._active_session
+            if previous is not None and not allow_reset:
+                current = self.transcript_store.get_active_session(self.group.id)  # Committed in-memory binding only.
+                if current is None or current.session_id != previous.meta.session_id:
+                    raise ValueError('Cached session owner changed; no implicit parent replacement')
+                self._session_last_active = time.time()
+                return previous
+            generation = self._source_revision
+            config = self.group.config
+            children_active = previous is not None and previous.children.supervisor.active
+            plan = await run_owned(partial(check, self.transcript_store, self.group.id,
+                config.daily_reset_hour, config.idle_reset_seconds, allow_reset=allow_reset and not children_active))
+            if self._active_session is not previous or self._source_revision != generation:
+                raise ValueError('Session preparation owner changed during metadata read')
+            if previous is not None:
+                if plan.meta is None or plan.meta.session_id != previous.meta.session_id:
+                    raise ValueError('Cached session owner changed during preparation')
+                if not plan.reset_due:
+                    self._session_last_active = time.time()
+                    return previous
+            if previous is not None:
+                self._drop_session()
+            generation = self._source_revision
+            data = await run_owned(partial(prepare, self.transcript_store, self.group.id,
+                self.workspace_dir, self._configured_model, plan.meta, reset=plan.reset_due, skills=self.skill_manager))
+            if self._active_session is not None or self._source_revision != generation:
+                raise ValueError('Session preparation owner changed before publication')
+            self.model = data.saved_model or self._configured_model
+            self.context_window, self.max_prompt_tokens = self._configured_limits
+            session = AgentSession(runtime=self, session_meta=data.meta, prepared=data)
+            self._active_session = session
+            self._session_last_active = time.time()
+            return session
 
     def navigation_entries(self, scope: str) -> list[dict[str, Any]]:
         store = self.transcript_store

@@ -453,7 +453,7 @@ class Orchestrator:
                 raise ValueError("Reviewed message owner changed before turn admission; no replay")
             if before_admission is not None and not await before_admission():
                 return None  # Host cancellation won before actual Agent admission.
-            session = runtime.get_or_create_session(allow_reset=input_alive is None)
+            session = await runtime.prepare_session(allow_reset=input_alive is None)
             if admit is not None and not await admit(session.meta.session_id):
                 return None
             if runtime.goal_available:
@@ -675,13 +675,13 @@ class Orchestrator:
         # child. Only start needs an idle group for prompt/tool snapshot rebuilding.
         if action == "start":
             async with self.group_controller(group_id).acquire(is_user=True):
-                session = runtime.get_or_create_session(allow_reset=False)
+                session = await runtime.prepare_session(allow_reset=False)
                 session.children.extensions.default_ui = child_ui
                 owner = session.children
                 result = await session.manage_children(action, identifier, text, access, config=config, images=images,
                                                        return_owner=return_owner, return_alive=return_alive)
         else:
-            session = runtime.get_or_create_session(allow_reset=False)
+            session = await runtime.prepare_session(allow_reset=False)
             owner = session.children
             result = await session.manage_children(action, identifier, text, access, config=config, images=images,
                                                        return_owner=return_owner, return_alive=return_alive)
@@ -721,7 +721,7 @@ class Orchestrator:
             async with self.group_controller(group_id).acquire(is_user=True):
                 if (runtime.get_new_session_id() or "") != expected_session:
                     raise ValueError("Access session changed; refresh before retrying")
-                session = runtime.get_or_create_session(allow_reset=False)
+                session = await runtime.prepare_session(allow_reset=False)
                 session._children_idle()
                 state = await run_owned(lambda: session.access.set_read_only(action == "restrict"))
                 runtime._source_revision += 1
@@ -735,7 +735,7 @@ class Orchestrator:
         if (runtime is None or (runtime.get_new_session_id() or "") != expected_session
                 or group_id in self._navigation_groups):
             raise ValueError("Compaction group/session changed; refresh before retrying")
-        session = cast(AgentSession, runtime.get_or_create_session(allow_reset=False))
+        session = await runtime.prepare_session(allow_reset=False)
         def owner_alive() -> bool:
             return (alive() and runtime._active_session is session
                     and group_id not in self._navigation_groups)
@@ -747,7 +747,7 @@ class Orchestrator:
         if (runtime is None or expected_session and runtime.get_new_session_id() != expected_session
                 or group_id in self._navigation_groups):
             raise ValueError('Skill group/session owner changed')
-        session = cast(AgentSession, runtime.get_or_create_session(allow_reset=False))
+        session = await runtime.prepare_session(allow_reset=False)
         def owner_alive() -> bool:
             return (alive() and runtime._active_session is session
                     and group_id not in self._navigation_groups)
@@ -757,7 +757,7 @@ class Orchestrator:
         runtime = self._runtimes.get(group_id)
         if runtime is None or (runtime.get_new_session_id() or "") != expected_session:
             raise ValueError("Reasoning session changed; refresh before changing settings")
-        session = cast(AgentSession, runtime.get_or_create_session(allow_reset=False))
+        session = await runtime.prepare_session(allow_reset=False)
         # An initially empty owner may explicitly bootstrap its first session.
         owner_session = session.meta.session_id
         await session.initialize_extensions()
@@ -811,7 +811,7 @@ class Orchestrator:
         runtime = self._runtimes.get(group_id)
         if runtime is None or (runtime.get_new_session_id() or "") != expected_session:
             raise ValueError("Extension model session changed; refresh before selecting")
-        session = cast(AgentSession, runtime.get_or_create_session(allow_reset=False))
+        session = await runtime.prepare_session(allow_reset=False)
         # An initially empty owner may explicitly bootstrap its first session.
         owner_session = session.meta.session_id
         await session.initialize_extensions()
@@ -931,7 +931,7 @@ class Orchestrator:
         if runtime is None or (runtime.get_new_session_id() or "") != expected_session:
             raise ValueError("Extension session/group changed; refresh before retrying")
         async with self.group_controller(group_id).acquire(is_user=True):
-            session = runtime.get_or_create_session(allow_reset=False)
+            session = await runtime.prepare_session(allow_reset=False)
             session._children_idle()
             if action == "auth":
                 return await self._manage_provider_auth(session, args, on_dialog, provider_auth_alive)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
 import re
 import uuid
@@ -33,7 +34,7 @@ from xdog.agent import (
     ToolExecutionStartEvent,
     ToolExecutionUpdateEvent,
 )
-from xdog.agent.access import AccessScope, AccessState, read_only_call
+from xdog.agent.access import AccessScope, read_only_call
 from xdog.agent.context_messages import ContextMessages
 from xdog.agent.extensions.dialogs import DialogBroker
 from xdog.agent.extensions.runtime import ExtensionRuntime
@@ -49,6 +50,7 @@ from xdog.ai.types import (
     UserMessage,
 )
 from xdog.claw.core.compaction import estimate_tokens, run_compaction, should_compact
+from xdog.claw.core.persistence.session_preparation import PreparedSession
 from xdog.claw.core.persistence.transcript_convert import (
     estimate_turn_usage as _estimate_turn_usage,
 )
@@ -57,7 +59,6 @@ from xdog.claw.core.persistence.transcript_convert import (
     messages_to_transcript,
     transcript_to_messages,
 )
-from xdog.claw.core.prompt.workspace import run_bootstrap
 from xdog.claw.core.runtime.child_agents import ClawChildren
 from xdog.claw.core.runtime.display_events import (
     AssistantTextDelta,
@@ -119,10 +120,20 @@ class AgentSession:
 
     children: ClawChildren
 
-    def __init__(self, *, runtime: GroupRuntime, session_meta: SessionMeta) -> None:
+    def __init__(self, *, runtime: GroupRuntime, session_meta: SessionMeta,
+                 prepared: PreparedSession | None = None) -> None:
         self._runtime = runtime
         self._meta = session_meta
         self._group_id = runtime.group.id
+        from xdog.claw.core.persistence.session_preparation import read
+        data = prepared or read(runtime.transcript_store, session_meta, runtime.workspace_dir,
+                                runtime.model, include_history=False, skills=runtime.skill_manager)
+        if (data.meta != session_meta or data.workspace != runtime.workspace_dir
+                or data.store_root != runtime.transcript_store._sessions_dir
+                or session_meta.group_id != self._group_id):
+            raise ValueError('Prepared session belongs to another context/workspace/store')
+        self._prepared_history = data.history
+        self._prepared_entries = data.entries_json
         self._human_inputs: dict[str, str] = {}
         self._authorized_messages: dict[int, UserMessage] = {}
         self._user_operation_authorized = False
@@ -132,15 +143,15 @@ class AgentSession:
         self._compacting = False
         self._tool_selection_changing = False
         self._tool_selection_retiring = False
-        self._saved_active_tools = runtime.transcript_store.get_active_tools(session_meta.session_id)
+        self._saved_active_tools = data.active_tools
         self._tool_selection_restore_pending = self._saved_active_tools is not None
-        self._active_skills = frozenset(runtime.transcript_store.get_active_skills(session_meta.session_id))
+        self._active_skills = frozenset(data.active_skills)
         try:
             self._host_loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
         except RuntimeError:
             self._host_loop = None
 
-        self.access = AccessScope(AccessState.from_dict(runtime.transcript_store.get_access(session_meta.session_id)),
+        self.access = AccessScope(data.access,
                               lambda state: runtime.transcript_store.save_access(
                                   session_meta.session_id, state.to_dict()))
         from xdog.agent.supervision import RESERVED_TOOLS
@@ -158,10 +169,10 @@ class AgentSession:
         native_metadata = (effective_stream_fn.resolve_model(runtime.model)
                            if isinstance(effective_stream_fn, ModelStreamFn) and not runtime.model.startswith("ext-")
                            else None)
-        if (runtime.transcript_store.get_model(session_meta.session_id) and not runtime.model.startswith("ext-")
+        if (data.saved_model and not runtime.model.startswith("ext-")
                 and native_metadata is None):
             raise ValueError("Saved native model unavailable on configured adapter; no fallback")
-        if (native_metadata is not None and runtime.transcript_store.get_model(session_meta.session_id)
+        if (native_metadata is not None and data.saved_model
                 and (native_metadata.model_type != "chat" or not native_metadata.supports_streaming
                      or native_metadata.context_window <= 0)):
             raise ValueError("Saved native model is no longer a streaming chat model; no fallback")
@@ -170,7 +181,7 @@ class AgentSession:
             runtime.max_prompt_tokens = native_metadata.max_prompt_tokens
         from xdog.agent.extensions.providers import ExtensionProviderStream
         from xdog.agent.helpers import model_supports_tool_calls
-        saved_thinking = runtime.transcript_store.get_reasoning(session_meta.session_id, runtime.model or "test/dummy")
+        saved_thinking = data.thinking
         options = runtime.agent_config.options
         if saved_thinking is not None:
             from typing import cast
@@ -202,6 +213,7 @@ class AgentSession:
             # longer carries a skills summary of its own.
             skills=getattr(runtime, "skill_manager", None),
             active_skills=tuple(sorted(self._active_skills)),
+            prepared_skills=data.skills,
             tool_ctx={
                 "group_id": self._group_id,
                 "workspace_dir": str(runtime.workspace_dir) if runtime.workspace_dir else "",
@@ -260,6 +272,14 @@ class AgentSession:
         if self._restored:
             return
         self._restored = True
+        if self._prepared_history is not None:
+            data, self._prepared_history = self._prepared_history, None
+            self._has_compaction_entry = data.has_compaction
+            self._compaction_metadata = json.loads(data.compaction_json) if data.compaction_json is not None else None
+            self._source_channels = dict(data.channels)
+            self._agent.replace_messages(list(data.messages))
+            self._persisted_count = len(data.messages)
+            return
         transcript = self._store.load_transcript(self._meta.session_id)
         if not transcript:
             return
@@ -342,7 +362,7 @@ class AgentSession:
         session_id = self._meta.session_id
         store = self._runtime.transcript_store
         self.extension_dialogs = DialogBroker()
-        entries = ExtensionEntries(store.get_extension_entries(session_id),
+        entries = ExtensionEntries(json.loads(self._prepared_entries),
                                    lambda value: store.save_extension_entries(session_id, value))
         self.extensions = ExtensionRuntime(
             self._runtime.extension_names, self._runtime.extension_root, self._runtime.workspace_dir,
@@ -584,7 +604,7 @@ class AgentSession:
             return {"presets": self.children.supervisor.presets.snapshot()}
         if action == "start":
             await self.initialize_extensions()
-            self._agent.set_system_prompt(self._runtime.build_system_prompt())
+            self._agent.set_system_prompt(await self._prompt_blocks())
             child_id = await self.children.supervisor.start(text, access=access, config=config, images=images)
             return {"child_id": child_id, 'accepted_input': self.children.supervisor.admission_receipt(child_id),
                     **self.children.supervisor.snapshot()}
@@ -630,10 +650,12 @@ class AgentSession:
         # Once a write is admitted, settle BOTH disk and owning-loop state before
         # releasing the group reservation, even if its receipt is disconnected.
         async def commit() -> None:
+            from xdog.agent.skills.types import SkillPlacement
+            placement = await asyncio.to_thread(SkillPlacement.read, self._runtime.skill_manager, chosen)
             await asyncio.to_thread(self._store.save_active_skills, self._meta.session_id, chosen)
             self._active_skills = frozenset(chosen)
             if update_agent:
-                self._agent.set_active_skills(chosen)
+                self._agent.set_active_skills(chosen, prepared_skills=placement)
         task = asyncio.create_task(commit())
         try:
             await asyncio.shield(task)
@@ -739,7 +761,7 @@ class AgentSession:
             await self.initialize_extensions()  # Lifecycle hooks may update provider metadata.
             if isinstance(input, UserInput) and input.images:
                 await asyncio.to_thread(self._runtime.validate_images, input.images)
-            system_prompt = self._rebuild_system_prompt(input)
+            system_prompt = await self._rebuild_system_prompt(input)
             await self._maybe_compact()
 
             previous_count = len(self._agent.state.messages)
@@ -840,20 +862,26 @@ class AgentSession:
 
     # -- Turn sub-steps -------------------------------------------------------
 
-    def _rebuild_system_prompt(self, input: GroupInput) -> str:
-        bootstrap_content = None
-        ws = self._runtime.workspace_dir
-        if ws:
-            bootstrap_content = run_bootstrap(ws)
+    async def _prompt_blocks(self, *, bootstrap: bool = False) -> tuple[SystemPromptBlock, ...]:
+        from functools import partial
 
-        blocks = self._runtime.build_system_prompt(
-            bootstrap_content=bootstrap_content,
-        )
+        from xdog.agent.async_work import run_owned
+        from xdog.claw.core.persistence.session_preparation import PromptTool, prompt
 
+        active = {tool.name for tool in self._agent.active_tools}
+        tools = tuple(PromptTool(tool.name, tool.description) for tool in self._runtime.tools if tool.name in active)
+        original = self._meta.session_id
+        blocks = await run_owned(partial(prompt, self._runtime.workspace_dir, tools, self._runtime.model,
+                                         bootstrap=bootstrap))
+        if self._runtime._active_session is not self or self._meta.session_id != original:
+            raise ValueError('Prompt preparation context owner changed')
+        return blocks
+
+    async def _rebuild_system_prompt(self, input: GroupInput) -> str:
+        blocks = await self._prompt_blocks(bootstrap=True)
         if self.access.state.read_only:
             blocks = (*blocks, SystemPromptBlock(text=self.access.state.prompt(), cache=False))
         self._agent.set_system_prompt(blocks)
-        # Return plain text for usage estimation
         from xdog.ai.types import system_prompt_text
         return system_prompt_text(blocks) or ""
 
@@ -1099,7 +1127,7 @@ class AgentSession:
             from xdog.ai.types import system_prompt_text
             sp = system_prompt_text(self._agent.state.system_prompt) or ""
             if not sp:
-                sp = system_prompt_text(self._runtime.build_system_prompt()) or ""
+                sp = system_prompt_text(await self._prompt_blocks()) or ""
             # Model selection/extension adapters are session-owned. Never use a
             # stale initial model or quietly send an extension model to ai.load().
             summarizer = self._runtime.summarizer

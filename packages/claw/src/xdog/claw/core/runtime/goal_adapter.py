@@ -225,7 +225,7 @@ class ClawGoalHost:
 
     async def _start(self, spec: WorkerSpec | ReviewerSpec) -> WorkerRef:
         self._check()
-        session = self.runtime.get_or_create_session(allow_reset=False)
+        session = await self.runtime.prepare_session(allow_reset=False)
         self.attach(session)
         role = "worker" if isinstance(spec, WorkerSpec) else "reviewer"
         ticket = _Admission(self, spec)

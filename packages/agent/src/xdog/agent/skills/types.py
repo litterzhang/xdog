@@ -1,8 +1,13 @@
 """Skill types — frozen dataclass for skill metadata and content."""
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from xdog.agent.skills.manager import SkillManager
 
 
 @dataclass(frozen=True)
@@ -43,3 +48,25 @@ class Skill:
     def directory(self) -> Path | None:
         """The skill's own directory — what its relative paths resolve against."""
         return self.path.parent if self.path is not None else None
+
+
+@dataclass(frozen=True)
+class SkillPlacement:
+    """Detached prompt placement; hosts may resolve filesystem skills in owned IO."""
+
+    slugs: tuple[str, ...]
+    index: str
+    fixed: str
+    transient: tuple[Skill, ...]
+    resolved: tuple[Skill, ...]
+
+    @classmethod
+    def read(cls, manager: SkillManager | None, selected: Sequence[str]) -> SkillPlacement:
+        # Same placement engine as ordinary Agent construction/selection, not a
+        # host-specific skill resolver or a second cache/persistence authority.
+        from xdog.agent.agent import _place_skills
+        index, fixed, transient, resolved = _place_skills(manager, selected)
+        return cls(tuple(dict.fromkeys(selected)), index, fixed, tuple(transient), tuple(resolved.values()))
+
+    def unpack(self) -> tuple[str, str, list[Skill], dict[str, Skill]]:
+        return self.index, self.fixed, list(self.transient), {skill.slug: skill for skill in self.resolved}

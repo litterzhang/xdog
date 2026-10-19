@@ -197,7 +197,7 @@ class GatewayServer:
                 current = runtime.get_new_session_id() or ""
                 selected = runtime.transcript_store.get_extension_model(current) if current else ""
                 if runtime.model.startswith("ext-") or selected:
-                    session = runtime.get_or_create_session(allow_reset=False)
+                    session = await runtime.prepare_session(allow_reset=False)
                     await session.initialize_extensions(require_model=True)
             await self._orchestrator.start()
             inputs = await self._orchestrator.input_service()
@@ -793,17 +793,20 @@ class GatewayServer:
                         runtime = self._orchestrator._runtimes.get(group)
                         if runtime is None or session_id and (runtime.get_new_session_id() or '') != session_id:
                             raise ValueError('Tool inventory owner changed')
-                        active = runtime.get_or_create_session(allow_reset=False)
-                        if session_id and active.meta.session_id != session_id:
-                            raise ValueError('Tool inventory owner changed')
                     except (ValueError, RuntimeError):
                         await write({'type': 'tool_inventory_result', 'request_id': rid, 'group_id': group,
                                      'session_id': session_id, 'success': False})
                         continue
-                    async def inventory_job(identifier: str, gid: str, sid: str, owner: Any,
-                                            runtime_owner: Any, requested_session: str,
-                                            include_selection: bool) -> None:
+                    async def inventory_job(identifier: str, gid: str, requested_session: str,
+                                            runtime_owner: Any, include_selection: bool) -> None:
+                        sid = requested_session
                         try:
+                            # Cold preparation is part of the cancellable job, not
+                            # the protocol reader (which must still read ping/cancel).
+                            owner = await runtime_owner.prepare_session(allow_reset=False)
+                            sid = owner.meta.session_id
+                            if requested_session and sid != requested_session:
+                                raise ValueError('Tool inventory owner changed')
                             snapshot = await asyncio.to_thread(owner._extension_tools)
                             if (not tool_inventory_supported or runtime_owner._active_session is not owner
                                     or owner.meta.session_id != sid or snapshot is None):
@@ -824,8 +827,7 @@ class GatewayServer:
                         finally:
                             if tool_inventory_jobs.get(identifier) is asyncio.current_task():
                                 tool_inventory_jobs.pop(identifier, None)
-                    job = asyncio.create_task(inventory_job(rid, group, active.meta.session_id,
-                                                            active, runtime, session_id,
+                    job = asyncio.create_task(inventory_job(rid, group, session_id, runtime,
                                                             request.get('include_selection', False)))
                     tool_inventory_jobs[rid] = job
                     def inventory_done(done: asyncio.Task[None], identifier: str = str(rid)) -> None:
@@ -1451,7 +1453,7 @@ class GatewayServer:
                                     or self._orchestrator.source_lease(group)[1] < 0):
                                 raise ValueError('MCP browser owner changed; reopen the current session')
                             runtime = self._orchestrator._runtimes[group]
-                            selected = runtime.get_or_create_session(allow_reset=False)
+                            selected = await runtime.prepare_session(allow_reset=False)
                             mcp_reply['session_id'] = selected.meta.session_id
                         async with self._orchestrator.operation_scope(reserved):
                             statuses = await self._orchestrator.manage_mcp(

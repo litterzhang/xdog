@@ -153,6 +153,14 @@ The old mixed MessageQueue and global Gateway running table are removed.
 GroupConfig has no queue mode/debounce/per-group-concurrency/trigger-pattern
 knobs; only live pending capacity and daily/idle reset settings remain. Agent
 explicit input modes and Eyes detector debounce are separate live APIs.
+Async application routes now use owned `prepare_session` IO with detached frozen
+PreparedSession/PreparedHistory, then construct/publish the Agent on its existing
+loop. Workspace/prompt IO and the shared Agent SkillPlacement resolve off-loop;
+no snapshot grants tool permission or changes Goal lifetime. Cold native tool
+inventory preparation lives inside its existing cancellable job, not the reader.
+This is a preparation milestone only: ordinary durable turn commits and broader
+startup/status/MCP/application IO audit remain pending. See
+`docs/claw-owned-session-io-verification.md`.
 
 ACP is now a thin adapter over the application-owned input service: it has no
 receipt database, consumer, observer/Goal query or report-delivery policy. Its
