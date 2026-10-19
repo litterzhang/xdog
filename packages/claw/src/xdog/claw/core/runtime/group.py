@@ -15,6 +15,7 @@ from dataclasses import replace
 from importlib.util import find_spec
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from weakref import WeakSet
 
 from xdog.agent import AgentConfig, AgentTool, StreamFn
 from xdog.agent.history import history_points
@@ -35,6 +36,7 @@ from xdog.claw.core.types import Group
 from xdog.tui.transcript_browser import TranscriptRecord
 
 if TYPE_CHECKING:
+    from xdog.agent.extensions.runtime import ExtensionRuntime
     from xdog.claw.core.inputs.consumer import InputService
     from xdog.claw.core.observers.manager import ManagedObservers
     from xdog.claw.core.runtime.goal_adapter import ClawGoalHost
@@ -150,7 +152,8 @@ class GroupRuntime:
         self.extension_allow_tools = extension_allow_tools
         from xdog.agent.supervision_config import ChildPresets
         self.child_presets = ChildPresets(child_presets)
-        self._retired_extensions: list[Any] = []
+        # Closing worker/callbacks own their lifetime; do not retain settled histories.
+        self._retired_extensions: WeakSet[ExtensionRuntime] = WeakSet()
 
         # Session lifecycle state
         from xdog.claw.core.runtime.session import AgentSession
@@ -615,7 +618,7 @@ class GroupRuntime:
         self._source_revision += 1
         if self._active_session is not None:
             self._active_session.dispose()
-            self._retired_extensions.append(self._active_session.extensions)
+            self._retired_extensions.add(self._active_session.extensions)
             self._active_session = None
         self._session_last_active = 0.0
 

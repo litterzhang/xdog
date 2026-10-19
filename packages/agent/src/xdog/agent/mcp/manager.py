@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar
 
+from xdog.agent.async_work import wait_owned
 from xdog.agent.core import AgentTool, AgentToolResult
 from xdog.agent.cross_loop import submit_remote
 from xdog.agent.mcp.client_capabilities import advertised, inventory
@@ -100,6 +101,7 @@ class McpManager:
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
         self._closed = False
+        self._close_future: concurrent.futures.Future[None] | None = None
 
     def _ensure_loop(self) -> asyncio.AbstractEventLoop:
         with self._start_lock:
@@ -766,18 +768,18 @@ class McpManager:
                 "structured_content": result.get("structuredContent")}
 
     async def aclose(self) -> None:
-        if self._closed:
-            if self._thread is not None:
-                await asyncio.to_thread(self._thread.join, 5)
+        self.close()
+        thread = self._thread
+        if thread is None:
             return
-        if self._loop is None:
-            self._closed = True
-            return
-        await self._bridge(self._close_clients())
-        self._closed = True
-        self._loop.call_soon_threadsafe(self._loop.stop)
-        if self._thread is not None:
-            await asyncio.to_thread(self._thread.join, 2)
+
+        async def settle() -> None:
+            # A join deadline/cancelled waiter is not actual resource settlement.
+            await asyncio.to_thread(thread.join)
+            if self._close_future is not None:
+                self._close_future.result()
+
+        await wait_owned(asyncio.create_task(settle()))
 
     async def _close_clients(self) -> None:
         await self._schemas.close()
@@ -795,14 +797,19 @@ class McpManager:
             self._tools = ()
 
     def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        if self._loop is None:
-            return
-        future = asyncio.run_coroutine_threadsafe(self._close_clients(), self._loop)
-        def settled(_future: concurrent.futures.Future[None]) -> None:
-            _future.exception()
-            assert self._loop is not None
-            self._loop.call_soon_threadsafe(self._loop.stop)
-        future.add_done_callback(settled)
+        with self._start_lock:
+            if self._closed:
+                return
+            self._closed = True
+            if self._loop is None:
+                return
+            loop = self._loop
+            self._close_future = asyncio.run_coroutine_threadsafe(self._close_clients(), loop)
+
+            def settled(future: concurrent.futures.Future[None]) -> None:
+                try:
+                    future.exception()  # Retrieved here; async close also reports the actual result.
+                finally:
+                    loop.call_soon_threadsafe(loop.stop)
+
+            self._close_future.add_done_callback(settled)

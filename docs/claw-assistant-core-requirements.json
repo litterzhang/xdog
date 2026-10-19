@@ -173,7 +173,9 @@
       "requirement": "取消与 shutdown 等待真实 producer/存储结算，保留用户优先与跨 group 隔离",
       "status": "pending",
       "evidence": [
-        "docs/claw-group-controller-verification.md"
+        "docs/claw-group-controller-verification.md",
+        "docs/claw-retired-extension-verification.md",
+        "docs/claw-assistant-core-final-audit.md"
       ]
     },
     {
@@ -409,7 +411,9 @@
       "status": "pending",
       "evidence": [
         "docs/goal-ui-extension-verification.md",
-        "docs/shared-goal-extension-verification.md"
+        "docs/shared-goal-extension-verification.md",
+        "docs/claw-retired-extension-verification.md",
+        "docs/claw-assistant-core-final-audit.md"
       ]
     },
     {
@@ -429,8 +433,11 @@
       "status": "pending",
       "evidence": [
         "docs/claw-observer-recipients-verification.md",
-        "docs/goal-storage-verification.md"
-      ]
+        "docs/goal-storage-verification.md",
+        "docs/claw-retired-extension-verification.md",
+        "docs/claw-assistant-core-final-audit.md"
+      ],
+      "audit_note": "Actual ordinary-input fsync trace remains on-loop (F-01); malformed active index silently ignored/rewritten (F-02); actual appended history durability needs proof (F-03). Existing passing suites do not satisfy this requirement."
     },
     {
       "id": "VERIFY-02",
@@ -438,7 +445,9 @@
       "requirement": "权威状态与派生视图分离，视图失败可重建且不产生第二权威",
       "status": "pending",
       "evidence": [
-        "docs/claw-observer-recipients-verification.md"
+        "docs/claw-observer-recipients-verification.md",
+        "docs/claw-retired-extension-verification.md",
+        "docs/claw-assistant-core-final-audit.md"
       ]
     },
     {
@@ -446,7 +455,10 @@
       "area": "verification",
       "requirement": "最终删除活动旧队列/Goal runner/原生 Goal UI，不保留双 owner 或双业务实现",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/claw-retired-extension-verification.md",
+        "docs/claw-assistant-core-final-audit.md"
+      ]
     },
     {
       "id": "VERIFY-04",
@@ -454,7 +466,9 @@
       "requirement": "九包源测试、Ruff、九 namespace strict mypy、Flow examples 与 lock 检查实际通过",
       "status": "pending",
       "evidence": [
-        "docs/goal-storage-verification.md"
+        "docs/goal-storage-verification.md",
+        "docs/claw-retired-extension-verification.md",
+        "docs/claw-assistant-core-final-audit.md"
       ]
     },
     {
@@ -463,7 +477,9 @@
       "requirement": "Goal-only 和两宿主 fresh wheel-only 执行、资源打包与 Twine 验证通过",
       "status": "pending",
       "evidence": [
-        "docs/goal-storage-verification.md"
+        "docs/goal-storage-verification.md",
+        "docs/claw-retired-extension-verification.md",
+        "docs/claw-assistant-core-final-audit.md"
       ]
     },
     {
@@ -471,7 +487,10 @@
       "area": "verification",
       "requirement": "全部条目具备证据，审核问题结算；阶段通过不冒充整个目标完成",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/claw-retired-extension-verification.md",
+        "docs/claw-assistant-core-final-audit.md"
+      ]
     }
   ],
   "workstreams": [
@@ -482,20 +501,21 @@
     },
     {
       "name": "application_input_consumer",
-      "status": "orchestrator_and_native_commit_ack_integrated_not_final_channel_cutover",
+      "status": "native_weixin_acp_integrated_and_source_verified",
       "evidence": "docs/claw-input-runtime-verification.md",
-      "note": "Legacy ACP receipt/observer bridge, final native/Weixin handoff and remaining objective acceptance still pending."
+      "note": "Ordinary durable intake/channel ownership integrated; final current-source IO/47-item audit/review/artifact gates remain open."
     },
     {
       "name": "independent_observer_journal",
-      "status": "validated_prerequisite_not_yet_active_manager_cutover",
+      "status": "active_manager_core_output_mirror_integrated",
       "evidence": "docs/claw-observer-journal-verification.md",
-      "note": "Core started fact and independent journal ready; Task3 must remove old active ACP receipt bridge."
+      "note": "Observerv3 owns intent/cursor; Core outputsv2 owns per-message sending. No aggregate report sender or ACP receipt bridge remains. Final acceptance still pending."
     },
     {
       "name": "thin_acp_and_observer_cutover",
       "status": "integrated_and_verified",
       "evidence": "docs/claw-acp-observer-cutover-verification.md"
     }
-  ]
+  ],
+  "audit_status": "in_progress_confirmed_io_findings_not_accepted"
 }

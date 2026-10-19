@@ -1349,10 +1349,6 @@ class ExtensionRuntime:
         self._generation += 1
         self.entries.close()
         self._closed = True
-        if self._manager._closed:
-            if self._manager._thread is not None:
-                await asyncio.to_thread(self._manager._thread.join, 5)
-            return
         await self._manager.aclose()
 
     def close(self) -> None:
