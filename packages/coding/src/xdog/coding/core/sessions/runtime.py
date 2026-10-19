@@ -108,6 +108,7 @@ class SessionRuntime:
         async def rebind() -> None:
             try:
                 await asyncio.wrap_future(discarded)
+                await self.session._settle_retired_goals()
                 if self.server is not None:
                     await self.server.close()
                     self.server = None

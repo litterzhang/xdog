@@ -1,7 +1,9 @@
 # Coding Goal host adapter — first integration milestone
 
-Date: 2026-10-19. This is the explicit host API milestone; automatic opt-in
-lifecycle/configuration is the next task, not claimed here.
+Date: 2026-10-19. Historical explicit-host API milestone. Automatic opt-in
+lifecycle/configuration was subsequently implemented and verified; see
+`docs/coding-goal-lifecycle-verification.md` for the current milestone.
+The evidence below describes the earlier explicit-API task only.
 
 ## Actual integration
 

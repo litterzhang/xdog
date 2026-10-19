@@ -2103,6 +2103,11 @@ dependencies = [
     { name = "xdog-tui" },
 ]
 
+[package.optional-dependencies]
+goals = [
+    { name = "xdog-goal" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "agent-client-protocol", marker = "python_full_version < '3.15'", specifier = ">=0.12.1,<0.13" },
@@ -2111,8 +2116,10 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "xdog-agent", editable = "packages/agent" },
     { name = "xdog-ai", extras = ["openai"], editable = "packages/ai" },
+    { name = "xdog-goal", marker = "extra == 'goals'", editable = "packages/goal" },
     { name = "xdog-tui", editable = "packages/tui" },
 ]
+provides-extras = ["goals"]
 
 [[package]]
 name = "xdog-eyes"

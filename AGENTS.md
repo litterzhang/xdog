@@ -94,6 +94,17 @@ The core invariant in `models.py` and `loader.py` is node-private typed ports co
 
 `core/agent_session.py` rebuilds the prompt and checks compaction before each turn, then adapts agent events to the selected UI mode. Session history, settings, summaries, and branches are persisted as JSON by `core/session_manager.py`. `core/sessions/` owns the single controller, writer lease, route ownership and separate durable automatically consumed inbox; TUI/SDK/ACP share that execution path, and offline ingress never constructs a second Agent. Project context discovery is non-recursive from the working directory: `AGENTS.md`, `AGENTS.md`, `.coding/INSTRUCTIONS.md`, and `.coding/instructions.md`, each capped at 64 KiB. Permissions belong in the coding client's pre-tool hook, not in the generic agent runtime. Preserve the default fail-closed behavior: read-only calls may run automatically, mutating calls require approval, and unattended execution may mutate only when `allow-all` was explicitly selected. Permission gates are not an OS sandbox.
 
+Coding optionally reuses `xdog-goal` through the `goals` extra and strict trusted
+**global-only** `goals_enabled` (default false). Lazy startup runs on the same
+session owner, not import/TUI/ACP. CodingGoalHost binds exact inbox namespace,
+session/branch/workspace, existing supervised role children and original-ID durable
+intake; source labels grant no authority. SDK opt-in retains the same controller's
+supported own-thread callback loop across awaits; callers dispose their session
+and teardown joins actual children/Goal commits before releasing that owner.
+Idle navigation retires the original capability without moving stored Goals.
+No turn-end review/Goal summary is hardcoded into Coding; readonly/default ask
+stays fail-closed. See `docs/coding-goals.md` and the adapter verification record.
+
 ### `xdog.claw`: persistent multi-channel assistant
 
 Claw is an application, not a public Python SDK. Its supported user surfaces are
@@ -149,8 +160,9 @@ Native notices use only the original live endpoint, never a newly connected peer
 No creator destination means not-required, not group broadcast; unavailable original
 recipient remains known-not-sent/pending. Stop notifications separately; source stop
 still does not retract accepted reports. No old journal upgrade is performed.
-The broader assistant-core refactor remains in progress: optional standalone Goal,
-its Coding adapter/shared extension UI and final feature-output streaming remain pending.
+The broader assistant-core refactor remains in progress: Coding now adopts the
+standalone optional Goal; Claw Goal cutover/shared extension UI and final
+feature-output streaming remain pending.
 Ordinary output receipts live in `<data_dir>/outputs/journal.sqlite3`: per-message
 send attempts distinguish delivered/pending/proven-not-sent/unknown independently
 from Agent execution. Unknown sends are never automatically replayed. Native
@@ -296,9 +308,10 @@ GoalService uses small async host ports, explicit task acceptance and independen
 review only on request_complete. Bound role tools read original history; Goal-local
 no-follow evidence fingerprints reject stale completion. Skills and derived views
 do not activate execution. See docs/goal-kernel-verification.md for the real SDK
-Supervisor and cold Goal-only lifecycle evidence. Real Claw/Coding adapter cutover
-and shared UI remain pending; legacy Claw Goal is transitional, not a compatibility
-backend for this package.
+Supervisor and cold Goal-only lifecycle evidence. Coding has an opt-in real host
+adapter and cold installed lifecycle (docs/coding-goal-lifecycle-verification.md).
+Claw adapter cutover and shared UI remain pending; legacy Claw Goal is transitional,
+not a compatibility backend for this package.
 
 ### `xdog.tui` and `xdog.site`
 

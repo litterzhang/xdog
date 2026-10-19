@@ -244,6 +244,8 @@ class CodingChildren:
         self.supervisor.abort()
 
     def close(self) -> None:
+        if self.goal_host is not None:
+            self.session._retire_goal_host(self.goal_host)
         for manager in tuple(self.permissions.values()):
             manager.close()
         self.supervisor.close()

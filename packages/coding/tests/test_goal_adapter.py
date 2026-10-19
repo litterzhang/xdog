@@ -22,7 +22,8 @@ def scripted(contexts, *, try_write=False):
         names = {tool.name for tool in context.tools}
         worker = "task_report" in names
         reviewer = "goal_context" in names and not worker
-        round_number = sum(message.role == "assistant" for message in context.messages)
+        start = max((index for index, message in enumerate(context.messages) if message.role == "user"), default=-1)
+        round_number = sum(message.role == "assistant" for message in context.messages[start + 1 :])
         if (worker or reviewer) and round_number == 0:
             parts = (ToolCall(id="contract", name="goal_context", arguments={}),)
         elif (worker or reviewer) and round_number == 1:

@@ -55,6 +55,7 @@ from xdog.coding.core.system_prompt import build_system_prompt
 if TYPE_CHECKING:
     from concurrent.futures import Future
 
+    from xdog.coding.core.goal_adapter import CodingGoalHost
     from xdog.coding.core.session_staging import StagedExtensions
     from xdog.coding.core.sessions.batches import TurnInput
     from xdog.coding.core.sessions.controller import SessionController
@@ -144,6 +145,7 @@ def _idle_change(method: Callable[Concatenate["AgentSession", P], R]) -> Callabl
                         async def rebind_sdk() -> None:
                             from xdog.coding.core.sessions.store import InputStore
                             await asyncio.wrap_future(discarded)
+                            await self._settle_retired_goals()
                             previous = controller.inbox
                             if previous is not None:
                                 await previous.retire()
@@ -194,6 +196,11 @@ class AgentSession:
     _sdk_closing: Future[None] | None = field(default=None, init=False, repr=False)
     _sdk_retiring_leases: set[SessionLease] = field(default_factory=set, init=False, repr=False)
     _sdk_disposing: bool = field(default=False, init=False, repr=False)
+    _retired_goal_hosts: list[CodingGoalHost] = field(default_factory=list, init=False, repr=False)
+    _goal_start: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
+    _user_prompt_messages: dict[int, UserMessage] = field(default_factory=dict, init=False, repr=False)
+    _authorized_messages: dict[int, UserMessage] = field(default_factory=dict, init=False, repr=False)
+    _user_operation_authorized: bool = field(default=False, init=False, repr=False)
     _sdk_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _lease: SessionLease | None = field(default=None, init=False, repr=False)
     _pending_lease: SessionLease | None = field(default=None, init=False, repr=False)
@@ -259,13 +266,17 @@ class AgentSession:
 
     async def _transform_user_input(self, message: UserMessage, source: str,
                                     cancel: asyncio.Event | None = None) -> UserMessage | HandledInput:
+        authorized = self._user_prompt_messages.get(id(message)) is message
         try:
             if self._base_input_transform is not None:
                 value = await self._base_input_transform(message, source, cancel)
                 if isinstance(value, HandledInput):
                     return value
                 message = value
-            return await self.extensions.input(message, source, channel="coding")
+            value = await self.extensions.input(message, source, channel="coding")
+            if authorized and isinstance(value, UserMessage):
+                self._authorized_messages[id(value)] = value
+            return value
         finally:
             await self._sync_extension_tools()
 
@@ -321,7 +332,8 @@ class AgentSession:
 
     def _load_children(self) -> None:
         self.children = CodingChildren(self)
-        base = tuple(tool for tool in self.agent.state.tools if tool.name not in {"agent_spawn", "agent_control"})
+        base = tuple(tool for tool in self.agent.state.tools if tool.name not in {"agent_spawn", "agent_control"}
+                     and not any(tool is host.tool for host in self._retired_goal_hosts))
         self.agent.set_tools((*base, *self.children.supervisor.tools()))
 
     def _children_idle(self) -> None:
@@ -373,6 +385,42 @@ class AgentSession:
                                                           argument_input=argument_input)
         finally:
             await self._sync_extension_tools()
+
+    async def initialize_goals(self) -> None:
+        """Explicit global opt-in on the existing session execution owner only."""
+        if not self.settings.goals_enabled:
+            return
+        await self._settle_retired_goals()
+        if self.children.goal_host is not None:
+            return
+        if self._goal_start is None:
+            async def start() -> None:
+                from xdog.coding.core.goal_adapter import CodingGoalHost
+                from xdog.goal.host import OperationContext
+                host = await CodingGoalHost.open(
+                    self, context=lambda: OperationContext(self._user_operation_authorized))
+                await host.flush()  # Durable obligations only; no model/Goal-state polling.
+            self._goal_start = asyncio.create_task(start())
+        from xdog.agent.async_work import wait_owned
+        try:
+            await wait_owned(self._goal_start)
+        finally:
+            if self._goal_start.done():
+                self._goal_start = None
+
+    def _retire_goal_host(self, host: CodingGoalHost) -> None:
+        if host not in self._retired_goal_hosts:
+            self._retired_goal_hosts.append(host)
+        # The controller's existing settling/close path joins these exact hosts;
+        # scheduling is not permission to release their callback loop/lease.
+        if not host.loop.is_closed():
+            host.loop.call_soon_threadsafe(lambda: asyncio.create_task(host.aclose()))
+
+    async def _settle_retired_goals(self) -> None:
+        from xdog.agent.supervision import settle_on
+        for host in tuple(self._retired_goal_hosts):
+            await settle_on(host.loop, host.aclose())
+            self._retired_goal_hosts.remove(host)
 
     async def initialize_extensions(self) -> None:
         try:
@@ -639,6 +687,8 @@ class AgentSession:
     async def _close_sdk_owner(self, controller: SessionController) -> None:
         if controller.inbox is not None:
             await controller.inbox.retire()
+        if self._sdk_disposing or self.children.goal_host is not None or self._retired_goal_hosts:
+            await self._aclose_resources()
         self._release_sdk_leases()
 
     async def _acquire_owner(self) -> tuple[SessionController, bool]:
@@ -664,7 +714,10 @@ class AgentSession:
                         from xdog.coding.core.sessions.intake import attach_inbox
                         attach_inbox(controller)
                         controller._close_hook = lambda: self._close_sdk_owner(controller)
-                        controller.start()
+                        # Optional callback capabilities outlive an individual
+                        # SDK await/asyncio.run; retain the one controller's own
+                        # supported loop, never a second controller or daemon.
+                        controller.start(own_thread=self.settings.goals_enabled)
                         self._sdk_controller = controller
                     self._sdk_users += 1
                     return self._sdk_controller, True
@@ -673,7 +726,8 @@ class AgentSession:
     def _release_sdk_owner(self, controller: SessionController) -> Future[None] | None:
         with self._sdk_lock:
             self._sdk_users -= 1
-            if self._sdk_users == 0 and self._sdk_controller is controller:
+            if (self._sdk_users == 0 and self._sdk_controller is controller
+                    and self.children.goal_host is None and not self._retired_goal_hosts):
                 self._sdk_controller = None
                 self._sdk_closing = controller.close()
                 return self._sdk_closing
@@ -759,8 +813,12 @@ class AgentSession:
             raise ValueError('Canonical continuation cannot share a batch')
         images = tuple(image for item in inputs for image in item.images)
         context_snapshot = await self.context_messages.capture() if 'user' in origins else None
+        self._user_operation_authorized = False
+        self._user_prompt_messages.clear()
+        self._authorized_messages.clear()
         try:
             self.handled_feedback = []
+            await self.initialize_goals()
             if images:
                 from xdog.ai.utils.image_files import validate_references
                 await asyncio.to_thread(validate_references, images, self.model_info)
@@ -797,6 +855,9 @@ class AgentSession:
                 event_stream = await self.agent.continue_()
             else:
                 messages = [agent_message(item) for item in inputs]
+                self._user_prompt_messages = {
+                    id(message): message for message, origin in zip(messages, origins, strict=True)
+                    if origin == "user" and isinstance(message, UserMessage)}
                 event_stream = await self.agent.prompt(messages,
                     initial_prompt_context=(lambda: self.context_messages.admit(context_snapshot))
                         if context_snapshot is not None else None)
@@ -820,6 +881,9 @@ class AgentSession:
 
             return last_assistant
         finally:
+            self._user_operation_authorized = False
+            self._user_prompt_messages.clear()
+            self._authorized_messages.clear()
             await self._sync_extension_tools()
             self._expire_turn_scoped_skills()
 
@@ -1522,6 +1586,9 @@ class AgentSession:
         self.agent.set_system_prompt(prompt + self.access.state.prompt())
     def _on_agent_event(self, event: AgentEvent) -> None:
         """Handle agent lifecycle events."""
+        if (isinstance(event, MessageEndEvent) and isinstance(event.message, UserMessage)
+                and self._authorized_messages.get(id(event.message)) is event.message):
+            self._user_operation_authorized = True
         if isinstance(event, AgentEndEvent):
             self._persist()
 
@@ -1610,6 +1677,9 @@ class AgentSession:
 
     async def _aclose_resources(self) -> None:
         await self.children.supervisor.aclose()
+        if self.children.goal_host is not None:
+            await self.children.goal_host.aclose()
+        await self._settle_retired_goals()
         self.extension_dialogs.close()
         await self.extensions.aclose()
         if self.mcp is not None:

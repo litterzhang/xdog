@@ -95,6 +95,13 @@ class SettingsManager:
         return "\n\n".join(parts)
 
     @property
+    def goals_enabled(self) -> bool:
+        # Only trusted global config enables an optional in-process capability;
+        # a project/session snapshot cannot grant it.
+        from xdog.coding.config import validate_goals_enabled
+        return validate_goals_enabled(self._global.goals_enabled)
+
+    @property
     def child_presets(self) -> Any:
         return self._global.child_presets  # Explicit global templates; project/session data cannot replace them.
 

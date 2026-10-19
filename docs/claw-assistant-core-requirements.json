@@ -227,7 +227,9 @@
       "requirement": "独立 xdog-goal，仅依赖 Agent/标准库，不依赖 Claw/Coding/TUI/Eyes/ACP/Flow",
       "status": "pending",
       "evidence": [
-        "docs/goal-storage-verification.md"
+        "docs/goal-storage-verification.md",
+        "docs/goal-kernel-verification.md",
+        "docs/coding-goal-lifecycle-verification.md"
       ]
     },
     {
@@ -236,7 +238,9 @@
       "requirement": "Goal 自行维护全部业务存储/lease/outbox，核心无 Goal 状态表或副本",
       "status": "pending",
       "evidence": [
-        "docs/goal-storage-verification.md"
+        "docs/goal-storage-verification.md",
+        "docs/goal-kernel-verification.md",
+        "docs/coding-goal-lifecycle-verification.md"
       ]
     },
     {
@@ -245,7 +249,9 @@
       "requirement": "没有旧格式迁移/双读兼容；明确拒绝且不删除或改写原数据",
       "status": "pending",
       "evidence": [
-        "docs/goal-storage-verification.md"
+        "docs/goal-storage-verification.md",
+        "docs/goal-kernel-verification.md",
+        "docs/coding-goal-lifecycle-verification.md"
       ]
     },
     {
@@ -253,63 +259,90 @@
       "area": "goal",
       "requirement": "小型异步宿主端口，无整个 Runtime/Session 引用或宿主私有字段访问",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/goal-kernel-verification.md",
+        "docs/coding-goal-lifecycle-verification.md"
+      ]
     },
     {
       "id": "GOAL-05",
       "area": "goal",
       "requirement": "宿主原 supervisor 创建 worker/reviewer，权限/readonly/MCP/extension 边界不放宽",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/goal-kernel-verification.md",
+        "docs/coding-goal-lifecycle-verification.md"
+      ]
     },
     {
       "id": "GOAL-06",
       "area": "goal",
       "requirement": "主 Agent 规划、分配、接受报告；worker submitted 不等于任务接受/Goal 完成",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/goal-kernel-verification.md",
+        "docs/coding-goal-lifecycle-verification.md"
+      ]
     },
     {
       "id": "GOAL-07",
       "area": "goal",
       "requirement": "仅显式 request_complete 启动验收，无普通 turn-end 隐式 reviewer",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/goal-kernel-verification.md",
+        "docs/coding-goal-lifecycle-verification.md"
+      ]
     },
     {
       "id": "GOAL-08",
       "area": "goal",
       "requirement": "逐条件独立验收及 revision/attempt/实际证据指纹通过才可提交完成",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/goal-kernel-verification.md",
+        "docs/coding-goal-lifecycle-verification.md"
+      ]
     },
     {
       "id": "GOAL-09",
       "area": "goal",
       "requirement": "通知由事实/明确委托产生并去重，对账不因 active 状态周期调用模型",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/goal-kernel-verification.md",
+        "docs/coding-goal-lifecycle-verification.md"
+      ]
     },
     {
       "id": "GOAL-10",
       "area": "goal",
       "requirement": "criteria 修改/用户暂停释放依据真实用户授权，不由事件来源或展示扩展赋权",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/goal-kernel-verification.md",
+        "docs/coding-goal-lifecycle-verification.md"
+      ]
     },
     {
       "id": "GOAL-11",
       "area": "goal",
       "requirement": "Claw group 与 Coding 精确 session/branch adapter 各自真实运行同一 Goal 实现",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/goal-kernel-verification.md",
+        "docs/coding-goal-lifecycle-verification.md"
+      ]
     },
     {
       "id": "GOAL-12",
       "area": "goal",
       "requirement": "上下文轮换/分支变化安全，不自动跨宿主接管同一 Goal，无 Goal 专属 Session 状态机",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/goal-kernel-verification.md",
+        "docs/coding-goal-lifecycle-verification.md"
+      ]
     },
     {
       "id": "GOAL-13",
