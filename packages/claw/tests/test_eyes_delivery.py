@@ -25,12 +25,12 @@ async def test_failures_never_mark_success(managed, failure, monkeypatch):
     elif failure == 'no-channel':
         managed.orch._channels.clear()
     elif failure == 'unknown-group':
-        execute = managed.orch._execute_with_queue
+        execute = managed.orch._execute_owned_input
         async def unavailable(message, **kwargs):
             if not isinstance(message, ExternalInput):
                 return await execute(message, **kwargs)
             return None  # Actual application admission boundary refuses execution.
-        monkeypatch.setattr(managed.orch, '_execute_with_queue', unavailable)
+        monkeypatch.setattr(managed.orch, '_execute_owned_input', unavailable)
     elif failure == 'empty':
         managed.model.replies['report'] = AssistantMessage(content=())
     managed.clock.advance(240)

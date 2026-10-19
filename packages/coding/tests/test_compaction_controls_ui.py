@@ -80,8 +80,9 @@ async def test_claw_coalesced_cancel_before_job_start_receipt_reservation_and_no
         receipt = await receive('session_compact_result', 'coalesced')
         assert receipt['canceled'] is True and 'before summary started' in receipt['error']
         await asyncio.sleep(0)
-        assert server._orchestrator.try_reserve_group('main')
-        server._orchestrator.release_group_reservation('main')
+        reservation = server._orchestrator.try_reserve_group('main')
+        assert reservation
+        server._orchestrator.release_group_reservation(reservation)
         writer.write((json.dumps(request) + '\n').encode())
         await writer.drain()
         assert (await receive('session_compact_result', 'coalesced'))['success'] is False

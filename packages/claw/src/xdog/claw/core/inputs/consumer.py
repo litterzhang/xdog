@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -35,9 +36,12 @@ class InputService:
     """
 
     def __init__(self, store: InputStore, execute: Execute, *,
-                 on_settled: Callable[[InputScope], None] | None = None, paused: bool = False) -> None:
+                 on_settled: Callable[[InputScope], None] | None = None, paused: bool = False,
+                 execution_scope: Callable[[InputRecord], AbstractAsyncContextManager[None]] | None = None,
+                 on_admitted: Callable[[InputRecord, str], None] | None = None) -> None:
         self.store, self.execute = store, execute
         self.on_settled = on_settled
+        self.execution_scope, self.on_admitted = execution_scope, on_admitted
         self._paused = paused
         self._signals: dict[InputScope, asyncio.Event] = {}
         self._tasks: dict[InputScope, asyncio.Task[None]] = {}
@@ -154,14 +158,13 @@ class InputService:
                     if not waiter.done():
                         waiter.set_result(None)
 
-    async def _admit(self, record: InputRecord, session_id: str = '') -> bool:
+    async def _admit(self, record: InputRecord, session_id: str = '') -> InputRecord | None:
         try:
-            await self.store.start(record, session_id=session_id)
-            return True
+            return await self.store.start(record, session_id=session_id)
         except ValueError:
             current = await self.store.get(record.envelope.scope, record.envelope.message.id)
             if current is not None and current.status == 'cancelled' and current.attempt_id == record.attempt_id:
-                return False
+                return None
             raise
 
     async def _execute(self, record: InputRecord) -> InputRecord:
@@ -170,7 +173,10 @@ class InputService:
             nonlocal admitted
             if admitted:
                 raise ValueError('Execution attempt already passed admission')
-            admitted = await self._admit(record, session_id)
+            started = await self._admit(record, session_id)
+            admitted = started is not None
+            if started is not None and self.on_admitted is not None:
+                self.on_admitted(started, session_id)
             return admitted
         try:
             outcome = await self.execute(record, admit)
@@ -235,7 +241,16 @@ class InputService:
                     if record is None:
                         break
                     self._active.add(scope)
-                    completed = await self._execute(record)
+                    owner = self.execution_scope(record) if self.execution_scope is not None else nullcontext()
+                    async with owner:
+                        try:
+                            completed = await self._execute(record)
+                        except asyncio.CancelledError:
+                            # The original producer owns its durable interrupt
+                            # commit too, not just the model/tool invocation.
+                            await wait_owned(asyncio.create_task(self._settle(scope, record, claim)))
+                            record, claim = None, None
+                            raise
                     self._pending.discard((scope, record.envelope.message.id))
                     self._active.discard(scope)
                     if self.on_settled is not None:

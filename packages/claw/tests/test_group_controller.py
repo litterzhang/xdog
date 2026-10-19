@@ -5,10 +5,10 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from xdog.claw.core.runtime.group_controller import GroupController
 
 
 async def test_reserved_unstarted_operation_fences_input_until_its_actual_exit():
-    from xdog.claw.core.runtime.group_controller import GroupController
 
     controller = GroupController("main", asyncio.Semaphore(1))
     entered, release = asyncio.Event(), asyncio.Event()
@@ -41,7 +41,6 @@ async def test_reserved_unstarted_operation_fences_input_until_its_actual_exit()
 
 
 async def test_prestart_cancellation_closes_unentered_coroutine_and_releases_its_own_fence():
-    from xdog.claw.core.runtime.group_controller import GroupController
 
     controller = GroupController("main", asyncio.Semaphore(1))
     entered = []
@@ -59,7 +58,6 @@ async def test_prestart_cancellation_closes_unentered_coroutine_and_releases_its
 
 
 async def test_a_stale_or_foreign_release_cannot_release_a_successor():
-    from xdog.claw.core.runtime.group_controller import GroupController
 
     slots = asyncio.Semaphore(1)
     controller, foreign = GroupController("main", slots), GroupController("other", slots)
@@ -72,7 +70,6 @@ async def test_a_stale_or_foreign_release_cannot_release_a_successor():
 
 
 async def test_other_tasks_cannot_release_or_confirm_a_running_owner():
-    from xdog.claw.core.runtime.group_controller import GroupController
 
     controller = GroupController("main", asyncio.Semaphore(1))
     entered, release = asyncio.Event(), asyncio.Event()
@@ -105,7 +102,6 @@ async def test_other_tasks_cannot_release_or_confirm_a_running_owner():
 
 
 async def test_input_cancellation_keeps_the_owner_until_real_cleanup_finishes():
-    from xdog.claw.core.runtime.group_controller import GroupController
 
     controller = GroupController("main", asyncio.Semaphore(1))
     entered, cleanup, release, successor = (asyncio.Event() for _ in range(4))
@@ -143,7 +139,6 @@ async def test_input_cancellation_keeps_the_owner_until_real_cleanup_finishes():
 
 
 async def test_unconfirmed_or_mismatched_input_cannot_borrow_live_controls():
-    from xdog.claw.core.runtime.group_controller import GroupController
 
     controller = GroupController("main", asyncio.Semaphore(1))
     async with controller.acquire(is_user=True, input_key=("one", "attempt-one")):
@@ -159,7 +154,6 @@ async def test_unconfirmed_or_mismatched_input_cannot_borrow_live_controls():
 
 
 async def test_waiting_for_background_capacity_does_not_block_an_independent_human_group():
-    from xdog.claw.core.runtime.group_controller import GroupController
 
     slots = asyncio.Semaphore(1)
     first, second, human = (GroupController(name, slots) for name in ("first", "second", "human"))
@@ -182,7 +176,6 @@ async def test_waiting_for_background_capacity_does_not_block_an_independent_hum
 
 
 async def test_a_foreign_or_already_used_reservation_cannot_start_an_operation():
-    from xdog.claw.core.runtime.group_controller import GroupController
 
     slots = asyncio.Semaphore(1)
     first, second = GroupController("first", slots), GroupController("second", slots)
@@ -194,3 +187,57 @@ async def test_a_foreign_or_already_used_reservation_cannot_start_an_operation()
     with pytest.raises(ValueError):
         async with first.acquire(is_user=True, reservation=lease):
             pytest.fail("Released lease entered")
+
+
+@pytest.mark.asyncio
+async def test_acquire_cleans_up_on_exception():
+    """acquire() clears running even when the body raises."""
+    q = GroupController('main', asyncio.Semaphore(2))
+    with pytest.raises(ValueError):
+        async with q.acquire():
+            assert q.busy
+            raise ValueError("boom")
+    assert not q.busy
+
+@pytest.mark.asyncio
+async def test_acquire_user_bypasses_global_semaphore():
+    """User messages should not be blocked by the global semaphore."""
+    slots = asyncio.Semaphore(1)
+    q = GroupController('busy', slots)
+    acquired = []
+
+    async def hold_background():
+        async with q.acquire(is_user=False):
+            acquired.append("bg")
+            await asyncio.sleep(0.1)
+
+    # Start a background task that holds the global semaphore
+    bg_task = asyncio.create_task(hold_background())
+    await asyncio.sleep(0.01)  # let it acquire
+
+    # User message on a different group should NOT be blocked
+    async with GroupController('human', slots).acquire(is_user=True):
+        acquired.append("user")
+
+    await bg_task
+    # User acquired while background was still holding global sem
+    assert acquired == ["bg", "user"]
+
+async def test_busy_group_waiter_does_not_hold_global_capacity():
+    slots = asyncio.Semaphore(1)
+    q = GroupController('busy', slots)
+    waiting = asyncio.Event()
+
+    async def background():
+        waiting.set()
+        async with q.acquire():
+            pass
+
+    async with q.acquire(is_user=True):
+        waiter = asyncio.create_task(background())
+        await waiting.wait()
+        # The only global slot is still available while the waiter waits for busy.
+        async with asyncio.timeout(1):
+            async with GroupController('other', slots).acquire():
+                assert q.busy
+    await waiter

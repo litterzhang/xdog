@@ -16,7 +16,7 @@ import stat
 import threading
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -30,6 +30,7 @@ from xdog.ai.types import ImageContent, StreamOptions, ThinkingLevel
 from xdog.claw.channels.tui.image_upload import ImageUploads
 from xdog.claw.config import ClawConfig
 from xdog.claw.core.inputs.models import InputScope, ReplyTarget
+from xdog.claw.core.runtime.group_controller import GroupReservation
 from xdog.claw.core.runtime.input_queries import NativeInputReceipts
 from xdog.claw.core.runtime.mcp_protocol import McpSender
 from xdog.claw.core.runtime.orchestrator import Orchestrator
@@ -158,8 +159,6 @@ class GatewayServer:
         self._observers: ManagedObservers | None = None
         self._client_tasks: set[asyncio.Task[Any]] = set()
         self._client_counter = 0
-        self._group_runs: dict[str, str] = {}
-        self._group_runs_lock = asyncio.Lock()
         self._shutdown_event = asyncio.Event()
         self._stop_task: asyncio.Task[None] | None = None
 
@@ -311,6 +310,7 @@ class GatewayServer:
 
         write_lock = asyncio.Lock()
         runs: dict[str, _ClientRun] = {}
+        reserved: GroupReservation | None = None
         receipts: dict[str, tuple[str, dict[str, Any]]] = {}
         native_reads: set[asyncio.Task[None]] = set()
         extension_jobs: set[asyncio.Task[None]] = set()
@@ -480,6 +480,11 @@ class GatewayServer:
 
 
         assert self._orchestrator is not None
+
+        def start_operation(lease: GroupReservation | None, coroutine: Coroutine[Any, Any, None]
+                            ) -> asyncio.Task[None]:
+            assert self._orchestrator is not None
+            return self._orchestrator.start_group_operation(lease, coroutine)
 
         def child_ui_done(task: asyncio.Task[None]) -> None:
             child_ui_writes.discard(task)
@@ -675,7 +680,8 @@ class GatewayServer:
                         focus = summary_instructions(focus)
                         if 'extension_compaction_generation' in request:
                             raise ValueError('Extension compaction control has been removed; no replay')
-                        if not self._orchestrator.try_reserve_group(group):
+                        reserved = self._orchestrator.try_reserve_group(group)
+                        if reserved is None:
                             raise ValueError('Compaction requires an idle group')
                     except (ValueError, RuntimeError) as exc:
                         await write({'type': 'session_compact_result', 'request_id': rid, 'group_id': group,
@@ -704,7 +710,7 @@ class GatewayServer:
                             # Provider errors may contain credentials or submitted content.
                             result['error'] = 'Compaction failed; original history retained unless commit was admitted'
                         await write(result)
-                    job = asyncio.create_task(compact_job(rid, group, sid, focus))
+                    job = start_operation(reserved, compact_job(rid, group, sid, focus))
                     extension_jobs.add(job)
                     compact_jobs[rid] = job, group, sid
                     def compact_done(completed: asyncio.Task[None], identifier: str = str(rid),
@@ -713,8 +719,6 @@ class GatewayServer:
                         compact_jobs.pop(identifier, None)
                         compact_started.discard(identifier)
                         compact_canceled.discard(identifier)
-                        if self._orchestrator is not None:
-                            self._orchestrator.release_group_reservation(gid)
                         if not completed.cancelled():
                             completed.exception()
                     job.add_done_callback(compact_done)
@@ -724,7 +728,7 @@ class GatewayServer:
                 if msg_type == 'skills_control':
                     rid, group, sid = (request.get(key) for key in ('request_id', 'group_id', 'session_id'))
                     action, slug = request.get('action', 'list'), request.get('slug', '')
-                    reserved = False
+                    reserved = None
                     try:
                         if (not skills_supported or not isinstance(rid, str) or not 0 < len(rid) <= 128
                                 or not isinstance(group, str) or not isinstance(sid, str)
@@ -741,7 +745,7 @@ class GatewayServer:
                                      'success': False, 'error': str(exc)})
                         continue
                     async def skills_job(identifier: str, gid: str, expected: str, operation: str,
-                                         name: str, owns: bool) -> None:
+                                         name: str) -> None:
                         result: dict[str, Any] = {'type': 'skills_result', 'request_id': identifier,
                                                   'group_id': gid, 'success': False}
                         try:
@@ -753,13 +757,10 @@ class GatewayServer:
                         except (ValueError, RuntimeError, OSError) as exc:
                             result['error'] = str(exc)
                         await write(result)
-                    job = asyncio.create_task(skills_job(rid, group, sid, action, slug, reserved))
+                    job = start_operation(reserved, skills_job(rid, group, sid, action, slug))
                     extension_jobs.add(job)
-                    def skills_done(completed: asyncio.Task[None], gid: str = str(group),
-                                    owns: bool = reserved) -> None:
+                    def skills_done(completed: asyncio.Task[None]) -> None:
                         extension_jobs.discard(completed)
-                        if owns and self._orchestrator is not None:
-                            self._orchestrator.release_group_reservation(gid)
                         if not completed.cancelled():
                             completed.exception()
                     job.add_done_callback(skills_done)
@@ -964,7 +965,7 @@ class GatewayServer:
                     level = request.get("thinking")
                     reasoning_response = {"type": "reasoning_result", "request_id": rid, "group_id": group,
                                           "success": False}
-                    reserved = False
+                    reserved = None
                     try:
                         if (not reasoning_supported or not isinstance(rid, str) or not 0 < len(rid) <= 128
                                 or not isinstance(group, str) or not isinstance(session, str)
@@ -976,7 +977,7 @@ class GatewayServer:
                             raise ValueError("Reasoning controls require an idle owner")
                     except (ValueError, RuntimeError):
                         if reserved and self._orchestrator is not None:
-                            self._orchestrator.release_group_reservation(group)
+                            self._orchestrator.release_group_reservation(reserved)
                         reasoning_response["error"] = ("Reasoning controls require an updated gateway "
                                                        "and idle session owner")
                         await write(reasoning_response)
@@ -987,11 +988,8 @@ class GatewayServer:
                             result.update(success=True, **await self._orchestrator.reasoning(gid, sid, target))
                         except (ValueError, RuntimeError, OSError) as exc:
                             result["error"] = str(exc) or "Reasoning owner changed; no fallback/retry"
-                        finally:
-                            if self._orchestrator is not None:
-                                self._orchestrator.release_group_reservation(gid)
                         await write(result)
-                    job = asyncio.create_task(reasoning_job(group, session, level, reasoning_response))
+                    job = start_operation(reserved, reasoning_job(group, session, level, reasoning_response))
                     extension_jobs.add(job)
                     job.add_done_callback(extension_jobs.discard)
                     continue
@@ -1000,7 +998,7 @@ class GatewayServer:
                                                       ("request_id", "group_id", "session_id", "model"))
                     result = {"type": "extension_model_result", "request_id": rid, "group_id": group,
                               "success": False}
-                    reserved = False
+                    reserved = None
                     try:
                         if (not isinstance(rid, str) or not 0 < len(rid) <= 128
                                 or not isinstance(group, str) or not isinstance(session, str)
@@ -1020,11 +1018,8 @@ class GatewayServer:
                             response.update(success=True, **await self._orchestrator.extension_models(gid, sid, target))
                         except (ValueError, RuntimeError, OSError):
                             response['error'] = 'Model owner/catalog changed; no fallback'
-                        finally:
-                            if self._orchestrator is not None:
-                                self._orchestrator.release_group_reservation(gid)
                         await write(response)
-                    job = asyncio.create_task(model_job(group, session, selected, result))
+                    job = start_operation(reserved, model_job(group, session, selected, result))
                     extension_jobs.add(job)
                     job.add_done_callback(extension_jobs.discard)
                     continue
@@ -1049,7 +1044,7 @@ class GatewayServer:
                     continue
                 if msg_type == 'argument_completion':
                     rid, gid, sid = request.get('request_id'), request.get('group_id'), request.get('session_id')
-                    reserved = False
+                    reserved = None
                     argument_reply: dict[str, Any] = {'type': 'argument_completion_result', 'request_id': rid,
                                              'group_id': gid, 'session_id': sid, 'status': 'unavailable', 'items': []}
                     try:
@@ -1065,8 +1060,7 @@ class GatewayServer:
                         if request.get('argument_context') is not None and not argument_context_supported:
                             raise ValueError('Argument context requires independently negotiated support')
                         metadata = argument_context(request.get('argument_context'), prefix)
-                        async with self._group_runs_lock:
-                            reserved = gid not in self._group_runs and self._orchestrator.try_reserve_group(gid)
+                        reserved = self._orchestrator.try_reserve_group(gid)
                         if not reserved:
                             raise ValueError('Argument completion requires idle group')
                         async def argument_job(key: str, group: str, session: str, name: str,
@@ -1089,17 +1083,14 @@ class GatewayServer:
                                     failed = self._orchestrator.extension_failure_snapshot(group, session)
                                     if failed is not None:
                                         response['snapshot'] = failed['snapshot']
-                                    self._orchestrator.release_group_reservation(group)
                             await write(response)
-                        argument_task = asyncio.create_task(argument_job(rid, gid, sid, command,
+                        argument_task = start_operation(reserved, argument_job(rid, gid, sid, command,
                                                                         prefix, identity, argument_reply, metadata))
                         argument_jobs[rid] = argument_task, gid, sid
                         if metadata is not None:
                             argument_context_jobs.add(rid)
                         def argument_done(done: asyncio.Task[None], key: str = str(rid), group: str = str(gid)) -> None:
                             argument_jobs.pop(key, None)
-                            if key not in argument_started and self._orchestrator is not None:
-                                self._orchestrator.release_group_reservation(group)
                             argument_started.discard(key)
                             argument_canceling.discard(key)
                             argument_context_jobs.discard(key)
@@ -1108,7 +1099,7 @@ class GatewayServer:
                         argument_task.add_done_callback(argument_done)
                     except (ValueError, RuntimeError, OSError):
                         if reserved and self._orchestrator is not None:
-                            self._orchestrator.release_group_reservation(str(gid))
+                            self._orchestrator.release_group_reservation(reserved)
                         await write(argument_reply)
                     continue
                 if msg_type == "extension_control":
@@ -1125,8 +1116,7 @@ class GatewayServer:
                                 or len(args.encode("utf-8")) > 64 * 1024 or self._orchestrator is None
                                 or len(extension_jobs) >= 8 or identifier in extension_controls):
                             raise ValueError("Invalid/busy extension control")
-                        async with self._group_runs_lock:
-                            reserved = group not in self._group_runs and self._orchestrator.try_reserve_group(group)
+                        reserved = self._orchestrator.try_reserve_group(group)
                         if not reserved:
                             raise ValueError("Extension controls require idle group ownership")
                     except (ValueError, RuntimeError, OSError) as exc:
@@ -1175,14 +1165,13 @@ class GatewayServer:
                                     snapshot = self._orchestrator.extension_failure_snapshot(gid, sid)
                                     if snapshot is not None:
                                         reply['failure_snapshot'] = snapshot
-                                self._orchestrator.release_group_reservation(gid)
                         if writes:
                             try:
                                 await asyncio.gather(*writes)
                             except (ConnectionError, OSError, ValueError, RuntimeError):
                                 reply.update(success=False, error='Extension UI delivery failed; no replay')
                         await write(reply)
-                    task = asyncio.create_task(extension_job(identifier, group, action, session, name, args))
+                    task = start_operation(reserved, extension_job(identifier, group, action, session, name, args))
                     extension_jobs.add(task)
                     extension_controls[identifier] = task, group, session
                     if action == "auth":
@@ -1192,8 +1181,6 @@ class GatewayServer:
                         extension_jobs.discard(done)
                         extension_controls.pop(rid, None)
                         provider_auth_ids.discard(rid)
-                        if rid not in extension_started and self._orchestrator is not None:
-                            self._orchestrator.release_group_reservation(gid)
                         extension_started.discard(rid)
                         if not done.cancelled():
                             done.exception()
@@ -1205,7 +1192,7 @@ class GatewayServer:
                     child, text = request.get("child_id", ""), request.get("text", "")
                     access = request.get("access", "read-only")
                     selected_config = request.get("config", {})
-                    reserved = False
+                    reserved = None
                     try:
                         if (not isinstance(identifier, str) or not 0 < len(identifier) <= 128
                                 or not isinstance(group, str) or not isinstance(session, str)
@@ -1247,8 +1234,7 @@ class GatewayServer:
                             # Never refuse deallocation/inspection just because
                             # start replay receipts filled the connection budget.
                         if action == "start":
-                            async with self._group_runs_lock:
-                                reserved = group not in self._group_runs and self._orchestrator.try_reserve_group(group)
+                            reserved = self._orchestrator.try_reserve_group(group)
                             if not reserved:
                                 raise ValueError("User child start requires idle group ownership")
                         child_receipts[identifier] = signature, None
@@ -1289,16 +1275,13 @@ class GatewayServer:
                             uploads.discard_refs(refs)
                         except (ValueError, RuntimeError, OSError) as exc:
                             reply["error"] = str(exc)
-                        finally:
-                            if owns_group and self._orchestrator is not None:
-                                self._orchestrator.release_group_reservation(gid)
                         if op in {"list", "presets", "inspect", "wait"} or len(child_receipts) > 128:
                             child_receipts.pop(rid, None)  # Reads are safe to repeat; avoid caching large transcripts.
                         else:
                             child_receipts[rid] = fingerprint, reply
                         await write(reply)
-                    task = asyncio.create_task(child_job(identifier, group, action, session, child, text, access,
-                                                         reserved, signature, selected_config, images,
+                    task = start_operation(reserved, child_job(identifier, group, action, session, child, text, access,
+                                                         bool(reserved), signature, selected_config, images,
                                                          request.get('image_refs')))
                     child_jobs.add(task)
                     task.add_done_callback(child_jobs.discard)
@@ -1308,7 +1291,7 @@ class GatewayServer:
                     action, session = request.get("action"), request.get("session_id")
                     access_reply = {"type": "access_control_result", "request_id": identifier,
                              "group_id": group, "success": False}
-                    reserved = False
+                    reserved = None
                     try:
                         if (set(request) != {"type", "request_id", "group_id", "action", "session_id"}
                                 or not isinstance(identifier, str) or not 0 < len(identifier) <= 128
@@ -1317,25 +1300,25 @@ class GatewayServer:
                                 or self._orchestrator is None):
                             raise ValueError("Invalid access control")
                         if action != "status":
-                            async with self._group_runs_lock:
-                                reserved = group not in self._group_runs and self._orchestrator.try_reserve_group(group)
+                            reserved = self._orchestrator.try_reserve_group(group)
                             if not reserved:
                                 raise ValueError("Access changes require an idle group")
-                        result = await self._orchestrator.manage_access(group, action, session)
+                        async with self._orchestrator.operation_scope(reserved):
+                            result = await self._orchestrator.manage_access(group, action, session)
                         access_reply.update(success=True, **result)
                     except (ValueError, RuntimeError, OSError) as exc:
                         access_reply["error"] = str(exc)
                     finally:
                         if reserved and self._orchestrator is not None:
                             assert isinstance(group, str)
-                            self._orchestrator.release_group_reservation(group)
+                            self._orchestrator.release_group_reservation(reserved)
                     await write(access_reply)
                     continue
                 if msg_type == "mcp_auth_control":
                     rid, group, view = request.get("request_id"), request.get("group_id"), request.get("lease_id")
                     action, server = request.get("action"), request.get("server", "")
                     session, receipt = request.get("session_id"), request.get("review_id", "")
-                    reserved = False
+                    reserved = None
                     try:
                         if (not isinstance(rid, str) or not 0 < len(rid) <= 128 or not isinstance(group, str)
                                 or not isinstance(view, str) or not re.fullmatch(r"[a-f0-9]{32}", view)
@@ -1385,8 +1368,7 @@ class GatewayServer:
                             auth_closing.add(view)  # At most one deallocation job per bounded view.
                         if action.startswith("credentials_") or action in {"prepare", "start", "refresh_prepare",
                                                                           "refresh", "forget"}:
-                            async with self._group_runs_lock:
-                                reserved = group not in self._group_runs and self._orchestrator.try_reserve_group(group)
+                            reserved = self._orchestrator.try_reserve_group(group)
                             if not reserved:
                                 raise ValueError("Authorization changes require an idle group")
                     except (ValueError, RuntimeError, OSError) as exc:
@@ -1398,7 +1380,7 @@ class GatewayServer:
                         auth_owned.set()
                     async def auth_job(identifier: str, gid: str, key: str, op: str, srv: str, sid: str, proof: str,
                                        binding: tuple[str, tuple[str, int], str, threading.Event],
-                                       owns: bool, own_event: threading.Event) -> None:
+                                       own_event: threading.Event) -> None:
                         reply = {"type": "mcp_auth_result", "request_id": identifier, "group_id": gid,
                                  "lease_id": key, "session_id": sid, "success": False}
                         runtime = self._orchestrator._runtimes[gid] if self._orchestrator is not None else None
@@ -1427,11 +1409,9 @@ class GatewayServer:
                             if op in {"detach", "cancel"}:
                                 auth_closing.discard(key)
                             own_event.clear()
-                            if owns and self._orchestrator is not None:
-                                self._orchestrator.release_group_reservation(gid)
                         await write(reply)
-                    task = asyncio.create_task(auth_job(rid, group, view, action, server, session, receipt,
-                                                         existing, reserved, auth_owned))
+                    task = start_operation(reserved, auth_job(rid, group, view, action, server, session, receipt,
+                                                         existing, auth_owned))
                     auth_jobs.add(task)
                     task.add_done_callback(auth_jobs.discard)
                     continue
@@ -1439,7 +1419,7 @@ class GatewayServer:
                     identifier, group = request.get("request_id"), request.get("group_id")
                     action, server = request.get("action"), request.get("server", "")
                     mcp_reply = {"type": "mcp_result", "request_id": identifier, "group_id": group, "success": False}
-                    reserved = False
+                    reserved = None
                     if action == 'owner':
                         mcp_reply.update({key: request[key] for key in ('view', 'expected_session')
                                           if isinstance(request.get(key), str) and len(request[key]) <= 128})
@@ -1452,8 +1432,7 @@ class GatewayServer:
                         if self._orchestrator is None or group not in self._orchestrator.get_group_ids():
                             raise ValueError("Unknown group")
                         if action not in {"list", "status"}:
-                            async with self._group_runs_lock:
-                                reserved = group not in self._group_runs and self._orchestrator.try_reserve_group(group)
+                            reserved = self._orchestrator.try_reserve_group(group)
                             if not reserved:
                                 raise ValueError("MCP changes require an idle group")
                         if action == 'owner':
@@ -1468,15 +1447,16 @@ class GatewayServer:
                             runtime = self._orchestrator._runtimes[group]
                             selected = runtime.get_or_create_session(allow_reset=False)
                             mcp_reply['session_id'] = selected.meta.session_id
-                        statuses = await self._orchestrator.manage_mcp(
-                            group, 'list' if action == 'owner' else action, server)
+                        async with self._orchestrator.operation_scope(reserved):
+                            statuses = await self._orchestrator.manage_mcp(
+                                group, 'list' if action == 'owner' else action, server)
                         mcp_reply.update(success=True, servers=statuses)
                     except (ValueError, RuntimeError, OSError, TimeoutError) as exc:
                         mcp_reply["error"] = str(exc)
                     finally:
                         if reserved and self._orchestrator is not None:
                             assert isinstance(group, str)
-                            self._orchestrator.release_group_reservation(group)
+                            self._orchestrator.release_group_reservation(reserved)
                     await write(mcp_reply)
                     continue
                 if msg_type in {"child_source_read", "child_source_cancel"}:
@@ -1619,16 +1599,13 @@ class GatewayServer:
                                     or request.get('session_id') or request.get('branch_id')
                                     or request.get('index', -1) != -1):
                                 raise ValueError('Session naming requires an explicit current owner only')
-                        async with self._group_runs_lock:
-                            reserved = (
-                                group_id not in self._group_runs and self._orchestrator.try_reserve_group(group_id)
-                            )
+                        reserved = self._orchestrator.try_reserve_group(group_id)
                         if not reserved:
                             raise ValueError("Session changes require an idle group")
                         index = request.get("index", -1)
                         if (type(index) is not int or len(session_jobs) >= 8
                                 or session_request_id in session_jobs | name_read_jobs):
-                            self._orchestrator.release_group_reservation(group_id)
+                            self._orchestrator.release_group_reservation(reserved)
                             raise ValueError("Invalid/busy navigation owner")
                         async def session_job(gid: str, rid: str, action: str, sid: str, bid: str, point: int,
                                               expected: str, response: dict[str, Any], new_name: str = '',
@@ -1669,7 +1646,7 @@ class GatewayServer:
                                     await write({'type': 'history_chunk', 'entries': rows})
                                 if history:
                                     await write({'type': 'history_end'})
-                        task = asyncio.create_task(session_job(group_id, session_request_id, session_action,
+                        task = start_operation(reserved, session_job(group_id, session_request_id, session_action,
                             str(request.get('session_id', '')), str(request.get('branch_id', '')), index,
                             str(request.get('expected_session', '')), reply, name, expected_name))
                         session_jobs[session_request_id] = task, group_id, str(request.get('expected_session', ''))
@@ -1677,8 +1654,6 @@ class GatewayServer:
                                          gid: str = group_id) -> None:
                             session_jobs.pop(rid, None)
                             session_started.discard(rid)
-                            if self._orchestrator is not None:
-                                self._orchestrator.release_group_reservation(gid)
                             if not completed.cancelled():
                                 completed.exception()
                         task.add_done_callback(session_done)
@@ -1813,23 +1788,16 @@ class GatewayServer:
                             "run_id": run_id,
                         })
                         continue
-                    async with self._group_runs_lock:
-                        busy = (
-                            group_id in self._group_runs
-                            or not bool(
-                                self._orchestrator
-                                and self._orchestrator.try_reserve_group(group_id)
-                            )
-                        )
-                        stale_session = False
-                        if not busy:
-                            assert self._orchestrator is not None
-                            current_session = self._orchestrator.get_new_session_id(group_id) or ""
-                            stale_session = ("session_id" in request and request["session_id"] != current_session)
-                            if stale_session:
-                                self._orchestrator.release_group_reservation(group_id)
-                            else:
-                                self._group_runs[group_id] = run_id
+                    assert self._orchestrator is not None
+                    native_lease = self._orchestrator.try_reserve_group(group_id)
+                    busy = native_lease is None
+                    stale_session = False
+                    if native_lease is not None:
+                        current_session = self._orchestrator.get_new_session_id(group_id) or ""
+                        stale_session = "session_id" in request and request["session_id"] != current_session
+                        if stale_session:
+                            self._orchestrator.release_group_reservation(native_lease)
+                    request['_accepted_lease'] = native_lease
                     if stale_session:
                         await write({"type": "error", "run_id": run_id,
                                      "message": "Active session changed; refresh and resume before sending"})
@@ -1860,25 +1828,19 @@ class GatewayServer:
                     # The handler publishes run_ack only after durable intake.
                     # Do not block the socket reader on a filesystem commit.
 
-                    def _remove_run(_task: asyncio.Task[None], rid: str = run_id, gid: str = group_id) -> None:
+                    def _remove_run(done: asyncio.Task[None], rid: str = run_id,
+                                    lease: GroupReservation | None = native_lease) -> None:
                         runs.pop(rid, None)
-
-                        async def _release() -> None:
-                            if self._orchestrator:
-                                self._orchestrator.release_group_reservation(gid)
-                            async with self._group_runs_lock:
-                                if self._group_runs.get(gid) == rid:
-                                    self._group_runs.pop(gid, None)
-
-                        asyncio.create_task(_release())
+                        if self._orchestrator is not None:
+                            self._orchestrator.release_group_reservation(lease)
+                        if not done.cancelled():
+                            done.exception()
 
                     task.add_done_callback(_remove_run)
                     continue
                 if msg_type == "reset":
                     reset_group = str(request.get("group_id", "main"))
-                    async with self._group_runs_lock:
-                        reset_busy = reset_group in self._group_runs
-                    if reset_busy or bool(
+                    if bool(
                         self._orchestrator
                         and self._orchestrator.is_group_running(reset_group)
                     ):
@@ -2185,6 +2147,7 @@ class GatewayServer:
                 'session_id': orchestrator.get_new_session_id(group_id) or ''})
 
         def accepted() -> None:
+            orchestrator.release_group_reservation(request.get('_accepted_lease'))
             if started is not None:
                 started.set()
                 pending_writes.append(asyncio.create_task(publish_accepted()))

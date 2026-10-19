@@ -41,7 +41,7 @@ async def test_unstarted_cancel_receipt_precedes_successor_without_borrowed_rese
         original = getattr(orchestrator, name)
         def wrap(*args, _name=name, _original=original, **kwargs):
             result = _original(*args, **kwargs)
-            record(_name, result=result)
+            record(_name, result=bool(result) if _name == 'try_reserve_group' else result)
             return result
         monkeypatch.setattr(orchestrator, name, wrap)
     write = asyncio.StreamWriter.write
@@ -85,10 +85,9 @@ async def test_unstarted_cancel_receipt_precedes_successor_without_borrowed_rese
         assert result['success'], result
         assert json.loads(result['output']) == {'executed': 0, 'completed': 0}
         # No early release plus later done-callback release may steal the successor.
-        reservations = [(event['event'], event['result']) for event in trace
-                        if event['event'] in {'try_reserve_group', 'release_group_reservation'}]
-        assert reservations == [('try_reserve_group', True), ('release_group_reservation', None),
-                                ('try_reserve_group', True), ('release_group_reservation', None)]
+        reservations = [event['result'] for event in trace if event['event'] == 'try_reserve_group']
+        assert reservations == [True, True]
+        assert not orchestrator.is_group_running('main')
     finally:
         (tmp_path / ('batch-' + ending + '.json')).write_text(json.dumps(trace, indent=2))
         writer.close()
@@ -106,7 +105,7 @@ async def test_started_cancel_reader_stays_responsive_until_original_cleanup(tmp
     owner = server._orchestrator._runtimes['main'].get_or_create_session(allow_reset=False)
     entered, canceling, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
     async def slow_cleanup(group, *args, **kwargs):
-        async with server._orchestrator._queue.acquire(group, is_user=True):
+        async with server._orchestrator.group_controller(group).acquire(is_user=True):
             entered.set()
             try:
                 await asyncio.Event().wait()

@@ -61,7 +61,8 @@ async def test_explicit_browser_owner_requires_idle_exact_cold_source_and_never_
         runtime = orchestrator._runtimes['main']
         original = None
         if condition == 'busy':
-            assert orchestrator.try_reserve_group('main')
+            reservation = orchestrator.try_reserve_group('main')
+            assert reservation
         elif condition == 'existing':
             original = runtime.get_or_create_session(allow_reset=False)
         try:
@@ -86,7 +87,7 @@ async def test_explicit_browser_owner_requires_idle_exact_cold_source_and_never_
             assert not hasattr(runtime.mcp, '_sampling') and not hasattr(runtime.mcp, '_elicitation')
         finally:
             if condition == 'busy':
-                orchestrator.release_group_reservation('main')
+                orchestrator.release_group_reservation(reservation)
 
 
 def native_browser(monkeypatch, *, supported=True):

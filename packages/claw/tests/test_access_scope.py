@@ -139,17 +139,17 @@ async def test_manage_access_status_is_cold_read_only_then_restrict_release_pers
 
 async def test_access_control_rechecks_session_after_waiting_on_group_owner_queue(host, monkeypatch):
     session = host.activate()
-    original_acquire = host.orchestrator._queue.acquire
+    original_acquire = host.orchestrator.group_controller('main').acquire
     entered = asyncio.Event()
     @asynccontextmanager
     async def observed(*args, **kwargs):
         entered.set()
         async with original_acquire(*args, **kwargs):
             yield
-    monkeypatch.setattr(host.orchestrator._queue, 'acquire', observed)
+    monkeypatch.setattr(host.orchestrator.group_controller('main'), 'acquire', observed)
     pending = None
     try:
-        async with original_acquire('main', is_user=True):
+        async with original_acquire(is_user=True):
             pending = asyncio.create_task(host.orchestrator.manage_access('main', 'restrict', session.meta.session_id))
             await entered.wait()
             assert not pending.done()

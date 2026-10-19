@@ -5,11 +5,12 @@ import asyncio
 import logging
 import threading
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
+from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from xdog.agent.async_work import wait_owned
 from xdog.agent.core import CatalogStreamFn, ModelStreamFn
@@ -26,9 +27,9 @@ from xdog.claw.core.inputs.models import InputEnvelope, InputScope, ReplyTarget
 from xdog.claw.core.inputs.store import InputRecord, InputStore
 from xdog.claw.core.outputs.delivery import OutputDelivery
 from xdog.claw.core.outputs.store import OutputStore
-from xdog.claw.core.queue import MessageQueue
 from xdog.claw.core.runtime.channel_adapter import ChannelReplies, ChannelReply, durable_reply
 from xdog.claw.core.runtime.group import GroupRuntime
+from xdog.claw.core.runtime.group_controller import GroupController, GroupReservation
 from xdog.claw.core.runtime.input_adapter import freeze_input, restore_input
 from xdog.claw.core.runtime.session import AgentSession, TurnResult
 from xdog.claw.core.runtime.transcript_source import SourceCapture
@@ -45,6 +46,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+T = TypeVar('T')
 CommandMenuHost = tuple[Callable[[], bool], int]
 
 
@@ -88,7 +90,8 @@ class Orchestrator:
         self._goal_signatures: dict[str, tuple[Any, ...]] = {}
         self._goal_closing = False
         self._navigation_groups: set[str] = set()
-        self._queue = MessageQueue(max_concurrent=config.max_concurrent_agents)
+        self._background_slots = asyncio.Semaphore(config.max_concurrent_agents)
+        self._controllers: dict[str, GroupController] = {}
         self._observers: ManagedObservers | None = None
         self._chunker = BlockChunker()
         self._inputs: InputService | None = None
@@ -181,7 +184,8 @@ class Orchestrator:
     async def _initialize_inputs(self) -> InputService:
         store = await InputStore.open(self._data_dir / 'inputs' / 'inbox.sqlite3')
         service = InputService(store, self._execute_input, on_settled=self._input_settled,
-                               paused=self._config.eyes_enabled)
+                               paused=self._config.eyes_enabled, execution_scope=self._input_execution_scope,
+                               on_admitted=self._input_admitted)
         outputs: OutputDelivery | None = None
         try:
             output_store = await OutputStore.open(self._data_dir / 'outputs' / 'journal.sqlite3')
@@ -287,7 +291,7 @@ class Orchestrator:
                 async def send_error(error: str) -> None:
                     await send(f'Error: {error}')
                 on_error = send_error
-            result = await self._execute_with_queue(value, admit=admit, **options)
+            result = await self._execute_owned_input(value, admit=admit, **options)
             if result is None:
                 # A host fence explicitly refused this unstarted submission.
                 result = TurnResult(error='Host input admission was withdrawn')
@@ -367,7 +371,7 @@ class Orchestrator:
                 self._input_calls.pop(key, None)
             raise
 
-    async def _execute_with_queue(
+    async def _execute_owned_input(
         self,
         message: GroupInput,
         *,
@@ -387,7 +391,7 @@ class Orchestrator:
             return None
 
         is_user = isinstance(message, UserInput) and not isinstance(message, ExternalInput)
-        async with self._queue.acquire(group_id, is_user=is_user):
+        async with self.group_controller(group_id).acquire(is_user=is_user):
             if input_alive is not None and not input_alive():
                 raise ValueError("Reviewed message owner changed before turn admission; no replay")
             if before_admission is not None and not await before_admission():
@@ -507,19 +511,50 @@ class Orchestrator:
         if runtime:
             await runtime.wait_for_idle()
 
+    def group_controller(self, group_id: str) -> GroupController:
+        if group_id not in self._runtimes:
+            raise ValueError('Unknown execution group')
+        if group_id not in self._controllers:
+            self._controllers[group_id] = GroupController(group_id, self._background_slots)
+        return self._controllers[group_id]
+
+    def _input_execution_scope(self, record: InputRecord) -> AbstractAsyncContextManager[None]:
+        return self.group_controller(record.envelope.scope.group_id).acquire(
+            is_user=record.envelope.context.get('kind') == 'user',
+            input_key=(record.envelope.message.id, record.attempt_id))
+
+    def _input_admitted(self, record: InputRecord, session_id: str) -> None:
+        self.group_controller(record.envelope.scope.group_id).confirm_input(
+            record.envelope.message.id, record.attempt_id, session_id)
+
     def is_group_running(self, group_id: str) -> bool:
+        controller = self._controllers.get(group_id)
         workspace = self.get_group_workspace(group_id)
-        return self._queue.is_running(group_id) or bool(self._inputs is not None and workspace is not None
-            and self._inputs.has_work(InputScope(group_id, workspace)))
+        return bool(controller is not None and controller.busy or self._inputs is not None and workspace is not None
+                    and self._inputs.has_work(InputScope(group_id, workspace)))
 
-    def try_reserve_group(self, group_id: str) -> bool:
-        return not self.is_group_running(group_id) and self._queue.try_reserve(group_id)
+    def try_reserve_group(self, group_id: str) -> GroupReservation | None:
+        if group_id not in self._runtimes or self.is_group_running(group_id):
+            return None
+        return self.group_controller(group_id).reserve()
 
-    def claim_group_reservation(self, group_id: str) -> None:
-        self._queue.claim_reservation(group_id)
+    def release_group_reservation(self, reservation: GroupReservation | None) -> None:
+        if reservation is not None:
+            if not isinstance(reservation, GroupReservation):
+                raise ValueError('Releasing a group requires the original reservation, not a group name')
+            controller = self._controllers.get(reservation.group_id)
+            if controller is not None:
+                controller.release(reservation)
 
-    def release_group_reservation(self, group_id: str) -> None:
-        self._queue.release_reservation(group_id)
+    def operation_scope(self, reservation: GroupReservation | None) -> AbstractAsyncContextManager[None]:
+        return (nullcontext() if reservation is None else
+                self.group_controller(reservation.group_id).acquire(is_user=True, reservation=reservation))
+
+    def start_group_operation(self, reservation: GroupReservation | None, coroutine: Coroutine[Any, Any, T]
+                              ) -> asyncio.Task[T]:
+        if reservation is None:
+            return asyncio.create_task(coroutine)
+        return self.group_controller(reservation.group_id).start(reservation, coroutine)
 
     async def manage_children(self, group_id: str, action: str, identifier: str, text: str, access: str,
                               expected_session: str,
@@ -540,7 +575,7 @@ class Orchestrator:
         # Inspection/control must remain usable while the parent is waiting for a
         # child. Only start needs an idle group for prompt/tool snapshot rebuilding.
         if action == "start":
-            async with self._queue.acquire(group_id, is_user=True):
+            async with self.group_controller(group_id).acquire(is_user=True):
                 session = runtime.get_or_create_session(allow_reset=False)
                 session.children.extensions.default_ui = child_ui
                 owner = session.children
@@ -584,7 +619,7 @@ class Orchestrator:
                      AccessState.from_dict(runtime.transcript_store.get_access(expected_session))
                      if expected_session else AccessState())
         elif action in {"restrict", "release"}:
-            async with self._queue.acquire(group_id, is_user=True):
+            async with self.group_controller(group_id).acquire(is_user=True):
                 if (runtime.get_new_session_id() or "") != expected_session:
                     raise ValueError("Access session changed; refresh before retrying")
                 session = runtime.get_or_create_session(allow_reset=False)
@@ -796,7 +831,7 @@ class Orchestrator:
         runtime = self._runtimes.get(group_id)
         if runtime is None or (runtime.get_new_session_id() or "") != expected_session:
             raise ValueError("Extension session/group changed; refresh before retrying")
-        async with self._queue.acquire(group_id, is_user=True):
+        async with self.group_controller(group_id).acquire(is_user=True):
             session = runtime.get_or_create_session(allow_reset=False)
             session._children_idle()
             if action == "auth":
@@ -890,7 +925,7 @@ class Orchestrator:
         if (runtime is None or runtime.get_new_session_id() != expected_session
                 or runtime._active_session is None or runtime._active_session.meta.session_id != expected_session):
             raise ValueError('Argument completion owner changed; no activation')
-        async with self._queue.acquire(group_id, is_user=True):
+        async with self.group_controller(group_id).acquire(is_user=True):
             session = runtime._active_session
             session._children_idle()
             if session.agent.is_streaming:
@@ -951,7 +986,7 @@ class Orchestrator:
             return runtime.mcp.status()
         self._navigation_groups.add(group_id)
         try:
-            async with self._queue.acquire(group_id, is_user=True):
+            async with self.group_controller(group_id).acquire(is_user=True):
                 return await runtime.manage_mcp(action, server)
         finally:
             self._navigation_groups.discard(group_id)
@@ -963,7 +998,7 @@ class Orchestrator:
             raise ValueError("Authorization session changed; prepare a fresh view")
         if action in {"status", "cancel"}:
             return await runtime.mcp.manage_auth(server, action, receipt, lease=lease, alive=alive)
-        async with self._queue.acquire(group_id, is_user=True):
+        async with self.group_controller(group_id).acquire(is_user=True):
             if runtime._active_session is not None:
                 runtime._active_session._children_idle()
             result = await runtime.mcp.manage_auth(server, action, receipt, lease=lease, alive=alive)
@@ -1003,7 +1038,7 @@ class Orchestrator:
             raise ValueError("Unknown group")
         self._navigation_groups.add(group_id)
         try:
-            async with self._queue.acquire(group_id, is_user=True):
+            async with self.group_controller(group_id).acquire(is_user=True):
                 canceled = threading.Event()
                 task = asyncio.create_task(asyncio.to_thread(
                     runtime.navigate_session, action, session_id, branch_id, index, expected_session,
@@ -1049,7 +1084,7 @@ class Orchestrator:
             raise ValueError('Unknown group')
         self._navigation_groups.add(group_id)
         try:
-            async with self._queue.acquire(group_id, is_user=True):
+            async with self.group_controller(group_id).acquire(is_user=True):
                 canceled = threading.Event()
                 task = asyncio.create_task(asyncio.to_thread(
                     runtime.rename_session, expected_session, name,
@@ -1189,8 +1224,7 @@ class Orchestrator:
         if self._goal_closing:
             return
         for group_id, runtime in self._runtimes.items():
-            if (group_id in self._goal_jobs or self._queue.is_running(group_id)
-                    or self._queue._queues.get(group_id) or group_id in self._navigation_groups):
+            if (group_id in self._goal_jobs or self.is_group_running(group_id) or group_id in self._navigation_groups):
                 continue
             if runtime.goal_manager.has_active_goals() or runtime.goal_manager.has_pending_work():
                 self._goal_signatures[group_id] = self._goal_signature(runtime)

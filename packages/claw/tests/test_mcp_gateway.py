@@ -54,12 +54,13 @@ async def test_gateway_owned_explicit_mcp_controls_tool_registration_policy_and_
                 assistant_message=AssistantMessage(), args={"value": "test"}, context=AgentContext(),
             ))
             assert (decision is None) == allowed
-            assert server._orchestrator.try_reserve_group("main")
+            reservation = server._orchestrator.try_reserve_group("main")
+            assert reservation
             try:
                 assert not (await control("disconnect"))["success"]
                 assert (await control("list"))["success"]
             finally:
-                server._orchestrator.release_group_reservation("main")
+                server._orchestrator.release_group_reservation(reservation)
             assert (await control("disconnect"))["success"]
             assert not any(value.name == tool.name for value in session.agent.state.tools)
         finally:

@@ -52,10 +52,18 @@ async def test_queued_user_work_prevents_automatic_goal_dispatch(orchestrator, m
     orch = orchestrator
     tick = AsyncMock()
     monkeypatch.setattr(orch._runtimes['slow'].goal_manager, 'tick', tick)
-    orch._queue._queues['slow'] = [UserInput(group_id='slow', content='user first')]
-    await orch.tick()
-    tick.assert_not_awaited()
-    assert 'slow' not in orch._goal_jobs
+    lease = orch.try_reserve_group('slow')
+    try:
+        await orch.route_message(UserInput(group_id='slow', content='user first'),
+                                 message_id='queued-user', wait_for_result=False)
+        await orch.tick()
+        tick.assert_not_awaited()
+        assert 'slow' not in orch._goal_jobs
+    finally:
+        # Keep real preparation fenced until close cancels the unstarted input;
+        # this fixture intentionally has no model/provider configured.
+        await orch.stop()
+        orch.release_group_reservation(lease)
 
 
 async def test_unchanged_waiting_review_does_not_wake_into_busy_spin(orchestrator, monkeypatch):
