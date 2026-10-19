@@ -19,6 +19,7 @@ from xdog.claw.core.inputs.models import InputEnvelope, InputScope, decode_envel
 T = TypeVar('T')
 FORMAT = 'xdog.claw.inbox.v1'
 _INTERRUPTED = 'Execution interrupted; inspect prior effects before explicit retry'
+_STATES = frozenset({'pending', 'claimed', 'running', 'succeeded', 'failed', 'interrupted', 'cancelled'})
 _SCHEMA = '''
 CREATE TABLE metadata (format TEXT NOT NULL);
 CREATE TABLE inputs (
@@ -52,6 +53,8 @@ class InputAttempt:
 
 
 def _record(row: sqlite3.Row) -> InputRecord:
+    if row['status'] not in _STATES:
+        raise ValueError('Unknown input receipt state')
     envelope = decode_envelope(row['payload'])
     if (envelope.scope.group_id != row['group_id'] or str(envelope.scope.workspace) != row['workspace']
             or envelope.message.id != row['message_id']):
@@ -65,6 +68,36 @@ def _select(db: sqlite3.Connection, scope: InputScope, identifier: str) -> sqlit
     if row is None:
         raise ValueError('Unknown input in this scope')
     return cast(sqlite3.Row, row)
+
+
+
+def _validate_receipts(db: sqlite3.Connection) -> None:
+    """Read-only validation must precede every recovery write, not repair facts."""
+    db.row_factory = sqlite3.Row
+    if db.execute('PRAGMA foreign_key_check').fetchone() is not None:
+        raise ValueError('Input attempt refers to a missing receipt')
+    for row in db.execute('SELECT * FROM inputs ORDER BY sequence'):
+        record = _record(row)
+        attempts = db.execute('SELECT * FROM attempts WHERE sequence=? ORDER BY rowid',
+                              (row['sequence'],)).fetchall()
+        if any(attempt['status'] not in (_STATES - {'pending'}) | {'released'} for attempt in attempts):
+            raise ValueError('Unknown execution attempt state')
+        if any(attempt['status'] in {'claimed', 'running'} for attempt in attempts
+               if attempt['attempt_id'] != record.attempt_id):
+            raise ValueError('A noncurrent execution attempt remains active')
+        if record.attempt_id:
+            if (not attempts or attempts[-1]['attempt_id'] != record.attempt_id
+                    or attempts[-1]['status'] != record.status
+                    or any(attempts[-1][field] != row[field] for field in ('response', 'error', 'session_id'))):
+                raise ValueError('Current input and execution attempt facts disagree')
+        elif record.status not in {'pending', 'cancelled'}:
+            raise ValueError('Started input is missing its execution attempt')
+        if record.status == 'pending' and (record.attempt_id or record.response or record.error or record.session_id):
+            raise ValueError('Pending input contains execution facts')
+    duplicate = db.execute("SELECT 1 FROM inputs WHERE status IN ('claimed','running') "
+                           'GROUP BY group_id,workspace HAVING count(*)>1').fetchone()
+    if duplicate is not None:
+        raise ValueError('Input scope has multiple active execution attempts')
 
 
 def _directory(path: Path) -> None:
@@ -180,6 +213,7 @@ class InputStore:
                         raise ValueError('Unsupported input database format; no upgrade is performed')
                     if db.execute('PRAGMA quick_check').fetchone() != ('ok',):
                         raise ValueError('Input database integrity check failed')
+                    _validate_receipts(db)
             except sqlite3.DatabaseError as exc:
                 raise ValueError('Unsupported or corrupt input database; original data retained') from exc
 

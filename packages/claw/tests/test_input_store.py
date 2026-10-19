@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from dataclasses import replace
 
 import pytest
 from xdog.agent.session_input import SessionInput
+from xdog.ai.types import ImageContent
 from xdog.claw.core.inputs.models import InputEnvelope, InputScope, ReplyTarget
 
 
@@ -33,11 +35,14 @@ async def test_ack_and_dedup_survive_reopen_without_agent_or_protocol(tmp_path):
         await store.close()
 
 
-@pytest.mark.parametrize('change', ['reply', 'authority', 'instruction', 'admission'])
+@pytest.mark.parametrize('change', ['reply', 'authority', 'instruction', 'admission', 'images'])
 async def test_same_message_id_cannot_alias_different_host_or_content(tmp_path, change):
     from xdog.claw.core.inputs.store import InputStore
     value = envelope(tmp_path)
-    if change == 'instruction':
+    if change == 'images':
+        different = envelope(tmp_path, images=(ImageContent(data=base64.b64encode(
+            b'\x89PNG\r\n\x1a\nexample').decode(), mime_type='image/png'),))
+    elif change == 'instruction':
         different = InputEnvelope(value.scope, replace(value.message, instruction='different'),
                                   reply=value.reply, human_authorized=True)
     else:

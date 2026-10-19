@@ -341,5 +341,13 @@
       "status": "pending",
       "evidence": []
     }
+  ],
+  "workstreams": [
+    {
+      "name": "protocol_neutral_input_foundation",
+      "status": "validated_not_integrated",
+      "evidence": "docs/claw-input-foundation-verification.md",
+      "note": "Ordinary ingress/controller cutover and all47 objective acceptance items remain pending."
+    }
   ]
 }

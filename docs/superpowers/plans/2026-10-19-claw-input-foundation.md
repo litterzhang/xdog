@@ -1,6 +1,6 @@
 # Claw Durable Input Foundation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Establish protocol-independent durable input data and receipt storage as the first dependency of the complete Claw refactor; do not claim channel cutover or the overall goal complete.
 
@@ -52,7 +52,7 @@ Existing ACP runtime remains untouched during this plan. Later consumer integrat
   `encode_envelope(value: InputEnvelope) -> str`, `decode_envelope(payload: str) -> InputEnvelope`.
 - Encoding severs mutable evidence/provenance, enforces strict key sets, 1MiB canonical content budget and explicit separate image/total envelope bounds. Routing is immutable host-supplied data, not inferred from source.
 
-- [ ] Step 1: Write a real encode/decode round-trip containing one independent human message and image; change original provenance and prove persisted decoded payload is unchanged. Add invalid/unknown fields, invalid bool, NUL labels, relative scope, unsupported image MIME and oversized payload cases.
+- [x] Step 1: Write a real encode/decode round-trip containing one independent human message and image; change original provenance and prove persisted decoded payload is unchanged. Add invalid/unknown fields, invalid bool, NUL labels, relative scope, unsupported image MIME and oversized payload cases.
 
 ```python
 value = InputEnvelope(InputScope('main', tmp_path), message,
@@ -62,12 +62,12 @@ message.provenance['source'] = 'forged'
 assert decode_envelope(payload).message.provenance == {'source': 'original'}
 ```
 
-- [ ] Step 2: Run `uv run pytest packages/claw/tests/test_input_envelope.py -q -n 0`.
+- [x] Step 2: Run `uv run pytest packages/claw/tests/test_input_envelope.py -q -n 0`.
   Expected: fails because the new input envelope module does not exist.
-- [ ] Step 3: Implement validation and canonical JSON. Do not resolve symlinks into a different implicit workspace identity; reject nonabsolute/traversal scope. Serialize no callables, TUI handles or sessions.
-- [ ] Step 4: Rerun the command. Expected: all envelope tests pass; valid canonical identity and attachment order survive unchanged.
-- [ ] Step 5: `uv run ruff check packages/claw/src/xdog/claw/core/inputs packages/claw/tests/test_input_envelope.py` and strict Claw mypy. Expected: passed.
-- [ ] Step 6: Commit only Task 1 files with `feat(claw): define protocol-neutral input envelopes` and record task-done with the test command above.
+- [x] Step 3: Implement validation and canonical JSON. Do not resolve symlinks into a different implicit workspace identity; reject nonabsolute/traversal scope. Serialize no callables, TUI handles or sessions.
+- [x] Step 4: Rerun the command. Expected: all envelope tests pass; valid canonical identity and attachment order survive unchanged.
+- [x] Step 5: `uv run ruff check packages/claw/src/xdog/claw/core/inputs packages/claw/tests/test_input_envelope.py` and strict Claw mypy. Expected: passed.
+- [x] Step 6: Commit only Task 1 files with `feat(claw): define protocol-neutral input envelopes` and record task-done with the test command above.
 
 ### Task 2: Durable intake, attempt identities and explicit state transitions
 
@@ -86,7 +86,7 @@ assert decode_envelope(payload).message.provenance == {'source': 'original'}
 - Cancel is explicit and idempotent for pending/claimed; running cancellation is an execution-owner operation, not a store lie.
 - Retry only failed/interrupted, preserving attempt history; duplicate enqueue never retries.
 
-- [ ] Step 1: Write tests using real private tmp directories/database, not mocked SQL. Catch loss of pending messages, ID collisions with changed routing/content/images, scope isolation and full capacity behavior.
+- [x] Step 1: Write tests using real private tmp directories/database, not mocked SQL. Catch loss of pending messages, ID collisions with changed routing/content/images, scope isolation and full capacity behavior.
 
 ```python
 first, duplicate = await store.enqueue(envelope)
@@ -99,13 +99,13 @@ finished = await store.finish(running, 'succeeded', response='done')
 assert finished.response == 'done'
 ```
 
-- [ ] Step 2: Run `uv run pytest packages/claw/tests/test_input_store.py -q -n 0`.
+- [x] Step 2: Run `uv run pytest packages/claw/tests/test_input_store.py -q -n 0`.
   Expected: fails because InputStore is missing.
-- [ ] Step 3: Implement private owned lease, fixed new format, sqlite transactions serialized off-loop, immutable payload de-duplication and transition fences. Store current message state and append attempt records separately; no business tables or implicit retries.
-- [ ] Step 4: Add close/reopen tests: pending and claimed recover; running becomes interrupted; old claim cannot start a new attempt; inspected terminal input still returns the original envelope and reply target.
-- [ ] Step 5: Run `uv run pytest packages/claw/tests/test_input_envelope.py packages/claw/tests/test_input_store.py -q -n 0`.
+- [x] Step 3: Implement private owned lease, fixed new format, sqlite transactions serialized off-loop, immutable payload de-duplication and transition fences. Store current message state and append attempt records separately; no business tables or implicit retries.
+- [x] Step 4: Add close/reopen tests: pending and claimed recover; running becomes interrupted; old claim cannot start a new attempt; inspected terminal input still returns the original envelope and reply target.
+- [x] Step 5: Run `uv run pytest packages/claw/tests/test_input_envelope.py packages/claw/tests/test_input_store.py -q -n 0`.
   Expected: all pass. Run Ruff and strict Claw mypy. Expected: passed.
-- [ ] Step 6: Commit Task 2 files with `feat(claw): persist core input and execution receipts`; task-done uses the combined test command.
+- [x] Step 6: Commit Task 2 files with `feat(claw): persist core input and execution receipts`; task-done uses the combined test command.
 
 ### Task 3: Process/IO ownership and cancellation fault regressions
 
@@ -117,7 +117,7 @@ assert finished.response == 'done'
 - Consumes actual InputStore methods and private directory contract from Task 2; no new runtime consumer.
 - Produces proven single-owner lifecycle and unchanged original files on unsupported schema/corruption.
 
-- [ ] Step 1: Add a second-process lease test; unsupported format/symlink tests compare original file bytes; prove a cancelled writer cannot release owner before its real transaction settles.
+- [x] Step 1: Add a second-process lease test; unsupported format/symlink tests compare original file bytes; prove a cancelled writer cannot release owner before its real transaction settles.
 
 ```python
 await store.close()
@@ -128,12 +128,12 @@ finally:
     await reopened.close()
 ```
 
-- [ ] Step 2: Run `uv run pytest packages/claw/tests/test_input_store_ownership.py -q -n 0`.
+- [x] Step 2: Run `uv run pytest packages/claw/tests/test_input_store_ownership.py -q -n 0`.
   Expected: identify an unprotected ownership/fault condition; if a case passes, document it as characterization rather than claiming RED for existing behavior.
-- [ ] Step 3: Fix reproduced gaps with the smallest implementation changes, preserving transaction error precedence over observer cancellation. Add stale attempt, concurrent enqueue/fullness, multiple cancellation and invalid max_pending cases.
-- [ ] Step 4: Run `uv run pytest packages/claw/tests/test_input_envelope.py packages/claw/tests/test_input_store.py packages/claw/tests/test_input_store_ownership.py -q -n 0`.
+- [x] Step 3: Fix reproduced gaps with the smallest implementation changes, preserving transaction error precedence over observer cancellation. Add stale attempt, concurrent enqueue/fullness, multiple cancellation and invalid max_pending cases.
+- [x] Step 4: Run `uv run pytest packages/claw/tests/test_input_envelope.py packages/claw/tests/test_input_store.py packages/claw/tests/test_input_store_ownership.py -q -n 0`.
   Expected: all pass. Run complete `uv run python scripts/test.py`, Ruff packages and strict8 namespace mypy. Expected: no new failures/skips; disclose any failures by name.
-- [ ] Step 5: Commit with `test(claw): fence durable input ownership and recovery`; task-done runs the combined foundation tests. Record that IN-01/IN-07/RUN-03 remain pending until real channels and consumers switch.
+- [x] Step 5: Commit with `test(claw): fence durable input ownership and recovery`; task-done runs the combined foundation tests. Record that IN-01/IN-07/RUN-03 remain pending until real channels and consumers switch.
 
 ## Following plans and completion boundary
 
