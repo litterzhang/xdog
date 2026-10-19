@@ -298,6 +298,9 @@ class WeixinChannel(Channel):
 
         await self._send_text(real_user_id, context_token, text)
 
+    def reply_context(self, original: UserInput) -> dict[str, object]:
+        return {key: original.metadata.get(key, '') for key in ('account_id', 'weixin_user_id', 'context_token')}
+
     def accepts_saved_reply(self, original: UserInput) -> bool:
         return (original.channel == self.name and original.group_id == self._group_id
                 and original.metadata.get("account_id") == self._account_id)

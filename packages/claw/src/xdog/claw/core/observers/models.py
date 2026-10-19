@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from xdog.claw.core.outputs.targets import ReplyReference
+
 
 class ObserverStopped(RuntimeError):
     """A persisted cancellation/revision fence won before a new trigger."""
@@ -34,5 +36,6 @@ class ObserverRecord:
     owner: str = ""
     notify_only: bool = False
     reports_enabled: bool = True
+    reply: ReplyReference | None = None
 
 

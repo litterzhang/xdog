@@ -14,9 +14,10 @@ from xdog.agent.session_input import SessionInput, decode_input, input_data
 from xdog.claw.core.inputs.models import InputScope
 from xdog.claw.core.inputs.store import InputAttempt, InputRecord
 from xdog.claw.core.observers.models import ObserverRecord, ObserverStopped, encoded
+from xdog.claw.core.outputs.targets import ReplyReference, decode_reply, encode_reply
 
 T = TypeVar('T')
-_FORMAT = 'xdog.claw.observers.v1'
+_FORMAT = 'xdog.claw.observers.v2'
 _TERMINAL = frozenset({'succeeded', 'failed', 'interrupted', 'cancelled'})
 _DELIVERY = frozenset({'pending', 'sending', 'delivered', 'failed', 'unknown', 'not-required'})
 _SCHEMA = '''
@@ -24,7 +25,7 @@ CREATE TABLE observers(
     observer_id TEXT PRIMARY KEY,group_id TEXT NOT NULL,cwd TEXT NOT NULL,name TEXT NOT NULL,
     definition TEXT NOT NULL,revision INTEGER NOT NULL,enabled INTEGER NOT NULL,recovery TEXT NOT NULL,
     state TEXT NOT NULL,error TEXT NOT NULL,namespace TEXT NOT NULL,owner TEXT NOT NULL,
-    notify_only INTEGER NOT NULL,reports_enabled INTEGER NOT NULL DEFAULT 1,created REAL NOT NULL,
+    notify_only INTEGER NOT NULL,reports_enabled INTEGER NOT NULL DEFAULT 1,reply TEXT NOT NULL,created REAL NOT NULL,
     UNIQUE(group_id,cwd,name));
 CREATE TABLE outbox(
     group_id TEXT NOT NULL,cwd TEXT NOT NULL,message_id TEXT NOT NULL,observer_id TEXT NOT NULL REFERENCES observers,
@@ -48,13 +49,13 @@ def _row(row: sqlite3.Row) -> ObserverRecord:
     return ObserverRecord(row['observer_id'], row['group_id'], Path(row['cwd']), row['name'],
         json.loads(row['definition']), row['revision'], bool(row['enabled']), row['recovery'],
         json.loads(row['state']), row['error'], row['namespace'], row['owner'], bool(row['notify_only']),
-        bool(row['reports_enabled']))
+        bool(row['reports_enabled']), decode_reply(row['reply']) if row['reply'] else None)
 
 
 def _validate(db: sqlite3.Connection) -> None:
     columns = {
         'observers': {'observer_id', 'group_id', 'cwd', 'name', 'definition', 'revision', 'enabled', 'recovery',
-                      'state', 'error', 'namespace', 'owner', 'notify_only', 'reports_enabled', 'created'},
+                      'state', 'error', 'namespace', 'owner', 'notify_only', 'reports_enabled', 'reply', 'created'},
         'outbox': {'group_id', 'cwd', 'message_id', 'observer_id', 'revision', 'payload', 'cancelled',
                    'receipt_status', 'execution_status', 'execution_error', 'session_id', 'attempt_id', 'started',
                    'delivery_status', 'delivery_error', 'transport_status', 'created'},
@@ -67,7 +68,9 @@ def _validate(db: sqlite3.Connection) -> None:
         raise ValueError('Observer outbox has no registered owner')
     for row in db.execute('SELECT * FROM observers'):
         record = _row(row)
-        InputScope(record.group_id, record.cwd)
+        scope = InputScope(record.group_id, record.cwd)
+        if record.reply is not None and record.reply.scope != scope:
+            raise ValueError('Observer reply scope does not match its owner')
         uuid.UUID(hex=record.inbox_id)
         if (type(record.revision) is not int or not 1 <= record.revision < 2**53
                 or record.recovery not in {'managed', 'ephemeral', 'completed', 'cancelled', 'needs_review'}
@@ -113,12 +116,15 @@ class ObserverJournal:
     async def create(self, group: str, cwd: Path, name: str, definition: dict[str, object], *,
                      identifier: str = '', enabled: bool = True, recovery: str = 'managed',
                      state: dict[str, object] | None = None, error: str = '', owner: str = '',
-                     notify_only: bool = False) -> ObserverRecord:
+                     notify_only: bool = False, reply: ReplyReference | None = None) -> ObserverRecord:
         scope = InputScope(group, cwd)
         if (not name.strip() or len(name.encode()) > 256 or not isinstance(owner, str)
                 or owner and not owner.strip() or '\x00' in owner or len(owner.encode()) > 256
                 or type(notify_only) is not bool):
             raise ValueError('Expected bounded host owner and notify_only boolean')
+        if reply is not None and (not isinstance(reply, ReplyReference) or reply.scope != scope):
+            raise ValueError('Observer reply must match its original host scope')
+        reply_json = encode_reply(reply) if reply is not None else ''
         namespace = await self.receipts.namespace(scope)
         identifier = identifier or 'eyes-' + uuid.uuid4().hex
         payload, checkpoint = encoded(definition), encoded(state or {})
@@ -127,13 +133,13 @@ class ObserverJournal:
                                   (group, str(cwd), name)).fetchone()
             if previous is not None:
                 if (previous['definition'] != payload or previous['owner'] != owner
-                        or bool(previous['notify_only']) != notify_only):
+                        or bool(previous['notify_only']) != notify_only or previous['reply'] != reply_json):
                     raise ValueError('Observer name already has different content')
                 return _row(previous)
             db.execute('INSERT INTO observers(observer_id,group_id,cwd,name,definition,revision,enabled,recovery,'
-                'state,error,namespace,owner,notify_only,created) VALUES (?,?,?,?,?,1,?,?,?,?,?,?,?,?)',
+                'state,error,namespace,owner,notify_only,reply,created) VALUES (?,?,?,?,?,1,?,?,?,?,?,?,?,?,?)',
                 (identifier, group, str(cwd), name, payload, int(enabled), recovery, checkpoint, error,
-                 namespace, owner, int(notify_only), time.time()))
+                 namespace, owner, int(notify_only), reply_json, time.time()))
             return _row(db.execute('SELECT * FROM observers WHERE observer_id=?', (identifier,)).fetchone())
         return await self._disk(create)
 
@@ -266,6 +272,16 @@ class ObserverJournal:
                              (scope.group_id, str(scope.workspace), receipt.envelope.message.id)).fetchone()
             return dict(row) if row is not None else None
         return await self._disk(read)
+
+    async def reply_for(self, receipt: InputRecord) -> ReplyReference | None:
+        occurrence = await self.occurrence(receipt)
+        if occurrence is None:
+            return None
+        scope = receipt.envelope.scope
+        record = await self.get(scope.group_id, scope.workspace, str(occurrence['observer_id']))
+        if record is None or record.inbox_id != await self.receipts.namespace(scope):
+            raise ValueError('Original report owner/namespace changed')
+        return record.reply
 
     async def begin_delivery(self, receipt: InputRecord) -> bool:
         row = await self.occurrence(receipt)

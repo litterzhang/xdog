@@ -53,6 +53,10 @@ class Channel(ABC):
         """Stable transport correlation where the channel supports it."""
         await self.send_reply(original, text)
 
+    def reply_context(self, original: UserInput) -> dict[str, object]:
+        """Select routing metadata, not prompt/images/permission data."""
+        return {}
+
     def accepts_saved_reply(self, original: UserInput) -> bool:
         """Opt in to restoring a persisted destination without a live connection.
 
