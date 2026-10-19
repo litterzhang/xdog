@@ -97,3 +97,40 @@ async def test_old_observer_format_is_rejected_without_touching_original_bytes(t
         assert journal.path.read_bytes() == before
     finally:
         await core.close()
+
+
+@pytest.mark.parametrize("reject_raises", [False, True])
+async def test_unadmitted_input_cannot_leave_its_reply_capability_on_an_idle_agent(tmp_path, reject_raises):
+    from xdog.claw.config import ClawConfig
+    from xdog.claw.core.outputs.targets import ReplyReference
+    from xdog.claw.core.runtime.orchestrator import Orchestrator
+    from xdog.claw.core.types import Group
+
+    async def no_model(*args):
+        raise AssertionError("Unadmitted input must not run a model")
+
+    app = Orchestrator(ClawConfig(data_dir=str(tmp_path / "data")), model="test/dummy", stream_fn=no_model)
+    app.register_group(Group(id="main", workspace=str(tmp_path), enabled_tools=()))
+    reference = ReplyReference(InputScope("main", tmp_path), "original-route", user())
+
+    async def reject(session):
+        if reject_raises:
+            raise ValueError("admission failed before model")
+        return False
+
+    try:
+        if reject_raises:
+            with pytest.raises(ValueError):
+                await app._execute_owned_input(
+                    UserInput(group_id="main", content="rejected"), admit=reject, reply_reference=reference
+                )
+        else:
+            assert (
+                await app._execute_owned_input(
+                    UserInput(group_id="main", content="rejected"), admit=reject, reply_reference=reference
+                )
+                is None
+            )
+        assert app._runtimes["main"]._active_session.agent.tool_context.get("_reply_reference") is None
+    finally:
+        await app.stop()

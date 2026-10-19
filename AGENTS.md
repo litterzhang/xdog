@@ -143,8 +143,14 @@ join or a second authority. Source stop does not withdraw accepted input or stop
 its report. `eyes cancel_notifications` is separate; actual pending withdrawal
 uses the core input owner. No operation reverses started effects. A schema-neutral
 Agent `LeasedSqlite` helper owns IO only, never domain schema or planning policy.
+Observer journal formatv2 captures a host-only immutable ReplyReference from the
+actual creating input/tool scope. Weixin reports use original account/sender/context;
+Native notices use only the original live endpoint, never a newly connected peer.
+No creator destination means not-required, not group broadcast; unavailable original
+recipient remains known-not-sent/pending. Stop notifications separately; source stop
+still does not retract accepted reports. No old journal upgrade is performed.
 The broader assistant-core refactor remains in progress: optional standalone Goal,
-its Coding adapter/shared extension UI and observer-created reply capture remain pending.
+its Coding adapter/shared extension UI and final feature-output streaming remain pending.
 Ordinary output receipts live in `<data_dir>/outputs/journal.sqlite3`: per-message
 send attempts distinguish delivered/pending/proven-not-sent/unknown independently
 from Agent execution. Unknown sends are never automatically replayed. Native

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from xdog.claw.channels.base import Channel
 from xdog.claw.core.types import UserInput
@@ -57,3 +59,34 @@ class TuiChannel(Channel):
         if hasattr(self, "_on_message"):
             msg = UserInput(group_id=group_id, content=text, sender=sender, channel="tui")
             await self._on_message(msg)
+
+
+class NativeNoticeChannel(Channel):
+    """One live private connection's explicit notification route, never restorable."""
+
+    def __init__(self, publish: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
+        self._publish = publish
+        self._closed = False
+
+    @property
+    def name(self) -> str:
+        return 'tui'
+
+    async def connect(self) -> None:
+        pass
+
+    async def disconnect(self) -> None:
+        self._closed = True
+
+    def accepts_group(self, group_id: str) -> bool:
+        return False
+
+    async def send_message(self, group_id: str, text: str) -> None:
+        raise ValueError('Native notices require their original explicit reply binding')
+
+    async def send_output(self, original: UserInput, output_id: str, text: str) -> None:
+        from xdog.claw.core.outputs.delivery import DeliveryNotSent
+        if self._closed:
+            raise DeliveryNotSent('Original Native connection is closed')
+        await self._publish({'type': 'notification', 'group_id': original.group_id,
+                             'notification_id': output_id, 'content': text})

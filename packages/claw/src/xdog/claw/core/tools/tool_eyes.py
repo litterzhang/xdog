@@ -39,7 +39,7 @@ class EyesTool(ToolDef):
             instruction=Param('string', required=True, description='What the group agent should do and report'))
     async def create(self, ctx: dict[str, Any], name: str, source: dict[str, Any], instruction: str) -> str:
         service, group = _service(ctx)
-        return _render(await service.create(group, name, source, instruction))
+        return _render(await service.create(group, name, source, instruction, reply=ctx.get('_reply_reference')))
 
     @action('list', description='List only this group/workspace observers; does not create an agent turn')
     async def list(self, ctx: dict[str, Any]) -> str:

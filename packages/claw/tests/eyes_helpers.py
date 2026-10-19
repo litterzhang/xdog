@@ -17,7 +17,7 @@ from xdog.claw.config import ClawConfig
 from xdog.claw.core.observers.manager import ManagedObservers
 from xdog.claw.core.runtime.group import GroupRuntime
 from xdog.claw.core.runtime.orchestrator import Orchestrator
-from xdog.claw.core.types import Group, GroupConfig, QueueMode
+from xdog.claw.core.types import Group, GroupConfig, QueueMode, UserInput
 from xdog.eyes.managed_scheduler import SchedulerClocks
 
 NOW = datetime.fromisoformat('2026-10-12T09:20:00+08:00').timestamp()
@@ -29,6 +29,19 @@ def scheduler(**schedule):
 
 def at(seconds=240):
     return scheduler(at=datetime.fromtimestamp(NOW + seconds, UTC).isoformat())
+
+
+class ReportSink(TuiChannel):
+    """Controlled external report sink, explicitly restorable unlike a Native peer."""
+    def reply_context(self, original):
+        return {'account_id': 'fixture-report-sink'}
+
+    def accepts_saved_reply(self, original):
+        return original.channel == self.name and original.metadata.get('account_id') == 'fixture-report-sink'
+
+
+def report_reference(application, channel, group):
+    return application.capture_reply(channel, UserInput(group_id=group, sender='fixture-peer', channel=channel.name))
 
 
 class ManualClock:
@@ -135,31 +148,38 @@ class Harness:
             self.clock.pulse()
             await asyncio.sleep(.002)
 
+    def reference(self, group='g1'):
+        return report_reference(self.orch, self.channel, group)
+
     async def create(self, instruction='report', group='g1', source=None, name=None):
         self.serial += 1
-        return await self.manager.create(group, name or f'observer-{self.serial}', source or at(), instruction)
+        return await self.manager.create(group, name or f'observer-{self.serial}', source or at(), instruction,
+                                         reply=self.reference(group))
 
     async def tool(self, action, group='g1', **arguments):
         from xdog.claw.core.tools.tool_eyes import create_eyes_tool
         ctx = self.orch._runtimes[group].get_or_create_session().agent.tool_context
         assert ctx['_eyes'] is self.manager
+        ctx = {**ctx, '_reply_reference': self.reference(group)}
         result = await create_eyes_tool().execute('test-call', {'action': action, **arguments}, ctx=ctx)
         return result.content[0].text
 
     async def record(self, identifier, group='g1'):
         return await self.manager.store.get(group, self.orch.get_group_workspace(group), identifier)
 
-    async def completed(self, identifier, count=1, group='g1'):
+    async def completed(self, identifier, count=1, group='g1', *, pending_report=False):
         async def check():
             status = await self.manager.status(group, identifier)
             history = status['occurrences']
             if len(history) != count or any(
                 row['execution_status'] not in {'succeeded', 'failed', 'interrupted', 'cancelled'}
-                or row['delivery_status'] not in {'delivered', 'failed', 'unknown', 'not-required'} for row in history
+                or (row['delivery_status'] not in {'delivered', 'failed', 'unknown', 'not-required'}
+                    and not (pending_report and row['delivery_status'] == 'pending' and row['delivery_error']))
+                for row in history
             ):
                 return None
             record = await self.record(identifier, group)
-            if record.state.get('pending') is not None:
+            if record.state.get('pending') is not None and status['state'] != 'needs_review':
                 return None
             if 'at' in status['source'].get('schedule', {}) and (
                 status['enabled'] or status['state'] == 'running'
@@ -222,7 +242,7 @@ async def managed(tmp_path, monkeypatch):
     for gid in ('g1', 'g2', 'g3'):
         orch.register_group(Group(id=gid, workspace=str(tmp_path / gid),
                                   config=GroupConfig(debounce_ms=0, queue_mode=QueueMode.STEER)))
-    channel = TuiChannel()
+    channel = ReportSink()
     channel.send_message = AsyncMock()
     orch.add_channel(channel)
     # pytest's long node names must not leak into the Unix socket's 107-byte limit.

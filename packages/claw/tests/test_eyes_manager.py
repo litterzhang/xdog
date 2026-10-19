@@ -11,7 +11,6 @@ import pytest
 from xdog.ai.types import AssistantMessage, DoneEvent, StartEvent, TextContent
 from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.acp.server import ClawAcpServer
-from xdog.claw.channels.tui.channel import TuiChannel
 from xdog.claw.config import ClawConfig
 from xdog.claw.core.inputs.models import InputScope
 from xdog.claw.core.observers.manager import ManagedObservers
@@ -19,11 +18,20 @@ from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.types import Group, GroupConfig
 from xdog.eyes.managed_scheduler import SchedulerClocks
 
+from packages.claw.tests.eyes_helpers import ReportSink, report_reference
+
 
 async def eventually(check):
     async with asyncio.timeout(5):
         while not await check():
             await asyncio.sleep(.005)
+
+
+async def create(service, group, *args, **kwargs):
+    if 'reply' not in kwargs:
+        channel = service.orchestrator._channels[0]
+        kwargs['reply'] = report_reference(service.orchestrator, channel, group)
+    return await service.create(group, *args, **kwargs)
 
 
 @pytest.fixture
@@ -52,7 +60,7 @@ async def managed(tmp_path):
     for group in ('main', 'other'):
         orch.register_group(Group(id=group, workspace=str(tmp_path), enabled_tools=('eyes',),
                                   config=GroupConfig(debounce_ms=0)))
-    channel = TuiChannel()
+    channel = ReportSink()
     channel.send_message = AsyncMock()
     orch.add_channel(channel)
     with tempfile.TemporaryDirectory(prefix='claw-managed-') as short:
@@ -80,7 +88,7 @@ def at(clock, delta=10):
 
 async def test_one_off_create_receipt_execution_and_report_are_separate(managed):
     service, _, _, clock, calls, channel, _, _ = managed
-    record = await service.create('main', 'report', at(clock), 'Summarize progress')
+    record = await create(service, 'main', 'report', at(clock), 'Summarize progress')
     assert not calls and not record['occurrences']
     clock[0] += 10
     async def completed():
@@ -101,14 +109,14 @@ async def test_one_off_create_receipt_execution_and_report_are_separate(managed)
 
 async def test_cancel_only_current_group_and_does_not_rearm_same_name(managed):
     service, _, _, clock, calls, channel, _, _ = managed
-    record = await service.create('main', 'report', at(clock), 'Report')
+    record = await create(service, 'main', 'report', at(clock), 'Report')
     with pytest.raises(ValueError, match='Unknown observer'):
         await service.cancel('other', record['id'])
     with pytest.raises(ValueError, match='Unknown observer'):
         await service.status('other', record['id'])
     assert await service.list('other') == ()
     await service.cancel('main', record['id'])
-    assert not (await service.create('main', 'report', at(clock), 'Report'))['enabled']
+    assert not (await create(service, 'main', 'report', at(clock), 'Report'))['enabled']
     clock[0] += 10
     await asyncio.sleep(.03)
     assert not calls
@@ -118,16 +126,20 @@ async def test_cancel_only_current_group_and_does_not_rearm_same_name(managed):
 @pytest.mark.parametrize('failure', ['channel', 'no-channel', 'timeout'])
 async def test_report_failure_does_not_rerun_agent(managed, failure):
     service, orch, _, clock, calls, channel, _, _ = managed
+    reference = report_reference(orch, channel, 'main')
     if failure == 'no-channel':
+        orch.unregister_reply_channel(reference.binding)
         orch._channels.clear()
     else:
         channel.send_message.side_effect = (TimeoutError('unknown send') if failure == 'timeout'
                                             else RuntimeError('rejected'))
-    record = await service.create('main', 'report', at(clock), 'Report')
+    record = await create(service, 'main', 'report', at(clock), 'Report', reply=reference)
     clock[0] += 10
     async def terminal():
         row = await service.status('main', record['id'])
-        return bool(row['occurrences']) and row['occurrences'][0]['delivery_status'] in {'failed', 'unknown'}
+        return (bool(row['occurrences'])
+                and row['occurrences'][0]['delivery_status'] in {'failed', 'unknown', 'pending'}
+                and bool(row['occurrences'][0]['delivery_error']))
     await eventually(terminal)
     row = await service.status('main', record['id'])
     assert len(calls) == 1 and row['occurrences'][0]['execution_status'] == 'succeeded'
@@ -140,7 +152,7 @@ async def test_report_failure_does_not_rerun_agent(managed, failure):
 async def test_busy_interval_skips_ticks_without_overlapping(managed):
     service, _, _, clock, calls, channel, gate, entered = managed
     gate.clear()
-    record = await service.create('main', 'periodic',
+    record = await create(service, 'main', 'periodic',
                                   {'type': 'scheduler', 'schedule': {'every_seconds': 10}}, 'Report')
     clock[0] += 10
     await asyncio.wait_for(entered.wait(), 3)
@@ -164,7 +176,7 @@ async def test_busy_interval_skips_ticks_without_overlapping(managed):
 
 async def test_namespace_change_never_silently_retargets_saved_work(managed):
     service, _, server, clock, calls, _, _, _ = managed
-    record = await service.create('main', 'report', at(clock), 'Report')
+    record = await create(service, 'main', 'report', at(clock), 'Report')
     await server.backend.inputs.store._disk(lambda db: db.execute(
         "UPDATE scopes SET namespace='ffffffffffffffffffffffffffffffff' WHERE group_id='main'"))
     clock[0] += 10
@@ -178,7 +190,7 @@ async def test_namespace_change_never_silently_retargets_saved_work(managed):
 async def test_lost_enqueue_ack_retains_original_identity_and_never_repeats_model(managed, monkeypatch):
     service, _, server, clock, calls, channel, gate, entered = managed
     gate.clear()
-    created = await service.create('main', 'lost-ack', at(clock), 'Report')
+    created = await create(service, 'main', 'lost-ack', at(clock), 'Report')
     handler = service._handlers[created['id']]
     original = handler.client.enqueue
     sent = []
@@ -209,7 +221,7 @@ async def test_at_admitted_before_slow_connection_keeps_original_deadline(manage
         clock[0] += 30
         return await original(record, definition)
     monkeypatch.setattr(service, '_handler', delayed)
-    created = await service.create('main', 'slow-connect', at(clock, 10), 'Report')
+    created = await create(service, 'main', 'slow-connect', at(clock, 10), 'Report')
     async def completed():
         return (await service.status('main', created['id']))['state'] == 'completed'
     await eventually(completed)
@@ -220,7 +232,7 @@ async def test_file_observer_is_explicit_and_not_a_crash_restored_timer(managed)
     service, _, _, _, _, _, _, _ = managed
     root = service._cwd('main')
     (root / 'src').mkdir()
-    created = await service.create('main', 'watch', {'type': 'file', 'root': '.', 'include': ['src/**']}, 'Review')
+    created = await create(service, 'main', 'watch', {'type': 'file', 'root': '.', 'include': ['src/**']}, 'Review')
     record = await service.store.get('main', root, created['id'])
     assert record.recovery == 'ephemeral' and created['id'] in service._files
     await service.cancel('main', created['id'])
@@ -235,7 +247,7 @@ async def test_explicit_file_observer_closes_every_started_handler(managed, monk
         await original(handler)
         handlers.append(handler)
     monkeypatch.setattr(AcpHandler, 'start', capture)
-    created = await service.create('main', 'file-resource', {'type': 'file', 'root': '.',
+    created = await create(service, 'main', 'file-resource', {'type': 'file', 'root': '.',
                                    'include': ['src/**']}, 'Review')
     await service.cancel('main', created['id'])
     await service.close()
@@ -252,7 +264,7 @@ async def test_checkpoint_and_error_record_write_failure_halts_visibly(managed, 
         raise OSError('error record also unavailable')
     monkeypatch.setattr(service, '_save', failed_save)
     monkeypatch.setattr(service.store, 'fail', failed_error)
-    created = await service.create('main', 'disk-failure', at(clock), 'Report')
+    created = await create(service, 'main', 'disk-failure', at(clock), 'Report')
     release.set()
     async def stopped():
         return created['id'] not in service._tasks
@@ -266,7 +278,7 @@ async def test_integer_host_clock_preserves_exact_canonical_outbox_payload(manag
     from dataclasses import replace
     service, _, _, clock, calls, _, _, _ = managed
     service.clocks = replace(service.clocks, wall=lambda: int(clock[0]), monotonic=lambda: int(clock[0]))
-    created = await service.create('main', 'integer-clock', at(clock), 'Report')
+    created = await create(service, 'main', 'integer-clock', at(clock), 'Report')
     clock[0] += 10
     async def completed():
         return (await service.status('main', created['id']))['state'] == 'completed'

@@ -20,6 +20,7 @@ from xdog.claw.core.inputs.models import InputScope
 from xdog.claw.core.inputs.store import InputRecord
 from xdog.claw.core.observers.journal import ObserverJournal
 from xdog.claw.core.observers.models import ObserverRecord, ObserverStopped
+from xdog.claw.core.outputs.targets import ReplyReference
 from xdog.eyes.deliveries import Delivery
 from xdog.eyes.events import DeliveryResult
 from xdog.eyes.handlers.acp import AcpHandler
@@ -155,10 +156,16 @@ class ManagedObservers:
             if receipt.status == 'succeeded' and not receipt.response.strip():
                 raise ValueError('Agent produced no report')
             report = receipt.response if receipt.status == 'succeeded' else '观察任务执行失败: ' + receipt.error
-            outcomes = await self.orchestrator.deliver_report(receipt.envelope.scope.group_id, report)
+            target = await self.store.reply_for(receipt)
+            if target is None:
+                await self.store.finish_delivery(receipt, status='not-required')
+                return
+            outcomes = await self.orchestrator.deliver_report(target, report,
+                delivery_id=receipt.envelope.message.id + ':' + receipt.attempt_id)
             errors = [item for item in outcomes if item['status'] != 'delivered']
             unknown = any(item['status'] == 'unknown' for item in errors)
-            status = 'unknown' if unknown else 'failed' if errors else 'delivered'
+            status = ('unknown' if unknown else 'pending' if any(item['status'] == 'pending' for item in errors)
+                      else 'failed' if errors else 'delivered')
             await self.store.finish_delivery(receipt, status=status,
                 error=json.dumps(outcomes, ensure_ascii=False) if errors else '')
         except asyncio.CancelledError:
@@ -230,12 +237,13 @@ class ManagedObservers:
         return handler
 
     async def create(self, group: str, name: str, source: dict[str, Any], instruction: str, *,
-                     owner: str = "", notify_only: bool = False) -> dict[str, Any]:
+                     owner: str = "", notify_only: bool = False,
+                     reply: ReplyReference | None = None) -> dict[str, Any]:
         if self._closing:
             raise RuntimeError('Managed Eyes is closing')
         await self._ensure_store()
         task = asyncio.create_task(self._create(group, name, source, instruction,
-                                               owner=owner, notify_only=notify_only))
+                                               owner=owner, notify_only=notify_only, reply=reply))
         self._operations.add(task)
         try:
             return await wait_owned(task)
@@ -243,11 +251,15 @@ class ManagedObservers:
             self._operations.discard(task)
 
     async def _create(self, group: str, name: str, source: dict[str, Any], instruction: str, *,
-                      owner: str = "", notify_only: bool = False) -> dict[str, Any]:
+                      owner: str = "", notify_only: bool = False,
+                     reply: ReplyReference | None = None) -> dict[str, Any]:
         from xdog.eyes.managed_scheduler import initial_managed_state
         if (not isinstance(owner, str) or len(owner.encode()) > 256
                 or owner and not owner.strip() or type(notify_only) is not bool):
             raise ValueError('Expected bounded host owner and notify_only boolean')
+        if reply is not None and (not isinstance(reply, ReplyReference)
+                                  or reply.scope != InputScope(group, self._cwd(group))):
+            raise ValueError('Expected the current input host reply reference/scope')
         async with self._lock:
             if self._closing:
                 raise RuntimeError('Managed Eyes is closing')
@@ -256,7 +268,8 @@ class ManagedObservers:
             previous = next((item for item in await self.store.list(group, self._cwd(group))
                              if item.name == name), None)
             if previous is not None:
-                if previous.definition != data or previous.owner != owner or previous.notify_only != notify_only:
+                if (previous.definition != data or previous.owner != owner or previous.notify_only != notify_only
+                        or previous.reply != reply):
                     raise ValueError('Observer name already has different content; use a new name')
                 if previous.enabled:
                     await self._activate(previous)  # Explicit file start, never implicit restart.
@@ -264,7 +277,7 @@ class ManagedObservers:
             identifier = 'eyes-' + uuid.uuid4().hex
             record = ObserverRecord(identifier, group, self._cwd(group), name, data, 1, True,
                 'managed' if isinstance(definition.sources[0], SchedulerSourceDef) else 'ephemeral', {}, '',
-                owner=owner, notify_only=notify_only)
+                owner=owner, notify_only=notify_only, reply=reply)
             # Validate fresh deadlines before opening connections, then seed the
             # interval after the actual handler connects. Both operations are model-free.
             accepted = (initial_managed_state(definition, identifier, self.clocks)
@@ -281,7 +294,7 @@ class ManagedObservers:
                          if record.recovery == 'managed' else {})
                 record = await self.store.create(group, record.cwd, name, data, identifier=identifier,
                                                  recovery=record.recovery, state=cast(dict[str, Any], state),
-                                                 owner=owner, notify_only=notify_only)
+                                                 owner=owner, notify_only=notify_only, reply=reply)
             except BaseException:
                 handler = self._handlers.pop(identifier, None)
                 if handler is not None:
@@ -314,7 +327,8 @@ class ManagedObservers:
                     occurrence = await self.store.occurrence(receipt)
                     if occurrence is None:
                         raise ValueError('Original observer outbox disappeared')
-                    if occurrence['delivery_status'] in {'delivered', 'failed', 'not-required'}:
+                    if (occurrence['delivery_status'] in {'delivered', 'failed', 'not-required'}
+                            or occurrence['delivery_status'] == 'pending' and occurrence['delivery_error']):
                         return DeliveryResult('queued', receipt_status='duplicate', message_state=receipt.status)
                     if occurrence['delivery_status'] == 'unknown':
                         await self.store.fail(record, 'Unknown output; inspect before new work', review=True)
@@ -459,7 +473,8 @@ class ManagedObservers:
                         occurrence = await self.store.occurrence(receipt)
                         if occurrence is None or occurrence['delivery_status'] == 'unknown':
                             raise ValueError('Owned file event has unknown delivery; inspect before restarting')
-                        if occurrence['delivery_status'] in {'delivered', 'failed', 'not-required'}:
+                        if (occurrence['delivery_status'] in {'delivered', 'failed', 'not-required'}
+                                or occurrence['delivery_status'] == 'pending' and occurrence['delivery_error']):
                             await self.store.save(record, {'pending': None})
                             await self._start_file(record, self._definition(record))
                             return

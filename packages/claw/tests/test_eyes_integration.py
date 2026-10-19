@@ -53,7 +53,8 @@ async def test_model_can_create_task_via_real_tool_loop(managed):
         id='schedule-1', name='eyes', arguments={'action': 'create', 'name': 'follow-up',
                                                 'source': at(), 'instruction': 'scheduled follow-up'}),),
         stop_reason='toolUse')
-    result = await managed.orch.route_message(UserInput(group_id='g1', content='schedule now'))
+    result = await managed.orch.route_message(UserInput(group_id='g1', content='schedule now'),
+                                              reply_reference=managed.reference('g1'))
     assert result and not result.error
     created, = await managed.manager.list('g1')
     record = await managed.record(created['id'])
@@ -163,11 +164,11 @@ async def test_global_concurrency_bound_preserves_independent_group_owners(manag
 async def test_recurring_failure_advances_instead_of_retrying_same_occurrence(managed):
     created = await create(managed, source=scheduler(every_seconds=60))
     managed.clock.advance(60)
-    managed.channel.send_message.side_effect = RuntimeError('offline')
+    managed.channel.send_message.side_effect = ValueError('local report validation rejected')
     first = await managed.completed(created['id'])
     row, = first['occurrences']
     assert row['execution_status'] == 'succeeded' and row['delivery_status'] == 'failed'
-    assert 'offline' in row['delivery_error'] and first['enabled']
+    assert 'local report validation rejected' in row['delivery_error'] and first['enabled']
     first_identity = row['message_id']
     await managed.flush()
     assert managed.model.calls == ['report']

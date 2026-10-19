@@ -7,6 +7,8 @@ from xdog.claw.core.inputs.models import InputScope
 from xdog.claw.core.inputs.store import InputStore
 from xdog.claw.core.observers.journal import ObserverJournal
 from xdog.claw.core.observers.models import ObserverStopped
+from xdog.claw.core.outputs.targets import ReplyReference
+from xdog.claw.core.types import UserInput
 
 from packages.claw.tests.core_inputs import external_envelope
 
@@ -29,6 +31,8 @@ async def store(tmp_path):
 
 async def observer(store, **kwargs):
     journal, cwd, _ = store
+    kwargs.setdefault('reply', ReplyReference(InputScope('main', cwd), 'store-test-sink',
+                                               UserInput(group_id='main', sender='sink', channel='tui')))
     return await journal.create('main', cwd, 'remind', {'version': 2}, **kwargs)
 
 

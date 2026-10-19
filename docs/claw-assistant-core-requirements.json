@@ -87,7 +87,8 @@
       "status": "pending",
       "evidence": [
         "docs/claw-channel-handoff-verification.md",
-        "docs/claw-output-receipts-verification.md"
+        "docs/claw-output-receipts-verification.md",
+        "docs/claw-observer-recipients-verification.md"
       ]
     },
     {
@@ -106,7 +107,8 @@
       "status": "pending",
       "evidence": [
         "docs/claw-channel-handoff-verification.md",
-        "docs/claw-output-receipts-verification.md"
+        "docs/claw-output-receipts-verification.md",
+        "docs/claw-observer-recipients-verification.md"
       ]
     },
     {
@@ -206,14 +208,18 @@
       "area": "eyes_acp",
       "requirement": "宿主兑现显式取消，不误伤无关聊天，不因 provenance 获得内部身份",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/claw-observer-recipients-verification.md"
+      ]
     },
     {
       "id": "BOUND-05",
       "area": "eyes_acp",
       "requirement": "独立/托管观察恢复语义保持明确，ACK 不等于模型或报告完成",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/claw-observer-recipients-verification.md"
+      ]
     },
     {
       "id": "GOAL-01",
@@ -346,14 +352,18 @@
       "area": "verification",
       "requirement": "所有关键 fsync/阻塞 I/O off-loop 且取消后提交结算；corruption/lease 失败关闭",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/claw-observer-recipients-verification.md"
+      ]
     },
     {
       "id": "VERIFY-02",
       "area": "verification",
       "requirement": "权威状态与派生视图分离，视图失败可重建且不产生第二权威",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/claw-observer-recipients-verification.md"
+      ]
     },
     {
       "id": "VERIFY-03",

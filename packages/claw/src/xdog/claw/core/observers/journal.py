@@ -178,8 +178,8 @@ class ObserverJournal:
                         raise ValueError('Observer outbox identity/content changed')
                     continue
                 unfinished = db.execute("SELECT 1 FROM outbox WHERE observer_id=? AND cancelled=0 AND "
-                    "(receipt_status='unaccepted' OR execution_status IN ('pending','claimed','running') "
-                    "OR delivery_status IN ('pending','sending')) LIMIT 1", (record.id,)).fetchone()
+                    "(receipt_status='unaccepted' OR execution_status IN ('pending','claimed','running')) LIMIT 1",
+                    (record.id,)).fetchone()
                 if unfinished is not None:
                     raise ValueError('Unfinished overlapping observer outbox')
                 db.execute('INSERT INTO outbox(group_id,cwd,message_id,observer_id,revision,payload,created) '
@@ -299,7 +299,7 @@ class ObserverJournal:
             return False
         def begin(db: sqlite3.Connection) -> bool:
             current = db.execute('SELECT * FROM observers WHERE observer_id=?', (identifier,)).fetchone()
-            if current['notify_only'] or not current['reports_enabled']:
+            if current['notify_only'] or not current['reports_enabled'] or not current['reply']:
                 db.execute("UPDATE outbox SET delivery_status='not-required' WHERE group_id=? AND cwd=? "
                            "AND message_id=? AND delivery_status='pending'",
                            (scope.group_id, str(scope.workspace), receipt.envelope.message.id))
@@ -312,7 +312,7 @@ class ObserverJournal:
         return await self._disk(begin)
 
     async def finish_delivery(self, receipt: InputRecord, *, status: str, error: str = '') -> None:
-        if status not in {'delivered', 'failed', 'unknown'}:
+        if status not in {'delivered', 'failed', 'unknown', 'pending', 'not-required'}:
             raise ValueError('Invalid report delivery status')
         scope = receipt.envelope.scope
         await self._disk(lambda db: db.execute('UPDATE outbox SET delivery_status=?,delivery_error=? '

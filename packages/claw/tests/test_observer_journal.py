@@ -8,6 +8,8 @@ import pytest
 from xdog.agent.session_input import SessionInput
 from xdog.claw.core.inputs.models import InputEnvelope, InputScope
 from xdog.claw.core.inputs.store import InputStore
+from xdog.claw.core.outputs.targets import ReplyReference
+from xdog.claw.core.types import UserInput
 
 
 def canonical(identifier='event'):
@@ -30,6 +32,8 @@ async def open_journals(tmp_path):
 
 async def record(journals, **kwargs):
     _core, observers, scope = journals
+    kwargs.setdefault('reply', ReplyReference(scope, 'journal-test-recipient',
+        UserInput(group_id=scope.group_id, sender='sink', channel='tui')))
     return await observers.create(scope.group_id, scope.workspace, 'review', {'version': 2}, **kwargs)
 
 

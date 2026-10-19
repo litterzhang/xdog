@@ -25,8 +25,9 @@ from xdog.claw.core.chunker import BlockChunker
 from xdog.claw.core.inputs.consumer import Admit, InputOutcome, InputService
 from xdog.claw.core.inputs.models import InputEnvelope, InputScope, ReplyTarget
 from xdog.claw.core.inputs.store import InputRecord, InputStore
-from xdog.claw.core.outputs.delivery import OutputDelivery
+from xdog.claw.core.outputs.delivery import DeliveryNotSent, OutputDelivery
 from xdog.claw.core.outputs.store import OutputStore
+from xdog.claw.core.outputs.targets import ReplyReference
 from xdog.claw.core.runtime.channel_adapter import ChannelReplies, ChannelReply, durable_reply
 from xdog.claw.core.runtime.group import GroupRuntime
 from xdog.claw.core.runtime.group_controller import GroupController, GroupReservation, InputExecution
@@ -269,6 +270,7 @@ class Orchestrator:
             raise ValueError('Original live admission binding unavailable; inspect before retry')
         options = dict(call.options) if call is not None else {}
         options.pop('on_execution_started', None)
+        reference = options.pop('reply_reference', None)
         on_error: Callable[[str], Awaitable[None]] | None = None
         display = options.get('on_display_event')
         if call is not None and display is not None:
@@ -283,6 +285,17 @@ class Orchestrator:
             reply = options.get('on_assistant_message')
             recovered = (call is None and isinstance(value, UserInput) and not isinstance(value, ExternalInput)
                          and record.envelope.reply is not None)
+            if reference is None and isinstance(value, UserInput) and not isinstance(value, ExternalInput):
+                if isinstance(reply, ChannelReply):
+                    reference = self.capture_reply(reply.channel, restore_input(record.envelope))
+                elif recovered:
+                    original = restore_input(record.envelope)
+                    if not isinstance(original, UserInput):
+                        raise ValueError('Saved reply input kind changed')
+                    reference = ReplyReference(record.envelope.scope, 'saved-original-channel', original)
+            if reference is not None and reference.scope != record.envelope.scope:
+                raise ValueError('Reply reference no longer matches the input workspace')
+            options['reply_reference'] = reference
             if isinstance(reply, ChannelReply) or recovered:
                 if self._outputs is None:
                     raise RuntimeError('Application output receipts were not initialized')
@@ -315,6 +328,7 @@ class Orchestrator:
         on_accepted: Callable[[], None] | None = None, reply_target: ReplyTarget | None = None,
         wait_for_result: bool = True,
         on_execution_started: Callable[[InputExecution], None] | None = None,
+        reply_reference: ReplyReference | None = None,
     ) -> TurnResult | None:
         """Persist ordinary input before ACK; busy never implicitly means steering."""
         group_id = message.group_id
@@ -342,7 +356,7 @@ class Orchestrator:
             call = _InputCall(envelope, {'on_display_event': on_display_event, 'on_text_delta': on_text_delta,
                 'on_assistant_message': on_assistant_message, 'child_ui': child_ui, 'input_alive': input_alive,
                 'before_admission': before_admission, 'command_menu': command_menu,
-                'on_execution_started': on_execution_started},
+                'on_execution_started': on_execution_started, 'reply_reference': reply_reference},
                 asyncio.get_running_loop().create_future(), asyncio.Event())
             self._input_calls[key] = call
         try:
@@ -388,7 +402,7 @@ class Orchestrator:
         input_alive: Callable[[], bool] | None = None,
         before_admission: Callable[[], Awaitable[bool]] | None = None,
         command_menu: CommandMenuHost | None = None,
-        admit: Admit | None = None,
+        admit: Admit | None = None, reply_reference: ReplyReference | None = None,
     ) -> TurnResult | None:
         """Execute a message with concurrency control."""
         group_id = message.group_id
@@ -403,9 +417,10 @@ class Orchestrator:
             if before_admission is not None and not await before_admission():
                 return None  # Host cancellation won before actual Agent admission.
             session = runtime.get_or_create_session(allow_reset=input_alive is None)
-            session.agent.set_tool_context({**session.agent.tool_context, '_eyes': runtime.observers})
             if admit is not None and not await admit(session.meta.session_id):
                 return None
+            session.agent.set_tool_context({**session.agent.tool_context, '_eyes': runtime.observers,
+                                            '_reply_reference': reply_reference})
             previous_menu = session.extensions.command_menu_handler
             menu_handler = self._command_menu_handler(session, command_menu) if command_menu is not None else None
             previous_pending = session.extensions.pending_messages
@@ -421,6 +436,7 @@ class Orchestrator:
                 )
                 return replace(result, session_id=session.meta.session_id) if result is not None else None
             finally:
+                session.agent.set_tool_context({**session.agent.tool_context, '_reply_reference': None})
                 asyncio.get_running_loop().call_soon(runtime.goal_manager._wake_fn)
                 session.extensions.pending_messages = previous_pending
                 if session.extensions.command_menu_handler is menu_handler:
@@ -473,26 +489,46 @@ class Orchestrator:
             for channel in channels:
                 await channel.send_chunk(group_id, chunk)
 
-    async def deliver_report(self, group_id: str, text: str) -> list[dict[str, object]]:
-        """Trusted managed output; record partial sends, never retry model work."""
-        channels = [channel for channel in self._channels if channel.accepts_group(group_id)]
-        if not channels:
-            raise RuntimeError(f"No delivery channel for group {group_id}")
-        results: list[dict[str, object]] = []
-        for channel in channels:
-            sent = 0
-            try:
-                for chunk in self._chunker.chunk(text) or [text]:
-                    await channel.send_chunk(group_id, chunk)
-                    sent += 1
-                results.append({'channel': channel.name, 'status': 'delivered', 'accepted_chunks': sent})
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                results.append({'channel': channel.name, 'status': 'unknown' if isinstance(
-                    exc, (TimeoutError, ConnectionError, OSError)) else 'failed', 'accepted_chunks': sent,
-                    'error': str(exc)})
-        return results
+    def register_reply_channel(self, channel: Channel) -> str:
+        return self._channel_replies.register(channel)
+
+    def unregister_reply_channel(self, binding: str) -> None:
+        self._channel_replies.unregister(binding)
+
+    def capture_reply(self, channel: Channel, original: GroupInput) -> ReplyReference:
+        if not isinstance(original, UserInput):
+            raise ValueError('A reply reference requires the original input route')
+        workspace = self.get_group_workspace(original.group_id)
+        if workspace is None:
+            raise ValueError('Unknown reply workspace')
+        return self._channel_replies.capture(InputScope(original.group_id, workspace), channel, original)
+
+    async def deliver_report(self, reference: ReplyReference, text: str, *, delivery_id: str
+                             ) -> list[dict[str, object]]:
+        """Send only to a captured destination; group labels never select a sender."""
+        if (not isinstance(reference, ReplyReference)
+                or self.get_group_workspace(reference.scope.group_id) != reference.scope.workspace):
+            raise ValueError('Original report recipient scope changed')
+        channel = self._channel_replies.recipient(reference)
+        if channel is None:
+            return [{'channel': reference.channel, 'status': 'pending', 'accepted_chunks': 0,
+                     'error': 'Original recipient unavailable; no fallback destination'}]
+        import hashlib
+        sent = 0
+        try:
+            for ordinal, chunk in enumerate(self._chunker.chunk(text) or [text]):
+                identifier = hashlib.sha256(f'{delivery_id}:{ordinal}'.encode()).hexdigest()
+                await channel.send_output(reference.original, identifier, chunk)
+                sent += 1
+            return [{'channel': channel.name, 'status': 'delivered', 'accepted_chunks': sent}]
+        except asyncio.CancelledError:
+            raise
+        except DeliveryNotSent as exc:
+            return [{'channel': channel.name, 'status': 'pending' if sent == 0 else 'failed',
+                     'accepted_chunks': sent, 'error': str(exc)}]
+        except Exception as exc:
+            return [{'channel': channel.name, 'status': 'failed' if isinstance(exc, ValueError) else 'unknown',
+                     'accepted_chunks': sent, 'error': str(exc)}]
 
     # -- Group operations (internal gateway boundary) -----------------------------
 

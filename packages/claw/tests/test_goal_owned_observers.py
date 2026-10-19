@@ -37,7 +37,8 @@ async def create_file(harness, *, name="owned-file", group="g1", **policy):
     path = root / "task-report.json"
     if not path.exists():
         path.write_text('{"revision":1}')
-    created = await harness.manager.create(group, name, file_source(), "reconcile task", **policy)
+    created = await harness.manager.create(group, name, file_source(), "reconcile task",
+                                            reply=harness.reference(group), **policy)
     await watching(harness, created["id"], group)
     return created, path
 
@@ -134,7 +135,7 @@ async def test_owned_terminal_files_cannot_be_reenabled_by_resume_or_duplicate_c
     before = await managed.record(original.id)
     status = await managed.manager.resume_owned("g1", original.id, owner=OWNER)
     duplicate = await managed.manager.create("g1", "owned-file", file_source(), "reconcile task",
-                                             owner=OWNER, notify_only=True)
+                                             owner=OWNER, notify_only=True, reply=original.reply)
     assert not status["enabled"] and status["state"] == terminal
     assert duplicate["id"] == original.id and not duplicate["enabled"]
     assert await managed.record(original.id) == before
@@ -509,7 +510,7 @@ async def test_owned_file_interrupted_model_stays_needs_review_after_explicit_re
 @pytest.mark.parametrize("notify_only", [False, True])
 async def test_owned_scheduler_policy_uses_real_inbox_but_cannot_resume_as_file(managed, notify_only):
     created = await managed.manager.create("g1", "owned-timer", at(), "reconcile task", owner=OWNER,
-                                           notify_only=notify_only)
+                                           notify_only=notify_only, reply=managed.reference("g1"))
     before = await managed.record(created["id"])
     with pytest.raises(ValueError, match="Only explicitly owned file"):
         await managed.manager.resume_owned("g1", before.id, owner=OWNER)

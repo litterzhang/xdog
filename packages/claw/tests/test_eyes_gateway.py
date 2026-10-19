@@ -67,8 +67,8 @@ async def test_gateway_restores_accepted_expired_once_without_tui_or_replay(tmp_
                     await asyncio.sleep(.01)
             assert len(calls) == 1
             assert row['occurrences'][0]['execution_status'] == 'succeeded'
-            # No connected output channel: intake/model success is not delivery.
-            assert row['occurrences'][0]['delivery_status'] == 'failed'
+            # No creator selected a recipient: success is not an implicit broadcast.
+            assert row['occurrences'][0]['delivery_status'] == 'not-required'
         finally:
             await server.stop()
         # Another full receiver/gateway reconstruction does not re-run the once.

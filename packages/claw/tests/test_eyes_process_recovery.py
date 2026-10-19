@@ -19,12 +19,17 @@ from xdog.claw.channels.tui.channel import TuiChannel
 from xdog.claw.config import ClawConfig
 from xdog.claw.core.observers.manager import ManagedObservers
 from xdog.claw.core.runtime.orchestrator import Orchestrator
-from xdog.claw.core.types import Group,GroupConfig
+from xdog.claw.core.types import Group,GroupConfig,UserInput
+from xdog.claw.core.inputs.models import InputScope
+from xdog.claw.core.outputs.targets import ReplyReference
 from xdog.eyes.loader import definition_data
 from xdog.eyes.managed_scheduler import SchedulerClocks,initial_managed_state
 root,endpoint,phase=Path(sys.argv[1]),Path(sys.argv[2]),sys.argv[3]
 clock=2_000_000_000.0+(0 if phase=='create' else 100)
 count=[]
+class ProcessSink(TuiChannel):
+ def accepts_saved_reply(self,original):
+  return original.channel=='tui' and original.metadata.get('account_id')=='process-test-sink'
 def model(*args):
  count.append(1)
  with (root/'calls').open('a') as f:f.write('model\n')
@@ -41,10 +46,13 @@ async def main():
   definition=service.definition('main','persisted',{'type':'scheduler','schedule':{
    'at':datetime.fromtimestamp(clock+10,UTC).isoformat()}},'Report after restart')
   state=initial_managed_state(definition,'eyes-process',clocks)
-  await service.store.create('main',root,'persisted',definition_data(definition),identifier='eyes-process',state=state)
+  target=ReplyReference(InputScope('main',root),'old-process-binding',UserInput(group_id='main',
+   sender='test-sink',channel='tui',metadata={'account_id':'process-test-sink'}))
+  await service.store.create('main',root,'persisted',definition_data(definition),identifier='eyes-process',state=state,
+   reply=target)
   await service.close()
  else:
-  channel=TuiChannel()
+  channel=ProcessSink()
   async def send(group,text):
    assert group=='main' and text=='cross-process report'
    with (root/'reports').open('a') as f:f.write('delivered\n')

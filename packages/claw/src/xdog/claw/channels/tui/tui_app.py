@@ -3880,6 +3880,11 @@ class ChatApp:
             question = msg.get('dialog')
             if not isinstance(question, dict) or not self._extension_stack.accepts(question, []):
                 return  # Removed extension controls cannot touch a successor owner or draft.
+        if msg_type == 'notification':
+            if msg.get('group_id') == self.group_id and isinstance(msg.get('content'), str):
+                self._chat_log.add_system(msg['content'])
+                self._tui.request_render()
+            return
         if msg_type == "acp_input_completed":
             if (msg.get("group_id") != self.group_id or not isinstance(msg.get("session_id"), str)
                     or not msg.get("session_id") or self._gateway_session_id

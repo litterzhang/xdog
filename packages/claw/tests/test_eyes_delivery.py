@@ -23,6 +23,8 @@ async def test_failures_never_mark_success(managed, failure, monkeypatch):
     elif failure == 'delivery':
         managed.channel.send_message.side_effect = RuntimeError('delivery failed')
     elif failure == 'no-channel':
+        reference = (await managed.record(created['id'])).reply
+        managed.orch.unregister_reply_channel(reference.binding)
         managed.orch._channels.clear()
     elif failure == 'unknown-group':
         execute = managed.orch._execute_owned_input
@@ -34,7 +36,7 @@ async def test_failures_never_mark_success(managed, failure, monkeypatch):
     elif failure == 'empty':
         managed.model.replies['report'] = AssistantMessage(content=())
     managed.clock.advance(240)
-    saved = await managed.completed(created['id'])
+    saved = await managed.completed(created['id'], pending_report=failure == 'no-channel')
     row, = saved['occurrences']
     assert row['receipt_status'] == 'accepted' and not saved['enabled']
     if failure in {'model', 'unknown-group'}:
@@ -43,7 +45,8 @@ async def test_failures_never_mark_success(managed, failure, monkeypatch):
     else:
         # Model success must never be advertised as channel delivery success.
         assert row['execution_status'] == 'succeeded'
-        assert row['delivery_status'] == 'failed' and row['delivery_error']
+        expected = 'pending' if failure == 'no-channel' else 'unknown' if failure == 'delivery' else 'failed'
+        assert row['delivery_status'] == expected and row['delivery_error']
     if failure == 'model':
         assert 'model failed' in managed.channel.send_message.call_args.args[1]
     elif failure == 'unknown-group':
@@ -79,20 +82,18 @@ async def test_unknown_channel_outcome_disables_recurring_source_without_replay(
     assert not (await managed.manager.status('g1', created['id']))['enabled']
 
 
-async def test_partial_channel_failure_keeps_per_channel_receipts_without_second_model(managed):
+async def test_an_unrelated_channel_failure_cannot_affect_or_receive_the_original_report(managed):
     second = TuiChannel()
-    second.send_message = AsyncMock(side_effect=RuntimeError('second channel offline'))
+    second.send_message = AsyncMock(side_effect=RuntimeError('unrelated channel offline'))
     managed.orch.add_channel(second)
     created = await managed.create()
     managed.clock.advance(240)
     status = await managed.completed(created['id'])
     row, = status['occurrences']
-    assert row['execution_status'] == 'succeeded' and row['delivery_status'] == 'failed'
-    outcomes = json.loads(row['delivery_error'])
-    assert [outcome['status'] for outcome in outcomes] == ['delivered', 'failed']
-    assert outcomes[0]['accepted_chunks'] == 1 and outcomes[1]['accepted_chunks'] == 0
+    assert row['execution_status'] == 'succeeded' and row['delivery_status'] == 'delivered'
+    assert not row['delivery_error']
     managed.channel.send_message.assert_awaited_once_with('g1', 'Scheduled report')
-    second.send_message.assert_awaited_once_with('g1', 'Scheduled report')
+    second.send_message.assert_not_awaited()
     assert managed.model.calls == ['report']
 
 

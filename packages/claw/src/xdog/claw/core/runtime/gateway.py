@@ -27,6 +27,7 @@ from xdog.agent.mcp.completion import McpCompletion
 from xdog.agent.mcp.context import McpDocument, McpEntry
 from xdog.agent.supervision_config import ChildConfig
 from xdog.ai.types import ImageContent, StreamOptions, ThinkingLevel
+from xdog.claw.channels.tui.channel import NativeNoticeChannel
 from xdog.claw.channels.tui.image_upload import ImageUploads
 from xdog.claw.config import ClawConfig
 from xdog.claw.core.inputs.models import InputScope, ReplyTarget
@@ -483,6 +484,8 @@ class GatewayServer:
 
 
         assert self._orchestrator is not None
+        notice_channel = NativeNoticeChannel(write)
+        notice_binding = self._orchestrator.register_reply_channel(notice_channel)
 
         def start_operation(lease: GroupReservation | None, coroutine: Coroutine[Any, Any, None]
                             ) -> asyncio.Task[None]:
@@ -1805,6 +1808,8 @@ class GatewayServer:
                         if not future.done():
                             future.set_result(identity)
                     request['_on_execution_started'] = admitted
+                    request['_reply_reference'] = self._orchestrator.capture_reply(notice_channel,
+                        UserInput(group_id=group_id, sender='user', channel='tui'))
                     task = asyncio.create_task(
                         self._handle_chat_message(
                             request,
@@ -1902,6 +1907,9 @@ class GatewayServer:
             self._acp_viewers.pop(client_id, None)
             async def cleanup_client() -> None:
                 nonlocal child_ui_connected
+                if self._orchestrator is not None:
+                    self._orchestrator.unregister_reply_channel(notice_binding)
+                await notice_channel.disconnect()
                 try:
                     child_ui_connected = False
                     child_ui_connected = False
@@ -2197,6 +2205,7 @@ class GatewayServer:
                 command_menu=request.get("_command_menu"),
                 message_id='native:' + run_id,
                 on_accepted=accepted, on_execution_started=request.get('_on_execution_started'),
+                reply_reference=request.get('_reply_reference'),
                 reply_target=ReplyTarget('tui', run_id),
             )
         except ValueError as exc:
