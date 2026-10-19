@@ -88,14 +88,85 @@ This retains all test paths and physical terminal/socket tests. Earlier default
 four-worker timing observations and root-full constraints remain documented;
 this result is not a claim to have diagnosed/fixed those earlier observations.
 
+## Rebuilt cold installed artifacts
+
+Current runtime artifacts: `/data/observer-message-dist.LN5URO`, **seven wheels
+and seven sdists**, all14 Twine checks pass. Complete runtime/resource byte
+parity against current `packages/*/src/xdog` passes for both wheel and sdist:
+AI53/Agent124/Goal21/TUI89/Coding98/Claw94/Eyes37 files, including py.typed and
+packaged skills/extension code. Identities are recorded in `source-parity.json`.
+Claw wheel SHA256:
+`153f0691be7456b2a223fe082be587151ae7dc0cbd2601b2a38dc399f0cce502`.
+Goal wheel SHA256:
+`19d5057368c18987711960ec41d16feb6d6de341027e36933162268cb253be6b`.
+
+`verify_acp_artifacts.py` creates five non-editable wheel-only environments,
+outside the checkout with a fresh private HOME/config root and no project
+PYTHONPATH. Official ACP SDK0.12.1 is used. The new external
+`verify_claw_observer_output_artifact.py` imports only installed runtime modules;
+it verifies actual Weixin intake -> Agent eyes tool -> source journal -> scheduler
+-> Unix ACP enqueue -> Core input/execution/output -> original sender. It proves:
+
+- Alice's first message is sent while the second real Agent response is gated;
+  Bob's later input/current channel mapping cannot claim it. Two distinct output
+  IDs, no aggregate duplicate.
+- Stopping source preserves accepted execution and both messages; stopping
+  notifications leaves the first delivered, second cancelled, execution succeeded.
+- A real not-sent network boundary leaves both original message outputs pending;
+  after application/endpoint/source restart a forbidden model transport is never
+  called. Original Alice/context and original output IDs deliver once, despite a
+  different current peer. Source/journal/ACP/Core stores are not test substitutes.
+
+The same external first-message probe fails at its delivery deadline against the
+previous installed aggregate-sender artifacts, after the second response has
+actually entered its gate (`observer-message-installed-red.log`). A first setup
+attempt rejected an incorrectly permissioned scenario directory; it was corrected
+before recording the behavioral RED. Fresh artifacts pass the behavior probe.
+Expected `DeliveryNotSent` tracebacks in the cold log are intentionally exercised
+network rejection, not hidden test failures.
+
+Five-environment receipt:
+`/data/t.Vy5SaQ/xdog-acp-isolated.iusd70l5/verification.json`, including retained
+standalone Eyes validation, Agent stdio peer, model-free Coding Unix intake,
+actual Coding owner, generic Claw ACP, ordinary output restart and native queued
+controls. Dedicated updated observer output consumer is part of that same runner.
+
+Same rebuilt Goal wheel and packaged extension digest
+`2959d6de1764806ef3b078b0149d3f633164b4b4a37679eda47a09c40a90f3c7`
+also pass actual cold lifecycles:
+
+- Goal-only: `/data/t.Vy5SaQ/goal-only-installed-4ocsbfmh`; real SDK Agent/
+  ChildSupervisor/tool IO, explicit acceptance and independent review, five
+  scripted model calls/two Agents; no installed/imported TUI or host packages.
+- Coding: `/data/t.Vy5SaQ/coding-goal-installed-1nj35292`; base ordinary turn
+  without Goal, install only Goal then actual worker/report/accept/reviewer,
+  three durable notices, same generic display unloaded during running worker,
+  old exact owner unavailable/new owner empty. Default ask blocks attempted write.
+- Claw: `/data/t.Vy5SaQ/claw-goal-installed-l_l85g3v`; base without Goal,
+  install only Goal then actual worker/report/rotation/accept/review/reopen,
+  three notices; same display unloaded during running worker, original stable
+  group Goal remains visible in the fresh parent. No native Goal widget added.
+
+Logs under `/data/t.Vy5SaQ/`:
+`observer-message-{build,twine,parity}-current.log`,
+`observer-message-installed-{acp,goal,coding_goal,claw_goal}-current.log`,
+`observer-message-final-installed-acp.log` (strengthened pre-resume peer check).
+Commands are the existing `scripts/verify_{acp_artifacts,goal_artifact,
+coding_goal_artifact,claw_goal_artifact}.py <distribution-directory>`, run from
+the repository only to create isolated external consumers. No paid transport,
+provider, real account, user service or user state is used.
+
 ## Remaining gates
 
-The prior shared Goal UI cold wheels are from an earlier Core/observer-format
-snapshot. They are not proof of this new output path. The plan's Task3 must
-rebuild wheels/sdists, check runtime/resource parity and Twine, and run external
-wheel-only observer streaming, original-recipient recovery and independent
-cancellation plus existing Goal-only, both-host shared UI and ACP/native/output
-consumers. Inert queue/debounce cleanup, all47 requirement audit and one final
-fresh-context whole-branch review also remain. This document does not claim the
-whole assistant-core objective is finished. No push, deployment, publish, paid
-model or existing user data/service changes were performed.
+Final artifact-stage source gates: **6864 passed,34 skipped**,174.65s,
+Claw1041/107.26s (`observer-message-final-root9.log`), same unfiltered jobs2 and
+short /data environment as above. Fresh strict9 mypy595 files, Ruff packages and
+artifact verifiers, Flow17, lock/diff pass. Current wheel/sdist runtime/resource
+parity still matches source after these gates; only test consumers/docs changed
+since the build. Final logs: `observer-message-final-{root9,strict9,flow17}.log`.
+
+Inert queue/debounce cleanup,
+all47 requirement-by-requirement audit and one final fresh-context whole-branch
+review remain. This document does not claim the whole assistant-core objective
+is finished. No push, deployment, publish, paid model or existing user data/service
+changes were performed.

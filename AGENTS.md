@@ -176,8 +176,10 @@ legacy Goal manager. Claw has optional goals/eyes/acp install extras and cold
 base/two-host evidence. The same packaged Goal display and generic owner-bound
 views are verified in both actual source and cold installed hosts. Managed
 observers now use generic Core per-message output receipts, not an aggregate
-report sender; cold new-output artifacts, inert configuration cleanup and final
-acceptance/review remain pending.
+report sender. Rebuilt cold artifacts verify the same output IDs/original peer
+across restart without model replay and both independent cancellation modes; see
+`docs/observer-message-output-verification.md`. Inert configuration cleanup and
+final acceptance/review remain pending.
 Ordinary output receipts live in `<data_dir>/outputs/journal.sqlite3`: per-message
 send attempts distinguish delivered/pending/proven-not-sent/unknown independently
 from Agent execution. Unknown sends are never automatically replayed. Native

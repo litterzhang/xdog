@@ -290,6 +290,9 @@ def main() -> None:
     root = Path(tempfile.mkdtemp(prefix='xdog-acp-isolated.'))
     environment = {k: v for k, v in os.environ.items() if k not in {'PYTHONPATH', 'PYTHONHOME', 'VIRTUAL_ENV'}}
     environment['UV_NO_PROJECT'] = '1'
+    home = root / 'home'
+    home.mkdir(mode=0o700)
+    environment.update(HOME=str(home), XDG_CONFIG_HOME=str(home / '.config'), CODEX_HOME=str(home / '.codex'))
     uv = shutil.which('uv')
     if uv is None:
         raise RuntimeError('uv is required for artifact verification')
@@ -324,6 +327,9 @@ def main() -> None:
             native_probe = work / 'native_consumer.py'
             native_probe.write_text(Path(__file__).with_name('verify_claw_native_artifact.py').read_text())
             subprocess.run([str(python), str(native_probe)], env=environment, cwd=work, check=True, timeout=30)
+            observer_probe = work / 'observer_output_consumer.py'
+            observer_probe.write_text(Path(__file__).with_name('verify_claw_observer_output_artifact.py').read_text())
+            subprocess.run([str(python), str(observer_probe)], env=environment, cwd=work, check=True, timeout=40)
         if name == 'eyes':
             subprocess.run([str(env / 'bin' / 'xdog-eyes'), '--help'],
                            env=environment, cwd=work, check=True, stdout=subprocess.DEVNULL)
