@@ -113,3 +113,10 @@ Logs under `/data/t.Vy5SaQ/`: `claw-owned-ingress-source-final-root9.log`,
 `claw-owned-final-io-strict.log`, `claw-owned-ingress-source-flow-lock.log`.
 No runtime edit occurred during this full gate. Formal post-commit task-done
 re-runs its all9 command; its result is recorded in the original plan ledger.
+
+Formal post-commit task-done gate for `39547e0..eba1158` also completed:
+**7022 passed,34 skipped**,197.91s; Claw1193/132.66s. The original ledger records
+Task3 complete; this source subplan returns to parent final-acceptance Task2.
+Whole47/review/current artifacts remain required. Complete per-package log:
+`/data/t.Vy5SaQ/claw-owned-io-task3-complete-root9.log` (the helper console
+`claw-owned-io-task3-done.log` contains only its final tail, not all package counts).

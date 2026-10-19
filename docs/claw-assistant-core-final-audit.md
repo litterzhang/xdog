@@ -186,8 +186,9 @@ boundary. All9 current:7022 passed34 skipped199.49s, strict601/fullRuff/Flow17/
 lock/diff. This supersedes the preceding **historical finding** descriptions;
 those RED receipts remain authentic, not claims that their old code is current.
 
-Complete the existing owned-IO Task3 gate, then return to all47 row inspection.
-No row is promoted by a green suite alone. Source availability is not final
+The owned-IO Task3 post-commit all9 gate is complete (7022/34,197.91s);
+execution has returned to parent Task2 all47 row inspection. No row is promoted
+by a green suite alone. Source availability is not final
 artifact parity, and wholebranch review/current consumers remain unperformed.
 
 ## 47-item source/test inventory
@@ -259,9 +260,9 @@ Prefixes below expand to actual repository paths:
 
 ## Exit gates still required
 
-1. Close remaining owned-IO/durability findings and complete current-index recovery audit with RED-to-GREEN
-   tests and ordered ownership, without changing ordinary per-turn semantics or
-   Coding's independent input batching.
+1. Owned-IO/current-index/neutral-source implementation gates are complete at
+   eba1158 with actual RED-to-GREEN and post-commit all9 proof. Reconfirm their
+   acceptance scope row-by-row; they are not a substitute for review/artifacts.
 2. Finish source/test/artifact inspection for every row, source authority vs
    derived projections, all named artifacts/commands and acceptance invariants.
 3. One independent fresh-context whole-branch review from actual main merge base,
