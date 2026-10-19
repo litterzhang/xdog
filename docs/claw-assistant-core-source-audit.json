@@ -12,8 +12,9 @@
         "packages/claw/tests/test_goal_host.py::test_without_goal_package_claw_is_an_ordinary_assistant_without_goal_storage_or_tool"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "current wheel-only absent/present both hosts",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "CORE-02",
@@ -22,16 +23,18 @@
         "packages/goal/tests/test_service.py::test_optional_capability_is_not_delegation_or_automatic_model_work"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "one wholebranch review and final scope rerun",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "CORE-03",
       "source_mechanism": "Changes are on current feature checkout; no worktree/push/merge/publish operation in implementation; temporary sockets/envs contain only fixture data.",
       "runtime_cases": [],
       "source_verdict": "gate_or_operation_audit",
-      "remaining_final_proof": "final local-only operation audit",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "IN-01",
@@ -40,8 +43,9 @@
         "packages/claw/tests/test_native_busy_intake.py::test_busy_native_ack_is_a_real_pending_input_not_steering_or_a_second_agent"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "current installed native/ACP integration",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "IN-02",
@@ -50,8 +54,9 @@
         "packages/claw/tests/test_input_store.py::test_same_message_id_cannot_alias_different_host_or_content"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "one wholebranch review and final scope rerun",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "IN-03",
@@ -60,8 +65,9 @@
         "packages/claw/tests/test_input_store.py::test_concurrent_admission_does_not_overfill_or_delete_accepted_messages"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "one wholebranch review and final scope rerun",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "IN-04",
@@ -70,8 +76,9 @@
         "packages/claw/tests/test_input_consumer.py::test_withdrawal_while_executor_waits_prevents_admission_and_allows_next_input"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "one wholebranch review and final scope rerun",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "IN-05",
@@ -80,8 +87,9 @@
         "packages/claw/tests/test_input_store_ownership.py::test_real_process_exit_recovers_unstarted_but_never_replays_running"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "one wholebranch review and final scope rerun",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "IN-06",
@@ -90,8 +98,9 @@
         "packages/claw/tests/test_output_source_routes.py::test_external_ack_loss_duplicate_retains_accepted_reply_without_later_resolver_or_recipient"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "current installed original-recipient recovery",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "IN-07",
@@ -100,8 +109,9 @@
         "packages/claw/tests/test_weixin_application_intake.py::test_unsafe_intake_cannot_advance_upstream_cursor"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "current installed attachment/native/partial-ACK consumers",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "IN-08",
@@ -110,8 +120,9 @@
         "packages/claw/tests/test_observer_message_outputs.py::test_notification_cancel_cannot_relabel_an_entered_unknown_send_as_unsent"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "current installed observer per-message output",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "IN-09",
@@ -120,8 +131,9 @@
         "packages/claw/tests/test_native_busy_intake.py::test_running_abort_joins_original_attempt_before_the_next_pending_input_runs"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "one wholebranch review and final scope rerun",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "IN-10",
@@ -130,8 +142,9 @@
         "packages/coding/tests/test_batch_turns.py::test_five_inputs_are_five_history_messages_in_one_turn"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "one wholebranch review and final scope rerun",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "RUN-01",
@@ -140,8 +153,9 @@
         "packages/claw/tests/test_native_busy_intake.py::test_queued_peer_cannot_steer_first_and_abort_withdraws_only_its_queued_input"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "one wholebranch review and final scope rerun",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "RUN-02",
@@ -150,8 +164,9 @@
         "packages/claw/tests/test_native_busy_intake.py::test_busy_native_ack_is_a_real_pending_input_not_steering_or_a_second_agent"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "one wholebranch review and final scope rerun",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "RUN-03",
@@ -160,8 +175,9 @@
         "packages/claw/tests/test_native_busy_intake.py::test_delayed_old_view_cannot_control_a_successor_or_retry_attempt"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "one wholebranch review and final scope rerun",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "RUN-04",
@@ -170,8 +186,9 @@
         "packages/claw/tests/test_owned_source_io.py::test_generic_source_preserves_actual_ordinary_input_without_goal_policy"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "wholebranch responsibility review",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "RUN-05",
@@ -180,8 +197,9 @@
         "packages/claw/tests/test_owned_application_projection.py::test_repeated_application_shutdown_cancel_keeps_actual_cleanup_owner"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "one wholebranch review and final scope rerun",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "BOUND-01",
@@ -190,8 +208,9 @@
         "packages/claw/tests/test_acp_gateway.py::test_disabled_gateway_import_and_cli_do_not_load_optional_acp_sdk"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "wholebranch import/ownership review",
-      "overall_acceptance": "passed"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "BOUND-02",
@@ -200,8 +219,9 @@
         "packages/claw/tests/test_observer_message_outputs.py::test_first_observer_message_arrives_before_second_response_finishes"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "current installed observer handoff",
-      "overall_acceptance": "passed"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "BOUND-03",
@@ -210,8 +230,9 @@
         "packages/claw/tests/test_goal_host_recovery.py::test_goal_state_notification_and_observer_controls_are_independent"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "one wholebranch review and final scope rerun",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "BOUND-04",
@@ -220,8 +241,9 @@
         "packages/claw/tests/test_goal_host.py::test_forged_role_labels_and_execution_references_do_not_grant_a_role"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "one wholebranch review and final scope rerun",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "BOUND-05",
@@ -230,8 +252,9 @@
         "packages/claw/tests/test_output_source_routes.py::test_notification_cancellation_never_rewrites_an_entered_or_uncertain_send"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "current installed readiness/recovery",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "GOAL-01",
@@ -240,8 +263,9 @@
         "packages/goal/tests/test_agent_lifecycle.py::test_actual_supervised_worker_report_and_independent_reviewer_complete"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "current Goal-only isolated wheel dependencies/imports",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "GOAL-02",
@@ -250,8 +274,9 @@
         "packages/goal/tests/test_store.py::test_atomic_snapshot_history_notices_and_detached_reads"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "one wholebranch review and final scope rerun",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "GOAL-03",
@@ -260,8 +285,9 @@
         "packages/claw/tests/test_goal_host_recovery.py::test_legacy_goal_truth_is_refused_byte_preserving_without_empty_replacement"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "one wholebranch review and final scope rerun",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "GOAL-04",
@@ -270,8 +296,9 @@
         "packages/goal/tests/test_agent_lifecycle.py::test_actual_supervised_worker_report_and_independent_reviewer_complete"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "wholebranch port-boundary review",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "GOAL-05",
@@ -280,8 +307,9 @@
         "packages/claw/tests/test_goal_host.py::test_bound_reports_work_in_parent_readonly_without_granting_filesystem_mutation"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "current installed both-host permissions/reviewer evidence",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "GOAL-06",
@@ -290,8 +318,9 @@
         "packages/goal/tests/test_service.py::test_assignment_report_acceptance_and_dependencies_are_distinct"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "one wholebranch review and final scope rerun",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "GOAL-07",
@@ -300,8 +329,9 @@
         "packages/claw/tests/test_goal_host.py::test_ordinary_status_turns_and_goal_wait_do_not_start_a_reviewer"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "one wholebranch review and final scope rerun",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "GOAL-08",
@@ -310,8 +340,9 @@
         "packages/goal/tests/test_review.py::test_stale_incomplete_or_script_verdict_cannot_finish_goal"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "one wholebranch review and final scope rerun",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "GOAL-09",
@@ -320,8 +351,9 @@
         "packages/goal/tests/test_service.py::test_child_terminal_fact_notifies_once_without_acceptance_or_restart"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "one wholebranch review and final scope rerun",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "GOAL-10",
@@ -330,8 +362,9 @@
         "packages/coding/tests/test_goal_lifecycle.py::test_exact_session_notice_has_no_human_authority_even_if_source_and_text_claim_it"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "one wholebranch review and final scope rerun",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "GOAL-11",
@@ -340,8 +373,9 @@
         "packages/claw/tests/test_goal_host.py::test_actual_claw_worker_explicit_acceptance_independent_readonly_review_and_notices"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "same current Goal wheel actual both-host cold execution",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "GOAL-12",
@@ -350,8 +384,9 @@
         "packages/coding/tests/test_goal_lifecycle.py::test_idle_session_navigation_keeps_old_goal_private_and_releases_old_journal"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "current installed scope-rotation cases",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "GOAL-13",
@@ -360,8 +395,9 @@
         "packages/goal/tests/test_cumulative_state.py::test_aggregate_goal_over_old_megabyte_cap_roundtrips_reopens_and_preserves_versions"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "one wholebranch review and final scope rerun",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "UI-01",
@@ -370,8 +406,9 @@
         "packages/goal/tests/test_ui_views.py::test_same_packaged_goal_worker_uses_view_port_without_ui_or_a_business_host_loop"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "same current packaged extension digest in actual both hosts",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "UI-02",
@@ -380,8 +417,9 @@
         "packages/claw/tests/test_goal_extension_views.py::test_actual_group_goal_grants_headless_display_and_never_starts_work_for_queries"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "current wheel metadata/renderer consumer",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "UI-03",
@@ -390,8 +428,9 @@
         "packages/agent/tests/test_extension_views.py::test_registry_checks_real_owner_after_read_and_clones_query_and_result"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "one wholebranch review and final scope rerun",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "UI-04",
@@ -400,8 +439,9 @@
         "packages/agent/tests/test_extension_display_profile.py::test_failed_display_is_nonblocking_but_the_real_required_guard_still_blocks"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "current installed unload/crash/reconnect under running worker",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "UI-05",
@@ -410,8 +450,9 @@
         "packages/coding/tests/test_goal_extension_views.py::test_actual_coding_goal_owner_grants_headless_display_and_reading_never_calls_a_model"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "current Goal-only no installed/imported TUI consumer",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "VERIFY-01",
@@ -420,8 +461,9 @@
         "packages/claw/tests/test_owned_child_restore_io.py::test_existing_child_catalog_restore_reads_off_loop_without_replay_or_repair"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "final fresh all9 after review fixes",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "VERIFY-02",
@@ -430,8 +472,9 @@
         "packages/goal/tests/test_data_pages.py::test_parent_pages_keep_committed_version_after_another_actual_mutation"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "one wholebranch review and final scope rerun",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "VERIFY-03",
@@ -440,33 +483,45 @@
         "packages/claw/tests/test_owned_source_io.py::test_generic_source_preserves_actual_ordinary_input_without_goal_policy"
       ],
       "source_verdict": "inspected_with_current_runtime_cases",
-      "remaining_final_proof": "wholebranch deletion/callgraph review",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "VERIFY-04",
       "source_mechanism": "Current full9 source/strict/Ruff/Flow/lock gates run on changed source, not inferred from focus; retained timing/root-full observations and original real terminals/sockets.",
       "runtime_cases": [],
       "source_verdict": "gate_or_operation_audit",
-      "remaining_final_proof": "final command receipts after last review fix",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "VERIFY-05",
       "source_mechanism": "Earlier cold snapshots are explicitly stale; all current affected distributions must rebuild and run actual Goal-only/both-host/ACP/native consumers with byte parity.",
       "runtime_cases": [],
       "source_verdict": "gate_or_operation_audit",
-      "remaining_final_proof": "current artifact build/Twine/parity/cold consumers",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     },
     {
       "id": "VERIFY-06",
       "source_mechanism": "Source audit is not overall completion; all rows, one wholebranch review, important fixes and final current artifacts must settle before goal complete.",
       "runtime_cases": [],
       "source_verdict": "gate_or_operation_audit",
-      "remaining_final_proof": "wholebranch review/fix receipts plus complete47 audit",
-      "overall_acceptance": "pending"
+      "remaining_final_proof": "Independent wholebranch review, any required fixes, final source/artifact revalidation",
+      "overall_acceptance": "pending",
+      "candidate_verification": "Current candidate source/runtime/cold evidence available; independent review still missing"
     }
   ],
-  "implementation_head": "f2b0725bd1115a7e1e9a4cfc26b4339a37fc36eb"
+  "implementation_head": "f2b0725bd1115a7e1e9a4cfc26b4339a37fc36eb",
+  "candidate_artifact_proof": "docs/claw-assistant-core-candidate-artifacts.json",
+  "independent_review_status": {
+    "status": "failed_before_session_start",
+    "reviewer_started": false,
+    "reason": "ENOSPC creating /home/zhang/.codex/thread-writer-locks/01a15671-adac-72f2-a4d4-af8bd78eafdd.lock",
+    "source_base": "33df9083c95e4f838e0eaf34532d3cd3ea6deee0",
+    "source_head": "1559ddb899486f033a61d633616057760fed73e3"
+  }
 }

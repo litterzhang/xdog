@@ -1,0 +1,141 @@
+{
+  "kind": "candidate_pending_independent_review",
+  "source_commit": "1559ddb899486f033a61d633616057760fed73e3",
+  "dist": "/data/assistant-core-candidate-dist.vQzZLe",
+  "packages": {
+    "ai": {
+      "source_members": 53,
+      "wheel": "xdog_ai-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_ai-2.4.2.tar.gz"
+    },
+    "agent": {
+      "source_members": 125,
+      "wheel": "xdog_agent-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_agent-2.4.2.tar.gz"
+    },
+    "tui": {
+      "source_members": 89,
+      "wheel": "xdog_tui-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_tui-2.4.2.tar.gz"
+    },
+    "flow": {
+      "source_members": 57,
+      "wheel": "xdog_flow-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_flow-2.4.2.tar.gz"
+    },
+    "coding": {
+      "source_members": 98,
+      "wheel": "xdog_coding-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_coding-2.4.2.tar.gz"
+    },
+    "claw": {
+      "source_members": 99,
+      "wheel": "xdog_claw-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_claw-2.4.2.tar.gz"
+    },
+    "eyes": {
+      "source_members": 37,
+      "wheel": "xdog_eyes-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_eyes-2.4.2.tar.gz"
+    },
+    "site": {
+      "source_members": 63,
+      "wheel": "xdog_site-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_site-2.4.2.tar.gz"
+    },
+    "goal": {
+      "source_members": 22,
+      "wheel": "xdog_goal-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_goal-2.4.2.tar.gz"
+    }
+  },
+  "artifacts": {
+    "xdog-2.4.2-py3-none-any.whl": "5243fae5b9ddfbdda61d41b0c59d4561181f82c6fa1274f32e75aca9a537aa79",
+    "xdog-2.4.2.tar.gz": "8f98ca949990e0d3e51bdf04ea555bb268a0d45ee796801c378593a0f6df8e0d",
+    "xdog_agent-2.4.2-py3-none-any.whl": "cd3b2be29edc942531c7bdeb8753a4b5e9eafb5a17fe47924bbd4d6b95254ee2",
+    "xdog_agent-2.4.2.tar.gz": "513e8caa73653997cd73624770b00882e449e8ebfdd140362bb31d4224216bfd",
+    "xdog_ai-2.4.2-py3-none-any.whl": "8f423ef40763def8800b82ce1232264c89564b7571ce57a530103b49bc6dd061",
+    "xdog_ai-2.4.2.tar.gz": "84b4043a1e19ed51dfd7a0657ae86d2931b17fcdf435f35f7624b7a72d6c9c85",
+    "xdog_claw-2.4.2-py3-none-any.whl": "275838a7127ed4878009dc2400d2a833fea5aa0697a950272de554614ed82f9e",
+    "xdog_claw-2.4.2.tar.gz": "03ba1b691b907fba60a7ebfbb7b858aa4b910227428c35ed787e4765b6e9d83c",
+    "xdog_coding-2.4.2-py3-none-any.whl": "68244cf2291bd2b2b1e38b30ba74ba5bc4e4e0b6df3b6a440ec533408eedc0d8",
+    "xdog_coding-2.4.2.tar.gz": "18cea3a2764a27143bcac7ce2ef833612bfed95823bdcebbef463d38d9262de4",
+    "xdog_eyes-2.4.2-py3-none-any.whl": "d37a2ec41098994ac2500859360c474a53152d43f97ed47ff003b183ce0697b7",
+    "xdog_eyes-2.4.2.tar.gz": "99640c75668431729583a9d4c5166babe22848d5d963593b7c236d554f43bc0c",
+    "xdog_flow-2.4.2-py3-none-any.whl": "285b4a498d96cea5501dfba438c1fb5af7bc047fcbf57d1accb39bf9d6d922da",
+    "xdog_flow-2.4.2.tar.gz": "4ec2538fe5890f4c0caed6658ac312eee70ddc8035c3f0f0326fb91677cddba8",
+    "xdog_goal-2.4.2-py3-none-any.whl": "6e3a72ade13f03283e3242e19daf6e78ee7e401501a9c92861497fe62ee89d32",
+    "xdog_goal-2.4.2.tar.gz": "1123ceaebe622d33f1f93f0986aa9d1f60b3107b18b2da9167e75fa5d84d8990",
+    "xdog_site-2.4.2-py3-none-any.whl": "58d8d0868082b0065a86bc85bbca446e8f47d3c7eac7bd6bc6f47e0f1cc6902a",
+    "xdog_site-2.4.2.tar.gz": "af82ae1ecef2bfcd3cb9bf2c84810f55642957e8a79460db0a71a2708a877b25",
+    "xdog_tui-2.4.2-py3-none-any.whl": "e4df08890bfec5e3729e54fba7fb8b8d82c72206dbe5080923ec57770390b2c6",
+    "xdog_tui-2.4.2.tar.gz": "fb085fa44f2eea1c882025441406c11a11d6d965c7c47e540956d90d355a8f9e"
+  },
+  "review": {
+    "status": "failed_before_session_start",
+    "reviewer_started": false,
+    "reason": "ENOSPC creating /home/zhang/.codex/thread-writer-locks/01a15671-adac-72f2-a4d4-af8bd78eafdd.lock",
+    "source_base": "33df9083c95e4f838e0eaf34532d3cd3ea6deee0",
+    "source_head": "1559ddb899486f033a61d633616057760fed73e3"
+  },
+  "source_gates": {
+    "passed": 7035,
+    "skipped": 34,
+    "strict_source_files": 602,
+    "flow_examples": 17
+  },
+  "cold_consumers": {
+    "goal_only": {
+      "root": "/data/t.Vy5SaQ/goal-only-installed-c2p7k68r",
+      "log": "/data/t.Vy5SaQ/assistant-core-candidate-goal-only.log",
+      "passed": true,
+      "scripted_model_calls": 5,
+      "distinct_agents": 2
+    },
+    "coding_goal": {
+      "root": "/data/t.Vy5SaQ/coding-goal-installed-iwitbog3",
+      "log": "/data/t.Vy5SaQ/assistant-core-candidate-coding-goal.log",
+      "passed": true,
+      "base_without_goal": true,
+      "permission_mode": "ask",
+      "forbidden_write": false
+    },
+    "claw_goal": {
+      "root": "/data/t.Vy5SaQ/claw-goal-installed-iu1dj5e1",
+      "log": "/data/t.Vy5SaQ/assistant-core-candidate-claw-goal.log",
+      "passed": true,
+      "base_without_goal_eyes_acp": true,
+      "durable_notices": 3
+    },
+    "acp": {
+      "root": "/data/t.Vy5SaQ/xdog-acp-isolated.7v8yi3jr",
+      "log": "/data/t.Vy5SaQ/assistant-core-candidate-acp.log",
+      "passed": true,
+      "environments": [
+        "eyes",
+        "agent",
+        "coding",
+        "coding-owner",
+        "claw"
+      ],
+      "injected_not_sent_boundary": "expected recovery probe, not test failure"
+    },
+    "cumulative_goal": {
+      "log": "/data/t.Vy5SaQ/assistant-core-candidate-cumulative-cold.log",
+      "passed": true,
+      "parent_pages": 20,
+      "original_context_pages": 20,
+      "scripted_actual_worker_calls": 3,
+      "no_installed_harness_tui_acp": true
+    }
+  },
+  "same_ui_digest": "2959d6de1764806ef3b078b0149d3f633164b4b4a37679eda47a09c40a90f3c7",
+  "twine": {
+    "artifacts_passed": 20,
+    "warnings": [
+      "xdog-site wheel and sdist lack long_description/long_description_content_type; unchanged existing metadata"
+    ],
+    "log": "/data/t.Vy5SaQ/assistant-core-candidate-twine.log"
+  },
+  "acceptance": "CANDIDATE ONLY: independent review not performed; cannot claim whole47/goal complete"
+}
