@@ -15,7 +15,8 @@ from typing import TYPE_CHECKING, Any, cast
 
 from xdog.agent.async_work import wait_owned
 from xdog.agent.session_input import SessionInput, decode_input
-from xdog.claw.core.observers.store import ObserverRecord, ObserverStopped, ObserverStore
+from xdog.claw.core.observers.models import ObserverRecord, ObserverStopped
+from xdog.claw.core.observers.store import ObserverStore
 from xdog.eyes.deliveries import Delivery
 from xdog.eyes.events import DeliveryResult
 from xdog.eyes.handlers.acp import AcpHandler

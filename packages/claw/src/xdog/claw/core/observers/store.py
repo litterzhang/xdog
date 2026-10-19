@@ -10,42 +10,15 @@ import json
 import sqlite3
 import time
 import uuid
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from xdog.agent.session_input import SessionInput, decode_input, input_data
+from xdog.claw.core.observers.models import ObserverRecord, ObserverStopped, encoded
 
 if TYPE_CHECKING:
     from xdog.claw.acp.inbox import GroupInbox, InboxRecord
 
-
-class ObserverStopped(RuntimeError):
-    """A persisted cancellation/revision fence won before a new trigger."""
-
-
-def encoded(value: object) -> str:
-    data = json.dumps(value, sort_keys=True, ensure_ascii=True, allow_nan=False)
-    if len(data.encode()) > 1024 * 1024:
-        raise ValueError('Managed observer record exceeds one MiB; no data was dropped')
-    return data
-
-
-@dataclass(frozen=True)
-class ObserverRecord:
-    id: str
-    group_id: str
-    cwd: Path
-    name: str
-    definition: dict[str, Any]
-    revision: int
-    enabled: bool
-    recovery: str
-    state: dict[str, Any]
-    error: str
-    inbox_id: str = ""
-    owner: str = ""
-    notify_only: bool = False
 
 
 def observer_row(row: sqlite3.Row) -> ObserverRecord:

@@ -353,6 +353,12 @@
       "status": "orchestrator_and_native_commit_ack_integrated_not_final_channel_cutover",
       "evidence": "docs/claw-input-runtime-verification.md",
       "note": "Legacy ACP receipt/observer bridge, final native/Weixin handoff and remaining objective acceptance still pending."
+    },
+    {
+      "name": "independent_observer_journal",
+      "status": "validated_prerequisite_not_yet_active_manager_cutover",
+      "evidence": "docs/claw-observer-journal-verification.md",
+      "note": "Core started fact and independent journal ready; Task3 must remove old active ACP receipt bridge."
     }
   ]
 }

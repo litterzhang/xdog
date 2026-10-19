@@ -73,7 +73,7 @@ assert await store.namespace(scope) == namespace
 - `sync` reads core receipt/attempt facts and records projection/report identity. No raw SQL joins or writes to core inputs.
 - `begin_delivery` / `finish_delivery` fence actual report attempt; sending recovery becomes unknown, never blind retry.
 
-- [ ] Write actual two-store tests: cursor+whole outbox atomic rollback; dedup immutable body; unsupported files/lease conflicts; stable namespace recovery; independent close; observer cancel leaves accepted core input pending/running; explicit core withdrawal still works.
+- [x] Write actual two-store tests: cursor+whole outbox atomic rollback; dedup immutable body; unsupported files/lease conflicts; stable namespace recovery; independent close; observer cancel leaves accepted core input pending/running; explicit core withdrawal still works.
 
 ```python
 await observers.save(record, {'cursor': 1}, (canonical,))
@@ -82,10 +82,10 @@ await observers.cancel(scope.group_id, scope.workspace, record.id)
 assert (await inputs.store.get(scope, canonical.id)).status != 'cancelled'
 ```
 
-- [ ] Run `uv run pytest packages/claw/tests/test_observer_journal.py -q -n 0`.
+- [x] Run `uv run pytest packages/claw/tests/test_observer_journal.py -q -n 0`.
   Expected: old constructor/storage coupling and automatic accepted-input withdrawal do not meet contract.
-- [ ] Implement separate versioned private sqlite journal and receipt API reads. Keep actual attempt binding separate from per-occurrence message ID and report outcomes. No periodic model work.
-- [ ] Run ownership/fault/observer journal + core input tests and root suite. Expected: pass, no duplicated input authority or changed tool policy. Commit `refactor(claw): give managed observers their own journal`.
+- [x] Implement separate versioned private sqlite journal and receipt API reads. Keep actual attempt binding separate from per-occurrence message ID and report outcomes. No periodic model work.
+- [x] Run ownership/fault/observer journal + core input tests and root suite. Expected: pass, no duplicated input authority or changed tool policy. Commit `refactor(claw): give managed observers their own journal`.
 
 ### Task 3: Switch actual ACP/managed runtime and delete old bridge
 

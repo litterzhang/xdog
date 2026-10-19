@@ -17,7 +17,7 @@ from xdog.agent.async_work import wait_owned
 from xdog.claw.core.inputs.models import InputEnvelope, InputScope, decode_envelope, encode_envelope
 
 T = TypeVar('T')
-FORMAT = 'xdog.claw.inbox.v2'
+FORMAT = 'xdog.claw.inbox.v3'
 _INTERRUPTED = 'Execution interrupted; inspect prior effects before explicit retry'
 _STATES = frozenset({'pending', 'claimed', 'running', 'succeeded', 'failed', 'interrupted', 'cancelled'})
 _SCHEMA = '''
@@ -32,7 +32,8 @@ CREATE TABLE inputs (
     FOREIGN KEY(group_id,workspace) REFERENCES scopes(group_id,workspace));
 CREATE TABLE attempts (
     attempt_id TEXT PRIMARY KEY, sequence INTEGER NOT NULL REFERENCES inputs(sequence), status TEXT NOT NULL,
-    response TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', session_id TEXT NOT NULL DEFAULT '');
+    response TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', session_id TEXT NOT NULL DEFAULT '',
+    started INTEGER NOT NULL DEFAULT 0 CHECK(started IN (0,1)));
 '''
 
 
@@ -53,6 +54,7 @@ class InputAttempt:
     response: str
     error: str
     session_id: str
+    started: bool = False
 
 
 def _record(row: sqlite3.Row) -> InputRecord:
@@ -88,6 +90,10 @@ def _validate_receipts(db: sqlite3.Connection) -> None:
                               (row['sequence'],)).fetchall()
         if any(attempt['status'] not in (_STATES - {'pending'}) | {'released'} for attempt in attempts):
             raise ValueError('Unknown execution attempt state')
+        if any(attempt['status'] in {'claimed', 'released', 'cancelled'} and attempt['started']
+               or attempt['status'] in {'running', 'succeeded', 'interrupted'} and not attempt['started']
+               for attempt in attempts):
+            raise ValueError('Execution admission fact does not match attempt state')
         if any(attempt['status'] in {'claimed', 'running'} for attempt in attempts
                if attempt['attempt_id'] != record.attempt_id):
             raise ValueError('A noncurrent execution attempt remains active')
@@ -312,7 +318,8 @@ class InputStore:
         def read(db: sqlite3.Connection) -> tuple[InputAttempt, ...]:
             row = _select(db, scope, message_id)
             return tuple(InputAttempt(attempt['attempt_id'], attempt['status'], attempt['response'],
-                                      attempt['error'], attempt['session_id']) for attempt in db.execute(
+                                      attempt['error'], attempt['session_id'], bool(attempt['started']))
+                         for attempt in db.execute(
                 'SELECT * FROM attempts WHERE sequence=? ORDER BY rowid', (row['sequence'],)))
         return await self._disk(read)
 
@@ -344,7 +351,7 @@ class InputStore:
             row = self._attempt(db, record, 'claimed')
             db.execute("UPDATE inputs SET status='running',session_id=? WHERE sequence=?",
                        (session_id, row['sequence']))
-            db.execute("UPDATE attempts SET status='running',session_id=? WHERE attempt_id=?",
+            db.execute("UPDATE attempts SET status='running',started=1,session_id=? WHERE attempt_id=?",
                        (session_id, record.attempt_id))
             return _record(_select(db, record.envelope.scope, record.envelope.message.id))
         return await self._disk(start)

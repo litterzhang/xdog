@@ -140,7 +140,10 @@ async def test_channel_delivers_progress_before_turn_finishes(tmp_path, fail_aft
         assert sent == ["Checking."]
     finally:
         release_final.set()
-        await asyncio.wait_for(task, timeout=2)
+        try:
+            await asyncio.wait_for(task, timeout=2)
+        finally:
+            await orch.stop()
 
     assert sent == ["Checking.", "Error: model failed" if fail_after_progress else "Done."]
 

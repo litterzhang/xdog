@@ -101,3 +101,20 @@ async def test_previous_core_format_is_rejected_without_schema_upgrade(tmp_path)
     with pytest.raises(ValueError, match='Unsupported'):
         await InputStore.open(path)
     assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize('started', [False, True])
+async def test_failed_attempt_retains_actual_admission_fact_without_inferring_from_error_text(tmp_path, started):
+    store = await InputStore.open(tmp_path / 'private' / 'inputs.sqlite3')
+    item = value(tmp_path)
+    try:
+        await store.enqueue(item)
+        attempt = await store.claim(item.scope)
+        if started:
+            attempt = await store.start(attempt)
+            await store.finish(attempt, 'failed', error='same failure text')
+        else:
+            await store.reject(attempt, 'same failure text')
+        assert (await store.attempts(item.scope, 'one'))[0].started is started
+    finally:
+        await store.close()
