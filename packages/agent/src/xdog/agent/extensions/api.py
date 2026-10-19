@@ -67,6 +67,7 @@ class ExtensionAPI:
         self._tool_inventory: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
             "extension_invocation_tools", default=None)
         self._has_pending_messages = contextvars.ContextVar("extension_pending_messages", default=False)
+        self._has_views = contextvars.ContextVar("extension_host_views", default=False)
         self._has_ui: contextvars.ContextVar[bool] = contextvars.ContextVar("extension_has_ui", default=False)
         self._dialog_events: dict[str, asyncio.Event] = {}
         self._dialogs: dict[str, tuple[dict[str, Any], asyncio.Future[Any]]] = {}
@@ -88,6 +89,14 @@ class ExtensionAPI:
     async def confirm(self, title: str, message: str = "", *, timeout: float = 300) -> bool:
         return bool(await self._ask("confirm", title, message, timeout=timeout))
 
+
+    async def read_view(self, name: str, *, query: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        """Read an explicitly granted host snapshot, independently of UI permission."""
+        from xdog.agent.extensions.views import answer, request
+        packet = request({"name": name, "query": {} if query is None else query})
+        value = await self._ask("view", "Read host view", "Read-only owner-bound data",
+                                _host_read=True, **packet)
+        return answer(value)
 
     async def get_session(self, *, timeout: float = 30) -> dict[str, Any] | None:
         """Current host metadata only; no transcript or session mutation."""
@@ -206,8 +215,11 @@ class ExtensionAPI:
         _host_read = options.pop("_host_read", False) is True
         dialog = validate_sdk_dialog({"kind": kind, "title": title, "message": message,
                                   "id": uuid.uuid4().hex, **options})
-        if not self._has_ui.get() and not (_host_read and self._has_pending_messages.get()
-                                          and kind == "session" and options.get("operation") == "pending_messages"):
+        host_read = _host_read and (
+            kind == "view" and self._has_views.get()
+            or self._has_pending_messages.get() and kind == "session"
+            and options.get("operation") == "pending_messages")
+        if kind == "view" and not host_read or not self._has_ui.get() and not host_read:
             return validate_answer(dialog, None)
         call_id = self._call_id.get()
         if not call_id or call_id in self._dialogs:

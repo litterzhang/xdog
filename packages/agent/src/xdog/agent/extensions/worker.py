@@ -298,6 +298,8 @@ async def main() -> None:
             params = {**params, "context": invocation}
             session_id = str(invocation.get("session_id", ""))
             owner_id = str(invocation.get("child_id") or session_id)
+            from xdog.agent.extensions.views import METHODS as view_methods
+            api._has_views.set(method in view_methods and invocation.get('host_views') is True)
             from xdog.agent.extensions.pending_messages import METHODS as pending_methods
             api._has_pending_messages.set(method in pending_methods and invocation.get('host_pending_messages') is True)
             from xdog.agent.extensions.command_catalog import METHODS as menu_methods

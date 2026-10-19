@@ -30,6 +30,7 @@ from xdog.agent.extensions.state import ExtensionEntries
 from xdog.agent.extensions.tool_result import details_snapshot, host_result
 from xdog.agent.extensions.tools import declaration as tool_declaration
 from xdog.agent.extensions.transfer import BLOCK, ContextTransfer, owned_spool
+from xdog.agent.extensions.views import ViewRegistry
 from xdog.agent.extensions.worker import manifest
 from xdog.agent.mcp import McpManager
 from xdog.agent.mcp.config import McpServerConfig
@@ -116,7 +117,8 @@ class _Client(StdioClient):
         try:
             result = await self._request(method, params, version=version)
             # A successful JSON-RPC response can still contain a failed ToolResult.
-            await lease.complete(result.get('isError') is not True)
+            await lease.complete(result.pop('_xdog_view_invalidated', False) is not True
+                                 and result.get('isError') is not True)
             return result
         finally:
             try:
@@ -127,6 +129,13 @@ class _Client(StdioClient):
     async def _request(self, method: str, params: dict[str, Any], *, version: str = "") -> dict[str, Any]:
         inventory_key = ""
         value: Any = None  # Session controls return distinct scalar/dict shapes, each validated below.
+        view_pins: list[tuple[str, object]] = []
+
+        def view_scope_current() -> bool:
+            from xdog.agent.extensions.invocation import current_invocation
+            return (not view_pins or current_invocation() is not None and all(
+                self.owner.views.is_current(self.config.name, view, token) for view, token in view_pins))
+
         try:
             payload = dict(params)
             from xdog.agent.extensions.command_catalog import METHODS as menu_methods
@@ -138,6 +147,8 @@ class _Client(StdioClient):
             from xdog.agent.extensions.pending_messages import METHODS as pending_methods
             pending_reader = self.owner.pending_messages
             pending_allowed = method in pending_methods and pending_reader is not None and not self.owner._closed
+            from xdog.agent.extensions.views import METHODS as view_methods
+            views_allowed = method in view_methods and self.owner.views.has(self.config.name)
             if method not in {"xdog/context_begin", "xdog/context_chunk", "xdog/context_read", "xdog/context_close"}:
                 owner_context = self.owner.context()
                 projected_context = {key: item for key, item in {**owner_context, **params.get("context", {})}.items()
@@ -150,6 +161,7 @@ class _Client(StdioClient):
                                                       or self.owner.catalog_handler is not None)
                                                  and not self.owner._closed),
                                       "host_provider_auth": provider_auth_review is not None,
+                                      "host_views": views_allowed,
                                       "host_pending_messages": pending_allowed,
                                       "host_command_menu": menu_allowed,
                                       "host_catalog": (method == "xdog/command" and _dialogs_allowed.get()
@@ -247,17 +259,34 @@ class _Client(StdioClient):
                     raise ValueError("Invalid pending extension callback")
                 prompt = validate_sdk_dialog(result.get("xdog_prompt"))
                 contributions = result.pop("xdog_entries", [])
-                if contributions and method != 'xdog/provider_auth':
+                if contributions and method != 'xdog/provider_auth' and view_scope_current():
                     await self.owner.commit_entries(self.config.name, contributions)
                 auth_ui = result.pop("xdog_ui", [])
-                if method != 'xdog/provider_auth':
+                if method != 'xdog/provider_auth' and view_scope_current():
                     self._accept_ui(auth_ui)
                 handler = self.owner.dialog_handler if _dialogs_allowed.get() else None
                 if method == 'xdog/provider_auth':
                     handler = provider_auth_review
                 elif prompt["kind"] == "session" and method != "xdog/command":
                     handler = None  # Non-command read snapshots cannot borrow a live session dialog owner.
-                if prompt['kind'] == 'session' and prompt.get('operation') == 'commands' and menu_allowed:
+                if not view_scope_current():
+                    value = None  # Continue settling this callback, without a successor's grants/UI.
+                elif prompt['kind'] == 'view':
+                    from xdog.agent.extensions.invocation import current_invocation
+                    view_lease = current_invocation()
+                    value = None
+                    if views_allowed and view_lease is not None:
+                        binding = self.owner.views.token(self.config.name, prompt['name'])
+                        if binding is not None:
+                            view_pins.append((prompt['name'], binding))
+                        try:
+                            async with asyncio.timeout(min(30, float(prompt.get('timeout', 30)))):
+                                value = await self.owner.views.read(self.config.name, prompt['name'], prompt['query'])
+                        except (ValueError, TypeError, RuntimeError, OSError, TimeoutError):
+                            value = None
+                        if current_invocation() is not view_lease:
+                            value = None
+                elif prompt['kind'] == 'session' and prompt.get('operation') == 'commands' and menu_allowed:
                     from xdog.agent.extensions.command_catalog import answer as menu_answer
                     from xdog.agent.extensions.invocation import current_invocation
                     menu_lease = current_invocation()
@@ -306,6 +335,11 @@ class _Client(StdioClient):
                 value = validate_answer(prompt, value)
                 result = await super().request("xdog/ui_reply", {
                     "call_id": call_id, "dialog_id": prompt["id"], "value": value})
+            if not view_scope_current():
+                # Earlier valid reads cannot be published after a branch/provider
+                # binding changes later in the same awaited callback.
+                return {"_xdog_view_invalidated": True, **(
+                    {"output": "View unavailable: original owner changed"} if method == "xdog/command" else {})}
             if "xdog_tool_snapshot" in result:
                 await self.owner.accept_tool_registration(self.config.name, self, result.pop("xdog_tool_snapshot"))
             if "xdog_command_snapshot" in result:
@@ -413,6 +447,7 @@ class _Manager(McpManager):
         return metadata
 
     async def _close_clients(self) -> None:
+        await self.owner._cancel_view_jobs()
         async def finish(client: Any) -> None:
             if client.state == "connected":
                 try:
@@ -435,6 +470,9 @@ class ExtensionRuntime:
         self._pre_lock = asyncio.Lock()
         self.context = context or (lambda: {"cwd": str(cwd)})
         self.inspection = inspection
+        self.views = ViewRegistry()
+        self._view_hints: dict[tuple[str, str], tuple[object, str, _Client, int, tuple[str, str]]] = {}
+        self._view_jobs: dict[tuple[str, str], asyncio.Task[None]] = {}
         self.tool_inventory: Callable[[], dict[str, Any] | None] | None = None
         self.session_name: Callable[[], dict[str, str] | None] | None = None
         self.command_menu_handler: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None
@@ -460,6 +498,75 @@ class ExtensionRuntime:
                     str(self.root / name)], "timeout": timeout}
                    for name in self.enabled}
         self._manager = _Manager(self, configs)
+
+    def notify_view_changed(self, view: str, revision: str = "") -> None:
+        """Coalesce hints on the existing process owner; never load a worker/model."""
+        from xdog.agent.extensions.views import identifier as view_name
+        view = view_name(view)
+        if not isinstance(revision, str) or len(revision.encode("utf-8")) > 256:
+            raise ValueError("View revision hints must be bounded text")
+        loop = self._manager._loop
+        if self._closed or self._manager._closed or loop is None or loop.is_closed():
+            return
+        context = self.context()
+        scope = str(context.get("session_id", "")), str(context.get("child_id", ""))
+        generation = self._generation
+        with self._manager._lock:
+            clients = tuple(self._manager._clients.items())
+        targets = [(extension, client, token) for extension, client in clients
+                   if isinstance(client, _Client) and (token := self.views.token(extension, view)) is not None]
+
+        def admit() -> None:
+            if self._closed or self._manager._closed:
+                return
+            for extension, client, token in targets:
+                if not self._view_target(extension, view, token, client, generation, scope):
+                    continue
+                key = extension, view
+                self._view_hints[key] = token, revision, client, generation, scope
+                if key not in self._view_jobs:
+                    self._view_jobs[key] = asyncio.create_task(self._send_view_hints(key))
+        try:
+            loop.call_soon_threadsafe(admit)
+        except RuntimeError:
+            pass  # Closing won; hints are not authoritative facts or obligations.
+
+    def _view_target(self, extension: str, view: str, token: object, client: _Client,
+                     generation: int, scope: tuple[str, str]) -> bool:
+        context = self.context()
+        return (not self._closed and not self._manager._closed and self._generation == generation
+                and self._manager._clients.get(extension) is client and client.state == "connected"
+                and extension not in self._failed | self._unloaded
+                and "view_changed" in self._infos.get(extension, {}).get("events", ())
+                and (str(context.get("session_id", "")), str(context.get("child_id", ""))) == scope
+                and self.views.is_current(extension, view, token))
+
+    async def _send_view_hints(self, key: tuple[str, str]) -> None:
+        extension, view = key
+        try:
+            await asyncio.sleep(0)
+            while key in self._view_hints:
+                token, revision, client, generation, scope = self._view_hints.pop(key)
+                if not self._view_target(extension, view, token, client, generation, scope):
+                    continue
+                await self._rpc(extension, "xdog/event", {"event": "view_changed",
+                    "context": {"view": view, "revision": revision}})
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.fail(extension)  # A display failure is never a business-operation retry.
+        finally:
+            self._view_hints.pop(key, None)
+            self._view_jobs.pop(key, None)
+
+    async def _cancel_view_jobs(self, extension: str = "") -> None:
+        keys = tuple(key for key in self._view_jobs if not extension or key[0] == extension)
+        jobs = tuple(self._view_jobs[key] for key in keys)
+        for key in keys:
+            self._view_hints.pop(key, None)
+        for job in jobs:
+            job.cancel()
+        await asyncio.gather(*jobs, return_exceptions=True)
 
     async def commit_entries(self, name: str, contributions: Any) -> None:
         if self._closed:
@@ -1162,6 +1269,7 @@ class ExtensionRuntime:
             raise ValueError("Usage: /extensions [list|reload NAME|unload NAME] (global trusted IDs only)")
         async def run() -> None:
             self._generation += 1
+            await self._cancel_view_jobs(name)
             client = self._manager._clients.get(name)
             if client is not None and client.state == "connected":
                 await self._rpc(name, "xdog/event", {"event": "session_end"})
@@ -1184,6 +1292,7 @@ class ExtensionRuntime:
         return self.snapshot()
 
     async def aclose(self) -> None:
+        self.views.close()
         self._tool_wrappers.clear()
         self._generation += 1
         self.entries.close()
@@ -1195,6 +1304,7 @@ class ExtensionRuntime:
         await self._manager.aclose()
 
     def close(self) -> None:
+        self.views.close()
         self._tool_wrappers.clear()
         if not self._closed:
             self._generation += 1

@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 EVENTS = frozenset({'session_start', 'turn_start', 'turn_end', 'message_end', 'tool_start', 'tool_end', 'session_end',
-                    'session_before_compact', 'session_compact'})
+                    'session_before_compact', 'session_compact', 'view_changed'})
 FLAGS = ('pre', 'post', 'context', 'input')
 
 

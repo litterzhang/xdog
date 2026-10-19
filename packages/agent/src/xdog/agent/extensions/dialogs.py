@@ -28,11 +28,17 @@ def validate_dialog(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError('Invalid extension dialog')
     kind = value.get('kind')
-    if not isinstance(kind, str) or kind not in {'select', 'input', 'confirm', 'session'}:
+    if not isinstance(kind, str) or kind not in {'select', 'input', 'confirm', 'session', 'view'}:
         raise ValueError('Extension host mutation/control APIs and custom UI have been removed')
     fields = {'kind', 'id', 'title', 'message', 'timeout', 'extension'}
     if kind == 'session':
         validate_session_request(value)
+    elif kind == 'view':
+        from xdog.agent.extensions.views import request
+        fields.update({'name', 'query'})
+        if set(value) - fields:
+            raise ValueError('View request cannot choose host routing or methods')
+        request({'name': value.get('name'), 'query': value.get('query')})
     else:
         fields.update({'default', 'choices'})
         if kind in {'input', 'confirm'}:
@@ -73,6 +79,9 @@ def validate_answer(dialog: dict[str, Any], answer: Any) -> Any:
     dialog = validate_dialog(dialog)  # Even a canceled raw legacy packet is not a valid retained dialog.
     if answer is None:
         return False if dialog["kind"] == "confirm" else None
+    if dialog["kind"] == "view":
+        from xdog.agent.extensions.views import answer as view_answer
+        return view_answer(answer)
     if dialog["kind"] == "session":
         return validate_session_answer(dialog, answer)
     if dialog["kind"] == "confirm" and type(answer) is bool:
@@ -112,7 +121,10 @@ class DialogBroker:
 
 
     async def ask(self, extension: str, value: dict[str, Any]) -> Any:
-        return await self._ask(extension, validate_dialog(value))
+        dialog = validate_dialog(value)
+        if dialog["kind"] == "view":
+            raise ValueError("Read-only views use their host grant, not UI approval")
+        return await self._ask(extension, dialog)
 
     async def ask_command_menu(self, extension: str, value: dict[str, Any]) -> Any:
         """Admit host-stamped read-only menu identity, never plugin dialog fields."""

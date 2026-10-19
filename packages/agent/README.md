@@ -1914,3 +1914,15 @@ and widget layouts are removed. Native approval and recovery reviews remain host
 owned; they expose no plugin layout or editor/session-mutation authority. Core TUI
 overlays, transcript fullscreen, Unicode, clipping, cursor and tool-approval behavior
 remain.
+
+### Explicit read-only extension views
+
+Trusted hosts can register an owner-bound JSON read port on an existing
+`ExtensionRuntime.views` and configured extension callbacks can call
+`await api.read_view(name, query={...})`. This is independent of TUI/dialog
+permission and cannot execute host methods or tools. Missing/revoked views return
+unavailable, never a fake empty dataset. Queries/snapshots are finite, bounded
+JSON; actual client/owner/binding identity is checked across awaits and through
+callback publication. Coalesced `view_changed` hints use the existing process
+owner without starting a dormant worker or model. See
+`docs/extension-owner-views.md` in the repository for the contract and limits.

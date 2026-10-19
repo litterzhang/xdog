@@ -384,7 +384,9 @@
       "area": "ui",
       "requirement": "最小通用只读 extension view；bounded snapshot/提示，跨 owner 读取拒绝且无任意调用",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/extension-owner-views.md"
+      ]
     },
     {
       "id": "UI-04",

@@ -70,6 +70,15 @@ Keep provider/authentication, model routing, and wire-protocol adaptation separa
 
 Coding, claw, and SDK-backed flow agent nodes reuse this runtime. Flow's external CLI backends intentionally use `CliRunner`; do not introduce a second in-process tool loop for SDK-backed nodes. Tool calls execute in parallel by default, while preparation/finalization hooks are serial. Callers enforce tool permissions through hooks—the generic tools themselves are not a security boundary. Built-ins are registered at import time and include `bash`, `filesystem`, `current_time`, and `submit_result`.
 
+Agent's generic extension `ViewRegistry` exposes explicitly granted owner-bound
+read-only JSON snapshots through `api.read_view`, independently of TUI approval.
+Actual client identity and pinned bindings fence reads and later callback output;
+unavailable is not an empty dataset. Queries/snapshots are finite bounded JSON.
+Coalesced `view_changed` hints run on the existing worker owner without starting
+workers/models. This layer knows no Goal schema and owns no business lifetime.
+See `docs/extension-owner-views.md`; shared Goal display/host binding is still in
+progress, not provided by loading this protocol alone.
+
 ### `xdog.flow`: typed workflow engine and primary product surface
 
 A flow definition travels through:
