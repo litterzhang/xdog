@@ -139,7 +139,8 @@ async def test_report_failure_does_not_rerun_agent(managed, failure):
         row = await service.status('main', record['id'])
         return (bool(row['occurrences'])
                 and row['occurrences'][0]['delivery_status'] in {'failed', 'unknown', 'pending'}
-                and bool(row['occurrences'][0]['delivery_error']))
+                and bool(row['occurrences'][0]['delivery_error'])
+                and row['occurrences'][0]['execution_status'] in {'succeeded', 'failed', 'interrupted', 'cancelled'})
     await eventually(terminal)
     row = await service.status('main', record['id'])
     assert len(calls) == 1 and row['occurrences'][0]['execution_status'] == 'succeeded'

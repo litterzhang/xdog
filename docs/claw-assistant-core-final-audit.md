@@ -188,3 +188,22 @@ still-unmet original section11 contract. It preserves the full objective and all
 rows; it is not a new/reduced goal, an approval request or a reason to declare the
 final audit complete. It must finish before the single whole-branch reviewer and
 parent final-artifact gates.
+
+## Subsequent source evidence: ordinary history transaction
+
+The owned-IO plan Task2 now has actual ordinary-path proof: a frozen original-owner
+semantic-prefix checked batch writes/syncs JSONL/catalog/index via the existing
+journal; only then store cache/owning-loop cursor/meta and execution outcome
+publish. Actual metadata/rollback faults, a delayed marker+repeated cancel,
+readonly read isolation and five real process deaths preserve original bytes or
+true committed state, stable attempts and one real tool effect without automatic
+model replay. See `docs/claw-owned-transcript-commit-verification.md`. The full
+ordinary-turn probe now records23 actual fsync with zero on-owner (previously two
+remained). This advances F-01/F-03 for that path, not all-application acceptance.
+
+Remaining required Task3 inspection includes startup, same-group native status/
+MCP reads (history now serializes correctly), image/custom-context/compaction IO
+cancellation, missing current pointers/derived catalogs and saved-model sidecar
+no-follow/fallback ordering. Final whole-nine/cold current artifacts, per-row47
+verdicts and the single whole-branch review remain mandatory. No additional
+requirement is marked passed merely by this source milestone.

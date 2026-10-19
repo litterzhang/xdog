@@ -86,15 +86,19 @@ Flow17, lock/diff pass. Command `uv run python scripts/test.py --jobs 2`, with
 and `claw-owned-session-flow17.log`. The earlier6900 suite precedes final
 cached-owner/skill-order/native-reader regressions and is not substituted. Logs under `/data/t.Vy5SaQ/` use `claw-owned-session-*`.
 
-## Explicit remaining failure — not hidden by preparation GREEN
+## Subsequent durable turn commit and remaining application audit
 
-The full-turn real descriptor probe still fails: **12 actual fsync calls, two on
-the event-loop owner**, now in final ordinary turn metadata persistence
-(`claw-owned-session-remaining-turn-io.log`). The original probe had12/12 on-owner.
-This milestone moves preparation/prompt/skill IO, **not** the old `_persist_turn`
-/`_persist` or missing actual appended-JSONL durability. Task2 must implement
-ordered durable history+metadata commit, settle cancellation/failure without a
-second partial append, and publish cursor/receipts only after actual settlement.
-Task3 must audit remaining async application IO and recovery/current-pointer
-paths. Parent final-acceptance Task2 and the overall goal stay active. No push,
-merge, publication, paid provider or existing user data/service change occurred.
+At this preparation milestone the full-turn real descriptor probe still failed:
+12 actual fsync calls, two on the event-loop owner (the original had12/12).
+The subsequent Task2 implementation in
+`docs/claw-owned-transcript-commit-verification.md` replaces final ordinary
+history+metadata writes with one actual owned transaction. Its whole-turn probe
+now passes with23 actual fsync and zero on the model loop, plus actual data-sync,
+rollback/cancel and process-death/no-replay proofs. These are distinct phases;
+the earlier preparation-only6903 gate is not a final all-application IO claim.
+
+Task3 still must audit startup/status/MCP/image and other async/cancellation IO
+paths, especially readonly status callers now that history reads correctly wait
+behind the actual commit lock. Parent final-acceptance Task2/all47 review and final
+current artifact gates remain active. No push, merge, publication, paid provider
+or existing user data/service mutation is authorized.

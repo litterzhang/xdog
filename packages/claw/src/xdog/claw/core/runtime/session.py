@@ -56,7 +56,6 @@ from xdog.claw.core.persistence.transcript_convert import (
 )
 from xdog.claw.core.persistence.transcript_convert import (
     extract_final_text,
-    messages_to_transcript,
     transcript_to_messages,
 )
 from xdog.claw.core.runtime.child_agents import ClawChildren
@@ -79,6 +78,7 @@ from xdog.claw.core.types import (
 )
 
 if TYPE_CHECKING:
+    from xdog.claw.core.persistence.transcript_commit import HistoryCommit
     from xdog.claw.core.runtime.group import GroupRuntime
 
 logger = logging.getLogger(__name__)
@@ -242,6 +242,8 @@ class AgentSession:
         self._input_is_user = True
         self._input_channel = ""
         self._persisted_count: int = 0
+        self._history_fault = False
+        self._history_commit_task: asyncio.Task[SessionMeta] | None = None
         self._restored = False
         self._source_channels: dict[int, str] = {}
         self._source_tools: dict[str, SourceTool] = {}
@@ -312,20 +314,63 @@ class AgentSession:
         self.access.close()
         pass
 
-    def _persist(self) -> None:
-        """Crash-safe: persist new messages without metadata."""
-        if hasattr(self, 'context_messages') and self.context_messages.uncertain:
-            return
+    def require_history_ready(self) -> None:
+        if self._history_fault or self.context_messages.uncertain:
+            raise RuntimeError('History persistence unavailable; reopen the original context and inspect prior effects')
+
+    def _history_batch(self, input: GroupInput | None = None,
+                       usage: dict[str, int] | None = None) -> HistoryCommit | None:
+        from xdog.agent.messages import messages_to_dicts
+        from xdog.claw.core.persistence.transcript_commit import HistoryCommit
+        if self._history_fault or self.context_messages.uncertain:
+            return None
         messages = self._agent.state.messages
         if len(messages) <= self._persisted_count:
+            return None
+        channel = (input.channel if isinstance(input, UserInput) else
+                   input.kind if isinstance(input, SystemInput) else '')
+        try:
+            encoded = json.dumps(messages_to_dicts(list(messages)), allow_nan=False)
+        except Exception:
+            self._history_fault = True
+            self.context_messages.uncertain = True
+            raise
+        return HistoryCommit(self._meta, self._store._sessions_dir, self._store.active_branch(self._meta.session_id),
+            encoded, self._persisted_count, tuple(self._source_channels.items()), channel,
+            isinstance(input, ExternalInput),
+            tuple((usage or {}).items()), input is not None)
+
+    def _persist(self) -> None:
+        """Explicit synchronous fixture/composition save using the same transaction."""
+        from xdog.claw.core.persistence.transcript_commit import commit
+        batch = self._history_batch()
+        if batch is not None:
+            self._meta = commit(self._store, batch)
+            self._persisted_count = len(self._agent.messages)
+
+    async def _persist_history(self, input: GroupInput | None = None, usage: dict[str, int] | None = None) -> None:
+        from xdog.agent.async_work import wait_owned
+        from xdog.claw.core.persistence.transcript_commit import commit
+        if self._history_commit_task is not None:
+            raise RuntimeError('Original history commit still owns this context')
+        batch = self._history_batch(input, usage)
+        if batch is None:
             return
-        new_transcript = messages_to_transcript(messages[self._persisted_count:])
-        for offset, entry in enumerate(new_transcript, self._persisted_count):
-            channel = self._source_channels.get(offset)
-            if channel:
-                entry["channel"] = channel
-            self._store.append_turn(self._meta.session_id, entry)
-        self._persisted_count = len(messages)
+        count = len(self._agent.messages)
+        task = self._history_commit_task = asyncio.create_task(asyncio.to_thread(commit, self._store, batch))
+        try:
+            await wait_owned(task)
+        finally:
+            if task.done():
+                self._history_commit_task = None
+                if task.cancelled() or task.exception() is not None:
+                    self._history_fault = True
+                    self.context_messages.uncertain = True
+                else:
+                    # Actual committed result wins, even if the waiting caller
+                    # was cancelled. Never enter fallback append with the old cursor.
+                    self._meta = task.result()
+                    self._persisted_count = count
 
     def capture_source(self) -> SourceCapture:
         """Capture immutable state on the owning loop; serialization runs off-loop."""
@@ -729,6 +774,7 @@ class AgentSession:
         results. ``response_text`` still aggregates the turn for non-streaming
         callers; callers using message delivery must not send it again.
         """
+        self.require_history_ready()
         if self._tool_selection_changing or self._tool_selection_retiring:
             raise RuntimeError('Active-tool persistence owns this session; wait before sending input')
         if self._compacting:
@@ -796,12 +842,12 @@ class AgentSession:
             handled = self._agent.drain_handled_inputs()
 
             if self._agent.cancellation_requested:
-                self._persist_turn(input, turn.usage)
+                await self._persist_turn(input, turn.usage)
                 await self.extensions.event("turn_end")
                 return TurnResult(error="aborted")
             if self._agent.state.error:
                 error = self._agent.state.error
-                self._persist_turn(input, turn.usage)
+                await self._persist_turn(input, turn.usage)
                 await self.extensions.event("turn_end")
                 final = self._agent.messages[-1] if self._agent.messages else None
                 return TurnResult(error=error, tool_calls=turn.tool_calls, usage=turn.usage, retain_partial=True,
@@ -830,7 +876,7 @@ class AgentSession:
                 usage.get("cache_read", 0), usage.get("cache_write", 0),
             )
 
-            self._persist_turn(input, usage)
+            await self._persist_turn(input, usage)
             await self.extensions.event("turn_end")
 
             return TurnResult(
@@ -846,11 +892,11 @@ class AgentSession:
             if self._agent.state.is_streaming:
                 self._agent.abort()
                 await self._agent.wait_for_idle()
-            self._persist()
+            await self._persist_history()
             raise
         except Exception as e:
             logger.error("Agent turn failed for group %s: %s", self._group_id, e)
-            self._persist()
+            await self._persist_history()
             return TurnResult(error=str(e))
         finally:
             self._user_operation_authorized = False
@@ -994,44 +1040,8 @@ class AgentSession:
 
         return _DrainResult(tool_calls=tuple(tool_calls), usage=usage)
 
-    def _persist_turn(self, input: GroupInput, usage: dict[str, int]) -> None:
-        if self.context_messages.uncertain:
-            return  # Do not overwrite an uncertain canonical context commit before reload.
-        new_messages = self._agent.state.messages[self._persisted_count:]
-        if not new_messages:
-            return
-
-        new_entries = messages_to_transcript(new_messages)
-
-        # Tag the user message with its source channel so the TUI can
-        # filter internal messages from chat
-        # history and editor up-arrow.
-        if isinstance(input, UserInput):
-            channel = input.channel
-        elif isinstance(input, SystemInput):
-            channel = input.kind
-        else:
-            channel = ""
-
-        if channel and new_entries:
-            for entry in new_entries:
-                if entry.get("role") == "user" or isinstance(input, ExternalInput):
-                    entry["channel"] = channel
-                    break
-
-        if usage and new_entries:
-            for entry in reversed(new_entries):
-                if entry.get("role") == "assistant":
-                    entry["usage"] = dict(usage)
-                    break
-
-        for index, entry in enumerate(new_entries, self._persisted_count):
-            source = self._source_channels.get(index)
-            if source:
-                entry['channel'] = source
-            self._store.append_turn(self._meta.session_id, entry)
-        self._persisted_count = len(self._agent.state.messages)
-        self._meta = self._store.increment_turn(self._meta.session_id)
+    async def _persist_turn(self, input: GroupInput, usage: dict[str, int]) -> None:
+        await self._persist_history(input, usage)
 
     def _compaction_tools(self) -> list[AgentTool]:
         from xdog.agent import AgentContext, AgentToolResult

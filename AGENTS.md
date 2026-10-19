@@ -158,9 +158,14 @@ PreparedSession/PreparedHistory, then construct/publish the Agent on its existin
 loop. Workspace/prompt IO and the shared Agent SkillPlacement resolve off-loop;
 no snapshot grants tool permission or changes Goal lifetime. Cold native tool
 inventory preparation lives inside its existing cancellable job, not the reader.
-This is a preparation milestone only: ordinary durable turn commits and broader
-startup/status/MCP/application IO audit remain pending. See
-`docs/claw-owned-session-io-verification.md`.
+Ordinary history now uses an original-owner immutable batch on an owned worker,
+checking semantic prefix/context rather than length alone. Existing undo journal
+covers actual JSONL/catalog/index before cache/cursor/receipt publication; cancel
+settles actual commit, failure cannot enter append fallback or auto-reset into
+another model, and real process recovery never replays tools. History reads share
+the commit lock; remaining startup/status/MCP/image/application IO and cancellation
+callsite audit is not complete. See `docs/claw-owned-session-io-verification.md`
+and `docs/claw-owned-transcript-commit-verification.md`.
 
 ACP is now a thin adapter over the application-owned input service: it has no
 receipt database, consumer, observer/Goal query or report-delivery policy. Its

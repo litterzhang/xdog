@@ -453,7 +453,10 @@ class Orchestrator:
                 raise ValueError("Reviewed message owner changed before turn admission; no replay")
             if before_admission is not None and not await before_admission():
                 return None  # Host cancellation won before actual Agent admission.
+            if runtime._active_session is not None:
+                runtime._active_session.require_history_ready()  # Do not auto-reset around an uncertain executed tail.
             session = await runtime.prepare_session(allow_reset=input_alive is None)
+            session.require_history_ready()
             if admit is not None and not await admit(session.meta.session_id):
                 return None
             if runtime.goal_available:

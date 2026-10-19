@@ -473,17 +473,18 @@ class TranscriptStore:
 
     def load_transcript(self, session_id: str) -> list[dict[str, Any]]:
         """Load all turns from a session."""
-        transcript_file = self._path(session_id)
-        if not transcript_file.exists():
-            return []
+        with self._lock:
+            transcript_file = self._path(session_id)
+            if not transcript_file.exists():
+                return []
 
-        turns = []
-        with open(transcript_file, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    turns.append(json.loads(line))
-        return turns
+            turns = []
+            with open(transcript_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        turns.append(json.loads(line))
+            return turns
 
     def increment_turn(self, session_id: str) -> SessionMeta:
         """Bump turn count + last_active."""
