@@ -94,6 +94,8 @@ class Orchestrator:
         self._outputs: OutputDelivery | None = None
         self._output_resume: asyncio.Task[None] | None = None
         self._runtimes: dict[str, GroupRuntime] = {}
+        self._group_start_lock = asyncio.Lock()
+        self._group_initializers: set[asyncio.Task[None]] = set()
         self._navigation_groups: set[str] = set()
         self._background_slots = asyncio.Semaphore(config.max_concurrent_agents)
         self._controllers: dict[str, GroupController] = {}
@@ -109,8 +111,8 @@ class Orchestrator:
 
     # -- Group registration ----------------------------------------------------
 
-    def register_group(self, group: Group) -> None:
-        """Register a group and initialize its runtime."""
+    def _build_group(self, group: Group) -> GroupRuntime:
+        """Acquire still-unpublished resources; never run an Agent or mutate the registry."""
         group = replace(
             group,
             enabled_tools=self._config.enabled_tools if group.enabled_tools is None else group.enabled_tools,
@@ -127,7 +129,48 @@ class Orchestrator:
             extension_settings=self._config.extension_settings,
             extension_allow_tools=self._config.extension_allow_tools, child_presets=self._config.child_presets,
         )
-        self._runtimes[group.id] = runtime
+        return runtime
+
+    def register_group(self, group: Group) -> None:
+        """Explicit synchronous composition (bootstrap has not yet published this app)."""
+        self._runtimes[group.id] = self._build_group(group)
+
+    async def _ensure_dynamic_group(self, group_id: str) -> None:
+        if (not group_id.startswith('weixin:') or not group_id.strip() or len(group_id.encode()) > 256
+                or any(value in group_id for value in ('/', '\\', '\x00'))):
+            raise ValueError('Invalid dynamic group identity; no path-derived scope is allowed')
+        cancelled = asyncio.Event()
+
+        async def initialize() -> None:
+            async with self._group_start_lock:
+                if group_id in self._runtimes:
+                    return
+                if self._inputs_stopping or cancelled.is_set():
+                    return
+                runtime = await run_owned(self._build_group, Group(id=group_id, name=group_id))
+                if self._inputs_stopping or cancelled.is_set():
+                    # Resource factory has no Session/Agent/Goal owner yet.
+                    closures = [runtime.mcp.aclose()]
+                    if runtime.memory is not None:
+                        closures.append(runtime.memory.close())
+                    results = await asyncio.gather(*closures, return_exceptions=True)
+                    for result in results:
+                        if isinstance(result, BaseException):
+                            raise result
+                    return
+                self._runtimes[group_id] = runtime  # Actual owner loop publishes exactly once.
+
+        task = asyncio.create_task(initialize(), name='claw-group-start')
+        self._group_initializers.add(task)
+        task.add_done_callback(self._group_initializers.discard)
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled.set()
+            await wait_owned(task)
+            raise
+        if group_id not in self._runtimes:
+            raise RuntimeError('Group initialization stopped before publication')
 
     def add_channel(self, channel: Channel) -> None:
         """Add a messaging channel."""
@@ -371,7 +414,7 @@ class Orchestrator:
         group_id = message.group_id
         if group_id not in self._runtimes:
             if group_id.startswith('weixin:'):
-                self.auto_register_group(group_id)
+                await self._ensure_dynamic_group(group_id)
             else:
                 if not wait_for_result:
                     raise ValueError(f'Cannot accept input for unknown group: {group_id}')
@@ -1141,30 +1184,32 @@ class Orchestrator:
         runtime = self._runtimes.get(group_id)
         if runtime is None:
             raise ValueError("Unknown group")
+        if action != 'new':
+            raise ValueError('Claw history is read-only; historical route activation is not supported')
+        if session_id or branch_id or index != -1:
+            raise ValueError('New context cannot select historical data')
         self._navigation_groups.add(group_id)
         try:
             async with self.group_controller(group_id).acquire(is_user=True):
-                canceled = threading.Event()
-                task = asyncio.create_task(asyncio.to_thread(
-                    runtime.navigate_session, action, session_id, branch_id, index, expected_session,
-                    lambda: not canceled.is_set(), asyncio.get_running_loop(),
-                ))
-                try:
-                    await asyncio.shield(task)
-                except asyncio.CancelledError:
-                    canceled.set()
-                    # Cancel unadmitted stages but settle admitted disk/publication
-                    # work before releasing group ownership, through repeated cancel.
-                    while not task.done():
-                        try:
-                            await asyncio.shield(task)
-                        except asyncio.CancelledError:
-                            continue
-                        except Exception:
-                            break
-                    if not task.cancelled():
-                        task.exception()
-                    raise
+                from functools import partial
+
+                from xdog.claw.core.persistence.session_preparation import check, reset
+                if (runtime.get_new_session_id() or '') != expected_session:
+                    raise ValueError('Active context changed; refresh before creating a new context')
+                if runtime._active_session is not None:
+                    runtime._active_session._children_idle()
+                    if runtime._active_session.agent.is_streaming:
+                        raise RuntimeError('Context reset requires an idle agent')
+                previous = runtime._active_session
+                generation = runtime._source_revision
+                config = runtime.group.config
+                plan = await run_owned(partial(check, runtime.transcript_store, group_id,
+                    config.daily_reset_hour, config.idle_reset_seconds, allow_reset=False))
+                if (runtime._active_session is not previous or runtime._source_revision != generation
+                        or (runtime.get_new_session_id() or '') != expected_session):
+                    raise ValueError('Reset owner changed during preparation')
+                runtime._drop_session()  # Session/Agent lifecycle stays on its actual owner loop.
+                await run_owned(reset, runtime.transcript_store, group_id, plan.meta)
         finally:
             self._navigation_groups.discard(group_id)
 
@@ -1316,6 +1361,7 @@ class Orchestrator:
 
     async def stop(self) -> None:
         self.request_stop()
+        group_closed = await asyncio.gather(*tuple(self._group_initializers), return_exceptions=True)
         if self._input_start_task is not None:
             await asyncio.gather(self._input_start_task, return_exceptions=True)
         # Settle capability publication before closing either its input port or its lease.
@@ -1348,6 +1394,6 @@ class Orchestrator:
             *(runtime.memory.close() for runtime in self._runtimes.values() if runtime.memory is not None),
             return_exceptions=True,
         )
-        for result in (*disconnected, *goal_closed, *mcp_closed, *memory_closed):
+        for result in (*group_closed, *disconnected, *goal_closed, *mcp_closed, *memory_closed):
             if isinstance(result, BaseException):
                 raise result

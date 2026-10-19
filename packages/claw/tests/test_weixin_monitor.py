@@ -244,3 +244,75 @@ async def test_rejects_unbounded_or_negative_queue(tmp_path, limit):
     opts = options(tmp_path, FakeApi(), AsyncMock(), max_pending_messages=limit)
     with pytest.raises(ValueError, match="max_pending_messages"):
         await run_monitor(opts)
+
+
+@pytest.mark.parametrize('cancel_task', [False, True])
+async def test_shutdown_does_not_reenter_fifo_after_handler_settles_cancellation(tmp_path, cancel_task):
+    api = FakeApi()
+    entered, settled = asyncio.Event(), asyncio.Event()
+    processed = []
+
+    async def settle_handler(msg):
+        processed.append(msg.message_id)
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # Presentation cleanup can settle an inner canceled child and
+            # return normally. The monitor still owns its stop decision.
+            settled.set()
+
+    opts = options(tmp_path, api, settle_handler)
+    api.updates.put_nowait(GetUpdatesResp(msgs=(user_message(1),)))
+    task = asyncio.create_task(run_monitor(opts))
+    try:
+        await wait(entered.wait())
+        if cancel_task:
+            task.cancel()
+        else:
+            opts.cancel_event.set()
+        await wait(settled.wait())
+        if cancel_task:
+            with pytest.raises(asyncio.CancelledError):
+                await wait(task)
+        else:
+            await wait(task)
+        assert processed == [1] and api.poll_cancelled.is_set()
+        assert not any(t.get_name() == 'weixin-dispatch' for t in asyncio.all_tasks())
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_repeated_monitor_cancel_joins_actual_handler_cleanup(tmp_path):
+    api = FakeApi()
+    entered, cleaning, release, finished = (asyncio.Event() for _ in range(4))
+
+    async def handler(msg):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaning.set()
+            await release.wait()
+            finished.set()
+
+    opts = options(tmp_path, api, handler)
+    api.updates.put_nowait(GetUpdatesResp(msgs=(user_message(1),)))
+    task = asyncio.create_task(run_monitor(opts))
+    try:
+        await wait(entered.wait())
+        opts.cancel_event.set()
+        await wait(cleaning.wait())
+        for _ in range(3):
+            task.cancel()
+            await asyncio.sleep(0)
+        assert not task.done() and not finished.is_set()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await wait(task)
+        assert finished.is_set()
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

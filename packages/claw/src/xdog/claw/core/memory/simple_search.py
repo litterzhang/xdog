@@ -10,10 +10,10 @@ hybrid vector + BM25 pipeline from :mod:`claw.memory.indexer` and
 
 from __future__ import annotations
 
-import asyncio
 import re
 from pathlib import Path
 
+from xdog.agent.async_work import run_owned
 from xdog.claw.core.memory.types import MemoryChunk
 
 
@@ -40,7 +40,7 @@ class SimpleMemorySearch:
 
     async def search(self, query: str, top_k: int = 10) -> list[MemoryChunk]:
         """Return up to *top_k* chunks matching *query* keywords."""
-        return await asyncio.to_thread(self._search, query, top_k)
+        return await run_owned(self._search, query, top_k)
 
     def _search(self, query: str, top_k: int) -> list[MemoryChunk]:
         terms = tokenize(query)

@@ -24,6 +24,14 @@ sdists, Twine, Goal-only/both-host same extension and ACP/native/output consumer
 must run after the last runtime fix. No final whole-branch reviewer has been run;
 the one review is deferred until known required implementation gaps are closed.
 
+Current Task3 checkpoint after dynamic/native/memory/image/monitor fixes:
+**6961 passed,34 skipped**,190.25s; strict9 mypy600, full Ruff packages/scripts,
+Flow17, lock/diff pass. The first attempted full run hung in real Weixin shutdown
+and was explicitly recorded failed after diagnosis; the fresh complete run above
+includes its bounded reproducer/fix. See `docs/claw-owned-tool-io-verification.md`.
+F-04 optional paths and parent47/review/artifacts remain open. No requirements
+have been promoted merely because this suite is green.
+
 ## Confirmed closed findings
 
 - R-01: actual old extension owners retained by the application until shutdown.
@@ -38,7 +46,7 @@ or weakref/context-rotation proofs, not fake backend/store/close replacements.
 
 ## Acceptance findings — source fixes and still-open obligations
 
-### F-01 — ordinary Claw persistence still blocks its event-loop owner
+### F-01 — ordinary Claw persistence: bounded source fix verified
 
 The actual first ordinary input, with an explicitly scripted model and private
 fresh data root, records **12 actual fsync calls on the event-loop thread**.
@@ -55,6 +63,15 @@ perform ordered disk operations off-loop, settle actual commits before metadata/
 history or execution receipts publish, and preserve cancellation/no-replay/owner
 fences. Do not solve this by moving Agent execution to a second loop or by merely
 wrapping the entire mutable Session in a worker.
+
+The original F-01 counterexample above is historical, not the current runtime.
+`ae1e4fc` detached session preparation and `39547e0` history commit moved the
+actual ordinary-turn IO off-loop without moving Agent execution. The tracked
+whole-turn probe now observes23 real fsync calls and zero on the model loop.
+See `docs/claw-owned-session-io-verification.md` and
+`docs/claw-owned-transcript-commit-verification.md`. Startup/status/channels and
+native dynamic controls have their own later checkpoints. This closes that
+specific ordinary-turn counterexample, not all of VERIFY-01.
 
 ### F-02 — corrupt authoritative active index: source fix verified
 
@@ -85,7 +102,7 @@ by the current ledger. The final whole-objective current-pointer/derived-catalog
 and lease/recovery audit, including genuinely missing pointers, remains open;
 passing this bounded fix does not satisfy all of VERIFY-01.
 
-### F-03 — ordinary appended transcript durability needs its own proof
+### F-03 — ordinary appended transcript durability: source fix verified
 
 `TranscriptStore.append_turn` appends/closes the JSONL file without an explicit
 flush/fsync; `increment_turn` syncs metadata files, not that original log file.
@@ -96,10 +113,39 @@ sync actual history and publish its cursor/metadata only after commit. Failure o
 cancellation cannot silently append the same partial batch again or rerun tools.
 No hardware power-loss/exactly-once guarantee is claimed or required.
 
-F-01/F-03 and the remaining recovery audit keep VERIFY-01 open, even though the
-existing whole-nine suite passes. Formal remaining IO work must include actual
-thread/commit barriers, corruption byte-preservation and original-ID/no-replay
-proofs, not relaxed tests, deadlines or a narrower interpretation of the spec.
+That original append-only path is no longer the production turn writer.
+`transcript_commit.py` commits a detached, original-owner and semantic-prefix
+bound history batch through the existing undo journal. Real JSONL fsync and the
+commit marker precede cursor/metadata adoption and execution success; failed
+history never enters a second append fallback. `test_owned_transcript_commit.py`
+includes actual post-IO barriers, rollback failure/reopen and five subprocess
+crash points after a genuine model/tool effect. See
+`docs/claw-owned-transcript-commit-verification.md`. This closes F-03's original
+counterexample, without claiming hardware exactly-once or all source IO audited.
+
+### F-04 — remaining optional-memory and application IO audit
+
+The previous ordinary-turn fixes did not prove all tool paths. Current tracked
+`test_owned_memory_io.py` originally observed six actual get/write cases on the
+owner loop and one keyword-read cancellation escaping real IO (RED7). Tool IO
+now uses owned workers; a shared memory write lock preserves read/check/append
+ordering and the existing capacity policy. Actual cancellation retains its
+original group fence and appends only once. Generated-image path checks were
+on-loop, and reference/save cancellation returned before disk completion (RED3);
+owned preparation/read/save and cleanup joins now cover these paths, with the
+original provider/network boundary on its loop. Monitor shutdown also required a
+real fix: a presentation callback could settle cancellation, then dispatch
+waited on its next FIFO item forever. Two bounded cases reproduce that failure;
+the monitor now owns an explicit stop token and settled cleanup task.
+
+These are source fixes under current regression verification, not a completed
+VERIFY-01. Remaining explicit inspection includes optional hybrid indexer file
+reads/directory enumeration, lazy embedding load/encode and aiosqlite connection
+acquisition/late-close ownership, plus cached-workspace/projection metadata path
+IO. Existing source uses direct file reads there, so these cannot be declared
+safe merely because the default keyword path passed. Preserve exact source,
+permissions, corruption/lease and no-replay checks; no new search engine or
+model/tool execution loop is authorized. Task3 and parent47 audit remain open.
 
 ## 47-item source/test inventory
 

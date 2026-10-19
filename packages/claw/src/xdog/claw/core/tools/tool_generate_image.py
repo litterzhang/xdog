@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 import xdog.ai as ai
 from xdog.agent import AgentTool, AgentToolResult
+from xdog.agent.async_work import run_owned, wait_owned
 from xdog.ai.types import ImageGenerationRequest, TextContent
 from xdog.ai.utils.image_files import read_reference, save_images
 
@@ -58,7 +59,7 @@ async def _with_cancellation(
         for pending in tasks:
             if not pending.done():
                 pending.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await wait_owned(asyncio.gather(*tasks, return_exceptions=True))
 
 
 async def generate_images(
@@ -88,14 +89,17 @@ async def generate_images(
         raise ImageGenerationError("Image model must use provider/model format.")
     if cancel is not None and cancel.is_set():
         raise ImageGenerationError("Image generation cancelled.")
-    workspace = workspace.resolve()
-    output = _workspace_path(workspace, output_dir)
-    if output.exists() and not output.is_dir():
-        raise ImageGenerationError("Output directory is an existing file.")
-    reference_paths = [_workspace_path(workspace, name) for name in references]
+    def prepare_paths() -> tuple[Path, tuple[Path, ...]]:
+        root = workspace.resolve()
+        output = _workspace_path(root, output_dir)
+        if output.exists() and not output.is_dir():
+            raise ImageGenerationError("Output directory is an existing file.")
+        return root, tuple(_workspace_path(root, name) for name in references)
+
+    workspace, reference_paths = await run_owned(prepare_paths)
 
     async def run() -> GeneratedImages:
-        runtime = ai.load()
+        runtime = await run_owned(ai.load)
         if provider_id not in runtime.active_providers():
             raise ImageGenerationError(
                 f"Image provider {provider_id!r} is not logged in. Run `xdog-ai login {provider_id}` first."
@@ -106,7 +110,7 @@ async def generate_images(
                 f"Model {model!r} does not have confirmed image_generation support. "
                 "Run `xdog-claw onboard` to select a supported image model."
             )
-        reference_images = tuple([await asyncio.to_thread(read_reference, path) for path in reference_paths])
+        reference_images = tuple([await run_owned(read_reference, path) for path in reference_paths])
         result = await runtime.image_generation(model, ImageGenerationRequest(
             prompt=prompt, reference_images=reference_images, aspect_ratio=aspect_ratio, image_size=image_size,
         ))
@@ -117,8 +121,10 @@ async def generate_images(
         if cancel is not None and cancel.is_set():
             raise ImageGenerationError("Image generation cancelled.")
         # Recheck after the remote operation in case the output path changed.
-        output = _workspace_path(workspace, output_dir)
-        paths = await asyncio.to_thread(save_images, result.images, output)
+        def persist() -> tuple[Path, ...]:
+            return save_images(result.images, _workspace_path(workspace, output_dir))
+
+        paths = await run_owned(persist)
         return GeneratedImages(paths=paths, text=result.text[:2000])
 
     try:

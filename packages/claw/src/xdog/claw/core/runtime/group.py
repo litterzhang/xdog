@@ -184,6 +184,11 @@ class GroupRuntime:
         child_presets: dict[str, Any] | None = None,
     ) -> GroupRuntime:
         """Build a fully-initialized GroupRuntime from a Group config."""
+        # Validate pure descriptors before any optional worker/resource allocation.
+        from xdog.agent.mcp.config import parse_servers
+        from xdog.agent.supervision_config import ChildPresets
+        parse_servers(mcp_servers or {})
+        ChildPresets(child_presets)
         cfg = group.agent_config
         resolved_model = resolve_model_name(cfg.model, model)
         ctx_window, max_prompt = _get_model_limits(resolved_model)
@@ -210,11 +215,10 @@ class GroupRuntime:
         # optional search workers; malformed current data must not orphan them.
         transcript_store = TranscriptStore(group_dir / "sessions", owner_group=group.id)
         skill_manager = SkillManager(shared_dir=data_dir / "skills", group_dir=ws / "skills")
-        memory = MemoryManager(ws, group_dir, group.id, embed_fn=embed_fn)
         flush_runner = FlushRunner(resolved_model, stream_fn) if resolved_model else None
         summarizer = Summarizer(resolved_model) if resolved_model else None
 
-        return cls(
+        runtime = cls(
             group=group,
             data_dir=data_dir,
             model=resolved_model,
@@ -224,7 +228,6 @@ class GroupRuntime:
             agent_config=cfg,
             workspace_dir=ws,
             transcript_store=transcript_store,
-            memory=memory,
             skill_manager=skill_manager,
             flush_runner=flush_runner,
             summarizer=summarizer,
@@ -234,6 +237,10 @@ class GroupRuntime:
             extension_settings=extension_settings, extension_allow_tools=extension_allow_tools,
             child_presets=child_presets,
         )
+        # Acquire optional search workers last: a failed constructor must not
+        # orphan resources that the unpublished runtime never came to own.
+        runtime.memory = MemoryManager(ws, group_dir, group.id, embed_fn=embed_fn)
+        return runtime
 
     # -- Tools -----------------------------------------------------------------
 

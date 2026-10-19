@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -44,6 +45,7 @@ class MemoryManager:
         embed_fn: EmbedFn | None = None,
     ) -> None:
         self.workspace_dir = workspace_dir
+        self.write_lock = threading.Lock()  # Serialize actual read/check/append across shared memory tools.
         self.daily_log = DailyLog(workspace_dir / "memory")
         self.long_term = LongTermMemory(workspace_dir)
 

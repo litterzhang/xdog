@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from xdog.agent.async_work import run_owned
+from xdog.agent.async_work import run_owned, wait_owned
 from xdog.claw.channels.weixin.api import WeixinApiClient
 from xdog.claw.channels.weixin.types import (
     MessageType,
@@ -89,9 +89,10 @@ async def run_monitor(opts: MonitorOpts) -> None:
     owns_client = opts.api_client is None
     api_client = opts.api_client or WeixinApiClient(opts.base_url, opts.token)
     inbox: asyncio.Queue[WeixinMessage] = asyncio.Queue(maxsize=opts.max_pending_messages)
+    stopping = asyncio.Event()
     tasks = [
         asyncio.create_task(_poll_updates(opts, api_client, inbox), name="weixin-poll"),
-        asyncio.create_task(_dispatch_messages(opts, inbox), name="weixin-dispatch"),
+        asyncio.create_task(_dispatch_messages(opts, inbox, stopping), name="weixin-dispatch"),
         asyncio.create_task(opts.cancel_event.wait(), name="weixin-stop"),
     ]
     try:
@@ -101,22 +102,29 @@ async def run_monitor(opts: MonitorOpts) -> None:
         for task in done:
             task.result()
     finally:
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        if not inbox.empty():
-            logger.warning("Monitor stopped with %d pending in-memory messages", inbox.qsize())
-        if owns_client:
-            await api_client.close()
-        logger.info("Monitor stopped")
+        async def cleanup() -> None:
+            # The monitor, not a presentation callback, owns admission to the
+            # next FIFO item. A handler may settle cancellation during cleanup.
+            stopping.set()
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            if not inbox.empty():
+                logger.warning("Monitor stopped with %d pending in-memory messages", inbox.qsize())
+            if owns_client:
+                await api_client.close()
+            logger.info("Monitor stopped")
+
+        await wait_owned(asyncio.create_task(cleanup(), name="weixin-monitor-close"))
 
 
 async def _dispatch_messages(
     opts: MonitorOpts,
     inbox: asyncio.Queue[WeixinMessage],
+    stopping: asyncio.Event,
 ) -> None:
     """Keep handlers serial while the poller continues receiving messages."""
-    while True:
+    while not stopping.is_set():
         msg = await inbox.get()
         try:
             await opts.on_message(msg)

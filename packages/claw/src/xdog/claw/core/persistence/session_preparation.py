@@ -101,3 +101,13 @@ def prompt(workspace: Path, tools: tuple[PromptTool, ...], model: str,
     from xdog.claw.core.prompt import build_system_prompt, run_bootstrap
     return build_system_prompt(workspace, tools=list(tools), model=model,
                                bootstrap_content=run_bootstrap(workspace) if bootstrap else None)
+
+
+def reset(store: TranscriptStore, group: str, expected: SessionMeta | None) -> SessionMeta:
+    """Original binding only; no Runtime/Session/Agent mutation in its worker."""
+    with store._lock:
+        if store.get_active_session(group) != expected or store._load_index() != store._index:
+            raise ValueError('Reset pointer owner changed before persistence')
+        if expected is None and store.list_sessions(group):
+            raise ValueError('Committed current pointer missing; readonly archives cannot authorize reset')
+        return store.reset_session(group)

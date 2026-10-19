@@ -1852,6 +1852,19 @@ class GatewayServer:
                             "message": "Cannot reset while a run is active",
                         })
                         continue
+                    if len(extension_jobs) >= 8:
+                        await write({'type': 'error', 'message': 'Too many pending control requests'})
+                        continue
+                    reset_task = asyncio.create_task(self._dispatch(dict(request), writer), name='claw-native-reset')
+                    extension_jobs.add(reset_task)
+
+                    def reset_done(done: asyncio.Task[None]) -> None:
+                        extension_jobs.discard(done)
+                        if not done.cancelled() and done.exception() is not None:
+                            logger.debug('Detached reset request failed', exc_info=done.exception())
+
+                    reset_task.add_done_callback(reset_done)
+                    continue
                 if msg_type == "abort":
                     run_id = str(request.get("run_id", ""))
                     group_id = str(request.get("group_id", "main"))
@@ -2312,7 +2325,10 @@ class GatewayServer:
             return
 
         try:
-            reset = self._orchestrator.reset_group(group_id)
+            reset = group_id in self._orchestrator.get_group_ids()
+            if reset:
+                expected = self._orchestrator.get_new_session_id(group_id) or ''
+                await self._orchestrator.navigate_session(group_id, 'new', '', '', -1, expected)
         except (ValueError, RuntimeError) as exc:
             await self._write_response(writer, {"type": "error", "message": str(exc)})
             return
