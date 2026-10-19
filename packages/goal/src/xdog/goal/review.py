@@ -198,24 +198,28 @@ class ReviewLifecycle:
                         current, "review:" + review.id, "Independent review needs inspection: " + str(exc)
                     ),
                 )
+        result = replace(
+            review,
+            state="passed" if verdict == "passed" else verdict,
+            findings=rows,
+            verdict=verdict,
+            summary=summary,
+        )
+        status = "completed" if verdict == "passed" else "blocked" if verdict == "blocked" else "waiting"
         async with s._lock(identifier):
             current = await s._get(identifier)
             if current.version != goal.version or current.review != review:
+                if (current.version == goal.version + 1 and current.review == result
+                        and current.status == status and current.criteria_revision == goal.criteria_revision):
+                    return current  # The exact same execution/evidence was already committed once.
                 raise ValueError("Goal changed before applying independent review")
             if current.status == "paused":
                 # A user pause is not released by a background review result.
                 return current
-            result = replace(
-                review,
-                state="passed" if verdict == "passed" else verdict,
-                findings=rows,
-                verdict=verdict,
-                summary=summary,
-            )
             return await s._save(
                 current,
                 review=result,
-                status="completed" if verdict == "passed" else "blocked" if verdict == "blocked" else "waiting",
+                status=status,
                 summary=summary,
                 wait_reason="" if verdict == "passed" else summary,
                 artifacts=((f"review-result:{review.id}", {"worker": asdict(child.worker), "result": raw}),),

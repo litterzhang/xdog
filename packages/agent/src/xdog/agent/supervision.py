@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import copy
 import inspect
 import json
 import re
@@ -233,6 +234,7 @@ class ChildSupervisor:
         self.persist = persist or (lambda record: None)
         self.diagnostic = ""
         self.publish: Callable[[dict[str, Any]], None] = lambda event: None
+        self._listeners: dict[object, Callable[[dict[str, Any]], None]] = {}
         self._children: dict[str, _Child] = {}
         self._lock = threading.RLock()
         self._start_lock = threading.Lock()
@@ -428,14 +430,35 @@ class ChildSupervisor:
             return {key: list(value) if isinstance(value, list) else value
                     for key, value in child.initial_receipt.items()}
 
+    def subscribe(self, listener: Callable[[dict[str, Any]], None]) -> Callable[[], None]:
+        """Independent data-only lifecycle hints, unaffected by a UI publish owner.
+
+        Listeners may be called on the child loop and must marshal to their own
+        owner. Removing a listener changes no execution/resource state.
+        """
+        key = object()
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Child supervisor closed")
+            self._listeners[key] = listener
+        def remove() -> None:
+            with self._lock:
+                self._listeners.pop(key, None)
+        return remove
+
     def _notify(self, child: _Child) -> None:
         with self._lock:
             child.updated = time.time()
-        if not self._closed:
+            if self._closed:
+                return
+            targets = (*self._listeners.values(), self.publish)
+            event = {"type": "child_status", "child_id": child.spec.id, "snapshot": self.snapshot()}
+        for target in targets:
             try:
-                self.publish({"type": "child_status", "child_id": child.spec.id, "snapshot": self.snapshot()})
+                target(copy.deepcopy(event))
             except Exception:
-                # A disconnected UI must never strand a child or its persistence.
+                # A disconnected UI/listener cannot strand execution or disable
+                # another service's lifecycle hint. Facts remain queryable.
                 pass
 
     def _capture(self, child: _Child) -> None:

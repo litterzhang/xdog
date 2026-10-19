@@ -221,3 +221,28 @@ async def test_revision_does_not_implicitly_cancel_or_lose_an_active_reviewer(tm
         await service.cancel_review(goal.id, "Explicitly stop old reviewer")
         result = await service.request_complete(goal.id, paths=("result.txt",))
         assert result.review.id != requested.review.id and len(host.reviewed) == 2
+
+
+async def test_concurrent_reconciliation_of_same_completed_review_is_idempotent(tmp_path, monkeypatch):
+    import xdog.goal.review as review_module
+    async with setup_review(tmp_path) as (service, host, goal):
+        goal = await service.request_complete(goal.id, paths=('result.txt',))
+        finish(host, goal, verdict(goal))
+        fingerprint = review_module.fingerprint
+        entered = 0
+        both = asyncio.Event()
+        async def paused(*args, **kwargs):
+            nonlocal entered
+            result = await fingerprint(*args, **kwargs)
+            entered += 1
+            if entered == 2:
+                both.set()
+            await both.wait()
+            return result
+        monkeypatch.setattr(review_module, 'fingerprint', paused)
+        first, second = await asyncio.gather(service.reconcile(goal.id), service.reconcile(goal.id))
+        assert first.status == second.status == 'completed'
+        assert first.review == second.review
+        notices = await service.store.notices()
+        assert len(notices) == 1
+        assert len([item for item in await service.store.history(goal.id) if item.status == 'completed']) == 1
