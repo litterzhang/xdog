@@ -64,7 +64,7 @@ assert app._editor.get_text()=='current unsent edit'
 ```
 
 - [ ] Run targeted tests; expected current `_restore_pending_draft` merges/relabels the active input and drops its stable identity RED.
-- [ ] Implement the frozen submission/projection and capability-gated TUI path. Preserve legacy non-negotiated conservative restore behavior only for old peers in the same private transport, not as a data-format migration. Do not reuse ordinary input receipt recovery for Agent steer/follow-up inputs, which retain their existing consumed/returned semantics.
+- [ ] Implement the frozen submission/projection and capability-gated TUI path. Without negotiated receipt support, never automatically resend an uncertain input; existing conservative unsent-draft handling is not an old-data migration or an alternate receipt implementation. Do not reuse ordinary input receipt recovery for Agent steer/follow-up inputs, which retain their existing consumed/returned semantics.
 - [ ] Run full Native/TUI/Gateway/input tests and root suite, Ruff/strict8 mypy, Flow examples, lock/diff. Record actual verification/remaining queue-durability limits in `docs/claw-native-reconnect-verification.md`; commit `fix(claw): reconcile native ACK loss without replaying accepted input`.
 
 ## Follow-through

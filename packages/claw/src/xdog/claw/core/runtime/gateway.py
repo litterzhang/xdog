@@ -29,7 +29,8 @@ from xdog.agent.supervision_config import ChildConfig
 from xdog.ai.types import ImageContent, StreamOptions, ThinkingLevel
 from xdog.claw.channels.tui.image_upload import ImageUploads
 from xdog.claw.config import ClawConfig
-from xdog.claw.core.inputs.models import ReplyTarget
+from xdog.claw.core.inputs.models import InputScope, ReplyTarget
+from xdog.claw.core.runtime.input_queries import NativeInputReceipts
 from xdog.claw.core.runtime.mcp_protocol import McpSender
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.runtime.source_protocol import SourceSender
@@ -149,6 +150,7 @@ class GatewayServer:
         self._acp_server: ClawAcpServer | None = None
         self._acp_viewers: dict[int, tuple[str, Callable[[dict[str, Any]], Awaitable[None]]]] = {}
         self._orchestrator: Orchestrator | None = None
+        self._native_inputs: NativeInputReceipts | None = None
         self._input_unsubscribe: Callable[[], None] | None = None
         self._input_notices: set[asyncio.Task[None]] = set()
         self._goal_task: asyncio.Task[Any] | None = None
@@ -195,6 +197,11 @@ class GatewayServer:
                     await session.initialize_extensions(require_model=True)
             await self._orchestrator.start()
             inputs = await self._orchestrator.input_service()
+            application = self._orchestrator
+            def native_scope(group_id: str) -> InputScope | None:
+                workspace = application.get_group_workspace(group_id)
+                return InputScope(group_id, workspace) if workspace is not None else None
+            self._native_inputs = NativeInputReceipts(inputs, native_scope)
             def completed(record: InputRecord) -> None:
                 if record.envelope.message.origin == 'acp' and self._acp_viewers:
                     task = asyncio.create_task(self._acp_completed(record))
@@ -305,6 +312,7 @@ class GatewayServer:
         write_lock = asyncio.Lock()
         runs: dict[str, _ClientRun] = {}
         receipts: dict[str, tuple[str, dict[str, Any]]] = {}
+        native_reads: set[asyncio.Task[None]] = set()
         extension_jobs: set[asyncio.Task[None]] = set()
         extension_controls: dict[str, tuple[asyncio.Task[None], str, str]] = {}
         extension_started: set[str] = set()
@@ -1897,6 +1905,20 @@ class GatewayServer:
                     })
                     continue
 
+                if msg_type == 'input_status':
+                    if len(native_reads) >= 16:
+                        await write({'type': 'input_status_result', 'request_id': request.get('request_id', ''),
+                                     'success': False, 'error': 'Too many outstanding native receipt reads'})
+                        continue
+                    job = asyncio.create_task(self._read_native_receipt(dict(request), write),
+                                              name='claw-native-receipt')
+                    native_reads.add(job)
+                    def finished_read(done: asyncio.Task[None]) -> None:
+                        native_reads.discard(done)
+                        if not done.cancelled() and done.exception() is not None:
+                            logger.debug('Detached native receipt view failed', exc_info=done.exception())
+                    job.add_done_callback(finished_read)
+                    continue
                 await self._dispatch(request, writer,
                     skill_controls_active=skills_supported,
                     compaction_active=compaction_supported, saved_source_active=saved_source_supported,
@@ -1948,6 +1970,9 @@ class GatewayServer:
                     for job in tuple(child_jobs):
                         job.cancel()
                     await asyncio.gather(*child_jobs, return_exceptions=True)
+                    for job in tuple(native_reads):
+                        job.cancel()
+                    await asyncio.gather(*native_reads, return_exceptions=True)
                     for job in tuple(extension_jobs):
                         job.cancel()
                     await asyncio.gather(*extension_jobs, return_exceptions=True)
@@ -1977,6 +2002,26 @@ class GatewayServer:
             # server.wait_closed(). Never detach resource cleanup in the background.
             cleanup = asyncio.create_task(cleanup_client(), name=f"claw-client-{client_id}-cleanup")
             await wait_owned(cleanup)
+
+    async def _read_native_receipt(self, request: dict[str, Any],
+                                   write: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
+        from xdog.claw.core.runtime.input_queries import _label
+        payload: dict[str, Any] = {'type': 'input_status_result', 'request_id': request.get('request_id', ''),
+                                   'success': False}
+        try:
+            _label(request.get('request_id'), maximum=128)
+            if self._native_inputs is None:
+                raise ValueError('Native input receipt service is unavailable')
+            namespace = _label(request.get('namespace'))
+            group, message_id = _label(request.get('group_id')), _label(request.get('message_id'))
+            wait = request.get('wait', False)
+            if not isinstance(wait, bool):
+                raise ValueError('Invalid native receipt wait flag')
+            result = await self._native_inputs.read(group, namespace, message_id, wait=wait)
+            payload.update(success=True, namespace=namespace, message=result)
+        except Exception as exc:
+            payload['error'] = str(exc)[:1024]
+        await write(payload)
 
     async def _dispatch(
         self, request: dict[str, Any], writer: asyncio.StreamWriter, *,
@@ -2027,6 +2072,13 @@ class GatewayServer:
                 "child_source": 1, "child_queues": 1,
                 "child_dialogs": 1, "child_config": 3, "child_images": 1,
             }
+            session_info['input_receipts'] = 0
+            if self._native_inputs is not None:
+                try:
+                    session_info['inbox_namespace'] = await self._native_inputs.namespace(group_id)
+                    session_info['input_receipts'] = 1
+                except ValueError:
+                    pass
             history: list[dict[str, Any]] = []
             if self._orchestrator:
                 session_info.update(self._orchestrator.get_session_info(group_id))
@@ -2126,14 +2178,16 @@ class GatewayServer:
         pending_writes: list[asyncio.Task[None]] = []
         orchestrator = self._orchestrator
 
+        async def publish_accepted() -> None:
+            namespace = await self._native_inputs.namespace(group_id) if self._native_inputs is not None else ''
+            await write_response({'type': 'run_ack', 'group_id': group_id, 'run_id': run_id,
+                'message_id': 'native:' + run_id, 'inbox_namespace': namespace,
+                'session_id': orchestrator.get_new_session_id(group_id) or ''})
+
         def accepted() -> None:
             if started is not None:
                 started.set()
-                pending_writes.append(asyncio.create_task(write_response({
-                    'type': 'run_ack', 'group_id': group_id, 'run_id': run_id,
-                    'message_id': 'native:' + run_id,
-                    'session_id': orchestrator.get_new_session_id(group_id) or '',
-                })))
+                pending_writes.append(asyncio.create_task(publish_accepted()))
 
         def on_display_event(event: Any) -> None:
             nonlocal accumulated_text, streamed_any_text
