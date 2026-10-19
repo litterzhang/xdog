@@ -111,7 +111,7 @@ class ChildExtensions:
 
 
     def check_parent(self) -> None:
-        if any(row["state"] == "failed" for row in self.parent.snapshot()["extensions"]):
+        if self.parent.validation_failed:
             raise ValueError("Parent extension validation unavailable; unload/reload failed extensions explicitly")
 
     async def create(self, spec: ChildSpec, publish: Callable[[dict[str, Any]], None],

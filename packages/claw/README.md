@@ -165,6 +165,17 @@ input, execution receipts and conversation history, not Goal tables. The package
 roles describe explicit planning, assignment, reporting, acceptance and review.
 Derived workspace files are projections, not execution authority.
 
+For the shared Python display, include `goal_ui` in the existing trusted global
+`extensions` list. It loads directly from the Goal package; no copy or separate
+Goal enable flag. `/ext-goal_ui-goals [GOAL_ID | page OFFSET]` queries the actual
+group-owned read-only view, while `/goals` remains skill loading. The generic
+shared TUI ExtensionView renders its status text; the main TUI knows no Goal
+schema or lifecycle. Context rotation rebinds the fresh parent to the same group
+service. Actual child runtimes do not inherit its grant, and unloading/crashing
+the display does not cancel work, notifications or observations. See the source
+runtime evidence in `docs/shared-goal-extension-verification.md`; final installed
+same-extension and whole-objective validation are still in progress.
+
 A submitted worker report is not an accepted task; an accepted task is not a
 completed Goal. **Only `request_complete` starts independent review.** Ordinary
 turn end, idle and active Goal state never start a reviewer or a new model loop.

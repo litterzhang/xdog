@@ -246,6 +246,11 @@ view 读取/刷新不启动模型、不需要 TUI 存在、不授权工具；刷
 
 `xdog.tui` 只渲染既有通用 ExtensionView/交互组件；Coding/Claw 适配扩展数据、当前连接、
 能力协商及布局。移除主 TUI 的 Goal state/专用 widget/进度判断/turn-end finalize。
+实际执行边界补充：manifest 可严格声明 display_only=true；宿主禁止此类扩展注册验证
+hooks、工具/模型 provider、持久化对话 entries 或宿主动作提案，仅允许查询/文本与
+session_start/end/view_changed 展示事件。已确认的纯展示组件故障只影响展示，不作为
+业务验证 veto；现有/未知扩展仍默认 required/fail-closed，不按 Goal 名字特判。
+
 Goal 扩展拥有 `/goals` 等查询命令，卸载清理其 UI 和订阅，不改变 Goal 数据/执行状态。
 其他 native todo 展示不在本轮顺便重做，但不能把 turn-end 等同于 Goal 完成。
 通用工具事件不包含用于原生 Goal UI 的专用分支；没有扩展也能用文本和工具操作 Goal。

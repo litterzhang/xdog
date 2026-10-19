@@ -371,7 +371,8 @@
       "requirement": "同一 Goal Python 展示扩展实际供两宿主使用，主 TUI 无 Goal 业务判断",
       "status": "pending",
       "evidence": [
-        "docs/goal-ui-extension-verification.md"
+        "docs/goal-ui-extension-verification.md",
+        "docs/shared-goal-extension-verification.md"
       ]
     },
     {
@@ -379,7 +380,9 @@
       "area": "ui",
       "requirement": "通用 UI renderer 在 xdog.tui；宿主仅连接/布局/owner 适配，包不依赖 Goal",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/shared-goal-extension-verification.md"
+      ]
     },
     {
       "id": "UI-03",
@@ -388,7 +391,8 @@
       "status": "pending",
       "evidence": [
         "docs/extension-owner-views.md",
-        "docs/goal-ui-extension-verification.md"
+        "docs/goal-ui-extension-verification.md",
+        "docs/shared-goal-extension-verification.md"
       ]
     },
     {
@@ -397,7 +401,8 @@
       "requirement": "扩展禁用/故障/卸载仅影响展示，清理 UI/订阅但不改变 Goal 执行状态",
       "status": "pending",
       "evidence": [
-        "docs/goal-ui-extension-verification.md"
+        "docs/goal-ui-extension-verification.md",
+        "docs/shared-goal-extension-verification.md"
       ]
     },
     {
@@ -406,7 +411,8 @@
       "requirement": "不恢复任意 renderer、复杂 widget/layout，headless 不依赖 TUI 或展示扩展",
       "status": "pending",
       "evidence": [
-        "docs/goal-ui-extension-verification.md"
+        "docs/goal-ui-extension-verification.md",
+        "docs/shared-goal-extension-verification.md"
       ]
     },
     {

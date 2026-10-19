@@ -324,8 +324,12 @@ do not activate execution. See docs/goal-kernel-verification.md for the real SDK
 Supervisor and cold Goal-only lifecycle evidence. Coding has an optional real host
 adapter and cold installed lifecycle (docs/coding-goal-lifecycle-verification.md).
 Claw has the group-owned adapter and no legacy backend. Goal now ships a readonly
-projection and one packaged goal_ui worker; actual two-host view bindings, cold
-same-extension validation and final acceptance remain pending.
+projection and one packaged goal_ui worker with actual both-host bindings. Coding
+uses exact session/branch and Claw current-parent/stable-group scope; shared
+GoalDisplay owns only readonly data-read settlement, never business lifetime.
+Known display_only profiles have no validation/tool/provider/entry authority;
+unknown/default extensions keep fail-closed gates. Both native TUIs use generic
+ExtensionView, not Goal schema. Cold same-extension/final acceptance remain pending.
 
 ### `xdog.tui` and `xdog.site`
 

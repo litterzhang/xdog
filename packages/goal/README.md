@@ -47,8 +47,12 @@ Missing/malformed views say unavailable, never zero Goals. It imports no host,
 store or TUI and exposes no mutation commands. The normal shared TUI ExtensionView
 renders its generic status output; the main application needs no Goal widget.
 
-Current development milestone proves the projection with real Goal storage and
-the actual generic subprocess worker. Automatic binding to the actual Coding/Claw
-Goal owners and their owner-rotation/lifetime tests are the next task; installing
-this worker alone does not provide an unregistered host view. Headless Goal tools
-and durable notices do not depend on the display extension.
+The actual Coding and Claw adapters now bind this same display implementation to
+their real owners. Coding follows exact session/branch scope; Claw follows stable
+group data across context rotation. Actual children do not inherit the parent's
+view grant. UI failure/unload never closes business storage, cancels work or stops
+notices. A restricted generic `display_only` manifest profile gives this worker
+no validation/tool/provider authority, so its failure cannot veto execution.
+Cold installed same-extension validation and final architecture acceptance remain
+in progress. See `docs/shared-goal-extension-verification.md` for source/runtime
+evidence and limits. Headless Goal tools and durable notices remain independent.

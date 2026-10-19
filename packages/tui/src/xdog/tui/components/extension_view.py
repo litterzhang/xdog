@@ -19,5 +19,6 @@ class ExtensionView(Component):
                     or not isinstance(value.get("lines"), (list, tuple))):
                 continue
             for line in value["lines"][:2]:
-                rows.append(truncate_to_width(sanitize_terminal_text(f"{key}: {line}"), max(0, width), ""))
+                text = sanitize_terminal_text(f"{key}: {line}").replace("\n", " ").replace("\r", " ")
+                rows.append(truncate_to_width(text, max(0, width), ""))
         return rows[:4]

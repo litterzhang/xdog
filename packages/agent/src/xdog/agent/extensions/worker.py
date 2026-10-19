@@ -44,17 +44,19 @@ class _Captured(io.TextIOBase):
         pass
 
 
-def manifest(path: Path) -> dict[str, Any]:
+def manifest(path: Path, *, check_entry: bool = True) -> dict[str, Any]:
     file = path / "extension.yaml"
     if file.stat().st_size > 64 * 1024:
         raise ValueError("Extension manifest is too large")
     value = yaml.safe_load(file.read_text(encoding="utf-8"))
     if not isinstance(value, dict) or value.get("name", path.name) != path.name:
         raise ValueError("Extension manifest identity mismatch")
+    if type(value.get("display_only", False)) is not bool:
+        raise ValueError("display_only must be a strict boolean declaration")
     entry = value.get("entry_point", "main")
     if not isinstance(entry, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", entry):
         raise ValueError("Extension entry_point must be a local Python module name")
-    if not (path / f"{entry}.py").is_file():
+    if check_entry and not (path / f"{entry}.py").is_file():
         raise ValueError("Extension entry module is missing")
     dependencies = value.get("dependencies", [])
     if not isinstance(dependencies, list) or any(not isinstance(name, str) for name in dependencies):

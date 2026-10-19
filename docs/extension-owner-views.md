@@ -115,3 +115,19 @@ This is source/runtime-worker evidence for the generic foundation. Earlier
 cutover artifact receipts belong to their own milestone; rebuilding/installing
 this new protocol with the actual shared Goal UI is still required by Task4.
 No user service/data, paid model, push, merge or publication was used.
+
+## Restricted display contribution profile
+
+A manifest may explicitly declare `display_only: true` (strict boolean). The
+host reads valid identity/profile metadata before loading/checking the code entry.
+A known display's syntax/module/process/view failure affects display, not business
+validation. Unknown/unreadable/invalid identities/profiles still default required
+and fail closed; they are not silently assumed to be UI.
+
+A display cannot register tools/providers, pre/post/context/input or non-display
+lifecycle hooks, persist conversation entries, return host-action proposals or
+open session-control/export dialogs. The allowed lifecycle is session_start/end
+and view_changed, with text commands, basic UI and explicitly granted readonly
+views. Initial and live declarations are enforced by the host, not SDK goodwill.
+Existing/default extensions retain their guard authority/failure vetoes. A failed
+display does not disable an actual required guard or change tool permissions.

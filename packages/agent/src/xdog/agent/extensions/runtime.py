@@ -12,6 +12,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
@@ -286,6 +287,8 @@ class _Client(StdioClient):
                             value = None
                         if current_invocation() is not view_lease:
                             value = None
+                elif self.config.name in self.owner._display_only and prompt['kind'] == 'session':
+                    value = None  # Display profiles have no reviewed host-control/data-export proposals.
                 elif prompt['kind'] == 'session' and prompt.get('operation') == 'commands' and menu_allowed:
                     from xdog.agent.extensions.command_catalog import answer as menu_answer
                     from xdog.agent.extensions.invocation import current_invocation
@@ -335,6 +338,9 @@ class _Client(StdioClient):
                 value = validate_answer(prompt, value)
                 result = await super().request("xdog/ui_reply", {
                     "call_id": call_id, "dialog_id": prompt["id"], "value": value})
+            if (self.config.name in self.owner._display_only and method == "xdog/command"
+                    and "xdog_command_result" in result):
+                raise ValueError("Display-only commands return text, not host action proposals")
             if not view_scope_current():
                 # Earlier valid reads cannot be published after a branch/provider
                 # binding changes later in the same awaited callback.
@@ -489,6 +495,7 @@ class ExtensionRuntime:
         self._input_required: set[str] = set()
         self._provider_lock = asyncio.Lock()
         self._failed: set[str] = set()
+        self._display_only: set[str] = set()
         self._unloaded: set[str] = set()
         self._aliases: set[str] = set()
         self._tool_wrappers: dict[str, tuple[McpTool, Any, AgentTool]] = {}
@@ -568,16 +575,36 @@ class ExtensionRuntime:
             job.cancel()
         await asyncio.gather(*jobs, return_exceptions=True)
 
+    @property
+    def validation_failed(self) -> frozenset[str]:
+        # Unknown/default extensions remain required. Only an explicitly
+        # validated display profile has no validation authority to lose.
+        return frozenset(self._failed - self._unloaded - self._display_only)
+
+    def _profile(self, name: str, meta: dict[str, Any]) -> None:
+        if meta.get("display_only") is True:
+            self._display_only.add(name)
+        else:
+            self._display_only.discard(name)
+
+    def _display_hooks(self, name: str, declaration: dict[str, Any]) -> None:
+        if name in self._display_only and (
+                any(declaration.get(flag) for flag in FLAGS)
+                or set(declaration.get("events", ())) - {"session_start", "session_end", "view_changed"}):
+            raise ValueError("Display-only extensions cannot register validation/model hooks")
+
     async def commit_entries(self, name: str, contributions: Any) -> None:
         if self._closed:
             raise RuntimeError("Extension entry owner closed; late state was not written")
+        if name in self._display_only and contributions:
+            raise ValueError("Display-only extensions cannot persist conversation entries")
         await run_owned(self.entries.append, name, contributions)
 
     async def transform(self, messages: list[AgentMessage]) -> list[AgentMessage]:
         if not self.enabled:
             return messages
         await self.initialize()
-        if self._failed - self._unloaded:
+        if self.validation_failed:
             raise ValueError("Extension context validation unavailable; unload failed extensions explicitly")
         async def run() -> list[AgentMessage]:
             async with self._context_lock:
@@ -710,7 +737,8 @@ class ExtensionRuntime:
                     directory = await run_owned(extension_directory, name, self.root)
                     if directory is None:
                         raise ValueError("Configured extension is not installed or present in its explicit root")
-                    meta = await run_owned(manifest, directory)
+                    meta = await run_owned(partial(manifest, directory, check_entry=False))
+                    self._profile(name, meta)
                     dependencies = set(meta.get("dependencies", []))
                     if not dependencies <= set(self.enabled):
                         raise ValueError("Extension dependency is not explicitly enabled")
@@ -741,11 +769,18 @@ class ExtensionRuntime:
             directory = await run_owned(extension_directory, name, self.root)
             if directory is None:
                 raise ValueError("Configured extension is not installed")
-            await run_owned(manifest, directory)
+        meta = await run_owned(partial(manifest, directory, check_entry=False))
+        self._profile(name, meta)
+        if not await run_owned((directory / (meta['entry_point'] + '.py')).is_file):
+            raise ValueError("Extension entry module is missing")
         config = self._manager.configs[name]
         self._manager.configs[name] = replace(config, command=(*config.command[:-1], str(directory)))
         await self._manager._connect(name)
         info = await self._rpc(name, "xdog/info", {})
+        self._display_hooks(name, info)
+        if name in self._display_only and (info.get("providers") or any(
+                tool.server == name for tool in self._manager._tools)):
+            raise ValueError("Display-only extensions cannot register tools/providers")
         if (not isinstance(info.get("commands"), list) or len(info["commands"]) > 32
                 or not isinstance(info.get("events"), list) or type(info.get("pre")) is not bool
                 or type(info.get("post")) is not bool):
@@ -856,6 +891,8 @@ class ExtensionRuntime:
         if type(revision) is not int or not 0 <= revision <= 2**53:
             raise ValueError("Invalid live provider revision")
         normalized = provider_catalog(value['providers'], live=True)
+        if name in self._display_only and normalized:
+            raise ValueError("Display-only extensions cannot register model providers")
         previous = client._provider_snapshot
         if previous is not None and revision <= previous[0]:
             if revision == previous[0] and normalized != previous[1]:
@@ -875,6 +912,8 @@ class ExtensionRuntime:
         if self._closed or self._manager._clients.get(name) is not client or client.state == "disconnected":
             return
         current = tool_declaration(value)
+        if name in self._display_only and current['tools']:
+            raise ValueError("Display-only extensions cannot register tools")
         previous = client._tool_snapshot
         if previous is not None and current["revision"] <= previous["revision"]:
             if current["revision"] == previous["revision"] and current != previous:
@@ -910,6 +949,7 @@ class ExtensionRuntime:
         if self._closed or self._manager._clients.get(name) is not client or client.state == "disconnected":
             return
         current = hook_declaration(value)
+        self._display_hooks(name, current)
         previous = client._hook_snapshot
         if previous is not None and current["revision"] <= previous["revision"]:
             if current["revision"] == previous["revision"] and current != previous:
@@ -1093,7 +1133,7 @@ class ExtensionRuntime:
     async def before_compaction(self, preparation: dict[str, Any]) -> "CompactionDecision":
         from xdog.agent.extensions.compaction import CompactionDecision, decision
         await self.initialize()
-        if self._closed or self._failed - self._unloaded:
+        if self._closed or self.validation_failed:
             raise ValueError('Extension compaction validation unavailable; unload failed extensions explicitly')
         if not self.enabled:
             return CompactionDecision()
@@ -1135,13 +1175,13 @@ class ExtensionRuntime:
 
     async def pre(self, tool: str, params: dict[str, Any]) -> dict[str, Any] | None:
         await self.initialize()
-        if self._failed - self._unloaded:
+        if self.validation_failed:
             raise ValueError("Extension validation unavailable; explicitly unload failed extensions before tools run")
         if not self.enabled:
             return params
         async def run() -> dict[str, Any] | None:
             async with self._pre_lock:
-                if self._failed - self._unloaded:
+                if self.validation_failed:
                     raise ValueError("Extension validation unavailable; unload failed extensions explicitly")
                 current = dict(params)
                 for name, info in tuple(self._infos.items()):

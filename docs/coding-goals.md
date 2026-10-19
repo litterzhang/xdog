@@ -78,3 +78,21 @@ reject rather than block that loop behind admitted work. Submit an owner control
 or use `await asyncio.to_thread(session.restore_branch, branch_id)` as appropriate;
 this does not create another Agent/controller. Shutdown/disposal still waits for
 the existing controller, children and actual Goal commits to settle.
+
+## Optional shared display
+
+With the Goal package installed, list `goal_ui` in trusted global `extensions`
+(the same existing extension configuration, not another Goal enable flag):
+
+```json
+{"extensions": ["goal_ui"]}
+```
+
+The package resource is loaded directly; no copying or registration is needed.
+`/ext-goal_ui-goals [GOAL_ID | page OFFSET]` queries it, while `/goals` remains the
+built-in skill command. The actual session/branch owns its read-only view. Existing
+context navigation clears/replaces the old generic extension runtime rather than
+moving Goal data. The main TUI uses its generic shared ExtensionView and has no
+Goal widget or lifecycle policy. UI unload/failure affects display only; actual
+workers, stored contracts and durable notices keep their independent lifetimes.
+See `docs/shared-goal-extension-verification.md`; cold installed UI proof follows.

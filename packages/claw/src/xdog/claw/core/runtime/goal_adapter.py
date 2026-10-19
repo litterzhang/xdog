@@ -28,6 +28,7 @@ from xdog.goal.resources import role_instructions
 from xdog.goal.service import GoalService
 from xdog.goal.store import GoalStore
 from xdog.goal.tools import create_context_tool, create_goal_tool, create_report_tool
+from xdog.goal.ui_binding import GoalDisplay
 
 if TYPE_CHECKING:
     from xdog.claw.core.inputs.consumer import InputService
@@ -65,6 +66,8 @@ class ClawGoalHost:
         self._bound: dict[WorkerRef, tuple[AgentTool, ...]] = {}
         self._tool: AgentTool | None = None
         self._attached: AgentSession | None = None
+        self._display: GoalDisplay | None = None
+        self._retired_displays: set[GoalDisplay] = set()
         self._jobs: set[asyncio.Task[None]] = set()
         self._closing = False
         self._close_task: asyncio.Task[None] | None = None
@@ -176,6 +179,24 @@ class ClawGoalHost:
             raise ValueError("Goal tool name already owned; refusing capability replacement")
         session.agent.set_tools((*base, *self.runtime.capability_tools))
         self._tool, self._attached = tool, session
+        if self._display is not None:
+            previous_display = self._display
+            previous_display.retire()
+            self._retired_displays.add(previous_display)
+            self._display = None
+
+            async def close_display() -> None:
+                await previous_display.aclose()
+                self._retired_displays.discard(previous_display)
+
+            self._schedule(close_display)
+        extensions = session.extensions
+        if "goal_ui" in extensions.enabled:
+            self._display = GoalDisplay(self.service, extensions.views,
+                valid=lambda: not self._closing and self._attached is session
+                    and self.runtime._active_session is session and session.extensions is extensions
+                    and self.owner == self.service.store.owner,
+                notify=extensions.notify_view_changed)
         self._changed()  # Recover original persisted notices once; never poll active Goals.
 
     def capture(self, children: ClawChildren, spec: ChildSpec) -> None:
@@ -385,6 +406,8 @@ class ClawGoalHost:
 
     def _changed(self) -> None:
         self._schedule(self.service.drain_notifications)
+        if self._display is not None:
+            self._display.changed()
 
     def _event(self, children: ClawChildren, event: dict[str, Any]) -> None:
         role = self.role(children, event.get("child_id", ""))
@@ -412,8 +435,14 @@ class ClawGoalHost:
             for remove in self._subscriptions.values():
                 remove()
             self._subscriptions.clear()
+            displays = (*self._retired_displays, *((self._display,) if self._display is not None else ()))
+            for display in displays:
+                display.retire()
 
             async def close() -> None:
+                await asyncio.gather(*(display.aclose() for display in displays))
+                self._retired_displays.clear()
+                self._display = None
                 await asyncio.gather(*tuple(self._jobs), return_exceptions=True)
                 await self.service.close()
                 self.runtime.capability_tools = tuple(

@@ -1,3 +1,4 @@
 name: goal_ui
 entry_point: main
+display_only: true
 dependencies: []

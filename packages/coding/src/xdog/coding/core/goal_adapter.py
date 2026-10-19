@@ -27,6 +27,7 @@ from xdog.goal.resources import role_instructions
 from xdog.goal.service import GoalService
 from xdog.goal.store import GoalStore
 from xdog.goal.tools import create_context_tool, create_goal_tool, create_report_tool
+from xdog.goal.ui_binding import GoalDisplay
 
 if TYPE_CHECKING:
     from xdog.coding.core.agent_session import AgentSession
@@ -66,6 +67,7 @@ class CodingGoalHost:
         self._closing = False
         self._close_task: asyncio.Task[None] | None = None
         self._unsubscribe: Callable[[], None] = lambda: None
+        self._display: GoalDisplay | None = None
         self.service: GoalService
         self.tool: AgentTool
 
@@ -91,6 +93,13 @@ class CodingGoalHost:
             session.children.goal_host = host
             host._unsubscribe = host.children.supervisor.subscribe(host._event)
             session.agent.set_tools((*session.agent.state.tools, host.tool))
+            extensions = session.extensions
+            if "goal_ui" in extensions.enabled:
+                host._display = GoalDisplay(host.service, extensions.views,
+                    valid=lambda: not host._closing and host.owner == store.owner
+                        and session.extensions is extensions,
+                    notify=extensions.notify_view_changed)
+                host._display.changed()
         except BaseException:
             host._unsubscribe()
             session.children.goal_host = None
@@ -309,6 +318,8 @@ class CodingGoalHost:
 
     def _changed(self) -> None:
         self._schedule(self.service.drain_notifications)
+        if self._display is not None:
+            self._display.changed()
 
     def _event(self, event: dict[str, Any]) -> None:
         identifier = event.get("child_id", "")
@@ -336,8 +347,12 @@ class CodingGoalHost:
         if self._close_task is None:
             self._closing = True
             self._unsubscribe()
+            if self._display is not None:
+                self._display.retire()
 
             async def close() -> None:
+                if self._display is not None:
+                    await self._display.aclose()
                 await asyncio.gather(*tuple(self._jobs), return_exceptions=True)
                 await self.service.close()
                 if self.session.children is self.children:
