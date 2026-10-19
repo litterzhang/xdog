@@ -716,9 +716,17 @@ class Orchestrator:
         if (runtime.get_new_session_id() or "") != expected_session:
             raise ValueError("Access session changed; refresh before retrying")
         if action == "status":
-            state = (runtime._active_session.access.state if runtime._active_session is not None else
-                     AccessState.from_dict(runtime.transcript_store.get_access(expected_session))
-                     if expected_session else AccessState())
+            if runtime._active_session is not None:
+                state = runtime._active_session.access.state
+            elif expected_session:
+                generation = runtime._source_revision
+                raw = await run_owned(runtime.transcript_store.get_access, expected_session)
+                if (runtime._source_revision != generation
+                        or (runtime.get_new_session_id() or '') != expected_session):
+                    raise ValueError('Access status owner changed; refresh the current group')
+                state = AccessState.from_dict(raw)
+            else:
+                state = AccessState()
         elif action in {"restrict", "release"}:
             async with self.group_controller(group_id).acquire(is_user=True):
                 if (runtime.get_new_session_id() or "") != expected_session:

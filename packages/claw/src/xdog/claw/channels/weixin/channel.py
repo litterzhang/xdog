@@ -14,13 +14,15 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from xdog.agent.async_work import run_owned, wait_owned
 from xdog.claw.channels.base import Channel
 from xdog.claw.channels.weixin.api import WeixinApiClient
 from xdog.claw.channels.weixin.context_tokens import (
+    context_token_snapshot,
     get_context_token,
-    persist_context_tokens,
-    restore_context_tokens,
+    read_context_tokens,
     set_context_token,
+    write_context_tokens,
 )
 from xdog.claw.channels.weixin.monitor import MonitorOpts, run_monitor
 from xdog.claw.channels.weixin.types import (
@@ -229,6 +231,7 @@ class WeixinChannel(Channel):
         self._typing_tickets = _TypingTicketCache(self._api_client)
         # Reverse map: group_id → real weixin user_id (persisted to disk)
         self._user_id_map: dict[str, str] = {}
+        self._cache_ready = False
         # Active typing indicators: group_id → _TypingIndicator
         self._active_typing: dict[str, _TypingIndicator] = {}
 
@@ -237,9 +240,21 @@ class WeixinChannel(Channel):
         return "weixin"
 
     async def connect(self) -> None:
-        """Start the monitor long-poll loop as a background task."""
-        restore_context_tokens(self._state_dir, self._account_id)
-        self._user_id_map = _load_user_id_map(self._state_dir, self._account_id)
+        """Read caches on owned IO; only this loop adopts data/starts the monitor."""
+        def read_state() -> tuple[str, str]:
+            return (json.dumps(read_context_tokens(self._state_dir, self._account_id)),
+                    json.dumps(_load_user_id_map(self._state_dir, self._account_id)))
+
+        loading = asyncio.create_task(asyncio.to_thread(read_state))
+        try:
+            await wait_owned(loading)
+        finally:
+            if loading.done() and not loading.cancelled() and loading.exception() is None:
+                tokens, users = loading.result()
+                for user, token in json.loads(tokens).items():
+                    set_context_token(self._account_id, user, token)
+                self._user_id_map = json.loads(users)
+                self._cache_ready = True
 
         opts = MonitorOpts(
             base_url=self._base_url,
@@ -274,8 +289,10 @@ class WeixinChannel(Channel):
             await indicator.stop()
         self._active_typing.clear()
         # Persist state on shutdown
-        persist_context_tokens(self._state_dir, self._account_id)
-        _save_user_id_map(self._state_dir, self._account_id, self._user_id_map)
+        if self._cache_ready:
+            await run_owned(write_context_tokens, self._state_dir, self._account_id,
+                            context_token_snapshot(self._account_id))
+            await run_owned(_save_user_id_map, self._state_dir, self._account_id, dict(self._user_id_map))
         await self._api_client.close()
         logger.info("WeixinChannel disconnected: account=%s", self._account_id)
 
@@ -416,13 +433,16 @@ class WeixinChannel(Channel):
         from_user_id, group_id = inbound.sender, inbound.group_id
         if msg.context_token:
             set_context_token(self._account_id, from_user_id, msg.context_token)
-            persist_context_tokens(self._state_dir, self._account_id)
+            self._cache_ready = True
+            await run_owned(write_context_tokens, self._state_dir, self._account_id,
+                            context_token_snapshot(self._account_id))
         previous = self._user_id_map.get(group_id)
         if previous != from_user_id:
             # Retained only for explicit unsolicited group sends. Input replies
             # use send_reply's immutable binding, never this convenience map.
             self._user_id_map[group_id] = from_user_id
-            _save_user_id_map(self._state_dir, self._account_id, self._user_id_map)
+            self._cache_ready = True
+            await run_owned(_save_user_id_map, self._state_dir, self._account_id, dict(self._user_id_map))
         if hasattr(self, "_on_message"):
             try:
                 await self._start_typing(group_id, from_user_id, msg.context_token)

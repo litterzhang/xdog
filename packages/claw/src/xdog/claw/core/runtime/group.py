@@ -488,6 +488,9 @@ class GroupRuntime:
 
     def reset_session(self) -> None:
         """Rotate an idle group's context without deleting or reassigning Goals."""
+        if (self.transcript_store.get_active_session(self.group.id) is None
+                and self.transcript_store.list_sessions(self.group.id)):
+            raise ValueError('Committed current pointer missing; recover its original binding or use a fresh data root')
         if self._active_session is not None:
             self._active_session._children_idle()
             if self._active_session.agent.state.is_streaming:

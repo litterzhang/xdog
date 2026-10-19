@@ -10,7 +10,7 @@ from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.types import Group
 
 
-@pytest.mark.parametrize("kind", ["skill", "navigation"])
+@pytest.mark.parametrize("kind", ["skill", "navigation", "access"])
 async def test_cancelled_auxiliary_read_keeps_actual_group_owner_until_worker_exit(tmp_path, monkeypatch, kind):
     def no_model(*args):
         raise AssertionError("Readonly metadata/skill/navigation must not wake a model")
@@ -40,7 +40,7 @@ async def test_cancelled_auxiliary_read_keeps_actual_group_owner_until_worker_ex
 
             monkeypatch.setattr(runtime.skill_manager, "load_skill", actual_read)
             operation = app.skills_control("main", session.meta.session_id, "load", "focus")
-        else:
+        elif kind == "navigation":
             original = runtime.navigation_entries
 
             def actual_read(*args):
@@ -54,6 +54,23 @@ async def test_cancelled_auxiliary_read_keeps_actual_group_owner_until_worker_ex
 
             monkeypatch.setattr(runtime, "navigation_entries", actual_read)
             operation = app.navigation_entries("main", f"tree|{session.meta.session_id}|")
+        else:
+            runtime._drop_session()  # Actual current metadata, no cached Agent/access shortcut.
+            original = runtime.transcript_store.get_access
+            owner = threading.get_ident()
+
+            def actual_read(*args):
+                value = original(*args)
+                entered.set()
+                try:
+                    if threading.get_ident() != owner:
+                        assert release.wait(5)
+                    return value
+                finally:
+                    exited.set()
+
+            monkeypatch.setattr(runtime.transcript_store, "get_access", actual_read)
+            operation = app.manage_access("main", "status", session.meta.session_id)
         reservation = app.try_reserve_group("main")
         assert reservation is not None
         work = app.start_group_operation(reservation, operation)

@@ -37,40 +37,30 @@ def get_context_token(account_id: str, user_id: str) -> str | None:
     return val
 
 
-def restore_context_tokens(state_dir: Path, account_id: str) -> None:
-    """Restore persisted context tokens for an account into memory.
-
-    Called once during channel connect to survive restarts.
-    """
+def read_context_tokens(state_dir: Path, account_id: str) -> dict[str, str]:
+    """Read detached cache data; never mutate the owning loop's token map."""
     file_path = _resolve_file_path(state_dir, account_id)
     try:
         if not file_path.exists():
-            return
-        raw = file_path.read_text(encoding="utf-8")
-        tokens: dict[str, str] = json.loads(raw)
-        count = 0
-        for user_id, token in tokens.items():
-            if isinstance(token, str) and token:
-                _token_store[(account_id, user_id)] = token
-                count += 1
-        logger.info(
-            "restoreContextTokens: restored %d tokens for account=%s",
-            count,
-            account_id,
-        )
+            return {}
+        value = json.loads(file_path.read_text(encoding="utf-8"))
+        return {key: token for key, token in value.items() if isinstance(key, str) and isinstance(token, str) and token}
     except Exception as exc:
-        logger.warning(
-            "restoreContextTokens: failed to read %s: %s", file_path, exc
-        )
+        logger.warning("restoreContextTokens: failed to read %s: %s", file_path, exc)
+        return {}
 
 
-def persist_context_tokens(state_dir: Path, account_id: str) -> None:
-    """Persist all context tokens for a given account to disk."""
-    tokens: dict[str, str] = {}
-    for (acct, user_id), token in _token_store.items():
-        if acct == account_id:
-            tokens[user_id] = token
+def context_token_snapshot(account_id: str) -> dict[str, str]:
+    return {user: token for (account, user), token in _token_store.items() if account == account_id}
 
+
+def restore_context_tokens(state_dir: Path, account_id: str) -> None:
+    """Explicit synchronous setup helper; production adopts detached reads on its owner."""
+    for user, token in read_context_tokens(state_dir, account_id).items():
+        set_context_token(account_id, user, token)
+
+
+def write_context_tokens(state_dir: Path, account_id: str, tokens: dict[str, str]) -> None:
     file_path = _resolve_file_path(state_dir, account_id)
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -78,11 +68,13 @@ def persist_context_tokens(state_dir: Path, account_id: str) -> None:
         try:
             os.chmod(str(file_path), 0o600)
         except OSError:
-            pass  # best-effort
+            pass
     except Exception as exc:
-        logger.warning(
-            "persistContextTokens: failed to write %s: %s", file_path, exc
-        )
+        logger.warning("persistContextTokens: failed to write %s: %s", file_path, exc)
+
+
+def persist_context_tokens(state_dir: Path, account_id: str) -> None:
+    write_context_tokens(state_dir, account_id, context_token_snapshot(account_id))
 
 
 def clear_context_tokens(account_id: str) -> None:

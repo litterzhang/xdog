@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
 
+from xdog.agent.async_work import run_owned
 from xdog.claw.channels.weixin.api import WeixinApiClient
 from xdog.claw.channels.weixin.types import (
     MessageType,
@@ -131,7 +132,7 @@ async def _poll_updates(
     inbox: asyncio.Queue[WeixinMessage],
 ) -> None:
     """Fetch updates and enqueue them, preserving API order and retry behavior."""
-    get_updates_buf = _load_get_updates_buf(opts.state_dir, opts.account_id)
+    get_updates_buf = await run_owned(_load_get_updates_buf, opts.state_dir, opts.account_id)
     if get_updates_buf:
         logger.info(
             "Monitor resuming from previous sync buf (%d bytes)",
@@ -212,9 +213,7 @@ async def _poll_updates(
 
                 # Do not advance the cursor past a partially accepted/enqueued batch.
                 if resp.get_updates_buf:
-                    _save_get_updates_buf(
-                        opts.state_dir, opts.account_id, resp.get_updates_buf
-                    )
+                    await run_owned(_save_get_updates_buf, opts.state_dir, opts.account_id, resp.get_updates_buf)
                     get_updates_buf = resp.get_updates_buf
 
             except asyncio.CancelledError:

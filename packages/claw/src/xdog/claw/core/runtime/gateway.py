@@ -12,7 +12,6 @@ import logging
 import os
 import re
 import signal
-import stat
 import threading
 import time
 import uuid
@@ -38,6 +37,7 @@ from xdog.claw.core.runtime.mcp_protocol import McpSender
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.runtime.source_protocol import SourceSender
 from xdog.claw.core.runtime.transcript_source import SourceCapture
+from xdog.claw.core.runtime.unix_endpoint import BoundEndpoint
 from xdog.claw.core.types import Group, UserInput
 
 if TYPE_CHECKING:
@@ -151,6 +151,7 @@ class GatewayServer:
         self._socket_path = Path(config.socket_path)
         self._pid_path = Path(config.pid_file)
         self._server: asyncio.Server | None = None
+        self._bound_endpoint: BoundEndpoint | None = None
         self._acp_server: ClawAcpServer | None = None
         self._acp_viewers: dict[int, tuple[str, Callable[[dict[str, Any]], Awaitable[None]]]] = {}
         self._orchestrator: Orchestrator | None = None
@@ -221,7 +222,7 @@ class GatewayServer:
             if self._config.weixin_enabled:
                 channel = None
                 try:
-                    channel = self._start_weixin_channel()
+                    channel = await self._start_weixin_channel()
                     if channel is not None:
                         await channel.connect()
                 except Exception:
@@ -254,20 +255,18 @@ class GatewayServer:
             raise
 
         try:
-            # Clean up stale socket
-            if self._socket_path.exists():
-                self._socket_path.unlink()
-
-            # Ensure parent directory exists
-            self._socket_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # Start Unix socket server
+            from xdog.claw.core.runtime.unix_endpoint import bind, close
+            binding = asyncio.create_task(asyncio.to_thread(bind, self._socket_path))
+            try:
+                bound_endpoint = await wait_owned(binding)
+            except BaseException:
+                if binding.done() and not binding.cancelled() and binding.exception() is None:
+                    await run_owned(close, binding.result())
+                raise
+            self._bound_endpoint = bound_endpoint
             self._server = await asyncio.start_unix_server(
-                self._on_client_connect, path=str(self._socket_path), limit=_MAX_LINE_LENGTH
+                self._on_client_connect, sock=bound_endpoint.socket, limit=_MAX_LINE_LENGTH
             )
-
-            # Restrict socket permissions to owner only (0600)
-            os.chmod(str(self._socket_path), stat.S_IRUSR | stat.S_IWUSR)
 
             # Write PID file
             await run_owned(self._write_pid)
@@ -2367,7 +2366,7 @@ class GatewayServer:
         except OSError:
             pass
 
-    def _start_weixin_channel(self) -> Channel | None:
+    async def _start_weixin_channel(self) -> Channel | None:
         """Initialize and add the WeChat channel to the orchestrator."""
         from xdog.claw.channels.weixin import WeixinChannel
         from xdog.claw.channels.weixin.auth import (
@@ -2385,7 +2384,7 @@ class GatewayServer:
 
         # Try loading token from account file if not in config
         if account_id and not token:
-            account_data = load_account(state_dir, account_id)
+            account_data = await run_owned(load_account, state_dir, account_id)
             if account_data:
                 token = account_data.token
                 base_url = base_url or account_data.base_url
@@ -2473,12 +2472,12 @@ class GatewayServer:
             # Tool-context mutation is safe only after real execution settled.
             self._orchestrator.set_observers(None)
 
-        # Clean up socket and PID files
-        try:
-            if self._socket_path.exists():
-                self._socket_path.unlink()
-        except OSError:
-            pass
+        # Only the inode acquired by this startup may be removed. A rejected
+        # pre-existing user file or a replacement endpoint is never ours.
+        if self._bound_endpoint is not None:
+            from xdog.claw.core.runtime.unix_endpoint import close
+            endpoint, self._bound_endpoint = self._bound_endpoint, None
+            await run_owned(close, endpoint)
 
         await run_owned(self._remove_pid)
 
