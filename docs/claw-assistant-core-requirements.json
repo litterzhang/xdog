@@ -370,7 +370,9 @@
       "area": "ui",
       "requirement": "同一 Goal Python 展示扩展实际供两宿主使用，主 TUI 无 Goal 业务判断",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/goal-ui-extension-verification.md"
+      ]
     },
     {
       "id": "UI-02",
@@ -385,7 +387,8 @@
       "requirement": "最小通用只读 extension view；bounded snapshot/提示，跨 owner 读取拒绝且无任意调用",
       "status": "pending",
       "evidence": [
-        "docs/extension-owner-views.md"
+        "docs/extension-owner-views.md",
+        "docs/goal-ui-extension-verification.md"
       ]
     },
     {
@@ -393,14 +396,18 @@
       "area": "ui",
       "requirement": "扩展禁用/故障/卸载仅影响展示，清理 UI/订阅但不改变 Goal 执行状态",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/goal-ui-extension-verification.md"
+      ]
     },
     {
       "id": "UI-05",
       "area": "ui",
       "requirement": "不恢复任意 renderer、复杂 widget/layout，headless 不依赖 TUI 或展示扩展",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/goal-ui-extension-verification.md"
+      ]
     },
     {
       "id": "VERIFY-01",

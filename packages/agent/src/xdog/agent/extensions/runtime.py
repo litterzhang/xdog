@@ -706,7 +706,11 @@ class ExtensionRuntime:
             progressed = False
             for name in tuple(pending):
                 try:
-                    meta = await asyncio.to_thread(manifest, self.root / name)
+                    from xdog.agent.extensions.discovery import extension_directory
+                    directory = await run_owned(extension_directory, name, self.root)
+                    if directory is None:
+                        raise ValueError("Configured extension is not installed or present in its explicit root")
+                    meta = await run_owned(manifest, directory)
                     dependencies = set(meta.get("dependencies", []))
                     if not dependencies <= set(self.enabled):
                         raise ValueError("Extension dependency is not explicitly enabled")
@@ -714,7 +718,7 @@ class ExtensionRuntime:
                         continue
                     if not dependencies <= loaded:
                         raise ValueError("Extension dependency failed")
-                    await self._load(name)
+                    await self._load(name, directory=directory)
                     loaded.add(name)
                 except asyncio.CancelledError:
                     raise
@@ -728,10 +732,18 @@ class ExtensionRuntime:
                     self.fail(name)
                 break
 
-    async def _load(self, name: str) -> None:
+    async def _load(self, name: str, *, directory: Path | None = None) -> None:
         self._generation += 1
         if name not in self.enabled:
             raise ValueError("Extension is not explicitly trusted in global configuration")
+        if directory is None:
+            from xdog.agent.extensions.discovery import extension_directory
+            directory = await run_owned(extension_directory, name, self.root)
+            if directory is None:
+                raise ValueError("Configured extension is not installed")
+            await run_owned(manifest, directory)
+        config = self._manager.configs[name]
+        self._manager.configs[name] = replace(config, command=(*config.command[:-1], str(directory)))
         await self._manager._connect(name)
         info = await self._rpc(name, "xdog/info", {})
         if (not isinstance(info.get("commands"), list) or len(info["commands"]) > 32

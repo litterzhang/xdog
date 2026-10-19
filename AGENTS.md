@@ -323,7 +323,9 @@ no-follow evidence fingerprints reject stale completion. Skills and derived view
 do not activate execution. See docs/goal-kernel-verification.md for the real SDK
 Supervisor and cold Goal-only lifecycle evidence. Coding has an optional real host
 adapter and cold installed lifecycle (docs/coding-goal-lifecycle-verification.md).
-Claw has the group-owned adapter and no legacy backend; the shared extension UI and final acceptance remain pending.
+Claw has the group-owned adapter and no legacy backend. Goal now ships a readonly
+projection and one packaged goal_ui worker; actual two-host view bindings, cold
+same-extension validation and final acceptance remain pending.
 
 ### `xdog.tui` and `xdog.site`
 
