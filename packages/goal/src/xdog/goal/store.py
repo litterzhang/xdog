@@ -225,10 +225,12 @@ class GoalStore:
         artifacts: tuple[tuple[str, object], ...] = (),
         cancel_pending_notices: bool = False,
     ) -> Goal:
-        # Validate and sever all external references before any thread admission.
-        saved = decode_goal(encode_goal(goal))
+        # Sever bounded mutable artifact/notice input before yielding. The Goal
+        # itself is immutable typed data; aggregate encoding/validation is owned
+        # worker work, not an event-loop or business lifetime byte budget.
         notice_data = [(notice, encode_notice(notice)) for notice in notices]
         artifact_data = [(text(key, maximum=256), json_text(data, maximum=64 * 1024)) for key, data in artifacts]
+        saved = await self._database.run(lambda: decode_goal(encode_goal(goal)))
 
         def write(db: sqlite3.Connection) -> Goal:
             _write(db, saved, expected_version)

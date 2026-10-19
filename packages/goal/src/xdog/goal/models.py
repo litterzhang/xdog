@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections import deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -261,22 +262,26 @@ class Goal:
         indexed = {task.id: task for task in self.tasks}
         if len(indexed) != len(self.tasks):
             raise ValueError("Goal task IDs must be unique")
-        visited: set[str] = set()
-        visiting: set[str] = set()
-
-        def visit(key: str) -> None:
-            if key not in indexed or key in visiting:
-                raise ValueError("Task dependencies must be a valid acyclic graph")
-            if key in visited:
-                return
-            visiting.add(key)
-            for dependency in indexed[key].depends_on:
-                visit(dependency)
-            visiting.remove(key)
-            visited.add(key)
-
-        for key in indexed:
-            visit(key)
+        # Validate a DAG without imposing Python's call-stack depth as a
+        # hidden maximum task count. Preserve the caller's original task order.
+        pending = {key: len(task.depends_on) for key, task in indexed.items()}
+        followers: dict[str, list[str]] = {key: [] for key in indexed}
+        for task in self.tasks:
+            for dependency in task.depends_on:
+                if dependency not in indexed:
+                    raise ValueError("Task dependencies must be a valid acyclic graph")
+                followers[dependency].append(task.id)
+        ready = deque(key for key, count in pending.items() if count == 0)
+        visited = 0
+        while ready:
+            key = ready.popleft()
+            visited += 1
+            for follower in followers[key]:
+                pending[follower] -= 1
+                if pending[follower] == 0:
+                    ready.append(follower)
+        if visited != len(indexed):
+            raise ValueError("Task dependencies must be a valid acyclic graph")
         if self.review is not None and not isinstance(self.review, Review):
             raise ValueError("Goal review must be a typed snapshot")
         if self.status == "completed" and (

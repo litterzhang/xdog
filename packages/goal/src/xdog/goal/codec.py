@@ -1,4 +1,4 @@
-"""Exact bounded Goal snapshots; no migration or mutable caller-owned JSON."""
+"""Exact Goal snapshots; no migration or mutable caller-owned JSON."""
 
 from __future__ import annotations
 
@@ -11,15 +11,15 @@ from xdog.goal.models import Goal, Notice
 
 T = TypeVar("T")
 FORMAT = "xdog.goal.snapshot.v1"
-MAX_SNAPSHOT_BYTES = 1024 * 1024
+DEFAULT_JSON_BYTES = 1024 * 1024
 
 
-def json_text(value: object, *, maximum: int = MAX_SNAPSHOT_BYTES) -> str:
+def json_text(value: object, *, maximum: int | None = DEFAULT_JSON_BYTES) -> str:
     try:
         result = json.dumps(value, sort_keys=True, ensure_ascii=True, allow_nan=False)
     except (ValueError, TypeError, RecursionError) as exc:
         raise ValueError("Goal data must be finite bounded JSON") from exc
-    if len(result.encode()) > maximum:
+    if maximum is not None and len(result.encode()) > maximum:
         raise ValueError("Goal data exceeds bounded storage capacity")
     return result
 
@@ -68,12 +68,12 @@ def _model(kind: type[T], value: object, depth: int = 0) -> T:
 def encode_goal(goal: Goal) -> str:
     if not isinstance(goal, Goal):
         raise ValueError("Expected a typed Goal snapshot")
-    return json_text({"format": FORMAT, **asdict(goal)})
+    return json_text({"format": FORMAT, **asdict(goal)}, maximum=None)
 
 
 def decode_goal(payload: str) -> Goal:
-    if not isinstance(payload, str) or len(payload.encode()) > MAX_SNAPSHOT_BYTES:
-        raise ValueError("Goal snapshot exceeds capacity")
+    if not isinstance(payload, str):
+        raise ValueError("Goal snapshot must be JSON text")
     try:
         data = json.loads(payload, object_pairs_hook=_unique)
         if not isinstance(data, dict) or data.pop("format", None) != FORMAT:

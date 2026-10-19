@@ -191,6 +191,24 @@ execution has returned to parent Task2 all47 row inspection. No row is promoted
 by a green suite alone. Source availability is not final
 artifact parity, and wholebranch review/current consumers remain unperformed.
 
+### F-06 — aggregate Goal data quota and post-commit tool errors
+
+Source audit found authoritative encode/decode_goal capped the entire accumulated
+Goal at1MiB, while parent/context tools serialize whole state into256KiB frames.
+Actual valid160 tasks*8000-char Goal store put/reopen and reverse1500-task DAG
+were RED2/2.03s (`goal-cumulative-state-red.log`): hidden aggregate quota and
+Python recursion-depth limit. Bounded corrective plan:
+`docs/superpowers/plans/2026-10-19-goal-cumulative-state.md`.
+
+Task1 removes only the aggregate authoritative byte cap, preserves typed exact
+format/individual field/report/notice/artifact bounds, makes DAG validation
+iterative/order-preserving, and prepares immutable large snapshots on the owned
+leased worker. Actual Goal81 pass7.33s include close/cancel/reopen-no-write.
+Task2 must still prove bounded complete tool transfers, original-version/context
+pages and successful receipts after large committed mutations. GOAL13/VERIFY02
+remain unaccepted until both storage and usable bounded APIs are verified. No
+new goal, migration, enable flag or reviewer was introduced; parent47 is active.
+
 ## 47-item source/test inventory
 
 Prefixes below expand to actual repository paths:
