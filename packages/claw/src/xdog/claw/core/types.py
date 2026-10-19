@@ -107,7 +107,6 @@ class ExternalInput(UserInput):
 
 class SystemInputKind(StrEnum):
     """Discriminator for system-generated inputs."""
-    GOAL_RUNNER = "goal_runner"
     SCHEDULER = "scheduler"
     CONTEXT_CONTINUATION = "context_continuation"
     FLUSH = "flush"
@@ -116,7 +115,7 @@ class SystemInputKind(StrEnum):
 
 @dataclass(frozen=True)
 class SystemInput:
-    """Internal directive from a system component (goal runner, scheduler, etc.)."""
+    """Internal directive from a system component (scheduler, compaction, etc.)."""
     group_id: str = ""
     content: str = ""
     kind: SystemInputKind = SystemInputKind.SCHEDULER
@@ -132,113 +131,3 @@ class ContextContinuation(SystemInput):
 
 
 GroupInput = UserInput | SystemInput
-
-
-# ---------------------------------------------------------------------------
-# Goal types
-# ---------------------------------------------------------------------------
-
-class GoalStatus(StrEnum):
-    ACTIVE = "active"
-    COMPLETED = "completed"
-    ABANDONED = "abandoned"
-    PAUSED = "paused"
-    BLOCKED = "blocked"
-
-
-class TaskStatus(StrEnum):
-    PENDING = "pending"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    SKIPPED = "skipped"
-    SUBMITTED = "submitted"
-    BLOCKED = "blocked"
-    INTERRUPTED = "interrupted"
-
-
-# ---------------------------------------------------------------------------
-# Verification
-# ---------------------------------------------------------------------------
-
-class VerificationMethod(StrEnum):
-    SCRIPT = "script"           # Historical codec only; never a completion verdict
-    CONDITIONS = "conditions"   # list of conditions, LLM evaluates all-true
-
-
-class VerificationResult(StrEnum):
-    PASSED = "passed"
-    FAILED = "failed"
-    ERROR = "error"
-
-
-@dataclass(frozen=True)
-class Verification:
-    """How to verify a goal or task is actually done."""
-    method: VerificationMethod = VerificationMethod.CONDITIONS
-    script: str = ""                        # Historical reference, never executed by Goal Gate
-    conditions: tuple[str, ...] = ()        # checklist (when method=conditions)
-
-
-@dataclass(frozen=True)
-class VerificationRun:
-    """Result of running a verification check."""
-    result: VerificationResult = VerificationResult.FAILED
-    output: str = ""                        # script stdout/stderr or LLM reasoning
-    timestamp: float = 0.0
-
-
-# ---------------------------------------------------------------------------
-# Goal types
-# ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class GoalTask:
-    id: str = ""
-    description: str = ""
-    status: TaskStatus = TaskStatus.PENDING
-    notes: str = ""
-    summary: str = ""
-    depends_on: tuple[str, ...] = ()                          # task IDs that must complete first
-    verification: Verification | None = None
-    last_verification_run: VerificationRun | None = None
-    attempt_id: str = ""
-    agent_id: str = ""
-    report_revision: int = 0
-    report_digest: str = ""
-
-
-@dataclass(frozen=True)
-class Goal:
-    id: str = ""
-    group_id: str = ""
-    title: str = ""
-    description: str = ""
-    tasks: tuple[GoalTask, ...] = ()
-    status: GoalStatus = GoalStatus.ACTIVE
-    summary: str = ""
-    created_at: float = 0.0
-    updated_at: float = 0.0
-    verification: Verification = field(default_factory=Verification)
-    last_verification_run: VerificationRun | None = None
-    revision: int = 1
-    phase: str = "working"
-    wait_reason: str = ""
-    observer_id: str = ""
-    pending_notice: str = ""
-    notice_state: str = "pending"
-    review_child_id: str = ""
-    review_execution: str = ""
-    review_revision: int = 0
-    review_fingerprint: str = ""
-    review_output: str = ""
-    review_paths: tuple[str, ...] = ()
-    auto_continue: bool = True
-
-
-@dataclass(frozen=True)
-class GoalNotification:
-    goal_id: str = ""
-    title: str = ""
-    summary: str = ""
-    status: str = ""
-    timestamp: float = 0.0

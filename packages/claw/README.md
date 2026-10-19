@@ -5,10 +5,11 @@
 
 **Persistent multi-channel assistant application.**
 
-A local-first gateway with one logical main Agent per group, durable Goals,
+A local-first gateway with one logical main Agent per group, optional durable Goals,
 supervised task Agents, long-term memory, and JSON/JSONL conversation persistence.
 Eyes provides opt-in observations and scheduling through the existing private group
-ACP inbox; SQLite is used for that inbox and optional memory-search indexes.
+ACP inbox; SQLite is used for durable intake/output, optional Goal journals and
+optional memory-search indexes.
 
 ## Application and SDK boundaries
 
@@ -36,7 +37,8 @@ capabilities and preserve ownership, cancellation and no-blind-replay fences.
 
 `uv run xdog-claw tui` connects to the configured gateway using the main terminal
 buffer and native scrollback. It shares Coding's Unicode multiline editor and
-bounded layout. Goals/todos summarize retained state; queued messages keep their
+bounded layout. Native todos summarize transient work; optional feature display
+belongs to Python extensions, not native Goal state. Queued messages keep their
 full text while only a compact preview appears.
 
 Ctrl+L repaints the visible UI without clearing scrollback, the draft, or focus.
@@ -133,7 +135,7 @@ untouched: do not delete, rewrite, back up for migration, or convert it into Eye
 records or confirmation states. Users may explicitly request new Eyes observers;
 never automatically translate old schedules or replay missed periods.
 
-Eyes scheduler sources, the goal runner and historical transcript labels remain.
+Eyes scheduler sources and generic historical transcript labels remain; the implicit Goal runner is removed.
 See [Scheduling with Eyes](SCHEDULER.md) for the tool contract, source examples,
 recovery requirements and bounded storage limits. A known not-sent report can
 recover without a second Agent run; unknown channel effects are not automatically
@@ -142,56 +144,47 @@ regression evidence applies to the superseded migration implementation, not fina
 acceptance of this decision. Current status is tracked in
 [`claw-eyes-scheduler-requirements.json`](../../docs/claw-eyes-scheduler-requirements.json).
 
-## Group-owned Goals
+## Optional group-owned Goals
 
-Each group has **one logical main Agent and one execution route**. A session is a
-persisted context/history unit, not another Agent identity. The main Agent creates
-and manages Goals, plans and revises tasks, assigns dedicated workers or performs
-assigned work itself, checks reports, and explicitly waits/cancels/closes children.
-There is no automatic planner to take over after `goal.create`, no second main
-Agent loop, and no legacy task scheduler.
+Claw is a long-term personal assistant; task autonomy is optional. Goals default
+**off**. In this development branch, explicitly install `xdog-goal` and set the
+trusted global YAML flag `goals_enabled: true` to enable its tools. Loading a
+skill, opening a TUI or receiving a callback does not create a Goal.
+The installed package automatically contributes the built-in `goals` skill,
+just like Flow/Eyes, even while `goals_enabled` is false. No skill copying or
+registration is needed; the existing skill mechanism loads its body on demand.
 
-Goal workspaces live under `<group workspace>/.xdog/goals/<goal_id>/`. The `goal`
-tool persists the original conditions, revisions, task/attempt identities, reports,
-wait reasons and review state. Main-Agent management, each executor's bound report,
-and host-generated status/review records have separate writer responsibilities.
-A worker's `submitted` report is **not** task acceptance or Goal completion; the
-main Agent rereads the current attempt and evidence before accepting it. Only an
-actual user turn can authorize changes to Goal conditions, not a worker, Eyes event,
-or self-authored provenance.
+The same independent GoalService is used by Coding and Claw. Goal owns its private
+leased journal at `<data_dir>/groups/<id>/goals/journal.sqlite3`; Claw owns ordinary
+input, execution receipts and conversation history, not Goal tables. The packaged
+[goals skill](../goal/src/xdog/goal/skills/goals/SKILL.md) and its
+[worker](../goal/src/xdog/goal/roles/worker.md)/[reviewer](../goal/src/xdog/goal/roles/reviewer.md)
+roles describe explicit planning, assignment, reporting, acceptance and review.
+Derived workspace files are projections, not execution authority.
 
-Completion requests and the Goal work's normal safe-stop boundary enter an
-independent, host-created reviewer Agent. It checks every original condition using
-actual artifacts/evidence; scripts and tests are evidence-gathering tools, never
-an automatic completion verdict. The host validates reviewer role, Goal revision
-and evidence freshness before recording completion. Missing/stale evidence,
-waiting, cancellation and failure never count as success. Ordinary chat is not
-subject to a Goal completion gate.
+A submitted worker report is not an accepted task; an accepted task is not a
+completed Goal. **Only `request_complete` starts independent review.** Ordinary
+turn end, idle and active Goal state never start a reviewer or a new model loop.
+The reviewer has actual readonly tools and must cover original conditions and
+fresh evidence. Criteria changes and user-pause release require actual consumed
+human input; event provenance and anonymous steering cannot grant that authority.
 
-With `eyes_enabled: true`, Goal-owned file observers send change hints through
-`group:<gid>` and the existing ACP/inbox to that same main Agent. Hints cause a
-reread/reconciliation, not trusted execution instructions or report acceptance.
-The host explicitly restores its owned observers and reconciles saved reports;
-ordinary file observers still do **not** automatically restart. Goal-owned internal
-notifications use trusted `notify_only` policy and are not automatically broadcast
-to WeChat; event provenance cannot change this policy. Unknown/interrupted effects
-are inspected, not automatically replayed.
+Notices use stable original IDs and the existing durable group Inbox without
+message approval. Tool execution keeps the existing readonly/MCP/extension policy.
+Group ownership survives context rotation; original terminal child execution can
+be inspected/accepted without constructing an offline Agent or replaying work.
+Unfinished stored Goals do not suppress idle resets; actual running children still
+require cancel/wait through the generic execution owner.
 
-Unfinished Goals suppress automatic daily/idle context resets. An idle explicit
-`/new` or `/reset` may rotate context without deleting Goals or changing their group
-owner; active children must first settle. Goal work wakes on changed obligations,
-child completion or safe idle, with a 30-second fault-reconciliation fallback—not
-model polling. User input retains priority; waiting/no progress does not busy-spin.
-Use `goal.wait`, `pause`, `resume` or `abandon_goal` to manage Goal state; Goal resume
-is not the removed `/resume ID` historical-route control.
-
-Start with the packaged [claw-goals skill](src/xdog/claw/skills/claw-goals/SKILL.md),
-including its [task-worker](src/xdog/claw/skills/claw-goals/references/task-worker.md)
-and [goal-reviewer](src/xdog/claw/skills/claw-goals/references/goal-reviewer.md)
-roles. The current [objective](../../docs/claw-goals-objective.md),
-[group-owned design](../../docs/claw-session-goals-design.md) and
-[acceptance checklist](../../docs/claw-session-goals-requirements.json) track scope
-and verification; filenames containing `session` do not imply session-owned Goals.
+Goal state, worker cancellation, observation cancellation and notification
+cancellation are separate explicit operations. No adapter restores/cancels Eyes
+because a Goal changes status. Old Goal JSON is refused byte-preserving when the
+capability is enabled; disabled ordinary chat does not read it. No migration or
+compatibility backend is provided. Goal UI will use the same Python extension
+through generic shared TUI views, not a native Goal widget. The broader refactor's
+[design](../../docs/superpowers/specs/2026-10-19-claw-assistant-core-design.md) and
+[acceptance checklist](../../docs/claw-assistant-core-requirements.json) track the
+remaining packaging/UI/output and whole-branch verification gates.
 
 ## Messaging replies
 
@@ -956,7 +949,7 @@ chunked complete transcript history; legacy branch records remain historical dat
 not another execution route. Interrupted work is never restarted automatically.
 Closing archives a record without deleting its evidence; it is not needed to free a
 fixed record quota. Corrupt catalogs disable delegation with an explicit repair
-diagnostic, not the parent UI. Group/channel/memory/goal/skill services execute on
+diagnostic, not the parent UI. Group/channel/memory/skill services execute on
 their original host loop; shared parent validation stays serial and cannot borrow
 a parent dialog lease.
 `/agents` opens a live roster and focused complete-source browser/search/selection,
@@ -2252,7 +2245,7 @@ is performed; explicit refresh captures a new snapshot.
 Deduplication requires recorded parent-prefix lineage or a verified compaction
 recovery link. Source labels and opaque IDs remain visible. Independent roots,
 repeated later messages and divergent tool results are not collapsed merely because
-text matches. Normal goal/scheduler filtering and source redaction remain applied;
+text matches. Generic source redaction and system-input filtering remain applied;
 binary/signature bodies are not displayed. This is a branch-provenance graph, not a
 claimed total chronological ordering of parallel branches.
 

@@ -97,7 +97,6 @@ class ManagedObservers:
         self._report_signal = asyncio.Event()
         self._report_task: asyncio.Task[None] | None = None
         self._unsubscribe: Any = None
-        self._unproject: Any = None
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._cancel: dict[str, asyncio.Event] = {}
         self._handlers: dict[str, AcpHandler] = {}
@@ -129,10 +128,6 @@ class ManagedObservers:
         self._inputs = await self.orchestrator.input_service()
         self._store = await ObserverJournal.open(self.orchestrator.data_dir / 'observers' / 'journal.sqlite3',
                                                  self._inputs.store)
-        from xdog.claw.core.planning.notification_adapter import project_notification
-        async def project(receipt: InputRecord, value: Any) -> Any:
-            return await project_notification(self.orchestrator, self.store, receipt, value)
-        self._unproject = self.orchestrator.project_inputs(project)
         self._unsubscribe = self.orchestrator.subscribe_inputs(lambda _scope: self._report_signal.set())
         self._report_task = asyncio.create_task(self._reports(), name='claw-observer-reports')
         self._report_signal.set()
@@ -508,10 +503,10 @@ class ManagedObservers:
         self.inputs.resume()
 
     async def resume_owned(self, group: str, identifier: str, *, owner: str) -> dict[str, Any]:
-        """Host-only explicit restoration of a Goal-owned file observer.
+        """Host-only explicit restoration of a previously owned file observer.
 
         This never starts ordinary file observers, changes routing, or re-enables
-        cancelled/review work. The Goal host decides which owned IDs to restore.
+        cancelled/review work. The explicit owner selects its original IDs.
         """
         if self._closing:
             raise RuntimeError('Managed Eyes is closing')
@@ -631,8 +626,6 @@ class ManagedObservers:
         self._handlers.clear()
         if self._unsubscribe is not None:
             self._unsubscribe()
-        if self._unproject is not None:
-            self._unproject()
         if self._report_task is not None:
             self._report_task.cancel()
             await asyncio.gather(self._report_task, return_exceptions=True)

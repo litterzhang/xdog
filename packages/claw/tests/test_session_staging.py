@@ -16,9 +16,7 @@ def test_historical_agent_session_staging_module_is_removed():
 
 @pytest.mark.parametrize('action', ['resume', 'fork', 'branch', 'goto'])
 def test_retired_navigation_rejects_before_history_or_cached_agent_side_effects(tmp_path, action):
-    # Explicit injected Goal owner isolates this boundary from Goal implementation.
-    manager = Mock()
-    runtime = GroupRuntime(group=Group(id='main'), data_dir=tmp_path, goal_manager=manager)
+    runtime = GroupRuntime(group=Group(id='main'), data_dir=tmp_path)
     try:
         runtime.transcript_store.load_transcript = Mock(side_effect=AssertionError('Must not read target'))
         runtime._active_session = Mock()
@@ -29,7 +27,6 @@ def test_retired_navigation_rejects_before_history_or_cached_agent_side_effects(
         runtime._active_session._persist.assert_not_called()
         runtime._active_session.dispose.assert_not_called()
         assert not hasattr(runtime.transcript_store, 'commit_navigation')
-        manager.attach.assert_called_once_with(runtime)
     finally:
         runtime._active_session = None
         runtime.mcp.close()

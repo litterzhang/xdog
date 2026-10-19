@@ -60,57 +60,37 @@ and labeled display retention remain. Tool/extension RPC deadlines and owned
 cancellation/shutdown are distinct from a removed child lifetime timeout. Trusted
 Python/process code is not an OS sandbox.
 
-## Durable Goals: main Agent, workers and independent review
+## Optional reusable Goals
 
-The group main Agent creates a Goal with explicit original conditions and keeps
-responsibility for planning, task dependencies, assignment and report acceptance.
-There is no forced LLM planner, legacy task scheduler or script-verdict engine.
-Goal workspaces are under `<workspace>/.xdog/goals/<goal_id>/`; original conditions,
-revisions, task/attempt identities, wait reasons and review state persist.
+Claw is a long-term personal assistant with optional task autonomy. Goals default
+disabled. The independent `xdog-goal` service owns leased storage, historical
+contracts, reports/reviews and notification outbox. Claw's thin host binds a stable
+group/workspace/inbox owner to existing supervised children and Core durable
+intake; Coding uses the same service with its intentionally exact session/branch
+binding. No GoalManager, implicit planner, turn-end review or Gateway Goal loop
+remains. Scripts/tests are evidence, never completion verdicts.
 
-The main Agent manages its plan, each executor owns only its bound current report,
-and the host owns status/review summaries. Dedicated worker roles and report paths
-are host-bound; a label, skill body or event provenance cannot grant that authority.
-`submitted` means awaiting main-Agent acceptance, not task or Goal completion.
-Criteria revisions require an actual user turn, not background input.
-
-A completion request or the Goal work's normal safe stop enters a host-created
-independent reviewer Agent. It checks actual artifacts against every condition;
-scripts/tests are evidence tools, never an automatic success verdict. The host
-checks reviewer identity, Goal revision and evidence freshness before committing
-completion. Stale/missing evidence, waiting, cancellation and faults cannot pass.
-Ordinary chat is outside this Goal completion gate.
-
-Goal work reconciles once at gateway startup, then wakes on changed obligations,
-child completion or safe idle. A 30-second fallback handles fault reconciliation;
-it is not model polling. Event coalescing and producer state-change checks avoid
-busy-spin. User input has priority, and waiting/no progress does not launch another
-main Agent.
+A submitted report needs explicit parent acceptance; completing a Goal requires
+explicit request_complete and a fresh independent readonly review of each original
+condition. Idle context rotation is not blocked by unfinished Goal data. Original
+terminal child execution remains inspectable after rotation without constructing
+or replaying an offline Agent. User authority follows actual consumed human input,
+not provenance, source labels, anonymous steering or extension display.
 
 ## Eyes and channels
 
-With explicit `eyes_enabled: true`, the gateway owns managed Eyes observers and
-its private ACP endpoint. Time/file events enter the leased inbox at `group:<gid>`
-with exact workspace validation, then use the same group queue and active context.
-No exact-session event target, receiver-created second Agent or legacy scheduler
-is involved. The `eyes` tool manages observations, not agent execution inside a
-source; old task files are neither loaded nor migrated.
-
-Goal-owned file observers are restored explicitly by the host, alongside report
-rereads/reconciliation. Ordinary file observers remain opt-in and do not restart
-automatically. Events are change hints: the main Agent rereads and validates the
-current task, attempt and report revision. Trusted `notify_only` policy suppresses
-per-event channel broadcasts; untrusted provenance cannot select that policy.
-Pending/unknown/interrupted states retain their no-blind-replay boundaries.
-
-The terminal channel and WeChat channel share the group main Agent. Goal internal
-notifications do not automatically send each reconciliation reply to WeChat;
-ordinary channel replies retain their existing delivery semantics.
+Explicit Eyes observers deliver source-neutral events through the private
+`group:<gid>` ACP endpoint and existing Core Inbox/GroupController. Neither ACP nor
+channels project Goal policy into input. Goal notices use the same durable input
+path, not a separate handler host or main-Agent loop. There is no message approval;
+existing tool authorization still applies. Observation, notification and worker
+cancellation remain explicit independent Agent decisions. No Goal status implicitly
+stops/restores another resource. Unknown effects are not blindly replayed.
 
 ## Prompt and memory
 
 `build_system_prompt` separates a cacheable static base from mutable workspace,
-memory and Goal content. The workspace holds `IDENTITY.md`, `AGENTS.md`, `SOUL.md`,
+memory and generic skill/context content. The workspace holds `IDENTITY.md`, `AGENTS.md`, `SOUL.md`,
 `USER.md`, `MEMORY.md` and a one-time `BOOTSTRAP.md`. Session-scoped skills belong
 to the cacheable prefix; turn-scoped skill messages do not rewrite that prefix.
 
@@ -119,10 +99,7 @@ uses sentence-transformers/sqlite-vec vectors plus BM25; keyword search remains 
 fallback. Compaction archives original context and rebuilds the current one; its
 saved checkpoints are historical evidence, not a branch switch operation.
 
-See the packaged
-[claw-goals workflow](https://github.com/litterzhang/xdog/blob/main/packages/claw/src/xdog/claw/skills/claw-goals/SKILL.md),
-[current objective](https://github.com/litterzhang/xdog/blob/main/docs/claw-goals-objective.md),
-[group-owned design](https://github.com/litterzhang/xdog/blob/main/docs/claw-session-goals-design.md)
-and [acceptance checklist](https://github.com/litterzhang/xdog/blob/main/docs/claw-session-goals-requirements.json)
-for the role contracts and current verification status. Linux is the supported
-platform; no non-Linux native validation is claimed here.
+See the shared Goal skill in `packages/goal` and the assistant-core design and
+47-item acceptance checklist in the repository. Shared Python extension UI,
+packaging isolation and final whole-branch acceptance remain separate gates;
+this page does not claim those unfinished milestones are complete.

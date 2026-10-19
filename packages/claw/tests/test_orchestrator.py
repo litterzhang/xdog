@@ -46,7 +46,7 @@ def test_orchestrator_normalizes_model_at_runtime_boundary(tmp_path, monkeypatch
 
     def create(group, data_dir, **kwargs):
         received.append(kwargs["model"])
-        return SimpleNamespace(goal_manager=SimpleNamespace(_route_fn=None))
+        return SimpleNamespace()
 
     monkeypatch.setattr(GroupRuntime, "create", create)
     orchestrator = Orchestrator(ClawConfig(data_dir=str(tmp_path)), model=model)

@@ -1,6 +1,7 @@
 """The retired task scheduler is absent, not a migration input for Eyes."""
 from __future__ import annotations
 
+import asyncio
 import builtins
 import importlib.util
 import inspect
@@ -35,11 +36,10 @@ def test_retired_modules_types_and_tool_are_absent():
     assert 'task' not in registered_names()
     with pytest.raises(ValueError, match='Unknown tools'):
         create_tools(('task',))
-    assert {'eyes', 'goal'} <= registered_names()
-    assert {tool.name for tool in create_tools(('eyes', 'goal'))} == {'goal', 'eyes'}
-    # GoalTask/TaskStatus are goal planning, not the retired scheduled-task model.
-    assert {'id', 'description', 'status'} <= {field.name for field in fields(types.GoalTask)}
-    assert types.TaskStatus.PENDING.value == 'pending'
+    assert 'eyes' in registered_names() and 'goal' not in registered_names()
+    assert {tool.name for tool in create_tools(('eyes',))} == {'eyes'}
+    with pytest.raises(ValueError, match='Unknown tools'):
+        create_tools(('goal',))
 
 
 def test_no_legacy_configuration_or_management_api(tmp_path):
@@ -94,12 +94,12 @@ async def test_gateway_never_reads_imports_or_modifies_old_scheduled_tasks(tmp_p
         config = ClawConfig(data_dir=str(data), socket_path=str(Path(short) / 'gateway.sock'),
                             pid_file=str(Path(short) / 'gateway.pid'), eyes_enabled=enabled,
                             acp_socket_path=str(Path(short) / 'acp.sock') if enabled else '',
-                            enabled_tools=('eyes', 'goal'), groups=(GroupDef(id='main', workspace=str(tmp_path)),))
+                            enabled_tools=('eyes',), groups=(GroupDef(id='main', workspace=str(tmp_path)),))
         for _ in range(2):
             gateway = GatewayServer(config)
             try:
                 await gateway.start()
-                assert gateway._goal_task is not None and not gateway._goal_task.done()
+                assert gateway._orchestrator._runtimes['main'].goal_host is None
                 assert not hasattr(gateway._orchestrator, 'scheduler')
                 if enabled:
                     service = gateway._observers
@@ -108,7 +108,7 @@ async def test_gateway_never_reads_imports_or_modifies_old_scheduled_tasks(tmp_p
                     assert not service._tasks and not service._handlers
                 else:
                     assert gateway._observers is None and gateway._acp_server is None
-                await gateway._orchestrator.tick()
+                await asyncio.sleep(0)
                 assert not calls
             finally:
                 await gateway.stop()

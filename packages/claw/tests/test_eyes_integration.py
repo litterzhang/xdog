@@ -32,8 +32,7 @@ async def test_future_tool_task_runs_once_reports_and_reloads(managed):
     await managed.flush()
     assert not managed.model.calls
     managed.clock.advance(1)
-    await managed.orch.tick()
-    await managed.orch.tick()  # Goal ticks neither admit nor duplicate Eyes source work.
+    await managed.flush()  # Eyes owns source readiness; no Goal scheduler exists.
     saved = await managed.completed(created['id'])
     managed.channel.send_message.assert_awaited_once_with('g1', 'Scheduled report')
     assert managed.model.calls == ['report']
@@ -121,11 +120,11 @@ async def test_slow_task_does_not_block_other_group_or_next_tick(managed):
     managed.model.gates['slow'] = entered, release
     slow = await create(managed, instruction='slow')
     managed.clock.advance(240)
-    await asyncio.wait_for(managed.orch.tick(), 1)
+    await managed.flush()
     await asyncio.wait_for(entered.wait(), 3)
     fast = await create(managed, group='g2', instruction='fast', source=scheduler(every_seconds=1))
     managed.clock.advance(1)
-    await asyncio.wait_for(managed.orch.tick(), 1)
+    await managed.flush()
     await managed.completed(fast['id'], group='g2')
     assert 'fast' in managed.model.calls and not release.is_set()
     assert managed.model.peak == 2
@@ -267,49 +266,8 @@ async def test_slow_recurring_run_skips_missed_deadlines_but_retains_fixed_phase
     assert all(row['delivery_status'] == 'delivered' for row in second['occurrences'])
 
 
-@pytest.mark.parametrize('pending_only', [False, True])
-async def test_goal_tick_retains_current_group_tools_and_eyes_context(managed, monkeypatch, pending_only):
-    first = managed.orch._runtimes['g1']
-    second = managed.orch._runtimes['g2']
-    for runtime in (first, second):
-        monkeypatch.setattr(runtime.goal_manager, 'has_active_goals', lambda: not pending_only)
-        monkeypatch.setattr(runtime.goal_manager, 'has_pending_work', lambda: pending_only)
-    failed_tick = AsyncMock(side_effect=RuntimeError('goal verification failed'))
-    next_tick = AsyncMock()
-    monkeypatch.setattr(first.goal_manager, 'tick', failed_tick)
-    monkeypatch.setattr(second.goal_manager, 'tick', next_tick)
-    # Failure in one goal group must not stop the next group's goal tick.
-    await managed.orch.tick()
-    for runtime, tick in ((first, failed_tick), (second, next_tick)):
-        tick.assert_awaited_once()
-        assert tick.call_args.kwargs['tools'] == runtime.tools
-        assert tick.call_args.kwargs['tool_ctx'] == {
-            'group_id': runtime.group.id,
-            'workspace_dir': str(runtime.workspace_dir),
-            'data_dir': str(runtime.data_dir),
-            '_eyes': managed.manager,
-        }
-    assert not managed.model.calls and await managed.manager.list('g1') == ()
-    managed.channel.send_message.assert_not_awaited()
 
 
-async def test_goal_directive_remains_system_input_without_managed_report(managed, monkeypatch):
-    from xdog.claw.core.types import SystemInput, SystemInputKind
-
-    runtime = managed.orch._runtimes['g1']
-    route = AsyncMock(wraps=managed.orch.route_message)
-    monkeypatch.setattr(runtime.goal_manager, '_route_fn', route)
-    goal = runtime.goal_manager.create('g1', 'Persistent goal', 'Continue until evidence is checked',
-                                       ['Inspect the actual result'], [])
-    runtime.goal_manager._put(goal, phase='waiting', pending_notice='continue goal')
-    await runtime.goal_manager.tick()
-    route.assert_awaited_once()
-    message = route.call_args.args[0]
-    assert isinstance(message, SystemInput) and message.kind is SystemInputKind.GOAL_RUNNER
-    assert message.group_id == 'g1' and message.content == 'continue goal'
-    assert managed.model.calls == ['continue goal']
-    assert await managed.manager.list('g1') == ()
-    managed.channel.send_message.assert_not_awaited()
 
 
 async def test_agent_can_stop_notifications_without_stopping_observation_or_execution(managed):

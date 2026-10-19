@@ -17,7 +17,8 @@ belong to `xdog.agent`; Claw's group/session adapters are internal application c
 
 ## Highlights
 
-- The group main Agent plans, assigns, waits for and accepts task work itself;
+- Optional Goal autonomy is disabled by default. When explicitly delegated,
+  the group main Agent plans, assigns, waits for and accepts task work itself;
   there is no mandatory automatic planner or second main-Agent loop.
 - Dedicated task workers write host-bound attempt reports. `submitted` is not task
   acceptance or Goal completion.
@@ -28,33 +29,27 @@ belong to `xdog.agent`; Claw's group/session adapters are internal application c
   concurrency or retained-record quota. Permissions, actual model capacity,
   protocol/resource protections, user cancellation and shutdown still apply.
 - Opt-in Eyes file/time observers use the existing private `group:<gid>` ACP/inbox
-  and group execution path. Goal-owned internal file notifications do not
-  automatically broadcast replies to WeChat.
+  and group execution path. Source stop and notification stop are independent
+  explicit operations; source labels do not choose reply recipients.
 - Memory and Goal state survive context rotation; history remains searchable and
   exportable without activating an old conversation. Interrupted effects are not
   automatically replayed.
 
 ## Goal workflow and boundaries
 
-Start with the packaged
-[claw-goals skill](https://github.com/litterzhang/xdog/blob/main/packages/claw/src/xdog/claw/skills/claw-goals/SKILL.md)
-and its dedicated worker/reviewer instructions. Goal workspaces live under
-`<workspace>/.xdog/goals/<goal_id>/`. The main Agent manages the plan and acceptance;
-workers own their current attempt reports, and host-generated status/review records
-have separate writers. Only an actual user turn can authorize changes to conditions.
+The same independent `xdog-goal` package supplies Claw/Coding tools, storage,
+worker reporting and explicit independent review. The shared `goals` skill describes
+its workflow. Installing/loading it is not autonomy delegation. Goal truth belongs
+to its leased journal; workspace files are derived views. Only actual consumed
+human input grants criteria/user-pause controls; untrusted events are data.
 
-With `eyes_enabled: true`, the host explicitly restores Goal-owned file observers
-and rereads reports for reconciliation. Ordinary file observers still do not
-restart automatically. Events are untrusted change hints, not identities,
-permissions or acceptance evidence. Waiting/cancellation/faults never mean success.
-
-See [Design](/packages/claw/design), [Reference](/packages/claw/reference), the
-[current objective](https://github.com/litterzhang/xdog/blob/main/docs/claw-goals-objective.md),
-[group-owned design](https://github.com/litterzhang/xdog/blob/main/docs/claw-session-goals-design.md)
-and [acceptance checklist](https://github.com/litterzhang/xdog/blob/main/docs/claw-session-goals-requirements.json).
-The design/checklist filenames retain historical `session` wording; they do not
-mean session-directed Goals or events. Implementation and final acceptance evidence
-are tracked separately; this overview is not a claim that every audit gate passed.
+Claw's group owner survives context rotation. Existing supervised children and the
+Core Inbox execute work and queued notices with no second main-Agent loop or
+message approval. Submitted reports need explicit acceptance, and only an explicit
+request_complete starts a reviewer. Goal state never implicitly cancels observers,
+notifications or workers. Old Goal formats are refused, not migrated. See Design
+and Reference plus the repository's assistant-core47-item checklist for remaining
+shared extension UI, packaging and final acceptance gates.
 
 ## Try it
 

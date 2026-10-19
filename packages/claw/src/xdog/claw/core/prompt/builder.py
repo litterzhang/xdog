@@ -11,7 +11,6 @@ Usage::
         workspace_dir,
         tools=runtime.tools,
         model=runtime.model,
-        goals_summary=runtime.goals_summary(),
     )
     # blocks is tuple[SystemPromptBlock, ...] — pass to Context.system_prompt
 """
@@ -32,7 +31,6 @@ from xdog.claw.core.prompt.sections import (
     tone_section,
     tool_usage_section,
 )
-from xdog.claw.core.prompt.templates import GOALS_HEADER
 from xdog.claw.core.prompt.workspace import (
     load_memory_section,
     load_workspace_overrides,
@@ -44,7 +42,6 @@ def build_system_prompt(
     *,
     tools: list[Any] | None = None,
     model: str = "",
-    goals_summary: str = "",
     bootstrap_content: str | None = None,
     memory_content: str = "",
 ) -> tuple[SystemPromptBlock, ...]:
@@ -52,7 +49,7 @@ def build_system_prompt(
 
     Returns a tuple of ``SystemPromptBlock``:
     - Block 0: static base (cacheable — identical across turns)
-    - Block 1: dynamic content (per-turn — workspace, env, memory, goals)
+    - Block 1: dynamic content (per-turn — workspace, env, memory)
 
     Parameters
     ----------
@@ -62,8 +59,6 @@ def build_system_prompt(
         List of AgentTool instances for dynamic tool guidance.
     model:
         Model name for the environment section.
-    goals_summary:
-        Formatted active goals string.
     bootstrap_content:
         One-time bootstrap content (from BOOTSTRAP.md).
     """
@@ -99,8 +94,6 @@ def build_system_prompt(
             dynamic_parts.append(memory)
 
 
-    if goals_summary:
-        dynamic_parts.append(f"{GOALS_HEADER}\n\n{goals_summary}")
 
     if bootstrap_content:
         dynamic_parts.append(f"# Bootstrap\n\n{bootstrap_content}")

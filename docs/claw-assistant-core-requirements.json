@@ -229,7 +229,8 @@
       "evidence": [
         "docs/goal-storage-verification.md",
         "docs/goal-kernel-verification.md",
-        "docs/coding-goal-lifecycle-verification.md"
+        "docs/coding-goal-lifecycle-verification.md",
+        "docs/claw-goal-cutover-verification.md"
       ]
     },
     {
@@ -240,7 +241,8 @@
       "evidence": [
         "docs/goal-storage-verification.md",
         "docs/goal-kernel-verification.md",
-        "docs/coding-goal-lifecycle-verification.md"
+        "docs/coding-goal-lifecycle-verification.md",
+        "docs/claw-goal-cutover-verification.md"
       ]
     },
     {
@@ -251,7 +253,8 @@
       "evidence": [
         "docs/goal-storage-verification.md",
         "docs/goal-kernel-verification.md",
-        "docs/coding-goal-lifecycle-verification.md"
+        "docs/coding-goal-lifecycle-verification.md",
+        "docs/claw-goal-cutover-verification.md"
       ]
     },
     {
@@ -261,7 +264,8 @@
       "status": "pending",
       "evidence": [
         "docs/goal-kernel-verification.md",
-        "docs/coding-goal-lifecycle-verification.md"
+        "docs/coding-goal-lifecycle-verification.md",
+        "docs/claw-goal-cutover-verification.md"
       ]
     },
     {
@@ -271,7 +275,8 @@
       "status": "pending",
       "evidence": [
         "docs/goal-kernel-verification.md",
-        "docs/coding-goal-lifecycle-verification.md"
+        "docs/coding-goal-lifecycle-verification.md",
+        "docs/claw-goal-cutover-verification.md"
       ]
     },
     {
@@ -281,7 +286,8 @@
       "status": "pending",
       "evidence": [
         "docs/goal-kernel-verification.md",
-        "docs/coding-goal-lifecycle-verification.md"
+        "docs/coding-goal-lifecycle-verification.md",
+        "docs/claw-goal-cutover-verification.md"
       ]
     },
     {
@@ -291,7 +297,8 @@
       "status": "pending",
       "evidence": [
         "docs/goal-kernel-verification.md",
-        "docs/coding-goal-lifecycle-verification.md"
+        "docs/coding-goal-lifecycle-verification.md",
+        "docs/claw-goal-cutover-verification.md"
       ]
     },
     {
@@ -301,7 +308,8 @@
       "status": "pending",
       "evidence": [
         "docs/goal-kernel-verification.md",
-        "docs/coding-goal-lifecycle-verification.md"
+        "docs/coding-goal-lifecycle-verification.md",
+        "docs/claw-goal-cutover-verification.md"
       ]
     },
     {
@@ -311,7 +319,8 @@
       "status": "pending",
       "evidence": [
         "docs/goal-kernel-verification.md",
-        "docs/coding-goal-lifecycle-verification.md"
+        "docs/coding-goal-lifecycle-verification.md",
+        "docs/claw-goal-cutover-verification.md"
       ]
     },
     {
@@ -321,7 +330,8 @@
       "status": "pending",
       "evidence": [
         "docs/goal-kernel-verification.md",
-        "docs/coding-goal-lifecycle-verification.md"
+        "docs/coding-goal-lifecycle-verification.md",
+        "docs/claw-goal-cutover-verification.md"
       ]
     },
     {
@@ -331,7 +341,8 @@
       "status": "pending",
       "evidence": [
         "docs/goal-kernel-verification.md",
-        "docs/coding-goal-lifecycle-verification.md"
+        "docs/coding-goal-lifecycle-verification.md",
+        "docs/claw-goal-cutover-verification.md"
       ]
     },
     {
@@ -341,7 +352,8 @@
       "status": "pending",
       "evidence": [
         "docs/goal-kernel-verification.md",
-        "docs/coding-goal-lifecycle-verification.md"
+        "docs/coding-goal-lifecycle-verification.md",
+        "docs/claw-goal-cutover-verification.md"
       ]
     },
     {
@@ -349,7 +361,9 @@
       "area": "goal",
       "requirement": "保留子 Agent 无固定运行/累计配额约束，不以新架构偷偷恢复业务预算",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/claw-goal-cutover-verification.md"
+      ]
     },
     {
       "id": "UI-01",

@@ -8,7 +8,6 @@ import uuid
 from collections.abc import Awaitable, Callable, Coroutine
 from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass, replace
-from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
@@ -64,7 +63,7 @@ class Orchestrator:
     """Coordinates channels, groups, sessions, and agent execution.
 
     All messages enter through ``route_message()``. Background work
-    (Eyes callbacks, goal manager) retains the same execution owner.
+    (callbacks and feature notices) retains the same execution owner.
     """
 
     def __init__(
@@ -86,10 +85,6 @@ class Orchestrator:
         self._outputs: OutputDelivery | None = None
         self._output_resume: asyncio.Task[None] | None = None
         self._runtimes: dict[str, GroupRuntime] = {}
-        self._goal_wake: Callable[[], None] = lambda: None
-        self._goal_jobs: dict[str, asyncio.Task[None]] = {}
-        self._goal_signatures: dict[str, tuple[Any, ...]] = {}
-        self._goal_closing = False
         self._navigation_groups: set[str] = set()
         self._background_slots = asyncio.Semaphore(config.max_concurrent_agents)
         self._controllers: dict[str, GroupController] = {}
@@ -101,7 +96,6 @@ class Orchestrator:
         self._input_calls: dict[tuple[InputScope, str], _InputCall] = {}
         self._inputs_stopping = False
         self._input_listeners: set[Callable[[InputScope], None]] = set()
-        self._input_projectors: set[Callable[[InputRecord, GroupInput], Awaitable[GroupInput]]] = set()
 
     # -- Group registration ----------------------------------------------------
 
@@ -122,15 +116,8 @@ class Orchestrator:
             extensions=self._config.extensions, extension_dir=self._config.extension_dir,
             extension_settings=self._config.extension_settings,
             extension_allow_tools=self._config.extension_allow_tools, child_presets=self._config.child_presets,
+            goals_enabled=self._config.goals_enabled,
         )
-        # Bind route_fn so the goal system can send SystemInput
-        # messages that the agent actually receives and acts on
-        runtime.goal_manager._route_fn = self.route_message
-        runtime.goal_manager._report_fn = partial(self._send_response, group.id)
-        runtime.goal_manager._wake_fn = lambda: getattr(self, '_goal_wake', lambda: None)()
-        runtime.goal_manager._ready_fn = lambda: (
-            not self.is_group_running(group.id)
-            and group.id not in self._navigation_groups)
         self._runtimes[group.id] = runtime
 
     def add_channel(self, channel: Channel) -> None:
@@ -219,7 +206,6 @@ class Orchestrator:
     def request_stop(self) -> None:
         """Fence intake and signal owned execution before transport cleanup waits."""
         self._inputs_stopping = True
-        self._goal_closing = True
         if self._inputs is not None:
             self._inputs.request_stop()
         elif self._input_start_task is not None and not self._input_start_task.done():
@@ -236,13 +222,7 @@ class Orchestrator:
         self._input_listeners.add(callback)
         return lambda: self._input_listeners.discard(callback)
 
-    def project_inputs(self, callback: Callable[[InputRecord, GroupInput], Awaitable[GroupInput]]
-                       ) -> Callable[[], None]:
-        self._input_projectors.add(callback)
-        return lambda: self._input_projectors.discard(callback)
-
     def _input_settled(self, scope: InputScope) -> None:
-        self._goal_wake()
         for callback in tuple(self._input_listeners):
             try:
                 callback(scope)
@@ -280,8 +260,6 @@ class Orchestrator:
             options['on_display_event'] = publish
         try:
             value = restore_input(record.envelope)
-            for project in tuple(self._input_projectors):
-                value = await project(record, value)
             reply = options.get('on_assistant_message')
             recovered = (call is None and isinstance(value, UserInput) and not isinstance(value, ExternalInput)
                          and record.envelope.reply is not None)
@@ -419,6 +397,8 @@ class Orchestrator:
             session = runtime.get_or_create_session(allow_reset=input_alive is None)
             if admit is not None and not await admit(session.meta.session_id):
                 return None
+            if runtime.goals_enabled:
+                await runtime.initialize_goals(await self.input_service())
             session.agent.set_tool_context({**session.agent.tool_context, '_eyes': runtime.observers,
                                             '_reply_reference': reply_reference})
             previous_menu = session.extensions.command_menu_handler
@@ -437,7 +417,6 @@ class Orchestrator:
                 return replace(result, session_id=session.meta.session_id) if result is not None else None
             finally:
                 session.agent.set_tool_context({**session.agent.tool_context, '_reply_reference': None})
-                asyncio.get_running_loop().call_soon(runtime.goal_manager._wake_fn)
                 session.extensions.pending_messages = previous_pending
                 if session.extensions.command_menu_handler is menu_handler:
                     session.extensions.command_menu_handler = previous_menu
@@ -1000,7 +979,6 @@ class Orchestrator:
                     payload["command_content"] = output.to_dict()
                 return payload
             finally:
-                asyncio.get_running_loop().call_soon(runtime.goal_manager._wake_fn)
                 session.extensions.pending_messages = previous_pending
                 if session.extensions.command_menu_handler is menu_handler:
                     session.extensions.command_menu_handler = previous_menu
@@ -1272,90 +1250,42 @@ class Orchestrator:
             return None
         return runtime.get_new_session_id()
 
-    def pop_goal_notifications(self, group_id: str) -> list[Any]:
-        """Pop pending goal notifications for a group."""
-        runtime = self._runtimes.get(group_id)
-        if not runtime:
-            return []
-        return runtime.pop_goal_notifications()
-
     def set_observers(self, observers: ManagedObservers | None) -> None:
         """Publish only the gateway-owned service, never create a second owner."""
         self._observers = observers
         for runtime in self._runtimes.values():
             runtime.observers = observers
-            runtime.goal_manager._watchers.clear()
             if runtime._active_session is not None:
                 agent = runtime._active_session.agent
                 if not agent.state.is_streaming:
                     agent.set_tool_context({**agent.tool_context, '_eyes': observers})
 
-    # -- Goal manager tick (Eyes owns independent trigger tasks) -----------------
-
-    async def _tick_goal(self, group_id: str) -> None:
-        runtime = self._runtimes[group_id]
-        try:
-            await runtime.goal_manager.tick(tools=runtime.tools, tool_ctx={
-                'group_id': group_id, 'workspace_dir': str(runtime.workspace_dir),
-                'data_dir': str(runtime.data_dir), '_eyes': self._observers})
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception('Goal host work failed for group %s', group_id)
-
-    @staticmethod
-    def _goal_signature(runtime: GroupRuntime) -> tuple[Any, ...]:
-        return tuple((goal.id, goal.status, goal.revision, goal.phase, goal.notice_state, goal.pending_notice,
-                      goal.review_child_id, goal.review_output, goal.auto_continue)
-                     for goal in runtime.goal_manager.tracker.list_goals())
-
-    def _goal_job_done(self, group_id: str, task: asyncio.Task[None]) -> None:
-        if self._goal_jobs.get(group_id) is task:
-            self._goal_jobs.pop(group_id, None)
-        if not task.cancelled() and task.exception() is not None:
-            logger.error('Goal host job failed for %s: %s', group_id, task.exception())
-        if self._goal_closing:
-            return
-        runtime = self._runtimes.get(group_id)
-        previous = self._goal_signatures.pop(group_id, ())
-        if runtime is not None and self._goal_signature(runtime) != previous and any(
-                goal.status in {'active', 'completed', 'blocked'} and (
-                    goal.phase == 'review_requested' or goal.pending_notice
-                    and goal.notice_state == 'pending' and goal.auto_continue)
-                for goal in runtime.goal_manager.tracker.list_goals()):
-            self._goal_wake()  # A work-to-review transition may have signalled while this job still owned the group.
-
-    async def tick(self) -> None:
-        """Dispatch one host owner per idle group; a long turn cannot stall other groups."""
-        if self._goal_closing:
-            return
-        for group_id, runtime in self._runtimes.items():
-            if (group_id in self._goal_jobs or self.is_group_running(group_id) or group_id in self._navigation_groups):
-                continue
-            if runtime.goal_manager.has_active_goals() or runtime.goal_manager.has_pending_work():
-                self._goal_signatures[group_id] = self._goal_signature(runtime)
-                task = asyncio.create_task(self._tick_goal(group_id), name='claw-goal:' + group_id)
-                self._goal_jobs[group_id] = task
-                task.add_done_callback(partial(self._goal_job_done, group_id))
-        await asyncio.sleep(0)  # Admit cheap reconciliation without awaiting a long model turn.
-
     # -- Lifecycle -------------------------------------------------------------
 
     async def start(self) -> None:
-        await self.input_service()
+        inputs = await self.input_service()
+        for runtime in tuple(self._runtimes.values()):
+            if self._inputs_stopping:
+                return
+            if runtime.goals_enabled:
+                await runtime.initialize_goals(inputs)
+                if self._inputs_stopping:
+                    return
+                assert runtime.goal_host is not None
+                await runtime.goal_host.flush()  # Recover facts/outbox only; no active-Goal model polling.
         for channel in self._channels:
+            if self._inputs_stopping:
+                return
             await channel.connect()
 
     async def stop(self) -> None:
         self.request_stop()
         if self._input_start_task is not None:
             await asyncio.gather(self._input_start_task, return_exceptions=True)
-        goal_jobs = tuple(self._goal_jobs.values())
-        for task in goal_jobs:
-            task.cancel()
-        await asyncio.gather(*goal_jobs, return_exceptions=True)
-        self._goal_jobs.clear()
-        self._goal_signatures.clear()
+        # Settle capability publication before closing either its input port or its lease.
+        # start() fences later group admissions once request_stop() has run.
+        await asyncio.gather(*(runtime._goal_start for runtime in self._runtimes.values()
+            if runtime._goal_start is not None), return_exceptions=True)
         # Stop ingress and settle channel-owned turns before closing their resources.
         disconnected = await asyncio.gather(
             *(channel.disconnect() for channel in self._channels), return_exceptions=True,
@@ -1369,6 +1299,8 @@ class Orchestrator:
         children = [runtime._active_session.children.supervisor for runtime in self._runtimes.values()
                     if runtime._active_session is not None]
         await asyncio.gather(*(owner.aclose() for owner in children), return_exceptions=True)
+        goal_closed = await asyncio.gather(*(runtime.goal_host.aclose() for runtime in self._runtimes.values()
+            if runtime.goal_host is not None), return_exceptions=True)
         owners = [owner for runtime in self._runtimes.values() for owner in runtime._retired_extensions]
         owners.extend(runtime._active_session.extensions for runtime in self._runtimes.values()
                       if runtime._active_session is not None)
@@ -1380,6 +1312,6 @@ class Orchestrator:
             *(runtime.memory.close() for runtime in self._runtimes.values() if runtime.memory is not None),
             return_exceptions=True,
         )
-        for result in (*disconnected, *mcp_closed, *memory_closed):
+        for result in (*disconnected, *goal_closed, *mcp_closed, *memory_closed):
             if isinstance(result, BaseException):
                 raise result

@@ -294,7 +294,7 @@ SLASH_COMMANDS = {
     "/queue": "Inspect/edit/remove/reorder queued inputs",
     "/sessions": "Read saved history", "/tree": "Read historical checkpoints",
     "/name": "Inspect/name session: /name [NAME|- to clear]",
-    "/new": "Rotate chat context (group Goals are retained)",
+    "/new": "Rotate chat context",
     "/artifact": "Load a checksummed command artifact read-only",
     "/attach": "Attach an image file", "/attachments": "Inspect/remove/preview images", "/paste": "Read clipboard",
     "/steer": "Send input at the next checkpoint",
@@ -352,24 +352,6 @@ def _build_waiting_status(tick: int, elapsed: str, conn_status: str, phrase: str
     """Build waiting status message (matching OpenClaw's buildWaitingStatusMessage)."""
     cute = _shimmer_text(f"{phrase}…", tick)
     return f"{cute} • {elapsed} | {conn_status}"
-
-
-# Known prefixes of internal prompts injected by the goal runner and
-# scheduler.  Used as a content-based fallback to filter old transcript
-# entries that lack a ``channel`` tag.
-_INTERNAL_PROMPT_PREFIXES = (
-    "Continue working on your active goals:",
-    "[Goal:",      # goal system task instructions
-    "Goal completed:",
-)
-
-
-def _is_internal_prompt(content: str) -> bool:
-    """Return True if *content* looks like a goal_runner/scheduler prompt."""
-    for prefix in _INTERNAL_PROMPT_PREFIXES:
-        if content.startswith(prefix):
-            return True
-    return False
 
 
 # ── Message Components (matching OpenClaw components exactly) ─────────
@@ -866,10 +848,6 @@ class ChatApp:
         self._todo_text: Text | None = None
         self._last_todos: list[dict[str, Any]] = []
 
-        # Goal widget state (persistent across turns)
-        self._goal_text: Text | None = None
-        self._last_goal: dict[str, Any] | None = None
-
         # Waiting shimmer state (matching OpenClaw)
         self._waiting = False
         self._waiting_tick = 0
@@ -894,7 +872,6 @@ class ChatApp:
                                           lambda: self._tui.request_render())
 
         self._todo_container = Container()
-        self._goal_container = Container()
         self._work_container = Container()
         self._work_summary = CompactText("", 0, 0)
         self._work_container.add_child(self._work_summary)
@@ -3090,77 +3067,9 @@ class ChatApp:
         self._last_todos = completed
         self._render_todos(completed)
 
-    # ── Goal widget rendering ──────────────────────────────────────────
-
-    _GOAL_ICONS = {
-        "pending": "☐",
-        "in_progress": "⧖",
-        "completed": "☑",
-        "skipped": "☒",
-    }
-
-    def _render_goal(self, goal: dict[str, Any]) -> None:
-        """Render a goal with task statuses into the dedicated goal container."""
-        self._last_goal = dict(goal)
-
-        title = goal.get("title", "")
-        goal_id = goal.get("id", "")
-        goal_status = goal.get("status", "active")
-        tasks = goal.get("tasks", [])
-
-        lines: list[str] = []
-        # Title line
-        if goal_status in ("completed", "abandoned"):
-            lines.append(theme_dim(f"  {title} [{goal_id}] — {goal_status}"))
-        else:
-            lines.append(theme_accent(f"  {title} [{goal_id}]"))
-
-        # Task lines
-        for task in tasks:
-            status = task.get("status", "pending")
-            desc = task.get("description", "")
-            icon = self._GOAL_ICONS.get(status, "☐")
-
-            if status == "completed":
-                lines.append(theme_dim(f"    {icon} {desc}"))
-            elif status == "in_progress":
-                lines.append(theme_accent(f"    {icon} {desc}"))
-            elif status == "skipped":
-                lines.append(theme_dim(f"    {icon} {desc}"))
-            else:
-                lines.append(f"    {icon} {desc}")
-
-        display = "\n".join(lines)
-        if self._goal_text is None:
-            self._goal_text = Text(display, 0, 0)
-            self._goal_container.add_child(self._goal_text)
-        else:
-            self._goal_text.set_text(display)
-
-    def _clear_goal(self) -> None:
-        """Clear the goal widget display."""
-        if self._goal_text is not None:
-            self._goal_container.clear()
-            self._goal_text = None
-        self._last_goal = None
-        self._refresh_work_summary()
-
-    def _finalize_goal(self) -> None:
-        """On turn end, clear goal widget if completed/abandoned, otherwise keep."""
-        if self._last_goal is None:
-            return
-        status = self._last_goal.get("status", "active")
-        if status in ("completed", "abandoned"):
-            self._clear_goal()
-
     def _refresh_work_summary(self) -> None:
-        """Show bounded goal/todo progress without rendering full checklists."""
+        """Show bounded todo progress without rendering full checklists."""
         lines: list[str] = []
-        if self._last_goal is not None:
-            tasks = self._last_goal.get("tasks", [])
-            done = sum(1 for task in tasks if task.get("status") in {"completed", "skipped"})
-            title = sanitize_terminal_text(str(self._last_goal.get("title", "goal"))).replace("\n", " ")
-            lines.append(f"goal: {title} ({done}/{len(tasks)})")
         if self._last_todos:
             done = sum(1 for item in self._last_todos if item.get("status") == "completed")
             active = next(
@@ -3525,7 +3434,7 @@ class ChatApp:
                 return
             if command == "/new":
                 if args.strip():
-                    self._chat_log.add_system("Usage: /new (group Goals are retained)")
+                    self._chat_log.add_system("Usage: /new")
                     self._tui.request_render()
                 else:
                     self._new_context()
@@ -3619,7 +3528,6 @@ class ChatApp:
     def _start_message(self, value: str, images: tuple[Attachment, ...]) -> None:
         """Canonical native turn transport, without slash parsing or composer capture."""
         self._clear_todos()  # clear any finalized todos from previous turn
-        self._clear_goal()   # clear goal widget from previous turn
         self._active_images = images
         image_count = len(images)
         self._chat_log.add_user(value + (f"\n[Images: {image_count}]" if image_count else ""))
@@ -3824,9 +3732,7 @@ class ChatApp:
                 for part in parts
                 if isinstance(part, dict) and part.get("type") == "text"
             )
-            if channel in ("goal_runner", "scheduler"):
-                continue
-            if role == "user" and _is_internal_prompt(content):
+            if channel == "scheduler":
                 continue
             if role == "user" and (content or entry.get("image_count")):
                 if entry.get("image_count"):
@@ -4477,7 +4383,7 @@ class ChatApp:
             # Gateway validation failures (e.g. unknown group) can predate the
             # run acknowledgement and carry no run ID. They still settle input.
             msg["run_id"] = self._active_run_id
-        if msg_type in {"todo", "goal"} and msg.get("run_id"):
+        if msg_type == "todo" and msg.get("run_id"):
             run_id = str(msg["run_id"])
             if run_id != self._active_run_id or run_id == self._aborting_run_id:
                 return
@@ -4802,13 +4708,6 @@ class ChatApp:
             self._render_todos(todos)
             return
 
-        # Goal widget update (persistent across turns)
-        if msg_type == "goal":
-            goal = msg.get("goal")
-            if goal:
-                self._render_goal(goal)
-            return
-
         if msg_type in {"extension_notice", "extension_ui"}:
             if (msg.get("group_id") != self.group_id or msg.get("run_id") != self._active_run_id
                     or self._active_run_id is None):
@@ -4947,9 +4846,6 @@ class ChatApp:
             self._aborting_run_id = None
             self._streaming_output_chars = 0
             self._finalize_todos()
-            # Clear goal widget only if goal is completed/abandoned;
-            # active goals persist across turns
-            self._finalize_goal()
 
             if content:
                 # Non-streamed response — finalize with full content
@@ -5100,7 +4996,6 @@ class ChatApp:
             self._pending_command = None
             self._set_waiting(False)
             self._clear_todos()
-            self._clear_goal()
             # Use session ID from gateway if provided
             gateway_session_id = msg.get("session_id")
             if gateway_session_id:

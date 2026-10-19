@@ -16,7 +16,10 @@ or `$CODING_DIR/settings.json`), opt in explicitly:
 The Goal distribution must also be installed (the Coding `goals` extra declares
 that optional dependency). Strings/numbers/null are rejected rather than coerced;
 project settings and saved session JSON cannot enable the capability. The shipped
-session-scoped `goals` skill describes the explicit workflow. Loading instructions
+session-scoped `goals` skill is automatically discovered whenever the package is
+installed, just like Flow/Eyes, independently of `goals_enabled`. No copying or
+manual registration is needed; the normal skill mechanism loads its full body
+on demand. It describes the explicit workflow. Loading instructions
 is not authorization to create a Goal or to run tools.
 
 ## Execution and storage

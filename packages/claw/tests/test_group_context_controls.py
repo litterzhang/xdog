@@ -15,12 +15,10 @@ from packages.claw.tests.test_full_transcript_source import read, send
 
 @pytest.fixture
 async def owner(tmp_path):
-    goals = Mock()
-    goals.has_unfinished_goals.return_value = False
-    runtime = GroupRuntime(group=Group(id='main'), data_dir=tmp_path / 'data', goal_manager=goals,
+    runtime = GroupRuntime(group=Group(id='main'), data_dir=tmp_path / 'data',
                            model='test/dummy', stream_fn=Mock(side_effect=AssertionError('No model call expected')))
     try:
-        yield runtime, goals
+        yield runtime
     finally:
         if runtime._active_session is not None:
             await runtime._active_session.children.supervisor.aclose()
@@ -32,42 +30,36 @@ async def owner(tmp_path):
 
 
 @pytest.mark.parametrize('daily,idle', [(True, False), (False, True), (True, True)])
-async def test_unfinished_group_goal_suppresses_automatic_context_rotation(owner, monkeypatch, daily, idle):
-    runtime, goals = owner
+async def test_idle_automatic_context_rotation_uses_runtime_resources_not_goal_policy(owner, monkeypatch, daily, idle):
+    runtime = owner
     session = runtime.get_or_create_session(allow_reset=False)
-    goals.has_unfinished_goals.return_value = True
     monkeypatch.setattr(runtime.transcript_store, 'needs_daily_reset', lambda *args: daily)
     monkeypatch.setattr(runtime.transcript_store, 'needs_idle_reset', lambda *args: idle)
-    assert runtime.get_or_create_session() is session
-    assert runtime.get_new_session_id() == session.meta.session_id
-    goals.has_unfinished_goals.return_value = False
     fresh = runtime.get_or_create_session()
     assert fresh is not session and fresh.meta.session_id != session.meta.session_id
-    assert runtime.goal_manager is goals
+    assert runtime.goal_host is None
 
 
-async def test_manual_new_retains_group_goals_and_history_but_never_activates_old_route(owner):
-    runtime, goals = owner
-    goals.has_unfinished_goals.return_value = True
+async def test_manual_new_retains_workspace_and_history_but_never_activates_old_route(owner):
+    runtime = owner
     first = runtime.get_or_create_session(allow_reset=False)
     identifier = first.meta.session_id
     runtime.transcript_store.append_turn(identifier, {'role': 'user', 'content': 'Historical evidence'})
-    marker = runtime.workspace_dir / '.xdog' / 'goals' / 'goal' / 'goal.md'
+    marker = runtime.workspace_dir / 'notes' / 'contract.md'
     marker.parent.mkdir(parents=True)
-    marker.write_text('Original Goal conditions')
+    marker.write_text('Original workspace notes')
     runtime.navigate_session('new', '', '', -1, identifier)
     assert runtime._active_session is None and runtime.get_new_session_id() != identifier
-    assert runtime.goal_manager is goals and marker.read_text() == 'Original Goal conditions'
+    assert marker.read_text() == 'Original workspace notes'
     assert runtime.transcript_store.load_transcript(identifier)[0]['content'] == 'Historical evidence'
     fresh = runtime.get_or_create_session(allow_reset=False)
     with pytest.raises(ValueError, match='read-only'):
         runtime.navigate_session('resume', identifier, '', -1, fresh.meta.session_id)
     assert runtime._active_session is fresh
-    goals.attach.assert_called_once_with(runtime)
 
 
 async def test_rotation_requires_child_idle_and_nonstreaming_parent(owner, monkeypatch):
-    runtime, goals = owner
+    runtime = owner
     session = runtime.get_or_create_session(allow_reset=False)
     identifier = session.meta.session_id
     with monkeypatch.context() as child:
@@ -85,12 +77,11 @@ async def test_rotation_requires_child_idle_and_nonstreaming_parent(owner, monke
     finally:
         session.agent.state.is_streaming = False
     runtime.reset_session()
-    assert runtime.goal_manager is goals
 
 
 @pytest.mark.parametrize('args', [('old', '', -1), ('', 'legacy', -1), ('', '', 0)])
 async def test_new_cannot_smuggle_history_target_and_cancel_has_no_effect(owner, args):
-    runtime, _ = owner
+    runtime = owner
     meta = runtime.transcript_store.create_session('main')
     with pytest.raises(ValueError, match='cannot select'):
         runtime.navigate_session('new', *args, meta.session_id)
@@ -101,16 +92,10 @@ async def test_new_cannot_smuggle_history_target_and_cancel_has_no_effect(owner,
 
 @pytest.mark.parametrize('factory', [False, True])
 @pytest.mark.parametrize('custom_workspace', [False, True])
-def test_goal_workspace_and_attach_are_consistent_in_both_construction_paths(
+def test_optional_capabilities_do_not_change_workspace_in_both_construction_paths(
     tmp_path, monkeypatch, factory, custom_workspace,
 ):
     from xdog.claw.core.runtime import group as module
-    managers = []
-    def create_manager(**kwargs):
-        manager = Mock()
-        managers.append((manager, kwargs))
-        return manager
-    monkeypatch.setattr(module, 'GoalManager', create_manager)
     monkeypatch.setattr(module, '_get_model_limits', lambda model: (200_000, 0))
     monkeypatch.setattr(module, 'resolve_model_name', lambda configured, fallback: '')
     group = Group(id='main', workspace=str(tmp_path / 'custom') if custom_workspace else '')
@@ -119,11 +104,7 @@ def test_goal_workspace_and_attach_are_consistent_in_both_construction_paths(
     try:
         expected = Path(group.workspace) if group.workspace else tmp_path / 'data/groups/main/workspace'
         assert runtime.workspace_dir == expected
-        assert managers[0][1]['goals_dir'] == expected / '.xdog' / 'goals'
-        assert runtime.goal_manager is managers[0][0]
-        managers[0][0].attach.assert_called_once_with(runtime)
-        managers[0][0].goals_summary.return_value = 'Group Goal facade'
-        assert runtime.goals_summary() == 'Group Goal facade'
+        assert runtime.goal_host is None and not (tmp_path / 'data/groups/main/goals').exists()
     finally:
         runtime.mcp.close()
 
@@ -172,37 +153,6 @@ async def test_reset_child_busy_returns_error_and_keeps_gateway_alive(gateway, m
         await writer.wait_closed()
 
 
-async def test_real_group_goal_survives_context_rotation_and_disables_daily_idle_reset(tmp_path, monkeypatch):
-    runtime = GroupRuntime(group=Group(id='main'), data_dir=tmp_path / 'data', model='test/dummy',
-                           stream_fn=Mock(side_effect=AssertionError('No model call expected')))
-    manager = runtime.goal_manager
-    try:
-        assert manager.runtime is runtime
-        goal = manager.create('main', 'Durable Goal', 'Keep the original conditions', ['Inspect actual evidence'], [])
-        assert manager.has_unfinished_goals()
-        before = manager.tracker.get_goal(goal.id)
-        directory = runtime.workspace_dir / '.xdog' / 'goals'
-        assert directory.is_dir()
-        files = {path.relative_to(directory): path.read_bytes() for path in directory.rglob('*') if path.is_file()}
-        assert files
-        session = runtime.get_or_create_session(allow_reset=False)
-        monkeypatch.setattr(runtime.transcript_store, 'needs_daily_reset', lambda *args: True)
-        monkeypatch.setattr(runtime.transcript_store, 'needs_idle_reset', lambda *args: True)
-        assert runtime.get_or_create_session() is session
-        runtime.navigate_session('new', '', '', -1, session.meta.session_id)
-        assert runtime.goal_manager is manager and manager.runtime is runtime
-        assert manager.tracker.get_goal(goal.id) == before
-        assert all((directory / relative).read_bytes() == content for relative, content in files.items())
-        assert runtime.get_or_create_session() is not session
-        assert manager.has_unfinished_goals()
-    finally:
-        if runtime._active_session is not None:
-            await runtime._active_session.children.supervisor.aclose()
-            await runtime._active_session.extensions.aclose()
-            runtime._active_session.dispose()
-        for extension in runtime._retired_extensions:
-            await extension.aclose()
-        runtime.mcp.close()
 
 
 async def test_archived_history_and_legacy_branch_can_be_read_and_exported_without_activation(gateway, tmp_path):

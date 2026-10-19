@@ -165,7 +165,7 @@ def test_explicit_core_import_still_registers_domain_tools(tmp_path: Path) -> No
         from xdog.claw.core.tools.registry import create_tools, registered_names
 
         # Representative built-in and domain registrations; new tools may be added freely.
-        required = {'filesystem', 'group_message', 'goal', 'eyes', 'memory', 'skill'}
+        required = {'filesystem', 'group_message', 'eyes', 'memory', 'skill'}
         assert required <= registered_names(), required - registered_names()
         tools = create_tools(enabled=tuple(sorted(required)))
         assert {tool.name for tool in tools} == required

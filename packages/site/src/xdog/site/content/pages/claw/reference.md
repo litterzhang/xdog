@@ -95,29 +95,23 @@ and explicitly rejected. Legacy branch/checkpoint files are not deleted or activ
 Startup restores only the current committed context; uncertain requests and
 interrupted side effects are not automatically replayed. Coding branching is unchanged.
 
-## Goal tool and roles
+## Optional Goal tool and roles
 
-The packaged
-[claw-goals skill](https://github.com/litterzhang/xdog/blob/main/packages/claw/src/xdog/claw/skills/claw-goals/SKILL.md)
-contains exact tool examples and worker/reviewer instructions. Main-Agent actions
-include `create`, `list`, `status`, `add_task`, `assign_task`, `report_task`,
-`update_task`, `request_complete`, `update`, `wait`, `pause`, `resume` and
-`abandon_goal`. Goal `resume` continues the group's durable obligation; it is not
-historical-context activation. Only actual user input can authorize condition changes.
+Goals default disabled; an explicit trusted global `goals_enabled: true` and the
+optional Goal distribution enable the capability, not automatic delegation. The
+same `xdog-goal` service/skill is reused by Coding. Parent actions include create,
+list/status, add_task, assign, accept_task, revise, wait/pause/resume, abandon,
+cancel_task, cancel_notifications and request_complete. Workers have separately
+bound task_report/context tools. Submitted is not accepted, and only an explicit
+request_complete starts independent readonly review. Turn end is not acceptance.
 
-Use `assign_task` for a host-bound worker or main-Agent executor. Each task/attempt
-has its own report identity and increasing revision. A `submitted` report requires
-main-Agent acceptance; completing tasks does not complete the Goal. The host starts
-an independent reviewer for requested/normally stopped Goal work and checks every
-condition, reviewer identity, revision and evidence freshness. Scripts/tests supply
-evidence, not automatic completion verdicts. No mandatory planner takes over after
-creation, and ordinary chat is not forced through Goal review.
-
-The host explicitly restores its Goal-owned file observers when Eyes is enabled;
-ordinary file observers do not automatically restart. All callbacks use
-`group:<gid>` and exact workspace validation through the existing ACP/inbox. Events
-are untrusted hints requiring report rereads. Internal `notify_only` behavior comes
-from trusted host records, not provenance, and avoids per-event WeChat broadcasts.
+Claw's owner is the persistent group/workspace/inbox binding, not its current
+conversation. Context rotation cannot move or delete Goals; original terminal
+child execution supports explicit acceptance without offline replay. Actual human
+input authorizes condition changes/user-pause release; labels cannot. Goal state,
+worker control, source control and notification control remain independent.
+The native Goal widget and implicit Gateway Goal runner are removed. Shared Python
+extension UI and final architecture acceptance remain separately tracked.
 
 ## Child settings and resource boundaries
 
@@ -148,8 +142,8 @@ The gateway's background **group-turn** admission policy is separate from child
 concurrency; human inputs keep priority.
 
 Current scope and acceptance evidence are tracked in the
-[objective](https://github.com/litterzhang/xdog/blob/main/docs/claw-goals-objective.md),
-[design](https://github.com/litterzhang/xdog/blob/main/docs/claw-session-goals-design.md)
-and [checklist](https://github.com/litterzhang/xdog/blob/main/docs/claw-session-goals-requirements.json).
+[objective](https://github.com/litterzhang/xdog/blob/main/docs/superpowers/specs/2026-10-19-claw-assistant-core-design.md),
+[design](https://github.com/litterzhang/xdog/blob/main/docs/superpowers/specs/2026-10-19-claw-assistant-core-design.md)
+and [checklist](https://github.com/litterzhang/xdog/blob/main/docs/claw-assistant-core-requirements.json).
 Linux is the supported platform; this reference does not claim non-Linux validation
 or completed acceptance gates.

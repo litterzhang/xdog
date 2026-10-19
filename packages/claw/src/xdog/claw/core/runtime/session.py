@@ -71,11 +71,9 @@ from xdog.claw.core.runtime.display_events import (
 from xdog.claw.core.runtime.transcript_source import SourceCapture, SourceTool
 from xdog.claw.core.types import (
     ExternalInput,
-    GoalStatus,
     GroupInput,
     SessionMeta,
     SystemInput,
-    SystemInputKind,
     UserInput,
 )
 
@@ -125,8 +123,10 @@ class AgentSession:
         self._runtime = runtime
         self._meta = session_meta
         self._group_id = runtime.group.id
-        self._goal_touched: set[str] = set()
-        self._goal_human_inputs: dict[str, str] = {}
+        self._human_inputs: dict[str, str] = {}
+        self._authorized_messages: dict[int, UserMessage] = {}
+        self._user_operation_authorized = False
+        self._human_prompt = False
         self._compaction_metadata: dict[str, Any] | None = None
         self._has_compaction_entry = False
         self._compacting = False
@@ -214,8 +214,6 @@ class AgentSession:
                 "_memory_search": runtime.memory.search if runtime.memory else None,
                 "_memory_manager": runtime.memory,
                 "_skill_manager": runtime.skill_manager,
-                "_goal_manager": runtime.goal_manager,
-                "_goal_agent": self,
                 "_eyes": runtime.observers,
             },
             transform_context=self._extension_context,
@@ -224,7 +222,7 @@ class AgentSession:
             input_transform=self._transform_user_input,
         )
 
-        self._goal_input_unsubscribe = self._agent.subscribe(self._observe_goal_human_input)
+        self._human_input_unsubscribe = self._agent.subscribe(self._observe_human_input)
         self.children = ClawChildren(self)
         self._agent.set_tools((*self._agent.state.tools, *self.children.supervisor.tools()))
         if self._tool_selection_restore_pending:
@@ -286,8 +284,8 @@ class AgentSession:
         self._source_call_ids.clear()
 
     def dispose(self) -> None:
-        self._goal_input_unsubscribe()
-        self._goal_human_inputs.clear()
+        self._human_input_unsubscribe()
+        self._human_inputs.clear()
         self.children.supervisor.close()
         self.extension_dialogs.close()
         self.extensions.close()
@@ -500,8 +498,11 @@ class AgentSession:
                                     cancel: asyncio.Event | None = None) -> UserMessage | HandledInput:
         try:
             if source == "prompt" and not self._input_is_user:
-                return message  # Goal/scheduler/system work is not intercepted as human input.
-            return await self.extensions.input(message, source, channel=self._input_channel)
+                return message  # System work is not intercepted as human input.
+            value = await self.extensions.input(message, source, channel=self._input_channel)
+            if source == "prompt" and self._human_prompt and isinstance(value, UserMessage):
+                self._authorized_messages[id(value)] = value
+            return value
         finally:
             await self._sync_extension_tools()
 
@@ -653,13 +654,16 @@ class AgentSession:
         if retained != self._active_skills:
             await self._save_selected_skills(tuple(sorted(retained)), update_agent=False)
 
-    def _observe_goal_human_input(self, event: Any) -> None:
-        if isinstance(event, InputConsumedEvent) and event.input.id in self._goal_human_inputs:
-            channel = self._goal_human_inputs.pop(event.input.id)
-            self._goal_user_authorized = True  # Authorize only after this real user input is actually consumed.
+    def _observe_human_input(self, event: Any) -> None:
+        if (isinstance(event, MessageEndEvent) and isinstance(event.message, UserMessage)
+                and self._authorized_messages.get(id(event.message)) is event.message):
+            self._user_operation_authorized = True
+        if isinstance(event, InputConsumedEvent) and event.input.id in self._human_inputs:
+            channel = self._human_inputs.pop(event.input.id)
+            self._user_operation_authorized = True  # Authorize only after this real user input is actually consumed.
             self._source_channels[len(self._agent.messages) - 1] = channel
         elif isinstance(event, (InputHandledEvent, InputRejectedEvent)):
-            self._goal_human_inputs.pop(event.input_id, None)
+            self._human_inputs.pop(event.input_id, None)
 
     def queue_human_input(self, message: UserInput, delivery: str) -> None:
         from typing import cast
@@ -667,14 +671,14 @@ class AgentSession:
         from xdog.agent.input_queue import Delivery
         if (isinstance(message, ExternalInput) or message.metadata.get('input_origin', 'user') != 'user'
                 or delivery not in {'steer', 'follow_up'}):
-            raise ValueError('Only host-identified human input can authorize Goal controls')
+            raise ValueError('Only host-identified human input can authorize user controls')
         if message.images:
             self._runtime.validate_images(message.images)
         pending = {item.id for item in self._agent.pending_inputs()}
-        self._goal_human_inputs = {key: value for key, value in self._goal_human_inputs.items() if key in pending}
+        self._human_inputs = {key: value for key, value in self._human_inputs.items() if key in pending}
         identifier = 'claw-human-' + uuid.uuid4().hex
         self._agent.queue_input(identifier, message.content, cast(Delivery, delivery), message.images)
-        self._goal_human_inputs[identifier] = message.channel or 'user'
+        self._human_inputs[identifier] = message.channel or 'user'
 
     def steer(self, content: str) -> None:
         self._agent.steer(content)
@@ -688,44 +692,7 @@ class AgentSession:
 
     # -- Turn execution --------------------------------------------------------
 
-    def _goal_pending_label(self) -> str:
-        for identifier in self._goal_touched:
-            goal = self._runtime.goal_manager.tracker.get_goal(identifier)
-            if goal is not None and goal.status not in {GoalStatus.COMPLETED, GoalStatus.ABANDONED}:
-                return '[Goal 尚未验收完成]\n'
-        return ''
-
-    async def run_turn(self, input: GroupInput, on_text_delta: Any = None, *,
-                       on_display_event: Any = None,
-                       on_assistant_message: Callable[[str], Awaitable[None]] | None = None,
-                       child_ui: tuple[str, Callable[[dict[str, Any]], None]] | None = None) -> TurnResult:
-        try:
-            result = await self._run_turn(input, on_text_delta, on_display_event=on_display_event,
-                on_assistant_message=on_assistant_message, child_ui=child_ui)
-        except asyncio.CancelledError:
-            for identifier in self._goal_touched:
-                self._runtime.goal_manager.on_turn_end(goal_id=identifier, error='Cancelled; explicit resume required')
-            raise
-        notice = getattr(self, '_goal_notice', None)
-        if notice is not None:
-            identifier, text = notice
-            manager = self._runtime.goal_manager
-            current = manager.owned(self._group_id, identifier)
-            if current.pending_notice == text:
-                manager._put(current, pending_notice='',
-                             notice_state='interrupted' if result.error else 'acknowledged')
-        goal_error = result.error or ''
-        if result.input_handled and not goal_error:
-            goal_error = 'Goal input handled without model work; explicit continuation required'
-        for identifier in self._goal_touched:
-            self._runtime.goal_manager.on_turn_end(goal_id=identifier, tool_calls=len(result.tool_calls),
-                                                   error=goal_error)
-        label = self._goal_pending_label()
-        if label and result.response_text:
-            return replace(result, response_text=label + result.response_text)
-        return result
-
-    async def _run_turn(
+    async def run_turn(
         self,
         input: GroupInput,
         on_text_delta: Any = None,
@@ -750,25 +717,10 @@ class AgentSession:
                     on_text_delta(event.delta)
             on_display_event = _compat_display_event
         self._restore_messages()
-        self._goal_touched.clear()
-        self._goal_user_authorized = (isinstance(input, UserInput) and not isinstance(input, ExternalInput)
-                                     and input.metadata.get('input_origin', 'user') == 'user')
-        if isinstance(input, SystemInput) and input.kind == SystemInputKind.GOAL_RUNNER:
-            goal_id = input.metadata.get('goal_id')
-            if isinstance(goal_id, str):
-                self._goal_touched.add(goal_id)
-        self._goal_notice: tuple[str, str] | None = None
-        if isinstance(input, ExternalInput) and isinstance(input.metadata.get('_goal_id'), str):
-            manager = self._runtime.goal_manager
-            identifier = input.metadata['_goal_id']
-            saved = manager.owned(self._group_id, identifier)
-            current = await manager.reconcile(saved)
-            if (current.status != GoalStatus.ACTIVE or not current.pending_notice
-                    or current.notice_state in {'running', 'interrupted'}):
-                return TurnResult(input_handled=True)  # Coalesced or paused: no duplicate model work.
-            manager._put(current, notice_state='running')
-            self._goal_notice = (identifier, current.pending_notice)
-            self._goal_touched.add(identifier)
+        self._user_operation_authorized = False
+        self._authorized_messages.clear()
+        self._human_prompt = (isinstance(input, UserInput) and not isinstance(input, ExternalInput)
+                              and input.metadata.get('input_origin', 'user') == 'user')
         context_snapshot = (await self.context_messages.capture()
             if isinstance(input, UserInput) and input.metadata.get('input_origin', 'user') == 'user' else None)
         self.children.extensions.default_ui = child_ui
@@ -795,7 +747,7 @@ class AgentSession:
             channel = (input.channel if isinstance(input, UserInput)
                        else input.kind if isinstance(input, SystemInput) else "")
             self._source_channels[previous_count] = channel
-            self._input_is_user = isinstance(input, UserInput)
+            self._input_is_user = isinstance(input, UserInput) and not isinstance(input, ExternalInput)
             self._input_channel = str(channel)
             from xdog.claw.core.types import ContextContinuation
             if isinstance(input, ContextContinuation):
@@ -879,6 +831,9 @@ class AgentSession:
             self._persist()
             return TurnResult(error=str(e))
         finally:
+            self._user_operation_authorized = False
+            self._authorized_messages.clear()
+            self._human_prompt = False
             await self._sync_extension_tools()
             await self._expire_selected_skills()
 
@@ -891,9 +846,7 @@ class AgentSession:
         if ws:
             bootstrap_content = run_bootstrap(ws)
 
-        goals_summary = self._runtime.goals_summary()
         blocks = self._runtime.build_system_prompt(
-            goals_summary=goals_summary,
             bootstrap_content=bootstrap_content,
         )
 
@@ -911,7 +864,6 @@ class AgentSession:
         tool_calls: list[dict[str, Any]] = []
         usage: dict[str, int] = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
 
-        goal_label_shown = False
         async for event in event_stream:
             if isinstance(event, MessageEndEvent):
                 await self.extensions.event("message_end", {"role": getattr(event.message, "role", "custom")})
@@ -920,11 +872,6 @@ class AgentSession:
             if isinstance(event, MessageUpdateEvent):
                 inner = event.assistant_message_event
                 if on_display_event and isinstance(inner, TextDeltaEvent):
-                    if not goal_label_shown:
-                        label = self._goal_pending_label()
-                        if label:
-                            on_display_event(AssistantTextDelta(label))
-                            goal_label_shown = True
                     on_display_event(AssistantTextDelta(inner.delta))
 
             elif isinstance(event, ToolExecutionStartEvent):
@@ -1015,7 +962,7 @@ class AgentSession:
                         if isinstance(part, TextContent) and part.text
                     )
                     if text.strip():
-                        await on_assistant_message(self._goal_pending_label() + text)
+                        await on_assistant_message(text)
 
         return _DrainResult(tool_calls=tuple(tool_calls), usage=usage)
 
@@ -1029,12 +976,12 @@ class AgentSession:
         new_entries = messages_to_transcript(new_messages)
 
         # Tag the user message with its source channel so the TUI can
-        # filter internal messages (goal_runner, scheduler) from chat
+        # filter internal messages from chat
         # history and editor up-arrow.
         if isinstance(input, UserInput):
             channel = input.channel
         elif isinstance(input, SystemInput):
-            channel = input.kind  # "goal_runner", "scheduler", etc.
+            channel = input.kind
         else:
             channel = ""
 

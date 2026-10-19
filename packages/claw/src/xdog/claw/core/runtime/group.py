@@ -26,7 +26,6 @@ from xdog.claw.core.compaction.summarizer import Summarizer
 from xdog.claw.core.memory.manager import MemoryManager
 from xdog.claw.core.persistence.transcript_convert import TOOL_RESULT_ROLE, entry_text, transcript_to_messages
 from xdog.claw.core.persistence.transcript_store import TranscriptStore
-from xdog.claw.core.planning.goal_manager import GoalManager
 from xdog.claw.core.prompt import build_system_prompt, init_workspace, workspace_path
 from xdog.claw.core.runtime.display_events import display_arguments, display_result
 from xdog.claw.core.runtime.transcript_source import SourceCapture
@@ -35,7 +34,9 @@ from xdog.claw.core.types import Group
 from xdog.tui.transcript_browser import TranscriptRecord
 
 if TYPE_CHECKING:
+    from xdog.claw.core.inputs.consumer import InputService
     from xdog.claw.core.observers.manager import ManagedObservers
+    from xdog.claw.core.runtime.goal_adapter import ClawGoalHost
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +100,7 @@ class GroupRuntime:
         workspace_dir: Path | None = None,
         transcript_store: TranscriptStore | None = None,
         memory: MemoryManager | None = None,
-        goal_manager: GoalManager | None = None,
+        goals_enabled: bool = False,
         skill_manager: SkillManager | None = None,
         flush_runner: FlushRunner | None = None,
         summarizer: Summarizer | None = None,
@@ -121,18 +122,16 @@ class GroupRuntime:
         self.max_prompt_tokens = max_prompt_tokens
         self.stream_fn = stream_fn
         self.agent_config = agent_config or group.agent_config
-        self.workspace_dir = workspace_dir or (Path(group.workspace) if group.workspace
-                                               else data_dir / "groups" / group.id / "workspace")
+        self.workspace_dir = (workspace_dir or (Path(group.workspace) if group.workspace
+                              else data_dir / "groups" / group.id / "workspace")).resolve()
         self.transcript_store = transcript_store or TranscriptStore(
             data_dir / "groups" / group.id / "sessions", owner_group=group.id,
         )
         self.memory = memory
-        self.goal_manager = goal_manager or GoalManager(
-            goals_file=data_dir / "groups" / group.id / "goals.json",
-            goals_dir=self.workspace_dir / ".xdog" / "goals",
-            model=model,
-            stream_fn=stream_fn,
-        )
+        self.goals_enabled = goals_enabled
+        self.goal_host: ClawGoalHost | None = None
+        self.capability_tools: tuple[AgentTool, ...] = ()
+        self._goal_start: asyncio.Task[None] | None = None
         self.skill_manager = skill_manager or SkillManager(
             shared_dir=data_dir / "skills",
             group_dir=(workspace_dir or data_dir / "groups" / group.id / "workspace") / "skills",
@@ -163,7 +162,6 @@ class GroupRuntime:
         # Memory snapshot cache (frozen per-turn, reload on mtime change)
         self._memory_snapshot: str | None = None
         self._memory_mtime: float = 0.0
-        self.goal_manager.attach(self)
 
     @classmethod
     def create(
@@ -181,6 +179,7 @@ class GroupRuntime:
         extension_settings: dict[str, dict[str, Any]] | None = None,
         extension_allow_tools: tuple[str, ...] = (),
         child_presets: dict[str, Any] | None = None,
+        goals_enabled: bool = False,
     ) -> GroupRuntime:
         """Build a fully-initialized GroupRuntime from a Group config."""
         cfg = group.agent_config
@@ -208,12 +207,6 @@ class GroupRuntime:
         memory = MemoryManager(ws, group_dir, group.id, embed_fn=embed_fn)
         flush_runner = FlushRunner(resolved_model, stream_fn) if resolved_model else None
         summarizer = Summarizer(resolved_model) if resolved_model else None
-        goal_manager = GoalManager(
-            goals_file=group_dir / "goals.json",
-            goals_dir=ws / ".xdog" / "goals",
-            model=resolved_model,
-            stream_fn=stream_fn,
-        )
 
         return cls(
             group=group,
@@ -226,7 +219,7 @@ class GroupRuntime:
             workspace_dir=ws,
             transcript_store=TranscriptStore(group_dir / "sessions", owner_group=group.id),
             memory=memory,
-            goal_manager=goal_manager,
+            goals_enabled=goals_enabled,
             skill_manager=SkillManager(
                 shared_dir=data_dir / "skills",
                 group_dir=ws / "skills",
@@ -245,10 +238,32 @@ class GroupRuntime:
     @property
     def tools(self) -> list[AgentTool]:
         if self._tools is None:
+            enabled = self._enabled_tools
+            if self.goals_enabled and enabled is not None:
+                enabled = tuple(name for name in enabled if name != "goal")
             self._tools = create_tools(
-                enabled=self._enabled_tools, workspace_dir=self.workspace_dir, image_model=self.group.image_model,
+                enabled=enabled, workspace_dir=self.workspace_dir, image_model=self.group.image_model,
             )
-        return [*self._tools, *self.mcp.tools()]
+        return [*self._tools, *self.mcp.tools(), *self.capability_tools]
+
+    async def initialize_goals(self, inputs: InputService) -> None:
+        if not self.goals_enabled:
+            return
+        if self.goal_host is None:
+            if self._goal_start is None:
+                async def start() -> None:
+                    from xdog.claw.core.runtime.goal_adapter import ClawGoalHost
+                    self.goal_host = await ClawGoalHost.open(self, inputs)
+                self._goal_start = asyncio.create_task(start())
+            from xdog.agent.async_work import wait_owned
+            try:
+                await wait_owned(self._goal_start)
+            finally:
+                if self._goal_start.done():
+                    self._goal_start = None
+        if self._active_session is not None:
+            assert self.goal_host is not None
+            self.goal_host.attach(self._active_session)
 
     async def manage_mcp(self, action: str, server: str = "") -> tuple[dict[str, Any], ...]:
         if action in {"list", "status"}:
@@ -291,7 +306,7 @@ class GroupRuntime:
     # -- System prompt ---------------------------------------------------------
 
     def build_system_prompt(
-        self, goals_summary: str = "", bootstrap_content: str | None = None
+        self, bootstrap_content: str | None = None
     ) -> tuple[SystemPromptBlock, ...]:
         tools = self.tools
         if self._active_session is not None:
@@ -301,13 +316,9 @@ class GroupRuntime:
             self.workspace_dir,
             tools=tools,
             model=self.model,
-            goals_summary=goals_summary,
             bootstrap_content=bootstrap_content,
             memory_content=self.get_memory_snapshot(),
         )
-
-    def goals_summary(self) -> str:
-        return self.goal_manager.goals_summary()
 
     # -- Session lifecycle -----------------------------------------------------
 
@@ -323,7 +334,6 @@ class GroupRuntime:
             self.transcript_store.get_access(current.session_id)).read_only)
         children_active = self._active_session is not None and self._active_session.children.supervisor.active
         if (allow_reset and not read_only and not children_active
-                and not self.goal_manager.has_unfinished_goals()
                 and (self.transcript_store.needs_daily_reset(group_id, config.daily_reset_hour)
                      or self.transcript_store.needs_idle_reset(group_id, config.idle_reset_seconds))):
             self._drop_session()
@@ -470,11 +480,11 @@ class GroupRuntime:
             if not images_validated:
                 self.validate_images(images)
             agent.queue_input(input_id, content, cast(Delivery, delivery), images)
-            self._active_session._goal_human_inputs[input_id] = 'tui'
+            self._active_session._human_inputs[input_id] = 'tui'
             return True
         changed = agent.change_input(input_id, action, content, direction)
         if changed and action == 'remove':
-            self._active_session._goal_human_inputs.pop(input_id, None)
+            self._active_session._human_inputs.pop(input_id, None)
         return changed
 
     def pending_inputs(self, prefix: str) -> tuple[Any, ...]:
@@ -487,7 +497,7 @@ class GroupRuntime:
             return ()
         items = self._active_session.agent.drain_inputs(prefix)
         for item in items:
-            self._active_session._goal_human_inputs.pop(item.id, None)
+            self._active_session._human_inputs.pop(item.id, None)
         return items
 
     def abort(self) -> None:
@@ -497,14 +507,6 @@ class GroupRuntime:
     async def wait_for_idle(self) -> None:
         if self._active_session is not None:
             await self._active_session.agent.wait_for_idle()
-
-    # -- Goal facades ----------------------------------------------------------
-
-    def has_running_goals(self) -> bool:
-        return self.goal_manager.has_active_goals()
-
-    def pop_goal_notifications(self) -> list[Any]:
-        return self.goal_manager.pop_notifications()
 
     # -- Status queries --------------------------------------------------------
 
@@ -609,8 +611,6 @@ class GroupRuntime:
             self._active_session._children_idle()
         self._source_revision += 1
         if self._active_session is not None:
-            self.goal_manager.record_children_status(
-                self._active_session.children.supervisor.snapshot().get('children', []))
             self._active_session.dispose()
             self._retired_extensions.append(self._active_session.extensions)
             self._active_session = None

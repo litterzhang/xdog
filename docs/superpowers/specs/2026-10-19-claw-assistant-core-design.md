@@ -70,6 +70,9 @@ Claw application: InputService -> GroupController -> AgentSession -> xdog.agent
 Claw/Coding 各以显式 opt-in 的 `goals` extra 安装 Goal，并以 `goals_enabled` 启用业务，
 默认 false；展示扩展再通过现有显式 extensions 配置加载。缺依赖时启用失败，不静默回退。
 工作区/root 开发安装包含 Goal 供测试，但安装不等于自动启用。
+2026-10-19 用户补充：Goal 包存在时，与 Flow/Eyes 一样自动发现为 built-in skill，无需复制、
+单独安装或注册 skill，且不受 goals_enabled 控制。完整正文仍走现有按需加载机制；
+skill 可发现/加载与宿主工具/存储启用、实际用户任务委托是三个不同边界。
 现有 Eyes 的显式启用保持独立：普通提醒不依赖 Goal。
 
 不新建大而全的 service locator/event bus/plugin framework。应用入口按命令职责拆分，

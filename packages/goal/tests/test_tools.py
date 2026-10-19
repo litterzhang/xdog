@@ -97,10 +97,10 @@ async def test_derived_views_are_goal_owned_rebuildable_and_not_authority(tmp_pa
 
 async def test_packaged_reference_loads_through_agent_without_enabling_a_host_or_creating_storage(tmp_path):
     from xdog.agent.skills.manager import SkillManager
-    from xdog.goal.resources import role_instructions, skill_directory
+    from xdog.goal.resources import role_instructions
 
     directory = tmp_path / "no-side-effects"
-    manager = SkillManager(directory, packaged={"goals": skill_directory()})
+    manager = SkillManager(directory)
     skill = manager.load_skill("goals")
     assert skill is not None and skill.packaged and skill.scope == "session"
     assert skill.content and await role_instructions("worker") and await role_instructions("reviewer")

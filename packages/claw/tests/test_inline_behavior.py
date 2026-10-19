@@ -115,15 +115,6 @@ def test_claw_uses_bounded_inline_tail_and_single_truncated_status() -> None:
         {"content": f"todo-{index}", "status": "pending"}
         for index in range(20)
     ])
-    app._render_goal({
-        "id": "goal-1",
-        "title": "a deliberately long active goal",
-        "status": "active",
-        "tasks": [
-            {"description": f"task-{index}", "status": "pending"}
-            for index in range(20)
-        ],
-    })
     app._update_footer()
 
     rows = app._layout.render(32)

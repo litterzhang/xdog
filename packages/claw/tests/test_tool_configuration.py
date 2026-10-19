@@ -60,7 +60,7 @@ def test_orchestrator_applies_configuration_to_dynamic_groups(tmp_path, monkeypa
     def create(group, *args, **kwargs):
         from types import SimpleNamespace
         groups.append(group)
-        return SimpleNamespace(goal_manager=SimpleNamespace(_route_fn=None))
+        return SimpleNamespace()
 
     monkeypatch.setattr(GroupRuntime, "create", create)
     orch = Orchestrator(ClawConfig(

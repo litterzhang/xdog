@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -144,7 +144,6 @@ def _groups_from_config(config: ClawConfig) -> list[Group]:
 class GatewayServer:
     """Unix socket server that bridges TUI clients to the Orchestrator."""
 
-    _GOAL_RECONCILE_INTERVAL = 30  # Fault reconciliation fallback, never model polling
 
     def __init__(self, config: ClawConfig) -> None:
         self._config = config
@@ -157,8 +156,6 @@ class GatewayServer:
         self._native_inputs: NativeInputReceipts | None = None
         self._input_unsubscribe: Callable[[], None] | None = None
         self._input_notices: set[asyncio.Task[None]] = set()
-        self._goal_task: asyncio.Task[Any] | None = None
-        self._goal_signal = asyncio.Event()
         self._observers: ManagedObservers | None = None
         self._client_tasks: set[asyncio.Task[Any]] = set()
         self._client_counter = 0
@@ -175,7 +172,6 @@ class GatewayServer:
             self._stop_task = None
             self._shutdown_event.clear()
 
-        self._goal_signal.clear()
         # Initialize orchestrator
         data_dir = Path(self._config.data_dir)
         model, stream_fn = _build_model_and_options(self._config)
@@ -184,7 +180,6 @@ class GatewayServer:
             model=model, stream_fn=stream_fn,
             data_dir=data_dir,
         )
-        self._orchestrator._goal_wake = self._goal_signal.set
 
         # Register groups
         for group in _groups_from_config(self._config):
@@ -266,8 +261,6 @@ class GatewayServer:
             # Write PID file
             self._write_pid()
 
-            # Goal obligations wake this owner; Eyes retains its independent runtime.
-            self._goal_task = asyncio.create_task(self._goal_loop())
 
             logger.info("Gateway listening on %s (PID: %d)", self._socket_path, os.getpid())
         except BaseException:
@@ -2076,11 +2069,6 @@ class GatewayServer:
                 raw_history = session_info.pop("history", [])
                 if isinstance(raw_history, list):
                     history = raw_history
-                notifications = self._orchestrator.pop_goal_notifications(group_id)
-                if notifications:
-                    session_info["goal_notifications"] = [
-                        asdict(n) for n in notifications
-                    ]
             session_info["history_count"] = len(history)
             await self._write_response(writer, session_info)
             for entries in _history_chunks(history):
@@ -2337,32 +2325,6 @@ class GatewayServer:
         except OSError:
             pass
 
-    async def _goal_loop(self) -> None:
-        """Reconcile once at startup, then on obligations or fault fallback.
-
-        Event is level-triggered: notifications during a tick coalesce into one
-        follow-up pass. Producers wake only for changed/actionable obligations;
-        a busy main Agent is woken on safe idle, not repeatedly while it works.
-        """
-        while not self._shutdown_event.is_set():
-            self._goal_signal.clear()
-            try:
-                if self._orchestrator is not None:
-                    await self._orchestrator.tick()
-            except asyncio.CancelledError:
-                break
-            except Exception:
-                logger.exception("Goal loop error")
-            if self._shutdown_event.is_set():
-                break
-            try:
-                async with asyncio.timeout(self._GOAL_RECONCILE_INTERVAL):
-                    await self._goal_signal.wait()
-            except TimeoutError:
-                pass  # Durable fault reconciliation, not a new model obligation.
-            except asyncio.CancelledError:
-                break
-
     def _start_weixin_channel(self) -> Channel | None:
         """Initialize and add the WeChat channel to the orchestrator."""
         from xdog.claw.channels.weixin import WeixinChannel
@@ -2442,13 +2404,6 @@ class GatewayServer:
         if self._observers is not None:
             await self._observers.close()
             self._observers = None
-        if self._goal_task and not self._goal_task.done():
-            self._goal_task.cancel()
-            try:
-                await self._goal_task
-            except asyncio.CancelledError:
-                pass
-
         # Stop accepting first, but do not await server closure before retiring
         # peers: server.wait_closed() can wait for their live transports too.
         server = self._server
