@@ -1,5 +1,8 @@
 # Managed observer per-message replies
 
+Milestone: source/artifacts through commit90e56a7. Subsequent final cleanup and
+its mandatory rebuilt artifacts are tracked by the final-acceptance plan.
+
 ## Ownership and behavior
 
 Eyes sources still collect evidence and route events through the registered ACP

@@ -245,7 +245,7 @@ async def main():
   future=asyncio.get_running_loop().create_future();future.set_result(response)
   return EventStream.from_async_generator(events(),result_future=future)
  app=Orchestrator(ClawConfig(data_dir=str(root/'app')),model='test/dummy',stream_fn=model)
- app.register_group(Group(id='main',workspace=str(root),enabled_tools=(),config=GroupConfig(debounce_ms=0)))
+ app.register_group(Group(id='main',workspace=str(root),enabled_tools=(),config=GroupConfig()))
  await app.start()
  inputs=await app.input_service();scope=InputScope('main',root)
  namespace=await inputs.store.namespace(scope)

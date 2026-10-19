@@ -10,28 +10,14 @@ from xdog.agent.session_input import SessionInput
 from xdog.ai.types import ImageContent
 
 # ---------------------------------------------------------------------------
-# Queue mode
-# ---------------------------------------------------------------------------
-
-class QueueMode(StrEnum):
-    COLLECT = "collect"
-    STEER = "steer"
-    STEER_BACKLOG = "steer-backlog"
-
-
-# ---------------------------------------------------------------------------
 # Group configuration
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class GroupConfig:
-    """Operational config for message handling and session lifecycle."""
-    queue_mode: QueueMode = QueueMode.COLLECT
-    max_concurrent: int = 1
+    """Live durable-intake capacity and session reset policy, not Agent input modes."""
     daily_reset_hour: int = 4
     idle_reset_seconds: int = 0
-    trigger_pattern: str | None = None
-    debounce_ms: int = 500
     max_queued_messages: int = 50
 
 

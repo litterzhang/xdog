@@ -3,7 +3,7 @@ title: Reference
 ---
 
 Application boundaries, the `xdog-claw` CLI, workspace files, private local
-communication and input queue modes.
+communication, durable intake and explicit Agent input controls.
 
 ## Application boundary
 
@@ -50,7 +50,7 @@ running `onboard`) changes the agent.
 | `USER.md` | What the agent knows about the user. |
 | `MEMORY.md` | Long-term memory snapshot. |
 | `BOOTSTRAP.md` | One-time first-run setup, consumed then deleted. |
-| `.xdog/goals/<goal_id>/` | Group-owned conditions, plan, host status and task/review evidence with distinct writers. |
+| `.xdog/goals/<goal_id>/` | Disposable Goal projections; authoritative state is the optional package's private journal under `data_dir/groups/<id>/goals/`. |
 
 ## CLI — `xdog-claw`
 
@@ -65,22 +65,25 @@ Subcommands of the claw console script (`cli/cli.py`).
 | `channel login --weixin [--base-url]` | Authenticate the WeChat channel. |
 | `generate-image PROMPT [--workspace PATH] [--output-dir PATH]` | Generate local image assets with the configured image model. |
 
-## Queue modes
+## Ordinary intake and explicit Agent input
 
-How a burst of input to one group is folded together.
+Ordinary TUI, Weixin and ACP messages commit to the same durable group Inbox
+before acknowledgment. Busy input waits for the existing group execution owner;
+it is not silently steered into an in-flight turn. Input IDs deduplicate intake,
+while execution attempts and channel-output receipts remain separate facts.
+`max_queued_messages` bounds unfinished accepted inputs (pending/claimed/running,
+default50); accepted messages are never evicted to make room. Claw does not batch independent messages into one turn
+or expose collect/steer-backlog/debounce queue policies.
 
-| Mode | Behaviour |
-|---|---|
-| `collect` | Batch pending inputs into the next turn. |
-| `steer` | Deliver input at an `xdog.agent`/tool checkpoint, not an abort or rollback. |
-| `steer-backlog` | Steer, keeping a bounded backlog of the rest. |
-
+Explicit steer/follow-up uses the existing identified `xdog.agent` queue and safe
+checkpoints. It is neither cancellation/rollback nor a second Claw queue. The
+Agent's native input modes remain independent of group admission settings.
 
 ## Context and read-only history
 
 A group has one logical main Agent. `/new` and `/reset` rotate idle context without
-deleting its Goals; active child work must first settle. Unfinished Goals suppress
-automatic daily/idle resets. Runtime/gateway context identities fence stale requests,
+deleting its Goals; active child work must first settle. Unfinished stored Goals
+do not suppress automatic daily/idle resets. Runtime/gateway context identities fence stale requests,
 not route events to another main Agent.
 
 `/sessions` and `/tree` inspect history; **Enter/v** opens read-only source. `/` searches,

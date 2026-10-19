@@ -8,7 +8,7 @@ from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.channels.tui.channel import TuiChannel
 from xdog.claw.config import ClawConfig
 from xdog.claw.core.runtime.orchestrator import Orchestrator
-from xdog.claw.core.types import Group, GroupConfig, QueueMode, UserInput
+from xdog.claw.core.types import Group, GroupConfig, UserInput
 
 _TEST_MODEL = Model(
     id="test/dummy", name="dummy", api="openai-completions",
@@ -204,14 +204,14 @@ async def test_direct_route_does_not_duplicate_tui_output_to_channels(orch):
     channel.send_message.assert_not_awaited()
 
 # ---------------------------------------------------------------------------
-# Steer mode routing
+# Explicit Agent input control
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_explicit_host_steering_consumes_identified_agent_input(tmp_path):
     """Human steering keeps the same executor and is identified before consumption."""
     config = ClawConfig(data_dir=str(tmp_path / "data"))
-    steer_config = GroupConfig(queue_mode=QueueMode.STEER)
+    group_config = GroupConfig()
 
     # Observe the actual streaming boundary; sleeps race under concurrent load.
     entered, release = asyncio.Event(), asyncio.Event()
@@ -233,7 +233,7 @@ async def test_explicit_host_steering_consumes_identified_agent_input(tmp_path):
         return EventStream.from_async_generator(_gen(), result_future=fut)
 
     o = Orchestrator(config, model=_TEST_MODEL, stream_fn=slow_stream_fn, data_dir=tmp_path / "data")
-    o.register_group(Group(id="steer_group", name="SteerGroup", config=steer_config))
+    o.register_group(Group(id="steer_group", name="SteerGroup", config=group_config))
 
     sent = []
     ch = TuiChannel()

@@ -46,7 +46,7 @@ async def make_backend(tmp_path, model=None):
     model = model or ScriptedModel()
     orch = Orchestrator(ClawConfig(data_dir=str(tmp_path / "data")), model="test/dummy", stream_fn=model)
     orch.register_group(Group(id="main", workspace=str(tmp_path), enabled_tools=(),
-                              config=GroupConfig(debounce_ms=0)))
+                              config=GroupConfig()))
     backend = await ClawBackend.open(
                         orch,
                     )
@@ -181,7 +181,7 @@ async def test_real_unix_acp_supports_explicit_group_prompt_and_durable_enqueue(
     model = ScriptedModel()
     orch = Orchestrator(ClawConfig(data_dir=str(tmp_path / "data")), model="test/dummy", stream_fn=model)
     orch.register_group(Group(id="main", workspace=str(tmp_path), enabled_tools=(),
-                              config=GroupConfig(debounce_ms=0)))
+                              config=GroupConfig()))
     with tempfile.TemporaryDirectory(prefix="claw-acp-") as private:
         endpoint = Path(private) / "acp.sock"
         server = await ClawAcpServer.start(
@@ -228,7 +228,7 @@ async def test_eyes_enqueue_reaches_real_claw_without_tui_or_coding(tmp_path):
     model = ScriptedModel()
     orch = Orchestrator(ClawConfig(data_dir=str(tmp_path / "data")), model="test/dummy", stream_fn=model)
     orch.register_group(Group(id="main", workspace=str(tmp_path), enabled_tools=(),
-                              config=GroupConfig(debounce_ms=0)))
+                              config=GroupConfig()))
     with tempfile.TemporaryDirectory(prefix="claw-eyes-") as private:
         endpoint = Path(private) / "acp.sock"
         server = await ClawAcpServer.start(
@@ -284,7 +284,7 @@ async def test_cancel_over_acp_detaches_waiter_without_retracting_execution(tmp_
     model.release.clear()
     orch = Orchestrator(ClawConfig(data_dir=str(tmp_path / "data")), model="test/dummy", stream_fn=model)
     orch.register_group(Group(id="main", workspace=str(tmp_path), enabled_tools=(),
-                              config=GroupConfig(debounce_ms=0)))
+                              config=GroupConfig()))
     with tempfile.TemporaryDirectory(prefix="claw-cancel-") as private:
         server = await ClawAcpServer.start(
                            orch,
@@ -360,7 +360,7 @@ async def test_real_file_change_routes_through_unmodified_eyes_into_claw(tmp_pat
     model = ScriptedModel()
     orch = Orchestrator(ClawConfig(data_dir=str(tmp_path / "data")), model="test/dummy", stream_fn=model)
     orch.register_group(Group(id="main", workspace=str(tmp_path), enabled_tools=(),
-                              config=GroupConfig(debounce_ms=0)))
+                              config=GroupConfig()))
     (tmp_path / "src").mkdir()
     changed = tmp_path / "src" / "sample.py"
     changed.write_text("before")
@@ -510,7 +510,7 @@ async def test_callbacks_respect_global_background_limit_without_starving_human_
                         model="test/dummy", stream_fn=model)
     for group in ("main", "second", "human"):
         orch.register_group(Group(id=group, workspace=str(tmp_path), enabled_tools=(),
-                                  config=GroupConfig(debounce_ms=0)))
+                                  config=GroupConfig()))
     backend = await ClawBackend.open(
                         orch,
                     )
@@ -560,7 +560,7 @@ async def test_acp_ingress_retains_host_read_only_scope_after_merge(tmp_path, re
 
     orch = Orchestrator(ClawConfig(data_dir=str(tmp_path / "data")), model="test/dummy", stream_fn=model)
     orch.register_group(Group(id="main", workspace=str(tmp_path), enabled_tools=("filesystem",),
-                              config=GroupConfig(debounce_ms=0)))
+                              config=GroupConfig()))
     session = orch._runtimes["main"].get_or_create_session(allow_reset=False)
     if read_only:
         await orch.manage_access("main", "restrict", session.meta.session_id)

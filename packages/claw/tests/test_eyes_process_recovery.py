@@ -37,7 +37,7 @@ def model(*args):
 async def main():
  config=ClawConfig(data_dir=str(root/'data'),eyes_enabled=True,enabled_tools=('eyes',))
  orch=Orchestrator(config,model='test/process',stream_fn=model)
- orch.register_group(Group(id='main',workspace=str(root),enabled_tools=('eyes',),config=GroupConfig(debounce_ms=0)))
+ orch.register_group(Group(id='main',workspace=str(root),enabled_tools=('eyes',),config=GroupConfig()))
  clocks=SchedulerClocks(lambda:clock,lambda:clock)
  path=root/'private'/'inbox.sqlite3'
  if phase=='create':

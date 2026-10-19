@@ -59,7 +59,7 @@ async def managed(tmp_path):
     orch = Orchestrator(config, model='test/managed', stream_fn=model)
     for group in ('main', 'other'):
         orch.register_group(Group(id=group, workspace=str(tmp_path), enabled_tools=('eyes',),
-                                  config=GroupConfig(debounce_ms=0)))
+                                  config=GroupConfig()))
     channel = ReportSink()
     channel.send_message = AsyncMock()
     orch.add_channel(channel)

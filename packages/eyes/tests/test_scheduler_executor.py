@@ -321,7 +321,7 @@ async def test_scheduler_enqueue_reaches_existing_claw_group_without_tui(tmp_pat
 
     orch = Orchestrator(ClawConfig(data_dir=str(tmp_path / 'data')), model='test/model', stream_fn=model)
     orch.register_group(Group(id='main', workspace=str(tmp_path), enabled_tools=(),
-                              config=GroupConfig(debounce_ms=0)))
+                              config=GroupConfig()))
     with tempfile.TemporaryDirectory(prefix='eyes-claw-timer-') as private:
         server = await ClawAcpServer.start(orch, Path(private) / 'acp.sock')
         wall = [timestamp('2030-01-01T00:00:00Z')]

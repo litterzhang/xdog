@@ -182,8 +182,9 @@ shared TUI ExtensionView renders its status text; the main TUI knows no Goal
 schema or lifecycle. Context rotation rebinds the fresh parent to the same group
 service. Actual child runtimes do not inherit its grant, and unloading/crashing
 the display does not cancel work, notifications or observations. See the source
-runtime evidence in `docs/shared-goal-extension-verification.md`; final installed
-same-extension and whole-objective validation are still in progress.
+and installed runtime evidence in `docs/shared-goal-extension-verification.md`
+and `docs/observer-message-output-verification.md`; final whole-objective audit
+and whole-branch review remain in progress.
 
 A submitted worker report is not an accepted task; an accepted task is not a
 completed Goal. **Only `request_complete` starts independent review.** Ordinary
@@ -202,12 +203,25 @@ require cancel/wait through the generic execution owner.
 Goal state, worker cancellation, observation cancellation and notification
 cancellation are separate explicit operations. No adapter restores/cancels Eyes
 because a Goal changes status. Old Goal JSON is refused byte-preserving when the
-capability is enabled; disabled ordinary chat does not read it. No migration or
-compatibility backend is provided. Goal UI will use the same Python extension
-through generic shared TUI views, not a native Goal widget. The broader refactor's
+installed capability is attached; ordinary chat without the package does not read
+it. No migration or compatibility backend is provided. Goal UI uses the same
+Python extension through generic shared TUI views, not a native Goal widget. The broader refactor's
 [design](../../docs/superpowers/specs/2026-10-19-claw-assistant-core-design.md) and
 [acceptance checklist](../../docs/claw-assistant-core-requirements.json) track the
-remaining packaging/UI/output and whole-branch verification gates.
+remaining cleanup, current-artifact audit and whole-branch verification gates.
+
+## Durable intake and explicit input control
+
+Ordinary messages share the group Inbox and wait behind its single execution
+owner; busy messages never implicitly steer a running Agent. Claw's internal
+`GroupConfig` retains only real daily/idle reset settings and
+`max_queued_messages` unfinished-input capacity (pending/claimed/running,
+default50). Retired queue mode,
+debounce, per-group concurrency and trigger-pattern arguments are rejected, not
+ignored. The live global `max_concurrent_agents` background admission semaphore
+is unchanged. Explicit identified steer/follow-up and their checkpoints/queue
+consumption modes belong to `xdog.agent`, not a second Claw queue. Eyes detector
+debounce is a separate source feature and remains supported.
 
 ## Messaging replies
 

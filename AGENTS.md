@@ -150,6 +150,9 @@ the original admitted message+attempt+session, so a queued or delayed old view
 cannot touch another run or an explicit retry. Commands reserve fenced tokens;
 pre-start cancellation and late cleanup can release only their original token.
 The old mixed MessageQueue and global Gateway running table are removed.
+GroupConfig has no queue mode/debounce/per-group-concurrency/trigger-pattern
+knobs; only live pending capacity and daily/idle reset settings remain. Agent
+explicit input modes and Eyes detector debounce are separate live APIs.
 
 ACP is now a thin adapter over the application-owned input service: it has no
 receipt database, consumer, observer/Goal query or report-delivery policy. Its
@@ -178,8 +181,9 @@ views are verified in both actual source and cold installed hosts. Managed
 observers now use generic Core per-message output receipts, not an aggregate
 report sender. Rebuilt cold artifacts verify the same output IDs/original peer
 across restart without model replay and both independent cancellation modes; see
-`docs/observer-message-output-verification.md`. Inert configuration cleanup and
-final acceptance/review remain pending.
+`docs/observer-message-output-verification.md`. Inert group queue controls are
+removed; final47-item audit, generic retired-owner investigation, rebuilt final
+artifacts and whole-branch review remain pending.
 Ordinary output receipts live in `<data_dir>/outputs/journal.sqlite3`: per-message
 send attempts distinguish delivered/pending/proven-not-sent/unknown independently
 from Agent execution. Unknown sends are never automatically replayed. Native

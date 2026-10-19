@@ -25,13 +25,14 @@ plane or imply a public Python runtime embedding contract.
 The long-lived gateway (`core/runtime/gateway.py`) exposes a private Unix socket
 (`0600`) for `message`, `reset`, `status`, `ping` and negotiated native controls.
 The `Orchestrator.route_message` path serves TUI, channels, canonical ACP inputs
-and Goal system input under the same group ownership/queue policy. Each
+and Goal system input through the same durable input service and group execution owner. Each
 `GroupRuntime` owns its workspace, transcript store, memory, Goals, skills, tools
 and one cached active AgentSession.
 
 A session is a context/history persistence unit, not a second main-Agent identity.
 Idle `/new` or `/reset` can rotate context; Goals remain with the group, and active
-children must first settle. Unfinished Goals suppress automatic daily/idle resets.
+children must first settle. Unfinished stored Goals do not suppress automatic
+daily/idle resets.
 Historical `resume`, `fork`, `branch` and `goto` controls and target-session staging
 are removed and explicitly rejected. Saved transcripts/checkpoints/legacy branch
 files remain readable/exportable, never executable routes. Restart restores only
@@ -43,8 +44,11 @@ Coding's independent branching features are unchanged.
 Background group turns use the gateway's configured `max_concurrent_agents`
 admission semaphore (default 3) and per-group locks. User input bypasses that
 background semaphore so autonomous work does not hold human input behind it.
-Queue modes—`collect`, `steer`, `steer-backlog`—and debounce/backlog protections
-control how input is retained or delivered at checkpoints, not tool rollback.
+Ordinary messages are committed to one durable group Inbox with bounded pending
+admission; busy input never implicitly steers the current turn. Explicit identified
+steer/follow-up input belongs to `xdog.agent`, including its consumption modes and
+checkpoint receipts. No separate Claw queue policy or debounce controls remain;
+Eyes file-detector debounce is a different live source feature.
 
 Within a group, the main Agent manages child concurrency, progress, waiting,
 cancellation and closure. Child runtime timeout, fixed model-call count,
@@ -62,8 +66,9 @@ Python/process code is not an OS sandbox.
 
 ## Optional reusable Goals
 
-Claw is a long-term personal assistant with optional task autonomy. Goals default
-disabled. The independent `xdog-goal` service owns leased storage, historical
+Claw is a long-term personal assistant with optional task autonomy. Installing
+`xdog-goal` supplies the capability and built-in skill automatically, with no enable
+setting; ordinary conversation never silently delegates a Goal. The independent `xdog-goal` service owns leased storage, historical
 contracts, reports/reviews and notification outbox. Claw's thin host binds a stable
 group/workspace/inbox owner to existing supervised children and Core durable
 intake; Coding uses the same service with its intentionally exact session/branch

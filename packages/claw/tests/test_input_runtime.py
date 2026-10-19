@@ -14,7 +14,6 @@ from xdog.claw.core.types import (
     ExternalInput,
     Group,
     GroupConfig,
-    QueueMode,
     SystemInput,
     UserInput,
 )
@@ -58,7 +57,7 @@ async def test_busy_ordinary_input_is_durable_and_never_implicitly_steered(tmp_p
     model.gates['first'] = entered, release
     orch = Orchestrator(ClawConfig(data_dir=str(tmp_path / 'data')), model='test/dummy', stream_fn=model)
     orch.register_group(Group(id='main', workspace=str(tmp_path), enabled_tools=(),
-                              config=GroupConfig(queue_mode=QueueMode.STEER, debounce_ms=0)))
+                              config=GroupConfig()))
     first = asyncio.create_task(orch.route_message(UserInput(group_id='main', content='first'), message_id='one'))
     try:
         await asyncio.wait_for(entered.wait(), 3)
@@ -87,7 +86,7 @@ async def test_runtime_capacity_rejects_without_losing_an_accepted_input(tmp_pat
     model.gates['first'] = entered, release
     orch = Orchestrator(ClawConfig(data_dir=str(tmp_path / 'data')), model='test/dummy', stream_fn=model)
     orch.register_group(Group(id='main', workspace=str(tmp_path), enabled_tools=(),
-                              config=GroupConfig(max_queued_messages=2, debounce_ms=0)))
+                              config=GroupConfig(max_queued_messages=2)))
     first = asyncio.create_task(orch.route_message(UserInput(group_id='main', content='first'), message_id='one'))
     try:
         await asyncio.wait_for(entered.wait(), 3)

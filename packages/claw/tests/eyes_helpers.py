@@ -17,7 +17,7 @@ from xdog.claw.config import ClawConfig
 from xdog.claw.core.observers.manager import ManagedObservers
 from xdog.claw.core.runtime.group import GroupRuntime
 from xdog.claw.core.runtime.orchestrator import Orchestrator
-from xdog.claw.core.types import Group, GroupConfig, QueueMode, UserInput
+from xdog.claw.core.types import Group, GroupConfig, UserInput
 from xdog.eyes.managed_scheduler import SchedulerClocks
 
 NOW = datetime.fromisoformat('2026-10-12T09:20:00+08:00').timestamp()
@@ -241,7 +241,7 @@ async def managed(tmp_path, monkeypatch):
     orch = Orchestrator(config, stream_fn=model)
     for gid in ('g1', 'g2', 'g3'):
         orch.register_group(Group(id=gid, workspace=str(tmp_path / gid),
-                                  config=GroupConfig(debounce_ms=0, queue_mode=QueueMode.STEER)))
+                                  config=GroupConfig()))
     channel = ReportSink()
     channel.send_message = AsyncMock()
     orch.add_channel(channel)
