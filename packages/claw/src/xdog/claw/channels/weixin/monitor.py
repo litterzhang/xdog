@@ -40,6 +40,7 @@ class MonitorOpts:
     api_client: WeixinApiClient | None = None
     long_poll_timeout_ms: int = DEFAULT_LONG_POLL_TIMEOUT_MS
     max_pending_messages: int = DEFAULT_MAX_PENDING_MESSAGES
+    on_accept: Callable[[WeixinMessage], Awaitable[None]] | None = None
 
 
 def _sync_buf_file(state_dir: Path, account_id: str) -> Path:
@@ -200,12 +201,16 @@ async def _poll_updates(
                             msg.from_user_id,
                             ",".join(str(i.type) for i in msg.item_list) or "none",
                         )
+                        # The cursor is an upstream ACK, not a presentation ACK.
+                        # Settle durable intake before any volatile handoff.
+                        if opts.on_accept is not None:
+                            await opts.on_accept(msg)
                         if inbox.full():
                             logger.warning("WeChat inbox full; pausing polling until space is available")
                         await inbox.put(msg)
                         logger.info("Queued WeChat message (pending=%d)", inbox.qsize())
 
-                # Do not advance the cursor past a partially enqueued batch.
+                # Do not advance the cursor past a partially accepted/enqueued batch.
                 if resp.get_updates_buf:
                     _save_get_updates_buf(
                         opts.state_dir, opts.account_id, resp.get_updates_buf
