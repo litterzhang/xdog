@@ -1,0 +1,345 @@
+{
+  "format": "xdog.architecture_acceptance.v1",
+  "title": "Claw personal-assistant core and reusable optional Goal",
+  "date": "2026-10-19",
+  "base_commit": "33df908",
+  "spec": "docs/superpowers/specs/2026-10-19-claw-assistant-core-design.md",
+  "design_status": "awaiting_user_review",
+  "implementation_started": false,
+  "counts": {
+    "total": 47,
+    "passed": 0,
+    "remaining": 47
+  },
+  "requirements": [
+    {
+      "id": "CORE-01",
+      "area": "product",
+      "requirement": "Goals 默认关闭；无 Goals/ACP/Eyes 时普通聊天、记忆、工具与历史独立完整",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "CORE-02",
+      "area": "product",
+      "requirement": "自治委托与能力启用分离，不自动将普通请求升级成 Goal",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "CORE-03",
+      "area": "product",
+      "requirement": "当前 checkout 原地实施，无 worktree、付费模型、用户服务操作或自动发布",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "IN-01",
+      "area": "input",
+      "requirement": "TUI/微信/ACP 普通新输入共享应用持久 Inbox，先提交再 ACK",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "IN-02",
+      "area": "input",
+      "requirement": "稳定 message ID 去重，同 ID 不同内容拒绝，attempt 与消息身份分离",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "IN-03",
+      "area": "input",
+      "requirement": "容量满背压/明确拒绝，不能删除已经接收的输入",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "IN-04",
+      "area": "input",
+      "requirement": "claimed 与 running 分离，取消在 admission 边界阻止未开始工作",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "IN-05",
+      "area": "input",
+      "requirement": "pending/unstarted 安全恢复，running 转 interrupted，未知副作用不自动重放",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "IN-06",
+      "area": "input",
+      "requirement": "固定可信回复目的地；用户、内部通知和其他连接不串线或错误广播",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "IN-07",
+      "area": "input",
+      "requirement": "微信部分提交/游标与 TUI ACK 丢失安全；接收前附件可恢复且维持原边界",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "IN-08",
+      "area": "input",
+      "requirement": "执行结果与渠道送达分离，逐消息回复不与最终聚合重复，未知发送不自动重发",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "IN-09",
+      "area": "input",
+      "requirement": "断线不是已接收普通消息的撤回；明确取消仍绑定原执行",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "IN-10",
+      "area": "input",
+      "requirement": "Claw 首阶段不顺便改变 per-turn 语义；Coding 既有独立输入批处理不回退",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "RUN-01",
+      "area": "runtime",
+      "requirement": "steer/follow-up 队列、checkpoint 和消费收据仅由 xdog.agent 管理",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "RUN-02",
+      "area": "runtime",
+      "requirement": "无忙时自动 steering、steer-backlog 双重入队或 run 结束后的隐式新 turn",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "RUN-03",
+      "area": "runtime",
+      "requirement": "每 group 一个执行 owner，Gateway/ACP/UI 不另维护执行权威",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "RUN-04",
+      "area": "runtime",
+      "requirement": "Gateway 仅协议/连接；Session 仅上下文/Agent；应用命令按职责隔离",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "RUN-05",
+      "area": "runtime",
+      "requirement": "取消与 shutdown 等待真实 producer/存储结算，保留用户优先与跨 group 隔离",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "BOUND-01",
+      "area": "eyes_acp",
+      "requirement": "ACP 无 Goal/observer 查询、业务 schema 初始化、消费 pump 或报告策略",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "BOUND-02",
+      "area": "eyes_acp",
+      "requirement": "Eyes 自管 cursor+immutable outbox，向核心 Inbox 幂等交接，取消边界不丢失",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "BOUND-03",
+      "area": "eyes_acp",
+      "requirement": "Agent 显式停止观察/通知/worker，三种操作互不隐含，无完成后自动取消",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "BOUND-04",
+      "area": "eyes_acp",
+      "requirement": "宿主兑现显式取消，不误伤无关聊天，不因 provenance 获得内部身份",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "BOUND-05",
+      "area": "eyes_acp",
+      "requirement": "独立/托管观察恢复语义保持明确，ACK 不等于模型或报告完成",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "GOAL-01",
+      "area": "goal",
+      "requirement": "独立 xdog-goal，仅依赖 Agent/标准库，不依赖 Claw/Coding/TUI/Eyes/ACP/Flow",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "GOAL-02",
+      "area": "goal",
+      "requirement": "Goal 自行维护全部业务存储/lease/outbox，核心无 Goal 状态表或副本",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "GOAL-03",
+      "area": "goal",
+      "requirement": "没有旧格式迁移/双读兼容；明确拒绝且不删除或改写原数据",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "GOAL-04",
+      "area": "goal",
+      "requirement": "小型异步宿主端口，无整个 Runtime/Session 引用或宿主私有字段访问",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "GOAL-05",
+      "area": "goal",
+      "requirement": "宿主原 supervisor 创建 worker/reviewer，权限/readonly/MCP/extension 边界不放宽",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "GOAL-06",
+      "area": "goal",
+      "requirement": "主 Agent 规划、分配、接受报告；worker submitted 不等于任务接受/Goal 完成",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "GOAL-07",
+      "area": "goal",
+      "requirement": "仅显式 request_complete 启动验收，无普通 turn-end 隐式 reviewer",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "GOAL-08",
+      "area": "goal",
+      "requirement": "逐条件独立验收及 revision/attempt/实际证据指纹通过才可提交完成",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "GOAL-09",
+      "area": "goal",
+      "requirement": "通知由事实/明确委托产生并去重，对账不因 active 状态周期调用模型",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "GOAL-10",
+      "area": "goal",
+      "requirement": "criteria 修改/用户暂停释放依据真实用户授权，不由事件来源或展示扩展赋权",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "GOAL-11",
+      "area": "goal",
+      "requirement": "Claw group 与 Coding 精确 session/branch adapter 各自真实运行同一 Goal 实现",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "GOAL-12",
+      "area": "goal",
+      "requirement": "上下文轮换/分支变化安全，不自动跨宿主接管同一 Goal，无 Goal 专属 Session 状态机",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "GOAL-13",
+      "area": "goal",
+      "requirement": "保留子 Agent 无固定运行/累计配额约束，不以新架构偷偷恢复业务预算",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "UI-01",
+      "area": "ui",
+      "requirement": "同一 Goal Python 展示扩展实际供两宿主使用，主 TUI 无 Goal 业务判断",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "UI-02",
+      "area": "ui",
+      "requirement": "通用 UI renderer 在 xdog.tui；宿主仅连接/布局/owner 适配，包不依赖 Goal",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "UI-03",
+      "area": "ui",
+      "requirement": "最小通用只读 extension view；bounded snapshot/提示，跨 owner 读取拒绝且无任意调用",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "UI-04",
+      "area": "ui",
+      "requirement": "扩展禁用/故障/卸载仅影响展示，清理 UI/订阅但不改变 Goal 执行状态",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "UI-05",
+      "area": "ui",
+      "requirement": "不恢复任意 renderer、复杂 widget/layout，headless 不依赖 TUI 或展示扩展",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "VERIFY-01",
+      "area": "verification",
+      "requirement": "所有关键 fsync/阻塞 I/O off-loop 且取消后提交结算；corruption/lease 失败关闭",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "VERIFY-02",
+      "area": "verification",
+      "requirement": "权威状态与派生视图分离，视图失败可重建且不产生第二权威",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "VERIFY-03",
+      "area": "verification",
+      "requirement": "最终删除活动旧队列/Goal runner/原生 Goal UI，不保留双 owner 或双业务实现",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "VERIFY-04",
+      "area": "verification",
+      "requirement": "九包源测试、Ruff、九 namespace strict mypy、Flow examples 与 lock 检查实际通过",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "VERIFY-05",
+      "area": "verification",
+      "requirement": "Goal-only 和两宿主 fresh wheel-only 执行、资源打包与 Twine 验证通过",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "VERIFY-06",
+      "area": "verification",
+      "requirement": "全部条目具备证据，审核问题结算；阶段通过不冒充整个目标完成",
+      "status": "pending",
+      "evidence": []
+    }
+  ]
+}
