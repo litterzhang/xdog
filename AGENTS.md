@@ -164,7 +164,7 @@ join or a second authority. Source stop does not withdraw accepted input or stop
 its report. `eyes cancel_notifications` is separate; actual pending withdrawal
 uses the core input owner. No operation reverses started effects. A schema-neutral
 Agent `LeasedSqlite` helper owns IO only, never domain schema or planning policy.
-Observer journal formatv2 captures a host-only immutable ReplyReference from the
+Observer journal formatv3 captures a host-only immutable ReplyReference from the
 actual creating input/tool scope. Weixin reports use original account/sender/context;
 Native notices use only the original live endpoint, never a newly connected peer.
 No creator destination means not-required, not group broadcast; unavailable original
@@ -174,8 +174,9 @@ The broader assistant-core refactor remains in progress: Coding now adopts the
 standalone optional Goal; Claw has a group-owned optional adapter replacing its
 legacy Goal manager. Claw has optional goals/eyes/acp install extras and cold
 base/two-host evidence. The same packaged Goal display and generic owner-bound
-views are verified in both actual source and cold installed hosts; observer
-per-message feature output/cancellation, inert configuration cleanup and final
+views are verified in both actual source and cold installed hosts. Managed
+observers now use generic Core per-message output receipts, not an aggregate
+report sender; cold new-output artifacts, inert configuration cleanup and final
 acceptance/review remain pending.
 Ordinary output receipts live in `<data_dir>/outputs/journal.sqlite3`: per-message
 send attempts distinguish delivered/pending/proven-not-sent/unknown independently

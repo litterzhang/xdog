@@ -97,6 +97,8 @@ class ManagedObservers:
         self._report_signal = asyncio.Event()
         self._report_task: asyncio.Task[None] | None = None
         self._unsubscribe: Any = None
+        self._output_unsubscribe: Any = None
+        self._route_unsubscribe: Any = None
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._cancel: dict[str, asyncio.Event] = {}
         self._handlers: dict[str, AcpHandler] = {}
@@ -128,6 +130,10 @@ class ManagedObservers:
         self._inputs = await self.orchestrator.input_service()
         self._store = await ObserverJournal.open(self.orchestrator.data_dir / 'observers' / 'journal.sqlite3',
                                                  self._inputs.store)
+        self._route_unsubscribe = self.orchestrator.register_output_source(
+            'observations', self.store.resolve_reply, self.store.output_policy)
+        outputs = await self.orchestrator.output_service()
+        self._output_unsubscribe = outputs.subscribe(lambda _scope: self._report_signal.set())
         self._unsubscribe = self.orchestrator.subscribe_inputs(lambda _scope: self._report_signal.set())
         self._report_task = asyncio.create_task(self._reports(), name='claw-observer-reports')
         self._report_signal.set()
@@ -144,36 +150,50 @@ class ManagedObservers:
         except Exception:
             logger.exception('Observer report reconciliation stopped; inspect original outbox')
 
+    @staticmethod
+    def _output_details(rows: list[Any]) -> str:
+        details: list[dict[str, Any]] = []
+        for row in rows:
+            encoded = row.error.encode('utf-8')
+            error = (encoded[:512].decode('utf-8', errors='ignore') + '…' if len(encoded) > 512 else row.error)
+            item = {'output_id': row.id, 'status': row.status, 'error': error,
+                    **({'error_truncated': True} if error != row.error else {})}
+            remaining = len(rows) - len(details) - 1
+            marker = {'additional_outputs': remaining, 'projection_truncated': True}
+            candidate = [*details, item, *([marker] if remaining else [])]
+            if len(json.dumps(candidate, ensure_ascii=False).encode()) > 4096:
+                break
+            details.append(item)
+        if len(details) != len(rows):
+            details.append({'additional_outputs': len(rows) - len(details), 'projection_truncated': True})
+        return json.dumps(details, ensure_ascii=False)
+
     async def _report(self, receipt: InputRecord) -> None:
-        target = await self.store.reply_for(receipt)
-        if target is not None and not self.orchestrator.report_recipient_available(target):
-            await self.store.defer_delivery(receipt, json.dumps([{
-                'channel': target.channel, 'status': 'pending', 'accepted_chunks': 0,
-                'error': 'Original recipient unavailable; no fallback destination'}], ensure_ascii=False))
+        record = await self.store.binding(receipt.envelope)
+        if record is None:
             return
-        if not await self.store.begin_delivery(receipt):
-            return
-        try:
-            if receipt.status == 'succeeded' and not receipt.response.strip():
-                raise ValueError('Agent produced no report')
-            report = receipt.response if receipt.status == 'succeeded' else '观察任务执行失败: ' + receipt.error
-            if target is None:
-                await self.store.finish_delivery(receipt, status='not-required')
-                return
-            outcomes = await self.orchestrator.deliver_report(target, report,
-                delivery_id=receipt.envelope.message.id + ':' + receipt.attempt_id)
-            errors = [item for item in outcomes if item['status'] != 'delivered']
-            unknown = any(item['status'] == 'unknown' for item in errors)
-            status = ('unknown' if unknown else 'pending' if any(item['status'] == 'pending' for item in errors)
-                      else 'failed' if errors else 'delivered')
-            await self.store.finish_delivery(receipt, status=status,
-                error=json.dumps(outcomes, ensure_ascii=False) if errors else '')
-        except asyncio.CancelledError:
-            await self.store.finish_delivery(receipt, status='unknown',
-                                             error='Report send interrupted; inspect effects')
-            raise
-        except Exception as exc:
-            await self.store.finish_delivery(receipt, status='failed', error=str(exc))
+        rows = [row for row in await (await self.orchestrator.output_service()).store.records(receipt.envelope.scope)
+                if row.envelope.message.id == receipt.envelope.message.id and row.attempt_id == receipt.attempt_id]
+        states = {row.status for row in rows}
+        details = self._output_details(rows)
+        if 'unknown' in states:
+            status = 'unknown'
+        elif (receipt.status not in {'succeeded', 'failed', 'interrupted', 'cancelled'}
+              or states & {'pending', 'sending'}):
+            status = 'pending'
+        elif 'cancelled' in states:
+            status = 'cancelled'
+        elif rows:
+            status = 'delivered'
+        elif not record.reports_enabled:
+            status = 'cancelled'
+        elif record.reply is None or record.notify_only or receipt.status == 'cancelled':
+            status = 'not-required'
+        else:
+            status = 'failed'  # No actual assistant output: never resend aggregate execution history.
+        error = ((details if rows else 'No actual assistant output')
+                 if status not in {'delivered', 'not-required'} else '')
+        await self.store.mirror_delivery(receipt, status=status, error=error)
 
     def _cwd(self, group: str) -> Path:
         value = self.orchestrator.get_group_workspace(group)
@@ -327,7 +347,7 @@ class ManagedObservers:
                     occurrence = await self.store.occurrence(receipt)
                     if occurrence is None:
                         raise ValueError('Original observer outbox disappeared')
-                    if (occurrence['delivery_status'] in {'delivered', 'failed', 'not-required'}
+                    if (occurrence['delivery_status'] in {'delivered', 'failed', 'not-required', 'cancelled'}
                             or occurrence['delivery_status'] == 'pending' and occurrence['delivery_error']):
                         return DeliveryResult('queued', receipt_status='duplicate', message_state=receipt.status)
                     if occurrence['delivery_status'] == 'unknown':
@@ -473,7 +493,7 @@ class ManagedObservers:
                         occurrence = await self.store.occurrence(receipt)
                         if occurrence is None or occurrence['delivery_status'] == 'unknown':
                             raise ValueError('Owned file event has unknown delivery; inspect before restarting')
-                        if (occurrence['delivery_status'] in {'delivered', 'failed', 'not-required'}
+                        if (occurrence['delivery_status'] in {'delivered', 'failed', 'not-required', 'cancelled'}
                                 or occurrence['delivery_status'] == 'pending' and occurrence['delivery_error']):
                             await self.store.save(record, {'pending': None})
                             await self._start_file(record, self._definition(record))
@@ -500,6 +520,7 @@ class ManagedObservers:
                     await self._activate(record)
                 except Exception as exc:
                     await self.store.fail(record, str(exc), review=True)
+        await (await self.orchestrator.output_service()).resume()
         self.inputs.resume()
 
     async def resume_owned(self, group: str, identifier: str, *, owner: str) -> dict[str, Any]:
@@ -605,7 +626,14 @@ class ManagedObservers:
 
     async def cancel_notifications(self, group: str, identifier: str) -> dict[str, Any]:
         await self._ensure_store()
-        await self.store.cancel_notifications(group, self._cwd(group), identifier)
+        cwd = self._cwd(group)
+        await self.store.cancel_notifications(group, cwd, identifier)
+        messages = await self.store.notification_inputs(group, cwd, identifier)
+        await (await self.orchestrator.output_service()).cancel_pending(InputScope(group, cwd), messages)
+        self._report_signal.set()
+        for receipt in await self.store.pending_reports():
+            if receipt.envelope.scope == InputScope(group, cwd) and receipt.envelope.message.id in messages:
+                await self._report(receipt)
         return {'id': identifier, 'notifications_cancelled': True, 'execution_cancelled': False}
 
     async def close(self) -> None:
@@ -631,5 +659,9 @@ class ManagedObservers:
             await asyncio.gather(self._report_task, return_exceptions=True)
         if self._opening is not None:
             await asyncio.gather(self._opening, return_exceptions=True)
+        if self._route_unsubscribe is not None:
+            self._route_unsubscribe()
+        if self._output_unsubscribe is not None:
+            self._output_unsubscribe()
         if self._store is not None:
             await self._store.close()

@@ -192,7 +192,7 @@ async def test_native_notice_uses_only_creator_binding_never_a_new_peer(tmp_path
         assert model.calls.count("CALLBACK") == 1
         if not creator_online:
             await manager.cancel_notifications("main", created["id"])
-            assert (await manager.status("main", created["id"]))["occurrences"][0]["delivery_status"] == "not-required"
+            assert (await manager.status("main", created["id"]))["occurrences"][0]["delivery_status"] == "cancelled"
     finally:
         original_writer.close()
         other_writer.close()
@@ -210,15 +210,23 @@ async def test_saved_weixin_report_recovers_original_target_after_application_re
         (created,) = await manager.list("main")
         while not api.sent.empty():
             api.sent.get_nowait()
+        from xdog.claw.core.outputs.delivery import DeliveryNotSent
         reached = asyncio.Event()
 
-        async def hold_before_send(record):
+        async def hold_before_send(request):
             reached.set()
-            await asyncio.Event().wait()
+            raise DeliveryNotSent("Original recipient did not accept this output")
 
-        monkeypatch.setattr(manager, "_report", hold_before_send)
+        api.send_message = hold_before_send
         clock.advance(240)
         await asyncio.wait_for(reached.wait(), 5)
+
+        async def pending_output():
+            current = await manager.status("main", created["id"])
+            rows = current["occurrences"]
+            return current if rows and rows[0]["execution_status"] == "succeeded" else None
+
+        await until(pending_output)
         assert model.calls.count("CALLBACK") == 1 and api.sent.empty()
         await manager.close()
         await server.close()
@@ -309,8 +317,9 @@ async def test_partial_target_send_is_unknown_and_never_replays_accepted_chunks_
         row = await until(unknown)
         import json
 
-        (outcome,) = json.loads(row["delivery_error"])
-        assert outcome["accepted_chunks"] == 1 and len(sends) == 2
+        outcomes = json.loads(row["delivery_error"])
+        assert [outcome["status"] for outcome in outcomes] == ["delivered", "unknown"]
+        assert len({outcome["output_id"] for outcome in outcomes}) == 2 and len(sends) == 2
         assert all(item.to_user_id == "alice" and item.context_token == "ctx:alice" for item in sends)
         assert len({item.client_id for item in sends}) == 2
         await manager.close()

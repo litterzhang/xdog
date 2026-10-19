@@ -51,7 +51,7 @@ async def test_failures_never_mark_success(managed, failure, monkeypatch):
         assert 'model failed' in managed.channel.send_message.call_args.args[1]
     elif failure == 'unknown-group':
         assert managed.model.calls == []
-        assert '失败' in managed.channel.send_message.call_args.args[1]
+        assert row['execution_error'] in managed.channel.send_message.call_args.args[1]
     elif failure in {'no-channel', 'empty'}:
         managed.channel.send_message.assert_not_awaited()
     calls = list(managed.model.calls)
@@ -136,22 +136,25 @@ async def test_top_level_group_spoof_cannot_redirect_current_group_tool(managed)
     assert await managed.manager.list('g2') == () and not managed.model.calls
 
 
-async def test_restart_after_execution_commit_before_send_only_recovers_saved_report(managed, monkeypatch):
-    import asyncio
-    reached = asyncio.Event()
-    async def before_send(record):
-        reached.set()
-        await asyncio.Future()
-    monkeypatch.setattr(managed.manager, '_report', before_send)
+async def test_restart_after_execution_commit_before_transport_recovers_core_outputs_without_model_replay(managed):
     created = await managed.create()
+    reference = (await managed.record(created['id'])).reply
+    managed.orch.unregister_reply_channel(reference.binding)
+    managed.orch._channels.clear()
     managed.clock.advance(240)
-    await asyncio.wait_for(reached.wait(), 3)
-    saved = await managed.manager.status('g1', created['id'])
+    saved = await managed.completed(created['id'], pending_report=True)
     assert saved['occurrences'][0]['execution_status'] == 'succeeded'
     assert saved['occurrences'][0]['delivery_status'] == 'pending'
     managed.channel.send_message.assert_not_awaited()
+    outputs = await managed.orch.output_service()
+    original_outputs = await outputs.store.records()
+    assert len(original_outputs) == 1 and original_outputs[0].status == 'pending'
+    assert not original_outputs[0].send_id
+    managed.orch.add_channel(managed.channel)
     await managed.restart()
     completed = await managed.completed(created['id'])
     assert managed.model.calls == ['report']
     assert completed['occurrences'][0]['delivery_status'] == 'delivered'
+    current = await outputs.store.records()
+    assert current[0].id == original_outputs[0].id
     managed.channel.send_message.assert_awaited_once_with('g1', 'Scheduled report')

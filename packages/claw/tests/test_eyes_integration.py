@@ -160,14 +160,15 @@ async def test_global_concurrency_bound_preserves_independent_group_owners(manag
     assert managed.channel.send_message.await_count == 3
 
 
-async def test_recurring_failure_advances_instead_of_retrying_same_occurrence(managed):
+async def test_recurring_positive_rejection_advances_without_replaying_same_execution(managed):
     created = await create(managed, source=scheduler(every_seconds=60))
     managed.clock.advance(60)
-    managed.channel.send_message.side_effect = ValueError('local report validation rejected')
-    first = await managed.completed(created['id'])
+    from xdog.claw.core.outputs.delivery import DeliveryNotSent
+    managed.channel.send_message.side_effect = DeliveryNotSent('Receiver positively rejected before acceptance')
+    first = await managed.completed(created['id'], pending_report=True)
     row, = first['occurrences']
-    assert row['execution_status'] == 'succeeded' and row['delivery_status'] == 'failed'
-    assert 'local report validation rejected' in row['delivery_error'] and first['enabled']
+    assert row['execution_status'] == 'succeeded' and row['delivery_status'] == 'pending'
+    assert 'Receiver positively rejected' in row['delivery_error'] and first['enabled']
     first_identity = row['message_id']
     await managed.flush()
     assert managed.model.calls == ['report']
@@ -286,6 +287,6 @@ async def test_agent_can_stop_notifications_without_stopping_observation_or_exec
         release.set()
     status = await managed.completed(created['id'])
     row, = status['occurrences']
-    assert row['execution_status'] == 'succeeded' and row['delivery_status'] == 'not-required'
+    assert row['execution_status'] == 'succeeded' and row['delivery_status'] == 'cancelled'
     assert managed.model.calls == ['report']
     managed.channel.send_message.assert_not_awaited()

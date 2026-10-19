@@ -88,7 +88,9 @@
       "evidence": [
         "docs/claw-channel-handoff-verification.md",
         "docs/claw-output-receipts-verification.md",
-        "docs/claw-observer-recipients-verification.md"
+        "docs/claw-observer-recipients-verification.md",
+        "docs/observer-message-output-verification.md",
+        "packages/claw/tests/test_observer_message_outputs.py"
       ]
     },
     {
@@ -108,7 +110,9 @@
       "evidence": [
         "docs/claw-channel-handoff-verification.md",
         "docs/claw-output-receipts-verification.md",
-        "docs/claw-observer-recipients-verification.md"
+        "docs/claw-observer-recipients-verification.md",
+        "docs/observer-message-output-verification.md",
+        "packages/claw/tests/test_observer_message_outputs.py"
       ]
     },
     {
@@ -201,7 +205,10 @@
       "area": "eyes_acp",
       "requirement": "Agent 显式停止观察/通知/worker，三种操作互不隐含，无完成后自动取消",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/observer-message-output-verification.md",
+        "packages/claw/tests/test_observer_message_outputs.py"
+      ]
     },
     {
       "id": "BOUND-04",

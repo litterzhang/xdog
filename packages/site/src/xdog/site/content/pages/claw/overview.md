@@ -62,3 +62,14 @@ uv run xdog-claw tui --group main
 
 Configure an actual model/provider before starting the gateway. Linux is the
 supported platform; permissions are application policy, not an OS sandbox.
+
+## Observation replies
+
+Managed Eyes events enter the same durable Inbox through ACP. Their original
+creator's reply destination is bound before intake acknowledgment; source labels
+and evidence grant neither routing rights nor user authority. Each assistant
+message uses Core output receipts as soon as it is produced, without a duplicate
+aggregate report at turn end. Stopping observation does not retract accepted
+work or its replies. Explicit notification cancellation stops only unsent replies;
+entered sends retain their actual delivered/unknown facts. An unavailable original
+recipient remains pending rather than borrowing another connection.

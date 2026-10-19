@@ -1,9 +1,9 @@
 # Generic automatic reply routing and unsent-output cancellation
 
-This is the Core foundation for observer streaming, not proof that the observer
-aggregate sender has already been removed. Source integration follows the
-observer-message-output plan's Task2. No Goal/Eyes business logic enters ACP,
-GroupController or the output store.
+This records the Core foundation milestone. Managed observers now use these
+ports for per-message delivery; see `docs/observer-message-output-verification.md`
+for the subsequent integration and its distinct verification scope. No Goal/Eyes
+business logic enters ACP, GroupController or the output store.
 
 ## Intake and immutable routing
 
@@ -72,11 +72,10 @@ prove cancellation, attempt histories, v1 refusal, callback/commit races, canoni
 conflicts and maximum metadata/image boundaries. Protocol/store/sender owners are
 not mocked; model/transport boundaries are scripted.
 
-Current whole-nine/type/style verification is recorded by the plan ledger after
-terminal results, not inferred from focused tests. ManagedObservers still has its
-aggregate receipt.response sender at this foundation stage; removing it and using
-actual per-message Core facts, independent report intent and cold artifacts is
-mandatory before accepting IN-08 or the overall objective.
+The whole-nine/type/style results below belong to the Core foundation commit,
+not the later observer integration. That integration removes the aggregate
+receipt.response sender and mirrors actual per-message Core facts. Updated cold
+artifacts and final acceptance remain mandatory independent gates.
 
 ## Final Core foundation gate
 
@@ -91,5 +90,6 @@ root-full observations remain documented, with no test/timeout exclusions.
 
 No current new-output-format cold artifact claim is made here; the previous
 shared UI artifact receipts belong to their own milestone. Source adapter
-integration, aggregate sender removal, observer formatv3 and updated cold output
-artifacts remain separate mandatory tasks. No whole-goal completion claimed.
+integration, aggregate sender removal and observer formatv3 are recorded in the
+subsequent integration document; updated cold output artifacts remain a separate
+mandatory gate. No whole-goal completion claimed.

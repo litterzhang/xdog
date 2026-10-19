@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable, Sequence
 
 from xdog.agent.async_work import wait_owned
@@ -31,6 +32,18 @@ class OutputDelivery:
         self._tasks: set[asyncio.Task[None]] = set()
         self._closing = False
         self._close_task: asyncio.Task[None] | None = None
+        self._listeners: set[Callable[[InputScope], None]] = set()
+
+    def subscribe(self, callback: Callable[[InputScope], None]) -> Callable[[], None]:
+        self._listeners.add(callback)
+        return lambda: self._listeners.discard(callback)
+
+    def _notify(self, scope: InputScope) -> None:
+        for callback in tuple(self._listeners):
+            try:
+                callback(scope)
+            except Exception:
+                logging.getLogger(__name__).warning("Output fact committed; optional listener failed", exc_info=True)
 
     async def emit(self, envelope: InputEnvelope, attempt_id: str, binding: str,
                    chunks: Sequence[str], *, ordinal: int = 0) -> int:
@@ -63,7 +76,10 @@ class OutputDelivery:
 
     async def cancel_pending(self, scope: InputScope, message_ids: tuple[str, ...]) -> tuple[str, ...]:
         # Do not wait behind an entered network sender or cancel its actual work.
-        return await self.store.cancel_pending(scope, message_ids)
+        cancelled = await self.store.cancel_pending(scope, message_ids)
+        if cancelled:
+            self._notify(scope)
+        return cancelled
 
     async def _policy(self, row: OutputRecord) -> Policy:
         try:
@@ -84,7 +100,7 @@ class OutputDelivery:
                     continue
                 policy = await self._policy(row)
                 if policy == "cancelled":
-                    await self.store.cancel_pending(scope, (row.envelope.message.id,))
+                    await self.cancel_pending(scope, (row.envelope.message.id,))
                     continue
                 if policy == "pending":
                     continue
@@ -104,7 +120,7 @@ class OutputDelivery:
                     "Notification cancelled before transport" if policy == "cancelled" else
                     "Output policy unavailable before transport")
                 if policy == "cancelled":
-                    await self.store.cancel_pending(row.envelope.scope, (row.envelope.message.id,))
+                    await self.cancel_pending(row.envelope.scope, (row.envelope.message.id,))
                 return
             entered_sender = True
             await sender(started)
@@ -133,6 +149,8 @@ class OutputDelivery:
                                     str(exc) or type(exc).__name__)
         else:
             await self.store.settle(row.id, started.send_id, 'delivered')
+        finally:
+            self._notify(row.envelope.scope)
 
     async def close(self) -> None:
         if self._close_task is None:

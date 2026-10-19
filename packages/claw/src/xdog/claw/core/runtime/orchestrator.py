@@ -24,7 +24,7 @@ from xdog.claw.core.chunker import BlockChunker
 from xdog.claw.core.inputs.consumer import Admit, InputOutcome, InputService
 from xdog.claw.core.inputs.models import InputEnvelope, InputScope, ReplyTarget
 from xdog.claw.core.inputs.store import InputRecord, InputStore
-from xdog.claw.core.outputs.delivery import DeliveryNotSent, OutputDelivery
+from xdog.claw.core.outputs.delivery import OutputDelivery
 from xdog.claw.core.outputs.routes import (
     OutputRoute,
     Policy,
@@ -540,40 +540,6 @@ class Orchestrator:
         if workspace is None:
             raise ValueError('Unknown reply workspace')
         return self._channel_replies.capture(InputScope(original.group_id, workspace), channel, original)
-
-    def report_recipient_available(self, reference: ReplyReference) -> bool:
-        """A preflight hint, not a send receipt or permission to change destination."""
-        if (not isinstance(reference, ReplyReference)
-                or self.get_group_workspace(reference.scope.group_id) != reference.scope.workspace):
-            raise ValueError('Original report recipient scope changed')
-        return self._channel_replies.recipient(reference) is not None
-
-    async def deliver_report(self, reference: ReplyReference, text: str, *, delivery_id: str
-                             ) -> list[dict[str, object]]:
-        """Send only to a captured destination; group labels never select a sender."""
-        if (not isinstance(reference, ReplyReference)
-                or self.get_group_workspace(reference.scope.group_id) != reference.scope.workspace):
-            raise ValueError('Original report recipient scope changed')
-        channel = self._channel_replies.recipient(reference)
-        if channel is None:
-            return [{'channel': reference.channel, 'status': 'pending', 'accepted_chunks': 0,
-                     'error': 'Original recipient unavailable; no fallback destination'}]
-        import hashlib
-        sent = 0
-        try:
-            for ordinal, chunk in enumerate(self._chunker.chunk(text) or [text]):
-                identifier = hashlib.sha256(f'{delivery_id}:{ordinal}'.encode()).hexdigest()
-                await channel.send_output(reference.original, identifier, chunk)
-                sent += 1
-            return [{'channel': channel.name, 'status': 'delivered', 'accepted_chunks': sent}]
-        except asyncio.CancelledError:
-            raise
-        except DeliveryNotSent as exc:
-            return [{'channel': channel.name, 'status': 'pending' if sent == 0 else 'failed',
-                     'accepted_chunks': sent, 'error': str(exc)}]
-        except Exception as exc:
-            return [{'channel': channel.name, 'status': 'failed' if isinstance(exc, ValueError) else 'unknown',
-                     'accepted_chunks': sent, 'error': str(exc)}]
 
     # -- Group operations (internal gateway boundary) -----------------------------
 

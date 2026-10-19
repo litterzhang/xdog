@@ -11,15 +11,17 @@ from typing import Protocol, TypeVar
 
 from xdog.agent.leased_sqlite import LeasedSqlite
 from xdog.agent.session_input import SessionInput, decode_input, input_data
-from xdog.claw.core.inputs.models import InputScope
+from xdog.claw.core.inputs.models import InputEnvelope, InputScope
 from xdog.claw.core.inputs.store import InputAttempt, InputRecord
 from xdog.claw.core.observers.models import ObserverRecord, ObserverStopped, encoded
+from xdog.claw.core.outputs.routes import Policy, saved_route
+from xdog.claw.core.outputs.store import OutputRecord
 from xdog.claw.core.outputs.targets import ReplyReference, decode_reply, encode_reply
 
 T = TypeVar('T')
-_FORMAT = 'xdog.claw.observers.v2'
+_FORMAT = 'xdog.claw.observers.v3'
 _TERMINAL = frozenset({'succeeded', 'failed', 'interrupted', 'cancelled'})
-_DELIVERY = frozenset({'pending', 'sending', 'delivered', 'failed', 'unknown', 'not-required'})
+_DELIVERY = frozenset({'pending', 'delivered', 'failed', 'unknown', 'not-required', 'cancelled'})
 _SCHEMA = '''
 CREATE TABLE observers(
     observer_id TEXT PRIMARY KEY,group_id TEXT NOT NULL,cwd TEXT NOT NULL,name TEXT NOT NULL,
@@ -94,10 +96,7 @@ def _validate(db: sqlite3.Connection) -> None:
 
 def _recover(db: sqlite3.Connection) -> None:
     db.execute("UPDATE outbox SET transport_status='unknown' WHERE transport_status='sending'")
-    db.execute("UPDATE observers SET enabled=0,recovery='needs_review',error='Unknown channel send; inspect effects' "
-               "WHERE observer_id IN (SELECT observer_id FROM outbox WHERE delivery_status='sending')")
-    db.execute("UPDATE outbox SET delivery_status='unknown',delivery_error='Channel send interrupted' "
-               "WHERE delivery_status='sending'")
+
 
 
 class ObserverJournal:
@@ -259,9 +258,6 @@ class ObserverJournal:
             raise ValueError('Unknown observer in this scope')
         def cancel(db: sqlite3.Connection) -> None:
             db.execute('UPDATE observers SET reports_enabled=0 WHERE observer_id=?', (identifier,))
-            db.execute("UPDATE outbox SET delivery_status='not-required' WHERE observer_id=? "
-                       "AND delivery_status='pending'",
-                       (identifier,))
         await self._disk(cancel)
 
     async def occurrence(self, receipt: InputRecord) -> dict[str, object] | None:
@@ -272,64 +268,52 @@ class ObserverJournal:
             return dict(row) if row is not None else None
         return await self._disk(read)
 
-    async def reply_for(self, receipt: InputRecord) -> ReplyReference | None:
-        occurrence = await self.occurrence(receipt)
-        if occurrence is None:
-            return None
-        scope = receipt.envelope.scope
-        record = await self.get(scope.group_id, scope.workspace, str(occurrence['observer_id']))
-        if record is None or record.inbox_id != await self.receipts.namespace(scope):
-            raise ValueError('Original report owner/namespace changed')
-        return record.reply
+    async def binding(self, envelope: InputEnvelope) -> ObserverRecord | None:
+        def read(db: sqlite3.Connection) -> ObserverRecord | None:
+            row = db.execute('SELECT * FROM outbox WHERE group_id=? AND cwd=? AND message_id=?',
+                (envelope.scope.group_id, str(envelope.scope.workspace), envelope.message.id)).fetchone()
+            if row is None:
+                return None
+            message = decode_input(json.loads(row['payload']), transport_envelope=False)
+            if message != envelope.message:
+                raise ValueError('Original observer intent content conflict')
+            parent = db.execute('SELECT * FROM observers WHERE observer_id=?', (row['observer_id'],)).fetchone()
+            if parent is None:
+                raise ValueError('Original observer owner is unavailable')
+            return _row(parent)
+        record = await self._disk(read)
+        if record is not None and record.inbox_id != await self.receipts.namespace(envelope.scope):
+            raise ValueError('Original observer input namespace changed')
+        return record
 
-    async def begin_delivery(self, receipt: InputRecord) -> bool:
-        row = await self.occurrence(receipt)
-        if row is None:
-            return False
-        scope = receipt.envelope.scope
-        identifier = str(row['observer_id'])
-        record = await self.get(scope.group_id, scope.workspace, identifier)
-        if record is None or await self.receipts.namespace(scope) != record.inbox_id:
-            return False
-        await self.sync(record)
-        actual = await self.occurrence(receipt)
-        if (actual is None or actual['attempt_id'] != receipt.attempt_id
-                or actual['execution_status'] != receipt.status):
-            return False
-        def begin(db: sqlite3.Connection) -> bool:
-            current = db.execute('SELECT * FROM observers WHERE observer_id=?', (identifier,)).fetchone()
-            if current['notify_only'] or not current['reports_enabled'] or not current['reply']:
-                db.execute("UPDATE outbox SET delivery_status='not-required' WHERE group_id=? AND cwd=? "
-                           "AND message_id=? AND delivery_status='pending'",
-                           (scope.group_id, str(scope.workspace), receipt.envelope.message.id))
-                return False
-            changed = db.execute("UPDATE outbox SET delivery_status='sending' WHERE group_id=? AND cwd=? "
-                "AND message_id=? AND delivery_status='pending' AND cancelled=0 "
-                "AND execution_status IN ('succeeded','failed')", (scope.group_id, str(scope.workspace),
-                                                                   receipt.envelope.message.id))
-            return changed.rowcount == 1
-        return await self._disk(begin)
+    async def resolve_reply(self, envelope: InputEnvelope) -> ReplyReference | None:
+        record = await self.binding(envelope)
+        return record.reply if record is not None and not record.notify_only else None
 
-    async def defer_delivery(self, receipt: InputRecord, error: str) -> None:
-        """Known unavailable recipient: no send was admitted, no unknown effect.
+    async def output_policy(self, output: OutputRecord) -> Policy:
+        record = await self.binding(output.envelope)
+        if record is None:
+            return 'pending'
+        route = saved_route(output.envelope)
+        if route is None or route.reference != record.reply:
+            raise ValueError('Original observer output recipient changed')
+        return 'ready' if record.reports_enabled and not record.notify_only else 'cancelled'
 
-        Leave the independent report outbox pending; do not reuse source pending
-        as its owner or publish a fictitious sending/crash-recovery transition.
-        """
-        scope = receipt.envelope.scope
-        await self._disk(lambda db: db.execute("UPDATE outbox SET delivery_error=? "
-            "WHERE group_id=? AND cwd=? AND message_id=? AND attempt_id=? "
-            "AND delivery_status='pending' AND execution_status IN ('succeeded','failed')",
-            (error[:4096], scope.group_id, str(scope.workspace), receipt.envelope.message.id, receipt.attempt_id)))
+    async def notification_inputs(self, group: str, cwd: Path, identifier: str) -> tuple[str, ...]:
+        if await self.get(group, cwd, identifier) is None:
+            raise ValueError('Unknown observer in this scope')
+        return await self._disk(lambda db: tuple(row[0] for row in db.execute(
+            'SELECT message_id FROM outbox WHERE observer_id=? ORDER BY rowid', (identifier,))))
 
-    async def finish_delivery(self, receipt: InputRecord, *, status: str, error: str = '') -> None:
-        if status not in {'delivered', 'failed', 'unknown', 'pending', 'not-required'}:
-            raise ValueError('Invalid report delivery status')
-        scope = receipt.envelope.scope
+    async def mirror_delivery(self, receipt: InputRecord, *, status: str, error: str = '') -> None:
+        if status not in _DELIVERY:
+            raise ValueError('Invalid Core output fact projection')
+        if await self.binding(receipt.envelope) is None:
+            return
         await self._disk(lambda db: db.execute('UPDATE outbox SET delivery_status=?,delivery_error=? '
-            "WHERE group_id=? AND cwd=? AND message_id=? AND attempt_id=? AND delivery_status='sending'",
-            (status, error[:4096], scope.group_id, str(scope.workspace),
-             receipt.envelope.message.id, receipt.attempt_id)))
+            'WHERE group_id=? AND cwd=? AND message_id=? AND attempt_id=? AND execution_status=?',
+            (status, error[:4096], receipt.envelope.scope.group_id, str(receipt.envelope.scope.workspace),
+             receipt.envelope.message.id, receipt.attempt_id, receipt.status)))
 
     async def fail(self, record: ObserverRecord, error: str, *, review: bool = False) -> None:
         await self._disk(lambda db: db.execute('UPDATE observers SET error=?,enabled=?,recovery=? '
@@ -367,7 +351,7 @@ class ObserverJournal:
             await self.sync(record)
             rows = await self._disk(lambda db: tuple(dict(row) for row in db.execute(
                 "SELECT * FROM outbox WHERE observer_id=? AND cancelled=0 AND delivery_status='pending' "
-                "AND execution_status IN ('succeeded','failed')", (record.id,))))
+                "AND execution_status IN ('running','succeeded','failed','interrupted','cancelled')", (record.id,))))
             for row in rows:
                 receipt = await self.receipts.get(InputScope(record.group_id, record.cwd), row['message_id'])
                 if receipt is not None:

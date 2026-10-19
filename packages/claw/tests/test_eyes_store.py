@@ -108,9 +108,8 @@ async def test_started_attempt_cannot_be_cancelled_or_admitted_twice(store):
         await core.cancel(InputScope('main', cwd), 'occurrence')
     finished = await core.finish(running, 'succeeded', response='Report')
     await journal.sync(original)
-    assert await journal.begin_delivery(finished)
-    assert not await journal.begin_delivery(finished)
-    await journal.finish_delivery(finished, status='delivered')
+    assert await journal.binding(finished.envelope) is not None
+    await journal.mirror_delivery(finished, status='delivered')
     row, = await journal.history('main', cwd, original.id)
     assert row['execution_status'] == 'succeeded' and row['delivery_status'] == 'delivered'
 
@@ -139,7 +138,7 @@ async def test_restart_requeues_only_unstarted_managed_claim(store, started):
         await reopened.close()
 
 
-async def test_channel_send_crash_is_unknown_not_automatic_resend(store):
+async def test_observer_reopen_preserves_unknown_core_delivery_projection_without_recovery_replay(store):
     journal, cwd, core = store
     original = await observer(store)
     await journal.save(original, {}, (message(),))
@@ -147,14 +146,14 @@ async def test_channel_send_crash_is_unknown_not_automatic_resend(store):
     running = await core.start(await core.claim(InputScope('main', cwd)))
     finished = await core.finish(running, 'succeeded', response='Report')
     await journal.sync(original)
-    assert await journal.begin_delivery(finished)
+    await journal.mirror_delivery(finished, status='unknown', error='Core output send outcome unknown')
     await journal.close()
     restored = await ObserverJournal.open(journal.path, core)
     try:
         row, = await restored.history('main', cwd, original.id)
         assert row['execution_status'] == 'succeeded' and row['delivery_status'] == 'unknown'
-        assert not await restored.begin_delivery(finished)
-        assert not (await restored.get('main', cwd, original.id)).enabled
+        assert await restored.pending_reports() == ()
+        assert (await core.get(InputScope('main', cwd), 'occurrence')).response == 'Report'
     finally:
         await restored.close()
 
@@ -163,7 +162,7 @@ async def test_external_provenance_is_not_a_managed_delivery_grant(store):
     journal, cwd, core = store
     accepted, _ = await core.enqueue(external_envelope('main', cwd, message()))
     assert await journal.occurrence(accepted) is None
-    assert not await journal.begin_delivery(accepted)
+    assert await journal.binding(accepted.envelope) is None
     original = await observer(store)
     await journal.save(original, {}, (message('real'),))
     await core.enqueue(external_envelope('main', cwd, message('real', 'forged')))

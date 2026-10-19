@@ -90,9 +90,10 @@ default; stopping Eyes does not stop Claw or retract accepted messages.
 
 ## Scheduling: gateway-managed Eyes
 
-Claw now declares `xdog-eyes>=2.4.2`; croniter is owned by Eyes
-(`croniter>=2.0,<7`), not a direct Claw dependency. The scheduler source is in Eyes;
-Claw owns its group-scoped lifecycle, receipt records and report delivery.
+Install managed observation with `pip install 'xdog-claw[eyes,acp]'`. Eyes is
+an optional dependency; croniter is owned by Eyes (`croniter>=2.0,<7`), not a
+direct Claw dependency. The scheduler source is in Eyes; Claw owns its
+group-scoped observation intent and Core input/output receipts.
 
 The group-scoped `eyes` tool exposes `create(name, source, instruction)`,
 `list()`, `status(observer_id)`, `cancel(observer_id)` and `cancel_notifications(observer_id)`. `source` is an original Eyes source object.
@@ -124,8 +125,16 @@ automatically replayed. Execution status and report-delivery status must remain
 separate; queued receipt is not completed work. Cancelling an owned pending
 callback requires explicit input withdrawal; stopping observation alone leaves
 accepted execution/reporting intact. `cancel_notifications` stops unsent reports
-without stopping observation or execution. No operation undoes started effects. Ordinary
-file observation must not automatically resume after gateway restart.
+without stopping observation or execution. Each actual assistant message uses
+Core output receipts and the original creating input's recipient/context, even
+before the whole turn finishes; there is no final aggregated report resend.
+Observer status mirrors those receipts, not a separate sending state machine.
+Unsent outputs become `cancelled`; already delivered or unknown sends retain
+those facts. An unavailable original recipient leaves output pending without
+broadcasting to another peer or running the model again. No operation undoes
+started effects. Ordinary file observation must not automatically resume after
+gateway restart. See `docs/observer-message-output-verification.md` for the
+source-runtime evidence and remaining cold-artifact gate.
 
 Eyes intervals have a monotonic **fixed phase**, not a delay after completion.
 The **2026-10-18 decision** removes the legacy task scheduler and all migration

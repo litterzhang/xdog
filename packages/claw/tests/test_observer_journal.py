@@ -113,8 +113,8 @@ async def test_notifications_are_separate_from_collection_and_execution(tmp_path
         await observers.cancel('main', scope.workspace, created.id)
         finished = await core.finish(running, 'succeeded', response='original report')
         await observers.sync(created)
-        assert await observers.begin_delivery(finished) is True
-        await observers.finish_delivery(finished, status='delivered')
+        assert await observers.binding(finished.envelope) is not None
+        await observers.mirror_delivery(finished, status='delivered')
         history = await observers.history('main', scope.workspace, created.id)
         assert history[0]['execution_status'] == 'succeeded' and history[0]['delivery_status'] == 'delivered'
         assert history[0]['attempt_id'] == running.attempt_id
@@ -131,13 +131,15 @@ async def test_explicit_notification_cancel_does_not_stop_source_or_core_work(tm
         assert (await observers.get('main', scope.workspace, created.id)).enabled
         finished = await core.finish(running, 'succeeded', response='keep in history')
         await observers.sync(created)
-        assert await observers.begin_delivery(finished) is False
+        assert not (await observers.binding(finished.envelope)).reports_enabled
         assert (await core.get(scope, 'event')).response == 'keep in history'
 
 
-async def test_reopen_recovers_known_not_sent_report_but_not_unknown_send(tmp_path):
+async def test_core_output_crash_is_mirrored_without_an_observer_send_attempt_or_model_replay(tmp_path):
+    from xdog.claw.core.observers.journal import ObserverJournal
+    from xdog.claw.core.outputs.store import OutputStore
+
     async with open_journals(tmp_path) as journals:
-        from xdog.claw.core.observers.journal import ObserverJournal
         core, observers, scope = journals
         created = await record(journals)
         await observers.save(created, {}, (canonical(),))
@@ -145,21 +147,22 @@ async def test_reopen_recovers_known_not_sent_report_but_not_unknown_send(tmp_pa
         running = await core.start(await core.claim(scope))
         finished = await core.finish(running, 'succeeded', response='done')
         await observers.sync(created)
-        path = observers.path
+        outputs = await OutputStore.open(tmp_path / 'outputs' / 'state.sqlite3')
+        row = await outputs.append(finished.envelope, finished.attempt_id, 0, 'original', 'actual output')
+        await outputs.begin(row.id)
+        await outputs.close()
         await observers.close()
-        restored = await ObserverJournal.open(path, core)
+        restored = await ObserverJournal.open(observers.path, core)
+        outputs = await OutputStore.open(outputs.path)
         try:
-            assert [r.envelope.message.id for r in await restored.pending_reports()] == ['event']
-            assert await restored.begin_delivery(finished)
-        finally:
-            await restored.close()
-        restored = await ObserverJournal.open(path, core)
-        try:
+            assert (await outputs.records())[0].status == 'unknown'
+            assert (await restored.history('main', scope.workspace, created.id))[0]['delivery_status'] == 'pending'
+            await restored.mirror_delivery(finished, status='unknown', error='Core send outcome unknown')
             assert await restored.pending_reports() == ()
-            status = await restored.get('main', scope.workspace, created.id)
-            assert not status.enabled and status.recovery == 'needs_review'
+            assert (await restored.get('main', scope.workspace, created.id)).enabled
             assert (await core.get(scope, 'event')).status == 'succeeded'
         finally:
+            await outputs.close()
             await restored.close()
 
 
@@ -172,8 +175,8 @@ async def test_retry_attempt_cannot_rebind_an_old_occurrence_or_resend_its_repor
         first = await core.start(await core.claim(scope))
         failed = await core.finish(first, 'failed', error='inspect effects')
         await observers.sync(created)
-        assert await observers.begin_delivery(failed)
-        await observers.finish_delivery(failed, status='delivered')
+        assert await observers.binding(failed.envelope) is not None
+        await observers.mirror_delivery(failed, status='delivered')
         await core.retry(scope, 'event')
         second = await core.start(await core.claim(scope))
         await core.finish(second, 'succeeded', response='explicit second attempt')
@@ -233,8 +236,8 @@ async def test_source_cancel_during_unknown_enqueue_cannot_drop_report_for_late_
         await observers.sync(created)
         history = await observers.history('main', scope.workspace, created.id)
         assert not history[0]['cancelled'] and history[0]['transport_status'] == 'accepted'
-        assert await observers.begin_delivery(finished)
-        await observers.finish_delivery(finished, status='delivered')
+        assert await observers.binding(finished.envelope) is not None
+        await observers.mirror_delivery(finished, status='delivered')
         assert (await core.get(scope, 'event')).status == 'succeeded'
 
 
@@ -281,12 +284,43 @@ async def test_report_recovery_uses_original_attempt_not_a_later_explicit_retry(
         second = await core.start(await core.claim(scope))
         succeeded = await core.finish(second, 'succeeded', response='second attempt report')
         await observers.sync(created)
-        assert not await observers.begin_delivery(succeeded), 'A new attempt stole an old report binding'
+        await observers.mirror_delivery(succeeded, status='delivered')
+        assert (await observers.history('main', scope.workspace, created.id))[0]['delivery_status'] == 'pending'
         reports = await observers.pending_reports()
         assert len(reports) == 1 and reports[0].attempt_id == first.attempt_id
         assert reports[0].error == 'first attempt failed' and not reports[0].response
-        assert await observers.begin_delivery(failed)
-        await observers.finish_delivery(succeeded, status='delivered')
-        assert (await observers.history('main', scope.workspace, created.id))[0]['delivery_status'] == 'sending'
-        await observers.finish_delivery(failed, status='delivered')
+        await observers.mirror_delivery(succeeded, status='delivered')
+        assert (await observers.history('main', scope.workspace, created.id))[0]['delivery_status'] == 'pending'
+        await observers.mirror_delivery(failed, status='delivered')
         assert await observers.pending_reports() == ()
+
+
+async def test_old_aggregate_report_format_is_refused_before_any_recovery_write(tmp_path):
+    from xdog.claw.core.observers.journal import ObserverJournal
+
+    async with open_journals(tmp_path) as (core, observers, scope):
+        created = await observers.create(scope.group_id, scope.workspace, 'old-format', {'version': 2})
+        await observers.close()
+        with sqlite3.connect(observers.path) as db:
+            db.execute("UPDATE metadata SET format='xdog.claw.observers.v2'")
+        before = observers.path.read_bytes()
+        with pytest.raises(ValueError, match='format|[Uu]nsupported'):
+            await ObserverJournal.open(observers.path, core)
+        assert observers.path.read_bytes() == before
+        assert (await core.namespace(scope)) == created.inbox_id
+
+
+async def test_late_running_projection_cannot_overwrite_terminal_attempt_facts(tmp_path):
+    async with open_journals(tmp_path) as journals:
+        core, observers, scope = journals
+        created = await record(journals)
+        await observers.save(created, {}, (canonical(),))
+        await core.enqueue(InputEnvelope(scope, canonical()))
+        running = await core.start(await core.claim(scope))
+        await observers.sync(created)
+        finished = await core.finish(running, 'succeeded', response='actual output')
+        await observers.sync(created)
+        await observers.mirror_delivery(finished, status='delivered')
+        await observers.mirror_delivery(running, status='pending', error='stale read')
+        row, = await observers.history('main', scope.workspace, created.id)
+        assert row['execution_status'] == 'succeeded' and row['delivery_status'] == 'delivered'

@@ -23,7 +23,7 @@ async def test_finished_source_may_release_cursor_while_original_report_stays_du
     managed.channel.send_message.assert_not_awaited()
 
 
-async def test_known_offline_report_does_not_publish_sending_during_reconciliation(managed, monkeypatch):
+async def test_known_offline_report_does_not_publish_sending_during_reconciliation(managed):
     created = await managed.create()
     reference = (await managed.record(created['id'])).reply
     managed.orch.unregister_reply_channel(reference.binding)
@@ -33,13 +33,11 @@ async def test_known_offline_report_does_not_publish_sending_during_reconciliati
     message = saved['occurrences'][0]['message_id']
     scope = InputScope('g1', managed.orch.get_group_workspace('g1'))
     receipt = await managed.manager.inputs.store.get(scope, message)
-    original = managed.orch.deliver_report
-    states = []
-    async def observe(*args, **kwargs):
-        states.append((await managed.manager.store.occurrence(receipt))['delivery_status'])
-        return await original(*args, **kwargs)
-    monkeypatch.setattr(managed.orch, 'deliver_report', observe)
+    outputs = await managed.orch.output_service()
+    before = await outputs.store.records(scope)
     await managed.manager._report(receipt)
-    assert 'sending' not in states
+    after = await outputs.store.records(scope)
+    assert after == before
+    assert all(row.status == 'pending' and not row.send_id for row in after)
     assert (await managed.manager.store.occurrence(receipt))['delivery_status'] == 'pending'
     assert managed.model.calls == ['report']

@@ -173,7 +173,7 @@ class Harness:
             history = status['occurrences']
             if len(history) != count or any(
                 row['execution_status'] not in {'succeeded', 'failed', 'interrupted', 'cancelled'}
-                or (row['delivery_status'] not in {'delivered', 'failed', 'unknown', 'not-required'}
+                or (row['delivery_status'] not in {'delivered', 'failed', 'unknown', 'not-required', 'cancelled'}
                     and not (pending_report and row['delivery_status'] == 'pending' and row['delivery_error']))
                 for row in history
             ):
