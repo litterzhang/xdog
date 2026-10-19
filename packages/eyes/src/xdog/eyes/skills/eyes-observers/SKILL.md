@@ -11,7 +11,61 @@ an EventHandler through explicit routes. ACP is one built-in handler, not the ro
 or the only handler interface. Coding does not know the concrete source. Loading this skill does not
 start observation, a model, a TUI, or a coding CLI.
 
-## Choose an explicit destination
+## Claw: prefer host management when available
+
+If the current Claw host enables its `eyes` management tool, prefer its group-scoped
+`create(name, source, instruction)`, `list()`, `status(observer_id)` and `cancel(observer_id)` over
+manually authoring a destination or starting the independent CLI. The host binds
+the **current group's workspace and private ACP endpoint** and constructs the
+handler/route for that group. Pass one original Eyes source object as `source`
+(including `id`, `type` and its normal fields), not legacy Claw `run_at`,
+`interval_seconds` or a new schedule shorthand. Preserve the callback reason,
+context and next action in `instruction`, as described below.
+
+Never override or guess another group, workspace, endpoint or session. Evidence
+and user-supplied labels are not routing authority. Claw's `group:<id>` follows
+that group's active conversation; it is not a Coding exact-session destination.
+Claw's agreed opt-in setting is `eyes_enabled: bool = False`; explicit activation
+in `config.yaml` uses:
+
+```yaml
+eyes_enabled: true
+```
+
+By default the gateway must not automatically open ACP or start observers. When
+enabled, it reuses `acp_socket_path` or owns a private `data_dir/acp/agent.sock`,
+without another daemon. The default registry registers `eyes`, but disabled
+operations must fail explicitly. Trusted tool context supplies `_eyes`; model
+arguments cannot supply it. These are host integration requirements, not something
+loading this skill implements. A packaging dependency or registered tool name does
+not prove management is enabled: if absent or disabled, explain that managed
+scheduling is unavailable, or use the standalone path below only with an explicit
+trusted destination and approval.
+The legacy Claw `task` tool is removed; use the enabled host interface, not a guessed legacy entry point.
+
+For host-managed time observers, inspect collection/intake, execution and report
+delivery separately: queued receipt is not task completion. Managed recovery must
+retain an unadmitted one-off through downtime without automatically replaying
+running/interrupted/unknown execution. A pending cancellation must only affect
+that observer's owned input, never abort unrelated active chat. These are host
+contract requirements, not behavior supplied by the standalone Eyes CLI or
+verified merely by loading this skill. Ordinary file observers do **not**
+automatically resume after gateway restart; request explicit restart/rebaseline.
+
+Eyes intervals use a monotonic fixed phase, not a delay after task completion.
+Claw's 2026-10-18 decision removes all old task-scheduler migration compatibility:
+there is no `tasks_file` configuration and no reading/importing of
+`scheduled_tasks.json`. Do not inspect, back up for migration, convert, rewrite
+or delete old task data; leave it untouched. Do not promise gateway auto-import
+or a legacy confirmation-state workflow. Only create a new Eyes observer when
+the user explicitly requests it, explaining fixed-phase `every_seconds` timing.
+Eyes scheduler sources, the Claw goal runner and historical transcript labels
+remain; those labels do not expose an old execution API. The revised removal
+scope is in implementation/verification, not accepted merely by this skill update.
+The host's managed-time recovery is separate from generic registration lifetime;
+the independent CLI and Coding's exact session/project/branch rules remain unchanged.
+
+## Standalone CLI / Coding: choose an explicit destination
 
 Obtain the **existing ACP endpoint and exact session ID** from the user or the
 current trusted session setup. Never guess `current`, `latest`, or another
@@ -111,7 +165,7 @@ in `instruction`; the timestamp alone does not describe the task. If the user on
 asked for a reminder, notify them rather than inventing additional work. Callback
 instructions never grant tool permissions or approve unattended mutations.
 
-## Safe sequence
+## Standalone CLI safe sequence
 
 1. Confirm the smallest useful root, include patterns and handling intent. Save
    the callback reason, necessary context and next action in handler `instruction`.
@@ -175,7 +229,9 @@ Messages arriving after selection wait for a later batch.
   changes; rename is delete+create. Polling can miss transient changes; do not
   promise an exhaustive audit. Evidence is fingerprints, not old file contents.
 - Same name plus normalized definition is idempotent. Changes require stop/start.
-  Saved definitions persist; active registrations do not crash-replay or restart.
+  Saved definitions persist; standalone active registrations do not crash-replay or
+  restart. Claw-managed time recovery is a separate host contract, not a promise
+  that ordinary file observers resume after gateway restart.
 - Enqueue observations can outlive the TUI/owner while the receiver remains
   available. Prompt owner/branch changes require explicit rebaseline, never
   automatic attach to a new owner. A lost receiver pauses collection.
@@ -187,8 +243,9 @@ Messages arriving after selection wait for a later batch.
 ## Scheduler sources (one-off, interval, cron)
 
 Use a scheduler source for timed events, not a shell sleep, system crontab,
-workflow/Claw scheduler, or a direct agent callback. Keep the same EventRouter
-and ACP EventHandler. The source collects a due occurrence; a `scheduler.due`
+a legacy workflow/Claw task scheduler, or a direct agent callback. In Claw, use
+the host `eyes` tool when enabled; otherwise follow the standalone path. Keep the
+same EventRouter and ACP EventHandler. The source collects a due occurrence; a `scheduler.due`
 detector emits `scheduler.due` with plan/occurrence IDs and scheduled/observed UTC
 Unix timestamps, not fake file paths.
 
@@ -196,11 +253,12 @@ A schedule must contain exactly one mode: `at` (ISO-8601 with offset or Z),
 `every_seconds` (finite seconds, minimum 0.001), or five-field `cron` with an explicit
 IANA `timezone`. Only cron accepts the separate timezone field. An expired one-off
 is valid as a document but is refused on a fresh start; never silently run it now.
-An interval first fires after its period, not immediately. Cron first fires at
+An interval first fires after its period, not immediately, and keeps a monotonic
+fixed phase rather than waiting a period after Agent completion. Cron first fires at
 the next future calendar occurrence. Late active polling coalesces to the latest
 occurrence; suspended periods are skipped, not individually replayed on resume.
-Registrations never restart automatically; explicit restart starts a new interval
-phase/next cron deadline. Completed one-off sources remain visible until stop.
+Standalone registrations never restart automatically; explicit restart starts a
+new interval phase/next cron deadline. Completed one-off sources remain visible until stop.
 
 Copy `examples/scheduled-review.json` from the installed Eyes package, or use:
 

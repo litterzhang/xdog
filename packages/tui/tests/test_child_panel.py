@@ -185,7 +185,7 @@ def test_configured_start_requires_every_settings_page_and_resize_invalidates_re
     assert panel._mode == "config"
     panel.render(80)
     panel._input.set_text(json.dumps({"label": "Reviewer", "instructions": "long settings " * 50,
-                                      "tools": ["filesystem"], "max_tokens": 800}))
+                                      "tools": ["filesystem"]}))
     panel.handle_input(KeyEvent("enter"))
     assert panel._mode == "form" and panel._input.get_text() == "review task"
     panel.render(80)
@@ -222,7 +222,7 @@ def test_configured_start_requires_every_settings_page_and_resize_invalidates_re
 def test_preset_picker_only_applies_draft_and_final_review_contains_full_expanded_settings():
     from xdog.agent.supervision_config import ChildPresets
     presets = ChildPresets({"reviewer": {"description": "Review safely", "config": {
-        "instructions": "SPECIALIST-PRESET-TEXT", "tools": [], "max_tokens": 900}}})
+        "instructions": "SPECIALIST-PRESET-TEXT", "tools": [], "label": "Reviewer"}}})
     panel, actions, *_ = make()
     panel.configure = lambda value: presets.resolve(value).to_dict()
     chosen = []
@@ -249,7 +249,7 @@ def test_preset_picker_only_applies_draft_and_final_review_contains_full_expande
     assert "SPECIALIST-PRESET-TEXT" in content and '"preset": "reviewer"' in content
     panel.handle_input(KeyEvent("enter"))
     assert chosen[0][0] == "task" and chosen[0][1] == "read-only"
-    assert chosen[0][2]["max_tokens"] == 900 and chosen[0][2]["tools"] == []
+    assert chosen[0][2]["label"] == "Reviewer" and chosen[0][2]["tools"] == []
     panel.close()
 
 
@@ -665,5 +665,52 @@ def test_captured_queue_read_callback_cannot_borrow_closed_blurred_or_withdrawn_
         with pytest.raises(ValueError, match='owner changed'):
             captured()
         assert len(actions) == 1
+    finally:
+        panel.close()
+
+
+def test_child_roster_and_full_paired_history_remain_viewable_beyond_removed_count_limits():
+    roster = child_entries({"children": [entry(f"{index:012x}") for index in range(25)]})
+    assert len(roster) == 25
+    messages = [{"role": "user", "content": "Original task"}]
+    for index in range(10005):
+        messages.extend([
+            {"role": "assistant", "content": [{"type": "toolCall", "id": f"call-{index}",
+                                               "name": "read", "arguments": {"path": f"file-{index}"}}]},
+            {"role": "toolResult", "tool_call_id": f"call-{index}", "tool_name": "read",
+             "content": [{"type": "text", "text": f"RESULT-{index}"}]},
+        ])
+    records = child_records({**entry(), "messages": messages})
+    tools = [record for record in records if record.role == "tool"]
+    assert len(tools) == 10005 and "RESULT-0" in tools[0].body and "RESULT-10004" in tools[-1].body
+    assert tools[-1].id == "m20009:p0"
+    # Removing catalog count limits must not weaken per-row identities.
+    with pytest.raises(ValueError, match="identity"):
+        child_entries({"children": [entry()] * 25})
+
+
+@pytest.mark.parametrize("field,value", [("timeout", 120), ("max_model_calls", 16), ("max_tokens", 32000)])
+def test_config_json_uses_host_validation_and_removed_budget_fields_cannot_start_work(field, value):
+    import json
+
+    from xdog.agent.supervision_config import ChildConfig
+    panel, actions, *_ = make()
+    configured = []
+    panel.configure = lambda config: ChildConfig.from_dict(config).to_dict()
+    panel.configured_start = lambda *args: configured.append(args)
+    try:
+        panel.handle_input(KeyEvent("n"))
+        panel.handle_paste("task")
+        panel.render(80)
+        panel.handle_input(KeyEvent("g", ctrl=True))
+        panel.render(80)
+        panel._input.set_text(json.dumps({field: value}))
+        panel.handle_input(KeyEvent("enter"))
+        assert panel._mode == "config" and panel._error and not configured and not actions
+        panel._input.set_text(json.dumps({"label": "Reviewer", "tools": []}))
+        panel.handle_input(KeyEvent("enter"))
+        assert panel._mode == "form" and panel._config["label"] == "Reviewer"
+        assert not {"timeout", "max_model_calls", "max_tokens"} & panel._config.keys()
+        assert not configured and not actions  # Configuration still cannot bypass the visible final review.
     finally:
         panel.close()

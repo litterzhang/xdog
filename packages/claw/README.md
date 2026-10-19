@@ -5,8 +5,10 @@
 
 **Agent orchestration runtime.**
 
-Runs and supervises long-lived agent sessions: scheduling, a gateway, tool
-memory, and persistence backed by SQLite.
+A local-first gateway with one logical main Agent per group, durable Goals,
+supervised task Agents, long-term memory, and JSON/JSONL conversation persistence.
+Eyes provides opt-in observations and scheduling through the existing private group
+ACP inbox; SQLite is used for that inbox and optional memory-search indexes.
 
 ## Interactive terminal
 
@@ -61,6 +63,111 @@ its actual result. Interrupted execution is not automatically replayed.
 See [Claw/Eyes ACP design and setup](../../docs/claw-eyes-acp.md) for definition
 examples, scope/receipt/cancel semantics, recovery and limits. ACP is disabled by
 default; stopping Eyes does not stop Claw or retract accepted messages.
+
+## Scheduling: gateway-managed Eyes
+
+Claw now declares `xdog-eyes>=2.4.2`; croniter is owned by Eyes
+(`croniter>=2.0,<7`), not a direct Claw dependency. The scheduler source is in Eyes;
+Claw owns its group-scoped lifecycle, receipt records and report delivery.
+
+The group-scoped `eyes` tool exposes `create(name, source, instruction)`,
+`list()`, `status(observer_id)` and `cancel(observer_id)`. `source` is an original Eyes source object.
+The host binds the current group's workspace/private ACP endpoint and destination;
+callers cannot redirect observers into other groups. When that tool is enabled,
+prefer it over manually wiring a standalone CLI registration. The old `task` tool
+and old timer engine are removed. A registered `eyes` tool alone does not mean
+management is enabled; disabled operations return a clear configuration error.
+Standalone Eyes CLI/ACP setup above remains available and unchanged; Coding keeps
+its exact session/project/branch semantics, unlike Claw's active group conversation.
+
+The agreed host configuration is opt-in (`eyes_enabled: bool = False`):
+
+```yaml
+eyes_enabled: true
+```
+
+With the default `false`, no ACP endpoint or observer is automatically started.
+When enabled, the gateway reuses configured `acp_socket_path` or owns the private
+`data_dir/acp/agent.sock` endpoint, with no extra daemon. The default tool registry
+registers `eyes`; disabled operations must report an explicit error. Trusted tool
+context binds `_eyes` to the host, never to a model-selected host. These settings
+are managed by this gateway and joined during shutdown. Explicit standalone ACP
+opt-in is unchanged.
+
+Managed time recovery must retain an unadmitted `at` through downtime without
+silently losing it, while interrupted or unknown execution must **not** be
+automatically replayed. Execution status and report-delivery status must remain
+separate; queued receipt is not completed work. Cancelling an owned pending
+callback must not abort unrelated active chat or undo started effects. Ordinary
+file observation must not automatically resume after gateway restart.
+
+Eyes intervals have a monotonic **fixed phase**, not a delay after completion.
+The **2026-10-18 decision** removes the legacy task scheduler and all migration
+compatibility: no `tasks_file` configuration and no reading or importing
+`scheduled_tasks.json`, whether Eyes is enabled or disabled. Old user data stays
+untouched: do not delete, rewrite, back up for migration, or convert it into Eyes
+records or confirmation states. Users may explicitly request new Eyes observers;
+never automatically translate old schedules or replay missed periods.
+
+Eyes scheduler sources, the goal runner and historical transcript labels remain.
+See [Scheduling with Eyes](SCHEDULER.md) for the tool contract, source examples,
+recovery requirements and bounded storage limits. A known not-sent report can
+recover without a second Agent run; unknown channel effects are not automatically
+retried. The revised removal scope is **in implementation/verification**; earlier
+regression evidence applies to the superseded migration implementation, not final
+acceptance of this decision. Current status is tracked in
+[`claw-eyes-scheduler-requirements.json`](../../docs/claw-eyes-scheduler-requirements.json).
+
+## Group-owned Goals
+
+Each group has **one logical main Agent and one execution route**. A session is a
+persisted context/history unit, not another Agent identity. The main Agent creates
+and manages Goals, plans and revises tasks, assigns dedicated workers or performs
+assigned work itself, checks reports, and explicitly waits/cancels/closes children.
+There is no automatic planner to take over after `goal.create`, no second main
+Agent loop, and no legacy task scheduler.
+
+Goal workspaces live under `<group workspace>/.xdog/goals/<goal_id>/`. The `goal`
+tool persists the original conditions, revisions, task/attempt identities, reports,
+wait reasons and review state. Main-Agent management, each executor's bound report,
+and host-generated status/review records have separate writer responsibilities.
+A worker's `submitted` report is **not** task acceptance or Goal completion; the
+main Agent rereads the current attempt and evidence before accepting it. Only an
+actual user turn can authorize changes to Goal conditions, not a worker, Eyes event,
+or self-authored provenance.
+
+Completion requests and the Goal work's normal safe-stop boundary enter an
+independent, host-created reviewer Agent. It checks every original condition using
+actual artifacts/evidence; scripts and tests are evidence-gathering tools, never
+an automatic completion verdict. The host validates reviewer role, Goal revision
+and evidence freshness before recording completion. Missing/stale evidence,
+waiting, cancellation and failure never count as success. Ordinary chat is not
+subject to a Goal completion gate.
+
+With `eyes_enabled: true`, Goal-owned file observers send change hints through
+`group:<gid>` and the existing ACP/inbox to that same main Agent. Hints cause a
+reread/reconciliation, not trusted execution instructions or report acceptance.
+The host explicitly restores its owned observers and reconciles saved reports;
+ordinary file observers still do **not** automatically restart. Goal-owned internal
+notifications use trusted `notify_only` policy and are not automatically broadcast
+to WeChat; event provenance cannot change this policy. Unknown/interrupted effects
+are inspected, not automatically replayed.
+
+Unfinished Goals suppress automatic daily/idle context resets. An idle explicit
+`/new` or `/reset` may rotate context without deleting Goals or changing their group
+owner; active children must first settle. Goal work wakes on changed obligations,
+child completion or safe idle, with a 30-second fault-reconciliation fallback—not
+model polling. User input retains priority; waiting/no progress does not busy-spin.
+Use `goal.wait`, `pause`, `resume` or `abandon_goal` to manage Goal state; Goal resume
+is not the removed `/resume ID` historical-route control.
+
+Start with the packaged [claw-goals skill](src/xdog/claw/skills/claw-goals/SKILL.md),
+including its [task-worker](src/xdog/claw/skills/claw-goals/references/task-worker.md)
+and [goal-reviewer](src/xdog/claw/skills/claw-goals/references/goal-reviewer.md)
+roles. The current [objective](../../docs/claw-goals-objective.md),
+[group-owned design](../../docs/claw-session-goals-design.md) and
+[acceptance checklist](../../docs/claw-session-goals-requirements.json) track scope
+and verification; filenames containing `session` do not imply session-owned Goals.
 
 ## Messaging replies
 
@@ -274,13 +381,14 @@ queue viewer is read-only; child queue mutation/recovery stays in the main-Agent
 SDK path described below.
 
 
-### Gateway-owned session browsing and branch trees
+### Gateway-owned read-only history and context rotation
 
 **Alt+R / `/sessions`** opens the group's searchable archived-session browser;
-`/tree` shows branches and stable checkpoints. `/` searches, Up/Down/PgUp/PgDn
-navigates, Right enters a tree, Left returns, Enter activates, `r` refreshes,
-`n` creates a new session, and Escape exits search/closes without changing the
-draft. Shortcuts are configurable (`sessions`, `tree`); tree is unbound by default.
+`/tree` inspects historical checkpoints and legacy branch records, not executable
+routes. `/` searches, Up/Down/PgUp/PgDn navigates, Right inspects a tree, Left returns,
+**Enter or v opens read-only source**, `r` refreshes, and Escape exits search/closes
+without changing the draft. There is no history-browser activation or `n` new-context
+shortcut. Shortcuts are configurable (`sessions`, `tree`); tree is unbound by default.
 
 `/name` inspects the current session name; `/name NAME` sets a durable plain-text
 name and `/name -` clears it. Names take precedence over automatic summaries in
@@ -302,32 +410,30 @@ It never substitutes the footer cache. Reads may run during an active model turn
 they do not reserve execution, create an Agent, load history or reset run timers.
 While a metadata journal/navigation owner is settling, a bounded background read
 waits without blocking the socket reader. Escape cancels that read first, not the
-active turn. A changed active session requires explicit `/sessions` refresh/resume;
-failed, withdrawn, canceled or disconnected reads do not replay or fall back to
-cached metadata. The reply is an owner-bound snapshot, not a continuous name watch.
+active turn. When context changes, refresh/reconnect synchronizes the group's
+current context; it never activates an archived conversation. Failed, withdrawn,
+canceled or disconnected reads do not replay or fall back to cached metadata. The reply is an owner-bound snapshot, not a continuous name watch.
 
-`/resume ID`, `/new`, `/fork [INDEX]`, `/branch [SESSION] ID`, and `/goto INDEX`
-are direct controls with one-based checkpoints. Updated gateways advertise
-session-control version 1; older/offline gateways receive no unsupported operation.
-Changes require an idle **group**, not just an idle client, and an expected active
-session ID. The gateway retains the per-group lock while durable work settles,
-scopes IDs/catalogs to the group, and refuses stale/foreign/invalid selections.
+`/new` and `/reset` rotate the current context, not the group's logical main Agent
+or its Goals. Changes require an idle **group**, not just an idle client; active
+children must settle first. New-context controls carry the expected active-context
+identity and reject stale or historical target fields. `/resume ID`, `/fork`,
+`/branch` and `/goto` are removed; the gateway and runtime explicitly reject their
+old route-switching operations rather than merely hiding them in the UI.
 
-A durable catalog retains archived sessions instead of losing their metadata on
-reset. Older orphan JSONL archives are recovered only inside an explicitly
-owned group directory, never guessed across shared stores. Branch parentage and
-return checkpoints are retained, and safe checkpoint selection cannot split tool
-batches. Explicit resume is recorded so an old session does not immediately
-trigger another daily reset. Group workspace/model policy remains group-owned.
+A durable catalog retains archived conversations instead of losing metadata on
+reset. Older orphan JSONL archives are recovered only inside an explicitly owned
+group directory, never guessed across shared stores. Existing branch/checkpoint
+files remain untouched and readable as historical evidence; they cannot become
+the active execution route. Group workspace/model policy stays group-owned.
 
-After mutation, correlated metadata and bounded history chunks rebuild the
-visible context/editor recall without clearing native scrollback or the draft.
-The client waits for history completion before sending. Unexpected active-session
-changes require explicit refresh/resume; version-1 sends carry a session lease so
-a stale view cannot silently address another conversation. Uncertain operations
-are not replayed on reconnect: inspect gateway state before retrying. Navigation
-uses no model calls; metadata I/O is off the event loop. Linux/tmux is tested;
-Other Linux desktop/IME behavior remains unverified.
+After context rotation, correlated metadata and bounded history chunks synchronize
+the visible context/editor recall without clearing native scrollback or the draft.
+The client waits for history completion before sending. Reconnect synchronizes only
+the group's current context and never replays uncertain inputs or control requests;
+inspect state before explicitly retrying. History inspection and context controls
+make no model calls, and metadata I/O stays off-loop. Linux/tmux is tested;
+other Linux desktop/IME behavior remains unverified.
 
 ### Image drafts and clipboard inputs
 
@@ -616,9 +722,10 @@ the original idle owner with child/storage work settled, persist before publicat
 and do not submit a model turn. Claw additionally fences controls to its ready
 original group/session/connection; uncertain requests are not replayed.
 
-Access state survives session/branch restore. Historical saved planning state is
-read only for compatibility: a retained restriction is not silently cleared by
-navigation, and malformed state fails closed. These are host policy gates, not an
+Access state for the current context survives gateway restart. Historical saved
+planning/access state is read-only compatibility data, not authority to switch an
+execution route or release a retained restriction. Malformed state fails closed;
+new/reset controls do not grant tool approval. These are host policy gates, not an
 OS sandbox or a restriction on arbitrary trusted Python code.
 
 ### Trusted Python extensions (runtime API v1)
@@ -697,8 +804,9 @@ Extensions can now call `api.append_entry("note", {"text": "durable data"})` fro
 an active callback. Host-owned JSON entries are bounded, independently namespaced
 per extension and committed before the callback receipt is returned. Subsequent
 callback context contains that extension's `context["entries"]`; unload/reload
-retains it. Session/new/branch activation follows the selected durable snapshot,
-not process globals. Old owners cannot publish entry writes after navigation.
+retains it. Restart restores the current context's durable snapshot, not process
+globals. New/reset rotates the context; archived session/branch snapshots cannot
+be activated. Retired owners cannot publish writes into a successor context.
 Close invalidates late writes, so shutdown callbacks should not append entries.
 
 Register `api.context(callback)` to transform the ephemeral message list before
@@ -743,10 +851,12 @@ interception or custom-layout authority. Registered shortcuts, basic dialogs, ri
 results and session-owned providers have their separate contracts below. Extension
 code is still trusted code with the user's privileges, not an OS sandbox.
 
-Claw caches independent atomic extension-entry session/branch sidecars at startup;
-transcript-catalog recovery cannot discard them. Branching from a selected branch
-inherits its entries rather than the current head. Invalid sidecars are explicit
-errors, not empty state. Session-owned workers are recreated for branch activation.
+Claw loads the current context's independent atomic extension-entry sidecars at
+startup; transcript-catalog recovery cannot discard them. Invalid sidecars are
+explicit errors, not empty state. Legacy session/branch sidecars remain historical
+data: they do not offer branch activation or worker restoration into an alternate
+route. Context rotation retires old workers; startup rebuilds workers only for the
+current group context and its trusted extension configuration.
 
 
 ### Interactive extension dialogs
@@ -772,7 +882,7 @@ output review retain higher focus priority. An affirmative extension confirmatio
 never grants the underlying agent tool permission or switches host read-only scope.
 
 Dialog IDs are host-generated and scoped to their session/request/run/connection.
-Timeout, abort, navigation, disconnect and shutdown settle/cancel pending futures;
+Timeout, abort, context rotation, disconnect and shutdown settle/cancel pending futures;
 late/foreign answers cannot resume a successor's callback. Claw command waits are
 connection-owned background jobs so the socket can still process UI replies and
 other controls while the group remains reserved. Context-hook dialogs still share
@@ -800,19 +910,31 @@ retain authority. Read-only children permit only known read-only filesystem call
 and current time. User starts require idle group ownership, while inspect/cancel/
 wait controls remain reader-responsive even if the parent waits for a child.
 
-Bounds are three active children, 16 retained records, 120-second execution deadline,
-16 model calls, 32,000 reported tokens and bounded transcript/input retention. Token
-usage is a stop threshold, not exact provider billing; cleanup/persistence can extend
-past the execution deadline. Socket jobs are bounded and start replay receipts prevent
-duplicate child work on one connection. Expected-session checks fence stale controls;
-active children prevent navigation/schema changes and automatic daily/idle resets.
-Daemon shutdown settles child owners before shared extension/MCP resources close.
+The main Agent manages child concurrency, progress, waiting, cancellation and
+closure. There is **no fixed child execution timeout, model-call count, cumulative
+token quota, active-child concurrency cap or retained-record count cap**. A parent
+turn ending does not close still-working children. Long tool loops use native Agent
+compaction with durable original-history checkpoints when the adapter supplies the
+required model metadata; they are not stopped by a cumulative-history budget.
 
-Session/branch child sidecars persist final transcripts/results and isolated extension
-entries; interrupted work is never restarted automatically. Closing archives records
-while freeing the retained slot. Corrupt catalogs disable delegation with an explicit
-repair diagnostic, not the parent UI. Group/channel/memory/goal/skill services execute on their original host
-loop; shared parent validation stays serial and cannot borrow a parent dialog lease.
+Permissions, actual model context/output/vision limits, bounded protocol frames,
+single-message/persistence-chunk guards, input/image collection checks and labeled
+display retention limits remain. They protect individual operations/resources,
+not a hidden task-lifetime quota. Tool/extension RPC deadlines, explicit user
+cancellation and host shutdown still settle their actual owners; no permission or
+OS sandbox is implied. Socket jobs and replay receipts remain bounded. Expected
+context checks fence stale controls; active children prevent context/schema changes
+and automatic daily/idle resets. Daemon shutdown settles child owners before shared
+extension/MCP resources close.
+
+Current-context child records persist final results, isolated extension entries and
+chunked complete transcript history; legacy branch records remain historical data,
+not another execution route. Interrupted work is never restarted automatically.
+Closing archives a record without deleting its evidence; it is not needed to free a
+fixed record quota. Corrupt catalogs disable delegation with an explicit repair
+diagnostic, not the parent UI. Group/channel/memory/goal/skill services execute on
+their original host loop; shared parent validation stays serial and cannot borrow
+a parent dialog lease.
 `/agents` opens a live roster and focused complete-source browser/search/selection,
 with visible child-specific control forms, opt-in fullscreen and scoped reviewed
 copy/export/share. Child source has its own checksummed/coalescing 64 KiB transport
@@ -842,10 +964,10 @@ still uses silent no-UI answers to avoid borrowing its separate dialog reservati
 Complex extension forms are removed; basic child dialogs retain these ownership and cancellation checks.
 
 
-### Child specialization and limits
+### Child specialization and resource boundaries
 
 `/agents start --label Reviewer --instructions "Inspect only" --tools filesystem,current_time
---fresh --timeout 60 --calls 4 --tokens 8000 -- TASK` specializes a child without
+--fresh -- TASK` specializes a child without
 changing parent permissions. Options precede the task; `--` preserves a task that
 starts with flags. Plain tasks preserve quotes/newlines. `--tools none` gives the
 child no executable tools; otherwise selected names must exist in its inherited tool
@@ -854,11 +976,14 @@ fail visibly. Instructions append to, rather than replace, parent restrictions.
 
 In `/agents` press `n`, then Ctrl+G for settings JSON. Supported keys are `label`,
 `instructions`, `tools` (array or null for inherited tools), `inherit_context`,
-`timeout`, `max_model_calls` and `max_tokens`. Enter applies the settings draft only;
+`model`, `thinking` and `preset`. Enter applies the settings draft only;
 start review requires every page to be painted before confirmation. Resize invalidates
 that review. This confirmation does NOT approve tool use. Effective settings persist
-with child results and appear in complete child source. Request/token caps may be
-lowered, not raised above 16 / 32,000; token usage is not exact billable accounting.
+with child results and appear in complete child source. The removed `--timeout`,
+`--calls`, `--tokens` flags and `timeout`/`max_model_calls`/`max_tokens` child config
+keys are rejected on new starts; historical saved values are inert compatibility
+data, not restored limits. Actual model output/context options remain separate from
+a removed cumulative child token quota; usage is not exact billable accounting.
 `--fresh` omits canonical history/child entry inheritance, not mandatory parent
 validation/context or the shared workspace. Model/reasoning inherit by default; explicit overrides now use the actual adapter.
 Named presets now use explicit user configuration. Claw specialized
@@ -882,8 +1007,9 @@ host native-tool overrides. Switching to a nonreasoning model disables inherited
 reasoning; unsupported positive choices fail visibly. Model switches omit inherited/
 transformed provider continuity and old reasoning from the CHILD copy, leaving parent
 provenance/history intact. Transformed images are validated; oversized switched-model
-contexts fail a conservative byte-based preflight with fresh/lower-output/larger-model
-guidance, not automatic summarization or exact token accounting. Parent model/options/
+contexts are checked against the actual model window/output allowance. Native
+compaction can maintain later tool-loop context; it is not exact token accounting
+or permission to silently drop invalid images or switch providers. Parent model/options/
 settings/grants never change. Named presets now use explicit user configuration.
 
 
@@ -900,17 +1026,14 @@ using this descriptor shape:
       "config": {
         "instructions": "Review requested code; return findings with file locations.",
         "tools": ["filesystem", "current_time"],
-        "inherit_context": false,
-        "max_model_calls": 4,
-        "max_tokens": 8000
+        "inherit_context": false
       }
     }
   }
 }
 ```
 
-Browse `/agents presets`, or use `/agents start --preset reviewer --tokens 6000 --
-TASK`. Explicit flags override template fields. Ctrl+P selects a template in a new
+Browse `/agents presets`, or use `/agents start --preset reviewer -- TASK`. Explicit flags override template fields. Ctrl+P selects a template in a new
 child form, Ctrl+G adjusts the draft, and full expanded settings/task review still
 precedes execution. Selection itself makes no model request. Templates cannot encode
 access/permission changes, code/imports, recursion or provider activation. Starts
@@ -1067,7 +1190,7 @@ remote MCP calls are never retried by it. Serialized schema caching is capped at
 32 entries/4 MiB. Schema/value bytes, depth and node counts are bounded; these are
 application limits, **not** OS-enforced filesystem/network/memory sandboxing.
 
-Bounded JSON tool details now survive save/reload/branches in both clients, preserving
+Bounded JSON tool details survive save/reload and read-only historical source in Claw, preserving
 typed structured output and null-presence flags. Live/non-JSON handles stay transient.
 Transcripts may contain sensitive structured values: keep them private. Actual current/
 legacy peers, both app permission paths and Linux/private-tmux inspectors are verified;
@@ -1765,7 +1888,7 @@ not replayed. Unload/reload/close generations fence results and make the explici
 alias unavailable rather than silently routing to a built-in.
 
 Child model overrides use the independently created CHILD extension worker and
-retain existing child context/vision/reasoning/budget guards and parent tool
+retain actual model context/vision/reasoning and protocol/resource guards and parent tool
 restrictions; selecting a child provider does not switch the parent's model.
 Existing primary routing and native/global provider registration are unchanged.
 Owned worker/client/child and production Linux/private-tmux model-selection paths
@@ -1824,7 +1947,8 @@ implicit reload. Bootstrap errors are reported cleanly by the CLI.
 
 Claw activates configured aliases before its owned gateway reports readiness. Its
 explicit model selection is saved atomically in a session-owned model sidecar;
-restart/resume restores that alias and the corresponding worker/limits. Selection
+gateway restart restores the current context's alias and corresponding worker/model
+limits; this does not offer historical-session activation. Selection
 persistence completes before the live model is changed. Invalid/symlinked/excessive
 saved model files or unavailable trusted registrations fail, not choose a primary
 provider. Image metadata comes from the active extension registration, not a global
@@ -1926,9 +2050,8 @@ model to call a tool:
 ```
 
 Changes require an idle owning group/session, including its children. Selection is
-session-wide metadata, persisted separately from transcript bodies; switching a
-branch within the same session does not change it. A new session starts with its
-own selection. A missing sidecar means no selection; malformed metadata is rejected.
+current-context metadata, persisted separately from transcript bodies. Archived
+branch selections cannot be activated; a new context starts with its own selection. A missing sidecar means no selection; malformed metadata is rejected.
 
 Session-scoped skill instructions are included in the cacheable system prefix.
 Turn-scoped instructions are supplied only in the current request's messages,
@@ -1970,11 +2093,12 @@ context. Both manual gateway requests and automatic pre-turn compaction use the
 same session-owned contract. Complete typed preparation is transferred without
 preview clipping; retention boundaries, conflict/failure handling, and immutable
 callback copies are validated. Source/details metadata persists in tagged summary
-entries and branches, including restoration of prior summary context. Neither hook
+entries and durable historical checkpoints, including restart of the committed
+current summary context; historical checkpoint activation is not supported. Neither hook
 borrows TUI command/dialog/navigation authority or grants tool permissions. See the
 Agent package's owned compaction extension documentation for the exact contract.
 
-### Recovering context before compaction
+### Inspecting context from before compaction
 
 Each successful manual or automatic compaction creates a durable **Before
 compaction #N** branch containing the complete original JSONL conversation,
@@ -1984,24 +2108,23 @@ later replacement failure may leave an extra safe checkpoint but does not produc
 a successful compaction receipt. Admitted writes and publication remain owned
 through repeated cancellation, with no automatic replay.
 
-Use `/tree` to find and explicitly restore the checkpoint. Normal navigation
-retains a return head and restores access/extension-entry context, without
-submitting a model turn or changing tool permissions. The transcript viewer can
-then search/copy/export the restored source. Restoration is conversation-only;
-workspace files are not reverted, and normal idle/group/session/tool-boundary
-checks still apply. The optional `recovery_branch_id` in committed compaction
+Use `/tree` to find the checkpoint and **Enter/v** to inspect it read-only.
+Search/copy/export uses that saved source without replacing the active context,
+restoring permissions/extension workers, reverting workspace files or submitting a
+model turn. There is no checkpoint activation, return-head route or `/goto`. The optional `recovery_branch_id` in committed compaction
 metadata identifies the source checkpoint.
 
 Markdown conversation archives now have random unique suffixes, are created
 exclusively rather than overwritten, and use private `0600` permissions on POSIX.
 Even simultaneous same-second compactions preserve their separate archive files.
 These Markdown artifacts are supplementary human-readable archives; lossless
-restoration uses the typed recovery branch, not parsed Markdown.
+historical source uses the typed checkpoint, not parsed Markdown. Neither archive
+format is a command to resume an old execution route.
 
 ### View saved context without activating it
 
 Select a saved session/branch in `/sessions` or `/tree` and press **v** for a
-read-only full-source view. **Enter** still means activate. Explicit equivalents:
+read-only full-source view; **Enter** also views without activation. Explicit equivalents:
 
 ```text
 /transcript branch BRANCH_ID
@@ -2023,40 +2146,27 @@ workflow. Loading/unavailable views cannot export another conversation as fallba
 Closing returns to the active parent draft. This is individual saved-source browsing,
 not an automatically merged/deduplicated timeline of every branch.
 
-### Staged saved-session/provider navigation
+### No saved-route activation
 
-Resume, branch restore, and checkpoint navigation now prepare a target AgentSession
-before retiring the current cached owner or changing the active pointer. The stage
-uses the target's saved model, reasoning, transcript, access state, extension entries,
-branch child scope, and the group's existing tools/permission configuration. Startup
-entry/access writes are buffered and target UI is not published during validation.
-Missing providers, failed startup, unsupported saved effort, and canceled preparation
-leave the current owner intact; no provider/model fallback is attempted.
+Claw does not stage or construct a target AgentSession to resume, branch, fork or
+return to a historical checkpoint. Those runtime and gateway controls, the target
+session staging module and their UI activation paths are removed. Existing saved
+transcripts, provider/access/extension metadata and checkpoints remain available
+for read-only inspection and ordinary export; they cannot replace the group's
+current owner or start another main Agent. Coding's independent route/branch
+features are unchanged.
 
-A successful admission commits target managed state, then adopts the prepared Agent
-and worker once—startup is not replayed against the live target. Buffered entry writers
-and access/inspection/child-service context are rebound to the owning group and
-its real gateway loop. Follow-on entries and plans persist to the active target.
+Necessary new/reset operations retain idle/group ownership and cancellation
+settlement. They rotate only the current context, preserve group Goals, and never
+turn an uncertain control receipt into an automatic replay. Restart restores the
+committed current context, not a user-selected archived route.
 
-Navigation is a connection-owned job rather than a blocked gateway reader operation.
-On an updated gateway, Escape cancels pending navigation while other inspection
-controls remain responsive. Cancellation before admission discards the prepared
-owner. Once a managed commit is admitted, repeated cancellation waits for disk and
-in-memory publication before releasing the group. If that commit completed, the
-client synchronizes the actual new context rather than claiming a rollback or replaying
-navigation. Older gateways explicitly lack the cancellation capability.
+### Durable metadata and legacy journal recovery
 
-Managed multi-file navigation writes have private rollback copies and cache snapshots;
-an ordinary I/O failure restores the prior target/pointer state and removes transaction
-temporary files. Individual file writes remain atomic replacements. This is **not** a
-power-loss-atomic multi-file database transaction; abrupt process/OS termination and
-failure of rollback itself remain storage limitations. Trusted extension external
-filesystem/network side effects are likewise not rollbackable or OS-sandboxed.
-
-### Interrupted navigation recovery
-
-Claw navigation now writes a durable undo journal before changing managed session,
-branch, entry, access, catalog, and active-pointer files. Private checksummed backups
+The persistence layer retains its durable undo journal for managed metadata writes
+and recovery of existing interrupted transactions. This crash-consistency mechanism
+is not a current historical-route switching API. It can cover session, historical
+checkpoint, entry, access, catalog and active-pointer files. Private checksummed backups
 are flushed before the prepared manifest is published. Managed replacement names are
 synced before a committed marker is published. The store recovers interrupted work
 **before** loading any session index or exposing access/extension state:
@@ -2065,7 +2175,7 @@ synced before a committed marker is published. The store recovers interrupted wo
   targets. Backup copies remain intact throughout replay, so another interruption
   during recovery can be retried safely.
 - A committed marker retains the complete new state and finishes cleanup; a failed
-  housekeeping cleanup is not reported as a failed/rolled-back navigation commit.
+  housekeeping cleanup is not reported as a failed/rolled-back managed commit.
 - All backup identities/checksums and managed destination names are validated before
   any recovery writes. Corrupt/missing/unowned recovery data blocks opening the store,
   rather than silently dropping metadata or exposing a mixed state.
@@ -2082,7 +2192,9 @@ Recovery was verified with abrupt offline process termination at managed-write a
 recovery boundaries. This improves the previous multi-file interruption limitation;
 it is not a claim about failing hardware, filesystems that ignore durability requests,
 or untested Linux storage power-loss behavior. Directory fsync and advisory-lock guarantees
-require the documented Linux filesystem semantics. Trusted extension external side effects remain outside this journal.
+require the documented Linux filesystem semantics. Trusted extension external side
+effects remain outside this journal; recovery never authorizes model/tool replay or
+an archived route's activation.
 
 ### Exact slash-command submission
 
@@ -2204,8 +2316,9 @@ without an advertised model profile; no images are silently converted to text.
 
 Retained-context counts use the advertised model limits, **not** the four-image
 composer limit. Unspecified counts do not impose that per-draft limit on retained
-history. Existing neutral payload and child transcript/persistence budgets remain
-in force. Offline tests cover both actual application child factories, retained
+history. Neutral payload, per-message/persistence-chunk and image collection
+resource guards remain; complete child history is chunked without a cumulative
+execution-history quota. Offline tests cover both actual application child factories, retained
 user/tool images and a real owned context-hook worker. Existing private-terminal
 child approval/recovery checks are separate compatibility evidence, not an image
 attachment UI test. Native child start/steering/follow-up image drafts and typed submission are
@@ -2234,13 +2347,14 @@ receipt is disclosed again on reopening. Reopening never automatically submits.
 The normal input limits are four PNG/JPEG/WebP images per draft, 10 MiB each.
 Editor retention is shared with other local attachments; the child runtime has
 its own 40 MiB retained-image and serialized-collection guards. Images no longer
-consume the 512 KiB **text/metadata** transcript budget. Initial images are saved
+consume the 512 KiB **text/metadata** single-message/chunk resource allowance;
+that allowance is not a cumulative child-history limit. Initial images are saved
 before child execution and preserved when factory setup fails; canonical and
 unadmitted queue images persist without truncation. Reload does not restart work.
 Switched-model context preflight no longer treats base64 transport as plain text
 but uses a rough image allowance alongside the conservative text guard. This is
 not exact provider token accounting or a promise that any image fits any model.
-Final actual-context model validation and all existing permission/budget rules apply.
+Final actual-context model validation, permissions and protocol/resource guards still apply.
 
 SDK callers can pass `images=tuple[ImageContent, ...]` to `ChildSupervisor.start`
 or its steering/follow-up `control` methods. The application child APIs propagate
@@ -2312,7 +2426,7 @@ variants) refuses immediately without a disk job, command/socket request or back
 `saved-child-drafts` files are neither inspected, migrated nor deleted.
 
 The panel derives entries only from its exact current cache. Opening recovery in
-a new session/branch/connection context keeps only that current cache and drops
+a new current-context/connection scope keeps only that current cache and drops
 old references rather than guessing/adopting another scope. A new application owner does not restore transient edits. Preview,
 focus/geometry changes, stale source identity and replaced/closed views cannot
 reuse old review proof. **p** opens the retained read-only image preview; returning

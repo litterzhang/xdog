@@ -196,8 +196,8 @@ async def test_direct_route_does_not_duplicate_tui_output_to_channels(orch):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_steer_mode_calls_executor_steer(tmp_path):
-    """When agent is running and STEER mode is configured, executor.steer() is called."""
+async def test_steer_mode_queues_and_consumes_identified_human_input(tmp_path):
+    """Human steering keeps the same executor and is identified before consumption."""
     config = ClawConfig(data_dir=str(tmp_path / "data"))
     steer_config = GroupConfig(queue_mode=QueueMode.STEER)
 
@@ -234,24 +234,29 @@ async def test_steer_mode_calls_executor_steer(tmp_path):
 
     steered = []
     runtime = o._runtimes["steer_group"]
-    original_steer = runtime.steer
-    def track_steer(content):
-        steered.append(content)
-        return original_steer(content)
-    runtime.steer = track_steer
-
     # Send first message (starts the agent turn)
     task1 = asyncio.create_task(
         o.route_message(UserInput(group_id="steer_group", content="first", sender="user"))
     )
     try:
         await asyncio.wait_for(entered.wait(), 5)
+        session = runtime._active_session
+        original = session.queue_human_input
+        def track(message, delivery):
+            steered.append((message.content, delivery))
+            return original(message, delivery)
+        session.queue_human_input = track
         # Send while the first stream is held, not merely scheduled.
         await o.route_message(UserInput(group_id="steer_group", content="urgent", sender="user"))
-        assert steered == ["urgent"]
+        assert steered == [("urgent", "steer")]
+        assert [item.content for item in session.agent.pending_inputs()] == ["urgent"]
     finally:
         release.set()
         try:
             await asyncio.wait_for(task1, 5)
+            assert runtime._active_session is session and call_count[0] == 2
+            from xdog.claw.core.persistence.transcript_convert import entry_text
+            history = runtime.transcript_store.load_transcript(session.meta.session_id)
+            assert sum(row.get('role') == 'user' and entry_text(row) == 'urgent' for row in history) == 1
         finally:
             await o.stop()

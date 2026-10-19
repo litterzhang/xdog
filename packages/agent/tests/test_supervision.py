@@ -60,8 +60,7 @@ async def test_start_inspect_wait_close_persists_once_and_emits_owned_status():
 
 @pytest.mark.parametrize("kwargs", [
     {"task": ""}, {"task": "x" * 16001}, {"task": "x", "access": "all"},
-    {"task": "x", "access": []}, {"task": "x", "timeout": float("nan")},
-    {"task": "x", "timeout": True}, {"task": "x", "timeout": 601},
+    {"task": "x", "access": []},
     {"task": "x", "inherit_context": 1},
 ])
 async def test_invalid_start_does_not_create_owner(kwargs):
@@ -84,8 +83,7 @@ async def test_persistence_holds_slot_and_canceled_control_until_settlement():
         ids = [await owner.start(str(i)) for i in range(3)]
         await until(entered.is_set)
         assert owner.active
-        with pytest.raises(ValueError, match="concurrency"):
-            await owner.start("fourth")
+        ids.append(await owner.start("fourth"))
         operation = asyncio.create_task(owner.control("cancel", ids[0]))
         await asyncio.sleep(0.02)
         operation.cancel()
@@ -97,7 +95,7 @@ async def test_persistence_holds_slot_and_canceled_control_until_settlement():
         with pytest.raises(asyncio.CancelledError):
             await operation
         await until(lambda: not owner.active)
-        assert len(saved) == 3
+        assert len(saved) == 4
     finally:
         release.set()
         await owner.aclose()
@@ -123,18 +121,17 @@ async def test_close_rejects_new_work_while_persistence_drains():
     assert not owner._thread.is_alive()
 
 
-async def test_record_limit_requires_explicit_close():
+async def test_catalog_exceeds_old_record_limit_and_close_remains_explicit():
     owner = ChildSupervisor(factory)
     try:
         identifiers = []
-        for _ in range(16):
+        for _ in range(20):
             identifier = await owner.start("task")
             await owner.control("wait", identifier)
             identifiers.append(identifier)
-        with pytest.raises(ValueError, match="16 record"):
-            await owner.start("overflow")
+        assert len(owner.snapshot()["children"]) == 20
         await owner.control("close", identifiers[0])
-        await owner.start("replacement")
+        assert len(owner.snapshot()["children"]) == 19
     finally:
         await owner.aclose()
 
@@ -155,56 +152,55 @@ async def test_children_reject_recursive_or_parent_plan_tools(name):
         await owner.aclose()
 
 
-async def test_model_call_and_token_guards_are_enforced_without_factory_cooperation():
+async def test_model_calls_and_reported_tokens_cross_old_boundaries_without_clamping_output():
+    from xdog.ai.types import StreamOptions
     limits = []
     async def execute(*args, **kwargs):
         return AgentToolResult(content=(TextContent(text="small"),))
     def looping(spec, publish):
-        msg = AssistantMessage(content=(ToolCall(id="call", name="read", arguments={}),))
-        return Agent(done_stream(msg, limits), config=AgentConfig(model="test/dummy"),
+        def stream(model, context, options):
+            limits.append(options.max_tokens)
+            message = AssistantMessage(
+                content=((ToolCall(id=f"call-{len(limits)}", name="read", arguments={}),)
+                         if len(limits) < 25 else (TextContent(text="finished"),)),
+                usage=replace(Usage(), total_tokens=32000))
+            return done_stream(message)(model, context, options)
+        return Agent(stream, config=AgentConfig(model="test/dummy", options=StreamOptions(max_tokens=4096)),
                      tools=[AgentTool(name="read", parameters={"type": "object"}, execute=execute)])
     owner = ChildSupervisor(looping)
     try:
-        identifier = await owner.start("task")
-        result = await owner.control("wait", identifier)
-        assert result["status"] == "failed" and "budget" in result["error"]
-        assert result["calls"] == 16 and limits == [32000] * 16
-    finally:
-        await owner.aclose()
-
-    limits.clear()
-    def expensive(spec, publish):
-        msg = AssistantMessage(content=(ToolCall(id="call", name="read", arguments={}),),
-                               usage=replace(Usage(), total_tokens=32000))
-        return Agent(done_stream(msg, limits), config=AgentConfig(model="test/dummy"),
-                     tools=[AgentTool(name="read", parameters={"type": "object"}, execute=execute)])
-    owner = ChildSupervisor(expensive)
-    try:
-        identifier = await owner.start("task")
-        result = await owner.control("wait", identifier)
-        assert result["status"] == "failed" and "budget" in result["error"]
-        assert result["calls"] == 1 and result["tokens"] == 32000
+        result = await owner.control("wait", await owner.start("task"))
+        assert result["status"] == "completed" and result["calls"] == 25
+        assert result["tokens"] == 25 * 32000 and limits == [4096] * 25
     finally:
         await owner.aclose()
 
 
-async def test_output_limit_is_aggregate_and_persists_last_safe_transcript():
+async def test_complete_tool_pairs_cross_old_aggregate_text_limit_and_persist(tmp_path):
+    from xdog.agent.history import validate_checkpoint
+    from xdog.agent.messages import dicts_to_messages
+    from xdog.agent.supervision_store import ChildStore
     calls = []
     async def execute(*args, **kwargs):
         calls.append(1)
         return AgentToolResult(content=(TextContent(text="x" * (MAX_TRANSCRIPT_BYTES // 3)),))
     def large(spec, publish):
-        msg = AssistantMessage(content=(ToolCall(id="call", name="read", arguments={}),))
-        return Agent(done_stream(msg), config=AgentConfig(model="test/dummy"),
+        def stream(model, context, options):
+            msg = AssistantMessage(content=((ToolCall(id=f"call-{len(calls)}", name="read", arguments={}),)
+                if len(calls) < 10 else (TextContent(text="done"),)))
+            return done_stream(msg)(model, context, options)
+        return Agent(stream, config=AgentConfig(model="test/dummy"),
                      tools=[AgentTool(name="read", parameters={"type": "object"}, execute=execute)])
-    saved = []
-    owner = ChildSupervisor(large, saved.append)
+    store = ChildStore(tmp_path)
+    owner = ChildSupervisor(large, store.save, begin=store.begin, persist_admission=store.save_admission)
     try:
-        identifier = await owner.start("task")
-        result = await owner.control("wait", identifier)
-        assert result["status"] == "failed" and "aggregate" in result["error"]
-        assert len(calls) == 3 and len(saved) == 1
-        assert len(str(saved[0])) < MAX_TRANSCRIPT_BYTES
+        result = await owner.control("wait", await owner.start("task"))
+        assert result["status"] == "completed" and len(calls) == 10
+        loaded = store.load()[0]
+        assert loaded["messages"] == result["messages"]
+        assert len(str(loaded["messages"])) > MAX_TRANSCRIPT_BYTES
+        typed = dicts_to_messages(loaded["messages"])
+        validate_checkpoint(typed, len(typed) - 1)
     finally:
         await owner.aclose()
 
@@ -224,7 +220,7 @@ async def test_persistence_failure_is_visible_and_callback_failure_does_not_stra
         await owner.aclose()
 
 
-async def test_steering_follow_up_cancel_and_deadline_use_real_agent():
+async def test_steering_follow_up_and_explicit_cancel_use_real_agent():
     agents = []
     def blocking(spec, publish):
         def stream(model, context, options):
@@ -248,9 +244,6 @@ async def test_steering_follow_up_cancel_and_deadline_use_real_agent():
         assert result["status"] == "canceled" and not agents[0].is_streaming
         with pytest.raises(ValueError, match="not running"):
             await owner.control("steer", identifier, "late")
-        identifier = await owner.start("deadline", timeout=1)
-        result = await owner.control("wait", identifier)
-        assert result["status"] == "timed-out" and not owner.active
     finally:
         await owner.aclose()
 
@@ -324,10 +317,10 @@ async def test_tool_proxies_only_control_their_owner_and_validate_defaults():
     other = ChildSupervisor(factory)
     try:
         spawn, control = owner.tools()
-        result = await spawn.execute("call", {"task": "task", "inherit_context": False, "timeout": 5})
+        result = await spawn.execute("call", {"task": "task", "inherit_context": False})
         identifier = result.content[0].text
         await owner.control("wait", identifier)
-        assert specs[0].access == "read-only" and not specs[0].inherit_context and specs[0].timeout == 5
+        assert specs[0].access == "read-only" and not specs[0].inherit_context
         with pytest.raises(ValueError, match="another supervisor"):
             await other.control("cancel", identifier)
         result = await control.execute("list", {"action": "list"})
@@ -567,4 +560,62 @@ async def test_progress_retention_clips_explicitly_without_canceling_valid_tool_
         assert result["status"] == "completed" and "small final" in str(result["messages"])
     finally:
         release.set()
+        await owner.aclose()
+
+
+async def test_main_owner_can_run_more_than_old_concurrency_and_catalog_limits_and_aclose_all():
+    entered, cleaned = [], []
+    def blocking(spec, publish):
+        def stream(model, context, options):
+            async def generate():
+                entered.append(spec.id)
+                try:
+                    await asyncio.Event().wait()  # Deliberately ignores the abort event.
+                    yield DoneEvent(message=AssistantMessage())
+                finally:
+                    cleaned.append(spec.id)
+            return EventStream.from_async_generator(generate())
+        return Agent(stream, config=AgentConfig(model="test/dummy"))
+    saved = []
+    owner = ChildSupervisor(blocking, saved.append)
+    try:
+        ids = [await owner.start("task", access="inherit", inherit_context=False,
+                                 config={"label": "Goal", "instructions": "Work", "tools": []}) for _ in range(20)]
+        await until(lambda: len(entered) == 20)
+        assert len(owner.snapshot()["children"]) == 20 and owner.active
+        inspected = await owner.control("inspect", ids[0])
+        assert inspected["status"] == "running" and not inspected["config"]["inherit_context"]
+        assert (await owner.control("cancel", ids[0]))["status"] == "canceled"
+        await owner.control("close", ids[0])
+    finally:
+        await owner.aclose()
+    assert set(cleaned) == set(ids) and len(saved) == 20 and not owner.active
+    assert all(record["status"] == "canceled" for record in saved)
+    assert not owner._thread.is_alive()
+
+
+async def test_advancing_service_clock_beyond_old_120_and_600_seconds_does_not_end_child():
+    entered = threading.Event()
+    def blocking(spec, publish):
+        def stream(model, context, options):
+            async def generate():
+                entered.set()
+                await options.cancel.wait()
+                yield DoneEvent(message=AssistantMessage(stop_reason="aborted"))
+            return EventStream.from_async_generator(generate())
+        return Agent(stream, config=AgentConfig(model="test/dummy"))
+    owner = ChildSupervisor(blocking)
+    try:
+        identifier = await owner.start("long running task")
+        await until(entered.is_set)
+        async def advance():
+            loop = asyncio.get_running_loop()
+            original = loop.time
+            loop.time = lambda: original() + 601
+        await owner._bridge(advance())
+        # Let any previously scheduled deadline callbacks execute on the service loop.
+        await asyncio.sleep(0.02)
+        assert (await owner.control("inspect", identifier))["status"] == "running"
+        assert (await owner.control("cancel", identifier))["status"] == "canceled"
+    finally:
         await owner.aclose()

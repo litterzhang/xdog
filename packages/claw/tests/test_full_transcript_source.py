@@ -78,7 +78,7 @@ async def source(reader, writer, session, *, nonce="source", group="main"):
     return received[-1]["records"]
 
 
-async def test_foreign_session_unknown_group_and_same_session_navigation_fence_source(gateway):
+async def test_foreign_session_unknown_group_and_context_rotation_fence_source(gateway):
     server, path, calls = gateway
     runtime = server._orchestrator._runtimes["main"]
     meta = runtime.transcript_store.create_session("main")
@@ -102,15 +102,18 @@ async def test_foreign_session_unknown_group_and_same_session_navigation_fence_s
         with patch.object(source_protocol, "prepare_source", side_effect=prepare):
             await send(writer, dict(type="source_read", request_id="held", group_id="main", session_id=meta.session_id))
             assert await asyncio.to_thread(entered.wait, 5)
-            # Same session ID, different head. No source may be committed under
-            # the old revision even though an ID-only guard would accept it.
-            await send(peer_writer, dict(type="session_control", request_id="goto", action="goto", group_id="main",
-                                         session_id=meta.session_id, index=0, expected_session=meta.session_id))
+            # Context rotation invalidates an already prepared source read;
+            # historical goto/route switching no longer exists in Claw.
+            await send(peer_writer, dict(type="session_control", request_id="new", action="new", group_id="main",
+                                         expected_session=meta.session_id))
             assert (await read(peer_reader, "session_result"))["success"]
             await read(peer_reader, "session_changed")
             release.set()
             assert "changed" in (await read(reader, "source_error"))["error"].lower()
-        assert len(await source(reader, writer, meta.session_id, nonce="fresh")) == 1
+        current = runtime.get_new_session_id()
+        assert current != meta.session_id
+        assert len(await source(reader, writer, current, nonce="fresh")) == 0
+        assert len(runtime.transcript_store.load_transcript(meta.session_id)) == 2
         assert not calls
     finally:
         release.set()

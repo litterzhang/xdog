@@ -1,14 +1,13 @@
-"""Planning — goals (what to do) and schedules (when to do it).
+"""Planning — goals (what to do); Eyes owns observations and time.
 
-Both domains own their tools and register them with the tool registry.
+Domain tools are registered here; only Eyes computes trigger deadlines.
 """
 from xdog.claw.core.planning.goal_tracker import GoalTracker
-from xdog.claw.core.planning.task_scheduler import TaskScheduler
 from xdog.claw.core.tools.registry import register
+from xdog.claw.core.tools.tool_eyes import create_eyes_tool
 from xdog.claw.core.tools.tool_goal import create_goal_tool
-from xdog.claw.core.tools.tool_task import create_task_tool
 
 register("goal", create_goal_tool)
-register("task", create_task_tool)
+register("eyes", create_eyes_tool)
 
-__all__ = ["GoalTracker", "TaskScheduler"]
+__all__ = ["GoalTracker"]

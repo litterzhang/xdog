@@ -11,11 +11,15 @@ These files are human-readable AND serve as the goal agent's context.
 """
 from __future__ import annotations
 
+import json
 import logging
-import shutil
+import os
+import stat
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from xdog.claw.core.planning.task_reports import _parent, _validate_id
 from xdog.claw.core.types import (
     Goal,
     GoalTask,
@@ -27,6 +31,29 @@ from xdog.claw.core.types import (
 logger = logging.getLogger(__name__)
 
 
+def ensure_private_directory(path: Path) -> None:
+    """Create private directories without following any symlink component."""
+    path = path.absolute()
+    if '..' in path.parts:
+        raise ValueError("Goal workspace cannot traverse parent components")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    directory = os.open('/', flags)
+    try:
+        for part in path.parts[1:]:
+            try:
+                os.mkdir(part, 0o700, dir_fd=directory)
+            except FileExistsError:
+                pass
+            # Also sync existing entries: they may be visible from a prior
+            # mkdir whose parent fsync failed before the caller got an ACK.
+            os.fsync(directory)
+            child = os.open(part, flags, dir_fd=directory)
+            os.close(directory)
+            directory = child
+    finally:
+        os.close(directory)
+
+
 class GoalWorkspace:
     """Manages markdown files in a goal's workspace directory.
 
@@ -34,9 +61,10 @@ class GoalWorkspace:
     """
 
     def __init__(self, goals_dir: Path) -> None:
-        self._goals_dir = goals_dir
+        self._goals_dir = goals_dir.absolute()
 
     def goal_dir(self, goal_id: str) -> Path:
+        _validate_id(goal_id, "goal_id")
         return self._goals_dir / goal_id
 
     # -- Lifecycle --------------------------------------------------------
@@ -44,22 +72,16 @@ class GoalWorkspace:
     def init_workspace(self, goal: Goal) -> None:
         """Create goal workspace with all three files."""
         d = self.goal_dir(goal.id)
-        d.mkdir(parents=True, exist_ok=True)
+        self._mkdir(d)
         self.write_goal(goal)
         self.write_status(goal)
         initial_plan = (
             f"# Plan: {goal.title}\n\n"
             "## Current Strategy\n"
-            "(Initial plan pending — goal agent will create one)\n\n"
+            "(The group main Agent maintains the strategy; no automatic planner)\n\n"
             "## Decision Log\n"
         )
         self.write_plan(goal.id, initial_plan)
-
-    def remove_workspace(self, goal_id: str) -> None:
-        """Remove goal workspace directory."""
-        d = self.goal_dir(goal_id)
-        if d.exists():
-            shutil.rmtree(d)
 
     # -- goal.md (written once at creation) -------------------------------
 
@@ -79,6 +101,9 @@ class GoalWorkspace:
         lines.append("")
 
         self._write(goal.id, "goal.md", "\n".join(lines))
+        self._write(goal.id, 'contract.json', json.dumps({'format': 'xdog.goal.contract.v1',
+            'goal_id': goal.id, 'description': goal.description,
+            'conditions': list(goal.verification.conditions)}, ensure_ascii=False, indent=2))
 
     def read_goal(self, goal_id: str) -> str:
         """Read goal.md content."""
@@ -144,17 +169,67 @@ class GoalWorkspace:
 
     # -- Private I/O ------------------------------------------------------
 
+    def write_assignment(self, goal_id: str, task_id: str, content: str) -> None:
+        self._write(goal_id, f"tasks/{task_id}/assignment.md", content)
+
+    def write_review(self, goal_id: str, review_id: str, verdict: object) -> None:
+        self._write(goal_id, f"reviews/{review_id}.json", json.dumps(verdict, ensure_ascii=False, indent=2))
+
+    _mkdir = staticmethod(ensure_private_directory)
+
+    def ensure_task_dir(self, goal_id: str, task_id: str = '') -> Path:
+        root = self.goal_dir(goal_id) / 'tasks'
+        if task_id:
+            _validate_id(task_id, 'task_id')
+            root = root / task_id
+        self._mkdir(root)
+        return root
+
     def _write(self, goal_id: str, filename: str, content: str) -> None:
-        d = self.goal_dir(goal_id)
-        d.mkdir(parents=True, exist_ok=True)
-        (d / filename).write_text(content, encoding="utf-8")
+        target = self.goal_dir(goal_id) / filename
+        if '..' in target.parts:
+            raise ValueError('Unsafe goal workspace path')
+        self._mkdir(target.parent)
+        with _parent(target) as (directory, name):
+            try:
+                if not stat.S_ISREG(os.stat(name, dir_fd=directory, follow_symlinks=False).st_mode):
+                    raise ValueError('Goal workspace destination must be a regular file')
+            except FileNotFoundError:
+                pass
+            temporary = '.goal-' + uuid.uuid4().hex + '.tmp'
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                         0o600, dir_fd=directory)
+            try:
+                with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+                    stream.write(content)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+                os.fsync(directory)
+            finally:
+                try:
+                    os.unlink(temporary, dir_fd=directory)
+                except FileNotFoundError:
+                    pass
 
     def _read(self, goal_id: str, filename: str) -> str:
         path = self.goal_dir(goal_id) / filename
-        if not path.exists():
-            logger.warning("Goal workspace file missing: %s", path)
-            return ""
-        return path.read_text(encoding="utf-8")
+        try:
+            with _parent(path) as (directory, name):
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                try:
+                    if not stat.S_ISREG(os.fstat(fd).st_mode):
+                        raise ValueError('Goal workspace documents must be regular files')
+                    with os.fdopen(fd, 'rb', closefd=False) as stream:
+                        data = stream.read(1024 * 1024 + 1)
+                finally:
+                    os.close(fd)
+            if len(data) > 1024 * 1024:
+                raise ValueError('Goal document exceeds one MiB; archive explicitly, never truncate')
+            return data.decode('utf-8')
+        except FileNotFoundError:
+            logger.warning('Goal workspace file missing: %s', path)
+            return ''
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +249,7 @@ def _format_verification(v: Verification) -> list[str]:
     """Format verification criteria for goal.md."""
     lines = [f"Method: {v.method}"]
     if v.method == VerificationMethod.SCRIPT:
-        lines.append(f"Script: `{v.script}`")
+        lines.append(f"Historical script reference (not a completion verdict): `{v.script}`")
     elif v.conditions:
         for c in v.conditions:
             lines.append(f"- {c}")

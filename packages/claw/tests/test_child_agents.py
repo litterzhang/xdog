@@ -306,17 +306,17 @@ async def test_claw_configured_child_gateway_and_cli_restrict_tools_and_preserve
         # Session created outside this UI; refresh its lease before explicit start.
         ui._gateway_session_id = session.meta.session_id
         ui._agents_command('start --label Reviewer --instructions "CLAW-SPECIALIST" --tools current_time '
-                           '--tokens 900 --calls 2 --fresh -- write')
+                           '--fresh -- write')
         await wait(lambda: len(contexts) == 2 and not session.children.supervisor.active and not ui._children_pending)
         assert "CLAW-SPECIALIST" in str(contexts[0].system_prompt)
         assert "PARENT-HISTORY-MARKER" not in str(contexts[0].messages)
         assert [tool.name for tool in contexts[0].tools] == ["current_time"]
         assert not (tmp_path / "workspace" / "target").exists()
         record = session.children.store.load()[0]
-        assert record["config"]["label"] == "Reviewer" and record["config"]["max_tokens"] == 900
+        assert record["config"]["label"] == "Reviewer" and "max_tokens" not in record["config"]
         assert session.agent.messages[0].content == "PARENT-HISTORY-MARKER"
         ui._open_children()
-        ui._child_configured_start("plain", "read-only", {"label": "UI specialist", "tools": [], "max_tokens": 600})
+        ui._child_configured_start("plain", "read-only", {"label": "UI specialist", "tools": []})
         await wait(lambda: len(contexts) == 3 and not session.children.supervisor.active and not ui._children_pending)
         assert not contexts[-1].tools
         assert any(record["config"]["label"] == "UI specialist" for record in session.children.store.load())
@@ -429,8 +429,7 @@ async def test_claw_preset_catalog_cli_and_picker_apply_frozen_template_without_
     from xdog.tui.keys import KeyEvent
     calls = []
     presets = {"reviewer": {"description": "Read-only review", "config": {
-        "instructions": "CLAW-PRESET-INSTRUCTIONS", "tools": ["current_time"], "inherit_context": False,
-        "max_tokens": 900, "max_model_calls": 2}}}
+        "instructions": "CLAW-PRESET-INSTRUCTIONS", "tools": ["current_time"], "inherit_context": False}}}
     config = ClawConfig(model="test/model", data_dir=str(tmp_path / "data"),
         socket_path=str(tmp_path / "presets.sock"), pid_file=str(tmp_path / "presets.pid"),
         groups=(GroupDef(id="main", is_main=True, workspace=str(tmp_path / "workspace")),), child_presets=presets)
@@ -458,9 +457,9 @@ async def test_claw_preset_catalog_cli_and_picker_apply_frozen_template_without_
         ui._child_panel.render(80)
         ui._child_panel.handle_input(KeyEvent("enter"))
         chosen = ui._child_panel._config
-        assert chosen["preset"] == "reviewer" and chosen["max_model_calls"] == 2 and not calls
+        assert chosen["preset"] == "reviewer" and "max_model_calls" not in chosen and not calls
         ui._close_children()
-        ui._agents_command("start --preset reviewer --tokens 800 write")
+        ui._agents_command("start --preset reviewer write")
         await wait(lambda: len(calls) == 2 and not ui._children_pending)
         session = server._orchestrator._runtimes["main"]._active_session
         await wait(lambda: not session.children.supervisor.active)
@@ -468,7 +467,7 @@ async def test_claw_preset_catalog_cli_and_picker_apply_frozen_template_without_
         assert "CLAW-PRESET-INSTRUCTIONS" in str(calls[0].system_prompt)
         assert [tool.name for tool in calls[0].tools] == ["current_time"]
         saved = session.children.store.load()[0]
-        assert saved["config"]["max_tokens"] == 800 and saved["config"]["preset"] == "reviewer"
+        assert "max_tokens" not in saved["config"] and saved["config"]["preset"] == "reviewer"
         ui._agents_command("presets")
         await wait(lambda: ui._child_panel is not None and ui._child_panel._presets)
         ui._child_configured_start("plain", "read-only", chosen)

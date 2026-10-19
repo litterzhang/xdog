@@ -106,8 +106,11 @@ class GroupInbox:
                        "attempt_id TEXT NOT NULL DEFAULT '', response TEXT NOT NULL DEFAULT '', "
                        "error TEXT NOT NULL DEFAULT '', session_id TEXT NOT NULL DEFAULT '', "
                        "UNIQUE(group_id, cwd, message_id))")
+            from xdog.claw.core.observers.store import initialize, recover_started
+            initialize(db)
             db.execute("UPDATE messages SET status='interrupted', error='Receiver stopped during execution; "
                        "inspect effects before explicitly sending a new message' WHERE status='running'")
+            recover_started(db)
         self._transaction(initialize)
 
     async def scope(self, group_id: str, cwd: Path) -> str:
@@ -127,13 +130,23 @@ class GroupInbox:
                 if existing["payload"] != canonical:
                     raise ValueError("Message ID already has different content")
                 return _row(existing), True
+            owned = db.execute('SELECT o.*,s.enabled,s.revision AS current_revision '
+                               'FROM managed_occurrences o JOIN managed_observers s ON s.observer_id=o.observer_id '
+                               'WHERE o.group_id=? AND o.cwd=? AND o.message_id=?',
+                               (group_id, str(cwd), message.id)).fetchone()
+            status = 'pending'
+            if owned is not None:
+                if owned['payload'] != canonical:
+                    raise ValueError('Managed occurrence content does not match the host outbox')
+                if owned['cancelled'] or not owned['enabled'] or owned['revision'] != owned['current_revision']:
+                    status = 'cancelled'
             active, total = db.execute("SELECT count(CASE WHEN status IN ('pending','running') THEN 1 END), count(*) "
                                       "FROM messages WHERE group_id=? AND cwd=?", (group_id, str(cwd))).fetchone()
-            if active >= self.max_pending or total >= 4096:
+            if status == 'pending' and active >= self.max_pending or total >= 4096:
                 raise ValueError("Inbox capacity exceeded; no message was dropped")
-            db.execute("INSERT INTO messages (group_id,cwd,message_id,payload,status) VALUES (?,?,?,?,'pending')",
-                       (group_id, str(cwd), message.id, canonical))
-            return InboxRecord(group_id, cwd, decode_input(json.loads(canonical)), "pending"), False
+            db.execute("INSERT INTO messages (group_id,cwd,message_id,payload,status) VALUES (?,?,?,?,?)",
+                       (group_id, str(cwd), message.id, canonical, status))
+            return InboxRecord(group_id, cwd, decode_input(json.loads(canonical)), status), False
         return await self._disk(enqueue)
 
     async def records(self, group_id: str, cwd: Path) -> tuple[InboxRecord, ...]:

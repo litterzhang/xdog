@@ -50,35 +50,6 @@ class Group:
 
 
 # ---------------------------------------------------------------------------
-# Task scheduling
-# ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class TaskSchedule:
-    cron: str | None = None
-    interval_seconds: int | None = None
-    run_at: float | None = None
-    timezone: str = ""
-
-
-@dataclass(frozen=True)
-class ScheduledTask:
-    id: str = ""
-    group_id: str = ""
-    prompt: str = ""
-    schedule: TaskSchedule = field(default_factory=TaskSchedule)
-    enabled: bool = True
-    last_run: float | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-    created_at: float = 0.0
-    next_run: float | None = None
-    last_attempt: float | None = None
-    last_error: str | None = None
-    status: str = "pending"
-    delivery_status: str = "pending"
-
-
-# ---------------------------------------------------------------------------
 # Session
 # ---------------------------------------------------------------------------
 
@@ -171,6 +142,8 @@ class GoalStatus(StrEnum):
     ACTIVE = "active"
     COMPLETED = "completed"
     ABANDONED = "abandoned"
+    PAUSED = "paused"
+    BLOCKED = "blocked"
 
 
 class TaskStatus(StrEnum):
@@ -178,6 +151,9 @@ class TaskStatus(StrEnum):
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
     SKIPPED = "skipped"
+    SUBMITTED = "submitted"
+    BLOCKED = "blocked"
+    INTERRUPTED = "interrupted"
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +161,7 @@ class TaskStatus(StrEnum):
 # ---------------------------------------------------------------------------
 
 class VerificationMethod(StrEnum):
-    SCRIPT = "script"           # bash command, exit 0 = pass
+    SCRIPT = "script"           # Historical codec only; never a completion verdict
     CONDITIONS = "conditions"   # list of conditions, LLM evaluates all-true
 
 
@@ -199,7 +175,7 @@ class VerificationResult(StrEnum):
 class Verification:
     """How to verify a goal or task is actually done."""
     method: VerificationMethod = VerificationMethod.CONDITIONS
-    script: str = ""                        # bash command (when method=script)
+    script: str = ""                        # Historical reference, never executed by Goal Gate
     conditions: tuple[str, ...] = ()        # checklist (when method=conditions)
 
 
@@ -225,6 +201,10 @@ class GoalTask:
     depends_on: tuple[str, ...] = ()                          # task IDs that must complete first
     verification: Verification | None = None
     last_verification_run: VerificationRun | None = None
+    attempt_id: str = ""
+    agent_id: str = ""
+    report_revision: int = 0
+    report_digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -240,6 +220,19 @@ class Goal:
     updated_at: float = 0.0
     verification: Verification = field(default_factory=Verification)
     last_verification_run: VerificationRun | None = None
+    revision: int = 1
+    phase: str = "working"
+    wait_reason: str = ""
+    observer_id: str = ""
+    pending_notice: str = ""
+    notice_state: str = "pending"
+    review_child_id: str = ""
+    review_execution: str = ""
+    review_revision: int = 0
+    review_fingerprint: str = ""
+    review_output: str = ""
+    review_paths: tuple[str, ...] = ()
+    auto_continue: bool = True
 
 
 @dataclass(frozen=True)

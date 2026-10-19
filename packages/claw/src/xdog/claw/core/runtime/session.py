@@ -10,6 +10,7 @@ import asyncio
 import inspect
 import logging
 import re
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
@@ -36,7 +37,7 @@ from xdog.agent.access import AccessScope, AccessState, read_only_call
 from xdog.agent.context_messages import ContextMessages
 from xdog.agent.extensions.dialogs import DialogBroker
 from xdog.agent.extensions.runtime import ExtensionRuntime
-from xdog.agent.extensions.state import ExtensionEntries, validate_entries
+from xdog.agent.extensions.state import ExtensionEntries
 from xdog.agent.types import HandledInput
 from xdog.ai.types import (
     AssistantMessage,
@@ -68,7 +69,15 @@ from xdog.claw.core.runtime.display_events import (
     ToolUpdated,
 )
 from xdog.claw.core.runtime.transcript_source import SourceCapture, SourceTool
-from xdog.claw.core.types import ExternalInput, GroupInput, SessionMeta, SystemInput, UserInput
+from xdog.claw.core.types import (
+    ExternalInput,
+    GoalStatus,
+    GroupInput,
+    SessionMeta,
+    SystemInput,
+    SystemInputKind,
+    UserInput,
+)
 
 if TYPE_CHECKING:
     from xdog.claw.core.runtime.group import GroupRuntime
@@ -110,10 +119,14 @@ class AgentSession:
     - Delegates steer/follow_up/abort to Agent
     """
 
+    children: ClawChildren
+
     def __init__(self, *, runtime: GroupRuntime, session_meta: SessionMeta) -> None:
         self._runtime = runtime
         self._meta = session_meta
         self._group_id = runtime.group.id
+        self._goal_touched: set[str] = set()
+        self._goal_human_inputs: dict[str, str] = {}
         self._compaction_metadata: dict[str, Any] | None = None
         self._has_compaction_entry = False
         self._compacting = False
@@ -202,7 +215,8 @@ class AgentSession:
                 "_memory_manager": runtime.memory,
                 "_skill_manager": runtime.skill_manager,
                 "_goal_manager": runtime.goal_manager,
-                "_task_scheduler": runtime.task_scheduler,
+                "_goal_agent": self,
+                "_eyes": runtime.observers,
             },
             transform_context=self._extension_context,
             before_tool_call=self._before_tool_call,
@@ -210,6 +224,7 @@ class AgentSession:
             input_transform=self._transform_user_input,
         )
 
+        self._goal_input_unsubscribe = self._agent.subscribe(self._observe_goal_human_input)
         self.children = ClawChildren(self)
         self._agent.set_tools((*self._agent.state.tools, *self.children.supervisor.tools()))
         if self._tool_selection_restore_pending:
@@ -271,6 +286,8 @@ class AgentSession:
         self._source_call_ids.clear()
 
     def dispose(self) -> None:
+        self._goal_input_unsubscribe()
+        self._goal_human_inputs.clear()
         self.children.supervisor.close()
         self.extension_dialogs.close()
         self.extensions.close()
@@ -636,6 +653,29 @@ class AgentSession:
         if retained != self._active_skills:
             await self._save_selected_skills(tuple(sorted(retained)), update_agent=False)
 
+    def _observe_goal_human_input(self, event: Any) -> None:
+        if isinstance(event, InputConsumedEvent) and event.input.id in self._goal_human_inputs:
+            channel = self._goal_human_inputs.pop(event.input.id)
+            self._goal_user_authorized = True  # Authorize only after this real user input is actually consumed.
+            self._source_channels[len(self._agent.messages) - 1] = channel
+        elif isinstance(event, (InputHandledEvent, InputRejectedEvent)):
+            self._goal_human_inputs.pop(event.input_id, None)
+
+    def queue_human_input(self, message: UserInput, delivery: str) -> None:
+        from typing import cast
+
+        from xdog.agent.input_queue import Delivery
+        if (isinstance(message, ExternalInput) or message.metadata.get('input_origin', 'user') != 'user'
+                or delivery not in {'steer', 'follow_up'}):
+            raise ValueError('Only host-identified human input can authorize Goal controls')
+        if message.images:
+            self._runtime.validate_images(message.images)
+        pending = {item.id for item in self._agent.pending_inputs()}
+        self._goal_human_inputs = {key: value for key, value in self._goal_human_inputs.items() if key in pending}
+        identifier = 'claw-human-' + uuid.uuid4().hex
+        self._agent.queue_input(identifier, message.content, cast(Delivery, delivery), message.images)
+        self._goal_human_inputs[identifier] = message.channel or 'user'
+
     def steer(self, content: str) -> None:
         self._agent.steer(content)
 
@@ -646,80 +686,46 @@ class AgentSession:
         self.children.supervisor.abort()
         self._agent.abort()
 
-    # -- Branching ---------------------------------------------------------------
-
-    def create_branch(self, *, at_index: int | None = None) -> str | None:
-        self._children_idle()
-        import uuid
-        messages = list(self._agent.state.messages)
-        branch_point = at_index if at_index is not None else len(messages) - 1
-        if branch_point < 0:
-            return None
-        branch_id = uuid.uuid4().hex[:8]
-        snapshot = messages_to_transcript(messages[:branch_point + 1])
-        if snapshot and self._has_compaction_entry:
-            snapshot[0].update(is_compaction=True, compaction=self._compaction_metadata)
-        selected = (self._saved_active_tools if self._tool_selection_restore_pending
-                    else self._agent.active_tool_selection)
-        self._store.save_branch(self._meta.session_id, branch_id, snapshot,
-                               metadata={'active_tools': list(selected) if selected is not None else None})
-        return branch_id
-
-    def restore_branch(self, branch_id: str) -> bool:
-        self._children_idle()
-        if self._agent.state.is_streaming:
-            raise RuntimeError("Branch restoration requires an idle agent")
-        transcript = self._store.load_branch(self._meta.session_id, branch_id)
-        if transcript is None:
-            return False
-        state = AccessState.from_dict(self._store.branch_access(
-            self._meta.session_id, branch_id)).retain_restriction(self.access.state)
-        entries = self._store.get_extension_entries(self._meta.session_id, branch_id)
-        validate_entries(entries)
-        from xdog.agent.extensions.compaction import saved_record
-        restored_compaction = next((saved_record(entry.get('compaction')) for entry in reversed(transcript)
-                                   if entry.get('is_compaction') is True), None)
-        messages = transcript_to_messages(transcript)
-        if self._runtime._active_session is not self:
-            raise ValueError('Branch restoration requires the current session owner')
-        selected = self._store.get_active_tools(self._meta.session_id, branch_id)
-        self._agent.validate_active_tools(self._agent.active_tool_selection,
-                                         expected_revision=self._agent.tool_selection_revision)
-        self._store.commit_navigation(self._group_id, self._meta.session_id, branch_id, transcript,
-                                      state.to_dict(), entries, branches=[], active_tools=selected)
-        self._compaction_metadata = restored_compaction
-        self._has_compaction_entry = bool(transcript and transcript[0].get('is_compaction') is True)
-        self._runtime._source_revision += 1
-        self._agent.replace_messages(messages)
-        self._source_channels = {index: str(entry.get("channel", "")) for index, entry in enumerate(transcript)}
-        self._source_tools.clear()
-        self._source_call_ids.clear()
-        self._persisted_count = len(messages)
-        self.children.supervisor.close()
-        self.extension_dialogs.close()
-        self.extensions.close()
-        self._runtime._retired_extensions.append(self.extensions)
-        old_aliases = self.extensions.aliases
-        self._agent.set_tools(tuple(tool for tool in self._agent.state.tools if tool.name not in old_aliases))
-        self._load_extensions()
-        self.access.close()
-        self.access = AccessScope(state, lambda value: self._store.save_access(self._meta.session_id, value.to_dict()))
-        self.children = ClawChildren(self)
-        base = tuple(tool for tool in self._agent.state.tools if tool.name not in {"agent_spawn", "agent_control"})
-        self._agent.set_tools((*base, *self.children.supervisor.tools()))
-        self._saved_active_tools = selected
-        self._tool_selection_restore_pending = selected is not None
-        self._agent.set_active_tools([] if selected is not None else None,
-                                     expected_revision=self._agent.tool_selection_revision)
-        return True
-
-    def list_branches(self) -> list[str]:
-        branches: list[str] = self._store.list_branches(self._meta.session_id)
-        return branches
-
     # -- Turn execution --------------------------------------------------------
 
-    async def run_turn(
+    def _goal_pending_label(self) -> str:
+        for identifier in self._goal_touched:
+            goal = self._runtime.goal_manager.tracker.get_goal(identifier)
+            if goal is not None and goal.status not in {GoalStatus.COMPLETED, GoalStatus.ABANDONED}:
+                return '[Goal 尚未验收完成]\n'
+        return ''
+
+    async def run_turn(self, input: GroupInput, on_text_delta: Any = None, *,
+                       on_display_event: Any = None,
+                       on_assistant_message: Callable[[str], Awaitable[None]] | None = None,
+                       child_ui: tuple[str, Callable[[dict[str, Any]], None]] | None = None) -> TurnResult:
+        try:
+            result = await self._run_turn(input, on_text_delta, on_display_event=on_display_event,
+                on_assistant_message=on_assistant_message, child_ui=child_ui)
+        except asyncio.CancelledError:
+            for identifier in self._goal_touched:
+                self._runtime.goal_manager.on_turn_end(goal_id=identifier, error='Cancelled; explicit resume required')
+            raise
+        notice = getattr(self, '_goal_notice', None)
+        if notice is not None:
+            identifier, text = notice
+            manager = self._runtime.goal_manager
+            current = manager.owned(self._group_id, identifier)
+            if current.pending_notice == text:
+                manager._put(current, pending_notice='',
+                             notice_state='interrupted' if result.error else 'acknowledged')
+        goal_error = result.error or ''
+        if result.input_handled and not goal_error:
+            goal_error = 'Goal input handled without model work; explicit continuation required'
+        for identifier in self._goal_touched:
+            self._runtime.goal_manager.on_turn_end(goal_id=identifier, tool_calls=len(result.tool_calls),
+                                                   error=goal_error)
+        label = self._goal_pending_label()
+        if label and result.response_text:
+            return replace(result, response_text=label + result.response_text)
+        return result
+
+    async def _run_turn(
         self,
         input: GroupInput,
         on_text_delta: Any = None,
@@ -744,6 +750,25 @@ class AgentSession:
                     on_text_delta(event.delta)
             on_display_event = _compat_display_event
         self._restore_messages()
+        self._goal_touched.clear()
+        self._goal_user_authorized = (isinstance(input, UserInput) and not isinstance(input, ExternalInput)
+                                     and input.metadata.get('input_origin', 'user') == 'user')
+        if isinstance(input, SystemInput) and input.kind == SystemInputKind.GOAL_RUNNER:
+            goal_id = input.metadata.get('goal_id')
+            if isinstance(goal_id, str):
+                self._goal_touched.add(goal_id)
+        self._goal_notice: tuple[str, str] | None = None
+        if isinstance(input, ExternalInput) and isinstance(input.metadata.get('_goal_id'), str):
+            manager = self._runtime.goal_manager
+            identifier = input.metadata['_goal_id']
+            saved = manager.owned(self._group_id, identifier)
+            current = await manager.reconcile(saved)
+            if (current.status != GoalStatus.ACTIVE or not current.pending_notice
+                    or current.notice_state in {'running', 'interrupted'}):
+                return TurnResult(input_handled=True)  # Coalesced or paused: no duplicate model work.
+            manager._put(current, notice_state='running')
+            self._goal_notice = (identifier, current.pending_notice)
+            self._goal_touched.add(identifier)
         context_snapshot = (await self.context_messages.capture()
             if isinstance(input, UserInput) and input.metadata.get('input_origin', 'user') == 'user' else None)
         self.children.extensions.default_ui = child_ui
@@ -886,6 +911,7 @@ class AgentSession:
         tool_calls: list[dict[str, Any]] = []
         usage: dict[str, int] = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
 
+        goal_label_shown = False
         async for event in event_stream:
             if isinstance(event, MessageEndEvent):
                 await self.extensions.event("message_end", {"role": getattr(event.message, "role", "custom")})
@@ -894,6 +920,11 @@ class AgentSession:
             if isinstance(event, MessageUpdateEvent):
                 inner = event.assistant_message_event
                 if on_display_event and isinstance(inner, TextDeltaEvent):
+                    if not goal_label_shown:
+                        label = self._goal_pending_label()
+                        if label:
+                            on_display_event(AssistantTextDelta(label))
+                            goal_label_shown = True
                     on_display_event(AssistantTextDelta(inner.delta))
 
             elif isinstance(event, ToolExecutionStartEvent):
@@ -984,7 +1015,7 @@ class AgentSession:
                         if isinstance(part, TextContent) and part.text
                     )
                     if text.strip():
-                        await on_assistant_message(text)
+                        await on_assistant_message(self._goal_pending_label() + text)
 
         return _DrainResult(tool_calls=tuple(tool_calls), usage=usage)
 
@@ -1019,7 +1050,10 @@ class AgentSession:
                     entry["usage"] = dict(usage)
                     break
 
-        for entry in new_entries:
+        for index, entry in enumerate(new_entries, self._persisted_count):
+            source = self._source_channels.get(index)
+            if source:
+                entry['channel'] = source
             self._store.append_turn(self._meta.session_id, entry)
         self._persisted_count = len(self._agent.state.messages)
         self._meta = self._store.increment_turn(self._meta.session_id)

@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from xdog.agent.core import CatalogStreamFn, ModelStreamFn
 from xdog.agent.extensions.command_result import ExtensionCommandResult
@@ -18,7 +18,6 @@ from xdog.ai.types import ImageContent, Model, ThinkingLevel
 from xdog.claw.channels.base import Channel
 from xdog.claw.config import ClawConfig
 from xdog.claw.core.chunker import BlockChunker
-from xdog.claw.core.planning.task_scheduler import TaskScheduler
 from xdog.claw.core.queue import MessageQueue
 from xdog.claw.core.runtime.group import GroupRuntime
 from xdog.claw.core.runtime.session import AgentSession, TurnResult
@@ -28,11 +27,11 @@ from xdog.claw.core.types import (
     Group,
     GroupInput,
     QueueMode,
-    ScheduledTask,
-    SystemInput,
-    SystemInputKind,
     UserInput,
 )
+
+if TYPE_CHECKING:
+    from xdog.claw.core.observers.manager import ManagedObservers
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +44,7 @@ class Orchestrator:
     """Coordinates channels, groups, sessions, and agent execution.
 
     All messages enter through ``route_message()``. Background work
-    (scheduled tasks, goal manager) is driven by ``tick()``.
+    (Eyes callbacks, goal manager) retains the same execution owner.
     """
 
     def __init__(
@@ -64,13 +63,13 @@ class Orchestrator:
         self._data_dir = Path(data_dir or config.data_dir)
         self._channels: list[Channel] = []
         self._runtimes: dict[str, GroupRuntime] = {}
+        self._goal_wake: Callable[[], None] = lambda: None
+        self._goal_jobs: dict[str, asyncio.Task[None]] = {}
+        self._goal_signatures: dict[str, tuple[Any, ...]] = {}
+        self._goal_closing = False
         self._navigation_groups: set[str] = set()
         self._queue = MessageQueue(max_concurrent=config.max_concurrent_agents)
-        tasks_file = Path(config.tasks_file).expanduser()
-        if data_dir is not None and tasks_file == Path(config.data_dir) / "scheduled_tasks.json":
-            tasks_file = self._data_dir / "scheduled_tasks.json"
-        self._scheduler = TaskScheduler(tasks_file)
-        self._scheduled_runs: dict[str, asyncio.Task[TurnResult | None]] = {}
+        self._observers: ManagedObservers | None = None
         self._chunker = BlockChunker()
 
     # -- Group registration ----------------------------------------------------
@@ -87,7 +86,7 @@ class Orchestrator:
             self._data_dir,
             model=self._model,
             stream_fn=self._stream_fn,
-            send_fn=self._send_to_channels, task_scheduler=self._scheduler, mcp_servers=self._config.mcp_servers,
+            send_fn=self._send_to_channels, observers=self._observers, mcp_servers=self._config.mcp_servers,
             mcp_credential_backend=self._config.mcp_credential_backend,
             extensions=self._config.extensions, extension_dir=self._config.extension_dir,
             extension_settings=self._config.extension_settings,
@@ -96,6 +95,11 @@ class Orchestrator:
         # Bind route_fn so the goal system can send SystemInput
         # messages that the agent actually receives and acts on
         runtime.goal_manager._route_fn = self.route_message
+        runtime.goal_manager._report_fn = partial(self._send_response, group.id)
+        runtime.goal_manager._wake_fn = lambda: getattr(self, '_goal_wake', lambda: None)()
+        runtime.goal_manager._ready_fn = lambda: (
+            not self._queue.is_running(group.id) and not self._queue._queues.get(group.id)
+            and group.id not in self._navigation_groups)
         self._runtimes[group.id] = runtime
 
     def add_channel(self, channel: Channel) -> None:
@@ -135,6 +139,7 @@ class Orchestrator:
         child_ui: tuple[str, Callable[[dict[str, Any]], None]] | None = None,
         reserved: bool = False,
         input_alive: Callable[[], bool] | None = None,
+        before_admission: Callable[[], Awaitable[bool]] | None = None,
         command_menu: CommandMenuHost | None = None,
     ) -> TurnResult | None:
         """Single entry point for all messages."""
@@ -152,18 +157,25 @@ class Orchestrator:
         max_queued = group.config.max_queued_messages if group.config else 50
         debounce_ms = group.config.debounce_ms if group.config else 0
 
-        scheduled = isinstance(message, SystemInput) and message.kind == SystemInputKind.SCHEDULER
-        # Scheduled inputs must retain their own completion/delivery callbacks while waiting.
-        # Never steer or fold them into another turn's fire-and-forget collected inputs.
-        if self._queue.is_running(group_id) and not reserved and not scheduled:
+        if self._queue.is_running(group_id) and not reserved:
             active = runtime._active_session
             if group_id in self._navigation_groups or active is None or not active.agent.state.is_streaming:
                 mode = QueueMode.COLLECT  # No ready checkpoint owner: retain, never drop into a disposed session.
             async def _on_steer(msg: GroupInput) -> None:
-                runtime.steer(msg.content)
+                if (isinstance(msg, UserInput) and not isinstance(msg, ExternalInput)
+                        and msg.metadata.get('input_origin', 'user') == 'user' and runtime._active_session is not None
+                        and (msg.content.strip() or msg.images)):
+                    runtime._active_session.queue_human_input(msg, 'steer')
+                else:
+                    runtime.steer(msg.content)
 
             async def _on_follow_up(msg: GroupInput) -> None:
-                runtime.follow_up(msg.content)
+                if (isinstance(msg, UserInput) and not isinstance(msg, ExternalInput)
+                        and msg.metadata.get('input_origin', 'user') == 'user' and runtime._active_session is not None
+                        and (msg.content.strip() or msg.images)):
+                    runtime._active_session.queue_human_input(msg, 'follow_up')
+                else:
+                    runtime.follow_up(msg.content)
 
             await self._queue.enqueue(
                 message, mode=mode, on_steer=_on_steer,
@@ -178,6 +190,7 @@ class Orchestrator:
             on_assistant_message=on_assistant_message,
             child_ui=child_ui,
             input_alive=input_alive,
+            before_admission=before_admission,
             command_menu=command_menu,
         )
 
@@ -201,6 +214,7 @@ class Orchestrator:
         on_assistant_message: Callable[[str], Awaitable[None]] | None = None,
         child_ui: tuple[str, Callable[[dict[str, Any]], None]] | None = None,
         input_alive: Callable[[], bool] | None = None,
+        before_admission: Callable[[], Awaitable[bool]] | None = None,
         command_menu: CommandMenuHost | None = None,
     ) -> TurnResult | None:
         """Execute a message with concurrency control."""
@@ -211,14 +225,10 @@ class Orchestrator:
 
         is_user = isinstance(message, UserInput) and not isinstance(message, ExternalInput)
         async with self._queue.acquire(group_id, is_user=is_user):
-            if isinstance(message, SystemInput) and message.kind == SystemInputKind.SCHEDULER:
-                task_id = message.metadata.get("task_id")
-                if task_id:
-                    current = self._scheduler.get_task(task_id)
-                    if current is None or not current.enabled or current.status != "running":
-                        return None  # Cancelled while waiting for the queue.
             if input_alive is not None and not input_alive():
                 raise ValueError("Reviewed message owner changed before turn admission; no replay")
+            if before_admission is not None and not await before_admission():
+                return None  # Host cancellation won before actual Agent admission.
             session = runtime.get_or_create_session(allow_reset=input_alive is None)
             previous_menu = session.extensions.command_menu_handler
             menu_handler = self._command_menu_handler(session, command_menu) if command_menu is not None else None
@@ -235,6 +245,7 @@ class Orchestrator:
                 )
                 return replace(result, session_id=session.meta.session_id) if result is not None else None
             finally:
+                asyncio.get_running_loop().call_soon(runtime.goal_manager._wake_fn)
                 session.extensions.pending_messages = previous_pending
                 if session.extensions.command_menu_handler is menu_handler:
                     session.extensions.command_menu_handler = previous_menu
@@ -285,6 +296,27 @@ class Orchestrator:
         for chunk in self._chunker.chunk(text) or [text]:
             for channel in channels:
                 await channel.send_chunk(group_id, chunk)
+
+    async def deliver_report(self, group_id: str, text: str) -> list[dict[str, object]]:
+        """Trusted managed output; record partial sends, never retry model work."""
+        channels = [channel for channel in self._channels if channel.accepts_group(group_id)]
+        if not channels:
+            raise RuntimeError(f"No delivery channel for group {group_id}")
+        results: list[dict[str, object]] = []
+        for channel in channels:
+            sent = 0
+            try:
+                for chunk in self._chunker.chunk(text) or [text]:
+                    await channel.send_chunk(group_id, chunk)
+                    sent += 1
+                results.append({'channel': channel.name, 'status': 'delivered', 'accepted_chunks': sent})
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                results.append({'channel': channel.name, 'status': 'unknown' if isinstance(
+                    exc, (TimeoutError, ConnectionError, OSError)) else 'failed', 'accepted_chunks': sent,
+                    'error': str(exc)})
+        return results
 
     # -- Group operations (public API for Gateway) -----------------------------
 
@@ -670,6 +702,7 @@ class Orchestrator:
                     payload["command_content"] = output.to_dict()
                 return payload
             finally:
+                asyncio.get_running_loop().call_soon(runtime.goal_manager._wake_fn)
                 session.extensions.pending_messages = previous_pending
                 if session.extensions.command_menu_handler is menu_handler:
                     session.extensions.command_menu_handler = previous_menu
@@ -937,88 +970,65 @@ class Orchestrator:
             return []
         return runtime.pop_goal_notifications()
 
-    @property
-    def scheduler(self) -> TaskScheduler:
-        return self._scheduler
+    def set_observers(self, observers: ManagedObservers | None) -> None:
+        """Publish only the gateway-owned service, never create a second owner."""
+        self._observers = observers
+        for runtime in self._runtimes.values():
+            runtime.observers = observers
+            runtime.goal_manager._watchers.clear()
+            if runtime._active_session is not None:
+                agent = runtime._active_session.agent
+                agent.set_tool_context({**agent.tool_context, '_eyes': observers})
 
-    # -- Background tick -------------------------------------------------------
+    # -- Goal manager tick (Eyes owns independent trigger tasks) -----------------
+
+    async def _tick_goal(self, group_id: str) -> None:
+        runtime = self._runtimes[group_id]
+        try:
+            await runtime.goal_manager.tick(tools=runtime.tools, tool_ctx={
+                'group_id': group_id, 'workspace_dir': str(runtime.workspace_dir),
+                'data_dir': str(runtime.data_dir), '_eyes': self._observers})
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception('Goal host work failed for group %s', group_id)
+
+    @staticmethod
+    def _goal_signature(runtime: GroupRuntime) -> tuple[Any, ...]:
+        return tuple((goal.id, goal.status, goal.revision, goal.phase, goal.notice_state, goal.pending_notice,
+                      goal.review_child_id, goal.review_output, goal.auto_continue)
+                     for goal in runtime.goal_manager.tracker.list_goals())
+
+    def _goal_job_done(self, group_id: str, task: asyncio.Task[None]) -> None:
+        if self._goal_jobs.get(group_id) is task:
+            self._goal_jobs.pop(group_id, None)
+        if not task.cancelled() and task.exception() is not None:
+            logger.error('Goal host job failed for %s: %s', group_id, task.exception())
+        if self._goal_closing:
+            return
+        runtime = self._runtimes.get(group_id)
+        previous = self._goal_signatures.pop(group_id, ())
+        if runtime is not None and self._goal_signature(runtime) != previous and any(
+                goal.status in {'active', 'completed', 'blocked'} and (
+                    goal.phase == 'review_requested' or goal.pending_notice
+                    and goal.notice_state == 'pending' and goal.auto_continue)
+                for goal in runtime.goal_manager.tracker.list_goals()):
+            self._goal_wake()  # A work-to-review transition may have signalled while this job still owned the group.
 
     async def tick(self) -> None:
-        """Run one scheduler + goal manager cycle."""
-        for task in self._scheduler.get_due_tasks():
-            if task.id not in self._scheduled_runs:
-                run = asyncio.create_task(self.run_scheduled_task(task), name=f"scheduled:{task.id}")
-                self._scheduled_runs[task.id] = run
-                run.add_done_callback(partial(self._scheduled_done, task.id))
-
-        # Goal manager tick — process queued verifications and re-plans
-        for group_id in self.get_group_ids():
-            runtime = self._runtimes.get(group_id)
-            if runtime and (runtime.goal_manager.has_active_goals()
-                            or runtime.goal_manager.has_pending_work()):
-                try:
-                    await runtime.goal_manager.tick(
-                        tools=runtime.tools,
-                        tool_ctx={
-                            "group_id": group_id,
-                            "workspace_dir": str(runtime.workspace_dir) if runtime.workspace_dir else "",
-                            "data_dir": str(runtime.data_dir),
-                            "_task_scheduler": self._scheduler,
-                        },
-                    )
-                except Exception:
-                    logger.exception("Goal manager tick failed for group %s", group_id)
-
-    def _scheduled_done(self, task_id: str, run: asyncio.Task[TurnResult | None]) -> None:
-        self._scheduled_runs.pop(task_id, None)
-        if not run.cancelled() and run.exception() is not None:
-            logger.error("Scheduled task %s failed: %s", task_id, run.exception())
-
-    async def run_scheduled_task(self, task: ScheduledTask) -> TurnResult | None:
-        """Run through the normal queue; success requires both execution and delivery.
-
-        Failed one-offs are terminal, not retried automatically (tools may have had
-        side effects). Recurring tasks advance to a future occurrence after an attempt.
-        """
-        admitted = self._scheduler.start_run(task.id)
-        if admitted is None:
-            return None
-        delivered = False
-        delivery_error: str | None = None
-
-        async def report(text: str) -> None:
-            nonlocal delivered, delivery_error
-            try:
-                await self._send_response(task.group_id, text, require_delivery=True)
-                delivered = True
-            except Exception as exc:
-                # Keep draining the agent even if delivery fails; don't orphan its producer.
-                delivery_error = str(exc) or type(exc).__name__
-                logger.exception("Scheduled task %s report delivery failed", task.id)
-
-        try:
-            message = SystemInput(group_id=task.group_id, content=task.prompt,
-                                  kind=SystemInputKind.SCHEDULER, metadata={"task_id": task.id})
-            result = await self.route_message(message, on_assistant_message=report)
-            if result is None and self._scheduler.get_task(task.id) is None:
-                return None  # A cancelled queued task has no execution outcome to report.
-            error = result.error if result is not None else "Task not executed (unknown group or cancelled)"
-            if error:
-                await report(f"Scheduled task {task.id} failed: {error}")
-            error = error or delivery_error or (None if delivered else "Agent produced no report")
-            self._scheduler.finish_run(task.id, error=error, delivered=delivered and delivery_error is None)
-            if error:
-                logger.error("Scheduled task %s failed: %s", task.id, error)
-                return replace(result, error=error) if result is not None else TurnResult(error=error)
-            return result
-        except asyncio.CancelledError:
-            self._scheduler.finish_run(task.id, error="Scheduled execution cancelled; side effects may have occurred",
-                                       delivered=delivered and delivery_error is None)
-            raise
-        except Exception as exc:
-            self._scheduler.finish_run(task.id, error=str(exc), delivered=delivered and delivery_error is None)
-            logger.exception("Scheduled task %s failed", task.id)
-            return TurnResult(error=str(exc))
+        """Dispatch one host owner per idle group; a long turn cannot stall other groups."""
+        if self._goal_closing:
+            return
+        for group_id, runtime in self._runtimes.items():
+            if (group_id in self._goal_jobs or self._queue.is_running(group_id)
+                    or self._queue._queues.get(group_id) or group_id in self._navigation_groups):
+                continue
+            if runtime.goal_manager.has_active_goals() or runtime.goal_manager.has_pending_work():
+                self._goal_signatures[group_id] = self._goal_signature(runtime)
+                task = asyncio.create_task(self._tick_goal(group_id), name='claw-goal:' + group_id)
+                self._goal_jobs[group_id] = task
+                task.add_done_callback(partial(self._goal_job_done, group_id))
+        await asyncio.sleep(0)  # Admit cheap reconciliation without awaiting a long model turn.
 
     # -- Lifecycle -------------------------------------------------------------
 
@@ -1027,10 +1037,13 @@ class Orchestrator:
             await channel.connect()
 
     async def stop(self) -> None:
-        scheduled = list(self._scheduled_runs.values())
-        for run in scheduled:
-            run.cancel()
-        await asyncio.gather(*scheduled, return_exceptions=True)
+        self._goal_closing = True
+        goal_jobs = tuple(self._goal_jobs.values())
+        for task in goal_jobs:
+            task.cancel()
+        await asyncio.gather(*goal_jobs, return_exceptions=True)
+        self._goal_jobs.clear()
+        self._goal_signatures.clear()
         # Stop ingress and settle channel-owned turns before closing their resources.
         disconnected = await asyncio.gather(
             *(channel.disconnect() for channel in self._channels), return_exceptions=True,

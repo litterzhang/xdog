@@ -38,6 +38,8 @@ from xdog.claw.core.types import Group, UserInput
 if TYPE_CHECKING:
     from xdog.claw.acp.inbox import InboxRecord
     from xdog.claw.acp.server import ClawAcpServer
+    from xdog.claw.channels.base import Channel
+    from xdog.claw.core.observers.manager import ManagedObservers
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +138,7 @@ def _groups_from_config(config: ClawConfig) -> list[Group]:
 class GatewayServer:
     """Unix socket server that bridges TUI clients to the Orchestrator."""
 
-    _SCHEDULER_POLL_INTERVAL = 30  # seconds between tick() calls
+    _GOAL_RECONCILE_INTERVAL = 30  # Fault reconciliation fallback, never model polling
 
     def __init__(self, config: ClawConfig) -> None:
         self._config = config
@@ -146,7 +148,9 @@ class GatewayServer:
         self._acp_server: ClawAcpServer | None = None
         self._acp_viewers: dict[int, tuple[str, Callable[[dict[str, Any]], Awaitable[None]]]] = {}
         self._orchestrator: Orchestrator | None = None
-        self._scheduler_task: asyncio.Task[Any] | None = None
+        self._goal_task: asyncio.Task[Any] | None = None
+        self._goal_signal = asyncio.Event()
+        self._observers: ManagedObservers | None = None
         self._client_tasks: set[asyncio.Task[Any]] = set()
         self._client_counter = 0
         self._group_runs: dict[str, str] = {}
@@ -164,6 +168,7 @@ class GatewayServer:
             self._stop_task = None
             self._shutdown_event.clear()
 
+        self._goal_signal.clear()
         # Initialize orchestrator
         data_dir = Path(self._config.data_dir)
         model, stream_fn = _build_model_and_options(self._config)
@@ -172,6 +177,7 @@ class GatewayServer:
             model=model, stream_fn=stream_fn,
             data_dir=data_dir,
         )
+        self._orchestrator._goal_wake = self._goal_signal.set
 
         # Register groups
         for group in _groups_from_config(self._config):
@@ -185,23 +191,41 @@ class GatewayServer:
                     session = runtime.get_or_create_session(allow_reset=False)
                     await session.initialize_extensions(require_model=True)
             await self._orchestrator.start()
-            if self._config.acp_socket_path:
+            # Await this owned connection before restoring overdue managed work.
+            # Keep the existing ability to use TUI when WeChat is unavailable.
+            if self._config.weixin_enabled:
+                channel = None
+                try:
+                    channel = self._start_weixin_channel()
+                    if channel is not None:
+                        await channel.connect()
+                except Exception:
+                    if channel is not None:
+                        await channel.disconnect()
+                        self._orchestrator._channels.remove(channel)
+                    logger.exception("Failed to connect WeChat channel — gateway continues without it")
+            if self._config.acp_socket_path or self._config.eyes_enabled:
                 from xdog.claw.acp.server import ClawAcpServer
+                endpoint = (Path(self._config.acp_socket_path) if self._config.acp_socket_path else
+                            data_dir / 'acp' / 'agent.sock')
                 self._acp_server = await ClawAcpServer.start(
-                    self._orchestrator, Path(self._config.acp_socket_path),
+                    self._orchestrator, endpoint,
                     data_dir / "acp" / "inbox.sqlite3", on_complete=self._acp_completed)
+            if self._config.eyes_enabled:
+                from xdog.claw.core.observers.manager import ManagedObservers
+                assert self._acp_server is not None
+                self._observers = ManagedObservers(self._acp_server.backend, self._acp_server.path)
+                self._orchestrator.set_observers(self._observers)
+                await self._observers.start()
         except BaseException:
+            if self._observers is not None:
+                await self._observers.close()
+                self._observers = None
+            if self._acp_server is not None:
+                await self._acp_server.close()
+                self._acp_server = None
             await self._orchestrator.stop()
             raise
-
-        # Wire WeChat channel if enabled
-        if self._config.weixin_enabled:
-            try:
-                self._start_weixin_channel()
-            except Exception:
-                logger.exception(
-                    "Failed to start WeChat channel — gateway continues without it"
-                )
 
         try:
             # Clean up stale socket
@@ -222,8 +246,8 @@ class GatewayServer:
             # Write PID file
             self._write_pid()
 
-            # Start scheduler polling loop
-            self._scheduler_task = asyncio.create_task(self._scheduler_loop())
+            # Goal obligations wake this owner; Eyes retains its independent runtime.
+            self._goal_task = asyncio.create_task(self._goal_loop())
 
             logger.info("Gateway listening on %s (PID: %d)", self._socket_path, os.getpid())
         except BaseException:
@@ -1498,8 +1522,10 @@ class GatewayServer:
                     try:
                         if self._orchestrator is None or group_id not in self._orchestrator.get_group_ids():
                             raise ValueError("Unknown group")
+                        if isinstance(session_action, str) and session_action in {"resume", "fork", "branch", "goto"}:
+                            raise ValueError("Claw history is read-only; historical route switching is not supported")
                         if not isinstance(session_action, str) or session_action not in {
-                            "list", "tree", "resume", "new", "fork", "branch", "goto", "rename", "name",
+                            "list", "tree", "new", "rename", "name",
                         }:
                             raise ValueError("Invalid session operation")
                         if not session_request_id or len(session_request_id) > 128:
@@ -1557,6 +1583,10 @@ class GatewayServer:
                                          active_session=self._orchestrator.get_new_session_id(group_id) or "")
                             await write(reply)
                             continue
+                        if session_action == 'new' and (
+                                request.get('session_id') or request.get('branch_id')
+                                or request.get('index', -1) != -1):
+                            raise ValueError('New context cannot select historical routes')
                         name = ''
                         expected_name = None
                         if session_action == 'rename':
@@ -2193,7 +2223,12 @@ class GatewayServer:
             })
             return
 
-        if self._orchestrator.reset_group(group_id):
+        try:
+            reset = self._orchestrator.reset_group(group_id)
+        except (ValueError, RuntimeError) as exc:
+            await self._write_response(writer, {"type": "error", "message": str(exc)})
+            return
+        if reset:
             new_session_info: dict[str, Any] = {
                 "type": "reset_ack",
                 "group_id": group_id,
@@ -2243,19 +2278,33 @@ class GatewayServer:
         except OSError:
             pass
 
-    async def _scheduler_loop(self) -> None:
-        """Periodically call orchestrator.tick() for scheduling and goal runner."""
+    async def _goal_loop(self) -> None:
+        """Reconcile once at startup, then on obligations or fault fallback.
+
+        Event is level-triggered: notifications during a tick coalesce into one
+        follow-up pass. Producers wake only for changed/actionable obligations;
+        a busy main Agent is woken on safe idle, not repeatedly while it works.
+        """
         while not self._shutdown_event.is_set():
+            self._goal_signal.clear()
             try:
-                await asyncio.sleep(self._SCHEDULER_POLL_INTERVAL)
-                if self._orchestrator is not None and not self._shutdown_event.is_set():
+                if self._orchestrator is not None:
                     await self._orchestrator.tick()
             except asyncio.CancelledError:
                 break
             except Exception:
-                logger.exception("Scheduler loop error")
+                logger.exception("Goal loop error")
+            if self._shutdown_event.is_set():
+                break
+            try:
+                async with asyncio.timeout(self._GOAL_RECONCILE_INTERVAL):
+                    await self._goal_signal.wait()
+            except TimeoutError:
+                pass  # Durable fault reconciliation, not a new model obligation.
+            except asyncio.CancelledError:
+                break
 
-    def _start_weixin_channel(self) -> None:
+    def _start_weixin_channel(self) -> Channel | None:
         """Initialize and add the WeChat channel to the orchestrator."""
         from xdog.claw.channels.weixin import WeixinChannel
         from xdog.claw.channels.weixin.auth import (
@@ -2284,7 +2333,7 @@ class GatewayServer:
                 "WeChat channel enabled but no token configured. "
                 "Run 'xdog-claw channel login --weixin' first."
             )
-            return
+            return None
 
         base_url = base_url or DEFAULT_BASE_URL
 
@@ -2300,17 +2349,16 @@ class GatewayServer:
             # the channel before `start()` raised AttributeError instead of
             # saying what was wrong.
             logger.error("Cannot add the WeChat channel: the orchestrator is not running")
-            return
+            return None
 
         self._orchestrator.add_channel(weixin)
-        # Channel was added after orchestrator.start(), so connect manually
-        asyncio.get_event_loop().create_task(weixin.connect())
         logger.info(
             "WeChat channel added: account=%s group=%s base_url=%s",
             account_id,
             group_id,
             base_url,
         )
+        return weixin
 
     async def stop(self) -> None:
         """Join one cleanup owner; caller cancellation is not resource settlement."""
@@ -2323,11 +2371,16 @@ class GatewayServer:
     async def _stop(self) -> None:
         logger.info("Shutting down gateway...")
 
-        # Cancel scheduler loop
-        if self._scheduler_task and not self._scheduler_task.done():
-            self._scheduler_task.cancel()
+        # Stop producers before their shared ACP inbox/consumer resources.
+        if self._observers is not None:
+            await self._observers.close()
+            self._observers = None
+        if self._orchestrator is not None:
+            self._orchestrator.set_observers(None)
+        if self._goal_task and not self._goal_task.done():
+            self._goal_task.cancel()
             try:
-                await self._scheduler_task
+                await self._goal_task
             except asyncio.CancelledError:
                 pass
 

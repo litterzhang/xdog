@@ -59,20 +59,24 @@ def test_name_store_rejects_foreign_inactive_and_stale_owner_without_writes(tmp_
     assert before == {path.name: path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
 
 
-def test_named_session_archive_reactivation_and_active_catalog_recovery_keep_explicit_label(tmp_path):
+def test_named_archive_is_read_only_and_current_name_survives_catalog_recovery(tmp_path):
     store = TranscriptStore(tmp_path, owner_group='main')
     named = store.create_session('main')
     store.rename_session('main', named.session_id, 'Durable named session')
     replacement = store.reset_session('main')
     rows = {row['session_id']: row for row in store.list_sessions('main')}
     assert rows[named.session_id]['label'] == 'Durable named session' and not rows[replacement.session_id]['label']
-    store.activate_session('main', named.session_id)
-    assert store.get_active_session('main').label == 'Durable named session'
+    assert not hasattr(store, 'activate_session')
+    assert store.get_active_session('main').session_id == replacement.session_id
+    store.rename_session('main', replacement.session_id, 'Current context')
+    reloaded = TranscriptStore(tmp_path, owner_group='main')
+    assert next(row for row in reloaded.list_sessions('main') if row['session_id'] == named.session_id
+                )['label'] == 'Durable named session'
     (tmp_path / 'catalog.json').write_text('{broken')
     recovered = TranscriptStore(tmp_path, owner_group='main')
-    assert recovered.get_active_session('main').label == 'Durable named session'
-    assert next(row for row in recovered.list_sessions('main') if row['session_id'] == named.session_id
-                )['label'] == 'Durable named session'
+    assert recovered.get_active_session('main').label == 'Current context'
+    assert recovered.get_active_session('main').session_id == replacement.session_id
+    assert any(row['session_id'] == named.session_id for row in recovered.list_sessions('main'))
 
 
 def test_name_runtime_refuses_to_rebind_stale_cached_agent_to_a_new_disk_owner(tmp_path):

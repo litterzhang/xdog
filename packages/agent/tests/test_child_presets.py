@@ -9,18 +9,16 @@ from xdog.ai.types import AssistantMessage
 from xdog.ai.utils.event_stream import EventStream
 
 PRESETS = {"reviewer": {"description": "Inspect without tools", "config": {
-    "instructions": "REVIEW-INSTRUCTIONS", "tools": [], "inherit_context": False,
-    "timeout": 10, "max_model_calls": 2, "max_tokens": 700}}}
+    "instructions": "REVIEW-INSTRUCTIONS", "tools": [], "inherit_context": False}}}
 
 
 def test_preset_resolution_is_immutable_bounded_and_explicit_flags_override_saved_defaults():
     values = {"reviewer": {"description": "Inspect without tools", "config": {**PRESETS["reviewer"]["config"]}}}
     presets = ChildPresets(values)
     values["reviewer"]["config"]["instructions"] = "MUTATED"
-    task, access, config = parse_child_start("--preset reviewer --tokens 600 --timeout 8 task", presets)
-    assert task == "task" and access == "read-only" and config.preset == "reviewer" and config.label == "reviewer"
+    task, access, config = parse_child_start("--preset reviewer --label custom task", presets)
+    assert task == "task" and access == "read-only" and config.preset == "reviewer" and config.label == "custom"
     assert config.instructions == "REVIEW-INSTRUCTIONS" and config.tools == () and not config.inherit_context
-    assert config.max_tokens == 600 and config.timeout == 8 and config.max_model_calls == 2
     snapshot = presets.snapshot()
     snapshot[0]["config"]["instructions"] = "MUTATED-SNAPSHOT"
     assert presets.resolve({"preset": "reviewer"}).instructions == "REVIEW-INSTRUCTIONS"
@@ -51,11 +49,11 @@ async def test_preset_tool_and_direct_start_use_same_expanded_snapshot_and_survi
         listed = await control.execute("presets", {"action": "presets"})
         assert "REVIEW-INSTRUCTIONS" in listed.content[0].text and not seen
         spawn = owner.tools()[0]
-        result = await spawn.execute("spawn", {"task": "task", "config": {"preset": "reviewer", "max_tokens": 600}})
+        result = await spawn.execute("spawn", {"task": "task", "config": {"preset": "reviewer"}})
         child = result.content[0].text
         record = await owner.control("wait", child)
-        assert seen[0].preset == "reviewer" and seen[0].timeout == 10 and not seen[0].inherit_context
-        assert seen[0].max_tokens == 600 and record["config"]["instructions"] == "REVIEW-INSTRUCTIONS"
+        assert seen[0].preset == "reviewer" and not seen[0].inherit_context
+        assert record["config"]["instructions"] == "REVIEW-INSTRUCTIONS"
         restored = ChildSupervisor(factory, records=store.load())
         try:
             assert (await restored.control("inspect", child))["config"] == record["config"]
@@ -69,15 +67,15 @@ async def test_preset_tool_and_direct_start_use_same_expanded_snapshot_and_survi
         await owner.aclose()
 
 
-async def test_nondefault_legacy_limits_override_presets_without_erasing_template_defaults():
+async def test_explicit_fresh_context_overrides_preset_without_erasing_template():
     specs = []
     def factory(spec, publish):
         specs.append(spec)
         return Agent(lambda *args: EventStream.empty(AssistantMessage()), config=AgentConfig(model="test/dummy"))
-    owner = ChildSupervisor(factory, presets=ChildPresets({"reader": {"config": {"timeout": 20, "max_tokens": 700}}}))
+    owner = ChildSupervisor(factory, presets=ChildPresets({"reader": {"config": {"instructions": "READ"}}}))
     try:
-        child = await owner.start("task", timeout=5, inherit_context=False, config={"preset": "reader"})
+        child = await owner.start("task", inherit_context=False, config={"preset": "reader"})
         await owner.control("wait", child)
-        assert specs[0].timeout == 5 and not specs[0].inherit_context and specs[0].max_tokens == 700
+        assert not specs[0].inherit_context and specs[0].instructions == "READ"
     finally:
         await owner.aclose()

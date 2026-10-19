@@ -108,10 +108,12 @@ class ClawConfig:
 
     # Paths (XDG defaults)
     data_dir: str = ""
-    tasks_file: str = ""  # defaults to {data_dir}/scheduled_tasks.json
     socket_path: str = ""
     acp_socket_path: str = ""  # explicit opt-in private Unix ACP endpoint
     pid_file: str = ""
+
+    # Explicit opt-in: only this gateway's managed time observers recover.
+    eyes_enabled: bool = False
 
     # Gateway settings (flattened from gateway: section)
     max_concurrent_agents: int = 3
@@ -159,13 +161,13 @@ class ClawConfig:
         if self.extension_dir:
             root = Path(self.extension_dir).expanduser()
             object.__setattr__(self, "extension_dir", str(root if root.is_absolute() else get_config_dir() / root))
+        if type(self.eyes_enabled) is not bool:
+            raise ToolConfigError('eyes_enabled must be a boolean; invalid settings never enable observation')
         if not isinstance(self.acp_socket_path, str) or (self.acp_socket_path and (
                 not Path(self.acp_socket_path).is_absolute() or "\x00" in self.acp_socket_path)):
             raise ToolConfigError("acp_socket_path must be an absolute Unix socket path or empty")
         if not self.data_dir:
             object.__setattr__(self, "data_dir", str(get_data_dir()))
-        if not self.tasks_file:
-            object.__setattr__(self, "tasks_file", str(Path(self.data_dir) / "scheduled_tasks.json"))
         if not self.socket_path:
             object.__setattr__(self, "socket_path", str(get_state_dir() / "gateway.sock"))
         if not self.pid_file:

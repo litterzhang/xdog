@@ -1,9 +1,7 @@
-"""Bounded, session-owned child agents; host factories remain the permission boundary.
+"""Session-owned child agents; host factories remain the permission boundary.
 
 This is runtime infrastructure, not an OS sandbox or a client permission policy.
 Factories must create fresh agents, enforce access, and snapshot stable parent context.
-Reported-token budgets are a stop threshold, not an exact billable-token guarantee:
-provider input accounting and providers ignoring max_tokens can overshoot a request.
 """
 from __future__ import annotations
 
@@ -11,7 +9,6 @@ import asyncio
 import concurrent.futures
 import inspect
 import json
-import math
 import re
 import threading
 import time
@@ -26,15 +23,20 @@ from xdog.agent.core import AgentMessage, AgentTool, AgentToolResult
 from xdog.agent.cross_loop import submit_remote
 from xdog.agent.events import (
     AgentEvent,
+    CompactionEndEvent,
+    CompactionFailedEvent,
+    CompactionStartEvent,
     InputHandledEvent,
     MessageEndEvent,
     MessageUpdateEvent,
     ToolExecutionEndEvent,
     ToolExecutionUpdateEvent,
+    UsageEvent,
 )
 from xdog.agent.history import history_points, validate_checkpoint
 from xdog.agent.input_queue import Delivery, QueuedInput
 from xdog.agent.messages import dicts_to_messages, messages_to_dicts
+from xdog.agent.supervision_compaction import ArchivedSummaryStream, preserve_model_metadata
 from xdog.agent.supervision_config import ChildConfig, ChildPresets
 from xdog.agent.supervision_images import (
     check_collection,
@@ -88,9 +90,6 @@ class ChildSpec:
     id: str
     task: str
     access: str = "read-only"
-    timeout: float = 120
-    max_model_calls: int = 16
-    max_tokens: int = 32000
     inherit_context: bool = True
     label: str = ""
     instructions: str = ""
@@ -102,7 +101,7 @@ class ChildSpec:
 
     def config(self) -> ChildConfig:
         return ChildConfig(self.label, self.instructions, self.tools, self.inherit_context,
-                           self.timeout, self.max_model_calls, self.max_tokens, self.model, self.thinking, self.preset)
+                           self.model, self.thinking, self.preset)
 
 
 def child_prompt(prompt: SystemPrompt | None, spec: ChildSpec) -> SystemPrompt:
@@ -196,6 +195,14 @@ class _Child:
 
 
 class ChildSupervisor:
+    """Host-owned children, with factory-opted-in native Agent compaction.
+
+    Auto-compacting factories must provide archive_compaction: a synchronous
+    durable export of (spec, generation, complete original paired history).
+    It runs as owned thread work before the native summary request may start.
+    A missing/failing archive never permits an unarchived compaction commit.
+    """
+
     def __init__(
         self,
         factory: Callable[[ChildSpec, Callable[[dict[str, Any]], None]], Agent | Awaitable[Agent]],
@@ -205,6 +212,7 @@ class ChildSupervisor:
         persist_inputs: Callable[[str, tuple[QueuedInput, ...]], None] | None = None,
         persist_return: Callable[[str, QueuedInput], None] | None = None,
         persist_admission: Callable[[dict[str, Any]], None] | None = None,
+        archive_compaction: Callable[[ChildSpec, int, tuple[AgentMessage, ...]], None] | None = None,
         forget: Callable[[str], None] | None = None,
         finalize: Callable[[ChildSpec], Awaitable[None]] | None = None,
         on_event: Callable[[ChildSpec, AgentEvent], Awaitable[None]] | None = None,
@@ -218,6 +226,7 @@ class ChildSupervisor:
         self.persist_inputs = persist_inputs
         self.persist_return = persist_return
         self.persist_admission = persist_admission
+        self.archive_compaction = archive_compaction
         self.forget = forget or (lambda identifier: None)
         self.on_event = on_event
         self.finalize = finalize
@@ -237,9 +246,9 @@ class ChildSupervisor:
         self._admission_pauses = 0
         from xdog.agent.supervision_queue import recovery_from_dicts
         for record in records or ():
-            config = ChildConfig.from_dict(record.get("config", {}))
-            spec = ChildSpec(record["id"], record["task"], record["access"], config.timeout, config.max_model_calls,
-                             config.max_tokens, config.inherit_context, config.label, config.instructions,
+            config = ChildConfig.from_record(record.get("config", {}))
+            spec = ChildSpec(record["id"], record["task"], record["access"], config.inherit_context,
+                             config.label, config.instructions,
                              config.tools, config.model, config.thinking, config.preset,
                              images_from_dicts(record.get('task_images', [])))
             self._children[spec.id] = _Child(
@@ -342,8 +351,7 @@ class ChildSupervisor:
                       "calls": child.calls, "tokens": child.tokens, "updated": child.updated,
                       "settling": child.settling, "revision": child.revision,
                       "config": child.spec.config().to_dict() if transcript else {
-                          "label": child.spec.label, "timeout": child.spec.timeout,
-                          "max_model_calls": child.spec.max_model_calls, "max_tokens": child.spec.max_tokens,
+                          "label": child.spec.label,
                           "inherit_context": child.spec.inherit_context, "model": child.spec.model,
                           "thinking": child.spec.thinking, "preset": child.spec.preset}}
             if child.effective:
@@ -377,25 +385,18 @@ class ChildSupervisor:
             return record
 
     async def start(self, task: str, *, access: str = "read-only", inherit_context: bool = True,
-                    timeout: float = 120, config: dict[str, Any] | None = None,
+                    config: dict[str, Any] | None = None,
                     images: tuple[ImageContent, ...] = ()) -> str:
         await asyncio.to_thread(validate_images, images)
         if (not isinstance(task, str) or not (task.strip() or images) or len(task.encode("utf-8")) > 16000
                 or not isinstance(access, str) or access not in {"read-only", "inherit"}
-                or type(inherit_context) is not bool or type(timeout) not in {float, int}
-                or not math.isfinite(timeout) or not 1 <= timeout <= 600):
-            raise ValueError("Invalid child task/access/budget")
+                or type(inherit_context) is not bool):
+            raise ValueError("Invalid child task/access/context")
         if config is not None:
-            ChildConfig.from_dict(config)  # Validate shape before merging legacy explicit controls.
-        # Explicit legacy controls participate only without a preset; otherwise
-        # their default values must not overwrite a saved template's fields.
-        base: dict[str, Any] = {"inherit_context": inherit_context, "timeout": timeout}
-        if config is not None and config.get("preset"):
+            ChildConfig.from_dict(config)
+        base: dict[str, Any] = {"inherit_context": inherit_context}
+        if config is not None and config.get("preset") and inherit_context:
             base = {}
-            if inherit_context is False:
-                base["inherit_context"] = False
-            if timeout != 120:
-                base["timeout"] = timeout
         selected = self.presets.resolve({**base, **(config or {})})
         receipt = await asyncio.to_thread(input_receipt, task, images)
         return await self._bridge(self._start(task, access, selected, images, receipt))
@@ -409,12 +410,7 @@ class ChildSupervisor:
                 raise RuntimeError("Session context/policy is changing; refresh before starting child work")
             if self.diagnostic:
                 raise ValueError(self.diagnostic)
-            if len(self._children) >= 16:
-                raise ValueError("Close child records before starting more (16 record limit)")
-            if sum(child.settling for child in self._children.values()) >= 3:
-                raise ValueError("Child concurrency limit reached (3)")
-            spec = ChildSpec(uuid.uuid4().hex[:12], task, access, config.timeout,
-                             config.max_model_calls, config.max_tokens, config.inherit_context,
+            spec = ChildSpec(uuid.uuid4().hex[:12], task, access, config.inherit_context,
                              config.label, config.instructions, config.tools, config.model,
                              config.thinking, config.preset, images)
             self.capture(spec)
@@ -455,9 +451,11 @@ class ChildSupervisor:
                             *(part for row in child.agent.pending_inputs() for part in row.images)))
         except ValueError as exc:
             raise RuntimeError(str(exc)) from exc
-        if (len(transcript) > 2000 or
-                _serialized_size(transcript) > MAX_TRANSCRIPT_BYTES):
-            raise RuntimeError("Child aggregate transcript budget exhausted")
+        # Bound each protocol message, not the lifetime of a tool-calling task.
+        # Never drop a prefix here: tool-call/result pairing belongs to Agent.
+        for message in transcript:
+            if _serialized_size((message,)) > MAX_TRANSCRIPT_BYTES:
+                raise RuntimeError("Child single-message budget exhausted")
         with self._lock:
             if child.transcript != transcript:
                 child.revision += 1
@@ -519,8 +517,8 @@ class ChildSupervisor:
 
     async def _run(self, child: _Child) -> None:
         status, error = "failed", ""
-        deadline: asyncio.Timeout | None = None
         budget_error = ""
+        compaction_source: tuple[AgentMessage, ...] | None = None
         def unsubscribe() -> None:
             pass
         def publish(event: dict[str, Any]) -> None:
@@ -530,8 +528,6 @@ class ChildSupervisor:
                 except Exception:
                     pass
         try:
-            deadline = asyncio.timeout(child.spec.timeout)
-            await deadline.__aenter__()
             beginning = asyncio.create_task(asyncio.to_thread(self.begin, child.spec))
             try:
                 await asyncio.shield(beginning)
@@ -574,8 +570,9 @@ class ChildSupervisor:
                             record['input_feedback'] = list(feedback)
                             if child.initial_state == 'pending' and event.source == 'prompt':
                                 record['initial_state'] = 'handled'
-                        if len(history) > 2000 or _serialized_size(history) > MAX_TRANSCRIPT_BYTES:
-                            raise RuntimeError('Child aggregate transcript budget exhausted')
+                        for message in history:
+                            if _serialized_size((message,)) > MAX_TRANSCRIPT_BYTES:
+                                raise RuntimeError('Child single-message budget exhausted')
                         canonical = image_parts(history)
                         missing = tuple(part for part in child.spec.images if part not in set(canonical))
                         check_collection((*canonical, *missing))
@@ -630,8 +627,17 @@ class ChildSupervisor:
             if any(tool.name in RESERVED_TOOLS for tool in child.agent.state.tools):
                 raise ValueError("Child tools cannot supervise children or mutate a parent plan")
             def observe(event: AgentEvent) -> None:
-                nonlocal budget_error
+                nonlocal budget_error, compaction_source
                 try:
+                    if isinstance(event, CompactionStartEvent):
+                        self._capture(child)
+                        compaction_source = agent.messages
+                    elif isinstance(event, (CompactionEndEvent, CompactionFailedEvent)):
+                        compaction_source = None
+                        self._capture(child)
+                    if isinstance(event, UsageEvent) and event.source == "compaction":
+                        with self._lock:
+                            child.tokens += event.usage.total_tokens or event.usage.input + event.usage.output
                     if (child.initial_state == 'pending' and isinstance(event, MessageEndEvent)
                             and isinstance(event.message, UserMessage)):
                         child.initial_state = 'admitted'
@@ -679,18 +685,33 @@ class ChildSupervisor:
                     agent.abort()
             unsubscribe = agent.subscribe(observe)
             original = child.agent.stream_fn
-            def bounded(model: str, context: Context, options: StreamOptions) -> EventStream[AssistantMessage]:
+            def counted(model: str, context: Context, options: StreamOptions) -> EventStream[AssistantMessage]:
+                nonlocal budget_error
                 self._capture(child)
                 if budget_error:
                     raise RuntimeError(budget_error)
-                with self._lock:
-                    remaining = child.spec.max_tokens - child.tokens
-                    if child.calls >= child.spec.max_model_calls or remaining <= 0:
-                        raise RuntimeError("Child model-call/token budget exhausted")
-                    child.calls += 1
-                limit = min(options.max_tokens, remaining) if options.max_tokens is not None else remaining
-                return original(model, context, replace(options, max_tokens=limit))
-            child.agent.set_stream_fn(bounded)
+                def start_request() -> EventStream[AssistantMessage]:
+                    with self._lock:
+                        child.calls += 1
+                    return original(model, context, options)
+                if compaction_source is not None:
+                    if self.archive_compaction is None:
+                        budget_error = "Child compaction requires an archive_compaction callback"
+                        raise RuntimeError(budget_error)
+                    source = compaction_source
+                    generation = agent._compaction_state.generation + 1
+                    async def archive() -> None:
+                        from xdog.agent.async_work import run_owned
+                        callback = self.archive_compaction
+                        if callback is None:
+                            raise RuntimeError("Child compaction requires an archive_compaction callback")
+                        # The immutable snapshot is exported before the native
+                        # summary can start, so neither a failed summary nor a
+                        # receiver crash can erase the uncompacted tool pairs.
+                        await run_owned(callback, child.spec, generation, source)
+                    return ArchivedSummaryStream(start_request, archive)
+                return start_request()
+            child.agent.set_stream_fn(preserve_model_metadata(counted, original))
             self._capture(child)
             with self._lock:
                 child.status = "running"
@@ -709,17 +730,10 @@ class ChildSupervisor:
             status = ("canceled" if child.agent.cancellation_requested or provider_aborted
                       else "failed" if error else "completed")
         except asyncio.CancelledError:
-            if deadline is not None and deadline.expired():
-                status, error = "timed-out", "Child absolute deadline expired"
-            else:
-                status = "canceled"
-        except TimeoutError:
-            status, error = "timed-out", "Child absolute deadline expired"
+            status = "canceled"
         except Exception as exc:
             status, error = "failed", str(exc)[:4000]
         finally:
-            if deadline is not None:
-                await deadline.__aexit__(None, None, None)
             # Cleanup/persistence owns the slot even if a control is repeatedly canceled.
             cleanup = asyncio.create_task(self._settle(child, status, error))
             while not cleanup.done():
@@ -1232,9 +1246,11 @@ class ChildSupervisor:
 
     def tools(self) -> tuple[AgentTool, ...]:
         async def spawn(call_id: str, args: dict[str, Any], *extra: Any, **kwargs: Any) -> AgentToolResult:
+            if set(args) - {"task", "access", "inherit_context", "config"}:
+                raise ValueError("Unknown child spawn arguments")
             identifier = await self.start(args["task"], access=args.get("access", "read-only"),
                                           inherit_context=args.get("inherit_context", True),
-                                          timeout=args.get("timeout", 120), config=args.get("config"))
+                                          config=args.get("config"))
             return AgentToolResult(content=(TextContent(text=identifier),))
         def validate_control(args: dict[str, Any]) -> None:
             # The generic lightweight schema checker tolerates extra keys. Enforce
@@ -1275,12 +1291,11 @@ class ChildSupervisor:
                 result = {**result, "image_recovery": {"receipt": payload["receipt"], "image_count": len(images)}}
             return AgentToolResult(content=(TextContent(text=json.dumps(result)), *images))
         return (
-            AgentTool(name="agent_spawn", description="Start a bounded session-owned child; default read-only.",
+            AgentTool(name="agent_spawn", description="Start a session-owned child; default read-only.",
                       parameters={"type": "object", "required": ["task"], "additionalProperties": False,
                                   "properties": {"task": {"type": "string"},
                                                  "access": {"enum": ["read-only", "inherit"]},
                                                  "inherit_context": {"type": "boolean"},
-                                                 "timeout": {"type": "number", "minimum": 1, "maximum": 600},
                                                  "config": {"type": "object", "additionalProperties": False,
                                                      "properties": {
                                                          "preset": {"type": ["string", "null"], "maxLength": 64},
@@ -1291,12 +1306,7 @@ class ChildSupervisor:
                                                          "instructions": {"type": "string", "maxLength": 16000},
                                                          "tools": {"type": ["array", "null"], "maxItems": 128,
                                                                    "items": {"type": "string"}, "uniqueItems": True},
-                                                         "inherit_context": {"type": "boolean"},
-                                                         "timeout": {"type": "number", "minimum": 1, "maximum": 600},
-                                                         "max_model_calls": {"type": "integer", "minimum": 1,
-                                                                             "maximum": 16},
-                                                         "max_tokens": {"type": "integer", "minimum": 1,
-                                                                        "maximum": 32000}}}}},
+                                                         "inherit_context": {"type": "boolean"}}}}},
                       execute=spawn),
             AgentTool(name="agent_control", description=(
                                    "List/inspect/steer/cancel/wait/close or control this session's child queues. "

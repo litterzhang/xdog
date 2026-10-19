@@ -17,6 +17,7 @@ from xdog.agent.acp.contracts import JsonValue, Peer, SessionRef, UpdateSink, fi
 from xdog.agent.async_work import wait_owned
 from xdog.agent.session_input import SessionInput, decode_input, render_input
 from xdog.claw.acp.inbox import GroupInbox, InboxRecord
+from xdog.claw.core.observers.store import ObserverStore
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.types import ExternalInput
 
@@ -30,6 +31,7 @@ class ClawBackend:
     def __init__(self, orchestrator: Orchestrator, inbox: GroupInbox,
                  on_complete: CompletionSink | None = None) -> None:
         self.orchestrator, self.inbox, self.on_complete = orchestrator, inbox, on_complete
+        self.observers = ObserverStore(inbox)
         self.generation = uuid.uuid4().hex
         self._bindings: dict[tuple[str, str], SessionRef] = {}
         self._closed_peers: set[str] = set()
@@ -38,6 +40,7 @@ class ClawBackend:
         self._waiters: dict[tuple[str, str], asyncio.Future[None]] = {}
         self._signals: dict[str, asyncio.Event] = {}
         self._workers: dict[str, asyncio.Task[None]] = {}
+        self._reports: set[asyncio.Task[None]] = set()
         self._faults: dict[str, str] = {}
         self._closing = False
         self._close_task: asyncio.Task[None] | None = None
@@ -49,7 +52,16 @@ class ClawBackend:
         backend = cls(orchestrator, inbox, on_complete)
         for group in orchestrator.get_group_ids():
             backend._wake(group)
+        for record in await backend.observers.pending_reports():
+            task = asyncio.create_task(backend._report_managed(record), name='claw-report:' + record.message.id)
+            backend._reports.add(task)
+            task.add_done_callback(backend._report_done)
         return backend
+
+    def _report_done(self, task: asyncio.Task[None]) -> None:
+        self._reports.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logger.error('Recovered channel report stopped: %s', task.exception())
 
     def _active(self, peer: Peer) -> None:
         if self._closing or peer.id in self._closed_peers:
@@ -124,22 +136,47 @@ class ClawBackend:
                                                 metadata={"input_origin": "external"}, canonical=record.message)
                         # Receipt-owning callbacks must never be steered/folded into
                         # another turn or dropped by the fire-and-forget collect queue.
-                        result = await self.orchestrator.route_message(message, reserved=True)
-                        error = result.error if result is not None else "Group did not execute the message"
-                        record = await self.inbox.finish(record, "failed" if error else "succeeded",
-                                                         response=result.response_text if result else "",
-                                                         error=error or "",
-                                                         session_id=result.session_id if result else "")
+                        owned = await self.observers.occurrence(record)
+                        if owned is not None:
+                            observer = await self.observers.get(group, cwd, owned['observer_id'])
+                            runtime = self.orchestrator._runtimes.get(group)
+                            if observer is not None and observer.owner and runtime is not None:
+                                goal = runtime.goal_manager.tracker.get_goal(observer.owner)
+                                if (goal is not None and goal.group_id == group
+                                        and goal.observer_id in {'', observer.id} and observer.notify_only):
+                                    message.metadata['_goal_id'] = goal.id  # Trusted journal binding, never provenance.
+                        claimed_record = record
+                        reported: list[str] = []
+                        async def admission(claimed: InboxRecord = claimed_record) -> bool:
+                            return await self.observers.admit(claimed)
+                        async def collect_report(text: str, parts: list[str] = reported) -> None:
+                            if text.strip():
+                                parts.append(text)
+                        result = await self.orchestrator.route_message(message, reserved=True,
+                            before_admission=admission if owned is not None else None,
+                            on_assistant_message=collect_report if owned is not None else None)
+                        current = await self.inbox.get(group, cwd, record.message.id)
+                        if current is not None and current.status == 'cancelled':
+                            record = current
+                        else:
+                            error = result.error if result is not None else "Group did not execute the message"
+                            record = await self.inbox.finish(record, "failed" if error else "succeeded",
+                                                             response=("\n\n".join(reported) if owned is not None else
+                                                                       result.response_text if result else ""),
+                                                             error=error or "",
+                                                             session_id=result.session_id if result else "")
                     except asyncio.CancelledError:
                         # The cancellation-safe disk worker may already have
                         # committed a terminal result before reporting cancellation.
                         current = await self.inbox.get(group, cwd, record.message.id)
                         if current is not None and current.status == "running":
-                            await self.inbox.finish(current, "interrupted",
-                                                    error="Receiver stopped; inspect side effects")
+                            if not await self.observers.release_unstarted(current):
+                                await self.inbox.finish(current, "interrupted",
+                                                        error="Receiver stopped; inspect side effects")
                         raise
                     except Exception as exc:
                         record = await self.inbox.finish(record, "failed", error=str(exc))
+                    await self._report_managed(record)
                     self._notify(record)
                     if self.on_complete is not None:
                         try:
@@ -157,6 +194,30 @@ class ClawBackend:
             for (target, _), future in self._waiters.items():
                 if target == group and not future.done():
                     future.set_result(None)
+
+    async def _report_managed(self, record: InboxRecord) -> None:
+        # This database association is host-created before enqueue. Neither an
+        # external source label nor a forged provenance flag can opt into sending.
+        if not await self.observers.begin_delivery(record):
+            return
+        try:
+            if record.status == 'succeeded' and not record.response.strip():
+                raise ValueError('Agent produced no report')
+            report = (record.response if record.status == 'succeeded' else
+                      f"观察任务执行失败: {record.error or record.status}")
+            outcomes = await self.orchestrator.deliver_report(record.group_id, report)
+            errors = [value for value in outcomes if value['status'] != 'delivered']
+            unknown = any(value['status'] == 'unknown' for value in errors)
+            import json
+            await self.observers.finish_delivery(record, status='unknown' if unknown else
+                                                  'failed' if errors else 'delivered',
+                                                  error=json.dumps(outcomes, ensure_ascii=False) if errors else '')
+        except asyncio.CancelledError:
+            await self.observers.finish_delivery(record, status='unknown',
+                                                 error='Channel send interrupted; inspect before resending')
+            raise
+        except Exception as exc:
+            await self.observers.finish_delivery(record, status='failed', error=str(exc))
 
     def _notify(self, record: InboxRecord) -> None:
         future = self._waiters.get((record.group_id, record.message.id))
@@ -275,7 +336,8 @@ class ClawBackend:
     async def _close(self) -> None:
         prompts = list(self._prompts.values())
         workers = list(self._workers.values())
-        for task in (*prompts, *workers):
+        reports = list(self._reports)
+        for task in (*prompts, *workers, *reports):
             task.cancel()
-        await asyncio.gather(*prompts, *workers, return_exceptions=True)
+        await asyncio.gather(*prompts, *workers, *reports, return_exceptions=True)
         await self.inbox.close()

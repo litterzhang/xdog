@@ -1,6 +1,6 @@
 name: publish
 
-# Publishes the four distributions to PyPI via Trusted Publishing (OIDC) — no API
+# Publishes the seven distributions to PyPI via Trusted Publishing (OIDC) — no API
 # token is stored anywhere. PyPI verifies the request came from this repository,
 # this workflow file, and the named environment.
 #
@@ -9,7 +9,7 @@ name: publish
 #   * Run workflow…         → publish a subset, for a staged first release
 #
 # Publish order does not matter: PyPI does not resolve Requires-Dist at upload
-# time, only at install time, and all four land in the same run.
+# time, only at install time, and all seven land in the same run.
 
 on:
   push:
@@ -22,7 +22,7 @@ on:
           trusted publishers at a time, so a first release has to go in waves —
           publish three, which converts their pending publishers to regular ones
           and frees the slots, then register and publish the rest.
-        default: '["xdog-ai","xdog-tui","xdog-agent","xdog-flow","xdog-claw","xdog-coding"]'
+        default: '["xdog-ai","xdog-tui","xdog-agent","xdog-flow","xdog-claw","xdog-coding","xdog-eyes"]'
 
 permissions:
   contents: read
@@ -32,9 +32,9 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # Everything except `xdog-site`, which is the website itself rather
-        # than a library anyone would install.
-        package: ${{ fromJSON(inputs.packages || '["xdog-ai","xdog-tui","xdog-agent","xdog-flow","xdog-claw","xdog-coding"]') }}
+        # Publish the seven library/client distributions, excluding the website
+        # (`xdog-site`) and the workspace umbrella (`xdog`).
+        package: ${{ fromJSON(inputs.packages || '["xdog-ai","xdog-tui","xdog-agent","xdog-flow","xdog-claw","xdog-coding","xdog-eyes"]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v9.0.0
@@ -67,14 +67,14 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       # One environment per package: PyPI keys a *pending* publisher on
-      # (owner, repository, workflow, environment), so six packages sharing one
+      # (owner, repository, workflow, environment), so seven packages sharing one
       # environment name is ambiguous — it cannot tell which project an upload
       # should create — and registering the second one is rejected outright.
       # Per-package environments also mean one package failing does not block
       # the rest, and each can carry its own approval gate.
       fail-fast: false
       matrix:
-        package: ${{ fromJSON(inputs.packages || '["xdog-ai","xdog-tui","xdog-agent","xdog-flow","xdog-claw","xdog-coding"]') }}
+        package: ${{ fromJSON(inputs.packages || '["xdog-ai","xdog-tui","xdog-agent","xdog-flow","xdog-claw","xdog-coding","xdog-eyes"]') }}
     environment: pypi-${{ matrix.package }}
     permissions:
       # Mints the short-lived OIDC token PyPI trades for an upload token.

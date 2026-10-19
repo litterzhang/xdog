@@ -1,0 +1,300 @@
+{
+  "status": "complete",
+  "base_commit": "fcacaa4",
+  "total": 8,
+  "remaining": 0,
+  "counts": {
+    "待实现": 0,
+    "待验证": 0,
+    "缺外部环境": 0,
+    "已完成": 8,
+    "延期": 0
+  },
+  "requirements": [
+    {
+      "id": "CS-01",
+      "title": "Eyes 可嵌入生命周期",
+      "scope": "复用运行核心，CLI保留IPC/锁/idle；Claw只托管自己的observer。",
+      "acceptance": "独立Eyes既有测试通过；托管停止等待所有自身任务/handler；不启动daemon/第二Agent。",
+      "status": "已完成",
+      "historical_evidence": [
+        "/tmp/xdog-claw-eyes-impl/eyes/pytest-final.txt:275Eyes tests passed before host integration",
+        "/tmp/xdog-claw-eyes-impl/review-green.log:3confirmed review bugs fixed incl file handler resource ownership",
+        "/tmp/xdog-claw-eyes-impl/gateway-manager.log:17passed",
+        "/tmp/xdog-claw-eyes-impl/final/:all8package final regression6411passed+7optionalCLI skips;all557strict;18freshartifacts;28wheel-onlyimports;independentEyespass"
+      ],
+      "evidence": [
+        "packages/claw/tests/test_eyes_gateway.py",
+        "packages/eyes/tests/test_observer_service.py",
+        "/tmp/xdog-claw-eyes-retirement/tests.log"
+      ],
+      "verification_scope": "最新删除范围已在当前Linux环境完成全8包门禁；历史迁移证据仅保留追溯。"
+    },
+    {
+      "id": "CS-02",
+      "title": "托管检查点及可靠触发",
+      "scope": "严格数据检查点；同一inbox所有者原子保存游标和不可变待投递事件；可信恢复已接受at。",
+      "acceptance": "落盘失败不发；进程重建不丢at；ACK丢失重交原ID/内容；未知执行不重放。",
+      "status": "已完成",
+      "historical_evidence": [
+        "/tmp/xdog-claw-eyes-impl/recovery.log:18passed incl real3process one-off restore/non-replay",
+        "/tmp/xdog-claw-eyes-impl/number-red.log:JSONinteger identity defect reproduced",
+        "/tmp/xdog-claw-eyes-impl/number-green.log:57passed after exact numeric preservation",
+        "/tmp/xdog-claw-eyes-impl/final/:all8package final regression6411passed+7optionalCLI skips;all557strict;18freshartifacts;28wheel-onlyimports;independentEyespass"
+      ],
+      "evidence": [
+        "packages/claw/tests/test_eyes_process_recovery.py",
+        "packages/claw/tests/test_eyes_store.py",
+        "packages/eyes/tests/test_managed_scheduler.py",
+        "/tmp/xdog-claw-eyes-retirement/tests.log"
+      ],
+      "verification_scope": "最新删除范围已在当前Linux环境完成全8包门禁；历史迁移证据仅保留追溯。"
+    },
+    {
+      "id": "CS-03",
+      "title": "ACP群接入与执行",
+      "scope": "固定当前群/工作区/私有端点；同一Orchestrator队列；单observer单在途；新interval固定相位。",
+      "acceptance": "真实ACP/Agent链路；同群串行、跨群受限；忙时不补发；原工具权限/会话路由保留。",
+      "status": "已完成",
+      "historical_evidence": [
+        "/tmp/xdog-claw-eyes-impl/host-focused.log:70passed",
+        "/tmp/xdog-claw-eyes-impl/review-red.log:namespace queued-admission defect reproduced",
+        "/tmp/xdog-claw-eyes-impl/review-green.log:all3 fixed",
+        "/tmp/xdog-claw-eyes-impl/final/:all8package final regression6411passed+7optionalCLI skips;all557strict;18freshartifacts;28wheel-onlyimports;independentEyespass"
+      ],
+      "evidence": [
+        "packages/claw/tests/test_eyes_integration.py",
+        "packages/claw/tests/test_eyes_manager.py",
+        "/tmp/xdog-claw-eyes-retirement/tests.log"
+      ],
+      "verification_scope": "最新删除范围已在当前Linux环境完成全8包门禁；历史迁移证据仅保留追溯。"
+    },
+    {
+      "id": "CS-04",
+      "title": "执行与渠道投递分离",
+      "scope": "接收/执行/投递独立状态，可信host渠道策略；微信失败不重跑模型。",
+      "acceptance": "无渠道/部分失败/发送中断如实记录；普通Eyes ACP不广播；已执行结果不重跑。",
+      "status": "已完成",
+      "historical_evidence": [
+        "/tmp/xdog-claw-eyes-impl/ported-tests/pytest.log:empty report defect reproduced before fix",
+        "/tmp/xdog-claw-eyes-impl/review-green.log:execution-commit-before-send recovery without Agent replay verified",
+        "/tmp/xdog-claw-eyes-impl/final/:all8package final regression6411passed+7optionalCLI skips;all557strict;18freshartifacts;28wheel-onlyimports;independentEyespass"
+      ],
+      "evidence": [
+        "packages/claw/tests/test_eyes_delivery.py",
+        "packages/claw/tests/test_eyes_process_recovery.py",
+        "/tmp/xdog-claw-eyes-retirement/tests.log"
+      ],
+      "verification_scope": "最新删除范围已在当前Linux环境完成全8包门禁；历史迁移证据仅保留追溯。"
+    },
+    {
+      "id": "CS-05",
+      "title": "取消准入栅栏",
+      "scope": "取消未来及未开始的所属消息；领取等待群锁后再次栅栏；不abort无关聊天。",
+      "acceptance": "确定性取消vs准入竞态；pending取消零模型调用；started如实不可撤销；独立Eyes stop不撤销inbox。",
+      "status": "已完成",
+      "historical_evidence": [
+        "packages/claw/tests/test_eyes_store.py:cancel before enqueue/claim/admission and afterstart fences",
+        "packages/claw/tests/test_scheduler_integration.py:actual busy group no steering, pendingcancel, concurrency",
+        "/tmp/xdog-claw-eyes-impl/final/:all8package final regression6411passed+7optionalCLI skips;all557strict;18freshartifacts;28wheel-onlyimports;independentEyespass"
+      ],
+      "evidence": [
+        "packages/claw/tests/test_eyes_integration.py",
+        "packages/claw/tests/test_eyes_store.py",
+        "/tmp/xdog-claw-eyes-retirement/tests.log"
+      ],
+      "verification_scope": "最新删除范围已在当前Linux环境完成全8包门禁；历史迁移证据仅保留追溯。"
+    },
+    {
+      "id": "CS-06",
+      "title": "统一Eyes工具和skill",
+      "scope": "group-scoped create/list/status/cancel；源结构复用，host绑定目的地；不改工具显示。",
+      "acceptance": "真实工具循环创建/查询/取消；跨群请求拒绝；skill区分Claw/Coding/CLI；不引入第二DSL。",
+      "status": "已完成",
+      "historical_evidence": [
+        "packages/claw/tests/test_scheduler_integration.py:real model toolloop createsEyes observer",
+        "/tmp/xdog-claw-eyes-impl/claw-eyes-preflight.log:1046passed",
+        "/tmp/xdog-claw-eyes-impl/final/:all8package final regression6411passed+7optionalCLI skips;all557strict;18freshartifacts;28wheel-onlyimports;independentEyespass"
+      ],
+      "evidence": [
+        "packages/claw/tests/test_eyes_manager.py",
+        "packages/claw/tests/test_eyes_scheduler.py",
+        "packages/claw/tests/test_eyes_packaging.py",
+        "/tmp/xdog-claw-eyes-retirement/tests.log"
+      ],
+      "verification_scope": "最新删除范围已在当前Linux环境完成全8包门禁；历史迁移证据仅保留追溯。"
+    },
+    {
+      "id": "CS-07",
+      "title": "彻底删除旧任务调度及迁移兼容，保留旧数据",
+      "scope": "删除TaskScheduler/task工具、专属模型/注入/导出、迁移模块/备份/转换/标记/确认状态与tasks_file配置及路径解析；不读不导入scheduled_tasks.json，用户旧数据不删不改；保留Eyes scheduler source、goal runner和历史transcript标签。",
+      "acceptance": "启用/禁用Eyes启动均不检查、读取、备份、导入或改写旧任务文件（含旧自定义路径），旧文件存在、损坏或不可读不影响启动且不生成observer；tasks_file不再是配置字段/运行路径，旧调度和迁移符号/存储兼容路径清除；旧数据原样保留；Eyes时间源、goal周期及历史标签有回归证据。",
+      "status": "已完成",
+      "historical_evidence": [
+        "/tmp/xdog-claw-eyes-impl/migration/:61unit cases strictmigration/backup",
+        "packages/claw/tests/test_scheduler.py:actuallegacy import, corrupt store, review states",
+        "packages/claw/tests/test_scheduler_integration.py:customtasks_file/data_dir and idempotent imports",
+        "/tmp/xdog-claw-eyes-impl/final/:all8package final regression6411passed+7optionalCLI skips;all557strict;18freshartifacts;28wheel-onlyimports;independentEyespass"
+      ],
+      "evidence": [
+        "packages/claw/tests/test_task_scheduler_removed.py",
+        "packages/claw/tests/test_eyes_store.py",
+        "packages/claw/tests/test_eyes_integration.py",
+        "/tmp/xdog-claw-eyes-retirement/tests.log"
+      ],
+      "verification_scope": "最新删除范围已在当前Linux环境完成全8包门禁；历史迁移证据仅保留追溯。",
+      "superseded_scope": {
+        "title": "迁移并删除旧引擎",
+        "scope": "私有备份、稳定映射、幂等迁移与异常保留；旧interval标需确认；删除TaskScheduler/TaskTool专属路径。",
+        "acceptance": "反复迁移无双触发；running未知不重放；旧cron/at验证；goal tick及历史transcript兼容保留。",
+        "status": "superseded",
+        "note": "仅供历史追溯，不再支持或验收旧任务迁移及needs_confirmation流程。"
+      },
+      "implementation_update": "旧引擎、工具、模型、配置、路径解析、迁移及迁移存储代码均已删除；新回归验证不读不改旧文件、goal周期保留，Eyes完整链路重新通过。"
+    },
+    {
+      "id": "CS-08",
+      "title": "安装发布配置与完整回归",
+      "scope": "Claw声明Eyes依赖、发布矩阵纳入Eyes，不实际发布；独立Eyes依赖方向；全8包门禁和9项目artifact。",
+      "acceptance": "全部8包完整测试+独立MCP SDK、Ruff、strict mypy8、Flow例、锁、18新artifact及wheel-only检查通过。",
+      "status": "已完成",
+      "historical_evidence": [
+        "/tmp/xdog-claw-eyes-impl/packaging/:12offlinechecks before docrealignment",
+        "/tmp/xdog-claw-eyes-impl/claw-eyes-preflight.log:1046fullClaw+Eyes passed",
+        "/tmp/xdog-claw-eyes-impl/mypy-latest.log:122sourcefilesclean;ruff-latest.log clean",
+        "/tmp/xdog-claw-eyes-impl/final/:all8package final regression6411passed+7optionalCLI skips;all557strict;18freshartifacts;28wheel-onlyimports;independentEyespass"
+      ],
+      "evidence": [
+        "packages/claw/tests/test_eyes_packaging.py",
+        "/tmp/xdog-claw-eyes-retirement/tests.log",
+        "/tmp/xdog-claw-eyes-retirement/ruff.log",
+        "/tmp/xdog-claw-eyes-retirement/mypy.log",
+        "/tmp/xdog-claw-eyes-retirement/lock.log",
+        "/tmp/xdog-claw-eyes-retirement/examples.log",
+        "/tmp/xdog-claw-eyes-retirement/build.log",
+        "/tmp/xdog-claw-eyes-retirement/artifacts.json",
+        "/tmp/xdog-claw-eyes-retirement/independent-eyes-wheel.log"
+      ],
+      "verification_scope": "最新删除范围已在当前Linux环境完成全8包门禁；历史迁移证据仅保留追溯。"
+    }
+  ],
+  "limits": [
+    "仅实现/本地验证，不自动commit/push/bump/tag/发布或重启服务",
+    "保留无关dirty和并行修改，不stash/reset/clean/add-A",
+    "非Linux原生验证范围外，不声称通过",
+    "不改Agent循环、工具显示、凭据或权限策略",
+    "新Eyes PyPI可信发布者及真实微信/付费provider未作外部验证；发布矩阵仅修改配置，未触发发布",
+    "源state是observer生命周期，completed仅表示一次性时间源已耗尽；实际执行/投递分别读取occurrences",
+    "独立CLI和普通文件观察不自动恢复；旧任务迁移/needs_confirmation策略已被2026-10-18完整删除决策取代，保留用户旧数据不代表兼容执行或导入。"
+  ],
+  "evidence_root": "/tmp/xdog-claw-eyes-retirement",
+  "review_fixes": [
+    {
+      "requirement": "CS-01",
+      "case": "explicitfilepreconnecthandlerleak",
+      "status": "fixed",
+      "red": "review-red.log",
+      "green": "review-green.log"
+    },
+    {
+      "requirement": "CS-02",
+      "case": "integerJSONrepresentationmustremainimmutable",
+      "status": "fixed",
+      "red": "number-red.log",
+      "green": "number-green.log"
+    },
+    {
+      "requirement": "CS-03",
+      "case": "queuednamespacechangefenceatAgentadmission",
+      "status": "fixed",
+      "red": "review-red.log",
+      "green": "review-green.log"
+    },
+    {
+      "requirement": "CS-04",
+      "case": "terminalexecutionbeforechannelsendrecoverywithoutmodel",
+      "status": "fixed",
+      "red": "review-red.log",
+      "green": "review-green.log"
+    }
+  ],
+  "latest_decision": {
+    "date": "2026-10-18",
+    "supersedes": "旧CS-07迁移范围及此前8/8完成结论对最新范围的适用性",
+    "scope": "彻底删除Claw旧task scheduler实现和所有迁移兼容；无tasks_file配置；不检查、读取、备份或导入scheduled_tasks.json及旧自定义任务路径；用户旧数据不删不改。",
+    "preserved": [
+      "Eyes scheduler source",
+      "goal runner及其周期",
+      "历史transcript scheduler/goal_runner标签"
+    ],
+    "acceptance_policy": "删除范围重新验收完毕，8项已完成，剩余0；不以旧范围的6411通过替代新验证。"
+  },
+  "historical_evidence_scope": "historical_evidence、review_fixes、historical_candidate_validation和historical_final_validation均为旧迁移范围记录；只保留追溯，不代表最新实现、源码或文档已通过新验收。 review_fixes中的相对日志路径以historical_evidence_root为根，不指向新验收目录。",
+  "historical_candidate_validation": {
+    "claw_eyes_passed": 1046,
+    "strict_claw_eyes_files": 122,
+    "full_final_gates": "pending",
+    "old_interval_policy": "preserved disabled needs_confirmation; explicitly create new fixed-phase replacement",
+    "publication_scope": "repository configuration only; no deployment/tag/push"
+  },
+  "historical_final_validation": {
+    "package_test_paths": 8,
+    "passed": 6411,
+    "optional_external_cli_skipped": 7,
+    "independent_mcp_sdk_enabled": true,
+    "elapsed_test_seconds": 123.23,
+    "ruff": "passed",
+    "strict_source_files": 557,
+    "flow_examples": 17,
+    "offline_lock": "passed",
+    "built_projects": 9,
+    "fresh_artifacts": 18,
+    "wheel_only_imports": 28,
+    "current_source_members_verified": 833,
+    "current_readme_metadata_verified": 8,
+    "independent_eyes_without_harness_or_sdk_activation": "passed",
+    "frozen_package_files_unchanged": 1367,
+    "unrelated_dirty_hashes_preserved": 9,
+    "staged_files": 0,
+    "committed": false,
+    "pushed": false,
+    "tagged": false,
+    "version_changed": false,
+    "service_restarts": 0
+  },
+  "final_validation": {
+    "status": "passed",
+    "scope": "2026-10-18完整删除旧任务与迁移兼容的最新范围",
+    "package_test_paths": 8,
+    "passed": 6355,
+    "optional_external_cli_skipped": 7,
+    "independent_mcp_sdk_enabled": true,
+    "elapsed_test_seconds": 125.16,
+    "ruff": "passed",
+    "strict_source_files": 556,
+    "flow_examples": 17,
+    "offline_lock": "passed",
+    "built_projects": 9,
+    "fresh_artifacts": 18,
+    "wheel_only_imports": 27,
+    "removed_imports_rejected": 12,
+    "current_source_members_verified": 832,
+    "current_readme_metadata_verified": 8,
+    "independent_eyes_without_harness_or_sdk_activation": "passed (source and wheel)",
+    "frozen_package_files_unchanged": 1327,
+    "unrelated_dirty_hashes_preserved": 9,
+    "staged_files": 0,
+    "committed": false,
+    "pushed": false,
+    "tagged": false,
+    "version_changed": false,
+    "service_restarts": 0,
+    "test_count_change": "此前6411通过→本次6355通过；删除明确废止的旧任务迁移测试，保留Eyes时间源/权限/并发/恢复/报告测试，并新增旧入口不存在与旧文件零访问回归。旧scheduler测试文件重命名为test_eyes_scheduler.py和test_eyes_integration.py，不是删除Eyes行为验证。"
+  },
+  "historical_evidence_root": "/tmp/xdog-claw-eyes-impl",
+  "current_validation": {
+    "status": "complete",
+    "evidence_root": "/tmp/xdog-claw-eyes-retirement",
+    "summary": "/tmp/xdog-claw-eyes-retirement/summary.json"
+  }
+}

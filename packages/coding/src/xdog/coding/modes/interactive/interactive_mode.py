@@ -1226,9 +1226,7 @@ class InteractiveMode:
     def _child_configured_start(self, task: str, access: str, config: dict[str, Any]) -> None:
         import shlex
         chosen = ChildConfig.from_dict(config)
-        options = ["--label", chosen.label, "--instructions", chosen.instructions,
-                   "--timeout", str(chosen.timeout), "--calls", str(chosen.max_model_calls),
-                   "--tokens", str(chosen.max_tokens)]
+        options = ["--label", chosen.label, "--instructions", chosen.instructions]
         if chosen.preset is not None:
             options.extend(("--preset", chosen.preset))
         if chosen.model is not None:

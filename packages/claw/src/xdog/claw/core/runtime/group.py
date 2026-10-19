@@ -13,10 +13,10 @@ import threading
 import time
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from xdog.agent import AgentConfig, AgentTool, StreamFn
-from xdog.agent.history import history_points, validate_checkpoint
+from xdog.agent.history import history_points
 from xdog.agent.mcp import McpManager
 from xdog.agent.skills import SkillManager
 from xdog.ai.types import ImageContent, SystemPromptBlock
@@ -27,13 +27,15 @@ from xdog.claw.core.memory.manager import MemoryManager
 from xdog.claw.core.persistence.transcript_convert import TOOL_RESULT_ROLE, entry_text, transcript_to_messages
 from xdog.claw.core.persistence.transcript_store import TranscriptStore
 from xdog.claw.core.planning.goal_manager import GoalManager
-from xdog.claw.core.planning.task_scheduler import TaskScheduler
 from xdog.claw.core.prompt import build_system_prompt, init_workspace, workspace_path
 from xdog.claw.core.runtime.display_events import display_arguments, display_result
 from xdog.claw.core.runtime.transcript_source import SourceCapture
 from xdog.claw.core.tools import create_tools
 from xdog.claw.core.types import Group
 from xdog.tui.transcript_browser import TranscriptRecord
+
+if TYPE_CHECKING:
+    from xdog.claw.core.observers.manager import ManagedObservers
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +104,7 @@ class GroupRuntime:
         flush_runner: FlushRunner | None = None,
         summarizer: Summarizer | None = None,
         send_fn: Callable[..., Awaitable[None]] | None = None,
-        task_scheduler: TaskScheduler | None = None,
+        observers: ManagedObservers | None = None,
         mcp_servers: dict[str, Any] | None = None,
         mcp_credential_backend: str = 'file',
         extensions: tuple[str, ...] = (), extension_dir: str = "",
@@ -119,14 +121,15 @@ class GroupRuntime:
         self.max_prompt_tokens = max_prompt_tokens
         self.stream_fn = stream_fn
         self.agent_config = agent_config or group.agent_config
-        self.workspace_dir = workspace_dir or data_dir / "groups" / group.id / "workspace"
+        self.workspace_dir = workspace_dir or (Path(group.workspace) if group.workspace
+                                               else data_dir / "groups" / group.id / "workspace")
         self.transcript_store = transcript_store or TranscriptStore(
             data_dir / "groups" / group.id / "sessions", owner_group=group.id,
         )
         self.memory = memory
         self.goal_manager = goal_manager or GoalManager(
             goals_file=data_dir / "groups" / group.id / "goals.json",
-            goals_dir=data_dir / "goals",
+            goals_dir=self.workspace_dir / ".xdog" / "goals",
             model=model,
             stream_fn=stream_fn,
         )
@@ -137,7 +140,7 @@ class GroupRuntime:
         self.flush_runner = flush_runner
         self.summarizer = summarizer
         self._send_fn = send_fn
-        self.task_scheduler = task_scheduler
+        self.observers = observers
         self._enabled_tools = group.enabled_tools
         self._tools: list[AgentTool] | None = None
         self.mcp = McpManager(mcp_servers or {}, self.workspace_dir,
@@ -160,6 +163,7 @@ class GroupRuntime:
         # Memory snapshot cache (frozen per-turn, reload on mtime change)
         self._memory_snapshot: str | None = None
         self._memory_mtime: float = 0.0
+        self.goal_manager.attach(self)
 
     @classmethod
     def create(
@@ -170,7 +174,7 @@ class GroupRuntime:
         model: str = "",
         stream_fn: StreamFn | None = None,
         send_fn: Callable[..., Awaitable[None]] | None = None,
-        task_scheduler: TaskScheduler | None = None,
+        observers: ManagedObservers | None = None,
         mcp_servers: dict[str, Any] | None = None,
         mcp_credential_backend: str = 'file',
         extensions: tuple[str, ...] = (), extension_dir: str = "",
@@ -206,7 +210,7 @@ class GroupRuntime:
         summarizer = Summarizer(resolved_model) if resolved_model else None
         goal_manager = GoalManager(
             goals_file=group_dir / "goals.json",
-            goals_dir=data_dir / "goals",
+            goals_dir=ws / ".xdog" / "goals",
             model=resolved_model,
             stream_fn=stream_fn,
         )
@@ -229,7 +233,7 @@ class GroupRuntime:
             ),
             flush_runner=flush_runner,
             summarizer=summarizer,
-            send_fn=send_fn, task_scheduler=task_scheduler, mcp_servers=mcp_servers,
+            send_fn=send_fn, observers=observers, mcp_servers=mcp_servers,
             mcp_credential_backend=mcp_credential_backend,
             extensions=extensions, extension_dir=extension_dir,
             extension_settings=extension_settings, extension_allow_tools=extension_allow_tools,
@@ -318,9 +322,10 @@ class GroupRuntime:
         read_only = (current is not None and AccessState.from_dict(
             self.transcript_store.get_access(current.session_id)).read_only)
         children_active = self._active_session is not None and self._active_session.children.supervisor.active
-        if allow_reset and not read_only and not children_active and (
-                self.transcript_store.needs_daily_reset(group_id, config.daily_reset_hour)
-                             or self.transcript_store.needs_idle_reset(group_id, config.idle_reset_seconds)):
+        if (allow_reset and not read_only and not children_active
+                and not self.goal_manager.has_unfinished_goals()
+                and (self.transcript_store.needs_daily_reset(group_id, config.daily_reset_hour)
+                     or self.transcript_store.needs_idle_reset(group_id, config.idle_reset_seconds))):
             self._drop_session()
             self.transcript_store.reset_session(group_id)
 
@@ -380,7 +385,7 @@ class GroupRuntime:
             result.append({"id": f"p:{branch_id}:{point.index}", "kind": "checkpoint", "session_id": session_id,
                            "branch_id": branch_id, "index": point.index,
                            "title": f"{point.index + 1}. {point.role}: {point.preview}",
-                           "detail": "Fork/navigate here; tool-call batches remain complete"})
+                           "detail": "Read-only historical checkpoint; execution cannot return here"})
         return result
 
     def rename_session(self, expected_session: str, name: str,
@@ -404,120 +409,28 @@ class GroupRuntime:
     def navigate_session(self, action: str, session_id: str, branch_id: str, index: int,
                          expected_session: str, alive: Callable[[], bool] = lambda: True,
                          owner_loop: asyncio.AbstractEventLoop | None = None) -> None:
-        import uuid
-        store = self.transcript_store
-        active = store.get_active_session(self.group.id)
+        """Compatibility boundary for context rotation, never history activation.
+
+        A group has one logical main Agent. Saved transcripts and legacy branches
+        are read-only evidence, not alternate execution routes.
+        """
+        if action != "new":
+            raise ValueError("Claw history is read-only; resume/fork/branch/goto route switching is not supported")
+        if session_id or branch_id or index != -1:
+            raise ValueError("New context cannot select a historical session, branch or checkpoint")
+        active = self.transcript_store.get_active_session(self.group.id)
         if (active.session_id if active is not None else "") != expected_session:
-            raise ValueError("Active session changed; refresh the browser")
+            raise ValueError("Active context changed; refresh before creating a new context")
+        if not alive():
+            raise asyncio.CancelledError
+        self.reset_session()
+
+    def reset_session(self) -> None:
+        """Rotate an idle group's context without deleting or reassigning Goals."""
         if self._active_session is not None:
             self._active_session._children_idle()
             if self._active_session.agent.state.is_streaming:
-                raise RuntimeError("Session navigation requires an idle agent")
-            self._active_session._persist()
-        if action == "new":
-            self.reset_session()
-            return
-        if session_id not in {data["session_id"] for data in store.list_sessions(self.group.id)}:
-            raise ValueError("Session unavailable or owned by another group")
-        source = store.load_branch(session_id, branch_id) if branch_id else store.load_transcript(session_id)
-        if source is None:
-            raise ValueError("Branch unavailable")
-        messages = transcript_to_messages(source)
-        if action == "resume":
-            self._navigate_prepared(session_id, store.active_branch(session_id), source, store.get_access(session_id),
-                                    store.get_extension_entries(session_id), [], alive, resume=True,
-                                    active_tools=store.get_active_tools(session_id),
-                                    owner_loop=owner_loop)
-            return
-        if action not in {"fork", "branch", "goto"}:
-            raise ValueError("Unknown session operation")
-        if action == "branch" and not branch_id:
-            raise ValueError("Branch ID required")
-        if action == "branch" and messages:
-            validate_checkpoint(messages, len(messages) - 1)
-        if action == "goto" and index < 0:
-            raise ValueError("A valid checkpoint index is required")
-        from xdog.agent.access import AccessState
-        source_access = AccessState.from_dict(store.branch_access(session_id, branch_id) if branch_id
-                                          else store.get_access(session_id))
-        from xdog.agent.extensions.state import validate_entries
-        source_entries = store.get_extension_entries(session_id, branch_id)
-        source_tools = store.get_active_tools(session_id, branch_id)
-        validate_entries(source_entries)
-        points = history_points(messages)
-        point = index if index >= 0 else points[-1].index if points else -1
-        validate_checkpoint(messages, point)
-        if action == "fork":
-            key = uuid.uuid4().hex[:8]
-            # Transcript conversion can contain multiple entries for one message;
-            # serialize the selected typed prefix rather than slicing JSONL rows.
-            from xdog.claw.core.persistence.transcript_convert import messages_to_transcript
-            prefix = messages_to_transcript(messages[:point + 1])
-            store.save_branch(session_id, key, prefix, metadata={
-                "branch_point": point, "label": "Saved checkpoint",
-                "parent_branch": branch_id or store.active_branch(session_id), "access": source_access.to_dict(),
-                "extension_entries": source_entries,
-                "active_tools": list(source_tools) if source_tools is not None else None,
-            })
-            return
-        head = store.load_transcript(session_id)
-        branches: list[tuple[str, list[dict[str, Any]], dict[str, Any]]] = [
-            (uuid.uuid4().hex[:8], head, {"label": "Return checkpoint before navigation"})]
-        if action == "goto":
-            from xdog.claw.core.persistence.transcript_convert import messages_to_transcript
-            source = messages_to_transcript(messages[:point + 1])
-            new_branch = uuid.uuid4().hex[:8]
-            branches.append((new_branch, source, {"branch_point": point, "parent_branch": branch_id,
-                "label": f"Checkpoint at message {point + 1}", "access": source_access.to_dict(),
-                "extension_entries": source_entries,
-                "active_tools": list(source_tools) if source_tools is not None else None}))
-            branch_id = new_branch
-        self._navigate_prepared(session_id, branch_id, source, source_access.to_dict(), source_entries,
-                                branches, alive, owner_loop=owner_loop, active_tools=source_tools)
-
-    def _navigate_prepared(self, session_id: str, branch_id: str, source: list[dict[str, Any]],
-                           access: Any, entries: Any,
-                           branches: list[tuple[str, list[dict[str, Any]], dict[str, Any]]],
-                           alive: Callable[[], bool], *, resume: bool = False,
-                           active_tools: tuple[str, ...] | None = None,
-                           owner_loop: asyncio.AbstractEventLoop | None = None) -> None:
-        from xdog.agent.access import AccessState
-        from xdog.claw.core.runtime.session_staging import prepare
-        target_access = AccessState.from_dict(access)
-        if self._active_session is not None:
-            target_access = target_access.retain_restriction(self._active_session.access.state)
-        access = target_access.to_dict()
-        stage = prepare(self, session_id, source, access, entries, branch_id, alive, active_tools=active_tools)
-        try:
-            if not alive():
-                raise asyncio.CancelledError
-            self.transcript_store.commit_navigation(self.group.id, session_id, branch_id, source,
-                AccessState.from_dict(access).to_dict(), stage.session.extensions.entries.snapshot(),
-                branches=branches, resume=resume, active_tools=stage.session.agent.active_tool_selection)
-        except BaseException:
-            stage.close()
-            raise
-        # Only an admitted target is made the active cached owner. The prepared
-        # worker is reused; setup callbacks and buffered entries are not replayed.
-        old_loop = self._active_session._host_loop if self._active_session is not None else None
-        self._drop_session()
-        stage.store.promote()
-        stage.runtime.transcript_store = self.transcript_store  # Captured access writer delegates to real storage.
-        stage.session._runtime = self
-        stage.session._host_loop = owner_loop or old_loop
-        stage.session.extensions.context = lambda: {
-            'session_id': stage.session.meta.session_id, 'group_id': self.group.id,
-            'cwd': str(self.workspace_dir), 'model': self.model,
-            'read_only': stage.session.access.state.read_only, 'permission_mode': 'configured'}
-        self.model = stage.runtime.model
-        self.context_window = stage.runtime.context_window
-        self.max_prompt_tokens = stage.runtime.max_prompt_tokens
-        self._active_session = stage.session
-        self._session_last_active = time.time()
-
-    def reset_session(self) -> None:
-        if self._active_session is not None:
-            self._active_session._children_idle()
+                raise RuntimeError("Context reset requires an idle agent")
         self._drop_session()
         self.transcript_store.reset_session(self.group.id)
 
@@ -557,8 +470,12 @@ class GroupRuntime:
             if not images_validated:
                 self.validate_images(images)
             agent.queue_input(input_id, content, cast(Delivery, delivery), images)
+            self._active_session._goal_human_inputs[input_id] = 'tui'
             return True
-        return agent.change_input(input_id, action, content, direction)
+        changed = agent.change_input(input_id, action, content, direction)
+        if changed and action == 'remove':
+            self._active_session._goal_human_inputs.pop(input_id, None)
+        return changed
 
     def pending_inputs(self, prefix: str) -> tuple[Any, ...]:
         if self._active_session is None:
@@ -568,7 +485,10 @@ class GroupRuntime:
     def drain_inputs(self, prefix: str) -> tuple[Any, ...]:
         if self._active_session is None:
             return ()
-        return self._active_session.agent.drain_inputs(prefix)
+        items = self._active_session.agent.drain_inputs(prefix)
+        for item in items:
+            self._active_session._goal_human_inputs.pop(item.id, None)
+        return items
 
     def abort(self) -> None:
         if self._active_session is not None:
@@ -689,6 +609,8 @@ class GroupRuntime:
             self._active_session._children_idle()
         self._source_revision += 1
         if self._active_session is not None:
+            self.goal_manager.record_children_status(
+                self._active_session.children.supervisor.snapshot().get('children', []))
             self._active_session.dispose()
             self._retired_extensions.append(self._active_session.extensions)
             self._active_session = None

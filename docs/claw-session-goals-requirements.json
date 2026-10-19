@@ -1,0 +1,280 @@
+{
+  "status": "complete",
+  "total": 12,
+  "remaining": 0,
+  "counts": {
+    "待实现": 0,
+    "待验证": 0,
+    "缺外部环境": 0,
+    "已完成": 12,
+    "延期": 0
+  },
+  "requirements": [
+    {
+      "id": "SG-01",
+      "title": "Group唯一主Agent与单路线生命周期",
+      "scope": "Claw只维护group唯一逻辑主Agent和单一执行路线；移除branch/fork/goto路线切换入口，不影响Coding；session只保存上下文历史，Goal随group主Agent持续管理。",
+      "acceptance": "Claw只维护group唯一逻辑主Agent和单一执行路线；移除branch/fork/goto路线切换入口，不影响Coding；session只保存上下文历史，Goal随group主Agent持续管理。",
+      "status": "已完成",
+      "evidence": [
+        "packages/claw/tests/test_group_context_controls.py",
+        "packages/claw/tests/test_context_rotation_access.py",
+        "packages/claw/tests/test_access_scope.py",
+        "packages/claw/tests/test_session_catalog.py",
+        "packages/claw/tests/test_navigation_journal.py",
+        "packages/coding/tests/test_active_tool_retirement.py",
+        "/tmp/xdog-session-goals/final/tests.log"
+      ],
+      "acceptance_result": "Single-route group ownership; context rotation, atomic readonly retention and read-only archives",
+      "verified_scope": "当前Linux，最新group-only用户范围，冻结candidate4；外部真实provider/微信和非Linux不宣称通过。"
+    },
+    {
+      "id": "SG-02",
+      "title": "主Agent管理且子Agent无固定运行预算",
+      "scope": "移除固定timeout/calls/tokens/并发与记录数业务上限；取消、权限、关闭、上下文管理和崩溃一致性保留。",
+      "acceptance": "移除固定timeout/calls/tokens/并发与记录数业务上限；取消、权限、关闭、上下文管理和崩溃一致性保留。",
+      "status": "已完成",
+      "evidence": [
+        "packages/agent/tests/test_supervision.py",
+        "packages/agent/tests/test_supervision_compaction.py",
+        "packages/agent/tests/test_supervision_store.py",
+        "packages/coding/tests/test_child_agents.py",
+        "packages/tui/tests/test_child_panel.py",
+        "/tmp/xdog-session-goals/final/claw-native-child.json",
+        "/tmp/xdog-session-goals/final/tests.log"
+      ],
+      "acceptance_result": "No child runtime/call/token/concurrency/record-count business caps; native policy and durable history",
+      "verified_scope": "当前Linux，最新group-only用户范围，冻结candidate4；外部真实provider/微信和非Linux不宣称通过。"
+    },
+    {
+      "id": "SG-03",
+      "title": "Group主Agent持久Goal契约与自主规划",
+      "scope": "Goal只归属group主Agent；创建后自主工作、不强制planner；条件/任务/状态/修订持久化，session轮换不产生新负责人或隐式Goal迁移。",
+      "acceptance": "Goal只归属group主Agent；创建后自主工作、不强制planner；条件/任务/状态/修订持久化，session轮换不产生新负责人或隐式Goal迁移。",
+      "status": "已完成",
+      "evidence": [
+        "packages/claw/tests/test_goals.py",
+        "packages/claw/tests/test_goal_journal_safety.py",
+        "packages/claw/tests/test_group_goal_gate.py",
+        "packages/claw/tests/test_goal_process_recovery.py",
+        "/tmp/xdog-session-goals/final/tests.log"
+      ],
+      "acceptance_result": "Group-owned contract/journal v2, no automatic planner, safe legacy data and corruption handling",
+      "verified_scope": "当前Linux，最新group-only用户范围，冻结candidate4；外部真实provider/微信和非Linux不宣称通过。"
+    },
+    {
+      "id": "SG-04",
+      "title": "Task/attempt单写者workspace",
+      "scope": "任务分配有稳定ID/attempt；执行Agent更新原子严格报告；主Agent及宿主不同文件，旧attempt/旧revision不能覆写。",
+      "acceptance": "任务分配有稳定ID/attempt；执行Agent更新原子严格报告；主Agent及宿主不同文件，旧attempt/旧revision不能覆写。",
+      "status": "已完成",
+      "evidence": [
+        "packages/claw/tests/test_task_reports.py",
+        "packages/claw/tests/test_group_goal_gate.py",
+        "packages/claw/tests/test_goal_journal_safety.py",
+        "/tmp/xdog-session-goals/ack-retry-durability.log",
+        "/tmp/xdog-session-goals/final/tests.log"
+      ],
+      "acceptance_result": "Strict atomic reports, host-bound identity/CAS, durable ACK-loss retry, no-follow and FD cleanup",
+      "verified_scope": "当前Linux，最新group-only用户范围，冻结candidate4；外部真实provider/微信和非Linux不宣称通过。"
+    },
+    {
+      "id": "SG-05",
+      "title": "实际sub-agent分配与角色权限",
+      "scope": "Goal assignment通过该session supervisor实际创建worker；显式注入worker说明；子Agent不能管理/完成Goal。",
+      "acceptance": "Goal assignment通过该session supervisor实际创建worker；显式注入worker说明；子Agent不能管理/完成Goal。",
+      "status": "已完成",
+      "evidence": [
+        "packages/claw/tests/test_group_goal_gate.py",
+        "packages/claw/tests/test_goal_eyes_end_to_end.py",
+        "packages/claw/tests/test_child_agents.py",
+        "/tmp/xdog-session-goals/final/claw-native-child.json",
+        "/tmp/xdog-session-goals/final/tests.log"
+      ],
+      "acceptance_result": "Actual supervisor worker creation, explicit role instructions and no Goal management in children",
+      "verified_scope": "当前Linux，最新group-only用户范围，冻结candidate4；外部真实provider/微信和非Linux不宣称通过。"
+    },
+    {
+      "id": "SG-06",
+      "title": "Eyes事件统一进入group主Agent",
+      "scope": "复用现有group ACP/inbox，事件仅向group唯一主Agent传递；不增加session地址或按session分发/停泊消息；保留来源不赋权、权限、并发和取消保护。",
+      "acceptance": "复用现有group ACP/inbox，事件仅向group唯一主Agent传递；不增加session地址或按session分发/停泊消息；保留来源不赋权、权限、并发和取消保护。",
+      "status": "已完成",
+      "evidence": [
+        "packages/claw/tests/test_goal_eyes_end_to_end.py",
+        "packages/claw/tests/test_goal_owned_observers.py",
+        "packages/claw/tests/test_goal_user_steering.py",
+        "/tmp/xdog-session-goals/final/tests.log"
+      ],
+      "acceptance_result": "Only existing group ACP/inbox routing; trusted owner policy, no session targets or forged user origin",
+      "verified_scope": "当前Linux，最新group-only用户范围，冻结candidate4；外部真实provider/微信和非Linux不宣称通过。"
+    },
+    {
+      "id": "SG-07",
+      "title": "通知对账与恢复",
+      "scope": "任务文件变化重读去重合并，不当新指令或循环通知；Goal-owned观察器恢复不改变普通file默认；group重启对账不丢义务、不重放中断执行。",
+      "acceptance": "任务文件变化重读去重合并，不当新指令或循环通知；Goal-owned观察器恢复不改变普通file默认；group重启对账不丢义务、不重放中断执行。",
+      "status": "已完成",
+      "evidence": [
+        "packages/claw/tests/test_goal_owned_observers.py",
+        "packages/claw/tests/test_goal_process_recovery.py",
+        "packages/claw/tests/test_goal_eyes_end_to_end.py",
+        "packages/claw/tests/test_eyes_process_recovery.py",
+        "packages/claw/tests/test_group_goal_gate.py",
+        "/tmp/xdog-session-goals/final/tests.log"
+      ],
+      "acceptance_result": "Current-report reconciliation, deduplication, original-ID owned-file recovery and no uncertain replay",
+      "verified_scope": "当前Linux，最新group-only用户范围，冻结candidate4；外部真实provider/微信和非Linux不宣称通过。"
+    },
+    {
+      "id": "SG-08",
+      "title": "独立Agent-only结束Gate",
+      "scope": "独立review子Agent逐条件证据结构化裁决；无script直接判成功/auto-pass；revision/成果变化旧结论拒绝，错误fail-closed。",
+      "acceptance": "独立review子Agent逐条件证据结构化裁决；无script直接判成功/auto-pass；revision/成果变化旧结论拒绝，错误fail-closed。",
+      "status": "已完成",
+      "evidence": [
+        "packages/claw/tests/test_group_goal_gate.py",
+        "packages/claw/tests/test_goal_process_recovery.py",
+        "packages/claw/tests/test_goal_eyes_end_to_end.py",
+        "packages/claw/tests/test_claw_goals_packaging.py",
+        "/tmp/xdog-session-goals/final/tests.log"
+      ],
+      "acceptance_result": "Independent Agent-only ordered verdict, actual evidence, revision/content fences and fail-closed faults",
+      "verified_scope": "当前Linux，最新group-only用户范围，冻结candidate4；外部真实provider/微信和非Linux不宣称通过。"
+    },
+    {
+      "id": "SG-09",
+      "title": "安全停止续跑与等待",
+      "scope": "显式完成及Goal工作正常stop兜底，不字符串匹配；用户输入优先/等待不空转/cancel不当成功；普通聊天不被绑架。",
+      "acceptance": "显式完成及Goal工作正常stop兜底，不字符串匹配；用户输入优先/等待不空转/cancel不当成功；普通聊天不被绑架。",
+      "status": "已完成",
+      "evidence": [
+        "packages/claw/tests/test_group_goal_gate.py",
+        "packages/claw/tests/test_goal_job_dispatch.py",
+        "packages/claw/tests/test_gateway_goal_wake.py",
+        "packages/claw/tests/test_goal_user_steering.py",
+        "packages/claw/tests/test_orchestrator.py",
+        "/tmp/xdog-session-goals/final/tests.log"
+      ],
+      "acceptance_result": "Safe stop/wait/continuation, user priority and consumed-human controls, no unchanged-state spin",
+      "verified_scope": "当前Linux，最新group-only用户范围，冻结candidate4；外部真实provider/微信和非Linux不宣称通过。"
+    },
+    {
+      "id": "SG-10",
+      "title": "Claw Goal skill与角色说明",
+      "scope": "打包发现加载claw-goals及worker/reviewer说明；覆盖创建/workspace/事件/验收/任务文件更新，删除旧STOP系统指令且不赋权。",
+      "acceptance": "打包发现加载claw-goals及worker/reviewer说明；覆盖创建/workspace/事件/验收/任务文件更新，删除旧STOP系统指令且不赋权。",
+      "status": "已完成",
+      "evidence": [
+        "packages/claw/src/xdog/claw/skills/claw-goals/SKILL.md",
+        "packages/claw/src/xdog/claw/skills/claw-goals/references/task-worker.md",
+        "packages/claw/src/xdog/claw/skills/claw-goals/references/goal-reviewer.md",
+        "packages/claw/tests/test_claw_goals_packaging.py",
+        "/tmp/xdog-session-goals/final/artifacts.json",
+        "/tmp/xdog-session-goals/final/tests.log"
+      ],
+      "acceptance_result": "Packaged/discovered claw-goals and explicit worker/reviewer instructions with executable schema examples",
+      "verified_scope": "当前Linux，最新group-only用户范围，冻结candidate4；外部真实provider/微信和非Linux不宣称通过。"
+    },
+    {
+      "id": "SG-11",
+      "title": "针对性单路线生命周期权限恢复验证",
+      "scope": "自动/手动上下文轮换与旧branch入口拒绝、group事件、真实Eyes通知、worker报告、审查陈旧/故障、重启和关闭有可复现回归。",
+      "acceptance": "自动/手动上下文轮换与旧branch入口拒绝、group事件、真实Eyes通知、worker报告、审查陈旧/故障、重启和关闭有可复现回归。",
+      "status": "已完成",
+      "evidence": [
+        "packages/claw/tests/test_goal_eyes_end_to_end.py",
+        "packages/claw/tests/test_goal_process_recovery.py",
+        "packages/claw/tests/test_context_rotation_access.py",
+        "packages/claw/tests/test_goal_owned_observers.py",
+        "packages/agent/tests/test_supervision_compaction.py",
+        "packages/claw/tests/test_goal_user_steering.py",
+        "/tmp/xdog-session-goals/final/tests.log"
+      ],
+      "acceptance_result": "Current Linux real transport/lifecycle, process-death recovery, permission and cancellation regression",
+      "verified_scope": "当前Linux，最新group-only用户范围，冻结candidate4；外部真实provider/微信和非Linux不宣称通过。"
+    },
+    {
+      "id": "SG-12",
+      "title": "全量回归与发布产物",
+      "scope": "Linux全8包+独立MCP SDK、Ruff、strict mypy8、Flow例、锁、全项目构建/wheel/skill审计；保留无关dirty，不自动发布/服务重启。",
+      "acceptance": "Linux全8包+独立MCP SDK、Ruff、strict mypy8、Flow例、锁、全项目构建/wheel/skill审计；保留无关dirty，不自动发布/服务重启。",
+      "status": "已完成",
+      "evidence": [
+        "/tmp/xdog-session-goals/final/tests.log",
+        "/tmp/xdog-session-goals/final/ruff.log",
+        "/tmp/xdog-session-goals/final/mypy.log",
+        "/tmp/xdog-session-goals/final/examples.log",
+        "/tmp/xdog-session-goals/final/lock.log",
+        "/tmp/xdog-session-goals/final/build.log",
+        "/tmp/xdog-session-goals/final/artifacts.json",
+        "/tmp/xdog-session-goals/final/independent-eyes.log",
+        "/tmp/xdog-session-goals/final/frozen-package-hashes.json"
+      ],
+      "acceptance_result": "All eight packages, full static/example/lock/build/wheel/API/skill gates on frozen candidate4",
+      "verified_scope": "当前Linux，最新group-only用户范围，冻结candidate4；外部真实provider/微信和非Linux不宣称通过。"
+    }
+  ],
+  "evidence_root": "/tmp/xdog-session-goals/final",
+  "limits": [
+    "不自动commit/push/bump/tag/发布或重启用户服务",
+    "保留上一目标Eyes改动与用户docs/agent-ui-features.md、workflows/",
+    "非Linux原生验证不在本轮范围",
+    "不扩展OS sandbox或第二Agent执行循环"
+  ],
+  "latest_scope_override": {
+    "date": "2026-10-18",
+    "authority": "用户最新明确决定，取代此前session-owned/精确session事件绑定设计及持久目标旧描述中相冲突部分",
+    "decisions": [
+      "每group一个逻辑主Agent，Claw单一执行路线，不支持branch分叉/回退/切换",
+      "Goal/task/event归属group主Agent，沿既有group ACP/inbox进入，不路由到session",
+      "session仅是上下文/历史持久化细节，不作为Goal负责人或事件地址；主Agent持续管理Goal",
+      "仅移除Claw分支路线能力，不改变Coding分支功能"
+    ]
+  },
+  "objective_file": "docs/claw-goals-objective.md",
+  "resume_instructions": "恢复后先读objective_file及latest_scope_override；只采用group唯一主Agent/单路线架构，旧工具目标正文session-owned部分已被用户最新指令取代。先收集各子Agent安全检查点交接再继续。",
+  "checkpoint": "2026-10-19: SG-01..SG-12全部验收；12已完成，准确剩余0；未发布或重启服务。",
+  "final_validation": {
+    "candidate": 4,
+    "package_test_paths": 8,
+    "passed": 6685,
+    "optional_external_cli_skipped": 7,
+    "elapsed_test_seconds": 123.07,
+    "independent_mcp_sdk_enabled": true,
+    "ruff": "passed",
+    "strict_source_files": 560,
+    "flow_examples": 17,
+    "offline_lock": "passed",
+    "built_projects": 9,
+    "fresh_artifacts": 18,
+    "wheel_only_imports": 32,
+    "removed_imports_rejected": 15,
+    "current_source_members_verified": 837,
+    "current_readme_metadata_verified": 8,
+    "frozen_package_files_unchanged": 1345,
+    "unrelated_dirty_hashes_preserved": 9,
+    "standalone_eyes_without_harness_or_acp_activation": "passed",
+    "actual_claw_native_child_probe": {
+      "status": "passed",
+      "actual_claw_goal_worker": true,
+      "business_model_requests": 32,
+      "native_summaries": 10,
+      "durable_archives": 10,
+      "reported_tokens": 80320,
+      "parent_history_unchanged": true,
+      "tool_pairs_preserved": true,
+      "worker_access": "read-only",
+      "task_state": "submitted"
+    },
+    "real_goal_eyes_chain": "passed (normal and observer-create ACK-loss cases)",
+    "three_process_goal_receipt_restore_without_model_replay": "passed",
+    "readonly_context_rotation_process_death_recovery": "passed",
+    "staged_files": 0,
+    "committed": false,
+    "pushed": false,
+    "tagged": false,
+    "version_changed": false,
+    "service_restarts": 0
+  }
+}

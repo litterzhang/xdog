@@ -1,4 +1,4 @@
-"""Claw restart/navigation selections preserve availability, not permission grants."""
+"""Claw context selections survive restart; historical routes remain read-only."""
 from __future__ import annotations
 
 import asyncio
@@ -43,7 +43,7 @@ async def close(runtime):
 
 
 @pytest.mark.parametrize('selection', [None, [], ['current_time']])
-async def test_restart_new_switch_and_checkpoints_keep_separate_selection(tmp_path, selection):
+async def test_restart_preserves_selection_new_context_does_not_switch_back(tmp_path, selection):
     runtime, calls = create(tmp_path)
     reopened = None
     try:
@@ -61,19 +61,16 @@ async def test_restart_new_switch_and_checkpoints_keep_separate_selection(tmp_pa
         assert restored.agent.active_tool_selection == (None if expected is None else ())
         await restored.initialize_extensions()
         assert restored.agent.active_tool_selection == expected
-        await asyncio.to_thread(reopened.navigate_session, 'fork', identifier, '', -1, identifier)
-        branch = reopened.transcript_store.list_branches(identifier)[0]
-        await restored.select_active_tools([], expected_revision=restored.agent.tool_selection_revision)
-        await asyncio.to_thread(reopened.navigate_session, 'goto', identifier, branch, 1, identifier)
-        assert reopened._active_session.agent.active_tool_selection == expected
-        returns = [row for row in reopened.transcript_store.branch_metadata(identifier)
-                   if row['label'].startswith('Return checkpoint')]
-        assert reopened.transcript_store.get_active_tools(identifier, returns[-1]['branch_id']) == ()
+        with pytest.raises(ValueError, match='read-only'):
+            await asyncio.to_thread(reopened.navigate_session, 'fork', identifier, '', -1, identifier)
+        assert reopened.transcript_store.list_branches(identifier) == []
         reopened.reset_session()
         fresh = reopened.get_or_create_session(allow_reset=False)
         assert fresh.meta.session_id != identifier and fresh.agent.active_tool_selection is None
-        await asyncio.to_thread(reopened.navigate_session, 'resume', identifier, '', -1, fresh.meta.session_id)
-        assert reopened._active_session.agent.active_tool_selection == expected
+        with pytest.raises(ValueError, match='read-only'):
+            await asyncio.to_thread(reopened.navigate_session, 'resume', identifier, '', -1, fresh.meta.session_id)
+        assert reopened._active_session is fresh
+        assert reopened.transcript_store.get_active_tools(identifier) == expected
         assert not calls and not later_calls
     finally:
         if reopened is not None:
@@ -105,7 +102,7 @@ async def test_unavailable_saved_name_does_not_reappear_on_late_registration(tmp
         await close(runtime)
 
 
-async def test_compaction_checkpoint_and_return_head_keep_their_own_tool_selection(tmp_path):
+async def test_compaction_checkpoint_selection_is_readable_but_cannot_be_activated(tmp_path):
     from unittest.mock import AsyncMock
     runtime, calls = create(tmp_path)
     runtime.summarizer = type('OfflineSummary', (), {'summarize': AsyncMock(return_value='offline summary')})()
@@ -127,12 +124,12 @@ async def test_compaction_checkpoint_and_return_head_keep_their_own_tool_selecti
         identifier = session.meta.session_id
         assert store.get_active_tools(identifier, recovery) == ('current_time',)
         await session.select_active_tools([], expected_revision=session.agent.tool_selection_revision)
-        await asyncio.to_thread(runtime.navigate_session, 'branch', identifier, recovery, -1, identifier)
-        assert runtime._active_session.agent.active_tool_selection == ('current_time',)
-        return_branch = next(row['branch_id'] for row in store.branch_metadata(identifier)
-                             if row['label'].startswith('Return checkpoint'))
-        await asyncio.to_thread(runtime.navigate_session, 'branch', identifier, return_branch, -1, identifier)
-        assert runtime._active_session.agent.active_tool_selection == ()
+        with pytest.raises(ValueError, match='read-only'):
+            await asyncio.to_thread(runtime.navigate_session, 'branch', identifier, recovery, -1, identifier)
+        assert runtime._active_session is session and session.agent.active_tool_selection == ()
+        assert store.get_active_tools(identifier, recovery) == ('current_time',)
+        assert not any(row.get('label', '').startswith('Return checkpoint')
+                       for row in store.branch_metadata(identifier))
         assert not calls
     finally:
         await close(runtime)

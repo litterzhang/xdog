@@ -237,7 +237,7 @@ async def test_legacy_branch_access_is_fenced_and_invalid_state_never_changes_cu
     sid, store = session.meta.session_id, host.runtime.transcript_store
     session.agent.replace_messages([UserMessage(content='current context')])
     session._persist()
-    store.save_branch(sid, 'old', [{'role': 'user', 'content': 'legacy branch context'}])
+    store.save_compaction_checkpoint(sid, 'old', [{'role': 'user', 'content': 'legacy branch context'}], metadata={})
     new_path = store._path(sid, 'old').with_suffix('.access.json')
     new_path.unlink()
     plan_path = store._path(sid, 'old').with_suffix('.plan.json')
@@ -246,17 +246,15 @@ async def test_legacy_branch_access_is_fenced_and_invalid_state_never_changes_cu
     fresh = TranscriptStore(store._sessions_dir, owner_group='main')
     host.runtime.transcript_store = fresh
     before, access, revision = session.agent.messages, session.access, host.runtime._source_revision
+    assert not hasattr(session, 'restore_branch')
     if bad:
         with pytest.raises(ValueError, match='Invalid'):
-            session.restore_branch('old')
-        assert session.agent.messages == before and session.access is access
-        assert host.runtime._source_revision == revision
+            fresh.branch_access(sid, 'old')
     else:
         assert fresh.branch_access(sid, 'old') == AccessState(True, 7).to_dict()
-        assert session.restore_branch('old') and session.access.state == AccessState(True, 7)
-        assert 'legacy branch context' in str(session.agent.messages)
-        with pytest.raises(RuntimeError, match='closed'):
-            access.set_read_only(False)
+        assert fresh.load_branch(sid, 'old')[0]['content'] == 'legacy branch context'
+    assert session.agent.messages == before and session.access is access
+    assert host.runtime._source_revision == revision
     assert plan_path.read_bytes() == original and not host.stream.contexts
 
 
@@ -281,38 +279,42 @@ async def test_access_scope_survives_compaction_recovery_branch_and_restart(host
     metadata = next(row for row in store.branch_metadata(sid) if row['branch_id'] == branch)
     assert metadata['access'] == AccessState(True, 1).to_dict() and 'plan' not in metadata
     await host.orchestrator.manage_access('main', 'release', sid)
-    assert session.restore_branch(branch) and session.access.state == AccessState(True, 1)
+    assert not hasattr(session, 'restore_branch') and session.access.state == AccessState(False, 2)
     fresh = TranscriptStore(store._sessions_dir, owner_group='main')
-    assert fresh.get_access(sid) == AccessState(True, 1).to_dict()
-    assert len(session.agent.messages) == len(messages) and not host.stream.contexts
+    assert fresh.get_access(sid) == AccessState(False, 2).to_dict()
+    assert len(fresh.load_branch(sid, branch)) == len(messages)
+    assert len(session.agent.messages) < len(messages) and not host.stream.contexts
     host.runtime._drop_session()
     host.runtime.transcript_store = fresh
     restarted = host.activate()
     assert restarted is not session and restarted.meta.session_id == sid
-    assert restarted.access.state == AccessState(True, 1)
+    assert restarted.access.state == AccessState(False, 2)
     assert not host.stream.contexts
 
 
-async def test_writable_branch_navigation_cannot_release_live_readonly_but_explicit_new_session_is_fresh(host):
+async def test_readonly_group_scope_survives_new_context_and_archives_cannot_release_it(host):
     session = host.activate()
-    session.agent.replace_messages([UserMessage(content='writable branch context')])
+    session.agent.replace_messages([UserMessage(content='writable historical context')])
     session._persist()
-    branch = session.create_branch()
     sid = session.meta.session_id
-    assert host.runtime.transcript_store.branch_access(sid, branch) == AccessState().to_dict()
+    store = host.runtime.transcript_store
+    store.save_compaction_checkpoint(sid, 'old-writable',
+        [{'role': 'user', 'content': 'read-only archive, not another route'}], metadata={})
     await host.orchestrator.manage_access('main', 'restrict', sid)
-    assert session.restore_branch(branch)
-    assert session.access.state == AccessState(True, 2)
-    assert host.runtime.transcript_store.get_access(sid) == AccessState(True, 2).to_dict()
+    assert store.branch_access(sid, 'old-writable') == AccessState().to_dict()
+    assert not hasattr(session, 'restore_branch') and not hasattr(session, 'create_branch')
+    assert session.access.state == AccessState(True, 1)
     await host.orchestrator.manage_access('main', 'release', sid)
-    assert session.access.state == AccessState(False, 3)
     await host.orchestrator.manage_access('main', 'restrict', sid)
     old_scope = session.access
     host.runtime.reset_session()
     successor = host.activate()
-    assert successor.meta.session_id != sid and successor.access.state == AccessState()
+    assert successor.meta.session_id != sid and successor.access.state == AccessState(True, 3)
+    assert store.get_access(successor.meta.session_id) == AccessState(True, 3).to_dict()
     with pytest.raises(RuntimeError, match='closed'):
         old_scope.set_read_only(False)
+    await host.orchestrator.manage_access('main', 'release', successor.meta.session_id)
+    assert successor.access.state == AccessState(False, 4)
     assert not host.stream.contexts
 
 
@@ -320,7 +322,8 @@ async def test_writable_branch_navigation_cannot_release_live_readonly_but_expli
 async def test_legacy_branch_catalog_fallback_refuses_malformed_access_without_erasing_current_state(host, bad):
     session = host.activate()
     store, sid = host.runtime.transcript_store, session.meta.session_id
-    store.save_branch(sid, 'catalog-old', [{'role': 'user', 'content': 'old catalog branch'}])
+    store.save_compaction_checkpoint(sid, 'catalog-old',
+        [{'role': 'user', 'content': 'old catalog branch'}], metadata={})
     store._path(sid, 'catalog-old').with_suffix('.access.json').unlink()
     catalog = json.loads(store._catalog_file.read_text())
     record = catalog['branches'][sid]['catalog-old']
@@ -332,11 +335,11 @@ async def test_legacy_branch_catalog_fallback_refuses_malformed_access_without_e
     host.runtime.transcript_store = fresh
     if bad:
         with pytest.raises(ValueError, match='Invalid'):
-            session.restore_branch('catalog-old')
+            fresh.branch_access(sid, 'catalog-old')
         assert store._catalog_file.read_bytes() == before and session.access.state == AccessState()
     else:
         assert fresh.branch_access(sid, 'catalog-old') == AccessState(True, 7).to_dict()
-        assert session.restore_branch('catalog-old') and session.access.state == AccessState(True, 7)
+        assert not hasattr(session, 'restore_branch') and session.access.state == AccessState()
     assert not host.stream.contexts
 
 
@@ -344,7 +347,7 @@ async def test_legacy_branch_catalog_fallback_refuses_malformed_access_without_e
 async def test_legacy_branch_import_writes_only_normalized_access_and_safe_catalog_fallback(host, mode, restricted):
     session = host.activate()
     store, sid = host.runtime.transcript_store, session.meta.session_id
-    store.save_branch(sid, 'imported', [], metadata={'plan': legacy(mode)})
+    store.save_compaction_checkpoint(sid, 'imported', [], metadata={'plan': legacy(mode)})
     expected = AccessState(restricted, 7).to_dict()
     assert store.branch_access(sid, 'imported') == expected
     row = next(row for row in store.branch_metadata(sid) if row['branch_id'] == 'imported')
@@ -376,7 +379,8 @@ async def test_missing_branch_sidecar_never_falls_back_from_invalid_catalog_acce
     store, sid = host.runtime.transcript_store, session.meta.session_id
     session.agent.replace_messages([UserMessage(content='current owner context')])
     session._persist()
-    store.save_branch(sid, 'invalid-catalog', [{'role': 'user', 'content': 'must not restore'}])
+    store.save_compaction_checkpoint(sid, 'invalid-catalog',
+        [{'role': 'user', 'content': 'must not restore'}], metadata={})
     sidecar = store._path(sid, 'invalid-catalog').with_suffix('.access.json')
     sidecar.unlink()
     catalog = json.loads(store._catalog_file.read_text())
@@ -391,8 +395,7 @@ async def test_missing_branch_sidecar_never_falls_back_from_invalid_catalog_acce
     messages, access, revision = session.agent.messages, session.access, host.runtime._source_revision
     with pytest.raises(ValueError, match='Invalid|Missing'):
         fresh.branch_access(sid, 'invalid-catalog')
-    with pytest.raises(ValueError, match='Invalid|Missing'):
-        session.restore_branch('invalid-catalog')
+    assert not hasattr(session, 'restore_branch')
     assert session.agent.messages == messages and session.access is access
     assert session.access.state == AccessState() and host.runtime._source_revision == revision
     assert host.runtime._active_session is session and not host.stream.contexts

@@ -745,7 +745,7 @@ none of these interfaces grants tool permission or full Pi API compatibility.
 
 ### Supervised child agents
 
-`/agents start TASK` starts bounded read-only child work. `/agents start --inherit
+`/agents start TASK` starts host-managed read-only child work. `/agents start --inherit
 TASK` inherits the current host policy; it does not copy approval grants or bypass
 read-only. Inspect with `/agents list` or `/agents inspect ID`; use `steer ID TEXT`,
 `follow-up ID TEXT`, `cancel ID`, `wait ID` and `close ID` under `/agents`.
@@ -754,10 +754,34 @@ recursively delegate through their parent's supervision tools.
 
 Children share the workspace, so coordinate conflicting writes. Context is copied
 at admission through a complete tool/result checkpoint. Model/options/tool execution
-mode are inherited. Defaults are three active children, 16 retained records,
-120-second execution deadline, 16 model calls and a 32,000 reported-token stop
-threshold—not exact billing. Output limits are clamped; input accounting can
-overshoot on the final request. Cleanup/persistence may outlast the execution deadline.
+mode are inherited. There is no fixed concurrent-child or retained-record count
+limit, elapsed-time deadline, model-call cap or cumulative reported-token stop
+threshold. The main Agent/host manages lifecycle with cancel/wait/close. Usage
+counters remain reported usage, not exact billable accounting; actual model
+output/context limits, permissions and message/input/image/per-file capacities
+still apply. Complete history uses atomic segmented persistence instead of a
+cumulative 512 KiB / 2,000-message execution cutoff; tool/result pairs are not
+silently truncated.
+
+Coding and Claw child factories explicitly enable the Agent's existing built-in
+compaction policy through `AgentConfig(compaction=selected.compaction(child_stream))`
+and provide `archive_compaction=store.archive_compaction` to the supervisor.
+This does **not** change the generic Agent default: automatic compaction is off
+unless explicitly configured. The selected helper uses the executing adapter's
+real context/prompt/output capacity; unknown metadata, context capacity or output
+reserve returns `None` (auto-compaction remains off), not a guessed fallback.
+A host requiring automatic compaction must reject that case or explicitly supply
+trusted capacity/reserve through native `CompactionConfig`.
+
+With the policy enabled, one long tool turn can compact repeatedly at safe paired
+boundaries. The supervisor waits for a durable full pre-compaction snapshot before
+the native summary request starts. Archive, summary or stream-cleanup failure does
+not commit a history cut, and cancellation settles owned writes/cleanup. The native
+summary's per-request timeout/capacity checks remain; there is no replacement child
+lifetime cap. Inspect shows the current retained context, possibly with summaries;
+`children.store.compaction_archives(child_id)` reads full earlier snapshots without
+replay. These child archives are separate from the parent session's `/tree`
+compaction checkpoints.
 
 Each child has independent Coding approvals and extension workers/state. Parent
 validation/context hooks and current read-only/permission gates remain authoritative;
@@ -800,10 +824,10 @@ still uses silent no-UI answers to avoid borrowing its separate dialog reservati
 Complex extension forms are removed; basic child dialogs retain these ownership and cancellation checks.
 
 
-### Child specialization and limits
+### Child specialization and protocol limits
 
 `/agents start --label Reviewer --instructions "Inspect only" --tools filesystem,current_time
---fresh --timeout 60 --calls 4 --tokens 8000 -- TASK` specializes a child without
+--fresh -- TASK` specializes a child without
 changing parent permissions. Options precede the task; `--` preserves a task that
 starts with flags. Plain tasks preserve quotes/newlines. `--tools none` gives the
 child no executable tools; otherwise selected names must exist in its inherited tool
@@ -812,11 +836,15 @@ fail visibly. Instructions append to, rather than replace, parent restrictions.
 
 In `/agents` press `n`, then Ctrl+G for settings JSON. Supported keys are `label`,
 `instructions`, `tools` (array or null for inherited tools), `inherit_context`,
-`timeout`, `max_model_calls` and `max_tokens`. Enter applies the settings draft only;
+`model`, `thinking` and `preset`. Enter applies the settings draft only;
 start review requires every page to be painted before confirmation. Resize invalidates
 that review. This confirmation does NOT approve tool use. Effective settings persist
-with child results and appear in complete child source. Request/token caps may be
-lowered, not raised above 16 / 32,000; token usage is not exact billable accounting.
+with child results and appear in complete child source. Runtime budget options
+`--timeout`, `--calls`, `--tokens` and config/preset keys `timeout`, `max_model_calls`,
+`max_tokens` are removed and rejected for new starts. Historical child records with
+these budget fields remain readable; the fields are inert and never reapply a
+budget or restart work. This removal does not remove the actual model's per-request
+output token ceiling.
 `--fresh` omits canonical history/child entry inheritance, not mandatory parent
 validation/context or the shared workspace. Model/reasoning inherit by default; explicit overrides now use the actual adapter.
 Named presets now use explicit user configuration. Claw specialized
@@ -840,9 +868,12 @@ host native-tool overrides. Switching to a nonreasoning model disables inherited
 reasoning; unsupported positive choices fail visibly. Model switches omit inherited/
 transformed provider continuity and old reasoning from the CHILD copy, leaving parent
 provenance/history intact. Transformed images are validated; oversized switched-model
-contexts fail a conservative byte-based preflight with fresh/lower-output/larger-model
-guidance, not automatic summarization or exact token accounting. Parent model/options/
-settings/grants never change. Named presets now use explicit user configuration.
+contexts use the same built-in text-token estimate as native compaction, rather
+than comparing text bytes to token capacity. This is not exact tokenizer accounting.
+Host-enabled compaction runs before forwarding the next model request; context that
+cannot be safely compacted or fit still fails explicitly with original history
+retained. Image/capability and actual output limits remain enforced. Parent
+model/options/settings/grants never change. Named presets use explicit user configuration.
 
 
 ### Named child presets
@@ -859,15 +890,14 @@ using this descriptor shape:
         "instructions": "Review requested code; return findings with file locations.",
         "tools": ["filesystem", "current_time"],
         "inherit_context": false,
-        "max_model_calls": 4,
-        "max_tokens": 8000
+        "label": "Reviewer"
       }
     }
   }
 }
 ```
 
-Browse `/agents presets`, or use `/agents start --preset reviewer --tokens 6000 --
+Browse `/agents presets`, or use `/agents start --preset reviewer --label Audit --
 TASK`. Explicit flags override template fields. Ctrl+P selects a template in a new
 child form, Ctrl+G adjusts the draft, and full expanded settings/task review still
 precedes execution. Selection itself makes no model request. Templates cannot encode

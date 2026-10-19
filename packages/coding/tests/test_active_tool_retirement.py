@@ -10,7 +10,7 @@ from packages.coding.tests.test_active_tool_persistence import create as create_
 
 
 @pytest.mark.parametrize('host', ['coding', 'claw'])
-async def test_prepared_navigation_commits_only_available_selected_names(tmp_path, host):
+async def test_navigation_preserves_inventory_or_rejects_claw_route_switch(tmp_path, host):
     import asyncio
 
     from xdog.ai.types import AssistantMessage, UserMessage
@@ -34,13 +34,18 @@ async def test_prepared_navigation_commits_only_available_selected_names(tmp_pat
             from xdog.claw.core.persistence.transcript_convert import messages_to_transcript
             store = runtime.transcript_store
             original = owner.meta.session_id
-            target = store.create_session('main')
-            store.replace_transcript(target.session_id, messages_to_transcript([UserMessage(content='target')]))
-            store.save_active_tools(target.session_id, ('missing', 'current_time'))
-            store.activate_session('main', original)
-            await asyncio.to_thread(runtime.navigate_session, 'resume', target.session_id, '', -1, original)
-            assert runtime._active_session.agent.active_tool_selection == ('current_time',)
-            assert store.get_active_tools(target.session_id) == ('current_time',)
+            target = 'historical-target'
+            store._atomic(store._path(target), messages_to_transcript([UserMessage(content='target')]), jsonl=True)
+            store._catalog['sessions'][target] = {**store._catalog['sessions'][original], 'session_id': target}
+            store._save_catalog()
+            store.save_active_tools(target, ('missing', 'current_time'))
+            selected = owner.agent.active_tool_selection
+            with pytest.raises(ValueError, match='read-only'):
+                await asyncio.to_thread(runtime.navigate_session, 'resume', target, '', -1, original)
+            assert runtime._active_session is owner and owner.agent.active_tool_selection == selected
+            assert store.get_active_session('main').session_id == original
+            assert store.get_active_tools(target) == ('missing', 'current_time')  # Read-only archive, never adopted.
+            assert not hasattr(store, 'activate_session')
         assert not calls
     finally:
         await (close_coding(owner) if host == 'coding' else close_claw(runtime))

@@ -1,7 +1,7 @@
 """Transcript store — pure JSONL persistence for session transcripts.
 
 Handles session metadata (sessions.json index), transcript files
-({session_id}.jsonl), and conversation branching. No knowledge of
+({session_id}.jsonl), and read-only historical/compaction archives. No knowledge of
 AgentSession or GroupRuntime — those are lifecycle concerns handled
 by GroupRuntime.
 """
@@ -275,21 +275,6 @@ class TranscriptStore:
                            if value.get("group_id") == group_id),
                           key=lambda value: str(value.get("last_active", "")), reverse=True)
 
-    def activate_session(self, group_id: str, session_id: str) -> SessionMeta:
-        with self._lock:
-            data = self._catalog["sessions"].get(session_id)
-            if not isinstance(data, dict) or data.get("group_id") != group_id:
-                raise ValueError("Session is unavailable or belongs to another group")
-            if not self._path(session_id).is_file():
-                raise ValueError("Saved transcript is unavailable")
-            self.load_transcript(session_id)  # Validate before changing the active pointer.
-            now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            self._index[group_id] = {**data, "last_active": now, "resumed_at": now}
-            self._save_index()
-            meta = self.get_active_session(group_id)
-            assert meta is not None
-            return meta
-
     def read_session_name(self, group_id: str, expected_session: str) -> dict[str, str] | None:
         """Copy committed metadata only; None means retry lock acquisition, never an empty name."""
         from xdog.agent.session_name import session_name
@@ -364,39 +349,53 @@ class TranscriptStore:
     def active_branch(self, session_id: str) -> str:
         return str(self._catalog["active_branches"].get(session_id, ""))
 
-    def set_active_branch(self, session_id: str, branch_id: str) -> None:
-        with self._lock:
-            self._catalog["active_branches"][session_id] = branch_id
-            self._save_catalog()
-
     def create_session(self, group_id: str) -> SessionMeta:
-        """Create a new session with uuid-based ID."""
-        session_id = str(uuid.uuid4())
-        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        """Rotate context without weakening the group's current access scope.
 
-        meta = SessionMeta(
-            session_id=session_id,
-            group_id=group_id,
-            created_at=now,
-            last_active=now,
-            turn_count=0,
-            label=""
-        )
-
-        self._index[group_id] = {
-            "session_id": meta.session_id,
-            "group_id": meta.group_id,
-            "created_at": meta.created_at,
-            "last_active": meta.last_active,
-            "turn_count": meta.turn_count,
-            "label": meta.label
-        }
-        self._save_index()
-
-        transcript_file = self._path(session_id)
-        transcript_file.touch(exist_ok=True)
-
-        return meta
+        The inherited scope is durable in catalog/index before the active pointer
+        can expose the new context. No access sidecar or history activation API
+        is needed; failed commits recover through the shared metadata journal.
+        """
+        from xdog.agent.access import AccessState
+        from xdog.claw.core.persistence.navigation_journal import JOURNAL, NavigationJournal, ownership
+        with self._lock:
+            self._require_navigation_ready()
+            current = self.get_active_session(group_id)
+            access = self.get_access(current.session_id) if current is not None else AccessState().to_dict()
+            session_id = str(uuid.uuid4())
+            now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            meta = SessionMeta(session_id=session_id, group_id=group_id, created_at=now,
+                               last_active=now, turn_count=0, label="")
+            row = {"session_id": meta.session_id, "group_id": meta.group_id,
+                   "created_at": meta.created_at, "last_active": meta.last_active,
+                   "turn_count": meta.turn_count, "label": meta.label, "access": access}
+            catalog, index = copy.deepcopy(self._catalog), copy.deepcopy(self._index)
+            catalog["sessions"][session_id] = copy.deepcopy(row)
+            index[group_id] = copy.deepcopy(row)
+            transcript = self._path(session_id)
+            if transcript.exists():
+                raise ValueError('New context transcript already exists; no history was overwritten')
+            with ownership(self._sessions_dir):
+                try:
+                    journal = NavigationJournal(self._sessions_dir, {self._catalog_file, self._index_file, transcript})
+                except BaseException:
+                    self._navigation_recovery_required = (self._sessions_dir / JOURNAL).exists()
+                    raise
+                try:
+                    self._atomic(transcript, [], jsonl=True)
+                    self._atomic(self._catalog_file, catalog)
+                    self._atomic(self._index_file, index)
+                    journal.commit()
+                except BaseException:
+                    try:
+                        journal.rollback()
+                    except BaseException:
+                        self._navigation_recovery_required = True
+                        raise
+                    raise
+            # Publish only after all managed files and their commit marker settle.
+            self._catalog, self._index = catalog, index
+            return meta
 
     def get_active_session(self, group_id: str) -> SessionMeta | None:
         """Get the active session for a group ID."""
@@ -471,13 +470,13 @@ class TranscriptStore:
         )
 
         self._index[group_id] = {
+            **data,
             "session_id": meta.session_id,
             "group_id": meta.group_id,
             "created_at": meta.created_at,
             "last_active": meta.last_active,
             "turn_count": meta.turn_count,
             "label": meta.label,
-            **({"resumed_at": data["resumed_at"]} if data.get("resumed_at") else {}),
         }
         self._save_index()
 
@@ -521,7 +520,7 @@ class TranscriptStore:
                 meta["message_count"] = len(turns)
             self._save_catalog()
 
-    # -- Branching ---------------------------------------------------------------
+    # -- Current-context metadata and read-only historical archives ---------------
 
     def get_extension_entries(self, session_id: str, branch_id: str = "") -> Any:
         key = self._path(session_id, branch_id).with_suffix(".extensions.json").name
@@ -566,7 +565,7 @@ class TranscriptStore:
     def branch_access(self, session_id: str, branch_id: str) -> dict[str, Any]:
         return self._saved_access(session_id, branch_id)
 
-    def save_branch(self, session_id: str, branch_id: str, transcript: list[dict[str, Any]],
+    def _archive_checkpoint(self, session_id: str, branch_id: str, transcript: list[dict[str, Any]],
                     *, metadata: dict[str, Any] | None = None) -> None:
         with self._lock:
             from xdog.agent.access import AccessState
@@ -597,51 +596,6 @@ class TranscriptStore:
             }
             self._save_catalog()
 
-    def commit_navigation(self, group_id: str, session_id: str, branch_id: str, source: list[dict[str, Any]],
-                          access: dict[str, Any], entries: dict[str, Any], *,
-                          branches: list[tuple[str, list[dict[str, Any]], dict[str, Any]]],
-                          resume: bool = False, active_tools: tuple[str, ...] | None = None) -> None:
-        """Journal managed files before writes; recover interrupted commits before opening sessions."""
-        from xdog.claw.core.persistence.navigation_journal import JOURNAL, NavigationJournal, ownership
-        with self._lock:
-            paths = {self._catalog_file, self._index_file, self._path(session_id),
-                     self._path(session_id).with_suffix('.access.json'),
-                     self._path(session_id).with_suffix('.extensions.json'),
-                     self._path(session_id).with_suffix('.tools.json')}
-            for key, _, _ in branches:
-                paths.update({self._path(session_id, key), self._path(session_id, key).with_suffix('.access.json'),
-                              self._path(session_id, key).with_suffix('.extensions.json'),
-                              self._path(session_id, key).with_suffix('.tools.json')})
-            cached = (copy.deepcopy(self._catalog), copy.deepcopy(self._index),
-                      copy.deepcopy(self._access), copy.deepcopy(self._extension_entries))
-            self._require_navigation_ready()
-            with ownership(self._sessions_dir):
-                try:
-                    journal = NavigationJournal(self._sessions_dir, paths)
-                except BaseException:
-                    self._navigation_recovery_required = (self._sessions_dir / JOURNAL).exists()
-                    raise
-                try:
-                    for key, transcript, metadata in branches:
-                        self.save_branch(session_id, key, transcript, metadata=metadata)
-                    self.save_extension_entries(session_id, entries)
-                    self.save_access(session_id, access)
-                    self.save_active_tools(session_id, active_tools)
-                    if not resume:
-                        self.replace_transcript(session_id, source)
-                        self.set_active_branch(session_id, branch_id)
-                    self.activate_session(group_id, session_id)
-                    journal.commit()
-                except BaseException:
-                    try:
-                        journal.rollback()
-                    except BaseException:
-                        self._navigation_recovery_required = True
-                        raise
-                    finally:
-                        self._catalog, self._index, self._access, self._extension_entries = cached
-                    raise
-
     def save_compaction_checkpoint(self, session_id: str, branch_id: str, transcript: list[dict[str, Any]],
                                    *, metadata: dict[str, Any]) -> None:
         """Durably index the complete original BEFORE destructive context replacement."""
@@ -649,7 +603,7 @@ class TranscriptStore:
             destination = self._path(session_id, branch_id)
             if destination.exists() or branch_id in self._catalog['branches'].get(session_id, {}):
                 raise ValueError('Compaction recovery checkpoint already exists; no overwrite')
-            self.save_branch(session_id, branch_id, transcript, metadata=metadata)
+            self._archive_checkpoint(session_id, branch_id, transcript, metadata=metadata)
 
     def load_branch(self, session_id: str, branch_id: str) -> list[dict[str, Any]] | None:
         """Load a conversation branch. Returns None if not found."""

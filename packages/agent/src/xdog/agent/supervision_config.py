@@ -1,9 +1,8 @@
-"""Validated per-child specialization/resource controls; never a permission grant."""
+"""Validated per-child specialization controls; never a permission grant."""
 from __future__ import annotations
 
 import io
 import json
-import math
 import re
 import shlex
 from dataclasses import dataclass
@@ -16,9 +15,6 @@ class ChildConfig:
     instructions: str = ""
     tools: tuple[str, ...] | None = None
     inherit_context: bool = True
-    timeout: float = 120
-    max_model_calls: int = 16
-    max_tokens: int = 32000
     model: str | None = None
     thinking: str | None = None
     preset: str | None = None
@@ -26,8 +22,7 @@ class ChildConfig:
     def to_dict(self) -> dict[str, Any]:
         return {"label": self.label, "instructions": self.instructions,
                 "tools": list(self.tools) if self.tools is not None else None,
-                "inherit_context": self.inherit_context, "timeout": self.timeout,
-                "max_model_calls": self.max_model_calls, "max_tokens": self.max_tokens,
+                "inherit_context": self.inherit_context,
                 "model": self.model, "thinking": self.thinking, "preset": self.preset}
 
     @classmethod
@@ -42,12 +37,6 @@ class ChildConfig:
                 raise ValueError(f"Invalid child {name}")
         if type(merged["inherit_context"]) is not bool:
             raise ValueError("Child inherit_context must be boolean")
-        timeout = merged["timeout"]
-        if type(timeout) not in {int, float} or not math.isfinite(timeout) or not 1 <= timeout <= 600:
-            raise ValueError("Child timeout must be 1–600 seconds")
-        for name, maximum in (("max_model_calls", 16), ("max_tokens", 32000)):
-            if type(merged[name]) is not int or not 1 <= merged[name] <= maximum:
-                raise ValueError(f"Child {name} must be an integer in 1–{maximum}")
         model, thinking = merged["model"], merged["thinking"]
         if model is not None and (not isinstance(model, str) or not model or len(model.encode("utf-8")) > 256
                                   or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in model)):
@@ -67,8 +56,15 @@ class ChildConfig:
                     or any(tool in {"agent_spawn", "agent_control", "update_plan"} for tool in tools)):
                 raise ValueError("Child tools must be distinct non-reserved tool names (at most 128)")
         return cls(merged["label"], merged["instructions"], tuple(tools) if tools is not None else None,
-                   merged["inherit_context"], float(timeout), merged["max_model_calls"],
-                   merged["max_tokens"], model, thinking, preset)
+                   merged["inherit_context"], model, thinking, preset)
+
+    @classmethod
+    def from_record(cls, value: Any) -> ChildConfig:
+        """Read historical budgets as inert data, never as current controls."""
+        if not isinstance(value, dict):
+            raise ValueError("Invalid persisted child configuration")
+        return cls.from_dict({key: item for key, item in value.items()
+                              if key not in {"timeout", "max_model_calls", "max_tokens"}})
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,7 +119,8 @@ class ChildPresets:
             if (not isinstance(row, dict) or set(row) != {"name", "description", "config"}
                     or not isinstance(row["name"], str) or row["name"] in values):
                 raise ValueError("Invalid/duplicate child preset identity")
-            values[row["name"]] = {"description": row["description"], "config": row["config"]}
+            values[row["name"]] = {"description": row["description"],
+                                   "config": ChildConfig.from_record(row["config"]).to_dict()}
         return cls(values)
 
     def snapshot(self) -> tuple[dict[str, Any], ...]:
@@ -155,7 +152,6 @@ def parse_child_options(text: str) -> tuple[str, str, dict[str, Any]]:
     access = "read-only"
     seen: set[str] = set()
     flags = {"--label": "label", "--instructions": "instructions", "--tools": "tools",
-             "--timeout": "timeout", "--calls": "max_model_calls", "--tokens": "max_tokens",
              "--model": "model", "--thinking": "thinking", "--preset": "preset"}
     while remaining.startswith("--"):
         # shlex lexer's stream position avoids rewriting the task suffix.
@@ -181,9 +177,7 @@ def parse_child_options(text: str) -> tuple[str, str, dict[str, Any]]:
                 raise ValueError("Missing value for " + flag)
             key = flags[flag]
             try:
-                value[key] = (float(argument) if key == "timeout" else int(argument)
-                              if key in {"max_model_calls", "max_tokens"} else
-                              [] if key == "tools" and argument == "none" else argument.split(",")
+                value[key] = ([] if key == "tools" and argument == "none" else argument.split(",")
                               if key == "tools" else argument)
             except ValueError as exc:
                 raise ValueError("Invalid value for " + flag) from exc

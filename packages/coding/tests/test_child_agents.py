@@ -284,19 +284,19 @@ async def test_coding_child_view_searches_running_tool_progress_then_switches_to
         session.dispose()
 
 
-async def test_coding_specialist_cli_controls_fresh_context_tools_budgets_and_parent_permissions(tmp_path):
+async def test_coding_specialist_cli_controls_fresh_context_tools_and_parent_permissions(tmp_path):
     session, contexts = create(tmp_path, "allow-all")
     session.agent.append_message(UserMessage(content="PARENT-HISTORY-MARKER"))
     try:
         result = await execute_command("agents", 'start --label Reviewer --instructions "SPECIALIST-INSTRUCTIONS" '
-            '--tools current_time --calls 2 --tokens 1200 --timeout 10 --fresh -- write', session)
+            '--tools current_time --fresh -- write', session)
         child = result.output.split()[1]
         record = await session.children.supervisor.control("wait", child)
         assert not (tmp_path / "target").exists()
         assert [tool.name for tool in contexts[0].tools] == ["current_time"]
         assert "SPECIALIST-INSTRUCTIONS" in str(contexts[0].system_prompt)
         assert "PARENT-HISTORY-MARKER" not in str(contexts[0].messages)
-        assert record["config"]["max_tokens"] == 1200 and record["config"]["label"] == "Reviewer"
+        assert record["config"]["label"] == "Reviewer"
         assert session.agent.messages[0].content == "PARENT-HISTORY-MARKER"
         assert session.permissions.mode == "allow-all"
     finally:
@@ -310,7 +310,7 @@ async def test_coding_configured_browser_start_uses_same_validated_command_path(
     try:
         ui._open_children()
         ui._child_configured_start("task", "read-only", {"label": "Browser specialist", "tools": [],
-                                  "max_tokens": 800, "inherit_context": False})
+                                  "inherit_context": False})
         await wait(lambda: bool(contexts) and not session.children.supervisor.active, ui)
         record = session.children.store.load()[0]
         assert record["config"]["label"] == "Browser specialist" and record["config"]["tools"] == []
@@ -422,8 +422,7 @@ async def test_coding_reviewed_child_settings_route_model_and_reasoning_without_
 
 async def test_coding_global_presets_reused_by_cli_picker_and_ignore_project_activation(tmp_path):
     presets = {"reviewer": {"description": "Read-only review", "config": {
-        "instructions": "PRESET-INSTRUCTIONS", "tools": ["current_time"], "inherit_context": False,
-        "max_model_calls": 2, "max_tokens": 900}}}
+        "instructions": "PRESET-INSTRUCTIONS", "tools": ["current_time"], "inherit_context": False}}}
     (tmp_path / "settings.json").write_text(json.dumps({"child_presets": presets}))
     project = tmp_path / ".coding"
     project.mkdir()
@@ -436,14 +435,14 @@ async def test_coding_global_presets_reused_by_cli_picker_and_ignore_project_act
     try:
         listed = await execute_command("agents", "presets", session)
         assert "reviewer" in listed.output and "malicious" not in listed.output and not contexts
-        result = await execute_command("agents", "start --preset reviewer --tokens 800 write", session)
+        result = await execute_command("agents", "start --preset reviewer --label OVERRIDE write", session)
         child = result.output.split()[1]
         record = await session.children.supervisor.control("wait", child)
         assert not (tmp_path / "target").exists()
         assert "PRESET-INSTRUCTIONS" in str(contexts[0].system_prompt)
         assert [tool.name for tool in contexts[0].tools] == ["current_time"]
-        assert record["config"]["preset"] == "reviewer" and record["config"]["max_tokens"] == 800
-        assert record["config"]["max_model_calls"] == 2 and not record["config"]["inherit_context"]
+        assert record["config"]["preset"] == "reviewer" and record["config"]["label"] == "OVERRIDE"
+        assert not record["config"]["inherit_context"]
         ui._handle_slash_command("agents", "presets")
         assert ui._child_panel._mode == "presets"
         ui._child_panel.render(80)
@@ -479,6 +478,48 @@ async def test_invalid_coding_preset_catalog_does_not_erase_parent_permission_se
         assert not contexts
         await session.send_message("parent still works")
         assert len(contexts) == 1 and session.permissions.mode == "deny"
+    finally:
+        await session.children.supervisor.aclose()
+        session.dispose()
+
+
+async def test_coding_factory_auto_compacts_long_read_only_tool_run_with_durable_archives(tmp_path):
+    from xdog.agent.compaction import safe_cut_indices
+    from xdog.agent.messages import dicts_to_messages
+    from xdog.ai.types import Model, StreamOptions, Usage
+    session, _ = create(tmp_path, "allow-all")
+    (tmp_path / "material").write_text("TOOL-FINDINGS\n" + "material " * 600)
+    requests, summaries = [], []
+    class Adapter:
+        def resolve_model(self, name):
+            return Model(id="test/model", context_window=14000, max_prompt_tokens=12000, max_tokens=128)
+        def __call__(self, model, context, options):
+            assert model == "test/model" and options.max_tokens == 128
+            safe_cut_indices(context.messages)
+            if not context.tools:
+                summaries.append(context)
+                assert list(session.children.store.root.glob("*.compaction-*.json"))
+                return EventStream.empty(AssistantMessage(content=(TextContent(text="Tool findings retained"),)))
+            requests.append(context)
+            message = AssistantMessage(content=((ToolCall(id=f"read-{len(requests)}", name="filesystem",
+                arguments={"action": "read", "path": "material"}),) if len(requests) < 26
+                else (TextContent(text="finished"),)), usage=Usage(input=2000, output=10))
+            return EventStream.empty(message)
+    session.agent.set_stream_fn(Adapter())
+    session.agent.set_options(StreamOptions(max_tokens=128))
+    child_id = []
+    try:
+        child_id.append(await session.children.supervisor.start("CURRENT_GOAL", inherit_context=False,
+            config={"label": "Reader", "tools": ["filesystem"]}))
+        result = await session.children.supervisor.control("wait", child_id[0])
+        assert result["status"] == "completed", result["error"]
+        assert len(requests) == 26 and len(summaries) >= 2 and result["tokens"] > 32000
+        archives = session.children.store.compaction_archives(child_id[0])
+        assert len(archives) == len(summaries) and "TOOL-FINDINGS" in str(archives)
+        for archive in archives:
+            safe_cut_indices(dicts_to_messages(archive["messages"]))
+        assert not session.agent.messages and session.permissions.mode == "allow-all"
+        assert all([tool.name for tool in context.tools] == ["filesystem"] for context in requests)
     finally:
         await session.children.supervisor.aclose()
         session.dispose()

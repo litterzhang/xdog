@@ -51,6 +51,7 @@ from xdog.agent.mcp.context import McpDocument, McpEntry
 from xdog.agent.mcp.oauth import normalize_auth_reply
 from xdog.agent.supervision_config import ChildConfig, ChildPresets, parse_child_options
 from xdog.ai.types import ImageContent
+from xdog.claw.channels.tui.history_panel import HistoryPanel
 from xdog.claw.channels.tui.mcp_data import McpDataReceiver
 from xdog.claw.channels.tui.source_reader import SourceReceiver
 from xdog.claw.config import get_config_dir, get_data_dir
@@ -72,7 +73,6 @@ from xdog.tui.components.markdown import DefaultTextStyle, MarkdownTheme
 from xdog.tui.components.mcp_panel import McpPanel
 from xdog.tui.components.messages import AssistantMessages, ThinkingMessage, Transcript
 from xdog.tui.components.messages import UserMessage as SharedUserMessage
-from xdog.tui.components.navigation_panel import NavigationPanel
 from xdog.tui.components.output_panel import OutputPanel
 from xdog.tui.components.parent_draft_panel import ParentDraftPanel
 from xdog.tui.components.spacer import Spacer
@@ -291,10 +291,9 @@ SLASH_COMMANDS = {
     "/keys": "Show active keybindings",
     "/editor": "Open external prompt editor",
     "/queue": "Inspect/edit/remove/reorder queued inputs",
-    "/sessions": "Browse saved sessions", "/tree": "Browse branches/checkpoints", "/resume": "Activate saved session",
+    "/sessions": "Read saved history", "/tree": "Read historical checkpoints",
     "/name": "Inspect/name session: /name [NAME|- to clear]",
-    "/new": "Create new session", "/fork": "Save checkpoint",
-    "/branch": "Restore branch", "/goto": "Fork at checkpoint",
+    "/new": "Rotate chat context (group Goals are retained)",
     "/artifact": "Load a checksummed command artifact read-only",
     "/attach": "Attach an image file", "/attachments": "Inspect/remove/preview images", "/paste": "Read clipboard",
     "/steer": "Send input at the next checkpoint",
@@ -728,7 +727,7 @@ class ChatApp:
         self._io_task: asyncio.Task[None] | None = None
         self._details_expanded = False
         self._details_open = False
-        self._navigation_panel: NavigationPanel | None = None
+        self._navigation_panel: HistoryPanel | None = None
         self._navigation_provider: NavigationFeed | None = None
         self._navigation_requests: dict[str, tuple[NavigationFeed | None, int, str]] = {}
         self._session_mutation_id: str | None = None
@@ -2370,11 +2369,11 @@ class ChatApp:
         if self._attachment_panel is not None:
             self._close_attachment_preview()
         if not self._connection_ready or not self._session_controls_supported:
-            self._chat_log.add_system("Session browser requires a ready updated gateway")
+            self._chat_log.add_system("History browser requires a ready updated gateway")
             self._tui.request_render()
             return
         if self._tui.has_overlay():
-            self._chat_log.add_system("Close the active dialog before session navigation")
+            self._chat_log.add_system("Close the active dialog before browsing history")
             self._tui.request_render()
             return
         if self._mcp_panel is not None:
@@ -2384,10 +2383,8 @@ class ChatApp:
         if self._details_open:
             self._close_details()
         self._navigation_provider = NavigationFeed(self._request_navigation)
-        self._navigation_panel = NavigationPanel(self._navigation_provider, self._activate_navigation,
-                                                 self._close_navigation, scope=scope,
-                                                 on_new=lambda: self._navigate_session("new"),
-                                                 on_view=self._view_navigation)
+        self._navigation_panel = HistoryPanel(self._navigation_provider, self._view_navigation,
+                                             self._close_navigation, scope=scope)
         self._layout.details = self._navigation_panel
         self._tui.set_focus(self._navigation_panel)
         self._update_hints()
@@ -2420,14 +2417,10 @@ class ChatApp:
                              "action": "list" if scope == "sessions" else "tree", "scope": scope,
                              "query": query, "offset": offset})
 
-    def _activate_navigation(self, entry: NavigationEntry) -> None:
-        action = "resume" if entry.kind == "session" else "branch" if entry.kind == "branch" else "goto"
-        self._navigate_session(action, entry.session_id, entry.branch_id, entry.index)
-
-    def _navigate_session(self, action: str, session_id: str = "", branch_id: str = "", index: int = -1) -> None:
+    def _new_context(self) -> None:
         if (not self._connection_ready or not self._session_controls_supported or self._active_run_id is not None
                 or self._pending_command is not None):
-            self._chat_log.add_system("Session changes require a ready idle group; selection was not sent")
+            self._chat_log.add_system("New context requires a ready idle group; request was not sent")
             self._tui.request_render()
             return
         request_id = uuid.uuid4().hex
@@ -2435,8 +2428,7 @@ class ChatApp:
         self._session_mutation_id = request_id
         self._pending_command = "session:" + request_id
         self._queue_request({"type": "session_control", "request_id": request_id, "group_id": self.group_id,
-                             "action": action, "session_id": session_id, "branch_id": branch_id, "index": index,
-                             "expected_session": self._gateway_session_id})
+                             "action": "new", "expected_session": self._gateway_session_id})
         self._set_waiting(True)
         self._tui.request_render()
 
@@ -2581,12 +2573,12 @@ class ChatApp:
     def _cancel_session_navigation(self) -> None:
         if self._session_mutation_id is not None:
             if not self._session_cancel_supported:
-                self._chat_log.add_system('Updated navigation-cancel gateway required; inspect before retrying')
+                self._chat_log.add_system('Updated context-operation cancellation required; inspect before retrying')
                 self._tui.request_render()
                 return
             self._queue_request({'type': 'session_control_cancel', 'request_id': self._session_mutation_id,
                                  'group_id': self.group_id, 'expected_session': self._gateway_session_id})
-            self._set_activity_status('canceling navigation · awaiting settlement')
+            self._set_activity_status('canceling context operation · awaiting settlement')
             self._tui.request_render()
 
     def _handle_session_event(self, msg: Mapping[str, Any]) -> None:
@@ -2629,8 +2621,10 @@ class ChatApp:
                         actual = str(msg["active_session"])
                         if actual != self._gateway_session_id:
                             self._session_context_stale = True
-                            self._chat_log.add_system("Gateway session changed; select/resume to load its context")
-                            self._gateway_session_id = actual
+                            self._chat_log.add_system(
+                                "Group context rotated; refreshing the current context (history is read-only)")
+                            if self._active_run_id is None:
+                                self._queue_request({"type": "ping", "group_id": self.group_id})
                     entries = tuple(NavigationEntry(**dict(row)) for row in msg.get("entries", ()))
                     value = NavigationSnapshot(scope=str(msg.get("scope", "sessions")), query=str(msg.get("query", "")),
                                                offset=int(msg.get("offset", 0)), total=int(msg.get("total", 0)),
@@ -2644,7 +2638,7 @@ class ChatApp:
                 self._set_waiting(False)
                 self._chat_log.add_system(str(msg.get("error", "Session change failed")))
             else:
-                self._chat_log.add_system("Navigation committed while cancellation settled; synchronizing context"
+                self._chat_log.add_system("Context rotation committed while cancellation settled; synchronizing context"
                     if msg.get('receipt_canceled') is True else "Session operation committed; synchronizing context")
         else:
             if request_id != self._session_mutation_id:
@@ -2709,7 +2703,7 @@ class ChatApp:
         elif self._attachment_panel is not None:
             hint = "Image preview · Esc return to draft · /attachments remove/clear"
         elif self._navigation_panel is not None:
-            hint = "Sessions/tree · ↑/↓ select · →/← tree/back · / search · v read-only · Enter activate · Esc close"
+            hint = "History · ↑/↓ select · →/← inspect/back · / search · Enter/v view (read-only) · Esc close"
         elif self._details_open:
             hint = "Details focused · ←/→ entry · PgUp/PgDn scroll · End latest · Esc input"
         elif self._compact_pending is not None:
@@ -3515,27 +3509,16 @@ class ChatApp:
             if command in {"/sessions", "/tree"}:
                 self._open_navigation("sessions" if command == "/sessions" else f"tree|{self._state['session_id']}|")
                 return
-            if command in {"/resume", "/new", "/fork", "/branch", "/goto"}:
-                try:
-                    values = args.split()
-                    active = str(self._state.get("session_id", ""))
-                    if command == "/resume" and len(values) == 1:
-                        self._navigate_session("resume", values[0])
-                    elif command == "/new" and not values:
-                        self._navigate_session("new")
-                    elif command == "/fork":
-                        self._navigate_session("fork", active, index=int(values[0]) - 1 if values else -1)
-                    elif command == "/branch" and len(values) in {1, 2}:
-                        self._navigate_session("branch", values[0] if len(values) == 2 else active, values[-1])
-                    elif command == "/goto" and len(values) == 1:
-                        self._navigate_session("goto", active, index=int(values[0]) - 1)
-                    else:
-                        raise ValueError(
-                            "Usage: /resume ID · /new · /fork [INDEX] · /branch [SESSION] ID · /goto INDEX"
-                        )
-                except ValueError as exc:
-                    self._chat_log.add_system(str(exc))
+            if command in {"/resume", "/fork", "/branch", "/goto"}:
+                self._chat_log.add_system("Claw history is read-only; historical route switching is not supported")
+                self._tui.request_render()
+                return
+            if command == "/new":
+                if args.strip():
+                    self._chat_log.add_system("Usage: /new (group Goals are retained)")
                     self._tui.request_render()
+                else:
+                    self._new_context()
                 return
             if command in {"/queue", "/steer", "/follow-up"}:
                 if command == "/queue":
@@ -3577,7 +3560,7 @@ class ChatApp:
             self._composer.take()
         if self._session_context_stale:
             self._composer.restore(images)
-            self._preserve_submission(value, "Session context changed; resume in /sessions before sending")
+            self._preserve_submission(value, "Group context changed; reconnect to synchronize before sending")
             return
         if not self._connection_ready:
             self._composer.restore(images)
@@ -4495,8 +4478,18 @@ class ChatApp:
             if self._child_panel is not None:
                 self._child_panel.queue_enabled = self._child_queues_supported
             actual = str(msg.get("session_id") or "")
+            refresh_current = (self._has_connected and actual != self._gateway_session_id
+                               and msg.get("session_controls") == 1 and self._active_run_id is None)
             if self._has_connected and actual != self._gateway_session_id and msg.get("session_controls") == 1:
-                self._session_context_stale = True
+                self._session_context_stale = not refresh_current
+            if refresh_current:
+                # Synchronize only the current group context; no historical
+                # activation or user/model input is sent after reconnect.
+                self._output_epoch += 1
+                self._chat_log.clear_all()
+                self._editor.reset_history()
+                self._history_tools.clear()
+                self._usage = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
             if msg.get("session_controls") != 1:
                 self._session_context_stale = False
             if self._transcript_panel is not None and actual != self._gateway_session_id:
@@ -4643,6 +4636,13 @@ class ChatApp:
                         self._replay_history_entries(history)
                 else:
                     self._chat_log.add_system(f"new session: {sid}")
+            elif refresh_current:
+                self._history_format = int(msg.get("history_format", 1))
+                self._replaying_history = self._history_loading
+                self._chat_log.add_system(f"Current group context: {sid}")
+                history = msg.get("history", [])
+                if history:
+                    self._replay_history_entries(history)
 
             self._update_header()
             self._update_footer()

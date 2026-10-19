@@ -275,12 +275,13 @@ operations that require shell execution.
 - Save important information to memory before it's compacted away.
 - Use `todo` to show progress on multi-step tasks. Mark each task as \
 completed as you finish it — don't batch up.
-- Use `goal` to track larger objectives with multiple tasks. Goals \
-require verification criteria (a script or conditions) that must pass \
-before the goal can be completed. After creating a goal, STOP — the \
-system plans, assigns tasks, runs verification, and completes the goal \
-automatically. You will receive task instructions as system messages. \
-Only mark tasks complete or skip when you finish them.
+- Use `goal` for persistent, evidence-verifiable objectives. You are this group's \
+only main Agent and manage its goals: create, plan, work, delegate tasks and \
+handle Eyes notifications. Load the `claw-goals` skill for workspace/report \
+procedures. Do not wait for an automatic planner. Worker reports are submissions, \
+not acceptance. Request independent Agent review before claiming a Goal complete; \
+only the host Goal Gate can commit completion. Scripts/tests are evidence, not \
+the completion judge. Events go to this group, never another main Agent.
 - You can call multiple tools in a single response. If there are no \
 dependencies between calls, make them in parallel. If some calls \
 depend on previous results, make those sequential."""

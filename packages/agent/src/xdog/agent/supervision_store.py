@@ -1,4 +1,4 @@
-"""Atomic, bounded child records and isolated extension entries, scoped by host session/branch."""
+"""Atomic, per-file bounded child records and isolated extension entries, scoped by host session/branch."""
 from __future__ import annotations
 
 import hashlib
@@ -6,16 +6,18 @@ import json
 import math
 import os
 import re
+import stat
 import tempfile
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
+from xdog.agent.core import AgentMessage
 from xdog.agent.extensions.state import validate_entries
 from xdog.agent.input_queue import QueuedInput
 from xdog.agent.messages import dicts_to_messages
-from xdog.agent.supervision import ChildSpec
+from xdog.agent.supervision import MAX_TRANSCRIPT_BYTES, ChildSpec
 from xdog.agent.supervision_config import ChildConfig
 from xdog.agent.supervision_images import (
     MAX_CHILD_ENCODED_IMAGES,
@@ -78,6 +80,14 @@ class ChildStore:
             self._sync_directory(directory.parent)
 
     def _write(self, path: Path, value: dict[str, Any]) -> None:
+        # A record file remains bounded, but a task's complete paired history
+        # has no lifetime cap. Immutable linked chunks are flushed before the
+        # atomic record/manifest replacement. Failed writes leave harmless
+        # unreferenced chunks; the prior checkpoint stays authoritative.
+        messages = value.get("messages")
+        if isinstance(messages, list) and (len(messages) > 2000 or
+                len(json.dumps(messages, ensure_ascii=True).encode()) > MAX_TRANSCRIPT_BYTES):
+            value = self._segment_history(value, messages)
         encoded = json.dumps(value, ensure_ascii=True).encode("utf-8")
         if len(encoded) > MAX_RECORD_BYTES:
             raise ValueError("Child record exceeds persistence budget")
@@ -105,6 +115,51 @@ class ChildStore:
                 "config": spec.config().to_dict(), "task_images": images_to_dicts(spec.images),
                 'initial_state': 'uncertain',
             })
+
+    def archive_compaction(self, spec: ChildSpec, generation: int, messages: tuple[AgentMessage, ...]) -> None:
+        """Durable, immutable pre-compaction export; failed/cancelled attempts are retained too."""
+        from xdog.agent.history import validate_checkpoint
+        from xdog.agent.messages import messages_to_dicts
+        if type(generation) is not int or generation < 1:
+            raise ValueError("Invalid child compaction generation")
+        validate_checkpoint(messages, len(messages) - 1)
+        if any(text_size((message,)) > MAX_TRANSCRIPT_BYTES for message in messages):
+            raise ValueError("Invalid/oversized child archive message")
+        check_collection(image_parts(messages))
+        record = {"id": spec.id, "generation": generation, "source": "builtin-coding",
+                  "messages": messages_to_dicts(list(messages))}
+        with self._lock:
+            path = self._path(spec.id, f".compaction-{generation}")
+            if path.exists():
+                if self._read(path) != record:
+                    raise ValueError("Child compaction archive identity mismatch")
+                # A prior rename may have succeeded while directory fsync
+                # failed. An exact retry must establish durability before ACK.
+                self._sync_directory(self.root)
+                return
+            self._write(path, record)
+
+    def compaction_archives(self, identifier: str) -> list[dict[str, Any]]:
+        """Read archived full paired snapshots without replaying model/tool work."""
+        self._path(identifier)  # Validate scope even when there are no archives.
+        with self._lock:
+            records = []
+            for path in self.root.glob(f"{identifier}.compaction-*.json"):
+                record = self._read(path)
+                generation = record.get("generation")
+                if (set(record) != {"id", "generation", "source", "messages"}
+                        or record.get("id") != identifier or type(generation) is not int or generation < 1
+                        or path != self._path(identifier, f".compaction-{generation}")
+                        or record.get("source") != "builtin-coding" or not isinstance(record.get("messages"), list)):
+                    raise ValueError("Invalid child compaction archive")
+                from xdog.agent.history import validate_checkpoint
+                messages = tuple(dicts_to_messages(record["messages"]))
+                validate_checkpoint(messages, len(messages) - 1)
+                if any(text_size((message,)) > MAX_TRANSCRIPT_BYTES for message in messages):
+                    raise ValueError("Invalid/oversized child archive message")
+                check_collection(image_parts(messages))
+                records.append(record)
+            return sorted(records, key=lambda record: record["generation"])
 
     def save_inputs(self, identifier: str, rows: tuple[QueuedInput, ...]) -> None:
         """Write-ahead snapshot before live acceptance; recovery is explicitly uncertain."""
@@ -144,7 +199,7 @@ class ChildStore:
                 raise ValueError('Invalid child admission checkpoint')
             base = self._path(record['id'])
             self._read(base)  # Apply link/size validation before reading the base identity.
-            digest = hashlib.sha256(base.read_bytes()).hexdigest()
+            digest = hashlib.sha256(self._read_bytes(base)).hexdigest()
             self._write(self._path(record['id'], '.admission'), {**record, '_admission_base_sha256': digest})
 
     def save(self, record: dict[str, Any]) -> None:
@@ -174,13 +229,94 @@ class ChildStore:
                 record["closed"] = True
                 self._write(path, record)  # Retain results on disk, but release the live catalog slot.
 
-    def _read(self, path: Path) -> dict[str, Any]:
-        if path.is_symlink() or path.stat().st_size > MAX_RECORD_BYTES:
-            raise ValueError("Invalid child record file")
-        value = json.loads(path.read_text(encoding="utf-8"))
+    def _segment_history(self, record: dict[str, Any], messages: list[Any]) -> dict[str, Any]:
+        tail: str | None = None
+        batch: list[Any] = []
+        size = 0
+
+        def commit() -> None:
+            nonlocal tail, batch, size
+            chunk = {"previous": tail, "items": batch}
+            encoded = json.dumps(chunk, ensure_ascii=True).encode("utf-8")
+            digest = hashlib.sha256(encoded).hexdigest()
+            path = self._path(record["id"], ".history-" + digest)
+            if path.exists():
+                # Never trust an existing content-addressed filename alone.
+                if self._read_file(path) != chunk:
+                    raise ValueError("Child history chunk identity mismatch")
+            else:
+                self._write(path, chunk)
+            tail, batch, size = digest, [], 0
+
+        for message in messages:
+            message_size = len(json.dumps(message, ensure_ascii=True).encode("utf-8"))
+            if batch and size + message_size > MAX_TRANSCRIPT_BYTES:
+                commit()
+            batch.append(message)
+            size += message_size + 2
+        if batch:
+            commit()
+        result = {key: item for key, item in record.items() if key != "messages"}
+        result["history"] = {"version": 1, "tail": tail, "count": len(messages)}
+        return result
+
+    def _read_bytes(self, path: Path) -> bytes:
+        # Validate the opened inode, not a prior stat: no final-component link
+        # following, FIFO blocking or unbounded reads if a file grows mid-read.
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_RECORD_BYTES:
+                raise ValueError("Invalid child record file")
+            with os.fdopen(fd, "rb", closefd=False) as file:
+                encoded = file.read(MAX_RECORD_BYTES + 1)
+            if len(encoded) > MAX_RECORD_BYTES:
+                raise ValueError("Invalid child record file")
+            return encoded
+        finally:
+            os.close(fd)
+
+    def _read_file(self, path: Path) -> dict[str, Any]:
+        value = json.loads(self._read_bytes(path).decode("utf-8"))
         if not isinstance(value, dict):
             raise ValueError("Invalid child record")
         return value
+
+    def _read(self, path: Path) -> dict[str, Any]:
+        value = self._read_file(path)
+        if "history" not in value:
+            return value
+        manifest = value["history"]
+        identifier = value.get("id")
+        if not isinstance(identifier, str) or not re.fullmatch(r"[a-f0-9]{12}", identifier):
+            raise ValueError("Invalid child history identity")
+        if ("messages" in value or not isinstance(manifest, dict)
+                or set(manifest) != {"version", "tail", "count"}
+                or type(manifest["version"]) is not int or manifest["version"] != 1
+                or type(manifest["count"]) is not int or manifest["count"] < 1):
+            raise ValueError("Invalid child history manifest")
+        chunks: list[list[Any]] = []
+        tail = manifest["tail"]
+        seen: set[str] = set()
+        count = 0
+        while tail is not None:
+            if (not isinstance(tail, str) or not re.fullmatch(r"[a-f0-9]{64}", tail) or tail in seen):
+                raise ValueError("Invalid child history chunk reference")
+            seen.add(tail)
+            chunk = self._read_file(self._path(identifier, ".history-" + tail))
+            if (hashlib.sha256(json.dumps(chunk, ensure_ascii=True).encode("utf-8")).hexdigest() != tail
+                    or set(chunk) != {"previous", "items"} or not isinstance(chunk["items"], list)
+                    or not chunk["items"]):
+                raise ValueError("Invalid child history chunk")
+            chunks.append(chunk["items"])
+            count += len(chunk["items"])
+            if count > manifest["count"]:
+                raise ValueError("Invalid child history count")
+            tail = chunk["previous"]
+        if count != manifest["count"]:
+            raise ValueError("Incomplete child history")
+        return {**{key: item for key, item in value.items() if key != "history"},
+                "messages": [message for chunk in reversed(chunks) for message in chunk]}
 
     def load(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -205,7 +341,7 @@ class ChildStore:
                         raise ValueError('Invalid child admission base identity')
                     # A terminal record may itself be interrupted. Its new base
                     # identity still wins if cleanup crashed before sidecar unlink.
-                    if hashlib.sha256(path.read_bytes()).hexdigest() == digest:
+                    if hashlib.sha256(self._read_bytes(path)).hexdigest() == digest:
                         record = checkpoint
                 journal = self._path(path.stem, '.inputs')
                 if record.get('status') == 'interrupted' and journal.exists():
@@ -239,7 +375,7 @@ class ChildStore:
                         or record['initial_state'] not in {
                         'pending', 'uncertain', 'admitted', 'handled', 'discarded'})):
                     raise ValueError('Invalid initial task admission state')
-                ChildConfig.from_dict(record.get("config", {}))
+                record["config"] = ChildConfig.from_record(record.get("config", {})).to_dict()
                 effective = record.get("effective", {})
                 if not isinstance(effective, dict) or set(effective) - {
                         "model", "thinking", "context_window", "max_prompt_tokens", "max_output_tokens",
@@ -270,7 +406,7 @@ class ChildStore:
                 if type(updated) not in {int, float} or not math.isfinite(updated):
                     raise ValueError("Invalid child update timestamp")
                 messages = record.get("messages", [])
-                if (not isinstance(messages, list) or len(messages) > 2000
+                if (not isinstance(messages, list)
                         or len(record["task"].encode("utf-8")) > 16000):
                     raise ValueError("Invalid/oversized child transcript/task")
                 feedback = record.get("input_feedback", [])
@@ -282,14 +418,12 @@ class ChildStore:
                 recovery = recovery_from_dicts(record.get('undelivered_inputs', []))
                 recovery_from_dicts(record.get('returned_backups', []))
                 typed = tuple(dicts_to_messages(messages))
-                if text_size(typed) > 512 * 1024:
-                    raise ValueError("Invalid/oversized child text transcript")
+                if any(text_size((message,)) > MAX_TRANSCRIPT_BYTES for message in typed):
+                    raise ValueError("Invalid/oversized child text message")
                 initial = images_from_dicts(record.get('task_images', []))
                 check_collection((*image_parts(typed), *initial))
                 check_retained((*image_parts(typed), *initial, *(part for row in recovery for part in row.images)))
                 result.append(record)
-                if len(result) > 16:
-                    raise ValueError("Child catalog exceeds record limit")
             return result
 
     def entries(self, identifier: str) -> dict[str, Any]:

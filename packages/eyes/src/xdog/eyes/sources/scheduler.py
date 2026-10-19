@@ -1,13 +1,16 @@
 """Bounded one-off/interval/calendar observations, with no harness or task execution."""
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
+from xdog.eyes.local_control import JsonValue, object_value
 from xdog.eyes.models import (
     AtSchedule,
     CronSchedule,
@@ -63,7 +66,7 @@ class SchedulerSource:
 
     Intervals use monotonic time; cron/at use UTC instants. A wall-clock rollback
     never rearms an already observed calendar occurrence. State lasts only for
-    this explicitly started registration, not across process restart.
+    this explicitly started registration unless a host explicitly persists a checkpoint.
     """
 
     def __init__(self, definition: SchedulerSourceDef, *, wall_now: float, monotonic_now: float) -> None:
@@ -80,6 +83,49 @@ class SchedulerSource:
             self._next_mono = monotonic_now + schedule.every_seconds
         else:
             self._next_wall = cron_time(schedule, wall_now)
+
+    def export_checkpoint(self, *, wall_now: float, monotonic_now: float) -> dict[str, JsonValue]:
+        """Data only; interval UTC is a restart bridge, never the online clock."""
+        next_utc = (wall_now + (self._next_mono - monotonic_now)
+                    if isinstance(self.definition.schedule, IntervalSchedule) else self._next_wall)
+        return object_value({'version': 1, 'binding': self._binding(self.definition),
+                             'next_utc': next_utc, 'completed': self.completed})
+
+    @staticmethod
+    def _binding(definition: SchedulerSourceDef) -> str:
+        return hashlib.sha256(json.dumps(asdict(definition), sort_keys=True, allow_nan=False).encode()).hexdigest()
+
+    @classmethod
+    def restore(cls, definition: SchedulerSourceDef, checkpoint: object, *, wall_now: float,
+                monotonic_now: float) -> SchedulerSource:
+        """Restore a trusted, definition-bound host checkpoint, not a fresh admission.
+
+        Past accepted one-offs remain eligible exactly once. Overdue intervals
+        coalesce on their first poll; cron retains its UTC next-occurrence cursor.
+        No handler, code, credential or monotonic epoch is loaded from the data.
+        """
+        keys = {'version', 'binding', 'next_utc', 'completed'}
+        data = object_value(checkpoint, allowed=keys, required=keys)
+        if type(data['version']) is not int or data['version'] != 1 or data['binding'] != cls._binding(definition):
+            raise ValueError('Scheduler checkpoint version or definition binding mismatch')
+        deadline, completed = data['next_utc'], data['completed']
+        if isinstance(deadline, bool) or not isinstance(deadline, (int, float)) or type(completed) is not bool:
+            raise ValueError('Invalid scheduler checkpoint cursor')
+        schedule = definition.schedule
+        if isinstance(schedule, AtSchedule):
+            if deadline != at_timestamp(schedule.at):
+                raise ValueError('One-off checkpoint deadline mismatch')
+        elif completed:
+            raise ValueError('Repeating scheduler cannot be completed')
+        if isinstance(schedule, CronSchedule):
+            if cron_time(schedule, float(deadline), previous=True) != deadline:
+                raise ValueError('Cron checkpoint cursor is not an occurrence')
+        source = cls.__new__(cls)
+        source.definition, source.completed = definition, completed
+        source._next_wall = float(deadline)
+        source._next_mono = (monotonic_now + (float(deadline) - wall_now)
+                             if isinstance(schedule, IntervalSchedule) else math.inf)
+        return source
 
     def poll(self, *, wall_now: float, monotonic_now: float, suspended: bool = False) -> SchedulerSnapshot:
         if self.completed:

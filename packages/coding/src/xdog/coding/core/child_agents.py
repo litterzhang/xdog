@@ -53,7 +53,7 @@ class CodingChildren:
             diagnostic = "Child catalog unavailable; repair saved records before delegation: " + str(exc)[:500]
         self.supervisor = ChildSupervisor(self.create, self.store.save, capture=self.capture, begin=self.store.begin,
             persist_inputs=self.store.save_inputs, persist_return=self.store.save_return,
-            persist_admission=self.store.save_admission,
+            persist_admission=self.store.save_admission, archive_compaction=self.store.archive_compaction,
                                           forget=self.store.forget, finalize=self.finish,
             on_event=self.extensions.event, records=records, presets=presets)
         self.supervisor.diagnostic = diagnostic
@@ -162,12 +162,14 @@ class CodingChildren:
         base_stream = session.agent.stream_fn
         if isinstance(base_stream, ExtensionProviderStream):
             base_stream = base_stream.base
-        agent = Agent(selected.stream(ExtensionProviderStream(extension, base_stream)),
+        child_stream = selected.stream(ExtensionProviderStream(extension, base_stream))
+        agent = Agent(child_stream,
             config=AgentConfig(model=selected.id,
             system_prompt=selected.prompt(child_prompt(state.system_prompt, spec)),
             tool_execution=session.agent.tool_execution,
             context_window=selected.context_window, max_prompt_tokens=selected.max_prompt_tokens,
-            supports_tool_calls=selected.supports_tool_calls, options=selected.options), tools=tools,
+            supports_tool_calls=selected.supports_tool_calls, options=selected.options,
+            compaction=selected.compaction(child_stream)), tools=tools,
             tool_ctx=session.agent.tool_context, transform_context=context,
             before_tool_call=before, after_tool_call=after, input_transform=input_transform)
         if allowed_tools is not None:

@@ -1,6 +1,6 @@
 """Goal tracker — persistent goal and task management.
 
-Mirrors the scheduler.py pattern: JSON persistence, immutable updates
+Uses owned JSON persistence and immutable updates
 via dataclasses.replace. Goals persist across session resets and drive
 the background goal runner in the gateway daemon.
 """
@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
+import tempfile
 import time
 from dataclasses import asdict, replace
 from dataclasses import fields as dc_fields
@@ -32,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 def _short_hex_id(prefix: str) -> str:
     """Generate a short hex ID like 'g-a1b2' or 't-c3d4'."""
-    return f"{prefix}-{os.urandom(2).hex()}"
+    return f"{prefix}-{os.urandom(8).hex()}"
 
 
 def _load_verification(data: dict[str, Any] | None) -> Verification:
@@ -90,6 +92,7 @@ class GoalTracker:
         self._goals_file = goals_file
         self._goals: dict[str, Goal] = {}
         self._notifications: list[GoalNotification] = []
+        self.diagnostic = ""
         self._load()
         self._gc()
 
@@ -124,8 +127,18 @@ class GoalTracker:
             updated_at=now,
             verification=verification or Verification(),
         )
-        self._goals[goal_id] = goal
-        self._save()
+        return self.put(goal)
+
+    def put(self, goal: Goal) -> Goal:
+        """Publish an immutable replacement only after its durable commit."""
+        previous = self._goals
+        candidate = {**previous, goal.id: goal}
+        self._goals = candidate
+        try:
+            self._save()
+        except BaseException:
+            self._goals = previous
+            raise
         return goal
 
     def update_task(
@@ -324,50 +337,108 @@ class GoalTracker:
         return goal
 
     def _load(self) -> None:
-        if not self._goals_file.exists():
+        if not self._goals_file.exists() and not self._goals_file.is_symlink():
             return
         try:
-            raw = json.loads(self._goals_file.read_text(encoding="utf-8"))
-            known_goal_fields = {f.name for f in dc_fields(Goal)} - {"verification", "last_verification_run", "tasks"}
-            goals_data = raw.get("goals", {})
-            for gid, gdata in goals_data.items():
-                try:
-                    tasks_raw = gdata.pop("tasks", [])
-                    tasks = tuple(_load_goal_task(t) for t in tasks_raw)
-                    v_data = gdata.pop("verification", None)
-                    vr_data = gdata.pop("last_verification_run", None)
-                    # Filter to known fields for forward-compatibility
-                    filtered = {k: v for k, v in gdata.items() if k in known_goal_fields}
-                    filtered["status"] = GoalStatus(filtered.get("status", "active"))
-                    self._goals[gid] = Goal(
-                        **filtered,
-                        tasks=tasks,
-                        verification=_load_verification(v_data),
-                        last_verification_run=_load_verification_run(vr_data),
-                    )
-                except (TypeError, ValueError) as exc:
-                    logger.warning("Skipping corrupted goal %s: %s", gid, exc)
-            notifs_data = raw.get("notifications", [])
-            self._notifications = [GoalNotification(**n) for n in notifs_data]
-        except (json.JSONDecodeError, TypeError) as exc:
-            logger.warning("Failed to load goals file %s: %s", self._goals_file, exc)
+            def pairs(values: list[tuple[str, Any]]) -> dict[str, Any]:
+                result: dict[str, Any] = {}
+                for key, value in values:
+                    if key in result:
+                        raise ValueError('Duplicate Goal journal key')
+                    result[key] = value
+                return result
+            def constant(value: str) -> Any:
+                raise ValueError('Non-finite Goal journal value')
+            fd = os.open(self._goals_file, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise ValueError('Goal journal must be a regular file')
+                with os.fdopen(fd, 'r', encoding='utf-8', closefd=False) as stream:
+                    raw = json.load(stream, object_pairs_hook=pairs, parse_constant=constant)
+            finally:
+                os.close(fd)
+            if (not isinstance(raw, dict) or set(raw) - {'version', 'goals', 'notifications'}
+                    or type(raw.get('version', 1)) is not int or raw.get('version', 1) not in {1, 2}
+                    or not isinstance(raw.get('goals'), dict) or not isinstance(raw.get('notifications', []), list)):
+                raise ValueError('Unsupported or malformed Goal journal; nothing is resumed or overwritten')
+            from xdog.claw.core.planning.task_reports import _validate_id
+            goal_fields = {field.name for field in dc_fields(Goal)}
+            task_fields = {field.name for field in dc_fields(GoalTask)}
+            restored: dict[str, Goal] = {}
+            for gid, saved in raw['goals'].items():
+                _validate_id(gid, 'goal_id')
+                if (not isinstance(saved, dict) or set(saved) - goal_fields or saved.get('id') != gid
+                        or not isinstance(saved.get('group_id'), str) or not saved['group_id']):
+                    raise ValueError('Invalid Goal identity or unknown fields')
+                gdata = dict(saved)
+                tasks_raw = gdata.pop('tasks', [])
+                if (not isinstance(tasks_raw, list) or any(not isinstance(item, dict)
+                        or set(item) - task_fields for item in tasks_raw)):
+                    raise ValueError('Invalid task data; no partial Goal restore')
+                tasks = tuple(_load_goal_task(dict(item)) for item in tasks_raw)
+                ids = {task.id for task in tasks}
+                if len(ids) != len(tasks):
+                    raise ValueError('Duplicate task identity')
+                for task in tasks:
+                    _validate_id(task.id, 'task_id')
+                    if task.attempt_id:
+                        _validate_id(task.attempt_id, 'attempt_id')
+                    if (type(task.report_revision) is not int or task.report_revision < 0
+                            or any(not isinstance(item, str) for item in task.depends_on)):
+                        raise ValueError('Invalid task revision/dependencies')
+                verification = _load_verification(gdata.pop('verification', None))
+                run = _load_verification_run(gdata.pop('last_verification_run', None))
+                gdata['status'] = GoalStatus(gdata.get('status', 'active'))
+                goal = Goal(**gdata, tasks=tasks, verification=verification, last_verification_run=run)
+                if (type(goal.revision) is not int or goal.revision < 1
+                        or type(goal.review_revision) is not int or goal.review_revision < 0
+                        or type(goal.auto_continue) is not bool
+                        or goal.phase not in {'working', 'waiting', 'review_requested', 'reviewing', 'complete'}
+                        or goal.notice_state not in {'pending', 'running', 'interrupted', 'acknowledged'}
+                        or any(not isinstance(item, str) for item in goal.verification.conditions)):
+                    raise ValueError('Invalid Goal lifecycle state')
+                restored[gid] = goal
+            notifications = [GoalNotification(**item) for item in raw.get('notifications', [])]
+            self._goals, self._notifications = restored, notifications
+        except (OSError, ValueError, TypeError, UnicodeError, RecursionError) as exc:
+            # Do not silently skip records and overwrite them on the next create.
+            # The group may still chat; all Goal writes stay disabled until repair/reload.
+            self._goals, self._notifications = {}, []
+            self.diagnostic = 'Goal journal unavailable; repair and reload before Goal work: ' + str(exc)[:300]
+            logger.error('%s', self.diagnostic)
 
     def _save(self) -> None:
-        self._goals_file.parent.mkdir(parents=True, exist_ok=True)
+        if self.diagnostic:
+            raise ValueError(self.diagnostic)
+        from xdog.claw.core.planning.goal_workspace import ensure_private_directory
+        ensure_private_directory(self._goals_file.parent)
         goals_data: dict[str, Any] = {}
         for gid, goal in self._goals.items():
             d = asdict(goal)
             goals_data[gid] = d
         data = {
+            "version": 2,
             "goals": goals_data,
             "notifications": [asdict(n) for n in self._notifications],
         }
-        # Atomic write: temp file then os.replace() to prevent corruption
-        tmp_path = self._goals_file.with_suffix(".tmp")
-        tmp_path.write_text(
-            json.dumps(data, indent=2) + "\n", encoding="utf-8",
-        )
-        os.replace(tmp_path, self._goals_file)
+        if self._goals_file.is_symlink():
+            raise ValueError("Goal state must not be a symlink")
+        fd, name = tempfile.mkstemp(prefix=".goals-", dir=self._goals_file.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(data, stream, indent=2, allow_nan=False)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(name, self._goals_file)
+            directory = os.open(self._goals_file.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        finally:
+            if os.path.exists(name):
+                os.unlink(name)
 
     def _gc(self) -> None:
         """Purge completed/abandoned goals older than _GC_MAX_AGE."""

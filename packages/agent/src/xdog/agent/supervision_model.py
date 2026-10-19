@@ -1,14 +1,14 @@
 """Resolve child routing/reasoning on its existing adapter; no fallback/auth/provider activation."""
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, replace
 from typing import cast
 
+from xdog.agent.compaction import CompactionConfig, estimate_input_tokens, resolve_compaction_budget
 from xdog.agent.core import AgentMessage, ModelStreamFn, StreamFn
 from xdog.agent.image_context import validate_model_images
+from xdog.agent.supervision_compaction import preserve_model_metadata
 from xdog.agent.supervision_config import ChildConfig
-from xdog.agent.supervision_images import text_size
 from xdog.ai.types import (
     AssistantMessage,
     Context,
@@ -24,7 +24,6 @@ from xdog.ai.types import (
     ToolCall,
     ToolResultMessage,
     UserMessage,
-    system_prompt_text,
 )
 from xdog.ai.utils.event_stream import EventStream
 
@@ -79,6 +78,23 @@ class ChildModel:
                 result.append(message)
         return result
 
+    def compaction(self, stream: StreamFn) -> CompactionConfig | None:
+        """Opt in to the native policy only with executing-adapter metadata.
+
+        Unknown custom adapters keep their old behavior. Hosts can instead pass
+        an explicit CompactionConfig(auto=True, ...) to AgentConfig to require
+        fail-closed validation. This never supplies an invented context window
+        or output reserve and never sets a lifetime/call/token budget.
+        """
+        metadata = stream.resolve_model(self.id) if isinstance(stream, ModelStreamFn) else self.metadata
+        if metadata is None or metadata.context_window <= 0 or not (self.options.max_tokens or metadata.max_tokens):
+            return None
+        budget = resolve_compaction_budget(metadata, self.options,
+            context_window=self.context_window or None, max_prompt_tokens=self.max_prompt_tokens or None)
+        return CompactionConfig(auto=True, context_window=budget.context_window,
+                                max_prompt_tokens=budget.max_prompt_tokens or None,
+                                output_reserve=budget.output_reserve)
+
     def stream(self, original: StreamFn) -> StreamFn:
         def guarded(model: str, context: Context, options: StreamOptions) -> EventStream[AssistantMessage]:
             if self.switched:
@@ -105,23 +121,29 @@ class ChildModel:
                     raise ValueError("Child image capabilities changed during admission; no request or replay")
             if self.metadata is not None:
                 if self.switched:
-                    # Conservative byte-based preflight, NOT exact tokenizer
-                    # billing/compaction. Fail before forwarding an oversized
-                    # inherited/transformed context; the user may start --fresh.
-                    # Base64 transport is not model text. Keep the existing
-                    # conservative text-byte guard with a rough per-image token
-                    # allowance, not a false multi-megabyte text-token charge.
-                    body_size = text_size(tuple(cast(list[AgentMessage], list(context.messages))))
-                    image_allowance = 2048 * len(images)  # Heuristic, not provider tokenizer/billing proof.
-                    schema = json.dumps([{"name": tool.name, "description": tool.description,
-                                          "parameters": tool.parameters} for tool in context.tools or ()])
-                    prompt_size = len((system_prompt_text(context.system_prompt) or "").encode())
-                    size = body_size + image_allowance + len(schema.encode()) + prompt_size + 1024
-                    limit = self.max_prompt_tokens or self.context_window - (options.max_tokens or 0)
+                    # Use the SAME built-in text estimate as auto compaction.
+                    # Comparing UTF-8 bytes to tokens vetoed long tool loops
+                    # before the native 80% trigger could ever compact them.
+                    # Inline base64 is transport, not image model text; retain
+                    # the existing conservative per-image admission allowance.
+                    def without_image_transport(message: Message) -> Message:
+                        if isinstance(message, UserMessage) and not isinstance(message.content, str):
+                            return replace(message, content=tuple(
+                                replace(part, data="") if isinstance(part, ImageContent) else part
+                                for part in message.content))
+                        if isinstance(message, ToolResultMessage):
+                            return replace(message, content=tuple(
+                                replace(part, data="") if isinstance(part, ImageContent) else part
+                                for part in message.content))
+                        return message
+                    projected = tuple(without_image_transport(message) for message in context.messages)
+                    size = estimate_input_tokens(replace(context, messages=projected), options) + 2048 * len(images)
+                    limit = min(self.max_prompt_tokens or self.context_window,
+                                self.context_window - (options.max_tokens or 0))
                     if limit <= 0 or size > limit:
-                        raise ValueError("Child context too large; use --fresh, lower --tokens or a larger model")
+                        raise ValueError("Child context too large; use --fresh or a larger model")
             return original(model, context, options)
-        return guarded
+        return preserve_model_metadata(guarded, original)
 
 
 def resolve_child_model(stream: StreamFn, parent: str, options: StreamOptions, config: ChildConfig,

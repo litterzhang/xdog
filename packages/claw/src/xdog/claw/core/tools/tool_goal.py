@@ -1,254 +1,176 @@
-"""Goal tool — create, list, update tasks, add tasks, abandon goals.
-
-Uses ToolDef framework. Integrates with GoalManager's state machine
-for deterministic transitions and planner for initial/re-planning.
-
-Note: ``verify`` and ``complete_goal`` actions are NOT exposed to the
-main agent — the state machine handles both automatically. The planner
-calls the tracker/manager directly during planning.
-"""
+"""The group main Agent manages goals; only an independent Gate completes them."""
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
+from dataclasses import asdict
 from typing import Any
 
 from xdog.agent.core import AgentTool
 from xdog.agent.tool_def import Param, ToolDef, action
-from xdog.claw.core.types import (
-    GoalStatus,
-    TaskStatus,
-    Verification,
-    VerificationMethod,
-)
-
-_TASK_STATUS_MAP = {
-    "complete": TaskStatus.COMPLETED,
-    "skip": TaskStatus.SKIPPED,
-}
+from xdog.claw.core.planning.goal_manager import GoalManager
+from xdog.claw.core.types import GoalStatus
 
 
-def _tracker(ctx: dict[str, Any]) -> Any:
-    """Get GoalTracker — prefer GoalManager's tracker, fall back to standalone."""
-    manager = ctx.get("_goal_manager")
-    if manager is not None:
-        return manager.tracker
-    from pathlib import Path
-
-    from xdog.claw.core.planning.goal_tracker import get_tracker
-    goals_file = Path(ctx["data_dir"]) / "groups" / ctx["group_id"] / "goals.json"
-    return get_tracker(goals_file)
-
-
-def _format_goal(goal: Any) -> str:
-    lines = [f"{goal.title} [{goal.id}] — {goal.status}"]
-    for t in goal.tasks:
-        icon = {"completed": "[x]", "in_progress": "[>]", "skipped": "[-]"}.get(t.status, "[ ]")
-        lines.append(f"  {icon} [{t.id}] {t.description}")
-        if t.summary:
-            lines.append(f"      Summary: {t.summary}")
-        if t.depends_on:
-            lines.append(f"      Depends on: {', '.join(t.depends_on)}")
-    if goal.verification and goal.verification.method:
-        lines.append(f"  Verification: {goal.verification.method}")
-    if goal.last_verification_run:
-        lines.append(f"  Last verified: {goal.last_verification_run.result}")
-    return "\n".join(lines)
+def _host(ctx: dict[str, Any]) -> tuple[GoalManager, str, Any]:
+    manager, session = ctx.get('_goal_manager'), ctx.get('_goal_agent')
+    group = ctx.get('group_id')
+    if (not isinstance(manager, GoalManager) or session is None or not isinstance(group, str)
+            or session._runtime._active_session is not session or session.meta.group_id != group):
+        raise ValueError('Goal management belongs to the current group main Agent only')
+    if manager.tracker.diagnostic:
+        raise ValueError(manager.tracker.diagnostic)
+    return manager, group, session
 
 
-def _parse_task_input(tasks: Sequence[Any]) -> tuple[list[str], list[list[int]]]:
-    """Parse task input that can be strings or objects with depends_on.
-
-    Returns (descriptions, dep_indices) where dep_indices[i] is a list
-    of 0-based indices into the tasks array that task i depends on.
-    """
-    descriptions: list[str] = []
-    dep_indices: list[list[int]] = []
-
-    for item in tasks:
-        if isinstance(item, str):
-            descriptions.append(item)
-            dep_indices.append([])
-        elif isinstance(item, dict):
-            descriptions.append(item.get("description", ""))
-            raw_deps = item.get("depends_on", [])
-            # depends_on can be indices (int) or index strings ("0", "1")
-            indices = []
-            for d in raw_deps:
-                try:
-                    indices.append(int(d))
-                except (ValueError, TypeError):
-                    pass  # skip invalid refs — will be caught later
-            dep_indices.append(indices)
-        else:
-            descriptions.append(str(item))
-            dep_indices.append([])
-
-    return descriptions, dep_indices
+def _render(goal: Any) -> str:
+    return json.dumps(asdict(goal), ensure_ascii=False)
 
 
-def _apply_task_dependencies(
-    ctx: dict[str, Any], goal: Any, dep_indices: list[list[int]],
-) -> None:
-    """Resolve index-based depends_on to real task IDs and update tracker."""
-    from dataclasses import replace as dc_replace
+def _touch(session: Any, goal_id: str) -> None:
+    session._goal_touched.add(goal_id)
 
-    task_ids = [t.id for t in goal.tasks]
 
-    new_tasks = list(goal.tasks)
-    changed = False
-    for i, indices in enumerate(dep_indices):
-        if not indices:
-            continue
-        resolved = tuple(
-            task_ids[idx] for idx in indices
-            if 0 <= idx < len(task_ids)
-        )
-        if resolved:
-            new_tasks[i] = dc_replace(new_tasks[i], depends_on=resolved)
-            changed = True
-
-    if changed:
-        _tracker(ctx).replace_tasks(goal.id, tuple(new_tasks))
+def _user_control(session: Any, operation: str) -> None:
+    if not getattr(session, '_goal_user_authorized', False):
+        raise ValueError(operation + ' requires an explicit user turn, not events/background work')
 
 
 class GoalTool(ToolDef):
-    name = "goal"
-    description = "Manage verifiable goals. Create goals, mark tasks complete, check status."
-    required_ctx = ("data_dir", "group_id")
+    name = 'goal'
+    description = ('Manage this group main Agent\'s persistent goals and tasks. Plan and work after create; '
+                   'only an independent Agent Gate can complete a goal. Load claw-goals for the workflow.')
+    required_ctx = ('group_id',)
 
-    @action("create", description="Create a verifiable goal with tasks",
-            title=Param("string", required=True),
-            goal_description=Param("string", required=True, description="What this goal achieves"),
-            tasks=Param("array", required=True,
-                description="Task list. Each item is a string (simple) or "
-                "{\"description\": \"...\", \"depends_on\": [\"task-index-0\", ...]} "
-                "where depends_on references other tasks by their 0-based index in this array."),
-            verification_script=Param("string",
-                description="Bash command (exit 0 = pass). Recommended for concrete checks."),
-            verification_conditions=Param("array", items={"type": "string"},
-                description="Conditions for LLM evaluation. Use for subjective/complex checks. "
-                "Can be combined with verification_script — script runs first."))
-    async def create(self, ctx: dict[str, Any], title: str, goal_description: str, tasks: Sequence[Any],
-                     verification_script: str = "",
-                     verification_conditions: Sequence[Any] | None = None) -> str:
-        if not verification_script and not verification_conditions:
-            return "Error: at least one of verification_script or verification_conditions is required"
+    @action('create', description='Create an outcome contract, then plan and work; do not wait for a planner',
+            title=Param('string', required=True), goal_description=Param('string', required=True),
+            verification_conditions=Param('array', required=True, items={'type': 'string'}),
+            tasks=Param('array', items={'type': 'string'}))
+    async def create(self, ctx: dict[str, Any], title: str, goal_description: str,
+                     verification_conditions: Sequence[str], tasks: Sequence[str] = ()) -> str:
+        manager, group, session = _host(ctx)
+        goal = manager.create(group, title, goal_description, list(verification_conditions), list(tasks))
+        _touch(session, goal.id)
+        return _render(goal) + '\nYou own this goal. Continue planning/work; assign tasks or work yourself.'
 
-        if verification_script:
-            method = VerificationMethod.SCRIPT
-        else:
-            method = VerificationMethod.CONDITIONS
+    @action('update', description='Apply an explicit user change of outcome/acceptance; invalidates old review',
+            goal_id=Param('string', required=True), goal_description=Param('string', required=True),
+            verification_conditions=Param('array', required=True, items={'type': 'string'}),
+            reason=Param('string', required=True))
+    async def update(self, ctx: dict[str, Any], goal_id: str, goal_description: str,
+                     verification_conditions: Sequence[str], reason: str) -> str:
+        manager, group, session = _host(ctx)
+        _user_control(session, 'Goal criteria changes')
+        goal = manager.revise(group, goal_id, goal_description, list(verification_conditions), reason)
+        _touch(session, goal_id)
+        return _render(goal)
 
-        verification = Verification(
-            method=method,
-            script=verification_script,
-            conditions=tuple(verification_conditions or ()),
-        )
+    @action('list', description='Inspect only this group goals',
+            status=Param('string', default='active',
+                enum=['active', 'paused', 'blocked', 'completed', 'abandoned', 'all']))
+    async def list(self, ctx: dict[str, Any], status: str = 'active') -> str:
+        manager, group, _ = _host(ctx)
+        return json.dumps([asdict(goal) for goal in manager.tracker.list_goals(status)
+                           if goal.group_id == group], ensure_ascii=False)
 
-        # Parse tasks — accept both flat strings and objects with depends_on.
-        # Dependencies reference tasks by 0-based index in this array, which
-        # are resolved to real task IDs after creation.
-        task_descriptions, task_dep_indices = _parse_task_input(tasks)
+    @action('status', description='Inspect a goal and its workspace', goal_id=Param('string', required=True))
+    async def status(self, ctx: dict[str, Any], goal_id: str) -> str:
+        manager, group, _ = _host(ctx)
+        goal = await manager.reconcile(manager.owned(group, goal_id))
+        return _render(goal) + '\nWorkspace: ' + str(manager.workspace.goal_dir(goal.id))
 
-        goal = _tracker(ctx).create_goal(
-            ctx["group_id"], title, goal_description, task_descriptions,
-            verification=verification,
-        )
-
-        # Resolve index-based depends_on to real task IDs
-        if any(task_dep_indices):
-            _apply_task_dependencies(ctx, goal, task_dep_indices)
-            goal = _tracker(ctx).get_goal(goal.id)  # re-read with deps applied
-        # Init workspace and queue initial planning
-        manager = ctx.get("_goal_manager")
-        if manager:
-            manager.workspace.init_workspace(goal)
-            manager.on_goal_created(goal.id)
-        return (
-            f"Goal created: {_format_goal(goal)}\n\n"
-            "The goal system will now plan tasks, start them, run "
-            "verification, and complete the goal automatically. "
-            "You will receive task instructions — wait for them. "
-            "Do NOT work on the tasks yourself until instructed."
-        )
-
-    @action("list", description="List goals with progress",
-            status=Param("string", default="active", enum=["active", "completed", "abandoned", "all"]))
-    async def list(self, ctx: dict[str, Any], status: str = "active") -> str:
-        goals = _tracker(ctx).list_goals(status_filter=status)
-        if not goals:
-            return f"No {status} goals found."
-        parts: list[str] = []
-        for goal in goals:
-            done = sum(1 for t in goal.tasks if t.status == TaskStatus.COMPLETED)
-            parts.append(f"{_format_goal(goal)} ({done}/{len(goal.tasks)} done)")
-        return "\n\n".join(parts)
-
-    @action("update_task", description="Mark a task as complete or skip it",
-            goal_id=Param("string", required=True),
-            task_id=Param("string", required=True),
-            task_status=Param("string", required=True, enum=["complete", "skip"],
-                description="complete (task done) or skip (task not needed)"),
-            summary=Param("string", description="Required when task_status=complete"),
-            notes=Param("string"))
-    async def update_task(self, ctx: dict[str, Any], goal_id: str, task_id: str, task_status: str,
-                          summary: str = "", notes: str = "") -> str:
-        resolved = _TASK_STATUS_MAP.get(task_status)
-        if resolved is None:
-            return f"Error: task_status must be one of: {', '.join(_TASK_STATUS_MAP)}"
-        if task_status == "complete" and not summary:
-            return "Error: summary is required when completing a task"
-        _tracker(ctx).update_task(
-            goal_id, task_id, resolved, summary=summary, notes=notes,
-        )
-        # State machine handles transitions (may start next task, queue verification)
-        manager = ctx.get("_goal_manager")
-        if manager:
-            manager.on_task_updated(goal_id, task_id, resolved)
-        # Re-read goal AFTER state machine ran — it may have started the next task
-        goal = _tracker(ctx).get_goal(goal_id)
-        result = f"update_task ({task_status}): {_format_goal(goal)}"
-
-        # Check if all tasks are done — remind the agent to stop
-        pending = [t for t in goal.tasks if t.status in ("pending", "in_progress")]
-        if not pending:
-            result += (
-                "\n\nAll tasks are done. The system will now run verification "
-                "and complete the goal automatically. Do NOT run verification "
-                "or complete the goal yourself."
-            )
-        return result
-
-    @action("add_task", description="Add a task to a goal (used by planner)",
-            goal_id=Param("string", required=True),
-            task_description=Param("string", required=True, description="Task description"),
-            depends_on=Param("array", items={"type": "string"},
-                description="Task IDs that must complete before this task can start"))
+    @action('add_task', description='Add a task; the main Agent decides execution and dependencies',
+            goal_id=Param('string', required=True), task_description=Param('string', required=True),
+            depends_on=Param('array', items={'type': 'string'}))
     async def add_task(self, ctx: dict[str, Any], goal_id: str, task_description: str,
-                       depends_on: Sequence[Any] | None = None) -> str:
-        goal = _tracker(ctx).add_task(
-            goal_id, task_description,
-            depends_on=tuple(depends_on or ()),
-        )
-        manager = ctx.get("_goal_manager")
-        if manager:
-            manager.on_task_added(goal_id)
-        return f"add_task: {_format_goal(goal)}"
+                       depends_on: Sequence[str] = ()) -> str:
+        manager, group, session = _host(ctx)
+        goal = manager.add_task(group, goal_id, task_description, tuple(depends_on))
+        _touch(session, goal.id)
+        return _render(goal)
 
-    @action("abandon_goal", description="Abandon a goal",
-            goal_id=Param("string", required=True), summary=Param("string"))
-    async def abandon_goal(self, ctx: dict[str, Any], goal_id: str, summary: str = "") -> str:
-        goal = _tracker(ctx).update_goal_status(
-            goal_id, GoalStatus.ABANDONED, summary=summary,
-        )
-        # Notify for TUI and clean up workspace
-        manager = ctx.get("_goal_manager")
-        if manager:
-            manager.tracker.add_notification(
-                goal_id, goal.title, summary or "Abandoned", "abandoned",
-            )
-            manager.workspace.remove_workspace(goal_id)
-        return f"abandon_goal: {_format_goal(goal)}"
+    @action('assign_task', description='Start a task worker owned by this main Agent and give it its report path',
+            goal_id=Param('string', required=True), task_id=Param('string', required=True),
+            access=Param('string', enum=['read-only', 'inherit'], default='inherit'),
+            executor=Param('string', enum=['main', 'child'], default='child'))
+    async def assign_task(self, ctx: dict[str, Any], goal_id: str, task_id: str, access: str = 'inherit',
+                          executor: str = 'child') -> str:
+        manager, _, session = _host(ctx)
+        result = await manager.assign(session, goal_id, task_id, access, executor=executor)
+        _touch(session, goal_id)
+        return json.dumps(result, ensure_ascii=False)
+
+    @action('report_task', description='Atomically update a report for a task assigned to the main Agent itself',
+            goal_id=Param('string', required=True), task_id=Param('string', required=True),
+            report=Param('object', required=True,
+                description='revision, state, summary, evidence, blockers; identities are host-bound'))
+    async def report_task(self, ctx: dict[str, Any], goal_id: str, task_id: str, report: dict[str, Any]) -> str:
+        manager, group, session = _host(ctx)
+        goal = manager.owned(group, goal_id)
+        task = manager.task(goal, task_id)
+        await manager.write_report(group, goal_id, task_id, task.attempt_id, 'main', report)
+        _touch(session, goal_id)
+        return 'Report saved atomically; submitted is not task acceptance or Goal completion.'
+
+    @action('update_task', description='Accept a submitted report or record main-Agent work; never completes Goal',
+            goal_id=Param('string', required=True), task_id=Param('string', required=True),
+            task_status=Param('string', enum=['complete', 'skip'], required=True),
+            summary=Param('string', required=True))
+    async def update_task(self, ctx: dict[str, Any], goal_id: str, task_id: str, task_status: str, summary: str) -> str:
+        manager, group, session = _host(ctx)
+        if task_status not in {'complete', 'skip'}:
+            raise ValueError('Task status must be complete or skip')
+        goal = await manager.reconcile(manager.owned(group, goal_id))
+        goal = manager.accept_task(group, goal.id, task_id, summary, skip=task_status == 'skip')
+        _touch(session, goal_id)
+        return _render(goal)
+
+    @action('request_complete', description='Request independent Agent review; this is not a completion verdict',
+            goal_id=Param('string', required=True), summary=Param('string'),
+            evidence_paths=Param('array', items={'type': 'string'},
+                description='Relative evidence paths; default is workspace excluding runtime/cache trees'))
+    async def request_complete(self, ctx: dict[str, Any], goal_id: str, summary: str = '',
+                               evidence_paths: Sequence[str] = ()) -> str:
+        manager, group, session = _host(ctx)
+        await manager.reconcile(manager.owned(group, goal_id))
+        goal = manager.request_review(group, goal_id, summary, tuple(evidence_paths))
+        _touch(session, goal_id)
+        return _render(goal) + '\nPending independent review, not completed.'
+
+    @action('wait', description='Yield until task reports/events/user action; do not spin',
+            goal_id=Param('string', required=True), reason=Param('string', required=True))
+    async def wait(self, ctx: dict[str, Any], goal_id: str, reason: str) -> str:
+        manager, group, session = _host(ctx)
+        _touch(session, goal_id)
+        return _render(manager.wait(group, goal_id, reason))
+
+    @action('pause', description='Pause automatic goal work; manage active children explicitly',
+            goal_id=Param('string', required=True), reason=Param('string'))
+    async def pause(self, ctx: dict[str, Any], goal_id: str, reason: str = '') -> str:
+        manager, group, session = _host(ctx)
+        _user_control(session, 'Goal pause')
+        return _render(manager.status(group, goal_id, GoalStatus.PAUSED, reason))
+
+    @action('resume', description='Resume this group goal from saved evidence, never replay interrupted operations',
+            goal_id=Param('string', required=True))
+    async def resume(self, ctx: dict[str, Any], goal_id: str) -> str:
+        manager, group, session = _host(ctx)
+        current = manager.owned(group, goal_id)
+        if current.status == GoalStatus.PAUSED:
+            _user_control(session, 'A paused goal resume')
+        _touch(session, goal_id)
+        return _render(manager.status(group, goal_id, GoalStatus.ACTIVE))
+
+    @action('abandon_goal', description='Abandon without deleting workspace evidence',
+            goal_id=Param('string', required=True), summary=Param('string'))
+    async def abandon_goal(self, ctx: dict[str, Any], goal_id: str, summary: str = '') -> str:
+        manager, group, session = _host(ctx)
+        _user_control(session, 'Goal abandon')
+        await manager.cancel_workers(session, manager.owned(group, goal_id))
+        goal = manager.status(group, goal_id, GoalStatus.ABANDONED, summary)
+        if goal.observer_id and manager.runtime is not None and manager.runtime.observers is not None:
+            await manager.runtime.observers.cancel(group, goal.observer_id)
+        return _render(goal)
 
 
 def create_goal_tool() -> AgentTool:

@@ -265,7 +265,7 @@ Extensions can now call `api.append_entry("note", {"text": "durable data"})` fro
 an active callback. Host-owned JSON entries are bounded, independently namespaced
 per extension and committed before the callback receipt is returned. Subsequent
 callback context contains that extension's `context["entries"]`; unload/reload
-retains it. Session/new/branch activation follows the selected durable snapshot,
+retains it. Coding session/branch activation follows its selected durable snapshot; Claw only rotates its current context,
 not process globals. Old owners cannot publish entry writes after navigation.
 Close invalidates late writes, so shutdown callbacks should not append entries.
 
@@ -350,7 +350,7 @@ none of these interfaces grants tool permission or full Pi API compatibility.
 
 ### Child-supervision runtime
 
-`xdog.agent.supervision.ChildSupervisor` owns a separate asyncio loop and bounded
+`xdog.agent.supervision.ChildSupervisor` owns a separate asyncio loop and host-managed
 children, with start/inspect/steer/follow-up/wait/cancel/close operations and reserved
 `agent_spawn`/`agent_control` tool adapters. Each factory supplies a fresh `Agent`
 and MUST implement host permission/read-only policies and safe context inheritance.
@@ -367,15 +367,48 @@ images as typed `ImageContent` with bounded receipt metadata, not raw base64 tex
 Native child queue panels expose inspection only; they cannot mutate or recover
 those records. Restoring records/copying recovery never restarts child execution.
 
-Limits: three children, 16 retained records, 16 model requests, a 32,000 reported-token
-stop threshold (not exact billing), 1–600-second execution deadline (default 120),
-32 identified queued inputs and 512 KiB / 2,000-message retained transcripts. The
-request wrapper clamps output limits; provider input accounting can overshoot on
-one request. Children cannot recursively delegate through `agent_spawn` or `agent_control`.
-Persistence callbacks and all parallel tool siblings settle before slots release;
-failed callbacks are visible. Transcripts carry a stable checkpoint index; inherited
-context with incomplete tool batches is rejected before making a request.
-Synchronous `close()` requests disposal; `await aclose()` settles the owner thread.
+There is no supervisor-imposed elapsed-time deadline, model-call cap, cumulative
+reported-token budget, fixed concurrent-child limit or retained-record count limit.
+The main Agent/host owns lifecycle and resource management through cancel/wait/close;
+reported calls/tokens are usage counters, not stop thresholds. Actual model output
+and context ceilings still apply. Children cannot recursively delegate through
+`agent_spawn` or `agent_control`, or change the parent plan.
+
+Protocol capacities remain: 32 identified queued inputs, 16 KiB text per input,
+512 KiB single-message text capacity, image/retained-byte limits and per-file record
+limits. Complete history is not killed at a cumulative 512 KiB or 2,000 messages:
+`ChildStore` splits large histories into immutable linked chunks and atomically
+commits the record index after those chunks are durable. It neither silently clips
+history nor drops half a tool batch. Missing/corrupt chunks fail visibly rather than
+returning a partial history. Persistence callbacks and all parallel tool siblings
+settle before lifecycle completion; failed callbacks are visible. Transcripts carry
+a checkpoint index; inherited context with incomplete tool batches is rejected
+before making a request. Synchronous `close()` requests disposal;
+`await aclose()` settles the owner thread.
+
+**Generic Agent auto-compaction remains off by default** (`CompactionConfig.auto=False`).
+Constructing a `ChildSupervisor` alone does not enable it. Coding and Claw child
+factories explicitly pass `AgentConfig(compaction=selected.compaction(child_stream))`,
+where `child_stream = selected.stream(actual_adapter)`, and wire
+`archive_compaction=store.archive_compaction` into their supervisor. Adapter wrappers
+preserve the executing adapter's live `resolve_model` metadata. The helper opts into
+the existing built-in policy using real context/prompt/output capacity; it returns
+`None` if metadata, context capacity or an output reserve is unknown. That case is
+not auto-compaction: a host requiring it must reject the start or provide trusted
+capacity/reserve explicitly through `CompactionConfig(auto=True, ...)`, not invent a
+fallback window. No separate `set_compaction` hook or second Agent loop is needed.
+
+For supervised auto-compaction, `archive_compaction(spec, generation, messages)` is
+a synchronous durable callback. The supervisor waits for its owned thread work to
+persist the complete paired original history **before the native summary request
+starts**. `ChildStore.archive_compaction` implements this callback;
+`store.compaction_archives(child_id)` reads the retained full snapshots without
+replaying work. The built-in planner/summary/commit policy remains authoritative:
+archival, summarization or stream-cleanup failure does not commit a history cut;
+cancellation waits for owned archival/cleanup. A missing callback fails explicitly
+when compaction is needed. The native summarizer's per-request timeout and capacity
+checks still apply; these are not child lifetime budgets. Current inspected history
+may contain a summary, while the complete pre-compaction snapshots remain archived.
 
 `Agent.set_stream_fn()` replaces an idle request adapter. Owner-loop-only
 `await agent.cancel_and_wait()` cancels and joins the producer, including hook
@@ -384,15 +417,16 @@ Async cancellation cannot terminate blocking/native or cancellation-suppressing
 code, revoke approvals, or roll back tool effects.
 
 
-Factories may be asynchronous; execution deadlines include asynchronous preparation.
+Factories may be asynchronous; the supervisor adds no deadline to factory preparation
+or the child run. Cancellation still waits for owned preparation/cleanup to settle.
 Optional host admission/start/finalization/event/forget callbacks support stable
 snapshots, atomic interruption markers, extension cleanup and durable catalogs.
 `idle_scope()` freezes child admission throughout a host's idle-only context/policy
 change. `ChildStore` scopes records by session/branch; loading never resumes work.
 Both clients retain parent validation/context authority while independently owning
 child extension workers/tool executors/entries. Focused child UIs and independently owned select/input/confirm child dialogs are
-now wired in both applications. Task-specific labels/instructions, tool subsets, fresh context and downward budgets
-are now applied through validated `ChildConfig`. Per-child model/reasoning is now wired through the actual request adapter; named
+now wired in both applications. Task-specific labels/instructions, tool subsets and fresh context
+are applied through validated `ChildConfig`. Per-child model/reasoning is now wired through the actual request adapter; named
 specialist presets are now wired too; complex extension forms/renderers are removed.
 
 
@@ -406,13 +440,18 @@ questions are UI answers, not host tool approvals or host access changes.
 
 `ChildConfig` is frozen and validated independently of UI policy. `ChildSupervisor.start`
 accepts a bounded configuration dictionary; the factory receives its corresponding
-`ChildSpec`, and the supervisor enforces actual tool-subset and request/output limits.
+`ChildSpec`, and the supervisor enforces the tool subset and message/input protocol
+capacities. Actual per-request model output/context limits remain separate from
+child configuration; there is no cumulative request/token budget.
 Specialist instructions compose with parent restrictions using `child_prompt()`.
 Unsupported tool names fail before a model request; zero selected tools is an empty
 executable set. `parse_child_start()` supports explicit lexical flags without shell
 execution and preserves the task suffix. Configurations persist/restore without work
-replay. These settings never provide approval, a second tool loop, sandboxing or a
-automatic provider activation or model fallback.
+replay. The removed `timeout`, `max_model_calls` and cumulative `max_tokens` keys
+(and CLI `--timeout`, `--calls`, `--tokens`) are rejected for new starts/presets.
+Historical child records can still be read: their old budget fields are inert and
+do not resume work or reapply a budget. These settings never provide approval, a
+second tool loop, sandboxing, automatic provider activation or model fallback.
 
 
 Provider adapters from `stream_fn_from_provider()` implement optional
@@ -421,8 +460,8 @@ actual adapter for canonical routing, reasoning/capability/limits—never an amb
 `ai.load()` fallback or model sync. Custom adapters lacking the contract fail closed
 on explicit overrides. Model switches remove continuity from the child copy and
 recheck transformed image/context data before forwarding. Requested config and
-constructed effective choices persist separately. Existing host gates, budgets,
-settlement and default inherited behavior remain intact.
+constructed effective choices persist separately. Existing host permission gates,
+protocol capacities, settlement and default inherited behavior remain intact.
 
 
 `ChildPresets` is a frozen data-only catalog of bounded `ChildConfig` templates.

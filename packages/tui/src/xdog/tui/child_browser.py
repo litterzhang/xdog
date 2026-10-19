@@ -32,7 +32,7 @@ class ChildEntry:
 
 def child_entries(value: Mapping[str, Any]) -> tuple[ChildEntry, ...]:
     rows = value.get("children")
-    if not isinstance(rows, (list, tuple)) or len(rows) > 16:
+    if not isinstance(rows, (list, tuple)):
         raise ValueError("Invalid child catalog")
     result = []
     ids = set()
@@ -81,6 +81,12 @@ def message_records(messages: Any, *, partial: Any = None) -> tuple[TranscriptRe
     """Redacted complete typed history; no binary/signature bodies or execution."""
     if not isinstance(messages, (list, tuple)) or len(messages) > 20000:
         raise ValueError("Saved transcript exceeds the message limit")
+    return _message_records(messages, partial=partial)
+
+
+def _message_records(messages: list[Any] | tuple[Any, ...], *, partial: Any = None) -> tuple[TranscriptRecord, ...]:
+    # Child history may be a complete archived long run. Do not reuse the
+    # separate saved-parent-view protocol's count cap or silently clip pairs.
     records: list[TranscriptRecord] = []
     calls: dict[str, int] = {}
     def append_message(message: Any, index: str) -> None:
@@ -147,7 +153,7 @@ def child_records(value: Mapping[str, Any]) -> tuple[TranscriptRecord, ...]:
     """No binary bodies, signatures, truncation or rendering on the UI thread."""
     entry = child_entries({"children": [value]})[0]
     messages = value.get("messages", [])
-    if not isinstance(messages, (list, tuple)) or len(messages) > 2000:
+    if not isinstance(messages, (list, tuple)):
         raise ValueError("Invalid child transcript")
     records = [TranscriptRecord("child-status", "system", f"Child {entry.id}",
         f"[{entry.status}] {entry.access} · {entry.calls} calls · {entry.tokens} reported tokens\n"
@@ -159,7 +165,7 @@ def child_records(value: Mapping[str, Any]) -> tuple[TranscriptRecord, ...]:
         raise ValueError("Invalid child input-handler feedback")
     records.extend(TranscriptRecord(f"child-input-feedback:{index}", "system", "Extension input feedback",
                                    str(_safe(item))) for index, item in enumerate(feedback))
-    records.extend(message_records(messages, partial=value.get("partial")))
+    records.extend(_message_records(messages, partial=value.get("partial")))
     if isinstance(value.get("effective"), Mapping):
         records.append(TranscriptRecord("child-model", "system", "Effective child model/reasoning",
                                         json.dumps(_safe(value["effective"]), ensure_ascii=False, indent=2)))
