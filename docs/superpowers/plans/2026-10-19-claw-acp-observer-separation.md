@@ -43,7 +43,7 @@
 - `InputService.request_stop()->None` synchronously closes admission/signals actual consumers; async close joins them and only then closes storage.
 - Orchestrator initialization is one owned task, finishing all activation or closing failed resources before publishing its service.
 
-- [ ] Write real-store tests: namespace stable through reopen; same label/different workspace isolated; status/cursor/selected validation; no SQL writes/Agent construction during inspection; unsupported previous schema refused unchanged.
+- [x] Write real-store tests: namespace stable through reopen; same label/different workspace isolated; status/cursor/selected validation; no SQL writes/Agent construction during inspection; unsupported previous schema refused unchanged.
 
 ```python
 namespace = await store.bind_scope(scope)
@@ -53,10 +53,10 @@ assert rows[0]['message_id'] == 'one'
 assert await store.namespace(scope) == namespace
 ```
 
-- [ ] Run `uv run pytest packages/claw/tests/test_input_scope_status.py packages/claw/tests/test_input_start_stop.py -q -n 0`.
+- [x] Run `uv run pytest packages/claw/tests/test_input_scope_status.py packages/claw/tests/test_input_start_stop.py -q -n 0`.
   Expected: missing APIs then startup/early-stop boundary failures.
-- [ ] Implement new unreleased schema with scopes, no ALTER/upgrade branch; validate scopes before recovery. Add explicit early stop, preserve admitted disk work and full producer settlement.
-- [ ] Run all input tests, gateway shutdown and complete root suite; Ruff/strict8 mypy.
+- [x] Implement new unreleased schema with scopes, no ALTER/upgrade branch; validate scopes before recovery. Add explicit early stop, preserve admitted disk work and full producer settlement.
+- [x] Run all input tests, gateway shutdown and complete root suite; Ruff/strict8 mypy.
   Expected: pass; no new skips. Commit `feat(claw): expose authoritative input scope receipts`; task-done records input/start-stop tests.
 
 ### Task 2: Independently leased observer journal

@@ -17,16 +17,19 @@ from xdog.agent.async_work import wait_owned
 from xdog.claw.core.inputs.models import InputEnvelope, InputScope, decode_envelope, encode_envelope
 
 T = TypeVar('T')
-FORMAT = 'xdog.claw.inbox.v1'
+FORMAT = 'xdog.claw.inbox.v2'
 _INTERRUPTED = 'Execution interrupted; inspect prior effects before explicit retry'
 _STATES = frozenset({'pending', 'claimed', 'running', 'succeeded', 'failed', 'interrupted', 'cancelled'})
 _SCHEMA = '''
 CREATE TABLE metadata (format TEXT NOT NULL);
+CREATE TABLE scopes (group_id TEXT NOT NULL,workspace TEXT NOT NULL,
+    namespace TEXT NOT NULL UNIQUE CHECK(length(namespace)=32),PRIMARY KEY(group_id,workspace));
 CREATE TABLE inputs (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT, group_id TEXT NOT NULL, workspace TEXT NOT NULL,
     message_id TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL,
     attempt_id TEXT NOT NULL DEFAULT '', response TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '',
-    session_id TEXT NOT NULL DEFAULT '', UNIQUE(group_id, workspace, message_id));
+    session_id TEXT NOT NULL DEFAULT '', UNIQUE(group_id, workspace, message_id),
+    FOREIGN KEY(group_id,workspace) REFERENCES scopes(group_id,workspace));
 CREATE TABLE attempts (
     attempt_id TEXT PRIMARY KEY, sequence INTEGER NOT NULL REFERENCES inputs(sequence), status TEXT NOT NULL,
     response TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', session_id TEXT NOT NULL DEFAULT '');
@@ -74,6 +77,9 @@ def _select(db: sqlite3.Connection, scope: InputScope, identifier: str) -> sqlit
 def _validate_receipts(db: sqlite3.Connection) -> None:
     """Read-only validation must precede every recovery write, not repair facts."""
     db.row_factory = sqlite3.Row
+    for scope in db.execute('SELECT * FROM scopes'):
+        InputScope(scope['group_id'], Path(scope['workspace']))
+        uuid.UUID(hex=scope['namespace'])
     if db.execute('PRAGMA foreign_key_check').fetchone() is not None:
         raise ValueError('Input attempt refers to a missing receipt')
     for row in db.execute('SELECT * FROM inputs ORDER BY sequence'):
@@ -232,6 +238,44 @@ class InputStore:
         if count >= maximum:
             raise ValueError('Input capacity exceeded; no accepted message was dropped')
 
+    @staticmethod
+    def _bind_scope(db: sqlite3.Connection, scope: InputScope) -> str:
+        db.execute('INSERT OR IGNORE INTO scopes VALUES (?,?,?)',
+                   (scope.group_id, str(scope.workspace), uuid.uuid4().hex))
+        row = db.execute('SELECT namespace FROM scopes WHERE group_id=? AND workspace=?',
+                         (scope.group_id, str(scope.workspace))).fetchone()
+        return str(row[0])
+
+    async def bind_scope(self, scope: InputScope) -> str:
+        return await self._disk(lambda db: self._bind_scope(db, scope))
+
+    async def namespace(self, scope: InputScope) -> str:
+        def read(db: sqlite3.Connection) -> str:
+            row = db.execute('SELECT namespace FROM scopes WHERE group_id=? AND workspace=?',
+                             (scope.group_id, str(scope.workspace))).fetchone()
+            if row is None:
+                raise ValueError('Unknown registered input scope')
+            return str(row[0])
+        return await self._disk(read)
+
+    async def status(self, scope: InputScope, *, selected: str | None = None, cursor: int = 0,
+                     limit: int = 64) -> tuple[list[dict[str, object]], int | None]:
+        if (type(cursor) is not int or not 0 <= cursor < 2**53
+                or type(limit) is not int or not 1 <= limit <= 128
+                or selected is not None and (not isinstance(selected, str) or not selected.strip()
+                    or '\x00' in selected or len(selected.encode()) > 256 or cursor != 0)):
+            raise ValueError('Invalid input status selection or page')
+        def read(db: sqlite3.Connection) -> tuple[list[dict[str, object]], int | None]:
+            query = ('SELECT message_id,status,attempt_id,session_id,substr(error,1,1024) AS error '
+                     'FROM inputs WHERE group_id=? AND workspace=?')
+            args: list[object] = [scope.group_id, str(scope.workspace)]
+            if selected is not None:
+                query += ' AND message_id=?'
+                args.append(selected)
+            rows = db.execute(query + ' ORDER BY sequence LIMIT ? OFFSET ?', (*args, limit + 1, cursor)).fetchall()
+            return [dict(row) for row in rows[:limit]], cursor + limit if len(rows) > limit else None
+        return await self._disk(read)
+
     async def enqueue(self, envelope: InputEnvelope, *, max_pending: int | None = None) -> tuple[InputRecord, bool]:
         maximum = self.max_pending if max_pending is None else max_pending
         if type(maximum) is not int or not 1 <= maximum <= 4096:
@@ -246,6 +290,7 @@ class InputStore:
                     raise ValueError('Message ID already has different content or host routing')
                 return _record(row), True
             self._capacity(db, scope, maximum)
+            self._bind_scope(db, scope)
             db.execute("INSERT INTO inputs(group_id,workspace,message_id,payload,status) VALUES (?,?,?,?,'pending')",
                        (scope.group_id, str(scope.workspace), identifier, payload))
             return _record(_select(db, scope, identifier)), False

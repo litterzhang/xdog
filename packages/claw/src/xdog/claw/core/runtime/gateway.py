@@ -2383,14 +2383,14 @@ class GatewayServer:
         await wait_owned(task)
 
     async def _stop(self) -> None:
+        if self._orchestrator is not None:
+            self._orchestrator.request_stop()
         logger.info("Shutting down gateway...")
 
         # Stop producers before their shared ACP inbox/consumer resources.
         if self._observers is not None:
             await self._observers.close()
             self._observers = None
-        if self._orchestrator is not None:
-            self._orchestrator.set_observers(None)
         if self._goal_task and not self._goal_task.done():
             self._goal_task.cancel()
             try:
@@ -2422,6 +2422,8 @@ class GatewayServer:
 
         if self._orchestrator:
             await self._orchestrator.stop()
+            # Tool-context mutation is safe only after real execution settled.
+            self._orchestrator.set_observers(None)
 
         # Clean up socket and PID files
         try:

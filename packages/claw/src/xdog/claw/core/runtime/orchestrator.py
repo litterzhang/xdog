@@ -11,6 +11,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from xdog.agent.async_work import wait_owned
 from xdog.agent.core import CatalogStreamFn, ModelStreamFn
 from xdog.agent.extensions.command_result import ExtensionCommandResult
 from xdog.agent.mcp.completion import McpCompletion, request_arguments
@@ -85,6 +86,7 @@ class Orchestrator:
         self._chunker = BlockChunker()
         self._inputs: InputService | None = None
         self._input_lock = asyncio.Lock()
+        self._input_start_task: asyncio.Task[InputService] | None = None
         self._input_calls: dict[tuple[InputScope, str], _InputCall] = {}
         self._inputs_stopping = False
 
@@ -146,18 +148,44 @@ class Orchestrator:
     # -- Message routing -------------------------------------------------------
 
     async def input_service(self) -> InputService:
-        """Application ownership is independent of an ACP endpoint or TUI."""
+        """One owned initialization; a detached caller cannot publish half a service."""
         async with self._input_lock:
             if self._inputs_stopping:
                 raise RuntimeError('Claw application inputs are stopping')
-            if self._inputs is None:
-                store = await InputStore.open(self._data_dir / 'inputs' / 'inbox.sqlite3')
-                self._inputs = InputService(store, self._execute_input, on_settled=lambda _scope: self._goal_wake())
-                for group in self._runtimes:
-                    workspace = self.get_group_workspace(group)
-                    if workspace is not None:
-                        await self._inputs.activate(InputScope(group, workspace))
-            return self._inputs
+            if self._input_start_task is None:
+                self._input_start_task = asyncio.create_task(self._initialize_inputs(), name='claw-input-start')
+            opening = self._input_start_task
+        return await wait_owned(opening)
+
+    async def _initialize_inputs(self) -> InputService:
+        store = await InputStore.open(self._data_dir / 'inputs' / 'inbox.sqlite3')
+        service = InputService(store, self._execute_input, on_settled=lambda _scope: self._goal_wake())
+        scopes = [InputScope(group, workspace) for group in tuple(self._runtimes)
+                  if (workspace := self.get_group_workspace(group)) is not None]
+        try:
+            for scope in scopes:
+                await service.activate(scope, wake=False)
+            if self._inputs_stopping:
+                raise RuntimeError('Application stopped during input initialization')
+            self._inputs = service
+            for scope in scopes:
+                service.wake(scope)
+            return service
+        except BaseException:
+            await service.close()
+            raise
+
+    def request_stop(self) -> None:
+        """Fence intake and signal owned execution before transport cleanup waits."""
+        self._inputs_stopping = True
+        self._goal_closing = True
+        if self._inputs is not None:
+            self._inputs.request_stop()
+        elif self._input_start_task is not None and not self._input_start_task.done():
+            self._input_start_task.cancel()
+        for runtime in self._runtimes.values():
+            if runtime._active_session is not None:
+                runtime._active_session.children.supervisor.abort()
 
     async def _execute_input(self, record: InputRecord, admit: Admit) -> InputOutcome:
         scope, identifier = record.envelope.scope, record.envelope.message.id
@@ -1084,8 +1112,9 @@ class Orchestrator:
             await channel.connect()
 
     async def stop(self) -> None:
-        self._inputs_stopping = True
-        self._goal_closing = True
+        self.request_stop()
+        if self._input_start_task is not None:
+            await asyncio.gather(self._input_start_task, return_exceptions=True)
         goal_jobs = tuple(self._goal_jobs.values())
         for task in goal_jobs:
             task.cancel()

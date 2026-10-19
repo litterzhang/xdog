@@ -80,3 +80,23 @@ implicit Goal policies and native Goal UI are also pending removal. Optional
 standalone Goal, both real host adapters, shared extension views/UI and final
 nine-package/fresh-install/fresh-review gates remain required. None is claimed
 by this intermediate green checkpoint.
+
+## Scope/status and initialization follow-up
+
+The subsequent ACP/observer separation plan adds authoritative per-scope namespaces,
+bounded read-only status pages and explicit early application stop. Core schema is
+now `xdog.claw.inbox.v2`; a complete valid v1 schema is refused without modifying it.
+Namespace registration is explicit/app-owned and persists across owner reopen;
+inspection of an unknown scope neither creates one nor starts a model.
+
+Initialization is one owned task. All scopes prepare without starting consumers;
+only a fully ready service is published. Detached initialization callers still join
+real initialization. Failure releases the lease and leaves pending input unexecuted.
+Gateway stop signals actual producers before waiting for potentially blocked client
+cleanup; tool-context clearing follows actual execution settlement. True blocked
+transport and cancelled initialization tests cover these boundaries.
+
+Fresh follow-up:17 new boundary cases,99 targeted input/shutdown cases passed;
+whole root **6772 passed,34 skipped**, Claw1109 passed, all8 paths107.41s. Ruff
+packages and strict8 namespace mypy567 files passed. The legacy ACP receipt/observer
+bridge remains explicitly pending, not silently accepted as another authority.

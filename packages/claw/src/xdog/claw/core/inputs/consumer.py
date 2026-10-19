@@ -75,11 +75,13 @@ class InputService:
         return (scope in self._active or scope in self._faults
                 or any(owner == scope for owner, _identifier in self._pending))
 
-    async def activate(self, scope: InputScope) -> None:
+    async def activate(self, scope: InputScope, *, wake: bool = True) -> None:
+        await self.store.bind_scope(scope)
         for record in await self.store.records(scope):
             if record.status not in _TERMINAL:
                 self._pending.add((scope, record.envelope.message.id))
-        self.wake(scope)
+        if wake:
+            self.wake(scope)
 
     async def submit(self, envelope: InputEnvelope, *, max_pending: int | None = None) -> tuple[InputRecord, bool]:
         if self._closing:
@@ -244,9 +246,16 @@ class InputService:
             self._active.discard(scope)
             self._notify(scope)
 
+    def request_stop(self) -> None:
+        """Stop admission/signal real execution now; close joins before releasing IO."""
+        self._closing = True
+        for task in tuple(self._tasks.values()):
+            if not task.done() and not task.cancelling():
+                task.cancel()
+
     async def close(self) -> None:
         if self._close_task is None:
-            self._closing = True
+            self.request_stop()
             self._close_task = asyncio.create_task(self._close())
         await wait_owned(self._close_task)
 
