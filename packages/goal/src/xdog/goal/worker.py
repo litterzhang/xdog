@@ -49,11 +49,18 @@ class WorkerLifecycle:
                     raise ValueError("Previous actual worker is still running/settling")
             attempt = Attempt("a-" + uuid.uuid4().hex, assignment=assignment, access=access)
             task = replace(task, state="starting", attempts=(*task.attempts, attempt), acceptance=None)
-            goal = await s._save(goal, tasks=s._replace_task(goal, task), status="active", wait_reason="")
+            goal = await s._save(
+                goal,
+                tasks=s._replace_task(goal, task),
+                status="active",
+                wait_reason="",
+                artifacts=((f"assignment-context:{attempt.id}", {"version": goal.version + 1}),),
+            )
             prompt = (
-                f"Goal {goal.id}: {goal.outcome}\nCriteria: {goal.criteria!r}\n"
-                f"Task {task.id}: {task.description}\nAttempt {attempt.id}\n{assignment}\n"
-                "Use only your bound task_report capability. Submitted is not acceptance or Goal completion."
+                f"Goal {goal.id}; task {task.id}; attempt {attempt.id}. "
+                "The host supplies your bound original goal_context (contract, criteria and full assignment). "
+                "Use task_report for this attempt only; it cannot accept a task or complete a Goal. "
+                f"Task preview: {task.description[:1024]}\nAssignment preview: {assignment[:2048]}"
             )
             spec = WorkerSpec(goal.id, task.id, attempt.id, prompt, access)
         try:

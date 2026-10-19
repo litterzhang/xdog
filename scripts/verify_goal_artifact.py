@@ -38,7 +38,44 @@ async def main():
  finally:await s.close()
  print(json.dumps({'goal_only':'wheel-owned storage/history/notice recovery, no installed/imported hosts',
                    'model_calls':0,'path':str(root)}))
+async def lifecycle():
+ from agent_host import AgentHost
+ from xdog.goal.host import OperationContext
+ from xdog.goal.models import report_digest
+ from xdog.goal.service import GoalService
+ from xdog.agent.skills.manager import SkillManager
+ from xdog.goal.resources import skill_directory,role_instructions
+ root=Path.cwd();root.joinpath('result.txt').write_text('actual installed result')
+ owner=Owner('goal-only-lifecycle',root);host=AgentHost(owner)
+ service=GoalService(await GoalStore.open(root/'lifecycle-private'/'goal.sqlite3',owner),host)
+ host.service=service
+ try:
+  goal=await service.create('Portable','Inspect actual result',('Actual result is present',),
+                            context=OperationContext(True))
+  goal=await service.add_task(goal.id,'Read actual result')
+  goal=await service.assign(goal.id,goal.tasks[0].id,'Inspect and report actual file')
+  await host.wait(goal.tasks[0].attempts[-1].worker)
+  goal=await service.status(goal.id);task=goal.tasks[0];attempt=task.attempts[-1]
+  assert task.state=='submitted' and goal.status!='completed'
+  goal=await service.accept_task(goal.id,task.id,attempt.id,1,report_digest(attempt.reports[-1]),'Inspected')
+  goal=await service.request_complete(goal.id,paths=('result.txt',))
+  await host.wait(goal.review.worker)
+  goal=await service.reconcile(goal.id)
+  assert goal.status=='completed' and len(set(host.agent_ids))==2
+  await service.drain_notifications()
+  assert host.accepted and all(n.status=='accepted' for n in await service.store.notices())
+  view=await service.export_views(goal.id)
+  assert view.joinpath('status.json').is_file()
+  skill=SkillManager(root/'not-created',packaged={'goals':skill_directory()}).load_skill('goals')
+  assert skill is not None and skill.scope=='session' and not (root/'not-created').exists()
+  assert await role_instructions('worker') and await role_instructions('reviewer')
+  assert len(host.model_calls)==5
+  print(json.dumps({'goal_only_lifecycle':'real Agent/Supervisor/tool IO, explicit acceptance/independent review',
+                    'scripted_model_calls':len(host.model_calls),'distinct_agents':len(set(host.agent_ids))}))
+ finally:
+  await host.close();await service.close()
 asyncio.run(main())
+asyncio.run(lifecycle())
 """
 
 
@@ -59,10 +96,13 @@ def main() -> None:
     subprocess.run([uv, "pip", "install", "--python", str(python), *wheels], cwd=root, env=environment, check=True)
     work = root / "work"
     work.mkdir(mode=0o700)
+    # This copies the external consuming host, never Goal runtime source.
+    consumer_host = Path(__file__).parents[1] / "packages/goal/tests/agent_host.py"
+    (work / "agent_host.py").write_text(consumer_host.read_text())
     probe = work / "consumer.py"
     probe.write_text(PROBE)
     subprocess.run([str(python), str(probe)], cwd=work, env=environment, check=True, timeout=30)
-    result = {"root": str(root), "distribution": str(dist), "environment": str(target), "kernel_only": True}
+    result = {"root": str(root), "distribution": str(dist), "environment": str(target), "kernel_only": False}
     (root / "verification.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result, indent=2))
 

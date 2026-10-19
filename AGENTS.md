@@ -292,9 +292,13 @@ review snapshots, evidence artifacts and notification outbox. Owner/workspace is
 host-supplied, not tool JSON/provenance; wrong-owner/old-format/corrupt data is
 refused byte-preserving. Recovery interrupts started/unknown work, never starts
 an Agent or replays side effects. Workspace install/import enables no host/UI.
-The explicit service/role ports, real Claw/Coding adapter cutover and shared UI
-remain part of the active assistant-core goal; legacy Claw Goal is transitional,
-not a compatibility backend for this package.
+GoalService uses small async host ports, explicit task acceptance and independent
+review only on request_complete. Bound role tools read original history; Goal-local
+no-follow evidence fingerprints reject stale completion. Skills and derived views
+do not activate execution. See docs/goal-kernel-verification.md for the real SDK
+Supervisor and cold Goal-only lifecycle evidence. Real Claw/Coding adapter cutover
+and shared UI remain pending; legacy Claw Goal is transitional, not a compatibility
+backend for this package.
 
 ### `xdog.tui` and `xdog.site`
 

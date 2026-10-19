@@ -8,12 +8,14 @@ import logging
 import uuid
 from collections.abc import Callable, Coroutine
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, TypeVar
 
 from xdog.agent.async_work import wait_owned
 from xdog.goal.host import GoalHost, OperationContext, require_user
 from xdog.goal.models import Goal, Notice, Report, Task, WorkerRef, text
 from xdog.goal.notifications import drain
+from xdog.goal.review import ReviewLifecycle
 from xdog.goal.store import GoalStore
 from xdog.goal.worker import BoundReporter, WorkerLifecycle
 
@@ -41,6 +43,7 @@ class GoalService:
         self._closing = False
         self._close_task: asyncio.Task[None] | None = None
         self._workers = WorkerLifecycle(self)
+        self._reviews = ReviewLifecycle(self)
 
     def _owner(self) -> None:
         if self.host.owner != self.store.owner:
@@ -136,7 +139,15 @@ class GoalService:
         return await self._owned(commit())
 
     async def status(self, identifier: str) -> Goal:
-        return await self._get(identifier)
+        result = await self._get(identifier)
+        self._owner()
+        return result
+
+    async def list(self) -> tuple[Goal, ...]:
+        self._owner()
+        result = await self.store.list()
+        self._owner()
+        return result
 
     async def revise(
         self,
@@ -158,7 +169,7 @@ class GoalService:
                     outcome=outcome,
                     criteria=criteria,
                     criteria_revision=goal.criteria_revision + 1,
-                    review=None,
+                    review=replace(goal.review, state="invalid") if goal.review is not None else None,
                     status="paused" if goal.status == "paused" else "active",
                     wait_reason=reason,
                 )
@@ -237,8 +248,47 @@ class GoalService:
 
         return await self._owned(commit())
 
+    async def request_complete(self, identifier: str, *, paths: tuple[str, ...] = (), summary: str = "") -> Goal:
+        return await self._owned(self._reviews.request(identifier, paths, summary))
+
+    async def bind_reviewer(self, identifier: str, review_id: str, reference: WorkerRef) -> Goal:
+        return await self._owned(self._reviews.bind(identifier, review_id, reference))
+
+    async def cancel_review(self, identifier: str, reason: str) -> Goal:
+        return await self._owned(self._reviews.cancel(identifier, reason))
+
     async def reconcile(self, identifier: str) -> Goal:
-        return await self._owned(self._workers.reconcile(identifier))
+        async def facts() -> Goal:
+            await self._workers.reconcile(identifier)
+            return await self._reviews.reconcile(identifier)
+
+        return await self._owned(facts())
+
+    async def worker_context(self, identifier: str, task_id: str, attempt_id: str) -> Goal:
+        await self._get(identifier)
+        pointer = await self.store.artifact(identifier, "assignment-context:" + attempt_id)
+        if not isinstance(pointer, dict) or type(pointer.get("version")) is not int:
+            raise ValueError("Original worker contract unavailable; no current-context substitution")
+        original = await self.store.at_version(identifier, pointer["version"])
+        selected = self._task(original, task_id)
+        if not any(item.id == attempt_id for item in selected.attempts):
+            raise ValueError("Worker context belongs to another attempt")
+        return original
+
+    async def review_context(self, identifier: str, review_id: str) -> Goal:
+        await self._get(identifier)
+        pointer = await self.store.artifact(identifier, "review-context:" + review_id)
+        if not isinstance(pointer, dict) or type(pointer.get("version")) is not int:
+            raise ValueError("Original independent review contract unavailable")
+        original = await self.store.at_version(identifier, pointer["version"])
+        if original.review is None or original.review.id != review_id:
+            raise ValueError("Review context belongs to another execution")
+        return original
+
+    async def export_views(self, identifier: str) -> Path:
+        from xdog.goal.views import export
+
+        return await export(await self._get(identifier), self.store.owner.workspace)
 
     async def drain_notifications(self) -> None:
         await self._owned(drain(self))

@@ -205,6 +205,17 @@ class GoalStore:
             )
         )
 
+    async def at_version(self, identifier: str, version: int) -> Goal:
+        def read(db: sqlite3.Connection) -> Goal:
+            row = db.execute(
+                "SELECT payload FROM revisions WHERE goal_id=? AND version=?", (identifier, version)
+            ).fetchone()
+            if row is None:
+                raise ValueError("Unknown Goal contract version")
+            return decode_goal(row[0])
+
+        return await self._database.disk(read)
+
     async def put(
         self,
         goal: Goal,

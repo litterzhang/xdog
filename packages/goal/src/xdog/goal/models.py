@@ -209,7 +209,9 @@ class Review:
     def __post_init__(self) -> None:
         identity(self.id)
         number(self.criteria_revision)
-        state(self.state, {"starting", "running", "passed", "continue", "blocked", "interrupted", "invalid"})
+        state(
+            self.state, {"starting", "running", "passed", "continue", "blocked", "interrupted", "invalid", "cancelled"}
+        )
         text(self.fingerprint, empty=True, maximum=256)
         strings(self.paths)
         if self.worker is not None and not isinstance(self.worker, WorkerRef):

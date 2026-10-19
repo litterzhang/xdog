@@ -30,6 +30,7 @@ from xdog.ai.types import (
     Model,
     StreamOptions,
     SystemPrompt,
+    TextContent,
     ToolResultContentPart,
 )
 from xdog.ai.utils.event_stream import EventStream as AiEventStream
@@ -128,6 +129,13 @@ class AgentToolResult:
     content: tuple[ToolResultContentPart, ...] = ()
     details: Any = None
     is_error: bool = False
+
+    @classmethod
+    def from_text(cls, text: str, *, is_error: bool = False, details: Any = None) -> AgentToolResult:
+        """Return typed text through the Agent API, without exposing provider types."""
+        if not isinstance(text, str):
+            raise ValueError('Tool text result requires a string')
+        return cls(content=(TextContent(text=text),), is_error=is_error, details=details)
 
 
 AgentToolUpdateCallback = Callable[[AgentToolResult], Awaitable[None]]
