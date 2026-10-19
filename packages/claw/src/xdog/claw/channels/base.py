@@ -4,12 +4,14 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Awaitable, Callable
 
-from xdog.claw.core.types import GroupInput
+from xdog.claw.core.types import GroupInput, UserInput
 
 OnMessageCallback = Callable[[GroupInput], Awaitable[None]]
 
 class Channel(ABC):
     """Abstract base for messaging channels."""
+
+    _on_accept: OnMessageCallback | None = None
 
     @property
     @abstractmethod
@@ -38,3 +40,18 @@ class Channel(ABC):
 
     def set_on_message(self, callback: OnMessageCallback) -> None:
         self._on_message = callback
+
+    def set_on_accept(self, callback: OnMessageCallback) -> None:
+        """Bind lightweight application commit, independently of result display."""
+        self._on_accept = callback
+
+    async def send_reply(self, original: UserInput, text: str) -> None:
+        """Reply through the original live channel, not all group channels."""
+        await self.send_message(original.group_id, text)
+
+    def accepts_saved_reply(self, original: UserInput) -> bool:
+        """Opt in to restoring a persisted destination without a live connection.
+
+        A newly connected TUI must never inherit another connection's replies.
+        """
+        return False

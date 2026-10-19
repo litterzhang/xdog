@@ -127,18 +127,35 @@ class Orchestrator:
         """Add a messaging channel."""
         self._channels.append(channel)
 
-        async def _on_channel_message(message: GroupInput) -> None:
-            result = await self.route_message(
-                message,
-                on_assistant_message=partial(self._send_response, message.group_id),
-            )
-            if result is None:
-                return
-            group_id = message.group_id
-            if result.error:
-                await self._send_to_channels(group_id, f"Error: {result.error}")
+        async def accept(message: GroupInput) -> None:
+            await self.route_message(message, message_id=self._channel_message_id(message),
+                wait_for_result=False,
+                on_assistant_message=partial(self._send_channel_reply, channel, message),
+                on_execution_error=partial(self._send_channel_error, channel, message))
 
-        channel.set_on_message(_on_channel_message)
+        async def dispatch(message: GroupInput) -> None:
+            await self.route_message(message, message_id=self._channel_message_id(message),
+                reserved=self._channel_message_id(message) is not None,
+                on_assistant_message=partial(self._send_channel_reply, channel, message),
+                on_execution_error=partial(self._send_channel_error, channel, message))
+
+        channel.set_on_accept(accept)
+        channel.set_on_message(dispatch)
+
+    @staticmethod
+    def _channel_message_id(message: GroupInput) -> str | None:
+        identifier = message.metadata.get('channel_message_id')
+        return identifier if isinstance(identifier, str) and identifier else None
+
+    async def _send_channel_reply(self, channel: Channel, original: GroupInput, text: str) -> None:
+        for chunk in self._chunker.chunk(text) or [text]:
+            if isinstance(original, UserInput):
+                await channel.send_reply(original, chunk)
+            else:
+                await channel.send_message(original.group_id, chunk)
+
+    async def _send_channel_error(self, channel: Channel, original: GroupInput, error: str) -> None:
+        await self._send_channel_reply(channel, original, f'Error: {error}')
 
     def auto_register_group(self, group_id: str) -> None:
         """Auto-register a group on first message (e.g. from WeChat users)."""
@@ -232,6 +249,7 @@ class Orchestrator:
         if record.envelope.admission_key and call is None:
             raise ValueError('Original live admission binding unavailable; inspect before retry')
         options = dict(call.options) if call is not None else {}
+        on_error = options.pop('on_execution_error', None)
         display = options.get('on_display_event')
         if call is not None and display is not None:
             def publish(event: Any) -> None:
@@ -242,10 +260,21 @@ class Orchestrator:
             value = restore_input(record.envelope)
             for project in tuple(self._input_projectors):
                 value = await project(record, value)
+            if call is None and isinstance(value, UserInput) and record.envelope.reply is not None:
+                # Only explicitly restorable channels may bind recovered replies.
+                # In particular, a new TUI connection is never an old reply owner.
+                channels = [channel for channel in self._channels if channel.accepts_saved_reply(value)]
+                if len(channels) > 1:
+                    raise ValueError('Ambiguous saved channel reply binding')
+                if channels:
+                    options['on_assistant_message'] = partial(self._send_channel_reply, channels[0], value)
+                    on_error = partial(self._send_channel_error, channels[0], value)
             result = await self._execute_with_queue(value, admit=admit, **options)
             if result is None:
                 # A host fence explicitly refused this unstarted submission.
                 result = TurnResult(error='Host input admission was withdrawn')
+            if result.error and on_error is not None:
+                await on_error(result.error)
             if call is not None and not call.result.done():
                 call.result.set_result(result)
             return InputOutcome(response=result.response_text, error=result.error or '', session_id=result.session_id)
@@ -261,6 +290,8 @@ class Orchestrator:
         before_admission: Callable[[], Awaitable[bool]] | None = None,
         command_menu: CommandMenuHost | None = None, message_id: str | None = None,
         on_accepted: Callable[[], None] | None = None, reply_target: ReplyTarget | None = None,
+        wait_for_result: bool = True,
+        on_execution_error: Callable[[str], Awaitable[None]] | None = None,
     ) -> TurnResult | None:
         """Persist ordinary input before ACK; busy never implicitly means steering."""
         group_id = message.group_id
@@ -268,6 +299,8 @@ class Orchestrator:
             if group_id.startswith('weixin:'):
                 self.auto_register_group(group_id)
             else:
+                if not wait_for_result:
+                    raise ValueError(f'Cannot accept input for unknown group: {group_id}')
                 logger.warning('Message for unknown group: %s', group_id)
                 return None
         workspace = self.get_group_workspace(group_id)
@@ -285,13 +318,20 @@ class Orchestrator:
         if call is None:
             call = _InputCall(envelope, {'on_display_event': on_display_event, 'on_text_delta': on_text_delta,
                 'on_assistant_message': on_assistant_message, 'child_ui': child_ui, 'input_alive': input_alive,
-                'before_admission': before_admission, 'command_menu': command_menu},
+                'before_admission': before_admission, 'command_menu': command_menu,
+                'on_execution_error': on_execution_error},
                 asyncio.get_running_loop().create_future(), asyncio.Event())
             self._input_calls[key] = call
         try:
-            await service.submit(envelope, max_pending=self._runtimes[group_id].group.config.max_queued_messages)
+            record, _ = await service.submit(
+                envelope, max_pending=self._runtimes[group_id].group.config.max_queued_messages)
             if on_accepted is not None:
                 on_accepted()
+            if not wait_for_result:
+                if record.status in {'succeeded', 'failed', 'cancelled', 'interrupted'} and added:
+                    if self._input_calls.get(key) is call:
+                        self._input_calls.pop(key, None)
+                return None
             if busy and not reserved:
                 return None
             receipt = await service.wait(envelope.scope, identifier)

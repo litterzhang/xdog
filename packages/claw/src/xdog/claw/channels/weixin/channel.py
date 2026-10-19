@@ -6,6 +6,7 @@ long-poll monitoring (inbound) and sendMessage API (outbound).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -247,6 +248,7 @@ class WeixinChannel(Channel):
             state_dir=self._state_dir,
             cancel_event=self._cancel_event,
             on_message=self._on_inbound,
+            on_accept=self._accept_inbound if self._on_accept is not None else None,
             api_client=self._api_client,
         )
         self._monitor_task = asyncio.create_task(run_monitor(opts))
@@ -294,6 +296,24 @@ class WeixinChannel(Channel):
 
         context_token = get_context_token(self._account_id, real_user_id) or ""
 
+        await self._send_text(real_user_id, context_token, text)
+
+    def accepts_saved_reply(self, original: UserInput) -> bool:
+        return (original.channel == self.name and original.group_id == self._group_id
+                and original.metadata.get("account_id") == self._account_id)
+
+    async def send_reply(self, original: UserInput, text: str) -> None:
+        """Use the accepted sender/context, never mutable latest-recipient caches."""
+        if not self.accepts_saved_reply(original):
+            raise ValueError("Saved Weixin reply belongs to another account or group")
+        user_id = original.metadata.get("weixin_user_id")
+        context = original.metadata.get("context_token")
+        if not isinstance(user_id, str) or not user_id or user_id != original.sender or not isinstance(context, str):
+            raise ValueError("Invalid original Weixin reply binding")
+        if text:
+            await self._send_text(user_id, context, text)
+
+    async def _send_text(self, real_user_id: str, context_token: str, text: str) -> None:
         client_id = _generate_client_id()
         item_list = (
             MessageItem(
@@ -319,12 +339,12 @@ class WeixinChannel(Channel):
             logger.info(
                 "Sent message to %s (group=%s) client_id=%s",
                 real_user_id,
-                group_id,
+                self._group_id,
                 client_id,
             )
         except Exception:
             logger.exception(
-                "Failed to send message to %s (group=%s)", real_user_id, group_id
+                "Failed to send message to %s (group=%s)", real_user_id, self._group_id
             )
             raise
 
@@ -349,63 +369,52 @@ class WeixinChannel(Channel):
             await indicator.stop()
             logger.debug("Typing indicator stopped for group %s", group_id)
 
-    async def _on_inbound(self, msg: WeixinMessage) -> None:
-        """Handle an inbound WeixinMessage from the monitor."""
-        from_user_id = msg.from_user_id
-        if not from_user_id:
-            return
-
-        # Store context token
-        if msg.context_token:
-            set_context_token(self._account_id, from_user_id, msg.context_token)
-            # Persist periodically (every inbound message)
-            persist_context_tokens(self._state_dir, self._account_id)
-
-        # Extract text content
+    def _project_inbound(self, msg: WeixinMessage, *, durable: bool) -> UserInput | None:
+        """Pure projection: replay does not read clocks or mutable routing caches."""
         body = _body_from_item_list(msg.item_list)
         if not body:
-            logger.debug(
-                "Skipping non-text message from %s (no extractable body)",
-                from_user_id,
-            )
-            return
+            return None  # Unsupported media is not acknowledged as an Agent input.
+        if not msg.from_user_id:
+            raise ValueError("Weixin input requires an original sender")
+        metadata = {"account_id": self._account_id, "weixin_user_id": msg.from_user_id,
+                    "context_token": msg.context_token}
+        if durable:
+            if type(msg.message_id) is int and msg.message_id > 0:
+                upstream = ["message", str(msg.message_id)]
+            elif isinstance(msg.client_id, str) and msg.client_id.strip():
+                upstream = ["client", msg.client_id]
+            else:
+                raise ValueError("Durable Weixin input requires a stable upstream message identity")
+            identity = json.dumps([self._account_id, msg.from_user_id, *upstream], ensure_ascii=True)
+            metadata["channel_message_id"] = "weixin-" + hashlib.sha256(identity.encode()).hexdigest()
+        return UserInput(group_id=self._group_id, sender=msg.from_user_id, content=body,
+                         timestamp=msg.create_time_ms / 1000.0, channel=self.name, metadata=metadata)
 
-        # The bound conversation, not one derived from who is speaking.
-        group_id = self._group_id
-        # Remember where a reply goes. Updated on every message, not only the
-        # first: with one group serving a channel, the reply belongs to whoever
-        # just spoke. A change of peer is logged rather than silent — on a
-        # personal bot it means someone else reached it, and that is worth
-        # seeing in the journal instead of inferring from a stray answer.
+    async def _accept_inbound(self, msg: WeixinMessage) -> None:
+        """Commit to the application's sole Inbox before the upstream cursor."""
+        if self._on_accept is not None:
+            inbound = self._project_inbound(msg, durable=True)
+            if inbound is not None:
+                await self._on_accept(inbound)
+
+    async def _on_inbound(self, msg: WeixinMessage) -> None:
+        """Serial presentation/result wait; disconnect never owns Agent execution."""
+        inbound = self._project_inbound(msg, durable=self._on_accept is not None)
+        if inbound is None:
+            return
+        from_user_id, group_id = inbound.sender, inbound.group_id
+        if msg.context_token:
+            set_context_token(self._account_id, from_user_id, msg.context_token)
+            persist_context_tokens(self._state_dir, self._account_id)
         previous = self._user_id_map.get(group_id)
         if previous != from_user_id:
-            if previous is not None:
-                logger.info(
-                    "group %s: replies now go to %s (was %s)",
-                    group_id, from_user_id, previous,
-                )
+            # Retained only for explicit unsolicited group sends. Input replies
+            # use send_reply's immutable binding, never this convenience map.
             self._user_id_map[group_id] = from_user_id
             _save_user_id_map(self._state_dir, self._account_id, self._user_id_map)
-
-        # Start typing indicator before dispatching to orchestrator
-        await self._start_typing(group_id, from_user_id, msg.context_token or "")
-
-        inbound = UserInput(
-            group_id=group_id,
-            sender=from_user_id,
-            content=body,
-            timestamp=msg.create_time_ms / 1000.0 if msg.create_time_ms else time.time(),
-            channel="weixin",
-            metadata={
-                "account_id": self._account_id,
-                "weixin_user_id": from_user_id,
-                "context_token": msg.context_token,
-            },
-        )
-
         if hasattr(self, "_on_message"):
             try:
+                await self._start_typing(group_id, from_user_id, msg.context_token)
                 await self._on_message(inbound)
             finally:
-                # Ensure typing is cancelled even if orchestrator errors
                 await self._stop_typing(group_id)
