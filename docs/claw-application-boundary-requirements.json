@@ -1,13 +1,13 @@
 {
   "objective": "将Claw收口为应用，移除独立公共Python SDK设计但不破坏产品功能",
-  "status": "active",
+  "status": "complete",
   "total": 5,
-  "remaining": 1,
+  "remaining": 0,
   "counts": {
     "待实现": 0,
-    "待验证": 1,
+    "待验证": 0,
     "缺外部环境": 0,
-    "已完成": 4,
+    "已完成": 5,
     "延期": 0
   },
   "requirements": [
@@ -57,7 +57,7 @@
       "id": "CA-05",
       "title": "提交推送",
       "acceptance": "显式分离前置已完成Goal和本次改动；只stage已核查文件，正常push并验证远端SHA；不发布/tag/重启。",
-      "status": "待验证",
+      "status": "已完成",
       "evidence": [
         "/tmp/xdog-claw-application-boundary/prerequisite-staged-files.json"
       ]
@@ -94,5 +94,21 @@
     "unrelated_preserved": 9,
     "non_linux_native": "not performed",
     "real_wechat_live": "not performed; offline channel regressions passed"
+  },
+  "delivery": {
+    "prerequisite_commit": "52d132f4edaeff114a48b276edf06c5a2b02057a",
+    "application_commit": "55d6ec48d43badd31f873c8a6ff737f61de78558",
+    "remote_main_implementation_sha_verified": "55d6ec48d43badd31f873c8a6ff737f61de78558",
+    "remote": "origin",
+    "branch": "main",
+    "force_push": false,
+    "tagged": false,
+    "published": false,
+    "services_restarted": false,
+    "unrelated_dirty_preserved": [
+      "docs/agent-ui-features.md",
+      "workflows/"
+    ],
+    "acceptance_record": "此交付记录将在单独的docs提交推送；最终文档提交SHA在执行证据及最终报告记录，避免文件自引用。"
   }
 }
