@@ -440,3 +440,23 @@ async def test_settled_hint_runs_after_durable_result_and_cannot_replay_or_poiso
         assert calls == ['one', 'two'] and seen == [value.scope, value.scope]
     finally:
         await service.close()
+
+
+async def test_bootstrap_pause_preserves_intake_without_model_work_until_capabilities_are_ready(tmp_path):
+    from xdog.claw.core.inputs.consumer import InputOutcome, InputService
+    calls = []
+    async def execute(record, admit):
+        await admit()
+        calls.append(record.envelope.message.id)
+        return InputOutcome(response='ready')
+    store = await InputStore.open(tmp_path / 'private' / 'inputs.sqlite3')
+    service = InputService(store, execute, paused=True)
+    item = envelope(tmp_path)
+    try:
+        await service.submit(item)
+        assert (await store.get(item.scope, 'one')).status == 'pending' and not calls
+        service.resume()
+        assert (await asyncio.wait_for(service.wait(item.scope, 'one'), 2)).status == 'succeeded'
+        assert calls == ['one']
+    finally:
+        await service.close()

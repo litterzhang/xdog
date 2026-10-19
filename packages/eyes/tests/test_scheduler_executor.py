@@ -307,6 +307,7 @@ async def test_scheduler_enqueue_reaches_existing_claw_group_without_tui(tmp_pat
     from xdog.ai.utils.event_stream import EventStream
     from xdog.claw.acp.server import ClawAcpServer
     from xdog.claw.config import ClawConfig
+    from xdog.claw.core.inputs.models import InputScope
     from xdog.claw.core.runtime.orchestrator import Orchestrator
     from xdog.claw.core.types import Group, GroupConfig
     from xdog.eyes.local_control import runtime_location
@@ -322,8 +323,7 @@ async def test_scheduler_enqueue_reaches_existing_claw_group_without_tui(tmp_pat
     orch.register_group(Group(id='main', workspace=str(tmp_path), enabled_tools=(),
                               config=GroupConfig(debounce_ms=0)))
     with tempfile.TemporaryDirectory(prefix='eyes-claw-timer-') as private:
-        server = await ClawAcpServer.start(orch, Path(private) / 'acp.sock',
-                                          tmp_path / 'claw-inbox' / 'messages.sqlite3')
+        server = await ClawAcpServer.start(orch, Path(private) / 'acp.sock')
         wall = [timestamp('2030-01-01T00:00:00Z')]
         data = definition(observer_data, {'at': '2030-01-01T00:00:01Z'})
         data['handlers'][0].update(connection={'transport': 'unix', 'path': str(server.path)},
@@ -335,12 +335,12 @@ async def test_scheduler_enqueue_reaches_existing_claw_group_without_tui(tmp_pat
             wall[0] += 2
             async with asyncio.timeout(5):
                 while True:
-                    rows = await server.backend.inbox.records('main', tmp_path)
+                    rows = await server.backend.inputs.store.records(InputScope('main', tmp_path))
                     if rows and rows[0].status == 'succeeded':
                         break
                     await asyncio.sleep(.01)
             assert len(rows) == 1 and len(calls) == 1
-            assert rows[0].message.evidence[0]['type'] == 'scheduler.due'
+            assert rows[0].envelope.message.evidence[0]['type'] == 'scheduler.due'
             assert rows[0].session_id == orch.get_new_session_id('main')
         finally:
             if identifier is not None:

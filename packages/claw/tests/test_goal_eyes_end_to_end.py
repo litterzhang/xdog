@@ -7,6 +7,7 @@ import threading
 import pytest
 from xdog.ai.types import AssistantMessage, DoneEvent, TextContent, ToolCall
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.core.inputs.models import InputScope
 from xdog.claw.core.types import GoalStatus, TaskStatus
 
 from packages.claw.tests.eyes_helpers import managed as managed
@@ -83,7 +84,7 @@ async def test_worker_report_wakes_only_group_main_then_gate_accepts_and_reports
         assignment = await manager.assign(session, goal.id, goal.tasks[0].id)
         observer = manager.owned('g1', goal.id).observer_id
         await watching(managed, observer)
-        assert not await managed.server.backend.inbox.records('g1', runtime.workspace_dir)
+        assert not await managed.server.backend.inputs.store.records(InputScope('g1', runtime.workspace_dir))
         if observer_ack_lost:
             # The observer journal committed, but the Goal's acknowledgement did
             # not. Its trusted owner still binds the first original-ID delivery.
@@ -96,8 +97,8 @@ async def test_worker_report_wakes_only_group_main_then_gate_accepts_and_reports
         current = manager.owned('g1', goal.id)
         assert current.tasks[0].status == TaskStatus.COMPLETED
         assert current.status == GoalStatus.ACTIVE
-        records = await managed.server.backend.inbox.records('g1', runtime.workspace_dir)
-        assert len(records) == 1 and records[0].message.source == 'Eyes'
+        records = await managed.server.backend.inputs.store.records(InputScope('g1', runtime.workspace_dir))
+        assert len(records) == 1 and records[0].envelope.message.source == 'Eyes'
         await until(lambda: not session.children.supervisor.capture_source(assignment['agent_id']).settling)
         await until(lambda: not managed.orch.is_group_running('g1'))
         managed.channel.send_message.assert_not_awaited()

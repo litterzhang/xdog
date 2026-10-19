@@ -14,10 +14,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 from xdog.agent.session_input import SessionInput
-from xdog.claw.acp.inbox import GroupInbox
+from xdog.claw.core.inputs.models import InputScope
+from xdog.claw.core.inputs.store import InputStore
+from xdog.claw.core.observers.journal import ObserverJournal
 from xdog.claw.core.observers.manager import ManagedObservers
-from xdog.claw.core.observers.store import ObserverStopped, ObserverStore
+from xdog.claw.core.observers.models import ObserverStopped
 
+from packages.claw.tests.core_inputs import external_envelope
 from packages.claw.tests.eyes_helpers import at
 from packages.claw.tests.eyes_helpers import managed as managed
 
@@ -73,9 +76,9 @@ async def test_default_policy_is_unowned_broadcast_and_file_is_not_auto_restored
     assert record.owner == created["owner"] == ""
     assert record.notify_only is created["notify_only"] is False
     assert record.recovery == "ephemeral"
-    columns, policy = await managed.server.backend.inbox._disk(lambda db: (
-        {row[1]: row[2] for row in db.execute("PRAGMA table_info(managed_observers)")},
-        tuple(db.execute("SELECT owner,notify_only FROM managed_observers WHERE observer_id=?",
+    columns, policy = await managed.manager.store._disk(lambda db: (
+        {row[1]: row[2] for row in db.execute("PRAGMA table_info(observers)")},
+        tuple(db.execute("SELECT owner,notify_only FROM observers WHERE observer_id=?",
                          (record.id,)).fetchone()),
     ))
     assert columns["owner"] == "TEXT" and columns["notify_only"] == "INTEGER"
@@ -108,12 +111,13 @@ async def test_owned_file_explicit_restore_retains_identity_and_executes_without
     path.write_text('{"revision":2}')
     status = await settled(managed, original.id)
     row, = status["occurrences"]
-    receipt = await managed.server.backend.inbox.get("g1", original.cwd, row["message_id"])
+    receipt = await managed.server.backend.inputs.store.get(InputScope("g1", original.cwd), row["message_id"])
     assert receipt is not None and receipt.status == "succeeded" and receipt.response == "Scheduled report"
     assert row["started"] == 1 and row["receipt_status"] == "accepted"
     assert row["delivery_status"] == "not-required"
     assert managed.model.calls == ["reconcile task"]
-    assert await managed.server.backend.inbox.records("g2", managed.orch.get_group_workspace("g2")) == ()
+    other_scope = InputScope("g2", managed.orch.get_group_workspace("g2"))
+    assert await managed.server.backend.inputs.store.records(other_scope) == ()
     managed.channel.send_message.assert_not_awaited()
 
 
@@ -121,11 +125,11 @@ async def test_owned_file_explicit_restore_retains_identity_and_executes_without
 async def test_owned_terminal_files_cannot_be_reenabled_by_resume_or_duplicate_create(managed, terminal):
     created, path = await create_file(managed, owner=OWNER, notify_only=True)
     original = await managed.record(created["id"])
-    await managed.manager.close()
     if terminal == "cancelled":
         await managed.manager.store.cancel("g1", original.cwd, original.id)
     else:
         await managed.manager.store.fail(original, "inspect interrupted task effects", review=True)
+    await managed.manager.close()
     await managed.restart()
     before = await managed.record(original.id)
     status = await managed.manager.resume_owned("g1", original.id, owner=OWNER)
@@ -170,7 +174,7 @@ async def test_existing_name_and_stale_store_record_cannot_change_owner_policy(m
         await managed.manager.store.create("g1", original.cwd, original.name, original.definition,
                                            recovery="ephemeral", **policy)
     stale = replace(original, **changed_policy)
-    with pytest.raises(ObserverStopped, match="cancelled or changed"):
+    with pytest.raises(ObserverStopped, match="stopped or changed"):
         await managed.manager.store.save(stale, {"cursor": "must not commit"})
     assert await managed.record(original.id) == original
 
@@ -201,8 +205,8 @@ async def test_host_notify_policy_not_forged_provenance_controls_real_acp_delive
                           "evidence": [], "provenance": message.provenance})
     status = await settled(managed, record.id)
     row, = status["occurrences"]
-    receipt = await managed.server.backend.inbox.get("g1", record.cwd, message.id)
-    assert receipt is not None and receipt.message == message and receipt.status == "succeeded"
+    receipt = await managed.server.backend.inputs.store.get(InputScope("g1", record.cwd), message.id)
+    assert receipt is not None and receipt.envelope.message == message and receipt.status == "succeeded"
     assert row["delivery_status"] == ("not-required" if notify_only else "delivered")
     assert managed.model.calls == ["reconcile task"]
     assert await managed.manager.store.occurrence(receipt) is not None
@@ -228,14 +232,14 @@ async def test_owned_cursor_and_outbox_commit_roll_back_together(managed):
     created, _ = await create_file(managed, owner=OWNER, notify_only=True)
     record = await managed.record(created["id"])
     message = SessionInput("atomic-obligation", "acp", "Eyes", "reconcile task", (), {})
-    await managed.server.backend.inbox._disk(lambda db: db.execute(
-        "CREATE TRIGGER refuse_goal_cursor BEFORE UPDATE ON managed_observers "
+    await managed.manager.store._disk(lambda db: db.execute(
+        "CREATE TRIGGER refuse_goal_cursor BEFORE UPDATE ON observers "
         "BEGIN SELECT RAISE(ABORT, 'goal cursor disk failure'); END"))
     try:
         with pytest.raises(sqlite3.IntegrityError, match="goal cursor disk failure"):
             await managed.manager.store.save(record, {"cursor": "new", "pending": {"id": message.id}}, (message,))
     finally:
-        await managed.server.backend.inbox._disk(lambda db: db.execute("DROP TRIGGER refuse_goal_cursor"))
+        await managed.manager.store._disk(lambda db: db.execute("DROP TRIGGER refuse_goal_cursor"))
     assert await managed.record(record.id) == record
     assert await managed.manager.store.message(record, message.id) is None
     assert (await managed.manager.status("g1", record.id))["occurrences"] == ()
@@ -260,7 +264,7 @@ async def saved_pending_before_intake(harness, monkeypatch, *, notify_only=True)
         assert pending is not None
         canonical = await harness.manager.store.message(before, pending["id"])
         assert canonical is not None
-        assert await harness.server.backend.inbox.get("g1", before.cwd, pending["id"]) is None
+        assert await harness.server.backend.inputs.store.get(InputScope("g1", before.cwd), pending["id"]) is None
         assert not harness.model.calls
         await harness.restart()
     assert before.id not in harness.manager._files
@@ -282,20 +286,20 @@ async def test_owned_file_pending_before_intake_survives_explicit_restore_and_ne
     await watching(managed, identifier)
 
     async def delivered_original():
-        receipt = await managed.server.backend.inbox.get("g1", before.cwd, message_id)
+        receipt = await managed.server.backend.inputs.store.get(InputScope("g1", before.cwd), message_id)
         return receipt if receipt is not None and receipt.status == "succeeded" else None
 
     try:
         receipt = await managed.until(delivered_original)
     except TimeoutError:
         current = await managed.record(identifier)
-        receipt = await managed.server.backend.inbox.get("g1", before.cwd, message_id)
+        receipt = await managed.server.backend.inputs.store.get(InputScope("g1", before.cwd), message_id)
         pytest.fail(
             f"Saved obligation was not recovered: message_id={message_id}, "
             f"pending_preserved={current.state.get('pending') == pending}, "
             f"inbox_receipt={receipt}, model_calls={managed.model.calls}", pytrace=False,
         )
-    assert receipt.message == canonical
+    assert receipt.envelope.message == canonical
     assert managed.model.calls == ["reconcile task"]
     status = await settled(managed, identifier)
     assert [row["message_id"] for row in status["occurrences"]] == [message_id]
@@ -339,12 +343,15 @@ async def test_owned_file_explicit_restore_fresh_baselines_then_accepts_live_cha
 
 @pytest.fixture
 async def owned_store(tmp_path):
-    """Real leased inbox for field/transaction tests independent of Goal startup."""
-    inbox = await GroupInbox.open(tmp_path / "owned-private" / "inbox.sqlite3")
+    """Separate real leases for input facts and capability state."""
+    core = await InputStore.open(tmp_path / 'owned-core' / 'inputs.sqlite3')
+    await core.bind_scope(InputScope('g1', tmp_path))
+    journal = await ObserverJournal.open(tmp_path / 'owned-observers' / 'state.sqlite3', core)
     try:
-        yield ObserverStore(inbox), inbox, tmp_path
+        yield journal, core, tmp_path
     finally:
-        await inbox.close()
+        await journal.close()
+        await core.close()
 
 
 @pytest.mark.parametrize("policy", [
@@ -358,22 +365,16 @@ async def test_store_owner_and_notify_only_are_strictly_typed(owned_store, polic
     assert await store.list() == ()
 
 
-async def test_store_adds_policy_defaults_to_legacy_observer_schema(owned_store):
-    store, inbox, cwd = owned_store
-    original = await store.create("g1", cwd, "ordinary-file", {}, recovery="ephemeral")
-    await inbox._disk(lambda db: (
-        db.execute("ALTER TABLE managed_observers DROP COLUMN owner"),
-        db.execute("ALTER TABLE managed_observers DROP COLUMN notify_only"),
-    ))
-    await inbox.close()
-    reopened = await GroupInbox.open(inbox.path)
-    try:
-        assert await ObserverStore(reopened).get("g1", cwd, original.id) == original
-        columns = await reopened._disk(lambda db: {row[1] for row in db.execute(
-            "PRAGMA table_info(managed_observers)")})
-        assert {"owner", "notify_only"} <= columns
-    finally:
-        await reopened.close()
+async def test_store_refuses_missing_policy_schema_without_migration(owned_store):
+    store, core, cwd = owned_store
+    await store.create('g1', cwd, 'ordinary-file', {}, recovery='ephemeral')
+    await store._disk(lambda db: (db.execute('ALTER TABLE observers DROP COLUMN owner'),
+                                 db.execute('ALTER TABLE observers DROP COLUMN notify_only')))
+    await store.close()
+    original = store.path.read_bytes()
+    with pytest.raises(ValueError, match='Unsupported'):
+        await ObserverJournal.open(store.path, core)
+    assert store.path.read_bytes() == original
 
 
 async def test_store_owned_policy_and_cursor_pending_survive_receiver_reopen(owned_store):
@@ -383,21 +384,23 @@ async def test_store_owned_policy_and_cursor_pending_survive_receiver_reopen(own
     message = SessionInput("saved-obligation", "acp", "Eyes", "reconcile task", (), {})
     checkpoint = {"cursor": {"revision": 7}, "pending": {"id": message.id, "data": "immutable evidence"}}
     await store.save(original, checkpoint, (message,))
-    with pytest.raises(ValueError, match="unfinished managed outbox"):
+    with pytest.raises(ValueError, match="unfinished"):
         await store.save(original, {"cursor": {"revision": 7}, "pending": None})
-    assert await inbox.get("g1", cwd, message.id) is None
+    assert await inbox.get(InputScope("g1", cwd), message.id) is None
+    await store.close()
     await inbox.close()
-    reopened = await GroupInbox.open(inbox.path)
+    reopened = await InputStore.open(inbox.path)
     try:
-        restored_store = ObserverStore(reopened)
+        restored_store = await ObserverJournal.open(store.path, reopened)
         restored = await restored_store.get("g1", cwd, original.id)
         assert restored == replace(original, state=checkpoint)
         assert restored.owner == OWNER and restored.notify_only is True
         assert await restored_store.message(restored, message.id) == message
         assert await restored_store.get("g2", cwd, original.id) is None
         assert await restored_store.get("g1", cwd / "different", original.id) is None
-        assert await reopened.get("g1", cwd, message.id) is None
+        assert await reopened.get(InputScope("g1", cwd), message.id) is None
     finally:
+        await restored_store.close()
         await reopened.close()
 
 
@@ -409,7 +412,7 @@ async def test_store_fences_stale_owner_policy_and_revision_before_outbox_commit
     original = await store.create("g1", cwd, "goal-file", {}, owner=OWNER, notify_only=True,
                                    recovery="ephemeral")
     message = SessionInput("do-not-commit", "acp", "Eyes", "reconcile task", (), {})
-    with pytest.raises(ObserverStopped, match="cancelled or changed"):
+    with pytest.raises(ObserverStopped, match="stopped or changed"):
         await store.save(replace(original, **forged), {"pending": {"id": message.id}}, (message,))
     assert await store.get("g1", cwd, original.id) == original
     assert await store.message(original, message.id) is None
@@ -423,16 +426,19 @@ async def test_store_recovery_requeues_only_unstarted_owned_execution(owned_stor
     message = SessionInput("owned-execution", "acp", "Eyes", "reconcile task", (), {})
     checkpoint = {"cursor": {"revision": 3}, "pending": {"id": message.id}}
     await store.save(observer, checkpoint, (message,))
-    await inbox.enqueue("g1", cwd, message)
-    claimed = await inbox.claim("g1", cwd)
+    await inbox.enqueue(external_envelope("g1", cwd, message))
+    claimed = await inbox.claim(InputScope("g1", cwd))
     assert claimed is not None
     if started:
-        assert await store.admit(claimed)
+        await inbox.start(claimed)
+    await store.sync(observer)
+    await store.close()
     await inbox.close()
-    reopened = await GroupInbox.open(inbox.path)
+    reopened = await InputStore.open(inbox.path)
     try:
-        restored_store = ObserverStore(reopened)
-        receipt = await reopened.get("g1", cwd, message.id)
+        restored_store = await ObserverJournal.open(store.path, reopened)
+        await restored_store.sync(observer)
+        receipt = await reopened.get(InputScope("g1", cwd), message.id)
         assert receipt.status == ("interrupted" if started else "pending")
         restored = await restored_store.get("g1", cwd, observer.id)
         assert restored.owner == OWNER and restored.notify_only is True
@@ -440,11 +446,12 @@ async def test_store_recovery_requeues_only_unstarted_owned_execution(owned_stor
         assert restored.enabled is (not started)
         assert restored.recovery == ("needs_review" if started else "ephemeral")
         if started:
-            assert await reopened.claim("g1", cwd) is None
+            assert await reopened.claim(InputScope("g1", cwd)) is None
         else:
-            retried = await reopened.claim("g1", cwd)
-            assert retried.message == message and retried.attempt_id != claimed.attempt_id
+            retried = await reopened.claim(InputScope("g1", cwd))
+            assert retried.envelope.message == message and retried.attempt_id != claimed.attempt_id
     finally:
+        await restored_store.close()
         await reopened.close()
 
 
@@ -457,12 +464,12 @@ async def test_owned_file_execution_commit_before_silent_delivery_never_replays_
 
     created, path = await create_file(managed, owner=OWNER, notify_only=True)
     with monkeypatch.context() as patch:
-        patch.setattr(managed.server.backend, "_report_managed", before_report)
+        patch.setattr(managed.manager, "_report", before_report)
         path.write_text('{"revision":2}')
         await asyncio.wait_for(reached.wait(), 3)
         record = await managed.record(created["id"])
         message_id = record.state["pending"]["id"]
-        receipt = await managed.server.backend.inbox.get("g1", record.cwd, message_id)
+        receipt = await managed.server.backend.inputs.store.get(InputScope("g1", record.cwd), message_id)
         assert receipt.status == "succeeded"
         row, = (await managed.manager.status("g1", record.id))["occurrences"]
         assert row["started"] == 1 and row["delivery_status"] == "pending"
@@ -474,7 +481,7 @@ async def test_owned_file_execution_commit_before_silent_delivery_never_replays_
     await watching(managed, record.id)
     await managed.flush()
     assert managed.model.calls == ["reconcile task"]
-    assert len(await managed.server.backend.inbox.records("g1", record.cwd)) == 1
+    assert len(await managed.server.backend.inputs.store.records(InputScope("g1", record.cwd))) == 1
     managed.channel.send_message.assert_not_awaited()
 
 
@@ -509,7 +516,7 @@ async def test_owned_scheduler_policy_uses_real_inbox_but_cannot_resume_as_file(
     managed.clock.advance(240)
     status = await managed.completed(before.id)
     row, = status["occurrences"]
-    receipt = await managed.server.backend.inbox.get("g1", before.cwd, row["message_id"])
+    receipt = await managed.server.backend.inputs.store.get(InputScope("g1", before.cwd), row["message_id"])
     assert receipt is not None and receipt.status == "succeeded"
     assert row["delivery_status"] == ("not-required" if notify_only else "delivered")
     assert status["owner"] == OWNER and status["notify_only"] is notify_only
@@ -553,18 +560,18 @@ async def review_required(harness, identifier):
 
 async def test_owned_pending_namespace_change_never_enqueues_to_new_inbox(managed, monkeypatch):
     before, _, pending, canonical = await saved_pending_before_intake(managed, monkeypatch)
-    await managed.server.backend.inbox._disk(lambda db: db.execute(
-        "UPDATE scopes SET namespace='different-namespace' WHERE group_id=? AND cwd=?",
+    await managed.server.backend.inputs.store._disk(lambda db: db.execute(
+        "UPDATE scopes SET namespace='ffffffffffffffffffffffffffffffff' WHERE group_id=? AND workspace=?",
         ("g1", str(before.cwd)),
     ))
-    enqueue = AsyncMock(wraps=managed.server.backend._enqueue)
-    monkeypatch.setattr(managed.server.backend, "_enqueue", enqueue)
+    enqueue = AsyncMock(wraps=managed.orch.accept_external)
+    monkeypatch.setattr(managed.orch, "accept_external", enqueue)
     await managed.manager.resume_owned("g1", before.id, owner=OWNER)
     current = await review_required(managed, before.id)
     enqueue.assert_not_awaited()
     assert current.state["pending"] == pending
     assert await managed.manager.store.message(before, pending["id"]) == canonical
-    assert await managed.server.backend.inbox.get("g1", before.cwd, pending["id"]) is None
+    assert await managed.server.backend.inputs.store.get(InputScope("g1", before.cwd), pending["id"]) is None
     assert before.id not in managed.manager._files
     assert not managed.model.calls
     managed.channel.send_message.assert_not_awaited()
@@ -581,8 +588,8 @@ async def test_owned_pending_must_match_immutable_canonical_outbox(managed, monk
     else:
         corrupt["events"][0]["evidence"][0]["after"]["digest"] = "f" * 64
     await managed.manager.store.save(before, {"pending": corrupt})
-    enqueue = AsyncMock(wraps=managed.server.backend._enqueue)
-    monkeypatch.setattr(managed.server.backend, "_enqueue", enqueue)
+    enqueue = AsyncMock(wraps=managed.orch.accept_external)
+    monkeypatch.setattr(managed.orch, "accept_external", enqueue)
     await managed.manager.resume_owned("g1", before.id, owner=OWNER)
     try:
         current = await review_required(managed, before.id)
@@ -596,7 +603,7 @@ async def test_owned_pending_must_match_immutable_canonical_outbox(managed, monk
     enqueue.assert_not_awaited()
     assert current.state["pending"] == corrupt
     assert await managed.manager.store.message(before, canonical.id) == canonical
-    assert await managed.server.backend.inbox.get("g1", before.cwd, canonical.id) is None
+    assert await managed.server.backend.inputs.store.get(InputScope("g1", before.cwd), canonical.id) is None
     assert before.id not in managed.manager._files
     assert not managed.model.calls
 
@@ -609,15 +616,15 @@ async def test_owned_running_receipt_is_waited_not_reenqueued_or_reexecuted(mana
     await asyncio.wait_for(entered.wait(), 3)
     before = await managed.record(created["id"])
     message_id = before.state["pending"]["id"]
-    receipt = await managed.server.backend.inbox.get("g1", before.cwd, message_id)
+    receipt = await managed.server.backend.inputs.store.get(InputScope("g1", before.cwd), message_id)
     assert receipt.status == "running"
     # Stop collection only: the original admitted Agent turn remains alive.
     # Exercise manager recovery without rebinding an active Agent's tool context.
     await managed.manager.close()
-    managed.manager = ManagedObservers(managed.server.backend, managed.endpoint, clocks=managed.clock.clocks())
+    managed.manager = ManagedObservers(managed.orch, managed.endpoint, clocks=managed.clock.clocks())
     await managed.manager.start()
-    enqueue = AsyncMock(wraps=managed.server.backend._enqueue)
-    monkeypatch.setattr(managed.server.backend, "_enqueue", enqueue)
+    enqueue = AsyncMock(wraps=managed.orch.accept_external)
+    monkeypatch.setattr(managed.orch, "accept_external", enqueue)
     await managed.manager.resume_owned("g1", before.id, owner=OWNER)
     await managed.flush()
     enqueue.assert_not_awaited()
@@ -638,8 +645,8 @@ async def test_owned_unknown_channel_outcome_is_not_replayed_by_resume(managed, 
     path.write_text('{"revision":2}')
     before = await review_required(managed, created["id"])
     await managed.restart()
-    enqueue = AsyncMock(wraps=managed.server.backend._enqueue)
-    monkeypatch.setattr(managed.server.backend, "_enqueue", enqueue)
+    enqueue = AsyncMock(wraps=managed.orch.accept_external)
+    monkeypatch.setattr(managed.orch, "accept_external", enqueue)
     status = await managed.manager.resume_owned("g1", before.id, owner=OWNER)
     assert not status["enabled"] and status["state"] == "needs_review"
     row, = status["occurrences"]
@@ -661,6 +668,6 @@ async def test_cancelling_saved_unreceived_owned_pending_never_admits_it_on_resu
     assert row["message_id"] == canonical.id and row["cancelled"] == 1
     assert row["delivery_status"] == "not-required"
     assert (await managed.record(before.id)).state["pending"] == pending
-    assert await managed.server.backend.inbox.get("g1", before.cwd, canonical.id) is None
+    assert await managed.server.backend.inputs.store.get(InputScope("g1", before.cwd), canonical.id) is None
     assert before.id not in managed.manager._files
     assert not managed.model.calls

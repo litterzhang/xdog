@@ -8,8 +8,8 @@
   "implementation_started": true,
   "counts": {
     "total": 47,
-    "passed": 0,
-    "remaining": 47
+    "passed": 2,
+    "remaining": 45
   },
   "requirements": [
     {
@@ -142,15 +142,25 @@
       "id": "BOUND-01",
       "area": "eyes_acp",
       "requirement": "ACP 无 Goal/observer 查询、业务 schema 初始化、消费 pump 或报告策略",
-      "status": "pending",
-      "evidence": []
+      "status": "passed",
+      "evidence": [
+        "docs/claw-acp-observer-cutover-verification.md",
+        "packages/claw/tests/test_acp_core_receipts.py",
+        "packages/claw/tests/test_observer_journal.py",
+        "scripts/verify_acp_artifacts.py:CLAW"
+      ]
     },
     {
       "id": "BOUND-02",
       "area": "eyes_acp",
       "requirement": "Eyes 自管 cursor+immutable outbox，向核心 Inbox 幂等交接，取消边界不丢失",
-      "status": "pending",
-      "evidence": []
+      "status": "passed",
+      "evidence": [
+        "docs/claw-acp-observer-cutover-verification.md",
+        "packages/claw/tests/test_acp_core_receipts.py",
+        "packages/claw/tests/test_observer_journal.py",
+        "scripts/verify_acp_artifacts.py:CLAW"
+      ]
     },
     {
       "id": "BOUND-03",
@@ -359,6 +369,11 @@
       "status": "validated_prerequisite_not_yet_active_manager_cutover",
       "evidence": "docs/claw-observer-journal-verification.md",
       "note": "Core started fact and independent journal ready; Task3 must remove old active ACP receipt bridge."
+    },
+    {
+      "name": "thin_acp_and_observer_cutover",
+      "status": "integrated_and_verified",
+      "evidence": "docs/claw-acp-observer-cutover-verification.md"
     }
   ]
 }

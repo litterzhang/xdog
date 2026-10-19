@@ -122,8 +122,8 @@ async def test_tool_requires_live_service_and_owner():
 
 
 async def test_failed_save_does_not_publish_task(managed):
-    await managed.server.backend.inbox._disk(lambda db: db.execute(
-        "CREATE TRIGGER disk_full BEFORE INSERT ON managed_observers "
+    await managed.manager.store._disk(lambda db: db.execute(
+        "CREATE TRIGGER disk_full BEFORE INSERT ON observers "
         "BEGIN SELECT RAISE(ABORT, 'disk full'); END"))
     with pytest.raises(Exception, match='disk full'):
         await managed.create()

@@ -36,6 +36,7 @@ TOOL_RESULT_ROLE = "toolResult"
 def extract_final_text(
     messages: tuple[AgentMessage, ...],
     previous_count: int = 0,
+    *, empty: str = "(no response)",
 ) -> str:
     """Extract text from all new assistant messages in this turn."""
     new_msgs = messages[previous_count:]
@@ -45,7 +46,7 @@ def extract_final_text(
             for part in msg.content:
                 if isinstance(part, TextContent) and part.text:
                     text_parts.append(part.text)
-    return "\n\n".join(text_parts) if text_parts else "(no response)"
+    return "\n\n".join(text_parts) if text_parts else empty
 
 
 def estimate_tokens(text: str) -> int:

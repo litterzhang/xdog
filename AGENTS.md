@@ -125,12 +125,22 @@ Native `run_ack` follows the actual durable commit; the reader stays responsive
 during that commit. Native/ACP connection detachment does not cancel accepted
 application work; explicit abort and application shutdown have separate owners.
 
-The assistant-core refactor is in progress on its feature branch: the old ACP
-receipt/observer bridge still surrounds some callbacks and must be removed in the
-next cutover, not treated as a second final storage authority. Managed-observer
-restart tests must distinguish endpoint restart from actual application shutdown.
-See `docs/claw-assistant-core-requirements.json`; no Goal extraction or complete
-channel handoff is implied by the input-runtime checkpoint.
+ACP is now a thin adapter over the application-owned input service: it has no
+receipt database, consumer, observer/Goal query or report-delivery policy. Its
+namespace/status are the exact same facts used by native intake. Closing an ACP
+endpoint detaches waiters, not application execution or storage. Only actual
+application shutdown/crash interrupts started work. No old-format upgrade is
+provided; the retired `acp/inbox.py` and shared observer store are removed.
+Managed observers own `<data_dir>/observers/journal.sqlite3`; core input receipts
+live in `<data_dir>/inputs/inbox.sqlite3`. Source cursors and immutable outboxes
+commit together; cross-store intake is original-ID idempotent handoff, not a SQL
+join or a second authority. Source stop does not withdraw accepted input or stop
+its report. `eyes cancel_notifications` is separate; actual pending withdrawal
+uses the core input owner. No operation reverses started effects. A schema-neutral
+Agent `LeasedSqlite` helper owns IO only, never domain schema or planning policy.
+The broader assistant-core refactor remains in progress: optional standalone Goal,
+its Coding adapter/shared extension UI and final channel handoff are still pending.
+See `docs/claw-assistant-core-requirements.json` for exact acceptance status.
 
 Eyes callbacks enter through the existing leased ACP group inbox as canonical external input; goal work remains system input. Each group has one logical main Agent and one execution route; session files are context/history storage, never Goal ownership or event destinations. Both paths use the same Orchestrator group lock and current AgentSession. A group runtime owns its workspace, tools, memory, goals, prompt builder, transcript store, and one active cached agent session. Transcripts are JSONL with a `sessions.json` index; `SessionManager` is a compatibility alias for `TranscriptStore`, not an LRU multi-session manager.
 
@@ -142,20 +152,21 @@ Claw optionally exposes a private Unix ACP endpoint via `acp_socket_path` or
 `gateway start --acp-socket`. `acp/backend.py` implements the shared Agent ACP
 backend with explicit `group:<id>` addresses and exact workspace validation.
 Prompt/enqueue first persist canonical session inputs in the leased group inbox,
-then consumers use the existing Orchestrator group queue/active AgentSession.
+then the application consumer uses the existing group exclusion/active AgentSession.
 No TUI, message approval, second Agent loop or Eyes-specific handler is involved.
-Pending survives receiver restart; running becomes interrupted, never replayed.
+Pending/running survive receiver-only restart. Application shutdown/crash marks running interrupted, never replayed.
 Group scope intentionally follows active conversations, unlike coding's exact
 session/branch binding. Existing Claw tool policy remains unchanged. See
 `docs/claw-eyes-acp.md` for setup, scope, display and recovery limits.
 
 Claw's old TaskScheduler/task tool is removed. Explicit `eyes_enabled: true`
 (default false) enables gateway-owned `eyes` create/list/status/cancel. The host
-binds the current group/workspace/private ACP endpoint and borrows the existing
-inbox store owner for definitions, cursor+immutable outbox transactions and
-execution/report states. One observer has at most one in-flight execution.
-Claimed queue work is not started: a revision/enabled/namespace fence runs under
-the group lock before Agent admission. Cancellation never aborts unrelated chat.
+binds the current group/workspace/private ACP endpoint and owns a separate
+definition/cursor/outbox/report journal. Execution facts are read from core receipt
+APIs, never stored or changed by the ACP adapter. One observer has at most one in-flight execution.
+Claimed queue work is not started: explicit core withdrawal fences admission under
+the group lock. Source/reports/worker cancellation are distinct Agent decisions;
+observer enabled/revision fields never automatically cancel an accepted input.
 Known-not-sent reports recover without model replay; unknown sends/interrupted
 execution require review. The 2026-10-18 decision removes all legacy task
 scheduler implementation and migration compatibility: no `tasks_file` configuration,

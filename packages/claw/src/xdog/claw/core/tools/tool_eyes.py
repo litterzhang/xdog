@@ -52,11 +52,17 @@ class EyesTool(ToolDef):
         service, group = _service(ctx)
         return _render(await service.status(group, observer_id))
 
-    @action('cancel', description='Stop future triggers and cancel owned not-started work; never undo started effects',
+    @action('cancel', description='Stop future collection; leave accepted input and report delivery unchanged',
             observer_id=Param('string', required=True, description='Observer ID in this group'))
     async def cancel(self, ctx: dict[str, Any], observer_id: str) -> str:
         service, group = _service(ctx)
         return _render(await service.cancel(group, observer_id))
+
+    @action('cancel_notifications', description='Stop unsent reports, not observation or execution',
+            observer_id=Param('string', required=True, description='Observer ID in this group'))
+    async def cancel_notifications(self, ctx: dict[str, Any], observer_id: str) -> str:
+        service, group = _service(ctx)
+        return _render(await service.cancel_notifications(group, observer_id))
 
 
 def create_eyes_tool() -> AgentTool:

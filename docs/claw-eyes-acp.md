@@ -13,7 +13,7 @@ File → Eyes source/detector → EventRouter → generic ACP handler
                                                │ durable receipt
                             group inbox (SQLite, independent of TUI)
                                                │ automatic consumption
-                            existing Orchestrator per-group queue/lock
+                            application InputService + existing per-group exclusion
                                                │
                             group's current cached AgentSession → Agent
                                                │
@@ -70,12 +70,23 @@ message identity survive the actual Agent history and JSONL transcript.
   tool hooks still apply. This does **not** add coding's approval policy to Claw
   or allow evidence/labels to grant tool permissions.
 
-The SQLite inbox lives at `<data_dir>/acp/inbox.sqlite3`. An exclusive file lease
-protects recovery/consumption; disk transactions run off-loop and settle before
-cancellation releases ownership. States are `pending → running → succeeded |
-failed`, or `interrupted` on shutdown/crash. Restart consumes only pending work;
-running work becomes interrupted and is never automatically side-effect replayed.
-A terminal commit won by a race with shutdown is not overwritten.
+The sole SQLite input/attempt journal lives at `<data_dir>/inputs/inbox.sqlite3`,
+independent of ACP being enabled. An exclusive application lease protects recovery
+and consumption. Disk transactions run off-loop and settle before ownership is
+released. States are `pending → claimed → running → succeeded | failed`;
+explicit unstarted withdrawal is `cancelled`. `claimed` is not Agent admission.
+A failed attempt retains whether it actually started, not an error-string guess.
+Endpoint restart leaves actual execution alone. Application shutdown/crash changes
+running to interrupted, never automatic side-effect replay; unstarted claims can
+safely return to pending. A committed terminal result wins a shutdown race.
+
+ACP owns only protocol bindings/peer waiters, not that journal, its consumer or
+observer/Goal policy. Namespace/status inspect the same receipts as native inputs.
+Managed observer state has its own leased `<data_dir>/observers/journal.sqlite3`:
+cursor and whole outbox commit atomically there before original-ID ACP intake.
+Report attempts bind the actual original execution attempt. Their send status is
+separate from execution and later explicit retries cannot steal an old report.
+No legacy database import or format-upgrade path is provided.
 
 There is no automatic retry of interrupted/failed work. Inspect the transcript
 and effects first, then deliberately submit a **new** message ID if retry is safe.

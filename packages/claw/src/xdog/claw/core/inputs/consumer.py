@@ -35,27 +35,40 @@ class InputService:
     """
 
     def __init__(self, store: InputStore, execute: Execute, *,
-                 on_settled: Callable[[InputScope], None] | None = None) -> None:
+                 on_settled: Callable[[InputScope], None] | None = None, paused: bool = False) -> None:
         self.store, self.execute = store, execute
         self.on_settled = on_settled
+        self._paused = paused
         self._signals: dict[InputScope, asyncio.Event] = {}
         self._tasks: dict[InputScope, asyncio.Task[None]] = {}
         self._waiters: dict[tuple[InputScope, str], set[asyncio.Future[None]]] = {}
         self._faults: dict[InputScope, Exception] = {}
         self._pending: set[tuple[InputScope, str]] = set()
         self._active: set[InputScope] = set()
+        self._completed: set[Callable[[InputRecord], None]] = set()
         self._closing = False
         self._close_task: asyncio.Task[None] | None = None
+
+    def subscribe_completed(self, callback: Callable[[InputRecord], None]) -> Callable[[], None]:
+        self._completed.add(callback)
+        return lambda: self._completed.discard(callback)
 
     def wake(self, scope: InputScope) -> None:
         if self._closing or scope in self._faults:
             return
         signal = self._signals.setdefault(scope, asyncio.Event())
         signal.set()
-        if scope not in self._tasks:
+        if not self._paused and scope not in self._tasks:
             task = asyncio.create_task(self._consume(scope), name=f'claw-input:{scope.group_id}')
             self._tasks[scope] = task
             task.add_done_callback(lambda done: self._done(scope, done))
+
+    def resume(self) -> None:
+        if self._closing:
+            raise RuntimeError('Application input service is closing')
+        self._paused = False
+        for scope in tuple(self._signals):
+            self.wake(scope)
 
     def _done(self, scope: InputScope, task: asyncio.Task[None]) -> None:
         if self._tasks.get(scope) is task:
@@ -151,7 +164,7 @@ class InputService:
                 return False
             raise
 
-    async def _execute(self, record: InputRecord) -> None:
+    async def _execute(self, record: InputRecord) -> InputRecord:
         admitted = False
         async def admit(session_id: str = '') -> bool:
             nonlocal admitted
@@ -175,12 +188,11 @@ class InputService:
         if current is None:
             raise ValueError('Accepted input disappeared during execution')
         if current.status == 'cancelled':
-            return
+            return current
         if not admitted:
-            await self.store.reject(record, error)
-        else:
-            await self.store.finish(record, 'failed' if error else 'succeeded', response=outcome.response,
-                                    error=error, session_id=outcome.session_id)
+            return await self.store.reject(record, error)
+        return await self.store.finish(record, 'failed' if error else 'succeeded', response=outcome.response,
+                                       error=error, session_id=outcome.session_id)
 
     async def _settle(self, scope: InputScope, record: InputRecord | None,
                       claim: asyncio.Task[InputRecord | None] | None) -> None:
@@ -223,7 +235,7 @@ class InputService:
                     if record is None:
                         break
                     self._active.add(scope)
-                    await self._execute(record)
+                    completed = await self._execute(record)
                     self._pending.discard((scope, record.envelope.message.id))
                     self._active.discard(scope)
                     if self.on_settled is not None:
@@ -232,6 +244,11 @@ class InputService:
                         except Exception:
                             logger.warning('Input result committed; optional settled hint failed', exc_info=True)
                     self._notify(scope, record.envelope.message.id)
+                    for callback in tuple(self._completed):
+                        try:
+                            callback(completed)
+                        except Exception:
+                            logger.warning('Committed input display listener failed', exc_info=True)
                     record, claim = None, None
                 if self._closing:
                     break

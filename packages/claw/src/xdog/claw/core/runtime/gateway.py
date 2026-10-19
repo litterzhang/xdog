@@ -37,9 +37,9 @@ from xdog.claw.core.runtime.transcript_source import SourceCapture
 from xdog.claw.core.types import Group, UserInput
 
 if TYPE_CHECKING:
-    from xdog.claw.acp.inbox import InboxRecord
     from xdog.claw.acp.server import ClawAcpServer
     from xdog.claw.channels.base import Channel
+    from xdog.claw.core.inputs.store import InputRecord
     from xdog.claw.core.observers.manager import ManagedObservers
 
 logger = logging.getLogger(__name__)
@@ -149,6 +149,8 @@ class GatewayServer:
         self._acp_server: ClawAcpServer | None = None
         self._acp_viewers: dict[int, tuple[str, Callable[[dict[str, Any]], Awaitable[None]]]] = {}
         self._orchestrator: Orchestrator | None = None
+        self._input_unsubscribe: Callable[[], None] | None = None
+        self._input_notices: set[asyncio.Task[None]] = set()
         self._goal_task: asyncio.Task[Any] | None = None
         self._goal_signal = asyncio.Event()
         self._observers: ManagedObservers | None = None
@@ -192,6 +194,13 @@ class GatewayServer:
                     session = runtime.get_or_create_session(allow_reset=False)
                     await session.initialize_extensions(require_model=True)
             await self._orchestrator.start()
+            inputs = await self._orchestrator.input_service()
+            def completed(record: InputRecord) -> None:
+                if record.envelope.message.origin == 'acp' and self._acp_viewers:
+                    task = asyncio.create_task(self._acp_completed(record))
+                    self._input_notices.add(task)
+                    task.add_done_callback(self._input_notices.discard)
+            self._input_unsubscribe = inputs.subscribe_completed(completed)
             # Await this owned connection before restoring overdue managed work.
             # Keep the existing ability to use TUI when WeChat is unavailable.
             if self._config.weixin_enabled:
@@ -210,12 +219,13 @@ class GatewayServer:
                 endpoint = (Path(self._config.acp_socket_path) if self._config.acp_socket_path else
                             data_dir / 'acp' / 'agent.sock')
                 self._acp_server = await ClawAcpServer.start(
-                    self._orchestrator, endpoint,
-                    data_dir / "acp" / "inbox.sqlite3", on_complete=self._acp_completed)
+                                             self._orchestrator,
+                                             endpoint,
+                                         )
             if self._config.eyes_enabled:
                 from xdog.claw.core.observers.manager import ManagedObservers
                 assert self._acp_server is not None
-                self._observers = ManagedObservers(self._acp_server.backend, self._acp_server.path)
+                self._observers = ManagedObservers(self._orchestrator, self._acp_server.path)
                 self._orchestrator.set_observers(self._observers)
                 await self._observers.start()
         except BaseException:
@@ -255,11 +265,12 @@ class GatewayServer:
             await self.stop()
             raise
 
-    async def _acp_completed(self, record: InboxRecord) -> None:
+    async def _acp_completed(self, record: InputRecord) -> None:
         from xdog.claw.core.runtime.display_events import display_result
-        payload = {"type": "acp_input_completed", "group_id": record.group_id, "session_id": record.session_id,
-                   "message_id": record.message.id, "source": display_result(record.message.source),
-                   "instruction": display_result(record.message.instruction), "status": record.status,
+        payload = {"type": "acp_input_completed", "group_id": record.envelope.scope.group_id,
+                   "session_id": record.session_id,
+                   "message_id": record.envelope.message.id, "source": display_result(record.envelope.message.source),
+                   "instruction": display_result(record.envelope.message.instruction), "status": record.status,
                    "response": display_result(record.response), "error": display_result(record.error)}
         async def notify(write: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
             try:
@@ -268,7 +279,7 @@ class GatewayServer:
             except (OSError, TimeoutError):
                 pass  # Display failure cannot change the durable execution result.
         await asyncio.gather(*(notify(write) for group, write in tuple(self._acp_viewers.values())
-                               if group == record.group_id))
+                               if group == record.envelope.scope.group_id))
 
     def _on_client_connect(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -2385,6 +2396,12 @@ class GatewayServer:
     async def _stop(self) -> None:
         if self._orchestrator is not None:
             self._orchestrator.request_stop()
+        if self._input_unsubscribe is not None:
+            self._input_unsubscribe()
+            self._input_unsubscribe = None
+        for notice in tuple(self._input_notices):
+            notice.cancel()
+        await asyncio.gather(*tuple(self._input_notices), return_exceptions=True)
         logger.info("Shutting down gateway...")
 
         # Stop producers before their shared ACP inbox/consumer resources.

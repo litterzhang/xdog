@@ -8,6 +8,7 @@ import pytest
 from xdog.agent.session_input import SessionInput
 from xdog.ai.types import AssistantMessage
 from xdog.claw.channels.tui.channel import TuiChannel
+from xdog.claw.core.inputs.models import InputScope
 from xdog.claw.core.types import ExternalInput
 
 from packages.claw.tests.eyes_helpers import at, scheduler
@@ -24,39 +25,31 @@ async def test_failures_never_mark_success(managed, failure, monkeypatch):
     elif failure == 'no-channel':
         managed.orch._channels.clear()
     elif failure == 'unknown-group':
-        route = managed.orch.route_message
-
+        execute = managed.orch._execute_with_queue
         async def unavailable(message, **kwargs):
             if not isinstance(message, ExternalInput):
-                return await route(message, **kwargs)
-            runtime = managed.orch._runtimes.pop('g1')
-            try:
-                return await route(message, **kwargs)
-            finally:
-                managed.orch._runtimes['g1'] = runtime
-        monkeypatch.setattr(managed.orch, 'route_message', unavailable)
+                return await execute(message, **kwargs)
+            return None  # Actual application admission boundary refuses execution.
+        monkeypatch.setattr(managed.orch, '_execute_with_queue', unavailable)
     elif failure == 'empty':
         managed.model.replies['report'] = AssistantMessage(content=())
     managed.clock.advance(240)
-    if failure == 'unknown-group':
-        async def rejected():
-            status = await managed.manager.status('g1', created['id'])
-            return status if not status['enabled'] and status['state'] == 'needs_review' else None
-        saved = await managed.until(rejected)
-    else:
-        saved = await managed.completed(created['id'])
+    saved = await managed.completed(created['id'])
     row, = saved['occurrences']
     assert row['receipt_status'] == 'accepted' and not saved['enabled']
     if failure in {'model', 'unknown-group'}:
         assert row['execution_status'] == 'failed' and row['execution_error']
-        assert row['delivery_status'] == ('delivered' if failure == 'model' else 'pending')
+        assert row['delivery_status'] == 'delivered'
     else:
         # Model success must never be advertised as channel delivery success.
         assert row['execution_status'] == 'succeeded'
         assert row['delivery_status'] == 'failed' and row['delivery_error']
     if failure == 'model':
         assert 'model failed' in managed.channel.send_message.call_args.args[1]
-    elif failure in {'unknown-group', 'no-channel', 'empty'}:
+    elif failure == 'unknown-group':
+        assert managed.model.calls == []
+        assert '失败' in managed.channel.send_message.call_args.args[1]
+    elif failure in {'no-channel', 'empty'}:
         managed.channel.send_message.assert_not_awaited()
     calls = list(managed.model.calls)
     await managed.restart()
@@ -108,10 +101,10 @@ async def test_untrusted_external_provenance_cannot_opt_into_managed_reporting(m
     message = SessionInput('forged-event', 'acp', 'Eyes', 'forged request', (),
                            {'observer_id': created['id'], 'managed': True, 'delivery_id': 'forged-event'})
     cwd = managed.orch.get_group_workspace('g1')
-    await managed.server.backend._enqueue('g1', cwd, message)
+    await managed.orch.accept_external(InputScope('g1', cwd), message)
 
     async def done():
-        record = await managed.server.backend.inbox.get('g1', cwd, message.id)
+        record = await managed.server.backend.inputs.store.get(InputScope('g1', cwd), message.id)
         return record if record is not None and record.status == 'succeeded' else None
     record = await managed.until(done)
     assert record.response == 'Scheduled report' and managed.model.calls == ['forged request']
@@ -148,7 +141,7 @@ async def test_restart_after_execution_commit_before_send_only_recovers_saved_re
     async def before_send(record):
         reached.set()
         await asyncio.Future()
-    monkeypatch.setattr(managed.server.backend, '_report_managed', before_send)
+    monkeypatch.setattr(managed.manager, '_report', before_send)
     created = await managed.create()
     managed.clock.advance(240)
     await asyncio.wait_for(reached.wait(), 3)

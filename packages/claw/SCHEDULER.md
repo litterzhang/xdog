@@ -39,7 +39,7 @@ must not select a host. The gateway owns these resources and joins them before c
 ## Host tool: eyes
 
 The bounded surface is `create(name, source, instruction)`, `list()`, `status(observer_id)`
-and `cancel(observer_id)`. All four actions are scoped to the **current group**, including
+and `cancel(observer_id)` / `cancel_notifications(observer_id)`. These actions are scoped to the **current group**, including
 read-only list/status. Retain the returned observer ID for status/cancel.
 
 `source` is one original Eyes source object, not a new Claw schedule grammar:
@@ -132,11 +132,12 @@ An enqueue ACK is receipt, not execution success. Successful execution with a
 failed report must remain visible as two different outcomes; an error report does
 not make execution successful. Channel acceptance is not proof a user read it.
 
-`cancel` must stop future collection/admission and cancel only that observer's
-owned pending callback, if it has not started. It must **not abort unrelated
-active chat** or a shared turn containing other inputs. Already-started work and
-external effects cannot be withdrawn or undone; expose that limit instead of
-claiming cancellation reversed execution. Do not automatically retry failed or
+`cancel` stops future collection and not-yet-sent transport admission. It never
+withdraws already accepted input, cancels an active Agent or suppresses an accepted
+report. `cancel_notifications` separately stops not-yet-sent reports without
+stopping observation/execution. Explicit core input withdrawal can cancel selected
+unstarted messages; started execution requires its actual execution owner's cancel.
+These operations cannot reverse effects or abort unrelated chat. Do not automatically retry failed or
 unknown execution/reporting merely to make status green. These are host acceptance
 requirements. A report known not to have started sending can recover from its
 saved result without rerunning the Agent. A send interrupted after admission is
@@ -147,3 +148,14 @@ A current group's observer count is bounded at 128, occurrence history at 4096
 per observer, and individual stored data at one MiB. Capacity failure is visible;
 records are never silently pruned. Full acceptance evidence and optional test
 limits are recorded in `docs/claw-eyes-scheduler-requirements.json`.
+
+## Storage ownership after assistant-core cutover
+
+Core intake/attempt receipts use `data_dir/inputs/inbox.sqlite3`. This capability
+owns `data_dir/observers/journal.sqlite3` for definitions, cursor+immutable outbox,
+transport ACK state and report state. It reads core namespace/attempt APIs and
+never changes core receipt state based on observer/Goal status. ACP has no domain
+schema, consumer or report policy. Closing a receiver does not stop the application.
+Unsupported previous formats are refused; no database migration/import is performed.
+
+None of these controls may abort unrelated active chat or undo started effects.

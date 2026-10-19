@@ -14,8 +14,9 @@ import pytest
 import yaml
 from xdog.claw.config import ClawConfig, GroupDef, load_config, save_config
 from xdog.claw.core import planning, types
+from xdog.claw.core.observers.journal import ObserverJournal
 from xdog.claw.core.observers.manager import ManagedObservers
-from xdog.claw.core.observers.store import ObserverRecord, ObserverStore
+from xdog.claw.core.observers.models import ObserverRecord
 from xdog.claw.core.runtime.gateway import GatewayServer
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.tools.registry import create_tools, registered_names
@@ -48,9 +49,9 @@ def test_no_legacy_configuration_or_management_api(tmp_path):
     assert not hasattr(Orchestrator, 'legacy_tasks_file')
     assert tuple(inspect.signature(ManagedObservers.start).parameters) == ('self',)
     assert 'legacy' not in {field.name for field in fields(ObserverRecord)}
-    assert 'legacy' not in inspect.signature(ObserverStore.create).parameters
-    assert not hasattr(ObserverStore, 'migration_marker')
-    assert not hasattr(ObserverStore, 'import_records')
+    assert 'legacy' not in inspect.signature(ObserverJournal.create).parameters
+    assert not hasattr(ObserverJournal, 'migration_marker')
+    assert not hasattr(ObserverJournal, 'import_records')
     path = tmp_path / 'claw.yaml'
     path.write_text(yaml.safe_dump({'tasks_file': str(tmp_path / 'scheduled_tasks.json'), 'eyes_enabled': True}))
     config = load_config(path)

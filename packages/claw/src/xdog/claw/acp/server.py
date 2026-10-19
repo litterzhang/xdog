@@ -10,7 +10,7 @@ from pathlib import Path
 from xdog.agent.acp.adapter import AcpAdapter
 from xdog.agent.acp.transport import serve
 from xdog.agent.async_work import wait_owned
-from xdog.claw.acp.backend import ClawBackend, CompletionSink
+from xdog.claw.acp.backend import ClawBackend
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
@@ -27,8 +27,7 @@ class ClawAcpServer:
         self._close_task: asyncio.Task[None] | None = None
 
     @classmethod
-    async def start(cls, orchestrator: Orchestrator, path: Path, inbox_path: Path,
-                    *, on_complete: CompletionSink | None = None) -> ClawAcpServer:
+    async def start(cls, orchestrator: Orchestrator, path: Path) -> ClawAcpServer:
         maximum = 107  # Current Linux Unix-domain path limit; no non-Linux transport adapter.
         if not path.is_absolute() or "\x00" in str(path) or len(str(path).encode()) > maximum:
             raise ValueError("ACP socket must have a bounded absolute Unix path")
@@ -39,7 +38,7 @@ class ClawAcpServer:
             raise ValueError("ACP endpoint directory must be owned and private (0700), without symlinks")
         if path.exists() or path.is_symlink():
             raise ValueError("ACP endpoint already exists; stop its owner/remove a confirmed stale socket explicitly")
-        backend = await ClawBackend.open(orchestrator, inbox_path, on_complete=on_complete)
+        backend = await ClawBackend.open(orchestrator)
         result = cls(path, backend)
         try:
             result._server = await asyncio.start_unix_server(result._accept, path=str(path), limit=1024 * 1024)

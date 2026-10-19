@@ -93,7 +93,7 @@ Claw now declares `xdog-eyes>=2.4.2`; croniter is owned by Eyes
 Claw owns its group-scoped lifecycle, receipt records and report delivery.
 
 The group-scoped `eyes` tool exposes `create(name, source, instruction)`,
-`list()`, `status(observer_id)` and `cancel(observer_id)`. `source` is an original Eyes source object.
+`list()`, `status(observer_id)`, `cancel(observer_id)` and `cancel_notifications(observer_id)`. `source` is an original Eyes source object.
 The host binds the current group's workspace/private ACP endpoint and destination;
 callers cannot redirect observers into other groups. When that tool is enabled,
 prefer it over manually wiring a standalone CLI registration. The old `task` tool
@@ -120,7 +120,9 @@ Managed time recovery must retain an unadmitted `at` through downtime without
 silently losing it, while interrupted or unknown execution must **not** be
 automatically replayed. Execution status and report-delivery status must remain
 separate; queued receipt is not completed work. Cancelling an owned pending
-callback must not abort unrelated active chat or undo started effects. Ordinary
+callback requires explicit input withdrawal; stopping observation alone leaves
+accepted execution/reporting intact. `cancel_notifications` stops unsent reports
+without stopping observation or execution. No operation undoes started effects. Ordinary
 file observation must not automatically resume after gateway restart.
 
 Eyes intervals have a monotonic **fixed phase**, not a delay after completion.
@@ -2822,3 +2824,15 @@ and widget layouts are removed. Native approval and recovery reviews remain host
 owned; they expose no plugin layout or editor/session-mutation authority. Core TUI
 overlays, transcript fullscreen, Unicode, clipping, cursor and tool-approval behavior
 remain.
+
+### Application input and observer ownership
+
+ACP namespace/status now expose the same application receipts as native intake;
+there is no adapter-owned inbox/consumer. Endpoint detachment does not stop accepted
+work. Core receipt and observer journals are separate private SQLite files under
+`data_dir/inputs/` and `data_dir/observers/`. Cursor+outbox commits precede idempotent
+ACP handoff. Namespace/attempt fences and unknown-send handling remain fail closed;
+there is no old-format migration. The wider optional Goal/shared UI refactor is
+tracked in `docs/claw-assistant-core-requirements.json`, not claimed complete here.
+
+None of these controls may abort unrelated active chat or undo started effects.

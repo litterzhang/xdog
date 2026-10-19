@@ -1,10 +1,8 @@
-"""ACP group addressing and durable intake; execution stays in Orchestrator."""
+"""ACP addressing/peer waits over application-owned input receipts, with no business policy."""
 from __future__ import annotations
 
 import asyncio
-import logging
 import uuid
-from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -12,56 +10,32 @@ try:
     from acp import PromptResponse, RequestError
     from acp.schema import AgentMessageChunk, TextContentBlock
 except ImportError as exc:
-    raise ImportError("Claw ACP requires Python 3.12–3.14 and agent-client-protocol>=0.12.1,<0.13") from exc
+    raise ImportError('Claw ACP requires Python3.12-3.14 and agent-client-protocol>=0.12.1,<0.13') from exc
+
 from xdog.agent.acp.contracts import JsonValue, Peer, SessionRef, UpdateSink, finite_json, invalid
 from xdog.agent.async_work import wait_owned
-from xdog.agent.session_input import SessionInput, decode_input, render_input
-from xdog.claw.acp.inbox import GroupInbox, InboxRecord
-from xdog.claw.core.observers.store import ObserverStore
+from xdog.agent.session_input import decode_input
+from xdog.claw.core.inputs.consumer import InputService
+from xdog.claw.core.inputs.models import InputScope
 from xdog.claw.core.runtime.orchestrator import Orchestrator
-from xdog.claw.core.types import ExternalInput
-
-logger = logging.getLogger(__name__)
-CompletionSink = Callable[[InboxRecord], Awaitable[None]]
 
 
 class ClawBackend:
-    extensions = {"enqueue": 1, "inbox_status": 1, "session_info": 1}
+    extensions = {'enqueue': 1, 'inbox_status': 1, 'session_info': 1}
 
-    def __init__(self, orchestrator: Orchestrator, inbox: GroupInbox,
-                 on_complete: CompletionSink | None = None) -> None:
-        self.orchestrator, self.inbox, self.on_complete = orchestrator, inbox, on_complete
-        self.observers = ObserverStore(inbox)
+    def __init__(self, orchestrator: Orchestrator, inputs: InputService) -> None:
+        self.orchestrator, self.inputs = orchestrator, inputs
         self.generation = uuid.uuid4().hex
         self._bindings: dict[tuple[str, str], SessionRef] = {}
         self._closed_peers: set[str] = set()
         self._prompts: dict[tuple[str, str], asyncio.Task[Any]] = {}
         self._cancelled_requests: set[tuple[str, str]] = set()
-        self._waiters: dict[tuple[str, str], asyncio.Future[None]] = {}
-        self._signals: dict[str, asyncio.Event] = {}
-        self._workers: dict[str, asyncio.Task[None]] = {}
-        self._reports: set[asyncio.Task[None]] = set()
-        self._faults: dict[str, str] = {}
         self._closing = False
         self._close_task: asyncio.Task[None] | None = None
 
     @classmethod
-    async def open(cls, orchestrator: Orchestrator, path: Path,
-                   *, on_complete: CompletionSink | None = None) -> ClawBackend:
-        inbox = await GroupInbox.open(path)
-        backend = cls(orchestrator, inbox, on_complete)
-        for group in orchestrator.get_group_ids():
-            backend._wake(group)
-        for record in await backend.observers.pending_reports():
-            task = asyncio.create_task(backend._report_managed(record), name='claw-report:' + record.message.id)
-            backend._reports.add(task)
-            task.add_done_callback(backend._report_done)
-        return backend
-
-    def _report_done(self, task: asyncio.Task[None]) -> None:
-        self._reports.discard(task)
-        if not task.cancelled() and task.exception() is not None:
-            logger.error('Recovered channel report stopped: %s', task.exception())
+    async def open(cls, orchestrator: Orchestrator) -> ClawBackend:
+        return cls(orchestrator, await orchestrator.input_service())
 
     def _active(self, peer: Peer) -> None:
         if self._closing or peer.id in self._closed_peers:
@@ -104,173 +78,44 @@ class ClawBackend:
         self._bindings[peer.id, session_id] = ref
         return ref
 
-    def _wake(self, group: str) -> None:
-        if self._closing:
-            return
-        signal = self._signals.setdefault(group, asyncio.Event())
-        signal.set()
-        if group not in self._workers:
-            self._workers[group] = asyncio.create_task(self._consume(group), name=f"claw-acp:{group}")
-
-    async def _enqueue(self, group: str, cwd: Path, message: SessionInput) -> tuple[InboxRecord, bool]:
-        if group in self._faults:
-            raise RequestError(-32000, "Group inbox consumer unavailable; inspect receiver logs")
-        try:
-            return await self.inbox.enqueue(group, cwd, message)
-        finally:
-            # Cancellation may have lost the ACK after the disk transaction committed.
-            self._wake(group)
-
-    async def _consume(self, group: str) -> None:
-        signal = self._signals[group]
-        try:
-            while not self._closing:
-                signal.clear()
-                cwd = self.orchestrator.get_group_workspace(group)
-                if cwd is None:
-                    return
-                while not self._closing and (record := await self.inbox.claim(group, cwd)) is not None:
-                    try:
-                        content = render_input(record.message)
-                        message = ExternalInput(group_id=group, content=content, sender="acp", channel="acp",
-                                                metadata={"input_origin": "external"}, canonical=record.message)
-                        # Receipt-owning callbacks must never be steered/folded into
-                        # another turn or dropped by the fire-and-forget collect queue.
-                        owned = await self.observers.occurrence(record)
-                        if owned is not None:
-                            observer = await self.observers.get(group, cwd, owned['observer_id'])
-                            runtime = self.orchestrator._runtimes.get(group)
-                            if observer is not None and observer.owner and runtime is not None:
-                                goal = runtime.goal_manager.tracker.get_goal(observer.owner)
-                                if (goal is not None and goal.group_id == group
-                                        and goal.observer_id in {'', observer.id} and observer.notify_only):
-                                    message.metadata['_goal_id'] = goal.id  # Trusted journal binding, never provenance.
-                        claimed_record = record
-                        reported: list[str] = []
-                        async def admission(claimed: InboxRecord = claimed_record) -> bool:
-                            return await self.observers.admit(claimed)
-                        async def collect_report(text: str, parts: list[str] = reported) -> None:
-                            if text.strip():
-                                parts.append(text)
-                        result = await self.orchestrator.route_message(message, reserved=True,
-                            before_admission=admission if owned is not None else None,
-                            on_assistant_message=collect_report if owned is not None else None)
-                        current = await self.inbox.get(group, cwd, record.message.id)
-                        if current is not None and current.status == 'cancelled':
-                            record = current
-                        else:
-                            error = result.error if result is not None else "Group did not execute the message"
-                            record = await self.inbox.finish(record, "failed" if error else "succeeded",
-                                                             response=("\n\n".join(reported) if owned is not None else
-                                                                       result.response_text if result else ""),
-                                                             error=error or "",
-                                                             session_id=result.session_id if result else "")
-                    except asyncio.CancelledError:
-                        # The cancellation-safe disk worker may already have
-                        # committed a terminal result before reporting cancellation.
-                        current = await self.inbox.get(group, cwd, record.message.id)
-                        if current is not None and current.status == "running":
-                            if not await self.observers.release_unstarted(current):
-                                await self.inbox.finish(current, "interrupted",
-                                                        error="Receiver stopped; inspect side effects")
-                        raise
-                    except Exception as exc:
-                        record = await self.inbox.finish(record, "failed", error=str(exc))
-                    await self._report_managed(record)
-                    self._notify(record)
-                    if self.on_complete is not None:
-                        try:
-                            async with asyncio.timeout(5):
-                                await self.on_complete(record)
-                        except Exception:
-                            logger.exception("Claw ACP completion display failed")
-                await signal.wait()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            self._faults[group] = str(exc)
-            logger.exception("Claw ACP group consumer stopped: %s", group)
-        finally:
-            for (target, _), future in self._waiters.items():
-                if target == group and not future.done():
-                    future.set_result(None)
-
-    async def _report_managed(self, record: InboxRecord) -> None:
-        # This database association is host-created before enqueue. Neither an
-        # external source label nor a forged provenance flag can opt into sending.
-        if not await self.observers.begin_delivery(record):
-            return
-        try:
-            if record.status == 'succeeded' and not record.response.strip():
-                raise ValueError('Agent produced no report')
-            report = (record.response if record.status == 'succeeded' else
-                      f"观察任务执行失败: {record.error or record.status}")
-            outcomes = await self.orchestrator.deliver_report(record.group_id, report)
-            errors = [value for value in outcomes if value['status'] != 'delivered']
-            unknown = any(value['status'] == 'unknown' for value in errors)
-            import json
-            await self.observers.finish_delivery(record, status='unknown' if unknown else
-                                                  'failed' if errors else 'delivered',
-                                                  error=json.dumps(outcomes, ensure_ascii=False) if errors else '')
-        except asyncio.CancelledError:
-            await self.observers.finish_delivery(record, status='unknown',
-                                                 error='Channel send interrupted; inspect before resending')
-            raise
-        except Exception as exc:
-            await self.observers.finish_delivery(record, status='failed', error=str(exc))
-
-    def _notify(self, record: InboxRecord) -> None:
-        future = self._waiters.get((record.group_id, record.message.id))
-        if future is not None and not future.done():
-            future.set_result(None)
-
     async def prompt(self, ref: SessionRef, peer: Peer, text: str,
                      metadata: dict[str, JsonValue], emit: UpdateSink) -> PromptResponse:
         group, cwd = self._bound(ref, peer)
-        key = peer.id, ref.id
+        scope, key = InputScope(group, cwd), (peer.id, ref.id)
         if key in self._prompts:
-            raise invalid("A prompt is already pending for this peer/group")
+            raise invalid('A prompt is already pending for this peer/group')
         task = asyncio.current_task()
         assert task is not None
         self._prompts[key] = task
         identifier = uuid.uuid4().hex
-        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        self._waiters[group, identifier] = future
         try:
-            details = metadata.get("xdog", {})
+            details = metadata.get('xdog', {})
             if not isinstance(details, dict):
-                raise ValueError("Invalid external input metadata")
-            message = decode_input({"id": identifier, "origin": "acp", "source": details.get("source", "ACP"),
-                                    "instruction": text, "evidence": details.get("evidence", []),
-                                    "provenance": details.get("provenance", {})})
-            await self._enqueue(group, cwd, message)
-            await asyncio.shield(future)
-            record = await self.inbox.get(group, cwd, identifier)
-            if record is None:
-                raise RequestError(-32000, "Accepted input is unavailable; inspect inbox before retry")
-            if record.status != "succeeded":
-                raise RequestError(-32000, record.error or "Group consumer stopped; inspect inbox status")
+                raise ValueError('Invalid external input metadata')
+            message = decode_input({'id': identifier, 'origin': 'acp', 'source': details.get('source', 'ACP'),
+                'instruction': text, 'evidence': details.get('evidence', []),
+                'provenance': details.get('provenance', {})}, transport_envelope=False)
+            await self.orchestrator.accept_external(scope, message)
+            record = await self.inputs.wait(scope, identifier)
+            if record.status != 'succeeded':
+                raise RequestError(-32000, record.error or 'Input did not complete; inspect its durable receipt')
             self._active(peer)
-            # Bound the serialized JSON notification, including escaping, rather
-            # than assuming a one-MiB text value fits a one-MiB protocol frame.
             for offset in range(0, len(record.response), 16_384):
-                await emit(AgentMessageChunk(session_update="agent_message_chunk", content=TextContentBlock(
-                    type="text", text=record.response[offset:offset + 16_384])))
-            return PromptResponse.model_validate({"stopReason": "end_turn", "_meta": {"xdog": {
-                "message_id": identifier, "execution_session_id": record.session_id, "status": record.status}}})
+                await emit(AgentMessageChunk(session_update='agent_message_chunk', content=TextContentBlock(
+                    type='text', text=record.response[offset:offset + 16_384])))
+            return PromptResponse.model_validate({'stopReason': 'end_turn', '_meta': {'xdog': {
+                'message_id': identifier, 'execution_session_id': record.session_id, 'status': record.status}}})
         except asyncio.CancelledError:
             if key in self._cancelled_requests and not self._closing and peer.id not in self._closed_peers:
-                return PromptResponse.model_validate({"stopReason": "cancelled", "_meta": {"xdog": {
-                    "message_id": identifier, "execution_continues": True}}})
+                existing = await self.inputs.store.get(scope, identifier)
+                return PromptResponse.model_validate({'stopReason': 'cancelled', '_meta': {'xdog': {
+                    'message_id': identifier, 'execution_continues': existing is not None}}})
             raise
-        except ValueError as exc:
+        except (ValueError, TypeError) as exc:
             raise invalid(str(exc)) from exc
         finally:
             self._cancelled_requests.discard(key)
             self._prompts.pop(key, None)
-            self._waiters.pop((group, identifier), None)
-            if not future.done():
-                future.cancel()
 
     async def cancel(self, ref: SessionRef, peer: Peer) -> None:
         self._bound(ref, peer)
@@ -293,39 +138,41 @@ class ClawBackend:
         self._active(peer)
         try:
             finite_json(params)
-            if method == "xdog/session_info":
-                if set(params) != {"session_id"}:
-                    raise ValueError("Expected session_id")
-                ref = self._bindings.get((peer.id, params["session_id"]))
+            if method == 'xdog/session_info':
+                if set(params) != {'session_id'}:
+                    raise ValueError('Expected session_id')
+                ref = self._bindings.get((peer.id, params['session_id']))
                 if ref is None:
-                    raise ValueError("Unknown bound group")
+                    raise ValueError('Unknown bound group')
                 self._bound(ref, peer)
-                return {"session_id": ref.id, "cwd": str(ref.cwd), "generation": ref.generation}
-            if method not in {"xdog/enqueue", "xdog/inbox_status"}:
-                raise RequestError(-32601, "Unsupported Claw ACP extension")
-            group, cwd = self._target(params.get("session_id"), params.get("cwd", ""))
-            if method == "xdog/enqueue":
-                fields = {"session_id", "cwd", "message_id", "instruction", "source", "evidence", "provenance"}
+                return {'session_id': ref.id, 'cwd': str(ref.cwd), 'generation': ref.generation}
+            if method not in {'xdog/enqueue', 'xdog/inbox_status'}:
+                raise RequestError(-32601, 'Unsupported Claw ACP extension')
+            group, cwd = self._target(params.get('session_id'), params.get('cwd', ''))
+            scope = InputScope(group, cwd)
+            if method == 'xdog/enqueue':
+                fields = {'session_id', 'cwd', 'message_id', 'instruction', 'source', 'evidence', 'provenance'}
                 if set(params) != fields:
-                    raise ValueError("Invalid enqueue fields")
-                message = decode_input({"id": params["message_id"], "origin": "acp", "source": params["source"],
-                                        "instruction": params["instruction"], "evidence": params["evidence"],
-                                        "provenance": params["provenance"]})
-                record, duplicate = await self._enqueue(group, cwd, message)
-                return {"session_id": params["session_id"], "message_id": message.id, "branch_id": "",
-                        "status": "duplicate" if duplicate else "queued", "message_state": record.status}
-            if set(params) - {"session_id", "cwd", "message_id", "cursor"}:
-                raise ValueError("Invalid inbox status fields")
-            selected, cursor = params.get("message_id"), params.get("cursor", 0)
-            if (type(cursor) is not int or not 0 <= cursor <= 4096
-                    or selected is not None and (not isinstance(selected, str) or "cursor" in params)):
-                raise ValueError("Invalid inbox status selection/cursor")
-            namespace = await self.inbox.scope(group, cwd)
-            messages, next_cursor = await self.inbox.status(group, cwd, selected=selected, cursor=cursor)
-            return {"session_id": params["session_id"], "cwd": str(cwd), "branch_id": "", "inbox_id": namespace,
-                    "messages": messages, "next_cursor": next_cursor}
+                    raise ValueError('Invalid enqueue fields')
+                message = decode_input({'id': params['message_id'], 'origin': 'acp', 'source': params['source'],
+                    'instruction': params['instruction'], 'evidence': params['evidence'],
+                    'provenance': params['provenance']}, transport_envelope=False)
+                record, duplicate = await self.orchestrator.accept_external(scope, message)
+                return {'session_id': params['session_id'], 'message_id': message.id, 'branch_id': '',
+                        'status': 'duplicate' if duplicate else 'queued', 'message_state': record.status}
+            if set(params) - {'session_id', 'cwd', 'message_id', 'cursor'}:
+                raise ValueError('Invalid inbox status fields')
+            selected, cursor = params.get('message_id'), params.get('cursor', 0)
+            if selected is not None and 'cursor' in params:
+                raise ValueError('Select a message or a cursor, not both')
+            namespace = await self.inputs.store.namespace(scope)
+            messages, next_cursor = await self.inputs.store.status(scope, selected=selected, cursor=cursor)
+            return {'session_id': params['session_id'], 'cwd': str(cwd), 'branch_id': '', 'inbox_id': namespace,
+                    'messages': [{**row, 'branch_id': ''} for row in messages], 'next_cursor': next_cursor}
         except (ValueError, TypeError, UnicodeError) as exc:
             raise invalid(str(exc)) from exc
+        except RuntimeError as exc:
+            raise RequestError(-32000, 'Application input service unavailable; inspect receipts') from exc
 
     async def close(self) -> None:
         if self._close_task is None:
@@ -334,10 +181,9 @@ class ClawBackend:
         await wait_owned(self._close_task)
 
     async def _close(self) -> None:
-        prompts = list(self._prompts.values())
-        workers = list(self._workers.values())
-        reports = list(self._reports)
-        for task in (*prompts, *workers, *reports):
+        prompts = tuple(self._prompts.values())
+        for task in prompts:
             task.cancel()
-        await asyncio.gather(*prompts, *workers, *reports, return_exceptions=True)
-        await self.inbox.close()
+        await asyncio.gather(*prompts, return_exceptions=True)
+        self._bindings.clear()
+        # Endpoint/peer ownership ends here; application IO/execution remains alive.

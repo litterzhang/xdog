@@ -16,6 +16,7 @@ from xdog.agent.core import CatalogStreamFn, ModelStreamFn
 from xdog.agent.extensions.command_result import ExtensionCommandResult
 from xdog.agent.mcp.completion import McpCompletion, request_arguments
 from xdog.agent.mcp.context import McpDocument, McpEntry
+from xdog.agent.session_input import SessionInput
 from xdog.ai.types import ImageContent, Model, ThinkingLevel
 from xdog.claw.channels.base import Channel
 from xdog.claw.config import ClawConfig
@@ -89,6 +90,8 @@ class Orchestrator:
         self._input_start_task: asyncio.Task[InputService] | None = None
         self._input_calls: dict[tuple[InputScope, str], _InputCall] = {}
         self._inputs_stopping = False
+        self._input_listeners: set[Callable[[InputScope], None]] = set()
+        self._input_projectors: set[Callable[[InputRecord, GroupInput], Awaitable[GroupInput]]] = set()
 
     # -- Group registration ----------------------------------------------------
 
@@ -159,7 +162,8 @@ class Orchestrator:
 
     async def _initialize_inputs(self) -> InputService:
         store = await InputStore.open(self._data_dir / 'inputs' / 'inbox.sqlite3')
-        service = InputService(store, self._execute_input, on_settled=lambda _scope: self._goal_wake())
+        service = InputService(store, self._execute_input, on_settled=self._input_settled,
+                               paused=self._config.eyes_enabled)
         scopes = [InputScope(group, workspace) for group in tuple(self._runtimes)
                   if (workspace := self.get_group_workspace(group)) is not None]
         try:
@@ -187,6 +191,36 @@ class Orchestrator:
             if runtime._active_session is not None:
                 runtime._active_session.children.supervisor.abort()
 
+    @property
+    def data_dir(self) -> Path:
+        return self._data_dir
+
+    def subscribe_inputs(self, callback: Callable[[InputScope], None]) -> Callable[[], None]:
+        self._input_listeners.add(callback)
+        return lambda: self._input_listeners.discard(callback)
+
+    def project_inputs(self, callback: Callable[[InputRecord, GroupInput], Awaitable[GroupInput]]
+                       ) -> Callable[[], None]:
+        self._input_projectors.add(callback)
+        return lambda: self._input_projectors.discard(callback)
+
+    def _input_settled(self, scope: InputScope) -> None:
+        self._goal_wake()
+        for callback in tuple(self._input_listeners):
+            try:
+                callback(scope)
+            except Exception:
+                logger.exception('Optional application input listener failed')
+
+    async def accept_external(self, scope: InputScope, message: SessionInput) -> tuple[InputRecord, bool]:
+        if self.get_group_workspace(scope.group_id) != scope.workspace:
+            raise ValueError('External input target/workspace changed')
+        envelope = freeze_input(ExternalInput(group_id=scope.group_id, content='', sender='acp', channel='acp',
+            metadata={'input_origin': 'external'}, canonical=message), scope.workspace, message_id=message.id)
+        service = await self.input_service()
+        maximum = self._runtimes[scope.group_id].group.config.max_queued_messages
+        return await service.submit(envelope, max_pending=maximum)
+
     async def _execute_input(self, record: InputRecord, admit: Admit) -> InputOutcome:
         scope, identifier = record.envelope.scope, record.envelope.message.id
         key = scope, identifier
@@ -205,7 +239,10 @@ class Orchestrator:
                     display(event)
             options['on_display_event'] = publish
         try:
-            result = await self._execute_with_queue(restore_input(record.envelope), admit=admit, **options)
+            value = restore_input(record.envelope)
+            for project in tuple(self._input_projectors):
+                value = await project(record, value)
+            result = await self._execute_with_queue(value, admit=admit, **options)
             if result is None:
                 # A host fence explicitly refused this unstarted submission.
                 result = TurnResult(error='Host input admission was withdrawn')
@@ -300,6 +337,7 @@ class Orchestrator:
             if before_admission is not None and not await before_admission():
                 return None  # Host cancellation won before actual Agent admission.
             session = runtime.get_or_create_session(allow_reset=input_alive is None)
+            session.agent.set_tool_context({**session.agent.tool_context, '_eyes': runtime.observers})
             if admit is not None and not await admit(session.meta.session_id):
                 return None
             previous_menu = session.extensions.command_menu_handler
@@ -1052,7 +1090,8 @@ class Orchestrator:
             runtime.goal_manager._watchers.clear()
             if runtime._active_session is not None:
                 agent = runtime._active_session.agent
-                agent.set_tool_context({**agent.tool_context, '_eyes': observers})
+                if not agent.state.is_streaming:
+                    agent.set_tool_context({**agent.tool_context, '_eyes': observers})
 
     # -- Goal manager tick (Eyes owns independent trigger tasks) -----------------
 

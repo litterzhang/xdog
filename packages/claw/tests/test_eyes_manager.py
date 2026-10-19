@@ -13,6 +13,7 @@ from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.acp.server import ClawAcpServer
 from xdog.claw.channels.tui.channel import TuiChannel
 from xdog.claw.config import ClawConfig
+from xdog.claw.core.inputs.models import InputScope
 from xdog.claw.core.observers.manager import ManagedObservers
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.types import Group, GroupConfig
@@ -55,8 +56,11 @@ async def managed(tmp_path):
     channel.send_message = AsyncMock()
     orch.add_channel(channel)
     with tempfile.TemporaryDirectory(prefix='claw-managed-') as short:
-        server = await ClawAcpServer.start(orch, Path(short) / 'acp.sock', tmp_path / 'private' / 'inbox.sqlite3')
-        service = ManagedObservers(server.backend, server.path,
+        server = await ClawAcpServer.start(
+                           orch,
+                           Path(short) / 'acp.sock',
+                       )
+        service = ManagedObservers(orch, server.path,
             clocks=SchedulerClocks(lambda: clock[0], lambda: clock[0], sleep))
         orch.set_observers(service)
         await service.start()
@@ -161,8 +165,8 @@ async def test_busy_interval_skips_ticks_without_overlapping(managed):
 async def test_namespace_change_never_silently_retargets_saved_work(managed):
     service, _, server, clock, calls, _, _, _ = managed
     record = await service.create('main', 'report', at(clock), 'Report')
-    await server.backend.inbox._disk(lambda db: db.execute(
-        "UPDATE scopes SET namespace='replaced' WHERE group_id='main'"))
+    await server.backend.inputs.store._disk(lambda db: db.execute(
+        "UPDATE scopes SET namespace='ffffffffffffffffffffffffffffffff' WHERE group_id='main'"))
     clock[0] += 10
     async def paused():
         row = await service.status('main', record['id'])
@@ -188,7 +192,7 @@ async def test_lost_enqueue_ack_retains_original_identity_and_never_repeats_mode
     assert len(calls) == 1
     row = await service.store.get('main', service._cwd('main'), created['id'])
     assert row.state['pending']['id'] == sent[0]['message_id']
-    receipt = await server.backend.inbox.get('main', row.cwd, sent[0]['message_id'])
+    receipt = await server.backend.inputs.store.get(InputScope('main', row.cwd), sent[0]['message_id'])
     assert receipt.status == 'running'
     gate.set()
     async def completed():

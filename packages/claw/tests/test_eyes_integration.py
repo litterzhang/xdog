@@ -86,7 +86,7 @@ async def test_busy_group_waits_without_steering_or_losing_callback(managed, can
         async def admitted():
             status = await managed.manager.status('g1', created['id'])
             rows = status['occurrences']
-            return rows and rows[0]['receipt_status'] == 'accepted' and rows[0]['execution_status'] == 'running'
+            return rows and rows[0]['receipt_status'] == 'accepted' and rows[0]['execution_status'] == 'pending'
         await managed.until(admitted)
         rows = (await managed.manager.status('g1', created['id']))['occurrences']
         assert rows[0]['started'] == 0 and managed.model.calls == ['busy']
@@ -94,23 +94,23 @@ async def test_busy_group_waits_without_steering_or_losing_callback(managed, can
         follow_up.assert_not_called()
         if cancel:
             outcome = json.loads(await managed.tool('cancel', observer_id=created['id']))
-            assert outcome['not_started'] == 1 and outcome['already_started'] == 0
+            assert outcome['withdrawn_inputs'] == 0
             row, = (await managed.manager.status('g1', created['id']))['occurrences']
-            assert row['cancelled'] == 1 and row['execution_status'] == 'cancelled'
-            assert row['delivery_status'] == 'not-required'
+            assert row['cancelled'] == 0 and row['execution_status'] == 'pending'
+            assert row['delivery_status'] == 'pending'
         release.set()
         result = await asyncio.wait_for(user, 3)
         assert result and not result.error
         if cancel:
-            await managed.flush()
-            assert managed.model.calls == ['busy']
-            managed.channel.send_message.assert_not_awaited()
-            await managed.restart()
+            async def delivered():
+                current = await managed.manager.status('g1', created['id'])
+                return current['occurrences'][0]['delivery_status'] == 'delivered'
+            await managed.until(delivered)
             assert not (await managed.manager.status('g1', created['id']))['enabled']
         else:
             await managed.completed(created['id'])
-            assert managed.model.calls == ['busy', 'report']
-            managed.channel.send_message.assert_awaited_once_with('g1', 'Scheduled report')
+        assert managed.model.calls == ['busy', 'report']
+        managed.channel.send_message.assert_awaited_once_with('g1', 'Scheduled report')
         steer.assert_not_called()
         follow_up.assert_not_called()
 
@@ -189,9 +189,10 @@ async def test_shutdown_settles_active_scheduled_run_without_success(managed):
     await asyncio.wait_for(managed.manager.close(), 3)
     await asyncio.wait_for(managed.server.close(), 3)
     assert not managed.manager._tasks
-    assert all(task.done() for task in managed.server.backend._workers.values())
     # Application shutdown, not endpoint detach, fences the admitted turn.
+    previous_inputs = managed.server.backend.inputs
     await managed.restart(application=True)
+    assert not previous_inputs._tasks
     saved = await managed.manager.status('g1', created['id'])
     row, = saved['occurrences']
     assert row['execution_status'] == 'interrupted' and not saved['enabled']
@@ -307,4 +308,25 @@ async def test_goal_directive_remains_system_input_without_managed_report(manage
     assert message.group_id == 'g1' and message.content == 'continue goal'
     assert managed.model.calls == ['continue goal']
     assert await managed.manager.list('g1') == ()
+    managed.channel.send_message.assert_not_awaited()
+
+
+async def test_agent_can_stop_notifications_without_stopping_observation_or_execution(managed):
+    entered, release = asyncio.Event(), asyncio.Event()
+    managed.model.gates['report'] = entered, release
+    created = await create(managed)
+    managed.clock.advance(240)
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        result = json.loads(await managed.tool('cancel_notifications', observer_id=created['id']))
+        assert result['notifications_cancelled'] and not result['execution_cancelled']
+        status = await managed.manager.status('g1', created['id'])
+        assert status['enabled'] and not status['reports_enabled']
+        assert status['occurrences'][0]['execution_status'] == 'running'
+    finally:
+        release.set()
+    status = await managed.completed(created['id'])
+    row, = status['occurrences']
+    assert row['execution_status'] == 'succeeded' and row['delivery_status'] == 'not-required'
+    assert managed.model.calls == ['report']
     managed.channel.send_message.assert_not_awaited()

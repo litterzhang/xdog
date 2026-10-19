@@ -14,7 +14,6 @@ from pathlib import Path
 from xdog.ai.types import AssistantMessage,TextContent
 from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.acp.backend import ClawBackend
-from xdog.claw.acp.inbox import GroupInbox
 from xdog.claw.acp.server import ClawAcpServer
 from xdog.claw.channels.tui.channel import TuiChannel
 from xdog.claw.config import ClawConfig
@@ -37,14 +36,13 @@ async def main():
  clocks=SchedulerClocks(lambda:clock,lambda:clock)
  path=root/'private'/'inbox.sqlite3'
  if phase=='create':
-  inbox=await GroupInbox.open(path)
-  backend=ClawBackend(orch,inbox)
-  service=ManagedObservers(backend,endpoint,clocks=clocks)
+  service=ManagedObservers(orch,endpoint,clocks=clocks)
+  await service._ensure_store()
   definition=service.definition('main','persisted',{'type':'scheduler','schedule':{
    'at':datetime.fromtimestamp(clock+10,UTC).isoformat()}},'Report after restart')
   state=initial_managed_state(definition,'eyes-process',clocks)
   await service.store.create('main',root,'persisted',definition_data(definition),identifier='eyes-process',state=state)
-  await inbox.close()
+  await service.close()
  else:
   channel=TuiChannel()
   async def send(group,text):
@@ -52,8 +50,8 @@ async def main():
    with (root/'reports').open('a') as f:f.write('delivered\n')
   channel.send_message=send
   orch.add_channel(channel)
-  server=await ClawAcpServer.start(orch,endpoint,path)
-  service=ManagedObservers(server.backend,endpoint,clocks=clocks)
+  server=await ClawAcpServer.start(orch,endpoint)
+  service=ManagedObservers(orch,endpoint,clocks=clocks)
   orch.set_observers(service)
   try:
    await service.start()

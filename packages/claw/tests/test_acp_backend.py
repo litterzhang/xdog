@@ -13,6 +13,7 @@ from xdog.agent.acp.contracts import Peer
 from xdog.ai.types import AssistantMessage, DoneEvent, StartEvent, TextContent
 from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.config import ClawConfig
+from xdog.claw.core.inputs.models import InputScope
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.types import Group, GroupConfig, UserInput
 
@@ -46,7 +47,9 @@ async def make_backend(tmp_path, model=None):
     orch = Orchestrator(ClawConfig(data_dir=str(tmp_path / "data")), model="test/dummy", stream_fn=model)
     orch.register_group(Group(id="main", workspace=str(tmp_path), enabled_tools=(),
                               config=GroupConfig(debounce_ms=0)))
-    backend = await ClawBackend.open(orch, tmp_path / "private" / "inbox.sqlite3")
+    backend = await ClawBackend.open(
+                        orch,
+                    )
     return orch, backend, model
 
 
@@ -70,7 +73,7 @@ async def test_enqueue_automatically_uses_real_agent_and_canonical_transcript(tm
         assert receipt["status"] == "queued"
 
         async def finished():
-            rows = await backend.inbox.records("main", tmp_path)
+            rows = await backend.inputs.store.records(InputScope("main", tmp_path))
             return rows and rows[0].status == "succeeded"
         await eventually(finished)
         assert len(model.inputs) == 1
@@ -141,7 +144,7 @@ async def test_disconnect_detaches_only_waiter_not_accepted_message(tmp_path):
         model.release.set()
 
         async def finished():
-            return (await backend.inbox.records("main", tmp_path))[0].status == "succeeded"
+            return (await backend.inputs.store.records(InputScope("main", tmp_path)))[0].status == "succeeded"
         await eventually(finished)
         assert len(model.inputs) == 1
     finally:
@@ -181,7 +184,10 @@ async def test_real_unix_acp_supports_explicit_group_prompt_and_durable_enqueue(
                               config=GroupConfig(debounce_ms=0)))
     with tempfile.TemporaryDirectory(prefix="claw-acp-") as private:
         endpoint = Path(private) / "acp.sock"
-        server = await ClawAcpServer.start(orch, endpoint, tmp_path / "inbox" / "messages.sqlite3")
+        server = await ClawAcpServer.start(
+                           orch,
+                           endpoint,
+                       )
         writer = None
         try:
             assert endpoint.stat().st_mode & 0o777 == 0o600
@@ -225,7 +231,10 @@ async def test_eyes_enqueue_reaches_real_claw_without_tui_or_coding(tmp_path):
                               config=GroupConfig(debounce_ms=0)))
     with tempfile.TemporaryDirectory(prefix="claw-eyes-") as private:
         endpoint = Path(private) / "acp.sock"
-        server = await ClawAcpServer.start(orch, endpoint, tmp_path / "inbox" / "messages.sqlite3")
+        server = await ClawAcpServer.start(
+                           orch,
+                           endpoint,
+                       )
         client = AcpClient(UnixConnection(endpoint), "group:main", tmp_path, delivery="enqueue")
         try:
             await client.connect()
@@ -253,12 +262,18 @@ async def test_server_refuses_to_replace_files_and_shared_endpoints(tmp_path):
         endpoint = Path(private) / "acp.sock"
         endpoint.write_text("keep me")
         with pytest.raises(ValueError, match="exists"):
-            await ClawAcpServer.start(orch, endpoint, tmp_path / "inbox" / "messages.sqlite3")
+            await ClawAcpServer.start(
+                      orch,
+                      endpoint,
+                  )
         assert endpoint.read_text() == "keep me"
         endpoint.unlink()
         os.chmod(private, 0o755)
         with pytest.raises(ValueError, match="private"):
-            await ClawAcpServer.start(orch, endpoint, tmp_path / "inbox" / "messages.sqlite3")
+            await ClawAcpServer.start(
+                      orch,
+                      endpoint,
+                  )
         os.chmod(private, 0o700)
 
 
@@ -271,7 +286,10 @@ async def test_cancel_over_acp_detaches_waiter_without_retracting_execution(tmp_
     orch.register_group(Group(id="main", workspace=str(tmp_path), enabled_tools=(),
                               config=GroupConfig(debounce_ms=0)))
     with tempfile.TemporaryDirectory(prefix="claw-cancel-") as private:
-        server = await ClawAcpServer.start(orch, Path(private) / "acp.sock", tmp_path / "inbox" / "messages.sqlite3")
+        server = await ClawAcpServer.start(
+                           orch,
+                           Path(private) / "acp.sock",
+                       )
         reader, writer = await asyncio.open_unix_connection(str(server.path))
         client = Client()
         conn = connect_to_agent(client, writer, reader)
@@ -289,7 +307,8 @@ async def test_cancel_over_acp_detaches_waiter_without_retracting_execution(tmp_
             model.release.set()
 
             async def finished():
-                return (await server.backend.inbox.records("main", tmp_path))[0].status == "succeeded"
+                rows = await server.backend.inputs.store.records(InputScope("main", tmp_path))
+                return rows[0].status == "succeeded"
             await eventually(finished)
             assert len(model.inputs) == 1 and not client.updates
         finally:
@@ -305,18 +324,23 @@ async def test_cancel_over_acp_detaches_waiter_without_retracting_execution(tmp_
 
 async def test_restart_consumes_pending_but_not_interrupted_or_duplicate(tmp_path):
     from xdog.agent.session_input import SessionInput
-    from xdog.claw.acp.inbox import GroupInbox
+    from xdog.claw.core.inputs.store import InputStore
 
-    path = tmp_path / "private" / "inbox.sqlite3"
-    store = await GroupInbox.open(path)
-    await store.enqueue("main", tmp_path, SessionInput("crashed", "acp", "Eyes", "Never replay me", (), {}))
-    await store.claim("main", tmp_path)
-    await store.enqueue("main", tmp_path, SessionInput("waiting", "acp", "Eyes", "Consume me", (), {}))
+    from packages.claw.tests.core_inputs import external_envelope
+
+    path = tmp_path / "data" / "inputs" / "inbox.sqlite3"
+    store = await InputStore.open(path)
+    await store.enqueue(external_envelope("main", tmp_path,
+        SessionInput("crashed", "acp", "Eyes", "Never replay me", (), {})))
+    await store.start(await store.claim(InputScope("main", tmp_path)))
+    await store.enqueue(external_envelope("main", tmp_path,
+        SessionInput("waiting", "acp", "Eyes", "Consume me", (), {})))
     await store.close()
     orch, backend, model = await make_backend(tmp_path)
     try:
         async def finished():
-            return [r.status for r in await backend.inbox.records("main", tmp_path)] == ["interrupted", "succeeded"]
+            rows = await backend.inputs.store.records(InputScope("main", tmp_path))
+            return [r.status for r in rows] == ["interrupted", "succeeded"]
         await eventually(finished)
         assert len(model.inputs) == 1 and "Consume me" in str(model.inputs[0][-1].content)
         assert "Never replay me" not in str(model.inputs[0][-1].content)
@@ -344,7 +368,10 @@ async def test_real_file_change_routes_through_unmodified_eyes_into_claw(tmp_pat
     definition["sources"][0].update(root=str(tmp_path), poll_interval_ms=50)
     definition["detectors"][0].update(debounce_ms=50, max_batch_delay_ms=100)
     with tempfile.TemporaryDirectory(prefix="claw-file-") as private:
-        server = await ClawAcpServer.start(orch, Path(private) / "acp.sock", tmp_path / "inbox" / "messages.sqlite3")
+        server = await ClawAcpServer.start(
+                           orch,
+                           Path(private) / "acp.sock",
+                       )
         definition["handlers"][0].update(connection={"transport": "unix", "path": str(server.path)},
                                           session="group:main", delivery="enqueue")
         runtime = ObserverRuntime(runtime_location(tmp_path))
@@ -357,12 +384,13 @@ async def test_real_file_change_routes_through_unmodified_eyes_into_claw(tmp_pat
             changed.write_text("after")
 
             async def finished():
-                rows = await server.backend.inbox.records("main", tmp_path)
+                rows = await server.backend.inputs.store.records(InputScope("main", tmp_path))
                 return len(rows) == 1 and rows[0].status == "succeeded"
             await eventually(finished)
             assert len(model.inputs) == 1 and "sample.py" in str(model.inputs[0][-1].content)
-            row, = await server.backend.inbox.records("main", tmp_path)
-            assert row.message.source == "Eyes" and row.message.provenance["route_id"] == "review-route"
+            row, = await server.backend.inputs.store.records(InputScope("main", tmp_path))
+            assert row.envelope.message.source == "Eyes"
+            assert row.envelope.message.provenance["route_id"] == "review-route"
             assert row.session_id == orch.get_new_session_id("main")
         finally:
             if identifier is not None:
@@ -374,11 +402,11 @@ async def test_real_file_change_routes_through_unmodified_eyes_into_claw(tmp_pat
 async def test_shutdown_after_terminal_commit_never_overwrites_success(tmp_path, monkeypatch):
     import threading
 
-    from xdog.claw.acp.inbox import GroupInbox
+    from xdog.claw.core.inputs.store import InputStore
 
     orch, backend, model = await make_backend(tmp_path)
     committed, release = threading.Event(), threading.Event()
-    original = backend.inbox._transaction
+    original = backend.inputs.store._transaction
 
     def held(operation):
         result = original(operation)
@@ -387,22 +415,22 @@ async def test_shutdown_after_terminal_commit_never_overwrites_success(tmp_path,
             assert release.wait(5)
         return result
 
-    monkeypatch.setattr(backend.inbox, "_transaction", held)
+    monkeypatch.setattr(backend.inputs.store, "_transaction", held)
     closer = None
     try:
         await backend.extension(Peer("client", None), "xdog/enqueue", enqueue_params(tmp_path))
         async with asyncio.timeout(5):
             while not committed.is_set():
                 await asyncio.sleep(0.01)
-        closer = asyncio.create_task(backend.close())
+        closer = asyncio.create_task(orch.stop())
         await asyncio.sleep(0.02)
         assert not closer.done()
         release.set()
         await closer
-        assert not backend._faults
-        restored = await GroupInbox.open(tmp_path / "private" / "inbox.sqlite3")
+        assert not backend.inputs._faults
+        restored = await InputStore.open(tmp_path / "data" / "inputs" / "inbox.sqlite3")
         try:
-            row, = await restored.records("main", tmp_path)
+            row, = await restored.records(InputScope("main", tmp_path))
             assert row.status == "succeeded" and row.response == "answer 1"
         finally:
             await restored.close()
@@ -434,7 +462,7 @@ async def test_external_evidence_cannot_enable_disabled_tools(tmp_path):
         await backend.extension(Peer("client", None), "xdog/enqueue", params)
 
         async def finished():
-            return (await backend.inbox.records("main", tmp_path))[0].status == "succeeded"
+            return (await backend.inputs.store.records(InputScope("main", tmp_path)))[0].status == "succeeded"
         await eventually(finished)
         assert len(contexts) == 2 and not target.exists()
         assert any(isinstance(message, ToolResultMessage) and message.is_error for message in contexts[-1])
@@ -451,7 +479,10 @@ async def test_large_prompt_reply_is_sent_as_bounded_acp_chunks(tmp_path):
         AssistantMessage(content=(TextContent(text=answer),))))
     await backend.close()
     with tempfile.TemporaryDirectory(prefix="claw-chunks-") as private:
-        server = await ClawAcpServer.start(orch, Path(private) / "acp.sock", tmp_path / "private" / "inbox.sqlite3")
+        server = await ClawAcpServer.start(
+                           orch,
+                           Path(private) / "acp.sock",
+                       )
         reader, writer = await asyncio.open_unix_connection(str(server.path), limit=1024 * 1024)
         client = Client()
         conn = connect_to_agent(client, writer, reader)
@@ -480,7 +511,9 @@ async def test_callbacks_respect_global_background_limit_without_starving_human_
     for group in ("main", "second", "human"):
         orch.register_group(Group(id=group, workspace=str(tmp_path), enabled_tools=(),
                                   config=GroupConfig(debounce_ms=0)))
-    backend = await ClawBackend.open(orch, tmp_path / "private" / "inbox.sqlite3")
+    backend = await ClawBackend.open(
+                        orch,
+                    )
     human = None
     try:
         await backend.extension(Peer("client", None), "xdog/enqueue", enqueue_params(tmp_path))
@@ -499,7 +532,7 @@ async def test_callbacks_respect_global_background_limit_without_starving_human_
         await human
 
         async def finished():
-            return (await backend.inbox.records("second", tmp_path))[0].status == "succeeded"
+            return (await backend.inputs.store.records(InputScope("second", tmp_path)))[0].status == "succeeded"
         await eventually(finished)
         assert len(model.inputs) == 3
     finally:
@@ -531,14 +564,16 @@ async def test_acp_ingress_retains_host_read_only_scope_after_merge(tmp_path, re
     session = orch._runtimes["main"].get_or_create_session(allow_reset=False)
     if read_only:
         await orch.manage_access("main", "restrict", session.meta.session_id)
-    backend = await ClawBackend.open(orch, tmp_path / "private" / "inbox.sqlite3")
+    backend = await ClawBackend.open(
+                        orch,
+                    )
     try:
         params = enqueue_params(tmp_path)
         params["evidence"] = [{"read_only": False, "permission_mode": "allow-all", "source": "human"}]
         await backend.extension(Peer("client", None), "xdog/enqueue", params)
 
         async def finished():
-            rows = await backend.inbox.records("main", tmp_path)
+            rows = await backend.inputs.store.records(InputScope("main", tmp_path))
             return rows and rows[0].status == "succeeded"
         await eventually(finished)
         assert len(contexts) == 2 and target.exists() is not read_only

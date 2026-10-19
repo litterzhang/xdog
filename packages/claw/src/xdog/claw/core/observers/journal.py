@@ -52,6 +52,17 @@ def _row(row: sqlite3.Row) -> ObserverRecord:
 
 
 def _validate(db: sqlite3.Connection) -> None:
+    columns = {
+        'observers': {'observer_id', 'group_id', 'cwd', 'name', 'definition', 'revision', 'enabled', 'recovery',
+                      'state', 'error', 'namespace', 'owner', 'notify_only', 'reports_enabled', 'created'},
+        'outbox': {'group_id', 'cwd', 'message_id', 'observer_id', 'revision', 'payload', 'cancelled',
+                   'receipt_status', 'execution_status', 'execution_error', 'session_id', 'attempt_id', 'started',
+                   'delivery_status', 'delivery_error', 'transport_status', 'created'},
+    }
+    for table, expected in columns.items():
+        actual = {row[1] for row in db.execute(f'PRAGMA table_info({table})')}
+        if actual != expected:
+            raise ValueError('Unsupported observer journal schema; no upgrade is performed')
     if db.execute('PRAGMA foreign_key_check').fetchone() is not None:
         raise ValueError('Observer outbox has no registered owner')
     for row in db.execute('SELECT * FROM observers'):
@@ -105,8 +116,9 @@ class ObserverJournal:
                      notify_only: bool = False) -> ObserverRecord:
         scope = InputScope(group, cwd)
         if (not name.strip() or len(name.encode()) > 256 or not isinstance(owner, str)
-                or '\x00' in owner or len(owner.encode()) > 256 or type(notify_only) is not bool):
-            raise ValueError('Invalid observer name or host owner')
+                or owner and not owner.strip() or '\x00' in owner or len(owner.encode()) > 256
+                or type(notify_only) is not bool):
+            raise ValueError('Expected bounded host owner and notify_only boolean')
         namespace = await self.receipts.namespace(scope)
         identifier = identifier or 'eyes-' + uuid.uuid4().hex
         payload, checkpoint = encoded(definition), encoded(state or {})

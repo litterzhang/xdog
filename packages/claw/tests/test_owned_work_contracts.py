@@ -8,13 +8,13 @@ from types import SimpleNamespace
 
 import pytest
 from xdog.claw.acp.backend import ClawBackend
-from xdog.claw.acp.inbox import GroupInbox
 from xdog.claw.acp.server import ClawAcpServer
+from xdog.claw.core.inputs.store import InputStore
 
 
 @pytest.mark.parametrize('fails', [False, True])
 async def test_inbox_retains_lock_and_error_precedence_during_cancel(tmp_path, fails):
-    inbox = GroupInbox(tmp_path / 'not-opened', 50)
+    inbox = InputStore(tmp_path / 'not-opened', 50)
     entered, release = threading.Event(), threading.Event()
     failure = ValueError('actual transaction failure')
     def work():
@@ -23,7 +23,7 @@ async def test_inbox_retains_lock_and_error_precedence_during_cancel(tmp_path, f
         if fails:
             raise failure
         return 'not delivered after cancellation'
-    caller = asyncio.create_task(inbox._settle(work))
+    caller = asyncio.create_task(inbox._work(work))
     closer = None
     try:
         assert await asyncio.to_thread(entered.wait, 3)

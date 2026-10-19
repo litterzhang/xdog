@@ -173,7 +173,7 @@ class Harness:
 
     async def replace_manager(self):
         await self.manager.close()
-        self.manager = ManagedObservers(self.server.backend, self.endpoint, clocks=self.clock.clocks())
+        self.manager = ManagedObservers(self.orch, self.endpoint, clocks=self.clock.clocks())
         self.attach()
         return self.manager
 
@@ -188,8 +188,11 @@ class Harness:
             for group in groups:
                 self.orch.register_group(group)
             self.orch.add_channel(self.channel)
-        self.server = await ClawAcpServer.start(self.orch, self.endpoint, self.inbox_path)
-        self.manager = ManagedObservers(self.server.backend, self.endpoint, clocks=self.clock.clocks())
+        self.server = await ClawAcpServer.start(
+                                self.orch,
+                                self.endpoint,
+                            )
+        self.manager = ManagedObservers(self.orch, self.endpoint, clocks=self.clock.clocks())
         self.attach()
         await self.manager.start()
 
@@ -226,8 +229,11 @@ async def managed(tmp_path, monkeypatch):
     with tempfile.TemporaryDirectory(prefix='xe-', dir='/tmp') as private:
         endpoint = Path(private) / 'a.sock'
         inbox = tmp_path / 'private' / 'inbox.sqlite3'
-        server = await ClawAcpServer.start(orch, endpoint, inbox)
-        manager = ManagedObservers(server.backend, endpoint, clocks=clock.clocks())
+        server = await ClawAcpServer.start(
+                           orch,
+                           endpoint,
+                       )
+        manager = ManagedObservers(orch, endpoint, clocks=clock.clocks())
         harness = Harness(orch, clock, model, channel, server, manager, endpoint, inbox)
         harness.attach()
         try:

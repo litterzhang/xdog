@@ -841,7 +841,7 @@ class AgentSession:
 
             final_text = extract_final_text(
                 self._agent.state.messages,
-                previous_count=response_start,
+                previous_count=response_start, empty="",
             )
 
             usage = turn.usage

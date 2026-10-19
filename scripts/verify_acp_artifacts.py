@@ -214,6 +214,77 @@ asyncio.run(main())
 '''
 
 
+CLAW = r'''
+import asyncio, json, os, sys, tempfile
+from pathlib import Path
+for key in ('XDG_CONFIG_HOME','XDG_DATA_HOME','XDG_STATE_HOME'):
+ os.environ[key]=str(Path.cwd()/key.lower())
+from xdog.ai.types import AssistantMessage,TextContent,DoneEvent
+from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.config import ClawConfig
+from xdog.claw.core.runtime.orchestrator import Orchestrator
+from xdog.claw.core.types import Group,GroupConfig
+from xdog.claw.core.inputs.models import InputScope
+from xdog.claw.core.observers.journal import ObserverJournal
+from xdog.claw.acp.server import ClawAcpServer
+from xdog.eyes.acp_client import AcpClient
+from xdog.eyes.connections import UnixConnection
+import xdog.claw.core.inputs.store as storage
+assert Path(storage.__file__).is_relative_to(Path(sys.prefix))
+async def main():
+ root=Path.cwd()
+ entered,release=asyncio.Event(),asyncio.Event()
+ calls=[]
+ def model(_,context,options=None):
+  calls.append(context)
+  response=AssistantMessage(content=(TextContent(text='wheel Claw reply'),))
+  async def events():
+   entered.set()
+   await release.wait()
+   yield DoneEvent(message=response)
+  future=asyncio.get_running_loop().create_future();future.set_result(response)
+  return EventStream.from_async_generator(events(),result_future=future)
+ app=Orchestrator(ClawConfig(data_dir=str(root/'app')),model='test/dummy',stream_fn=model)
+ app.register_group(Group(id='main',workspace=str(root),enabled_tools=(),config=GroupConfig(debounce_ms=0)))
+ await app.start()
+ inputs=await app.input_service();scope=InputScope('main',root)
+ namespace=await inputs.store.namespace(scope)
+ with tempfile.TemporaryDirectory(prefix='claw-wheel-') as private:
+  endpoint=Path(private)/'acp.sock'
+  server=await ClawAcpServer.start(app,endpoint)
+  client=AcpClient(UnixConnection(endpoint),'group:main',root,delivery='enqueue')
+  params={'session_id':'group:main','cwd':str(root),'message_id':'wheel-event',
+          'instruction':'Check the deployment requested ten minutes earlier and report.',
+          'source':'Eyes','evidence':[{'type':'scheduler.due'}],'provenance':{}}
+  try:
+   await client.connect();assert client.inbox_id==namespace
+   assert (await client.enqueue(params))['status']=='queued'
+   await asyncio.wait_for(entered.wait(),5)
+   await client.close();await server.close()
+   assert (await inputs.store.get(scope,'wheel-event')).status=='running'
+   server=await ClawAcpServer.start(app,endpoint)
+   client=AcpClient(UnixConnection(endpoint),'group:main',root,delivery='enqueue')
+   await client.connect();assert client.inbox_id==namespace
+   status=await client.inbox_status('wheel-event')
+   assert status['messages'][0]['status']=='running'
+   release.set()
+   result=await asyncio.wait_for(inputs.wait(scope,'wheel-event'),5)
+   assert result.status=='succeeded' and result.response=='wheel Claw reply'
+   assert (await client.enqueue(params))['status']=='duplicate' and len(calls)==1
+   journal=await ObserverJournal.open(root/'observer'/'state.sqlite3',inputs.store)
+   try:
+    saved=await journal.create('main',root,'storage-only',{'version':2})
+    assert saved.inbox_id==namespace
+   finally:await journal.close()
+   assert (await inputs.store.get(scope,'wheel-event')).status=='succeeded'
+   print(json.dumps({'claw':'wheel-only generic Unix ACP, authoritative core receipt, endpoint restart',
+                     'model_calls':len(calls),'observer_journal_independent':True}))
+  finally:
+   release.set();await client.close();await server.close();await app.stop()
+asyncio.run(main())
+'''
+
+
 def main() -> None:
     dist = Path(sys.argv[1]).resolve()
     root = Path(tempfile.mkdtemp(prefix='xdog-acp-isolated.'))
@@ -228,6 +299,7 @@ def main() -> None:
         ('agent', ('ai', 'agent'), AGENT),
         ('coding', ('ai', 'agent', 'tui', 'coding'), CODING),
         ('coding-owner', ('ai', 'agent', 'tui', 'coding'), CODING_OWNER),
+        ('claw', ('ai', 'agent', 'tui', 'eyes', 'claw'), CLAW),
     ):
         env = root / (name + '-venv')
         work = root / (name + '-work')

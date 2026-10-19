@@ -102,8 +102,8 @@ assert (await inputs.store.get(scope, canonical.id)).status != 'cancelled'
 - Application offers scoped settled hints and capability-owned optional input projection. Neither hook chooses Goal actions or cancels work by Goal/observer status.
 - Gateway display listens to application receipts, not adapter-owned completion callbacks.
 
-- [ ] Add true official-SDK Unix tests: pending/running survives endpoint detach, result/status read same namespace/record as native intake, no second model call, generic status stays model-free.
-- [ ] Add real scheduler/file -> generic ACP -> core input -> Agent -> captured report tests, ACK-loss recovery and explicit separate cancel operations.
-- [ ] Run targeted commands before cutover; expected RED for duplicate/mislabeled old ACP receipt and adapter lifecycle ownership.
-- [ ] Switch consumers, remove old journal/module, update old cancel tests to stronger new contracts rather than disable tests. Keep process/crash/namespace/unknown-send coverage.
-- [ ] Run full root, strict8 mypy/Ruff/Flow/lock and fresh wheels. Expected: all pass; scans show no ACP Goal/observer/schema/consumer references. Commit `refactor(claw): make ACP a thin application adapter` and record remaining whole-goal work explicitly.
+- [x] Add true official-SDK Unix tests: pending/running survives endpoint detach, result/status read same namespace/record as native intake, no second model call, generic status stays model-free.
+- [x] Add real scheduler/file -> generic ACP -> core input -> Agent -> captured report tests, ACK-loss recovery and explicit separate cancel operations.
+- [x] Run targeted commands before cutover; expected RED for duplicate/mislabeled old ACP receipt and adapter lifecycle ownership.
+- [x] Switch consumers, remove old journal/module, update old cancel tests to stronger new contracts rather than disable tests. Keep process/crash/namespace/unknown-send coverage.
+- [x] Run full root, strict8 mypy/Ruff/Flow/lock and fresh wheels. Expected: all pass; scans show no ACP Goal/observer/schema/consumer references. Commit `refactor(claw): make ACP a thin application adapter` and record remaining whole-goal work explicitly.

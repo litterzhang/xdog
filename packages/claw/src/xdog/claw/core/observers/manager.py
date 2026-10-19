@@ -15,8 +15,11 @@ from typing import TYPE_CHECKING, Any, cast
 
 from xdog.agent.async_work import wait_owned
 from xdog.agent.session_input import SessionInput, decode_input
+from xdog.claw.core.inputs.consumer import InputService
+from xdog.claw.core.inputs.models import InputScope
+from xdog.claw.core.inputs.store import InputRecord
+from xdog.claw.core.observers.journal import ObserverJournal
 from xdog.claw.core.observers.models import ObserverRecord, ObserverStopped
-from xdog.claw.core.observers.store import ObserverStore
 from xdog.eyes.deliveries import Delivery
 from xdog.eyes.events import DeliveryResult
 from xdog.eyes.handlers.acp import AcpHandler
@@ -29,7 +32,7 @@ from xdog.eyes.models import AcpHandlerDef, AtSchedule, HandlerDef, ObserverDef,
 from xdog.eyes.service import ObserverService
 
 if TYPE_CHECKING:
-    from xdog.claw.acp.backend import ClawBackend
+    from xdog.claw.core.runtime.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -83,10 +86,17 @@ class _FileHandler:
 
 
 class ManagedObservers:
-    def __init__(self, backend: ClawBackend, endpoint: Path, *, clocks: SchedulerClocks = SchedulerClocks()) -> None:
-        self.backend, self.orchestrator = backend, backend.orchestrator
+    def __init__(self, application: Orchestrator, endpoint: Path, *,
+                 clocks: SchedulerClocks = SchedulerClocks()) -> None:
+        self.orchestrator = application
         self.endpoint, self.clocks = endpoint.absolute(), clocks
-        self.store: ObserverStore = backend.observers
+        self._store: ObserverJournal | None = None
+        self._inputs: InputService | None = None
+        self._opening: asyncio.Task[None] | None = None
+        self._report_signal = asyncio.Event()
+        self._report_task: asyncio.Task[None] | None = None
+        self._unsubscribe: Any = None
+        self._unproject: Any = None
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._cancel: dict[str, asyncio.Event] = {}
         self._handlers: dict[str, AcpHandler] = {}
@@ -96,6 +106,67 @@ class ManagedObservers:
         self._closing = False
         self._close_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
+
+    @property
+    def store(self) -> ObserverJournal:
+        if self._store is None:
+            raise RuntimeError('Managed observers must initialize their journal before use')
+        return self._store
+
+    @property
+    def inputs(self) -> InputService:
+        if self._inputs is None:
+            raise RuntimeError('Managed observer input port is not ready')
+        return self._inputs
+
+    async def _ensure_store(self) -> None:
+        if self._opening is None:
+            self._opening = asyncio.create_task(self._open_store())
+        await wait_owned(self._opening)
+
+    async def _open_store(self) -> None:
+        self._inputs = await self.orchestrator.input_service()
+        self._store = await ObserverJournal.open(self.orchestrator.data_dir / 'observers' / 'journal.sqlite3',
+                                                 self._inputs.store)
+        from xdog.claw.core.planning.notification_adapter import project_notification
+        async def project(receipt: InputRecord, value: Any) -> Any:
+            return await project_notification(self.orchestrator, self.store, receipt, value)
+        self._unproject = self.orchestrator.project_inputs(project)
+        self._unsubscribe = self.orchestrator.subscribe_inputs(lambda _scope: self._report_signal.set())
+        self._report_task = asyncio.create_task(self._reports(), name='claw-observer-reports')
+        self._report_signal.set()
+
+    async def _reports(self) -> None:
+        try:
+            while not self._closing:
+                self._report_signal.clear()
+                for receipt in await self.store.pending_reports():
+                    await self._report(receipt)
+                await self._report_signal.wait()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception('Observer report reconciliation stopped; inspect original outbox')
+
+    async def _report(self, receipt: InputRecord) -> None:
+        if not await self.store.begin_delivery(receipt):
+            return
+        try:
+            if receipt.status == 'succeeded' and not receipt.response.strip():
+                raise ValueError('Agent produced no report')
+            report = receipt.response if receipt.status == 'succeeded' else '观察任务执行失败: ' + receipt.error
+            outcomes = await self.orchestrator.deliver_report(receipt.envelope.scope.group_id, report)
+            errors = [item for item in outcomes if item['status'] != 'delivered']
+            unknown = any(item['status'] == 'unknown' for item in errors)
+            status = 'unknown' if unknown else 'failed' if errors else 'delivered'
+            await self.store.finish_delivery(receipt, status=status,
+                error=json.dumps(outcomes, ensure_ascii=False) if errors else '')
+        except asyncio.CancelledError:
+            await self.store.finish_delivery(receipt, status='unknown',
+                                             error='Report send interrupted; inspect effects')
+            raise
+        except Exception as exc:
+            await self.store.finish_delivery(receipt, status='failed', error=str(exc))
 
     def _cwd(self, group: str) -> Path:
         value = self.orchestrator.get_group_workspace(group)
@@ -139,7 +210,7 @@ class ManagedObservers:
     async def _namespace(self, record: ObserverRecord, handler: AcpHandler) -> None:
         if not record.inbox_id and await self.store.get(record.group_id, record.cwd, record.id) is not None:
             raise ValueError('Saved observer lacks a trusted inbox namespace; inspect before resuming')
-        expected = record.inbox_id or await self.backend.inbox.scope(record.group_id, record.cwd)
+        expected = record.inbox_id or await self.inputs.store.namespace(InputScope(record.group_id, record.cwd))
         if handler.client.inbox_id != expected:
             raise ValueError('ACP inbox namespace changed; no saved work was resent')
 
@@ -162,6 +233,7 @@ class ManagedObservers:
                      owner: str = "", notify_only: bool = False) -> dict[str, Any]:
         if self._closing:
             raise RuntimeError('Managed Eyes is closing')
+        await self._ensure_store()
         task = asyncio.create_task(self._create(group, name, source, instruction,
                                                owner=owner, notify_only=notify_only))
         self._operations.add(task)
@@ -228,40 +300,53 @@ class ManagedObservers:
         current = await self.store.message(record, delivery.id)
         if current != canonical_message(delivery, definition, record.cwd):
             raise ValueError('Delivery was not committed with its source cursor')
+        scope = InputScope(record.group_id, record.cwd)
         while not self._closing:
             current_record = await self.store.get(record.group_id, record.cwd, record.id)
-            if current_record is None or not current_record.enabled or current_record.revision != record.revision:
-                raise ObserverStopped('Observer cancelled or retired')
-            receipt = await self.backend.inbox.get(record.group_id, record.cwd, delivery.id)
+            receipt = await self.inputs.store.get(scope, delivery.id)
             if receipt is not None:
+                await self.store.sync(record)
                 if receipt.status in {'interrupted', 'cancelled'}:
                     await self.store.fail(record, receipt.error or receipt.status, review=True)
                     raise ObserverStopped('Interrupted/cancelled input is not automatically replayed')
                 if receipt.status in {'succeeded', 'failed'}:
+                    self._report_signal.set()
                     occurrence = await self.store.occurrence(receipt)
-                    assert occurrence is not None
+                    if occurrence is None:
+                        raise ValueError('Original observer outbox disappeared')
                     if occurrence['delivery_status'] in {'delivered', 'failed', 'not-required'}:
                         return DeliveryResult('queued', receipt_status='duplicate', message_state=receipt.status)
-                    if occurrence['delivery_status'] == 'unknown' or not occurrence['started']:
-                        await self.store.fail(record, 'Unknown output/admission; inspect before new work', review=True)
-                        raise ObserverStopped('Unknown execution or channel delivery is not replayed')
+                    if occurrence['delivery_status'] == 'unknown':
+                        await self.store.fail(record, 'Unknown output; inspect before new work', review=True)
+                        raise ObserverStopped('Unknown channel delivery is not replayed')
             else:
+                if (current_record is None or not current_record.enabled
+                        or current_record.revision != record.revision):
+                    raise ObserverStopped('Observer stopped before new transport admission')
                 try:
                     handler = await self._handler(record, definition)
                     await self._namespace(record, handler)
+                    if not await self.store.transport_started(record, delivery.id):
+                        raise ObserverStopped('Observer stopped before transport admission')
                     result = await handler.deliver(delivery)
+                    await self.store.transport_finished(record, delivery.id,
+                        status='queued' if result.status in {'queued', 'succeeded'} else
+                               'not-sent' if result.status == 'not-sent' else 'unknown')
                     if result.status not in {'queued', 'succeeded'}:
                         raise ConnectionError(result.error or result.status)
                 except asyncio.CancelledError:
                     raise
                 except ValueError as exc:
                     await self.store.fail(record, str(exc), review=True)
-                    raise ObserverStopped('Target binding changed; no saved work was resent') from exc
+                    raise ObserverStopped('Target binding changed; original work not resent') from exc
+                except ObserverStopped:
+                    raise
                 except Exception as exc:
+                    await self.store.transport_finished(record, delivery.id, status='unknown')
                     await self.store.fail(record, 'Waiting for original-ID intake: ' + str(exc))
-                    rejected_handler = self._handlers.pop(record.id, None)
-                    if rejected_handler is not None:
-                        await rejected_handler.close()
+                    rejected = self._handlers.pop(record.id, None)
+                    if rejected is not None:
+                        await rejected.close()
             await self.clocks.sleep(.1)
         raise asyncio.CancelledError
 
@@ -346,23 +431,31 @@ class ManagedObservers:
                     or json.dumps(message.evidence, sort_keys=True, allow_nan=False)
                     != json.dumps(pending['events'], sort_keys=True, allow_nan=False)):
                 raise ValueError('Owned file pending event lacks its matching immutable outbox')
-            namespace = await self.backend.inbox.scope(record.group_id, record.cwd)
+            namespace = await self.inputs.store.namespace(InputScope(record.group_id, record.cwd))
             if namespace != record.inbox_id:
                 raise ValueError('Inbox namespace changed; no saved work was resent')
-            receipt = await self.backend.inbox.get(record.group_id, record.cwd, identifier)
+            receipt = await self.inputs.store.get(InputScope(record.group_id, record.cwd), identifier)
             if receipt is None:
                 # Host-owned destination/namespace was checked above; this is
                 # exactly the existing canonical leased ACP intake path.
-                await self.backend._enqueue(record.group_id, record.cwd, message)
+                if not await self.store.transport_started(record, identifier):
+                    raise ObserverStopped('Owned source stopped before transport')
+                handler = await self._handler(record, self._definition(record))
+                await handler.client.enqueue({'session_id': 'group:' + record.group_id, 'cwd': str(record.cwd),
+                    'message_id': message.id, 'instruction': message.instruction, 'source': message.source,
+                    'evidence': list(message.evidence), 'provenance': message.provenance})
+                await self.store.transport_finished(record, identifier, status='queued')
             while not cancel.is_set() and not self._closing:
                 current = await self.store.get(record.group_id, record.cwd, record.id)
                 if current is None or not current.enabled or current.revision != record.revision:
                     return
-                receipt = await self.backend.inbox.get(record.group_id, record.cwd, identifier)
+                receipt = await self.inputs.store.get(InputScope(record.group_id, record.cwd), identifier)
                 if receipt is not None:
                     if receipt.status in {'interrupted', 'cancelled'}:
                         raise ValueError('Interrupted file-event execution is not automatically replayed')
                     if receipt.status in {'succeeded', 'failed'}:
+                        await self.store.sync(record)
+                        self._report_signal.set()
                         occurrence = await self.store.occurrence(receipt)
                         if occurrence is None or occurrence['delivery_status'] == 'unknown':
                             raise ValueError('Owned file event has unknown delivery; inspect before restarting')
@@ -385,12 +478,14 @@ class ManagedObservers:
             await self.store.fail(record, str(exc), review=True)
 
     async def start(self) -> None:
+        await self._ensure_store()
         for record in await self.store.list():
             if record.enabled and record.recovery == 'managed':
                 try:
                     await self._activate(record)
                 except Exception as exc:
                     await self.store.fail(record, str(exc), review=True)
+        self.inputs.resume()
 
     async def resume_owned(self, group: str, identifier: str, *, owner: str) -> dict[str, Any]:
         """Host-only explicit restoration of a Goal-owned file observer.
@@ -400,6 +495,7 @@ class ManagedObservers:
         """
         if self._closing:
             raise RuntimeError('Managed Eyes is closing')
+        await self._ensure_store()
         task = asyncio.create_task(self._resume_owned(group, identifier, owner))
         self._operations.add(task)
         try:
@@ -423,11 +519,18 @@ class ManagedObservers:
             return await self.status(group, identifier)
 
     async def status(self, group: str, identifier: str) -> dict[str, Any]:
+        await self._ensure_store()
         record = await self.store.get(group, self._cwd(group), identifier)
         if record is None:
             raise ValueError('Unknown observer in the current group/workspace')
+        await self.store.sync(record)
+        updated = await self.store.get(group, self._cwd(group), identifier)
+        if updated is None:
+            raise ValueError('Observer disappeared during status reconciliation')
+        record = updated
         source = record.definition.get('sources', [{}])[0]
-        state = 'failed' if identifier in self._faults else record.recovery
+        state = (record.recovery if record.recovery in {'needs_review', 'cancelled'} else
+                 'failed' if identifier in self._faults else record.recovery)
         runtime: dict[str, JsonValue] | None = None
         if record.enabled:
             if identifier in self._tasks:
@@ -446,10 +549,11 @@ class ManagedObservers:
         return {'id': record.id, 'name': record.name, 'enabled': record.enabled, 'revision': record.revision,
                 'state': state, 'source': source, 'instruction': instruction, 'next_due': next_due,
                 'error': record.error or self._faults.get(identifier, ''), 'runtime': runtime,
-                'owner': record.owner, 'notify_only': record.notify_only,
+                'owner': record.owner, 'notify_only': record.notify_only, 'reports_enabled': record.reports_enabled,
                 'history_window': 64, 'occurrences': await self.store.history(group, record.cwd, identifier)}
 
     async def list(self, group: str) -> tuple[dict[str, Any], ...]:
+        await self._ensure_store()
         # Keep inventory bounded: full source/instruction/history is available
         # through status rather than multiplying one-MiB definitions by 128.
         results = []
@@ -471,6 +575,7 @@ class ManagedObservers:
         return tuple(results)
 
     async def cancel(self, group: str, identifier: str) -> dict[str, Any]:
+        await self._ensure_store()
         result = await self.store.cancel(group, self._cwd(group), identifier)
         if identifier in self._cancel:
             self._cancel[identifier].set()
@@ -481,7 +586,12 @@ class ManagedObservers:
         if service is not None:
             await service.aclose()
         return {**result, 'id': identifier,
-                'notice': 'Only not-started work was cancelled; started effects cannot be undone'}
+                'notice': 'Stopped future collection; accepted inputs and reports were not withdrawn'}
+
+    async def cancel_notifications(self, group: str, identifier: str) -> dict[str, Any]:
+        await self._ensure_store()
+        await self.store.cancel_notifications(group, self._cwd(group), identifier)
+        return {'id': identifier, 'notifications_cancelled': True, 'execution_cancelled': False}
 
     async def close(self) -> None:
         if self._close_task is None:
@@ -499,3 +609,14 @@ class ManagedObservers:
         self._files.clear()
         await asyncio.gather(*(handler.close() for handler in self._handlers.values()), return_exceptions=True)
         self._handlers.clear()
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+        if self._unproject is not None:
+            self._unproject()
+        if self._report_task is not None:
+            self._report_task.cancel()
+            await asyncio.gather(self._report_task, return_exceptions=True)
+        if self._opening is not None:
+            await asyncio.gather(self._opening, return_exceptions=True)
+        if self._store is not None:
+            await self._store.close()
