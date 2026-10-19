@@ -187,8 +187,7 @@ class ObserverJournal:
                                                record.revision, payload, time.time()))
             if state.get('pending', True) is None and db.execute(
                     "SELECT 1 FROM outbox WHERE observer_id=? AND cancelled=0 AND (receipt_status='unaccepted' "
-                    "OR execution_status IN ('pending','claimed','running') "
-                    "OR delivery_status IN ('pending','sending'))",
+                    "OR execution_status IN ('pending','claimed','running'))",
                     (record.id,)).fetchone() is not None:
                 raise ValueError('Cannot discard an unfinished source outbox')
             db.execute("UPDATE observers SET state=?,error='' WHERE observer_id=?", (checkpoint, record.id))
@@ -310,6 +309,18 @@ class ObserverJournal:
                                                                    receipt.envelope.message.id))
             return changed.rowcount == 1
         return await self._disk(begin)
+
+    async def defer_delivery(self, receipt: InputRecord, error: str) -> None:
+        """Known unavailable recipient: no send was admitted, no unknown effect.
+
+        Leave the independent report outbox pending; do not reuse source pending
+        as its owner or publish a fictitious sending/crash-recovery transition.
+        """
+        scope = receipt.envelope.scope
+        await self._disk(lambda db: db.execute("UPDATE outbox SET delivery_error=? "
+            "WHERE group_id=? AND cwd=? AND message_id=? AND attempt_id=? "
+            "AND delivery_status='pending' AND execution_status IN ('succeeded','failed')",
+            (error[:4096], scope.group_id, str(scope.workspace), receipt.envelope.message.id, receipt.attempt_id)))
 
     async def finish_delivery(self, receipt: InputRecord, *, status: str, error: str = '') -> None:
         if status not in {'delivered', 'failed', 'unknown', 'pending', 'not-required'}:

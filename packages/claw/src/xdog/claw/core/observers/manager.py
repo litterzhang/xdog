@@ -150,13 +150,18 @@ class ManagedObservers:
             logger.exception('Observer report reconciliation stopped; inspect original outbox')
 
     async def _report(self, receipt: InputRecord) -> None:
+        target = await self.store.reply_for(receipt)
+        if target is not None and not self.orchestrator.report_recipient_available(target):
+            await self.store.defer_delivery(receipt, json.dumps([{
+                'channel': target.channel, 'status': 'pending', 'accepted_chunks': 0,
+                'error': 'Original recipient unavailable; no fallback destination'}], ensure_ascii=False))
+            return
         if not await self.store.begin_delivery(receipt):
             return
         try:
             if receipt.status == 'succeeded' and not receipt.response.strip():
                 raise ValueError('Agent produced no report')
             report = receipt.response if receipt.status == 'succeeded' else '观察任务执行失败: ' + receipt.error
-            target = await self.store.reply_for(receipt)
             if target is None:
                 await self.store.finish_delivery(receipt, status='not-required')
                 return

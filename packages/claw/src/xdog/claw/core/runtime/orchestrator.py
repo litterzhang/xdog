@@ -503,6 +503,13 @@ class Orchestrator:
             raise ValueError('Unknown reply workspace')
         return self._channel_replies.capture(InputScope(original.group_id, workspace), channel, original)
 
+    def report_recipient_available(self, reference: ReplyReference) -> bool:
+        """A preflight hint, not a send receipt or permission to change destination."""
+        if (not isinstance(reference, ReplyReference)
+                or self.get_group_workspace(reference.scope.group_id) != reference.scope.workspace):
+            raise ValueError('Original report recipient scope changed')
+        return self._channel_replies.recipient(reference) is not None
+
     async def deliver_report(self, reference: ReplyReference, text: str, *, delivery_id: str
                              ) -> list[dict[str, object]]:
         """Send only to a captured destination; group labels never select a sender."""
