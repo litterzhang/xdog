@@ -76,8 +76,9 @@ Actual client identity and pinned bindings fence reads and later callback output
 unavailable is not an empty dataset. Queries/snapshots are finite bounded JSON.
 Coalesced `view_changed` hints run on the existing worker owner without starting
 workers/models. This layer knows no Goal schema and owns no business lifetime.
-See `docs/extension-owner-views.md`; shared Goal display/host binding is still in
-progress, not provided by loading this protocol alone.
+See `docs/extension-owner-views.md` and `docs/shared-goal-extension-verification.md`.
+The shared Goal display is separately bound by actual capability adapters; loading
+this generic protocol alone still grants no business view or task authority.
 
 ### `xdog.flow`: typed workflow engine and primary product surface
 
@@ -172,8 +173,10 @@ still does not retract accepted reports. No old journal upgrade is performed.
 The broader assistant-core refactor remains in progress: Coding now adopts the
 standalone optional Goal; Claw has a group-owned optional adapter replacing its
 legacy Goal manager. Claw has optional goals/eyes/acp install extras and cold
-base/two-host evidence; shared extension UI and final feature-output streaming
-remain pending.
+base/two-host evidence. The same packaged Goal display and generic owner-bound
+views are verified in both actual source and cold installed hosts; observer
+per-message feature output/cancellation, inert configuration cleanup and final
+acceptance/review remain pending.
 Ordinary output receipts live in `<data_dir>/outputs/journal.sqlite3`: per-message
 send attempts distinguish delivered/pending/proven-not-sent/unknown independently
 from Agent execution. Unknown sends are never automatically replayed. Native
@@ -308,7 +311,7 @@ number representation. Busy managed schedules skip ticks without overlapping;
 accepted one-offs survive downtime. Claw restores only its managed time observers,
 never automatically restarts ordinary file observation. Eyes still imports no harness.
 
-### `xdog.goal`: optional host-neutral Goal kernel (cutover in progress)
+### `xdog.goal`: optional host-neutral Goal kernel
 
 The ninth distribution depends directly only on `xdog-agent` and stdlib. Frozen
 models/codecs and GoalStore own private leased/versioned Goal history, reports,
@@ -329,7 +332,9 @@ uses exact session/branch and Claw current-parent/stable-group scope; shared
 GoalDisplay owns only readonly data-read settlement, never business lifetime.
 Known display_only profiles have no validation/tool/provider/entry authority;
 unknown/default extensions keep fail-closed gates. Both native TUIs use generic
-ExtensionView, not Goal schema. Cold same-extension/final acceptance remain pending.
+ExtensionView, not Goal schema. Same-wheel/same-extension cold Coding/Claw and
+Goal-only-without-TUI consumers are verified; final whole-objective acceptance
+remains pending. See `docs/shared-goal-extension-verification.md`.
 
 ### `xdog.tui` and `xdog.site`
 
