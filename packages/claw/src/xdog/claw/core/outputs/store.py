@@ -12,8 +12,8 @@ from pathlib import Path
 from xdog.agent.leased_sqlite import LeasedSqlite
 from xdog.claw.core.inputs.models import InputEnvelope, InputScope, decode_envelope, encode_envelope
 
-_FORMAT = "xdog.claw.outputs.v1"
-_STATES = frozenset({"pending", "sending", "delivered", "unknown"})
+_FORMAT = "xdog.claw.outputs.v2"
+_STATES = frozenset({"pending", "sending", "delivered", "unknown", "cancelled"})
 _SCHEMA = """
 CREATE TABLE origins (
     origin_id TEXT PRIMARY KEY, group_id TEXT NOT NULL, workspace TEXT NOT NULL, message_id TEXT NOT NULL,
@@ -137,7 +137,7 @@ def _validate(db: sqlite3.Connection) -> None:
             if attempt["status"] not in {"sending", "not_sent", "delivered", "unknown"}:
                 raise ValueError("Unknown output send attempt state")
         if record.send_id:
-            state = "not_sent" if record.status == "pending" else record.status
+            state = "not_sent" if record.status in {"pending", "cancelled"} else record.status
             if (
                 not attempts
                 or (attempts[-1]["send_id"], attempts[-1]["status"], attempts[-1]["error"])
@@ -145,7 +145,7 @@ def _validate(db: sqlite3.Connection) -> None:
                 or any(attempt["status"] != "not_sent" for attempt in attempts[:-1])
             ):
                 raise ValueError("Output and send attempt facts disagree")
-        elif attempts or record.status != "pending" or record.error:
+        elif attempts or record.status not in {"pending", "cancelled"} or record.error:
             raise ValueError("Output delivery state is missing its send attempt")
 
 
@@ -211,6 +211,25 @@ class OutputStore:
             return [_record(row) for row in db.execute(query + " ORDER BY o.sequence", args)]
 
         return await self._database.disk(read)
+
+    async def cancel_pending(self, scope: InputScope, message_ids: tuple[str, ...]) -> tuple[str, ...]:
+        """Cancel only positively unsent outputs, preserving every actual send fact."""
+        if not isinstance(scope, InputScope) or type(message_ids) is not tuple:
+            raise ValueError("Output cancellation requires a frozen scope/message selection")
+        for identifier in message_ids:
+            _label(identifier)
+        selected = frozenset(message_ids)
+
+        def write(db: sqlite3.Connection) -> tuple[str, ...]:
+            rows = db.execute(_QUERY + " WHERE b.group_id=? AND b.workspace=? AND o.status='pending' "
+                              "ORDER BY o.sequence", (scope.group_id, str(scope.workspace)))
+            identifiers = tuple(row["output_id"] for row in rows if row["message_id"] in selected)
+            for identifier in identifiers:
+                db.execute("UPDATE outputs SET status='cancelled' WHERE output_id=? AND status='pending'",
+                           (identifier,))
+            return identifiers
+
+        return await self._database.disk(write)
 
     async def begin(self, identifier: str) -> OutputRecord:
         def write(db: sqlite3.Connection) -> OutputRecord:

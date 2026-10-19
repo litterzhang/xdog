@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable, Sequence
 
 from xdog.agent.async_work import wait_owned
 from xdog.claw.core.inputs.models import InputEnvelope, InputScope
+from xdog.claw.core.outputs.routes import Policy, ReadPolicy
 from xdog.claw.core.outputs.store import OutputRecord, OutputStore
 
 Sender = Callable[[OutputRecord], Awaitable[None]]
@@ -24,8 +25,8 @@ class OutputDelivery:
     already committed output's transport lifetime.
     """
 
-    def __init__(self, store: OutputStore, resolve_sender: ResolveSender) -> None:
-        self.store, self.resolve_sender = store, resolve_sender
+    def __init__(self, store: OutputStore, resolve_sender: ResolveSender, *, gate: ReadPolicy | None = None) -> None:
+        self.store, self.resolve_sender, self.gate = store, resolve_sender, gate
         self._locks: dict[InputScope, asyncio.Lock] = {}
         self._tasks: set[asyncio.Task[None]] = set()
         self._closing = False
@@ -60,6 +61,19 @@ class OutputDelivery:
         scopes = {row.envelope.scope for row in await self.store.records() if row.status == 'pending'}
         await asyncio.gather(*(self._start(scope) for scope in scopes))
 
+    async def cancel_pending(self, scope: InputScope, message_ids: tuple[str, ...]) -> tuple[str, ...]:
+        # Do not wait behind an entered network sender or cancel its actual work.
+        return await self.store.cancel_pending(scope, message_ids)
+
+    async def _policy(self, row: OutputRecord) -> Policy:
+        try:
+            value = await self.gate(row) if self.gate is not None else "ready"
+        except (OSError, RuntimeError):
+            return "pending"  # Capability/IO unavailable is not permission to enter the sender.
+        if value not in {"ready", "pending", "cancelled"}:
+            raise ValueError("Invalid host output policy")
+        return value
+
     async def _drain(self, scope: InputScope) -> None:
         lock = self._locks.setdefault(scope, asyncio.Lock())
         async with lock:
@@ -67,6 +81,12 @@ class OutputDelivery:
                 if self._closing:
                     return
                 if row.status != 'pending':
+                    continue
+                policy = await self._policy(row)
+                if policy == "cancelled":
+                    await self.store.cancel_pending(scope, (row.envelope.message.id,))
+                    continue
+                if policy == "pending":
                     continue
                 sender = self.resolve_sender(row)
                 if sender is None:
@@ -78,6 +98,14 @@ class OutputDelivery:
         entered_sender = False
         try:
             started = await self.store.begin(row.id)
+            policy = await self._policy(started)
+            if policy != "ready":
+                await self.store.settle(row.id, started.send_id, "pending",
+                    "Notification cancelled before transport" if policy == "cancelled" else
+                    "Output policy unavailable before transport")
+                if policy == "cancelled":
+                    await self.store.cancel_pending(row.envelope.scope, (row.envelope.message.id,))
+                return
             entered_sender = True
             await sender(started)
         except asyncio.CancelledError:
@@ -96,8 +124,13 @@ class OutputDelivery:
             await self.store.settle(row.id, started.send_id, 'pending', str(exc))
         except Exception as exc:
             if started is None:
+                current = next((item for item in await self.store.records(row.envelope.scope)
+                                if item.id == row.id), None)
+                if current is not None and current.status == "cancelled":
+                    return  # An explicit pending-only cancellation won before begin.
                 raise  # Storage is not transport; do not relabel a failed commit.
-            await self.store.settle(row.id, started.send_id, 'unknown', str(exc) or type(exc).__name__)
+            await self.store.settle(row.id, started.send_id, 'unknown' if entered_sender else 'pending',
+                                    str(exc) or type(exc).__name__)
         else:
             await self.store.settle(row.id, started.send_id, 'delivered')
 

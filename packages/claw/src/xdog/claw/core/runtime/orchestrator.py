@@ -25,7 +25,16 @@ from xdog.claw.core.inputs.consumer import Admit, InputOutcome, InputService
 from xdog.claw.core.inputs.models import InputEnvelope, InputScope, ReplyTarget
 from xdog.claw.core.inputs.store import InputRecord, InputStore
 from xdog.claw.core.outputs.delivery import DeliveryNotSent, OutputDelivery
-from xdog.claw.core.outputs.store import OutputStore
+from xdog.claw.core.outputs.routes import (
+    OutputRoute,
+    Policy,
+    ReadPolicy,
+    ResolveReply,
+    apply_route,
+    saved_route,
+    source_name,
+)
+from xdog.claw.core.outputs.store import OutputRecord, OutputStore
 from xdog.claw.core.outputs.targets import ReplyReference
 from xdog.claw.core.runtime.channel_adapter import ChannelReplies, ChannelReply, durable_reply
 from xdog.claw.core.runtime.group import GroupRuntime
@@ -96,6 +105,7 @@ class Orchestrator:
         self._input_calls: dict[tuple[InputScope, str], _InputCall] = {}
         self._inputs_stopping = False
         self._input_listeners: set[Callable[[InputScope], None]] = set()
+        self._output_sources: dict[str, tuple[ResolveReply, ReadPolicy]] = {}
 
     # -- Group registration ----------------------------------------------------
 
@@ -176,7 +186,7 @@ class Orchestrator:
         outputs: OutputDelivery | None = None
         try:
             output_store = await OutputStore.open(self._data_dir / 'outputs' / 'journal.sqlite3')
-            outputs = OutputDelivery(output_store, self._channel_replies.resolve)
+            outputs = OutputDelivery(output_store, self._channel_replies.resolve, gate=self._output_policy)
             scopes = [InputScope(group, workspace) for group in tuple(self._runtimes)
                       if (workspace := self.get_group_workspace(group)) is not None]
             for scope in scopes:
@@ -228,12 +238,58 @@ class Orchestrator:
             except Exception:
                 logger.exception('Optional application input listener failed')
 
+    def register_output_source(self, name: str, resolve: ResolveReply, policy: ReadPolicy) -> Callable[[], None]:
+        """Register host-owned ports, never a source/provenance-selected capability."""
+        name = source_name(name)
+        if name in self._output_sources or not callable(resolve) or not callable(policy) or self._inputs_stopping:
+            raise ValueError("Output source already owned, invalid or stopping")
+        ports = resolve, policy
+        self._output_sources[name] = ports
+
+        def remove() -> None:
+            if self._output_sources.get(name) is ports:
+                self._output_sources.pop(name)
+        return remove
+
+    async def _output_policy(self, row: OutputRecord) -> Policy:
+        route = saved_route(row.envelope)
+        if route is None:
+            return "ready"
+        ports = self._output_sources.get(route.source)
+        if ports is None:
+            return "pending"  # Unknown/offline capability never means new destination or approval.
+        result = await ports[1](row)
+        return result if self._output_sources.get(route.source) is ports else "pending"
+
+    async def _route_external_output(self, envelope: InputEnvelope) -> InputEnvelope:
+        selected: OutputRoute | None = None
+        for name, ports in tuple(self._output_sources.items()):
+            reference = await ports[0](envelope)
+            if self._output_sources.get(name) is not ports:
+                raise RuntimeError("Output source changed during intake; no route was committed")
+            if reference is not None:
+                if selected is not None:
+                    raise ValueError("Ambiguous original output route")
+                selected = OutputRoute(name, reference)
+        return apply_route(envelope, selected) if selected is not None else envelope
+
     async def accept_external(self, scope: InputScope, message: SessionInput) -> tuple[InputRecord, bool]:
         if self.get_group_workspace(scope.group_id) != scope.workspace:
             raise ValueError('External input target/workspace changed')
         envelope = freeze_input(ExternalInput(group_id=scope.group_id, content='', sender='acp', channel='acp',
             metadata={'input_origin': 'external'}, canonical=message), scope.workspace, message_id=message.id)
         service = await self.input_service()
+        existing = await service.store.get(scope, message.id)
+        if existing is not None:
+            saved_route(existing.envelope)  # Validate any persisted host route before returning its receipt.
+            if (existing.envelope.message != envelope.message or existing.envelope.scope != envelope.scope
+                    or existing.envelope.images != envelope.images or existing.envelope.human_authorized
+                    or existing.envelope.context.get('kind') != 'external'):
+                raise ValueError("Accepted external input content conflict")
+            # ACK loss/restart cannot reselect a destination from a later live source.
+            envelope = existing.envelope
+        else:
+            envelope = await self._route_external_output(envelope)
         maximum = self._runtimes[scope.group_id].group.config.max_queued_messages
         return await service.submit(envelope, max_pending=maximum)
 
@@ -272,11 +328,15 @@ class Orchestrator:
                     reference = ReplyReference(record.envelope.scope, 'saved-original-channel', original)
             if reference is not None and reference.scope != record.envelope.scope:
                 raise ValueError('Reply reference no longer matches the input workspace')
+            routed = saved_route(record.envelope)
+            if routed is not None:
+                reference = routed.reference
             options['reply_reference'] = reference
-            if isinstance(reply, ChannelReply) or recovered:
+            if isinstance(reply, ChannelReply) or recovered or routed is not None:
                 if self._outputs is None:
                     raise RuntimeError('Application output receipts were not initialized')
-                binding = reply.binding if isinstance(reply, ChannelReply) else 'saved-original-channel'
+                binding = (routed.reference.binding if routed is not None and routed.reference is not None else
+                           reply.binding if isinstance(reply, ChannelReply) else 'saved-original-channel')
                 send = durable_reply(self._outputs, record, binding)
                 options['on_assistant_message'] = send
                 async def send_error(error: str) -> None:

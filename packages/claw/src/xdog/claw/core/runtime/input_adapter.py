@@ -59,7 +59,12 @@ def restore_input(value: InputEnvelope) -> GroupInput:
         content = content[len('[Blank image input]\n'):]
     common: dict[str, Any] = {'group_id': value.scope.group_id, 'content': content, 'metadata': metadata}
     if kind in {'user', 'external'}:
-        sender, channel, timestamp = context.get('sender'), context.get('channel'), context.get('timestamp')
+        # Routed external messages reconstruct an original ReplyReference,
+        # whose routing contract has no timestamp. Omit that redundant zero in
+        # the stored context to preserve the existing64KiB host metadata bound.
+        default_timestamp = 0 if kind == 'external' and 'output' in context else None
+        sender, channel = context.get('sender'), context.get('channel')
+        timestamp = context.get('timestamp', default_timestamp)
         if (not isinstance(sender, str) or not isinstance(channel, str)
                 or not isinstance(timestamp, (int, float)) or isinstance(timestamp, bool)):
             raise ValueError('Invalid saved input channel projection')
