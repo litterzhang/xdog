@@ -206,6 +206,10 @@ class GroupRuntime:
             except Exception:
                 pass  # No API embedding available — local only
 
+        # Validate/load durable context and instruction roots before allocating
+        # optional search workers; malformed current data must not orphan them.
+        transcript_store = TranscriptStore(group_dir / "sessions", owner_group=group.id)
+        skill_manager = SkillManager(shared_dir=data_dir / "skills", group_dir=ws / "skills")
         memory = MemoryManager(ws, group_dir, group.id, embed_fn=embed_fn)
         flush_runner = FlushRunner(resolved_model, stream_fn) if resolved_model else None
         summarizer = Summarizer(resolved_model) if resolved_model else None
@@ -219,12 +223,9 @@ class GroupRuntime:
             stream_fn=stream_fn,
             agent_config=cfg,
             workspace_dir=ws,
-            transcript_store=TranscriptStore(group_dir / "sessions", owner_group=group.id),
+            transcript_store=transcript_store,
             memory=memory,
-            skill_manager=SkillManager(
-                shared_dir=data_dir / "skills",
-                group_dir=ws / "skills",
-            ),
+            skill_manager=skill_manager,
             flush_runner=flush_runner,
             summarizer=summarizer,
             send_fn=send_fn, observers=observers, mcp_servers=mcp_servers,
@@ -584,6 +585,36 @@ class GroupRuntime:
             info["image_limits"] = {"count": getattr(limits, "max_prompt_images", 0) or 4,
                                     "bytes": getattr(limits, "max_prompt_image_size", 0) or 10 * 1024 * 1024,
                                     "types": list(getattr(limits, "supported_media_types", ())) }
+        return info
+
+    async def read_session_info(self) -> dict[str, Any]:
+        """Capture runtime identity here; IO ports return detached readonly data."""
+        import json
+
+        from xdog.agent.async_work import run_owned
+        from xdog.claw.core.persistence.session_status import read
+
+        generation, model_name = self._source_revision, self.model
+        workspace = str(self.workspace_dir)
+        # Existing narrow metadata lookup port is readonly, including extension
+        # metadata. Do not offload this entire mutable Runtime or its Agent.
+        metadata = await run_owned(self.image_model_info) if model_name else None
+        data = await run_owned(read, self.transcript_store, self.group.id)
+        identifier = data.meta.session_id if data.meta is not None else ''
+        if (self._source_revision != generation or self.model != model_name
+                or (self.get_new_session_id() or '') != identifier):
+            raise ValueError('Status owner changed; refresh the current group')
+        info: dict[str, Any] = {'workspace_dir': workspace}
+        if data.meta is not None:
+            info.update(session_id=data.meta.session_id, turn_count=data.meta.turn_count,
+                        session_name=data.meta.label, history_format=2,
+                        history=json.loads(data.history_json), usage=dict(data.usage))
+        if model_name:
+            limits = getattr(metadata, 'vision_limits', None)
+            info.update(model=model_name, image_input=getattr(metadata, 'supports_image_input', None),
+                        image_limits={'count': getattr(limits, 'max_prompt_images', 0) or 4,
+                                      'bytes': getattr(limits, 'max_prompt_image_size', 0) or 10 * 1024 * 1024,
+                                      'types': list(getattr(limits, 'supported_media_types', ()))})
         return info
 
     def capture_source(self, expected_session: str) -> SourceCapture:

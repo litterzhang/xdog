@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
-from xdog.agent.async_work import wait_owned
+from xdog.agent.async_work import run_owned, wait_owned
 from xdog.agent.core import CatalogStreamFn, ModelStreamFn
 from xdog.agent.extensions.command_result import ExtensionCommandResult
 from xdog.agent.mcp.completion import McpCompletion, request_arguments
@@ -710,7 +710,6 @@ class Orchestrator:
 
     async def manage_access(self, group_id: str, action: str, expected_session: str) -> dict[str, Any]:
         from xdog.agent.access import AccessState
-        from xdog.agent.async_work import run_owned
         runtime = self._runtimes.get(group_id)
         if runtime is None:
             raise ValueError("Unknown group")
@@ -792,7 +791,6 @@ class Orchestrator:
                 session.agent.set_options(replace(session.agent.options,
                     thinking=None if level == "off" else cast(ThinkingLevel, level)))
                 runtime._source_revision += 1
-            from xdog.agent.async_work import run_owned
             try:
                 await run_owned(persist)
             except asyncio.CancelledError:
@@ -838,7 +836,7 @@ class Orchestrator:
             selected = model.id  # Persist and route the canonical identity, not a short lookup alias.
             target_thinking = session.agent.options.thinking
             if selected != session.agent.state.model:
-                saved = await asyncio.to_thread(runtime.transcript_store.get_reasoning,
+                saved = await run_owned(runtime.transcript_store.get_reasoning,
                                                 session.meta.session_id, selected)
                 target_thinking = (None if saved == "off" else cast(ThinkingLevel, saved) if saved is not None
                                    else runtime.agent_config.options.thinking)
@@ -866,7 +864,6 @@ class Orchestrator:
                 runtime.model, runtime.context_window = selected, model.context_window
                 runtime.max_prompt_tokens = model.max_prompt_tokens
                 runtime._source_revision += 1
-            from xdog.agent.async_work import run_owned
             try:
                 await run_owned(persist)
             except asyncio.CancelledError:
@@ -951,7 +948,6 @@ class Orchestrator:
                 if event.get("type") == "extension_notice" and len(notices) < 8 and owned():
                     notices.append(str(event.get("text", ""))[:4000])
             async def catalog(extension: str, request: dict[str, Any]) -> dict[str, Any] | None:
-                from xdog.agent.async_work import run_owned
                 from xdog.agent.extensions.catalog import page
                 if (action != "command" or not name.lower().startswith("ext-" + extension.lower() + "-")
                         or not owner_session or not owned()):
@@ -1130,7 +1126,7 @@ class Orchestrator:
         runtime = self._runtimes.get(group_id)
         if runtime is None:
             raise ValueError("Unknown group")
-        return await asyncio.to_thread(runtime.navigation_entries, scope)
+        return await run_owned(runtime.navigation_entries, scope)
 
     async def navigate_session(self, group_id: str, action: str, session_id: str, branch_id: str,
                                index: int, expected_session: str) -> None:
@@ -1249,6 +1245,10 @@ class Orchestrator:
         if not runtime:
             return {}
         return runtime.get_session_info()
+
+    async def read_session_info(self, group_id: str) -> dict[str, Any]:
+        runtime = self._runtimes.get(group_id)
+        return await runtime.read_session_info() if runtime is not None else {}
 
     def capture_source(self, group_id: str, expected_session: str) -> SourceCapture:
         runtime = self._runtimes.get(group_id)

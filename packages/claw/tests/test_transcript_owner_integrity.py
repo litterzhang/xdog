@@ -74,3 +74,19 @@ def test_genuinely_missing_or_valid_native_index_retains_its_actual_binding(tmp_
     restored = TranscriptStore(root, owner_group="main")
     assert restored.get_active_session("main") == created
     assert (root / "sessions.json").read_bytes() == original
+
+
+@pytest.mark.parametrize("setting", ["model", "thinking"])
+def test_dangling_saved_selection_is_unknown_data_not_permission_to_fall_back(tmp_path, setting):
+    store = TranscriptStore(tmp_path, owner_group="main")
+    meta = store.create_session("main")
+    suffix = ".model.json" if setting == "model" else ".thinking.json"
+    path = tmp_path / (meta.session_id + suffix)
+    target = tmp_path / "missing-selection"
+    path.symlink_to(target)
+    with pytest.raises(ValueError, match="selection"):
+        if setting == "model":
+            store.get_model(meta.session_id)
+        else:
+            store.get_reasoning(meta.session_id, "test/model")
+    assert path.is_symlink() and not target.exists()

@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from xdog.agent import AgentConfig
-from xdog.agent.async_work import wait_owned
+from xdog.agent.async_work import run_owned, wait_owned
 from xdog.agent.mcp.completion import McpCompletion
 from xdog.agent.mcp.context import McpDocument, McpEntry
 from xdog.agent.supervision_config import ChildConfig
@@ -179,23 +179,27 @@ class GatewayServer:
             self._stop_task = None
             self._shutdown_event.clear()
 
-        # Initialize orchestrator
+        # Acquire still-unpublished IO resources on a worker. Actual Agent,
+        # consumer and capability owner loops start only after adoption here.
+        from xdog.claw.core.runtime.bootstrap import build
+        building = asyncio.create_task(asyncio.to_thread(build, self._config))
+        try:
+            built = await wait_owned(building)
+        except BaseException:
+            if building.done() and not building.cancelled() and building.exception() is None:
+                orphan = building.result().application
+                await wait_owned(asyncio.create_task(orphan.stop()))
+            raise
+        self._orchestrator = built.application
+        if built.error is not None:
+            await wait_owned(asyncio.create_task(self._orchestrator.stop()))
+            raise built.error
         data_dir = Path(self._config.data_dir)
-        model, stream_fn = _build_model_and_options(self._config)
-        self._orchestrator = Orchestrator(
-            self._config,
-            model=model, stream_fn=stream_fn,
-            data_dir=data_dir,
-        )
-
-        # Register groups
-        for group in _groups_from_config(self._config):
-            self._orchestrator.register_group(group)
 
         try:
             for runtime in self._orchestrator._runtimes.values():
                 current = runtime.get_new_session_id() or ""
-                selected = runtime.transcript_store.get_extension_model(current) if current else ""
+                selected = await run_owned(runtime.transcript_store.get_extension_model, current) if current else ""
                 if runtime.model.startswith("ext-") or selected:
                     session = await runtime.prepare_session(allow_reset=False)
                     await session.initialize_extensions(require_model=True)
@@ -266,7 +270,7 @@ class GatewayServer:
             os.chmod(str(self._socket_path), stat.S_IRUSR | stat.S_IWUSR)
 
             # Write PID file
-            self._write_pid()
+            await run_owned(self._write_pid)
 
 
             logger.info("Gateway listening on %s (PID: %d)", self._socket_path, os.getpid())
@@ -318,6 +322,8 @@ class GatewayServer:
         native_reads: set[asyncio.Task[None]] = set()
         native_aborts: dict[str, asyncio.Task[None]] = {}
         extension_jobs: set[asyncio.Task[None]] = set()
+        status_jobs: set[asyncio.Task[None]] = set()
+        status_sequence = asyncio.Lock()
         extension_controls: dict[str, tuple[asyncio.Task[None], str, str]] = {}
         extension_started: set[str] = set()
         argument_jobs: dict[str, tuple[asyncio.Task[None], str, str]] = {}
@@ -807,7 +813,7 @@ class GatewayServer:
                             sid = owner.meta.session_id
                             if requested_session and sid != requested_session:
                                 raise ValueError('Tool inventory owner changed')
-                            snapshot = await asyncio.to_thread(owner._extension_tools)
+                            snapshot = await run_owned(owner._extension_tools)
                             if (not tool_inventory_supported or runtime_owner._active_session is not owner
                                     or owner.meta.session_id != sid or snapshot is None):
                                 raise ValueError('Tool inventory owner unavailable')
@@ -1646,7 +1652,7 @@ class GatewayServer:
                                     'Target preparation/navigation failed; current context retained')
                             await write(response)
                             if response.get('success') is True and action != 'rename':
-                                info = await asyncio.to_thread(self._orchestrator.get_session_info, gid)
+                                info = await self._orchestrator.read_session_info(gid)
                                 history = info.pop('history', [])
                                 await write({'type': 'session_changed', 'request_id': rid,
                                              **info, 'history_count': len(history)})
@@ -1712,7 +1718,7 @@ class GatewayServer:
                         try:
                             images = uploads.resolve(request.get("image_refs")) if action == "add" else ()
                             if images:
-                                await asyncio.to_thread(self._orchestrator.validate_images, group_id, images)
+                                await run_owned(self._orchestrator.validate_images, group_id, images)
                             # Validation yields; a settled run must not enqueue into
                             # a successor session that now owns the same group.
                             success = not run.task.done() and runs.get(run_id) is run and (
@@ -1776,7 +1782,7 @@ class GatewayServer:
                     content = request.get("content")
                     try:
                         if self._orchestrator is not None:
-                            await asyncio.to_thread(self._orchestrator.validate_images, group_id, images)
+                            await run_owned(self._orchestrator.validate_images, group_id, images)
                         request = {**request, "_images": images}
                     except ValueError as exc:
                         await write({"type": "error", "run_id": run_id, "message": str(exc)})
@@ -1894,12 +1900,32 @@ class GatewayServer:
                             logger.debug('Detached native receipt view failed', exc_info=done.exception())
                     job.add_done_callback(finished_read)
                     continue
-                await self._dispatch(request, writer,
-                    skill_controls_active=skills_supported,
+                capabilities: dict[str, Any] = dict(skill_controls_active=skills_supported,
                     compaction_active=compaction_supported, saved_source_active=saved_source_supported,
                     saved_timeline_active=saved_timeline_supported, name_read_active=name_read_supported,
                     command_menu_generation=command_catalog_generation,
                     provider_auth_active=provider_auth_supported, provider_auth_generation=provider_auth_generation)
+                if msg_type == 'ping':
+                    if len(status_jobs) >= 8:
+                        await write({'type': 'error', 'message': 'Too many outstanding status reads'})
+                        continue
+
+                    async def status_job(payload: dict[str, Any], flags: dict[str, Any]) -> None:
+                        async with status_sequence:
+                            await self._dispatch(payload, writer, **flags)
+
+                    status_task = asyncio.create_task(status_job(dict(request), capabilities),
+                                                      name='claw-native-status')
+                    status_jobs.add(status_task)
+
+                    def status_done(done: asyncio.Task[None]) -> None:
+                        status_jobs.discard(done)
+                        if not done.cancelled() and done.exception() is not None:
+                            logger.debug('Detached status read failed', exc_info=done.exception())
+
+                    status_task.add_done_callback(status_done)
+                    continue
+                await self._dispatch(request, writer, **capabilities)
 
         except (ConnectionResetError, BrokenPipeError):
             logger.info("Client disconnected: %s", peer)
@@ -1914,7 +1940,9 @@ class GatewayServer:
                 await notice_channel.disconnect()
                 try:
                     child_ui_connected = False
-                    child_ui_connected = False
+                    for status_task in tuple(status_jobs):
+                        status_task.cancel()
+                    await asyncio.gather(*tuple(status_jobs), return_exceptions=True)
                     for argument_task, _, _ in tuple(argument_jobs.values()):
                         argument_task.cancel()
                     await asyncio.gather(*(row[0] for row in tuple(argument_jobs.values())), return_exceptions=True)
@@ -2062,7 +2090,12 @@ class GatewayServer:
                     pass
             history: list[dict[str, Any]] = []
             if self._orchestrator:
-                session_info.update(self._orchestrator.get_session_info(group_id))
+                try:
+                    session_info.update(await self._orchestrator.read_session_info(group_id))
+                except (ValueError, RuntimeError, OSError) as exc:
+                    await self._write_response(writer, {'type': 'error',
+                                                        'message': 'Status unavailable: ' + str(exc)[:512]})
+                    return
                 if group_id in self._orchestrator.get_group_ids():
                     runtime = self._orchestrator._runtimes[group_id]
                     if runtime._active_session is not None:
@@ -2447,7 +2480,7 @@ class GatewayServer:
         except OSError:
             pass
 
-        self._remove_pid()
+        await run_owned(self._remove_pid)
 
         logger.info("Gateway stopped.")
 

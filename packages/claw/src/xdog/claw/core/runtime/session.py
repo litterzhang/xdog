@@ -35,6 +35,7 @@ from xdog.agent import (
     ToolExecutionUpdateEvent,
 )
 from xdog.agent.access import AccessScope, read_only_call
+from xdog.agent.async_work import run_owned
 from xdog.agent.context_messages import ContextMessages
 from xdog.agent.extensions.dialogs import DialogBroker
 from xdog.agent.extensions.runtime import ExtensionRuntime
@@ -503,7 +504,6 @@ class AgentSession:
 
     async def _persist_tool_retirement(self) -> None:
         """Await durable narrowing before a callback/turn can acknowledge inventory retirement."""
-        from xdog.agent.async_work import run_owned
         if self._tool_selection_restore_pending or self._runtime._active_session is not self:
             return  # Unadmitted prepared sessions publish their narrowed choice in the navigation journal.
         selected, saved = self._agent.active_tool_selection, self._saved_active_tools
@@ -530,7 +530,6 @@ class AgentSession:
     async def select_active_tools(self, names: list[str] | tuple[str, ...] | None, *, expected_revision: int,
                                   alive: Callable[[], bool] = lambda: True) -> None:
         """Owned disk commit; keep the group reserved until the real worker settles."""
-        from xdog.agent.async_work import run_owned
         from xdog.agent.extensions.active_tools import names as validate_names
         self._children_idle()
         if self._tool_selection_restore_pending:
@@ -672,7 +671,7 @@ class AgentSession:
                 raise ValueError('Skill selection requires an idle owning session')
             active = set(self._active_skills)
             if action == 'load':
-                skill = await asyncio.to_thread(manager.load_skill, slug)
+                skill = await run_owned(manager.load_skill, slug)
                 if skill is None:
                     raise ValueError('Skill is unavailable in this group')
                 active.add(slug)
@@ -685,7 +684,7 @@ class AgentSession:
                 raise ValueError('Skill selection owner changed; no replay')
             chosen = tuple(sorted(active))
             await self._save_selected_skills(chosen)
-        skills = await asyncio.to_thread(manager.list_skills)
+        skills = await run_owned(manager.list_skills)
         return {'session_id': self._meta.session_id, 'active': sorted(self._active_skills), 'skills': [
             {'slug': skill.slug, 'name': skill.name, 'description': skill.description,
              'scope': skill.scope, 'packaged': skill.packaged, 'active': skill.slug in self._active_skills}
@@ -696,8 +695,8 @@ class AgentSession:
         # releasing the group reservation, even if its receipt is disconnected.
         async def commit() -> None:
             from xdog.agent.skills.types import SkillPlacement
-            placement = await asyncio.to_thread(SkillPlacement.read, self._runtime.skill_manager, chosen)
-            await asyncio.to_thread(self._store.save_active_skills, self._meta.session_id, chosen)
+            placement = await run_owned(SkillPlacement.read, self._runtime.skill_manager, chosen)
+            await run_owned(self._store.save_active_skills, self._meta.session_id, chosen)
             self._active_skills = frozenset(chosen)
             if update_agent:
                 self._agent.set_active_skills(chosen, prepared_skills=placement)
@@ -806,7 +805,7 @@ class AgentSession:
             await self.extensions.event("turn_start", {"user_input": input.content})
             await self.initialize_extensions()  # Lifecycle hooks may update provider metadata.
             if isinstance(input, UserInput) and input.images:
-                await asyncio.to_thread(self._runtime.validate_images, input.images)
+                await run_owned(self._runtime.validate_images, input.images)
             system_prompt = await self._rebuild_system_prompt(input)
             await self._maybe_compact()
 
@@ -826,7 +825,6 @@ class AgentSession:
                 if (not history or not isinstance(history[-1], CustomAgentMessage) or history[-1].type != TYPE
                         or history[-1].data.get('id') != input.record_id):
                     raise ValueError('Canonical continuation tail changed; no new user input fabricated')
-                from xdog.agent.async_work import run_owned
                 await run_owned(lambda: self._runtime.validate_images(context_images((history[-1],))))
                 event_stream = await self._agent.continue_()
             elif isinstance(input, ExternalInput):
@@ -911,7 +909,6 @@ class AgentSession:
     async def _prompt_blocks(self, *, bootstrap: bool = False) -> tuple[SystemPromptBlock, ...]:
         from functools import partial
 
-        from xdog.agent.async_work import run_owned
         from xdog.claw.core.persistence.session_preparation import PromptTool, prompt
 
         active = {tool.name for tool in self._agent.active_tools}
@@ -1101,8 +1098,8 @@ class AgentSession:
         try:
             from xdog.claw.core.persistence.transcript_convert import live_transcript_snapshot
             original = self._agent.state.messages
-            stored = await asyncio.to_thread(self._store.load_transcript, self._meta.session_id)
-            transcript = await asyncio.to_thread(live_transcript_snapshot, original, stored)
+            stored = await run_owned(self._store.load_transcript, self._meta.session_id)
+            transcript = await run_owned(live_transcript_snapshot, original, stored)
             before = len(transcript)
             result: dict[str, Any] = {"session_id": self._meta.session_id, "before": before,
                                       "after": before, "changed": False}
@@ -1176,9 +1173,9 @@ class AgentSession:
                 # A failed checkpoint write cannot discard original context.
                 # If replacement later fails, the durable extra branch is safe
                 # and inspectable; it is not a false compaction-success receipt.
-                await asyncio.to_thread(self._store.save_compaction_checkpoint, self._meta.session_id,
+                await run_owned(self._store.save_compaction_checkpoint, self._meta.session_id,
                                         recovery_id, transcript, metadata=recovery)
-                await asyncio.to_thread(self._store.replace_transcript, self._meta.session_id, compacted)
+                await run_owned(self._store.replace_transcript, self._meta.session_id, compacted)
                 self._runtime._source_revision += 1
                 self._agent.replace_messages(compacted_messages)
                 self._source_channels = {index: str(entry.get("channel", ""))

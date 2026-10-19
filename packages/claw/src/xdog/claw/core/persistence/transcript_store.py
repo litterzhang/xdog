@@ -110,6 +110,8 @@ class TranscriptStore:
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session_id):
             raise ValueError("Invalid saved model session identity")
         path = self._sessions_dir / (session_id + ".model.json")
+        if path.is_symlink():
+            raise ValueError("Saved model selection is not owned; no primary-provider fallback")
         if not path.exists():
             return ""
         try:
@@ -156,6 +158,8 @@ class TranscriptStore:
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session_id):
             raise ValueError("Invalid reasoning session identity")
         path = self._sessions_dir / (session_id + ".thinking.json")
+        if path.is_symlink():
+            raise ValueError("Saved reasoning selection is not owned")
         if not path.exists():
             return None
         try:
