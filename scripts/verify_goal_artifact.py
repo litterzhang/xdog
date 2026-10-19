@@ -70,6 +70,20 @@ async def lifecycle():
   assert skill is not None and skill.scope=='session' and not (root/'not-created').exists()
   assert await role_instructions('worker') and await role_instructions('reviewer')
   assert len(host.model_calls)==5
+  from xdog.agent.extensions.runtime import ExtensionRuntime
+  from xdog.goal.ui_binding import GoalDisplay
+  runtime=ExtensionRuntime(('goal_ui',),root/'not-copied-ui',root,
+                           context=lambda:{'session_id':'goal-only-owner'})
+  display=GoalDisplay(service,runtime.views,valid=lambda:True,notify=runtime.notify_view_changed)
+  try:
+   output=str(await runtime.command('ext-goal_ui-goals',''))
+   assert goal.id in output and 'completed' in output
+   assert len(host.model_calls)==5 and not (root/'not-copied-ui').exists()
+   excluded=('xdog.claw','xdog.coding','xdog.tui','xdog.eyes','xdog.flow','xdog.site')
+   assert not any(n.startswith(excluded) for n in sys.modules)
+  finally:
+   await display.aclose();await runtime.aclose()
+  print(json.dumps({'goal_only_display':'actual packaged worker without installed/imported TUI or harnesses'}))
   print(json.dumps({'goal_only_lifecycle':'real Agent/Supervisor/tool IO, explicit acceptance/independent review',
                     'scripted_model_calls':len(host.model_calls),'distinct_agents':len(set(host.agent_ids))}))
  finally:

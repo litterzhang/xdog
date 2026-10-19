@@ -246,7 +246,7 @@ async def managed(tmp_path, monkeypatch):
     channel.send_message = AsyncMock()
     orch.add_channel(channel)
     # pytest's long node names must not leak into the Unix socket's 107-byte limit.
-    with tempfile.TemporaryDirectory(prefix='xe-', dir='/tmp') as private:
+    with tempfile.TemporaryDirectory(prefix='xe-') as private:
         endpoint = Path(private) / 'a.sock'
         inbox = tmp_path / 'private' / 'inbox.sqlite3'
         server = await ClawAcpServer.start(

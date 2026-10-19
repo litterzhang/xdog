@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.metadata as metadata
 import json
 import sys
+import threading
 from pathlib import Path
 
 from xdog.agent import Agent, AgentConfig
@@ -20,7 +22,7 @@ from xdog.coding.core.settings_manager import SettingsManager
 from xdog.coding.core.tools import get_default_tools
 
 
-def model(calls):
+def model(calls, gate=None, entered=None):
     def stream(selected, context, options):
         names = {tool.name for tool in context.tools}
         role = "worker" if "task_report" in names else "reviewer" if "goal_context" in names else "parent"
@@ -77,6 +79,10 @@ def model(calls):
         message = AssistantMessage(content=parts, stop_reason="toolUse" if isinstance(parts[0], ToolCall) else "stop")
 
         async def events():
+            if role == "worker" and gate is not None:
+                entered.set()
+                while not gate.is_set():
+                    await asyncio.sleep(.001)
             yield DoneEvent(message=message)
 
         future = asyncio.get_running_loop().create_future()
@@ -98,9 +104,18 @@ async def main():
     if not base_only:
         assert skills.load_skill("goals").scope == "session"
     calls = []
+    gate, entered = threading.Event(), threading.Event()
+    if not base_only:
+        root.joinpath("settings.json").write_text(json.dumps({
+            "extensions": ["goal_ui"], "extension_dir": str(root / "extensions")}))
+        from xdog.agent.extensions.discovery import extension_directory
+        resource = extension_directory("goal_ui", root / "extensions")
+        assert resource is not None and resource.is_relative_to(Path(sys.prefix))
+        ui_hash = hashlib.sha256(resource.joinpath("extension.yaml").read_bytes() + b"\0"
+                             + resource.joinpath("main.py").read_bytes()).hexdigest()
     session = AgentSession(
         agent=Agent(
-            model(calls),
+            model(calls, gate, entered),
             config=AgentConfig(model="test/installed"),
             tools=get_default_tools(root),
             tool_ctx={"fs_workspace": str(root)},
@@ -139,6 +154,15 @@ async def main():
             goal = await s.add_task(goal.id, "Read output")
             goal = await s.assign(goal.id, goal.tasks[0].id, "Read and report")
             worker = goal.tasks[0].attempts[-1].worker
+            assert await asyncio.to_thread(entered.wait, 5)
+            from xdog.tui.components.extension_view import ExtensionView
+            count = len(calls)
+            display = str(await session.extensions.command("ext-goal_ui-goals", ""))
+            assert goal.id in display and "Output" in display and len(calls) == count
+            assert any("Goals: 1" in line for line in ExtensionView(lambda: session.extensions.snapshot()).render(80))
+            await session.extensions.manage("unload", "goal_ui")
+            assert session.children.supervisor.active and not session.extensions.snapshot()["ui"]
+            gate.set()
             await session.children.supervisor.control("wait", worker.id)
             goal = await s.status(goal.id)
             task = goal.tasks[0]
@@ -163,9 +187,29 @@ async def main():
         assert calls.count("worker") == 4 and calls.count("reviewer") == 4
         assert not root.joinpath("not-created-skills").exists()
         assert not any(name.startswith(("xdog.claw", "xdog.eyes", "xdog.flow", "xdog.site")) for name in sys.modules)
+        async def query_completed():
+            await session.extensions.manage("reload", "goal_ui")
+            output = str(await session.extensions.command("ext-goal_ui-goals", ""))
+            assert goal.id in output and "completed" in output
+        count = len(calls)
+        await asyncio.wrap_future(controller.control(query_completed, name="consumer-read-display"))
+        assert len(calls) == count
+        previous = session.extensions
+        await asyncio.to_thread(session.new_session)
+        assert previous._closed and "Output" not in str(session.extensions.snapshot())
+        await session.send_message("New exact owner")
+        controller = session._sdk_controller
+        async def query_new():
+            assert await session.children.goal_host.service.list() == ()
+            output = str(await session.extensions.command("ext-goal_ui-goals", ""))
+            assert "no goals" in output.lower() and goal.id not in output
+        await asyncio.wrap_future(controller.control(query_new, name="consumer-new-view"))
         print(
             json.dumps(
                 {
+                    "shared_goal_ui_sha256": ui_hash,
+                    "actual_display_unloaded_during_worker": True,
+                    "ui_owner_rotation": "old exact owner unavailable; new owner genuinely empty",
                     "installed_coding_lifecycle": "explicit worker/acceptance/independent review/inbox consumption",
                     "goal_status": goal.status,
                     "worker_model_calls": 4,
@@ -179,6 +223,7 @@ async def main():
             )
         )
     finally:
+        gate.set()
         session.dispose()
         if controller is not None:
             await asyncio.wrap_future(controller.close())

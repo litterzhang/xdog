@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.metadata as metadata
 import json
 import sys
+import threading
 from pathlib import Path
 
 from xdog.ai.types import AssistantMessage, DoneEvent, TextContent, ToolCall
@@ -20,6 +22,8 @@ class Model:
     def __init__(self, *, ordinary=False):
         self.calls = []
         self.ordinary = ordinary
+        self.worker_gate = None
+        self.worker_entered = threading.Event()
 
     def __call__(self, model, context, options):
         names = {tool.name for tool in context.tools}
@@ -53,6 +57,10 @@ class Model:
         message = AssistantMessage(content=parts, stop_reason="toolUse" if isinstance(parts[0], ToolCall) else "stop")
 
         async def events():
+            if role == "worker" and self.worker_gate is not None:
+                self.worker_entered.set()
+                while not self.worker_gate.is_set():
+                    await asyncio.sleep(.001)
             yield DoneEvent(message=message)
 
         future = asyncio.get_running_loop().create_future()
@@ -60,8 +68,9 @@ class Model:
         return EventStream.from_async_generator(events(), result_future=future)
 
 
-def application(root, model):
-    app = Orchestrator(ClawConfig(data_dir=str(root / "data")),
+def application(root, model, *, display=False):
+    app = Orchestrator(ClawConfig(data_dir=str(root / "data"),
+        extensions=("goal_ui",) if display else (), extension_dir=str(root / "extensions")),
                        stream_fn=model, data_dir=root / "data")
     app.register_group(Group(id="main", workspace=str(root / "workspace")))
     return app, app._runtimes["main"]
@@ -126,7 +135,13 @@ async def lifecycle(root):
     from xdog.goal.store import GoalStore
 
     model = Model()
-    app, runtime = application(root, model)
+    model.worker_gate = threading.Event()
+    app, runtime = application(root, model, display=True)
+    from xdog.agent.extensions.discovery import extension_directory
+    resource = extension_directory("goal_ui", root / "extensions")
+    assert resource is not None and resource.is_relative_to(Path(sys.prefix))
+    ui_hash = hashlib.sha256(resource.joinpath("extension.yaml").read_bytes() + b"\0"
+                             + resource.joinpath("main.py").read_bytes()).hexdigest()
     runtime.workspace_dir.joinpath("result.txt").write_text("actual installed result")
     try:
         reference = runtime.skill_manager.load_skill("goals")
@@ -140,7 +155,17 @@ async def lifecycle(root):
         goal = await host.service.add_task(goal.id, "Read output")
         goal = await host.service.assign(goal.id, goal.tasks[0].id, "Read original output and report")
         worker = goal.tasks[0].attempts[-1].worker
-        await runtime._active_session.children.supervisor.control("wait", worker.id)
+        assert await asyncio.to_thread(model.worker_entered.wait, 5)
+        session = runtime._active_session
+        before = len(model.calls)
+        output = str(await session.extensions.command("ext-goal_ui-goals", ""))
+        assert goal.id in output and "Output" in output and len(model.calls) == before
+        from xdog.tui.components.extension_view import ExtensionView
+        assert any("Goals: 1" in line for line in ExtensionView(lambda: session.extensions.snapshot()).render(80))
+        await session.extensions.manage("unload", "goal_ui")
+        assert session.children.supervisor.active and not session.extensions.snapshot()["ui"]
+        model.worker_gate.set()
+        await session.children.supervisor.control("wait", worker.id)
         await host.flush()
         await settled(app, runtime)
         goal = await host.service.status(goal.id)
@@ -151,6 +176,11 @@ async def lifecycle(root):
         await activate(app)
         assert runtime._active_session is not old_session and runtime.goal_host.owner == owner
         assert (await host.child_status(worker)).state == "succeeded"
+        count = len(model.calls)
+        output = str(await runtime._active_session.extensions.command("ext-goal_ui-goals", ""))
+        assert goal.id in output and len(model.calls) == count
+        # Goal status is active and task acceptance is still explicitly zero here.
+        assert "active" in output and "accepted tasks 0/1" in output
         attempt = task.attempts[-1]
         goal = await host.service.accept_task(goal.id, task.id, attempt.id, 1, report_digest(attempt.reports[-1]),
                                               "Inspected actual settled report")
@@ -164,7 +194,10 @@ async def lifecycle(root):
         notices = [row for row in rows if row.envelope.message.source == "goal"]
         assert len(notices) == 3 and all(row.status == "succeeded" for row in notices)
         path = host.service.store.path
+        output = str(await runtime._active_session.extensions.command("ext-goal_ui-goals", ""))
+        assert goal.id in output and "completed" in output
     finally:
+        model.worker_gate.set()
         await app.stop()
     # Independently acquire the actual lease, then reopen the real application.
     store = await GoalStore.open(path, owner)
@@ -181,14 +214,17 @@ async def lifecycle(root):
     finally:
         await app.stop()
     # A fresh owner automatically gets the installed capability without delegation.
-    app, runtime = application(root / "disabled-with-package", model)
+    app, runtime = application(root / "fresh-with-package", model)
     try:
         await app.start()
         assert runtime.skill_manager.load_skill("goals").packaged
         assert runtime.goal_host is not None and await runtime.goal_host.service.list() == ()
     finally:
         await app.stop()
-    print(json.dumps({"installed_claw_goal": "real worker/report/rotation/accept/review/Inbox/reopen",
+    print(json.dumps({"shared_goal_ui_sha256": ui_hash,
+                      "actual_display_unloaded_during_worker": True,
+                      "ui_owner_rotation": "same original group goal in fresh parent",
+                      "installed_claw_goal": "real worker/report/rotation/accept/review/Inbox/reopen",
                       "calls": model.calls, "notices": len(notices)}))
 
 
