@@ -34,12 +34,16 @@ class InputService:
     No protocol, UI, observer, Goal state or model/tool loop belongs here.
     """
 
-    def __init__(self, store: InputStore, execute: Execute) -> None:
+    def __init__(self, store: InputStore, execute: Execute, *,
+                 on_settled: Callable[[InputScope], None] | None = None) -> None:
         self.store, self.execute = store, execute
+        self.on_settled = on_settled
         self._signals: dict[InputScope, asyncio.Event] = {}
         self._tasks: dict[InputScope, asyncio.Task[None]] = {}
         self._waiters: dict[tuple[InputScope, str], set[asyncio.Future[None]]] = {}
         self._faults: dict[InputScope, Exception] = {}
+        self._pending: set[tuple[InputScope, str]] = set()
+        self._active: set[InputScope] = set()
         self._closing = False
         self._close_task: asyncio.Task[None] | None = None
 
@@ -67,14 +71,27 @@ class InputService:
             # separately accepted following messages or authorize a retry.
             self.wake(scope)
 
-    async def submit(self, envelope: InputEnvelope) -> tuple[InputRecord, bool]:
+    def has_work(self, scope: InputScope) -> bool:
+        return (scope in self._active or scope in self._faults
+                or any(owner == scope for owner, _identifier in self._pending))
+
+    async def activate(self, scope: InputScope) -> None:
+        for record in await self.store.records(scope):
+            if record.status not in _TERMINAL:
+                self._pending.add((scope, record.envelope.message.id))
+        self.wake(scope)
+
+    async def submit(self, envelope: InputEnvelope, *, max_pending: int | None = None) -> tuple[InputRecord, bool]:
         if self._closing:
             raise RuntimeError('Application input service is closing')
         if envelope.scope in self._faults:
             error = self._faults[envelope.scope]
             raise RuntimeError('Application input owner is unavailable; inspect receipts') from error
         try:
-            return await self.store.enqueue(envelope)
+            result = await self.store.enqueue(envelope, max_pending=max_pending)
+            if result[0].status not in _TERMINAL:
+                self._pending.add((envelope.scope, envelope.message.id))
+            return result
         finally:
             # An ACK can be lost after a real commit; the application, not the
             # awaiting connection, owns subsequent processing.
@@ -111,6 +128,7 @@ class InputService:
 
     async def withdraw(self, scope: InputScope, message_id: str) -> InputRecord:
         record = await self.store.cancel(scope, message_id)
+        self._pending.discard((scope, message_id))
         self._notify(scope, message_id)
         return record
 
@@ -187,6 +205,8 @@ class InputService:
             await self.store.finish(current, 'interrupted', error='Application stopped; inspect prior effects')
         # A terminal commit can finish while cancellation loses its result. Its
         # actual receipt wins; never overwrite success with interrupted.
+        if not self._closing:
+            self._pending.discard((scope, current.envelope.message.id))
         self._notify(scope, current.envelope.message.id)
 
     async def _consume(self, scope: InputScope) -> None:
@@ -200,7 +220,15 @@ class InputService:
                     record = await asyncio.shield(claim)
                     if record is None:
                         break
+                    self._active.add(scope)
                     await self._execute(record)
+                    self._pending.discard((scope, record.envelope.message.id))
+                    self._active.discard(scope)
+                    if self.on_settled is not None:
+                        try:
+                            self.on_settled(scope)
+                        except Exception:
+                            logger.warning('Input result committed; optional settled hint failed', exc_info=True)
                     self._notify(scope, record.envelope.message.id)
                     record, claim = None, None
                 if self._closing:
@@ -213,6 +241,7 @@ class InputService:
             self._faults[scope] = exc
             logger.exception('Application input owner stopped for %s', scope.group_id)
         finally:
+            self._active.discard(scope)
             self._notify(scope)
 
     async def close(self) -> None:

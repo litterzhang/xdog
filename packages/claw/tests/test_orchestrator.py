@@ -56,11 +56,14 @@ def test_orchestrator_normalizes_model_at_runtime_boundary(tmp_path, monkeypatch
 
 
 @pytest.fixture
-def orch(tmp_path):
+async def orch(tmp_path):
     config = ClawConfig(data_dir=str(tmp_path / "data"))
     o = Orchestrator(config, model=_TEST_MODEL, stream_fn=_make_mock_stream_fn(), data_dir=tmp_path / "data")
     o.register_group(Group(id="main", name="Main", is_main=True))
-    return o
+    try:
+        yield o
+    finally:
+        await o.stop()
 
 @pytest.mark.asyncio
 async def test_handle_message_returns_response(orch):
@@ -174,10 +177,16 @@ async def test_queued_channel_turns_deliver_messages_once_in_order(tmp_path):
     finally:
         release.set()
         await asyncio.wait_for(task, timeout=2)
+    service = await orch.input_service()
+    from xdog.claw.core.inputs.models import InputScope
+    scope = InputScope('main', orch.get_group_workspace('main'))
+    queued = next(row for row in await service.store.records(scope) if row.envelope.message.instruction == 'second')
+    await asyncio.wait_for(service.wait(scope, queued.envelope.message.id), 2)
 
     assert [call.args[1] for call in channel.send_message.await_args_list] == [
         "First progress.", "First done.", "Second progress.", "Second done.",
     ]
+    await orch.stop()
 
 
 @pytest.mark.asyncio
@@ -196,7 +205,7 @@ async def test_direct_route_does_not_duplicate_tui_output_to_channels(orch):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_steer_mode_queues_and_consumes_identified_human_input(tmp_path):
+async def test_explicit_host_steering_consumes_identified_agent_input(tmp_path):
     """Human steering keeps the same executor and is identified before consumption."""
     config = ClawConfig(data_dir=str(tmp_path / "data"))
     steer_config = GroupConfig(queue_mode=QueueMode.STEER)
@@ -247,7 +256,7 @@ async def test_steer_mode_queues_and_consumes_identified_human_input(tmp_path):
             return original(message, delivery)
         session.queue_human_input = track
         # Send while the first stream is held, not merely scheduled.
-        await o.route_message(UserInput(group_id="steer_group", content="urgent", sender="user"))
+        session.queue_human_input(UserInput(group_id="steer_group", content="urgent", sender="user"), "steer")
         assert steered == [("urgent", "steer")]
         assert [item.content for item in session.agent.pending_inputs()] == ["urgent"]
     finally:

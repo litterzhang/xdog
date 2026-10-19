@@ -42,7 +42,7 @@
 - A cancelled `wait` detaches, not withdraws; explicit `store.cancel` makes admission return false.
 - Executions must call admit. An executor that returns without admission cannot record success.
 
-- [ ] Write tests using real InputStore and an actual `xdog.agent.Agent` with deterministic `EventStream.empty` model; verify two inputs and each result/history, duplicate ACK, wait cancellation, pending withdrawal, failed exception, close during pre-admission/running/after terminal commit.
+- [x] Write tests using real InputStore and an actual `xdog.agent.Agent` with deterministic `EventStream.empty` model; verify two inputs and each result/history, duplicate ACK, wait cancellation, pending withdrawal, failed exception, close during pre-admission/running/after terminal commit.
 
 ```python
 async def execute(record, admit):
@@ -54,10 +54,10 @@ async def execute(record, admit):
     return InputOutcome(response=agent.messages[-1].content[0].text)
 ```
 
-- [ ] Run `uv run pytest packages/claw/tests/test_input_consumer.py -q -n 0`.
+- [x] Run `uv run pytest packages/claw/tests/test_input_consumer.py -q -n 0`.
   Expected: missing consumer module, then named behavioral failures rather than a false successful store stub.
-- [ ] Implement one consumer task per scope, stable wake signals, waiter notification after durable terminal receipt, cancellation-safe claim/result cleanup and explicit scope wake on startup. No event polling for model work.
-- [ ] Run consumer + foundation tests and full root suite; Ruff/strict Claw mypy.
+- [x] Implement one consumer task per scope, stable wake signals, waiter notification after durable terminal receipt, cancellation-safe claim/result cleanup and explicit scope wake on startup. No event polling for model work.
+- [x] Run consumer + foundation tests and full root suite; Ruff/strict Claw mypy.
   Expected: pass, no new skips. Commit `feat(claw): consume durable inputs in application service`; task-done records targeted combined command.
 
 ### Task 2: Durable runtime projection and real Orchestrator cutover
@@ -76,12 +76,12 @@ async def execute(record, admit):
 - Busy nonreserved callers receive queued None after durable ACK; reserved callers wait for their own result, preserving old ACP/Goal waiter contracts until the next cutover.
 - User origins/attachments/kind and exact ContextContinuation remain distinct. Unknown restored process-local admission keys cannot execute.
 
-- [ ] Write deterministic real-Orchestrator tests: no ACP socket, ordinary busy messages persist and do not steer, results independent, limit rejects without loss, recovered pending runs once, closed receiver cannot close application service.
-- [ ] Run `uv run pytest packages/claw/tests/test_input_runtime.py -q -n 0`.
+- [x] Write deterministic real-Orchestrator tests: no ACP socket, ordinary busy messages persist and do not steer, results independent, limit rejects without loss, recovered pending runs once, closed receiver cannot close application service.
+- [x] Run `uv run pytest packages/claw/tests/test_input_runtime.py -q -n 0`.
   Expected: inputs not persisted / implicit steering observed before cutover.
-- [ ] Implement codec/projection then consumer integration; no change to model loop, permissions or Coding's controller. Stop old collect/debounce draining in route_message. Keep full live TurnResult and receipts consistent.
-- [ ] Run affected gateway/ACP/Eyes/Goal/Weixin/input tests and full root suite; fix behavioral regressions instead of skipping/weaking tests. Source coupling scans identify temporary old ACP storage for immediate next plan.
-- [ ] Commit `refactor(claw): route ordinary turns through durable application intake`; task-done records real runtime tests and foundation/consumer suite.
+- [x] Implement codec/projection then consumer integration; no change to model loop, permissions or Coding's controller. Stop old collect/debounce draining in route_message. Keep full live TurnResult and receipts consistent.
+- [x] Run affected gateway/ACP/Eyes/Goal/Weixin/input tests and full root suite; fix behavioral regressions instead of skipping/weaking tests. Source coupling scans identify temporary old ACP storage for immediate next plan.
+- [x] Commit `refactor(claw): route ordinary turns through durable application intake`; task-done records real runtime tests and foundation/consumer suite.
 
 ## Follow-through
 

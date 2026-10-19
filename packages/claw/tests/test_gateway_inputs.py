@@ -200,3 +200,78 @@ async def test_oversized_and_nonobject_frames_do_not_destroy_an_owned_run(gatewa
         release.set()
         writer.close()
         await writer.wait_closed()
+
+
+async def test_native_run_ack_waits_for_actual_durable_acceptance(gateway, monkeypatch):
+    import threading
+    server, entered, release_model, contexts, socket_path = gateway
+    service = await server._orchestrator.input_service()
+    loop, blocked, release_disk = asyncio.get_running_loop(), asyncio.Event(), threading.Event()
+    transaction = service.store._transaction
+    def held(operation):
+        if operation.__name__ == 'enqueue':
+            loop.call_soon_threadsafe(blocked.set)
+            if not release_disk.wait(5):
+                raise TimeoutError('Missing intake release')
+        return transaction(operation)
+    monkeypatch.setattr(service.store, '_transaction', held)
+    reader, writer = await asyncio.open_unix_connection(socket_path)
+    ack = None
+    try:
+        await send(writer, dict(type='message', group_id='main', run_id='durable-ack', content='HOLD'))
+        ack = asyncio.create_task(receive(reader, 'run_ack'))
+        await asyncio.wait_for(blocked.wait(), 2)
+        done, _ = await asyncio.wait([ack], timeout=.1)
+        assert not done, 'Gateway ACK preceded durable commit'
+        assert not entered.is_set()
+        release_disk.set()
+        result = await asyncio.wait_for(ack, 2)
+        assert result['message_id'] == 'native:durable-ack'
+        await asyncio.wait_for(entered.wait(), 2)
+    finally:
+        release_disk.set()
+        release_model.set()
+        if ack is not None:
+            await asyncio.gather(ack, return_exceptions=True)
+        writer.close()
+        await writer.wait_closed()
+
+
+async def test_failed_native_intake_returns_error_without_ack_and_keeps_connection_usable(gateway):
+    server, entered, release, contexts, socket_path = gateway
+    service = await server._orchestrator.input_service()
+    await service.store._disk(lambda db: db.execute('CREATE TRIGGER refuse_intake BEFORE INSERT ON inputs '
+        "BEGIN SELECT RAISE(ABORT,'intake unavailable'); END"))
+    reader, writer = await asyncio.open_unix_connection(socket_path)
+    try:
+        await send(writer, dict(type='message', group_id='main', run_id='not-accepted', content='HOLD'))
+        reply = json.loads(await asyncio.wait_for(reader.readline(), 2))
+        assert reply['type'] == 'error' and 'intake unavailable' in reply['message']
+        assert contexts == []
+        await send(writer, dict(type='ping'))
+        assert (await receive(reader, 'pong'))['input_controls'] == 1
+    finally:
+        release.set()
+        writer.close()
+        await writer.wait_closed()
+
+
+async def test_disconnected_native_client_does_not_cancel_accepted_application_work(gateway):
+    from xdog.claw.core.inputs.models import InputScope
+    server, entered, release, contexts, socket_path = gateway
+    reader, writer = await asyncio.open_unix_connection(socket_path)
+    try:
+        await send(writer, dict(type='message', group_id='main', run_id='detached', content='HOLD'))
+        await receive(reader, 'run_ack')
+        await asyncio.wait_for(entered.wait(), 2)
+        writer.close()
+        await writer.wait_closed()
+        service = await server._orchestrator.input_service()
+        scope = InputScope('main', server._orchestrator.get_group_workspace('main'))
+        release.set()
+        result = await asyncio.wait_for(service.wait(scope, 'native:detached'), 2)
+        assert result.status == 'succeeded' and contexts == [['HOLD']]
+    finally:
+        release.set()
+        writer.close()
+        await writer.wait_closed()

@@ -1,0 +1,87 @@
+"""Host-owned durable projection; payload provenance never selects authority or input kind."""
+from __future__ import annotations
+
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
+from xdog.agent.session_input import SessionInput, render_input
+from xdog.claw.core.inputs.models import InputEnvelope, InputScope, ReplyTarget
+from xdog.claw.core.types import (
+    ContextContinuation,
+    ExternalInput,
+    GroupInput,
+    SystemInput,
+    SystemInputKind,
+    UserInput,
+)
+
+
+def freeze_input(value: GroupInput, workspace: Path, *, message_id: str,
+                 admission_key: str = '', reply: ReplyTarget | None = None) -> InputEnvelope:
+    human = (isinstance(value, UserInput) and not isinstance(value, ExternalInput)
+             and value.metadata.get('input_origin', 'user') == 'user')
+    kind = ('external' if isinstance(value, ExternalInput) else 'continuation' if isinstance(value, ContextContinuation)
+            else 'system' if isinstance(value, SystemInput) else 'user')
+    context: dict[str, Any] = {'kind': kind, 'metadata': value.metadata,
+                               'empty_text': not bool(value.content)}
+    if isinstance(value, UserInput):
+        context.update(sender=value.sender, channel=value.channel, timestamp=value.timestamp)
+        if reply is None and value.channel and value.sender:
+            reply = ReplyTarget(value.channel, value.sender)
+    else:
+        context['system_kind'] = value.kind.value
+    if isinstance(value, ContextContinuation):
+        context['record_id'] = value.record_id
+    blank_image = (isinstance(value, UserInput) and bool(value.images)
+                   and bool(value.content) and not value.content.strip())
+    instruction = '[Blank image input]\n' + value.content if blank_image else value.content
+    if blank_image:
+        context['blank_image_text'] = True
+    message = (replace(value.canonical, id=message_id) if isinstance(value, ExternalInput) else
+        SessionInput(message_id, 'human' if human else 'automatic',
+                     (value.channel or 'User') if isinstance(value, UserInput) else value.kind.value,
+                     instruction or '[Saved input continuation or image]', (), {}))
+    return InputEnvelope(InputScope(value.group_id, workspace), message, reply,
+        value.images if isinstance(value, UserInput) else (), human_authorized=human,
+        admission_key=admission_key, context=context)
+
+
+def restore_input(value: InputEnvelope) -> GroupInput:
+    context = value.context
+    kind, metadata = context.get('kind'), context.get('metadata')
+    if not isinstance(kind, str) or not isinstance(metadata, dict):
+        raise ValueError('Input is missing its host metadata projection')
+    content = '' if context.get('empty_text') is True else value.message.instruction
+    if context.get('blank_image_text') is True:
+        if kind != 'user' or not value.images or not content.startswith('[Blank image input]\n'):
+            raise ValueError('Invalid saved image-only text projection')
+        content = content[len('[Blank image input]\n'):]
+    common: dict[str, Any] = {'group_id': value.scope.group_id, 'content': content, 'metadata': metadata}
+    if kind in {'user', 'external'}:
+        sender, channel, timestamp = context.get('sender'), context.get('channel'), context.get('timestamp')
+        if (not isinstance(sender, str) or not isinstance(channel, str)
+                or not isinstance(timestamp, (int, float)) or isinstance(timestamp, bool)):
+            raise ValueError('Invalid saved input channel projection')
+        common.update(sender=sender, channel=channel, timestamp=timestamp, images=value.images)
+        if kind == 'external':
+            if value.human_authorized:
+                raise ValueError('External input cannot acquire human control authority')
+            common['content'] = render_input(value.message)
+            return ExternalInput(**common, canonical=value.message)
+        if value.human_authorized != (metadata.get('input_origin', 'user') == 'user'):
+            raise ValueError('Saved input authority does not match the host binding')
+        return UserInput(**common)
+    if value.human_authorized:
+        raise ValueError('Automatic input cannot acquire human control authority')
+    if kind == 'continuation':
+        record_id = context.get('record_id')
+        if not isinstance(record_id, str) or not record_id or len(record_id.encode()) > 256 or '\x00' in record_id:
+            raise ValueError('Invalid saved context continuation binding')
+        return ContextContinuation(**common, record_id=record_id)
+    if kind == 'system':
+        system_kind = context.get('system_kind')
+        if not isinstance(system_kind, str):
+            raise ValueError('Invalid automatic input kind')
+        return SystemInput(**common, kind=SystemInputKind(system_kind))
+    raise ValueError('Unknown host input projection; no input kind inferred from payload')

@@ -99,7 +99,7 @@ async def test_worker_report_wakes_only_group_main_then_gate_accepts_and_reports
         records = await managed.server.backend.inbox.records('g1', runtime.workspace_dir)
         assert len(records) == 1 and records[0].message.source == 'Eyes'
         await until(lambda: not session.children.supervisor.capture_source(assignment['agent_id']).settling)
-        await until(lambda: not managed.orch._queue.is_running('g1'))
+        await until(lambda: not managed.orch.is_group_running('g1'))
         managed.channel.send_message.assert_not_awaited()
         await manager.tick()
         reviewing = manager.owned('g1', goal.id)

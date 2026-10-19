@@ -177,9 +177,17 @@ class Harness:
         self.attach()
         return self.manager
 
-    async def restart(self):
+    async def restart(self, *, application=False):
         await self.manager.close()
         await self.server.close()
+        if application:
+            previous = self.orch
+            groups = [runtime.group for runtime in previous._runtimes.values()]
+            await previous.stop()
+            self.orch = Orchestrator(previous._config, stream_fn=self.model, data_dir=previous._data_dir)
+            for group in groups:
+                self.orch.register_group(group)
+            self.orch.add_channel(self.channel)
         self.server = await ClawAcpServer.start(self.orch, self.endpoint, self.inbox_path)
         self.manager = ManagedObservers(self.server.backend, self.endpoint, clocks=self.clock.clocks())
         self.attach()

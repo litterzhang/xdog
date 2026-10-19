@@ -106,14 +106,31 @@ Do not remove required gateway/MCP/extension-worker communication as SDK cleanup
 The main path is:
 
 ```text
-TUI Unix socket or Weixin channel
-  -> core/runtime/gateway.py
-  -> Orchestrator and per-group queue (collect/steer/steer-backlog)
+TUI Unix socket / Weixin / existing ACP bridge
+  -> Orchestrator.route_message
+  -> core/inputs InputStore + application-owned InputService
+  -> existing per-group execution exclusion
   -> GroupRuntime's active AgentSession
   -> prompt rebuild and pre-turn compaction
   -> xdog.agent stream/tools
   -> JSONL transcript persistence and channel output
 ```
+
+Ordinary turns now persist protocol-independent immutable envelopes (including
+host-only context, attachments and reply target) before application admission.
+`claimed` is not `running`; preparation failure and execution failure are distinct,
+and crashed started work is never automatically replayed. Busy ordinary input is
+not implicit steering. Explicit steer/follow-up remains Agent-owned input control.
+Native `run_ack` follows the actual durable commit; the reader stays responsive
+during that commit. Native/ACP connection detachment does not cancel accepted
+application work; explicit abort and application shutdown have separate owners.
+
+The assistant-core refactor is in progress on its feature branch: the old ACP
+receipt/observer bridge still surrounds some callbacks and must be removed in the
+next cutover, not treated as a second final storage authority. Managed-observer
+restart tests must distinguish endpoint restart from actual application shutdown.
+See `docs/claw-assistant-core-requirements.json`; no Goal extraction or complete
+channel handoff is implied by the input-runtime checkpoint.
 
 Eyes callbacks enter through the existing leased ACP group inbox as canonical external input; goal work remains system input. Each group has one logical main Agent and one execution route; session files are context/history storage, never Goal ownership or event destinations. Both paths use the same Orchestrator group lock and current AgentSession. A group runtime owns its workspace, tools, memory, goals, prompt builder, transcript store, and one active cached agent session. Transcripts are JSONL with a `sessions.json` index; `SessionManager` is a compatibility alias for `TranscriptStore`, not an LRU multi-session manager.
 

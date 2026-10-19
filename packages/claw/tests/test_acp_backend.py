@@ -548,3 +548,25 @@ async def test_acp_ingress_retains_host_read_only_scope_after_merge(tmp_path, re
     finally:
         await backend.close()
         await orch.stop()
+
+
+async def test_closing_acp_endpoint_detaches_legacy_waiter_not_application_execution(tmp_path):
+    from xdog.claw.core.inputs.models import InputScope
+    model = ScriptedModel()
+    model.release.clear()
+    orch, backend, _ = await make_backend(tmp_path, model)
+    try:
+        await backend.extension(Peer('receiver', None), 'xdog/enqueue', enqueue_params(tmp_path))
+        await asyncio.wait_for(model.entered.wait(), 3)
+        service = await orch.input_service()
+        scope = InputScope('main', tmp_path)
+        await backend.close()
+        assert (await service.store.get(scope, 'event-1')).status == 'running'
+        assert not orch._runtimes['main']._active_session.agent.cancellation_requested
+        model.release.set()
+        result = await asyncio.wait_for(service.wait(scope, 'event-1'), 3)
+        assert result.status == 'succeeded' and len(model.inputs) == 1
+    finally:
+        model.release.set()
+        await backend.close()
+        await orch.stop()

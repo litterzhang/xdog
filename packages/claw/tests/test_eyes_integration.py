@@ -190,8 +190,8 @@ async def test_shutdown_settles_active_scheduled_run_without_success(managed):
     await asyncio.wait_for(managed.server.close(), 3)
     assert not managed.manager._tasks
     assert all(task.done() for task in managed.server.backend._workers.values())
-    # Receiver restart fences an admitted model turn; it cannot become fresh work.
-    await managed.restart()
+    # Application shutdown, not endpoint detach, fences the admitted turn.
+    await managed.restart(application=True)
     saved = await managed.manager.status('g1', created['id'])
     row, = saved['occurrences']
     assert row['execution_status'] == 'interrupted' and not saved['enabled']

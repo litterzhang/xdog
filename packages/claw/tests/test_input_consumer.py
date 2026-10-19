@@ -416,3 +416,27 @@ async def test_failed_cancellation_settlement_fences_new_admission_instead_of_ha
         await service.close()
         if waiter is not None:
             await asyncio.gather(waiter, return_exceptions=True)
+
+
+async def test_settled_hint_runs_after_durable_result_and_cannot_replay_or_poison_execution(tmp_path):
+    from xdog.claw.core.inputs.consumer import InputOutcome, InputService
+    seen, calls = [], []
+    async def execute(record, admit):
+        await admit()
+        calls.append(record.envelope.message.id)
+        return InputOutcome(response='stored')
+    def settled(scope):
+        seen.append(scope)
+        raise ValueError('Optional notification sink unavailable')
+    store = await InputStore.open(tmp_path / 'private' / 'inputs.sqlite3')
+    service = InputService(store, execute, on_settled=settled)
+    value = envelope(tmp_path)
+    try:
+        await service.submit(value)
+        first = await asyncio.wait_for(service.wait(value.scope, 'one'), 2)
+        await service.submit(envelope(tmp_path, 'two'))
+        second = await asyncio.wait_for(service.wait(value.scope, 'two'), 2)
+        assert first.status == second.status == 'succeeded'
+        assert calls == ['one', 'two'] and seen == [value.scope, value.scope]
+    finally:
+        await service.close()

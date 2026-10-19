@@ -486,7 +486,7 @@ async def test_owned_file_interrupted_model_stays_needs_review_after_explicit_re
     await asyncio.wait_for(entered.wait(), 3)
     record = await managed.record(created["id"])
     message_id = record.state["pending"]["id"]
-    await managed.restart()
+    await managed.restart(application=True)
     status = await managed.manager.resume_owned("g1", record.id, owner=OWNER)
     assert status["owner"] == OWNER and status["notify_only"] is True
     assert not status["enabled"] and status["state"] == "needs_review"

@@ -5,15 +5,15 @@ import asyncio
 
 import pytest
 from xdog.agent.core import AgentTool, AgentToolResult
-from xdog.agent.session_input import decode_input
-from xdog.ai.types import AssistantMessage, TextContent, ToolCall
+from xdog.agent.session_input import decode_input, encode_input
+from xdog.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage
 from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.config import ClawConfig
 from xdog.claw.core.persistence.transcript_convert import entry_text
 from xdog.claw.core.runtime.group import GroupRuntime
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.tools.tool_goal import create_goal_tool
-from xdog.claw.core.types import ExternalInput, Group, GroupConfig, QueueMode, SystemInput, SystemInputKind, UserInput
+from xdog.claw.core.types import Group, GroupConfig, QueueMode, SystemInput, SystemInputKind, UserInput
 
 
 @pytest.mark.parametrize('source', ['human', 'editor_queue', 'cancelled_editor', 'system', 'external'])
@@ -30,7 +30,7 @@ async def test_goal_controls_follow_actual_consumed_user_origin_not_labels(tmp_p
             part.text for part in last.content if isinstance(part, TextContent)))
         if last.role == 'user' and text == 'START':
             message = AssistantMessage(content=(ToolCall(id='barrier', name='barrier', arguments={}),))
-        elif last.role == 'user' and text == 'CHANGE':
+        elif last.role == 'user' and 'CHANGE' in text:
             message = AssistantMessage(content=(ToolCall(id='change', name='goal', arguments={
                 'action': 'update', 'goal_id': holder['goal'], 'goal_description': 'Updated user outcome',
                 'verification_conditions': ['new user condition'], 'reason': 'Explicit user scope change'}),))
@@ -56,7 +56,7 @@ async def test_goal_controls_follow_actual_consumed_user_origin_not_labels(tmp_p
         await asyncio.wait_for(entered.wait(), 3)
         assert not session._goal_user_authorized
         if source == 'human':
-            await orch.route_message(UserInput(group_id='main', content='CHANGE', channel='tui'))
+            session.queue_human_input(UserInput(group_id='main', content='CHANGE', channel='tui'), 'steer')
         elif source == 'editor_queue':
             assert runtime.control_input('add', 'editor-human', content='CHANGE', delivery='steer')
         elif source == 'cancelled_editor':
@@ -65,12 +65,11 @@ async def test_goal_controls_follow_actual_consumed_user_origin_not_labels(tmp_p
             # A later unclassified restore/reuse of the ID cannot inherit a cancelled user's authority.
             session.agent.queue_input('cancelled-user-id', 'CHANGE', 'steer')
         elif source == 'system':
-            await orch.route_message(SystemInput(group_id='main', content='CHANGE', kind=SystemInputKind.FLUSH))
+            session.agent.steer('CHANGE')
         else:
             canonical = decode_input({'id': 'external-event', 'origin': 'acp', 'source': 'user',
                 'instruction': 'CHANGE', 'evidence': [], 'provenance': {'claims_user': True}})
-            await orch.route_message(ExternalInput(group_id='main', content='CHANGE',
-                metadata={'input_origin': 'user'}, canonical=canonical))
+            session.agent.steer(encode_input(canonical))
         assert not session._goal_user_authorized  # Merely queued is not consumption/authorization.
         release.set()
         result = await asyncio.wait_for(owner, 4)
@@ -86,6 +85,10 @@ async def test_goal_controls_follow_actual_consumed_user_origin_not_labels(tmp_p
             assert current.description == 'Original user outcome'
             assert current.verification.conditions == ('original condition',)
             assert not session._goal_user_authorized
+            refusals = [part.text for row in session.agent.messages
+                        if isinstance(row, ToolResultMessage) and row.tool_name == 'goal'
+                        for part in row.content if isinstance(part, TextContent)]
+            assert any('requires an explicit user turn' in text for text in refusals)
     finally:
         release.set()
         if not owner.done():

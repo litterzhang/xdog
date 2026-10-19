@@ -345,9 +345,14 @@
   "workstreams": [
     {
       "name": "protocol_neutral_input_foundation",
-      "status": "validated_not_integrated",
-      "evidence": "docs/claw-input-foundation-verification.md",
-      "note": "Ordinary ingress/controller cutover and all47 objective acceptance items remain pending."
+      "status": "integrated_with_application_runtime",
+      "evidence": "docs/claw-input-foundation-verification.md"
+    },
+    {
+      "name": "application_input_consumer",
+      "status": "orchestrator_and_native_commit_ack_integrated_not_final_channel_cutover",
+      "evidence": "docs/claw-input-runtime-verification.md",
+      "note": "Legacy ACP receipt/observer bridge, final native/Weixin handoff and remaining objective acceptance still pending."
     }
   ]
 }

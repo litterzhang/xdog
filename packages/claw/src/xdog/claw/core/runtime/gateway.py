@@ -29,6 +29,7 @@ from xdog.agent.supervision_config import ChildConfig
 from xdog.ai.types import ImageContent, StreamOptions, ThinkingLevel
 from xdog.claw.channels.tui.image_upload import ImageUploads
 from xdog.claw.config import ClawConfig
+from xdog.claw.core.inputs.models import ReplyTarget
 from xdog.claw.core.runtime.mcp_protocol import McpSender
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.runtime.source_protocol import SourceSender
@@ -1837,13 +1838,8 @@ class GatewayServer:
                         task=task,
                         started=started,
                     )
-                    await started.wait()
-                    await write({
-                        "type": "run_ack",
-                        "group_id": request.get("group_id", "main"),
-                        "run_id": run_id,
-                        "session_id": self._orchestrator.get_new_session_id(group_id) or "",
-                    })
+                    # The handler publishes run_ack only after durable intake.
+                    # Do not block the socket reader on a filesystem commit.
 
                     def _remove_run(_task: asyncio.Task[None], rid: str = run_id, gid: str = group_id) -> None:
                         runs.pop(rid, None)
@@ -1915,11 +1911,8 @@ class GatewayServer:
                         read_task.cancel()
                     for session_task, _, _ in tuple(session_jobs.values()):
                         session_task.cancel()
-                    # Cancel model/tool ownership before settling an uninterruptible
-                    # source filesystem read; source cleanup must not postpone abort.
-                    for run in tuple(runs.values()):
-                        if self._orchestrator:
-                            self._orchestrator.abort_group(run.group_id)
+                    # Disconnect owns readers/dialogs, not already accepted
+                    # application work. Explicit abort/shutdown have separate owners.
                     await asyncio.gather(
                         *(binding[0] for binding in tuple(session_jobs.values())), return_exceptions=True)
                     await asyncio.gather(
@@ -1950,11 +1943,6 @@ class GatewayServer:
                     await mcp_sender.close()
                     await child_sender.close()
                     await source_sender.close()
-                    if self._orchestrator:
-                        await asyncio.gather(
-                            *(self._orchestrator.wait_group_idle(run.group_id) for run in runs.values()),
-                            return_exceptions=True,
-                        )
                     for run in tuple(runs.values()):
                         run.task.cancel()
                     if runs:
@@ -2067,6 +2055,22 @@ class GatewayServer:
             })
 
     async def _handle_chat_message(
+        self, request: dict[str, Any], writer: asyncio.StreamWriter, *,
+        write: Any = None, started: asyncio.Event | None = None,
+    ) -> None:
+        try:
+            await self._run_chat_message(request, writer, write=write, started=started)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            publish = write or (lambda data: self._write_response(writer, data))
+            await publish({'type': 'error', 'run_id': str(request.get('run_id', '')),
+                           'message': str(exc) or type(exc).__name__})
+        finally:
+            if started is not None:
+                started.set()
+
+    async def _run_chat_message(
         self,
         request: dict[str, Any],
         writer: asyncio.StreamWriter,
@@ -2105,13 +2109,20 @@ class GatewayServer:
                 group_id=group_id, content=content, sender="user", channel="tui",
                 images=tuple(request.get("_images", ())),
                 metadata={"input_origin": "extension"} if request.get("_message_alive") is not None else {})
-        if started is not None:
-            started.set()
-
         # Stream presentation-neutral turn events to the TUI client.
         accumulated_text = ""
         streamed_any_text = False
         pending_writes: list[asyncio.Task[None]] = []
+        orchestrator = self._orchestrator
+
+        def accepted() -> None:
+            if started is not None:
+                started.set()
+                pending_writes.append(asyncio.create_task(write_response({
+                    'type': 'run_ack', 'group_id': group_id, 'run_id': run_id,
+                    'message_id': 'native:' + run_id,
+                    'session_id': orchestrator.get_new_session_id(group_id) or '',
+                })))
 
         def on_display_event(event: Any) -> None:
             nonlocal accumulated_text, streamed_any_text
@@ -2148,6 +2159,9 @@ class GatewayServer:
                 reserved=True,
                 input_alive=request.get("_message_alive"),
                 command_menu=request.get("_command_menu"),
+                message_id='native:' + run_id,
+                on_accepted=accepted,
+                reply_target=ReplyTarget('tui', run_id),
             )
         except ValueError as exc:
             if request.get('_message_alive') is None:

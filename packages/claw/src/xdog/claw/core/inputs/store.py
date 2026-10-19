@@ -232,7 +232,10 @@ class InputStore:
         if count >= maximum:
             raise ValueError('Input capacity exceeded; no accepted message was dropped')
 
-    async def enqueue(self, envelope: InputEnvelope) -> tuple[InputRecord, bool]:
+    async def enqueue(self, envelope: InputEnvelope, *, max_pending: int | None = None) -> tuple[InputRecord, bool]:
+        maximum = self.max_pending if max_pending is None else max_pending
+        if type(maximum) is not int or not 1 <= maximum <= 4096:
+            raise ValueError('Invalid input capacity')
         def enqueue(db: sqlite3.Connection) -> tuple[InputRecord, bool]:
             payload = encode_envelope(envelope)
             scope, identifier = envelope.scope, envelope.message.id
@@ -242,7 +245,7 @@ class InputStore:
                 if row['payload'] != payload:
                     raise ValueError('Message ID already has different content or host routing')
                 return _record(row), True
-            self._capacity(db, scope, self.max_pending)
+            self._capacity(db, scope, maximum)
             db.execute("INSERT INTO inputs(group_id,workspace,message_id,payload,status) VALUES (?,?,?,?,'pending')",
                        (scope.group_id, str(scope.workspace), identifier, payload))
             return _record(_select(db, scope, identifier)), False

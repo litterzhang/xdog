@@ -4,8 +4,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -18,15 +19,18 @@ from xdog.ai.types import ImageContent, Model, ThinkingLevel
 from xdog.claw.channels.base import Channel
 from xdog.claw.config import ClawConfig
 from xdog.claw.core.chunker import BlockChunker
+from xdog.claw.core.inputs.consumer import Admit, InputOutcome, InputService
+from xdog.claw.core.inputs.models import InputEnvelope, InputScope, ReplyTarget
+from xdog.claw.core.inputs.store import InputRecord, InputStore
 from xdog.claw.core.queue import MessageQueue
 from xdog.claw.core.runtime.group import GroupRuntime
+from xdog.claw.core.runtime.input_adapter import freeze_input, restore_input
 from xdog.claw.core.runtime.session import AgentSession, TurnResult
 from xdog.claw.core.runtime.transcript_source import SourceCapture
 from xdog.claw.core.types import (
     ExternalInput,
     Group,
     GroupInput,
-    QueueMode,
     UserInput,
 )
 
@@ -38,6 +42,14 @@ logger = logging.getLogger(__name__)
 
 CommandMenuHost = tuple[Callable[[], bool], int]
 
+
+
+@dataclass(frozen=True)
+class _InputCall:
+    envelope: InputEnvelope
+    options: dict[str, Any]
+    result: asyncio.Future[TurnResult]
+    detached: asyncio.Event
 
 
 class Orchestrator:
@@ -71,6 +83,10 @@ class Orchestrator:
         self._queue = MessageQueue(max_concurrent=config.max_concurrent_agents)
         self._observers: ManagedObservers | None = None
         self._chunker = BlockChunker()
+        self._inputs: InputService | None = None
+        self._input_lock = asyncio.Lock()
+        self._input_calls: dict[tuple[InputScope, str], _InputCall] = {}
+        self._inputs_stopping = False
 
     # -- Group registration ----------------------------------------------------
 
@@ -98,7 +114,7 @@ class Orchestrator:
         runtime.goal_manager._report_fn = partial(self._send_response, group.id)
         runtime.goal_manager._wake_fn = lambda: getattr(self, '_goal_wake', lambda: None)()
         runtime.goal_manager._ready_fn = lambda: (
-            not self._queue.is_running(group.id) and not self._queue._queues.get(group.id)
+            not self.is_group_running(group.id)
             and group.id not in self._navigation_groups)
         self._runtimes[group.id] = runtime
 
@@ -129,81 +145,106 @@ class Orchestrator:
 
     # -- Message routing -------------------------------------------------------
 
+    async def input_service(self) -> InputService:
+        """Application ownership is independent of an ACP endpoint or TUI."""
+        async with self._input_lock:
+            if self._inputs_stopping:
+                raise RuntimeError('Claw application inputs are stopping')
+            if self._inputs is None:
+                store = await InputStore.open(self._data_dir / 'inputs' / 'inbox.sqlite3')
+                self._inputs = InputService(store, self._execute_input, on_settled=lambda _scope: self._goal_wake())
+                for group in self._runtimes:
+                    workspace = self.get_group_workspace(group)
+                    if workspace is not None:
+                        await self._inputs.activate(InputScope(group, workspace))
+            return self._inputs
+
+    async def _execute_input(self, record: InputRecord, admit: Admit) -> InputOutcome:
+        scope, identifier = record.envelope.scope, record.envelope.message.id
+        key = scope, identifier
+        call = self._input_calls.get(key)
+        if call is not None and call.envelope != record.envelope:
+            call = None  # An unaccepted conflicting submission cannot borrow a stored input.
+        if self.get_group_workspace(scope.group_id) != scope.workspace:
+            raise ValueError('Input workspace binding changed; no automatic reroute')
+        if record.envelope.admission_key and call is None:
+            raise ValueError('Original live admission binding unavailable; inspect before retry')
+        options = dict(call.options) if call is not None else {}
+        display = options.get('on_display_event')
+        if call is not None and display is not None:
+            def publish(event: Any) -> None:
+                if not call.detached.is_set():
+                    display(event)
+            options['on_display_event'] = publish
+        try:
+            result = await self._execute_with_queue(restore_input(record.envelope), admit=admit, **options)
+            if result is None:
+                # A host fence explicitly refused this unstarted submission.
+                result = TurnResult(error='Host input admission was withdrawn')
+            if call is not None and not call.result.done():
+                call.result.set_result(result)
+            return InputOutcome(response=result.response_text, error=result.error or '', session_id=result.session_id)
+        finally:
+            if self._input_calls.get(key) is call:
+                self._input_calls.pop(key, None)
+
     async def route_message(
-        self,
-        message: GroupInput,
-        *,
-        on_display_event: Any = None,
-        on_text_delta: Any = None,
+        self, message: GroupInput, *, on_display_event: Any = None, on_text_delta: Any = None,
         on_assistant_message: Callable[[str], Awaitable[None]] | None = None,
         child_ui: tuple[str, Callable[[dict[str, Any]], None]] | None = None,
-        reserved: bool = False,
-        input_alive: Callable[[], bool] | None = None,
+        reserved: bool = False, input_alive: Callable[[], bool] | None = None,
         before_admission: Callable[[], Awaitable[bool]] | None = None,
-        command_menu: CommandMenuHost | None = None,
+        command_menu: CommandMenuHost | None = None, message_id: str | None = None,
+        on_accepted: Callable[[], None] | None = None, reply_target: ReplyTarget | None = None,
     ) -> TurnResult | None:
-        """Single entry point for all messages."""
+        """Persist ordinary input before ACK; busy never implicitly means steering."""
         group_id = message.group_id
         if group_id not in self._runtimes:
-            if group_id.startswith("weixin:"):
+            if group_id.startswith('weixin:'):
                 self.auto_register_group(group_id)
             else:
-                logger.warning("Message for unknown group: %s", group_id)
+                logger.warning('Message for unknown group: %s', group_id)
                 return None
-
-        runtime = self._runtimes[group_id]
-        group = runtime.group
-        mode = group.config.queue_mode if group.config else QueueMode.COLLECT
-        max_queued = group.config.max_queued_messages if group.config else 50
-        debounce_ms = group.config.debounce_ms if group.config else 0
-
-        if self._queue.is_running(group_id) and not reserved:
-            active = runtime._active_session
-            if group_id in self._navigation_groups or active is None or not active.agent.state.is_streaming:
-                mode = QueueMode.COLLECT  # No ready checkpoint owner: retain, never drop into a disposed session.
-            async def _on_steer(msg: GroupInput) -> None:
-                if (isinstance(msg, UserInput) and not isinstance(msg, ExternalInput)
-                        and msg.metadata.get('input_origin', 'user') == 'user' and runtime._active_session is not None
-                        and (msg.content.strip() or msg.images)):
-                    runtime._active_session.queue_human_input(msg, 'steer')
-                else:
-                    runtime.steer(msg.content)
-
-            async def _on_follow_up(msg: GroupInput) -> None:
-                if (isinstance(msg, UserInput) and not isinstance(msg, ExternalInput)
-                        and msg.metadata.get('input_origin', 'user') == 'user' and runtime._active_session is not None
-                        and (msg.content.strip() or msg.images)):
-                    runtime._active_session.queue_human_input(msg, 'follow_up')
-                else:
-                    runtime.follow_up(msg.content)
-
-            await self._queue.enqueue(
-                message, mode=mode, on_steer=_on_steer,
-                on_follow_up=_on_follow_up, max_queued=max_queued,
-            )
-            return None
-
-        result = await self._execute_with_queue(
-            message,
-            on_display_event=on_display_event,
-            on_text_delta=on_text_delta,
-            on_assistant_message=on_assistant_message,
-            child_ui=child_ui,
-            input_alive=input_alive,
-            before_admission=before_admission,
-            command_menu=command_menu,
-        )
-
-        queued = await self._queue.collect_with_debounce(group_id, debounce_ms)
-        for qmsg in queued:
-            qresult = await self._execute_with_queue(
-                qmsg,
-                on_assistant_message=partial(self._send_response, group_id),
-            )
-            if qresult and qresult.error:
-                await self._send_to_channels(group_id, f"Error: {qresult.error}")
-
-        return result
+        workspace = self.get_group_workspace(group_id)
+        if workspace is None:
+            raise ValueError('Group input workspace is unavailable')
+        busy = self.is_group_running(group_id)
+        identifier = message_id or (message.canonical.id if isinstance(message, ExternalInput)
+                                    else 'input-' + uuid.uuid4().hex)
+        binding = 'live-' + uuid.uuid4().hex if input_alive is not None or before_admission is not None else ''
+        envelope = freeze_input(message, workspace, message_id=identifier, admission_key=binding, reply=reply_target)
+        service = await self.input_service()
+        key = envelope.scope, identifier
+        call = self._input_calls.get(key)
+        added = call is None
+        if call is None:
+            call = _InputCall(envelope, {'on_display_event': on_display_event, 'on_text_delta': on_text_delta,
+                'on_assistant_message': on_assistant_message, 'child_ui': child_ui, 'input_alive': input_alive,
+                'before_admission': before_admission, 'command_menu': command_menu},
+                asyncio.get_running_loop().create_future(), asyncio.Event())
+            self._input_calls[key] = call
+        try:
+            await service.submit(envelope, max_pending=self._runtimes[group_id].group.config.max_queued_messages)
+            if on_accepted is not None:
+                on_accepted()
+            if busy and not reserved:
+                return None
+            receipt = await service.wait(envelope.scope, identifier)
+            if call.result.done():
+                return call.result.result()
+            result = TurnResult(response_text=receipt.response, error=receipt.error or None,
+                                session_id=receipt.session_id, canceled=receipt.status in {'cancelled', 'interrupted'})
+            call.result.set_result(result)
+            if self._input_calls.get(key) is call:
+                self._input_calls.pop(key, None)
+            return result
+        except asyncio.CancelledError:
+            call.detached.set()  # Accepted input survives a lost waiter/connection.
+            raise
+        except Exception:
+            if added and self._input_calls.get(key) is call:
+                self._input_calls.pop(key, None)
+            raise
 
     async def _execute_with_queue(
         self,
@@ -216,6 +257,7 @@ class Orchestrator:
         input_alive: Callable[[], bool] | None = None,
         before_admission: Callable[[], Awaitable[bool]] | None = None,
         command_menu: CommandMenuHost | None = None,
+        admit: Admit | None = None,
     ) -> TurnResult | None:
         """Execute a message with concurrency control."""
         group_id = message.group_id
@@ -230,6 +272,8 @@ class Orchestrator:
             if before_admission is not None and not await before_admission():
                 return None  # Host cancellation won before actual Agent admission.
             session = runtime.get_or_create_session(allow_reset=input_alive is None)
+            if admit is not None and not await admit(session.meta.session_id):
+                return None
             previous_menu = session.extensions.command_menu_handler
             menu_handler = self._command_menu_handler(session, command_menu) if command_menu is not None else None
             previous_pending = session.extensions.pending_messages
@@ -342,10 +386,12 @@ class Orchestrator:
             await runtime.wait_for_idle()
 
     def is_group_running(self, group_id: str) -> bool:
-        return self._queue.is_running(group_id)
+        workspace = self.get_group_workspace(group_id)
+        return self._queue.is_running(group_id) or bool(self._inputs is not None and workspace is not None
+            and self._inputs.has_work(InputScope(group_id, workspace)))
 
     def try_reserve_group(self, group_id: str) -> bool:
-        return self._queue.try_reserve(group_id)
+        return not self.is_group_running(group_id) and self._queue.try_reserve(group_id)
 
     def claim_group_reservation(self, group_id: str) -> None:
         self._queue.claim_reservation(group_id)
@@ -1033,10 +1079,12 @@ class Orchestrator:
     # -- Lifecycle -------------------------------------------------------------
 
     async def start(self) -> None:
+        await self.input_service()
         for channel in self._channels:
             await channel.connect()
 
     async def stop(self) -> None:
+        self._inputs_stopping = True
         self._goal_closing = True
         goal_jobs = tuple(self._goal_jobs.values())
         for task in goal_jobs:
@@ -1048,6 +1096,8 @@ class Orchestrator:
         disconnected = await asyncio.gather(
             *(channel.disconnect() for channel in self._channels), return_exceptions=True,
         )
+        if self._inputs is not None:
+            await self._inputs.close()
         children = [runtime._active_session.children.supervisor for runtime in self._runtimes.values()
                     if runtime._active_session is not None]
         await asyncio.gather(*(owner.aclose() for owner in children), return_exceptions=True)
