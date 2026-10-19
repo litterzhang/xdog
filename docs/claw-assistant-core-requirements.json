@@ -17,21 +17,27 @@
       "area": "product",
       "requirement": "Goal 包未安装时普通聊天/记忆/工具/历史完整，无 Goal/ACP/Eyes 依赖；包存在自动提供 built-in skill 与能力，无 Goal enable 开关，不自动委托任务",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/claw-assistant-core-source-audit.json"
+      ]
     },
     {
       "id": "CORE-02",
       "area": "product",
       "requirement": "自治委托与能力启用分离，不自动将普通请求升级成 Goal",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/claw-assistant-core-source-audit.json"
+      ]
     },
     {
       "id": "CORE-03",
       "area": "product",
       "requirement": "当前 checkout 原地实施，无 worktree、付费模型、用户服务操作或自动发布",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/claw-assistant-core-source-audit.json"
+      ]
     },
     {
       "id": "IN-01",
@@ -41,7 +47,8 @@
       "evidence": [
         "docs/claw-channel-handoff-verification.md",
         "docs/claw-output-receipts-verification.md",
-        "docs/claw-group-controller-verification.md"
+        "docs/claw-group-controller-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -50,7 +57,8 @@
       "requirement": "稳定 message ID 去重，同 ID 不同内容拒绝，attempt 与消息身份分离",
       "status": "pending",
       "evidence": [
-        "docs/claw-group-controller-verification.md"
+        "docs/claw-group-controller-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -59,7 +67,8 @@
       "requirement": "容量满背压/明确拒绝，不能删除已经接收的输入",
       "status": "pending",
       "evidence": [
-        "docs/claw-group-controller-verification.md"
+        "docs/claw-group-controller-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -68,7 +77,8 @@
       "requirement": "claimed 与 running 分离，取消在 admission 边界阻止未开始工作",
       "status": "pending",
       "evidence": [
-        "docs/claw-group-controller-verification.md"
+        "docs/claw-group-controller-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -79,7 +89,8 @@
       "evidence": [
         "docs/claw-group-controller-verification.md",
         "docs/claw-owned-transcript-commit-verification.md",
-        "packages/claw/tests/test_owned_transcript_commit.py"
+        "packages/claw/tests/test_owned_transcript_commit.py",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -92,7 +103,8 @@
         "docs/claw-output-receipts-verification.md",
         "docs/claw-observer-recipients-verification.md",
         "docs/observer-message-output-verification.md",
-        "packages/claw/tests/test_observer_message_outputs.py"
+        "packages/claw/tests/test_observer_message_outputs.py",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -103,7 +115,8 @@
       "evidence": [
         "docs/claw-group-controller-verification.md",
         "docs/claw-owned-tool-io-verification.md",
-        "packages/claw/tests/test_weixin_application_intake.py"
+        "packages/claw/tests/test_weixin_application_intake.py",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -116,7 +129,8 @@
         "docs/claw-output-receipts-verification.md",
         "docs/claw-observer-recipients-verification.md",
         "docs/observer-message-output-verification.md",
-        "packages/claw/tests/test_observer_message_outputs.py"
+        "packages/claw/tests/test_observer_message_outputs.py",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -125,7 +139,8 @@
       "requirement": "断线不是已接收普通消息的撤回；明确取消仍绑定原执行",
       "status": "pending",
       "evidence": [
-        "docs/claw-group-controller-verification.md"
+        "docs/claw-group-controller-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -134,7 +149,8 @@
       "requirement": "Claw 首阶段不顺便改变 per-turn 语义；Coding 既有独立输入批处理不回退",
       "status": "pending",
       "evidence": [
-        "docs/claw-group-controller-verification.md"
+        "docs/claw-group-controller-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -143,7 +159,8 @@
       "requirement": "steer/follow-up 队列、checkpoint 和消费收据仅由 xdog.agent 管理",
       "status": "pending",
       "evidence": [
-        "docs/claw-group-controller-verification.md"
+        "docs/claw-group-controller-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -152,7 +169,8 @@
       "requirement": "无忙时自动 steering、steer-backlog 双重入队或 run 结束后的隐式新 turn",
       "status": "pending",
       "evidence": [
-        "docs/claw-group-controller-verification.md"
+        "docs/claw-group-controller-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -161,7 +179,8 @@
       "requirement": "每 group 一个执行 owner，Gateway/ACP/UI 不另维护执行权威",
       "status": "pending",
       "evidence": [
-        "docs/claw-group-controller-verification.md"
+        "docs/claw-group-controller-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -169,7 +188,9 @@
       "area": "runtime",
       "requirement": "Gateway 仅协议/连接；Session 仅上下文/Agent；应用命令按职责隔离",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/claw-assistant-core-source-audit.json"
+      ]
     },
     {
       "id": "RUN-05",
@@ -189,7 +210,8 @@
         "packages/claw/tests/test_weixin_monitor.py",
         "docs/claw-owned-hybrid-memory-verification.md",
         "packages/claw/tests/test_owned_application_projection.py",
-        "docs/claw-owned-ingress-source-verification.md"
+        "docs/claw-owned-ingress-source-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -201,7 +223,8 @@
         "docs/claw-acp-observer-cutover-verification.md",
         "packages/claw/tests/test_acp_core_receipts.py",
         "packages/claw/tests/test_observer_journal.py",
-        "scripts/verify_acp_artifacts.py:CLAW"
+        "scripts/verify_acp_artifacts.py:CLAW",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -213,7 +236,8 @@
         "docs/claw-acp-observer-cutover-verification.md",
         "packages/claw/tests/test_acp_core_receipts.py",
         "packages/claw/tests/test_observer_journal.py",
-        "scripts/verify_acp_artifacts.py:CLAW"
+        "scripts/verify_acp_artifacts.py:CLAW",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -223,7 +247,8 @@
       "status": "pending",
       "evidence": [
         "docs/observer-message-output-verification.md",
-        "packages/claw/tests/test_observer_message_outputs.py"
+        "packages/claw/tests/test_observer_message_outputs.py",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -232,7 +257,8 @@
       "requirement": "宿主兑现显式取消，不误伤无关聊天，不因 provenance 获得内部身份",
       "status": "pending",
       "evidence": [
-        "docs/claw-observer-recipients-verification.md"
+        "docs/claw-observer-recipients-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -241,7 +267,8 @@
       "requirement": "独立/托管观察恢复语义保持明确，ACK 不等于模型或报告完成",
       "status": "pending",
       "evidence": [
-        "docs/claw-observer-recipients-verification.md"
+        "docs/claw-observer-recipients-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -253,7 +280,8 @@
         "docs/goal-storage-verification.md",
         "docs/goal-kernel-verification.md",
         "docs/coding-goal-lifecycle-verification.md",
-        "docs/claw-goal-cutover-verification.md"
+        "docs/claw-goal-cutover-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -265,7 +293,8 @@
         "docs/goal-storage-verification.md",
         "docs/goal-kernel-verification.md",
         "docs/coding-goal-lifecycle-verification.md",
-        "docs/claw-goal-cutover-verification.md"
+        "docs/claw-goal-cutover-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -277,7 +306,8 @@
         "docs/goal-storage-verification.md",
         "docs/goal-kernel-verification.md",
         "docs/coding-goal-lifecycle-verification.md",
-        "docs/claw-goal-cutover-verification.md"
+        "docs/claw-goal-cutover-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -288,7 +318,8 @@
       "evidence": [
         "docs/goal-kernel-verification.md",
         "docs/coding-goal-lifecycle-verification.md",
-        "docs/claw-goal-cutover-verification.md"
+        "docs/claw-goal-cutover-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -299,7 +330,8 @@
       "evidence": [
         "docs/goal-kernel-verification.md",
         "docs/coding-goal-lifecycle-verification.md",
-        "docs/claw-goal-cutover-verification.md"
+        "docs/claw-goal-cutover-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -310,7 +342,8 @@
       "evidence": [
         "docs/goal-kernel-verification.md",
         "docs/coding-goal-lifecycle-verification.md",
-        "docs/claw-goal-cutover-verification.md"
+        "docs/claw-goal-cutover-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -321,7 +354,8 @@
       "evidence": [
         "docs/goal-kernel-verification.md",
         "docs/coding-goal-lifecycle-verification.md",
-        "docs/claw-goal-cutover-verification.md"
+        "docs/claw-goal-cutover-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -332,7 +366,8 @@
       "evidence": [
         "docs/goal-kernel-verification.md",
         "docs/coding-goal-lifecycle-verification.md",
-        "docs/claw-goal-cutover-verification.md"
+        "docs/claw-goal-cutover-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -343,7 +378,8 @@
       "evidence": [
         "docs/goal-kernel-verification.md",
         "docs/coding-goal-lifecycle-verification.md",
-        "docs/claw-goal-cutover-verification.md"
+        "docs/claw-goal-cutover-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -354,7 +390,8 @@
       "evidence": [
         "docs/goal-kernel-verification.md",
         "docs/coding-goal-lifecycle-verification.md",
-        "docs/claw-goal-cutover-verification.md"
+        "docs/claw-goal-cutover-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -365,7 +402,8 @@
       "evidence": [
         "docs/goal-kernel-verification.md",
         "docs/coding-goal-lifecycle-verification.md",
-        "docs/claw-goal-cutover-verification.md"
+        "docs/claw-goal-cutover-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -376,7 +414,8 @@
       "evidence": [
         "docs/goal-kernel-verification.md",
         "docs/coding-goal-lifecycle-verification.md",
-        "docs/claw-goal-cutover-verification.md"
+        "docs/claw-goal-cutover-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -385,7 +424,11 @@
       "requirement": "保留子 Agent 无固定运行/累计配额约束，不以新架构偷偷恢复业务预算",
       "status": "pending",
       "evidence": [
-        "docs/claw-goal-cutover-verification.md"
+        "docs/claw-goal-cutover-verification.md",
+        "docs/claw-assistant-core-source-audit.json",
+        "docs/goal-cumulative-data-verification.md",
+        "packages/goal/tests/test_cumulative_state.py",
+        "packages/goal/tests/test_data_pages.py"
       ]
     },
     {
@@ -397,7 +440,8 @@
         "docs/goal-ui-extension-verification.md",
         "docs/shared-goal-extension-verification.md",
         "docs/claw-owned-ingress-source-verification.md",
-        "packages/claw/tests/test_owned_source_io.py"
+        "packages/claw/tests/test_owned_source_io.py",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -406,7 +450,8 @@
       "requirement": "通用 UI renderer 在 xdog.tui；宿主仅连接/布局/owner 适配，包不依赖 Goal",
       "status": "pending",
       "evidence": [
-        "docs/shared-goal-extension-verification.md"
+        "docs/shared-goal-extension-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -417,7 +462,8 @@
       "evidence": [
         "docs/extension-owner-views.md",
         "docs/goal-ui-extension-verification.md",
-        "docs/shared-goal-extension-verification.md"
+        "docs/shared-goal-extension-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -429,7 +475,8 @@
         "docs/goal-ui-extension-verification.md",
         "docs/shared-goal-extension-verification.md",
         "docs/claw-retired-extension-verification.md",
-        "docs/claw-assistant-core-final-audit.md"
+        "docs/claw-assistant-core-final-audit.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -439,7 +486,8 @@
       "status": "pending",
       "evidence": [
         "docs/goal-ui-extension-verification.md",
-        "docs/shared-goal-extension-verification.md"
+        "docs/shared-goal-extension-verification.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -468,7 +516,11 @@
         "packages/claw/tests/test_owned_source_io.py",
         "packages/claw/tests/test_owned_child_restore_io.py",
         "packages/claw/tests/test_owned_constructor_metadata_io.py",
-        "packages/claw/tests/test_owned_mcp_spool_io.py"
+        "packages/claw/tests/test_owned_mcp_spool_io.py",
+        "docs/claw-assistant-core-source-audit.json",
+        "docs/goal-cumulative-data-verification.md",
+        "packages/goal/tests/test_cumulative_state.py",
+        "packages/goal/tests/test_data_pages.py"
       ],
       "audit_note": "Ordinary preparation and history transaction now have actual off-loop/data-durability/rollback/cancel/process-death proofs; F-02 native active-index fix preserved. Remaining startup/status/MCP/image/custom-context/compaction IO and missing-pointer/sidecar recovery audit still prevent full acceptance. No additional passed verdict before final47 review/current artifacts."
     },
@@ -484,7 +536,11 @@
         "docs/claw-owned-transcript-commit-verification.md",
         "packages/claw/tests/test_owned_transcript_commit.py",
         "docs/claw-owned-hybrid-memory-verification.md",
-        "packages/claw/tests/test_owned_hybrid_memory_io.py"
+        "packages/claw/tests/test_owned_hybrid_memory_io.py",
+        "docs/claw-assistant-core-source-audit.json",
+        "docs/goal-cumulative-data-verification.md",
+        "packages/goal/tests/test_cumulative_state.py",
+        "packages/goal/tests/test_data_pages.py"
       ]
     },
     {
@@ -494,7 +550,8 @@
       "status": "pending",
       "evidence": [
         "docs/claw-retired-extension-verification.md",
-        "docs/claw-assistant-core-final-audit.md"
+        "docs/claw-assistant-core-final-audit.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -507,7 +564,8 @@
         "docs/claw-retired-extension-verification.md",
         "docs/claw-assistant-core-final-audit.md",
         "docs/claw-owned-transcript-commit-verification.md",
-        "packages/claw/tests/test_owned_transcript_commit.py"
+        "packages/claw/tests/test_owned_transcript_commit.py",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -518,7 +576,8 @@
       "evidence": [
         "docs/goal-storage-verification.md",
         "docs/claw-retired-extension-verification.md",
-        "docs/claw-assistant-core-final-audit.md"
+        "docs/claw-assistant-core-final-audit.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     },
     {
@@ -528,7 +587,8 @@
       "status": "pending",
       "evidence": [
         "docs/claw-retired-extension-verification.md",
-        "docs/claw-assistant-core-final-audit.md"
+        "docs/claw-assistant-core-final-audit.md",
+        "docs/claw-assistant-core-source-audit.json"
       ]
     }
   ],
@@ -556,5 +616,5 @@
       "evidence": "docs/claw-acp-observer-cutover-verification.md"
     }
   ],
-  "audit_status": "in_progress_confirmed_io_findings_not_accepted"
+  "audit_status": "source_inspected_pending_wholebranch_review_and_current_artifacts"
 }

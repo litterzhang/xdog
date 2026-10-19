@@ -318,3 +318,22 @@ cancellation, missing current pointers/derived catalogs and saved-model sidecar
 no-follow/fallback ordering. Final whole-nine/cold current artifacts, per-row47
 verdicts and the single whole-branch review remain mandatory. No additional
 requirement is marked passed merely by this source milestone.
+
+## Requirement-by-requirement source inspection receipt
+
+`docs/claw-assistant-core-source-audit.json` now covers all47 original IDs with
+current actual mechanisms,43 named runtime-case locators (validated against
+actual test AST symbols), source/gate verdict and exact remaining final proof.
+This is not a new smaller checklist: every original requirement stays present.
+Core ordinary intake/state/route/attempt, native Agent lanes, cancellation/output
+certainty, Goal host/store/explicit review/criteria, real dual adapters, and generic
+view/display-only guard paths were inspected; F06 was found and fixed by that
+audit instead of passing from a green existing suite. No row is promoted merely
+from a test name or inventory. Current source gate7035/34, strict602/fullRuff/
+Flow17/lock/diff; Goal+actual both-host post-commit145 passed38.40s.
+
+Current installed Goal-only/absent-base/both-host same-wheel/UI/ACP/native/output
+proofs are still pending; old snapshots are not used. The original47 final
+statuses remain unchanged until final judgment/artifacts establish their scopes.
+The next step is the one fresh-context wholebranch review of actual main merge
+base through complete implementation HEAD, not another per-task/fix reviewer.

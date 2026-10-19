@@ -1,0 +1,472 @@
+{
+  "format": "xdog.assistant_core.source_audit.v1",
+  "spec": "docs/superpowers/specs/2026-10-19-claw-assistant-core-design.md",
+  "scope": "Current source inspection, not release/whole47 completion",
+  "source_base": "0735015",
+  "candidate": "Source checked after cumulative-state/page correction; final review/current artifacts pending",
+  "rows": [
+    {
+      "id": "CORE-01",
+      "source_mechanism": "find_spec/package extras gate capability only; installed skill uses normal packaged discovery; absent hosts open no Goal journal.",
+      "runtime_cases": [
+        "packages/claw/tests/test_goal_host.py::test_without_goal_package_claw_is_an_ordinary_assistant_without_goal_storage_or_tool"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "current wheel-only absent/present both hosts",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "CORE-02",
+      "source_mechanism": "GoalService.create requires actual user context; status/reconcile/idle have no planner or reviewer-start edge; skill says availability is not delegation.",
+      "runtime_cases": [
+        "packages/goal/tests/test_service.py::test_optional_capability_is_not_delegation_or_automatic_model_work"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "one wholebranch review and final scope rerun",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "CORE-03",
+      "source_mechanism": "Changes are on current feature checkout; no worktree/push/merge/publish operation in implementation; temporary sockets/envs contain only fixture data.",
+      "runtime_cases": [],
+      "source_verdict": "gate_or_operation_audit",
+      "remaining_final_proof": "final local-only operation audit",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "IN-01",
+      "source_mechanism": "Native/Weixin call application route_message; ACP delegates accept_external; InputService.submit awaits leased-store commit before ACK and finally wakes original consumer.",
+      "runtime_cases": [
+        "packages/claw/tests/test_native_busy_intake.py::test_busy_native_ack_is_a_real_pending_input_not_steering_or_a_second_agent"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "current installed native/ACP integration",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "IN-02",
+      "source_mechanism": "Store compares complete encoded envelope for duplicate IDs; claim creates new UUID attempt, terminal writes fence original attempt/status.",
+      "runtime_cases": [
+        "packages/claw/tests/test_input_store.py::test_same_message_id_cannot_alias_different_host_or_content"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "one wholebranch review and final scope rerun",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "IN-03",
+      "source_mechanism": "Capacity check and insert share BEGIN IMMEDIATE; full refuses new input, never removes accepted rows; pending IDs/attachments remain distinct.",
+      "runtime_cases": [
+        "packages/claw/tests/test_input_store.py::test_concurrent_admission_does_not_overfill_or_delete_accepted_messages"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "one wholebranch review and final scope rerun",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "IN-04",
+      "source_mechanism": "claimed is preparation; controller owns executor before admission; store.start persists running before Agent prompt; cancelled unstarted claims cannot admit.",
+      "runtime_cases": [
+        "packages/claw/tests/test_input_consumer.py::test_withdrawal_while_executor_waits_prevents_admission_and_allows_next_input"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "one wholebranch review and final scope rerun",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "IN-05",
+      "source_mechanism": "Exclusive open validates before recovery; claimed releases to pending, running becomes interrupted; retry is explicit new attempt and stale finishes fail.",
+      "runtime_cases": [
+        "packages/claw/tests/test_input_store_ownership.py::test_real_process_exit_recovers_unstarted_but_never_replays_running"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "one wholebranch review and final scope rerun",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "IN-06",
+      "source_mechanism": "Host ReplyReference captures original scope/channel/recipient before ACK; saved route reused after ACK loss; no destination means no broadcast.",
+      "runtime_cases": [
+        "packages/claw/tests/test_output_source_routes.py::test_external_ack_loss_duplicate_retains_accepted_reply_without_later_resolver_or_recipient"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "current installed original-recipient recovery",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "IN-07",
+      "source_mechanism": "Weixin accepts each stable upstream identity before cursor advance; native retains original submission ID across uncertain ACK; envelope persists actual image bytes.",
+      "runtime_cases": [
+        "packages/claw/tests/test_weixin_application_intake.py::test_unsafe_intake_cannot_advance_upstream_cursor"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "current installed attachment/native/partial-ACK consumers",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "IN-08",
+      "source_mechanism": "Per assistant message creates stable output ordinal/send attempt; aggregate response is receipt/history only; entered transport failure is unknown, never auto-resumed.",
+      "runtime_cases": [
+        "packages/claw/tests/test_observer_message_outputs.py::test_notification_cancel_cannot_relabel_an_entered_unknown_send_as_unsent"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "current installed observer per-message output",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "IN-09",
+      "source_mechanism": "Peer close detaches waiter/display; core consumer owns accepted input. Explicit native abort validates original execution tuple and joins before successor.",
+      "runtime_cases": [
+        "packages/claw/tests/test_native_busy_intake.py::test_running_abort_joins_original_attempt_before_the_next_pending_input_runs"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "one wholebranch review and final scope rerun",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "IN-10",
+      "source_mechanism": "Claw claim consumes one ordinary row/turn; Coding controller selects fixed batches up to strict1..128 default10, preserving independent user/canonical/image boundaries.",
+      "runtime_cases": [
+        "packages/coding/tests/test_batch_turns.py::test_five_inputs_are_five_history_messages_in_one_turn"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "one wholebranch review and final scope rerun",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "RUN-01",
+      "source_mechanism": "Claw forwards explicit queue_input/control to the actual Agent; Agent owns checkpoints, selected/consumed/returned IDs, not a second host queue.",
+      "runtime_cases": [
+        "packages/claw/tests/test_native_busy_intake.py::test_queued_peer_cannot_steer_first_and_abort_withdraws_only_its_queued_input"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "one wholebranch review and final scope rerun",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "RUN-02",
+      "source_mechanism": "Busy ordinary input stays durable pending and does not enter steer/follow-up; unconsumed explicit lane returns to original view instead of next-turn replay.",
+      "runtime_cases": [
+        "packages/claw/tests/test_native_busy_intake.py::test_busy_native_ack_is_a_real_pending_input_not_steering_or_a_second_agent"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "one wholebranch review and final scope rerun",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "RUN-03",
+      "source_mechanism": "One controller reservation/task per group; same-task nested borrowing only; stale/detached tasks cannot release or control successor owner.",
+      "runtime_cases": [
+        "packages/claw/tests/test_native_busy_intake.py::test_delayed_old_view_cannot_control_a_successor_or_retry_attempt"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "one wholebranch review and final scope rerun",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "RUN-04",
+      "source_mechanism": "Gateway owns parsing/peers/receipts; controller only exclusion/admission; application command methods delegate models/tools/skills/MCP; Session owns Agent/context/history, not Goal manager.",
+      "runtime_cases": [
+        "packages/claw/tests/test_owned_source_io.py::test_generic_source_preserves_actual_ordinary_input_without_goal_policy"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "wholebranch responsibility review",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "RUN-05",
+      "source_mechanism": "Original producer retains group through preparation/history commit/cancel; app joins one cleanup job across errors; human groups bypass background semaphore without bypassing own group.",
+      "runtime_cases": [
+        "packages/claw/tests/test_owned_application_projection.py::test_repeated_application_shutdown_cancel_keeps_actual_cleanup_owner"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "one wholebranch review and final scope rerun",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "BOUND-01",
+      "source_mechanism": "ACP imports only contracts/core inputs/application; it has no Goal/observer schema, report policy, consumer pump or CLI callback; app owns ingress lifecycle.",
+      "runtime_cases": [
+        "packages/claw/tests/test_acp_gateway.py::test_disabled_gateway_import_and_cli_do_not_load_optional_acp_sdk"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "wholebranch import/ownership review",
+      "overall_acceptance": "passed"
+    },
+    {
+      "id": "BOUND-02",
+      "source_mechanism": "Observer journal owns intent/cursor/outbox; ACP enqueue stable ID hands to Core; generic registered output policy mirrors independent send facts, not an aggregate sender.",
+      "runtime_cases": [
+        "packages/claw/tests/test_observer_message_outputs.py::test_first_observer_message_arrives_before_second_response_finishes"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "current installed observer handoff",
+      "overall_acceptance": "passed"
+    },
+    {
+      "id": "BOUND-03",
+      "source_mechanism": "Goal cancel task/notifications and observer cancel/notifications are separate functions. Completion/abandon/wait/UI unload contain no implicit worker/source stop.",
+      "runtime_cases": [
+        "packages/claw/tests/test_goal_host_recovery.py::test_goal_state_notification_and_observer_controls_are_independent"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "one wholebranch review and final scope rerun",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "BOUND-04",
+      "source_mechanism": "Cancel targets real WorkerRef/attempt/current group owner; source labels cannot authorize criteria or change host reply destination.",
+      "runtime_cases": [
+        "packages/claw/tests/test_goal_host.py::test_forged_role_labels_and_execution_references_do_not_grant_a_role"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "one wholebranch review and final scope rerun",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "BOUND-05",
+      "source_mechanism": "Definitions durable, registrations ephemeral; managed recovery/readiness and standalone disconnect pause explicit. ACK is intake, not Agent/report completion; unknown send remains unknown.",
+      "runtime_cases": [
+        "packages/claw/tests/test_output_source_routes.py::test_notification_cancellation_never_rewrites_an_entered_or_uncertain_send"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "current installed readiness/recovery",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "GOAL-01",
+      "source_mechanism": "Goal pyproject depends only Agent; code uses Goal/Agent/stdlib ports; no harness/TUI/Eyes/ACP/Flow imports in kernel. SDK host example owns actual supervisor.",
+      "runtime_cases": [
+        "packages/goal/tests/test_agent_lifecycle.py::test_actual_supervised_worker_report_and_independent_reviewer_complete"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "current Goal-only isolated wheel dependencies/imports",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "GOAL-02",
+      "source_mechanism": "GoalStore alone owns leased goals/revisions/artifacts/notices; Core stores canonical input/execution/output only. Derived exports carry non-authority markers.",
+      "runtime_cases": [
+        "packages/goal/tests/test_store.py::test_atomic_snapshot_history_notices_and_detached_reads"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "one wholebranch review and final scope rerun",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "GOAL-03",
+      "source_mechanism": "Leased store validates exact schema/format/owner before recovery; Claw refuses legacy goals.json byte-preserving; no migration/dual-read importer.",
+      "runtime_cases": [
+        "packages/claw/tests/test_goal_host_recovery.py::test_legacy_goal_truth_is_refused_byte_preserving_without_empty_replacement"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "one wholebranch review and final scope rerun",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "GOAL-04",
+      "source_mechanism": "GoalHost Protocol exposes owner/start/status/cancel/enqueue/receipt only; kernel never reads harness private fields or constructs Agent; adapters bind actual host resources.",
+      "runtime_cases": [
+        "packages/goal/tests/test_agent_lifecycle.py::test_actual_supervised_worker_report_and_independent_reviewer_complete"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "wholebranch port-boundary review",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "GOAL-05",
+      "source_mechanism": "Actual host supervisor admits worker/reviewer with captured tool ceilings and exact bound tool object identities; readonly reviewer cannot write or accept tasks.",
+      "runtime_cases": [
+        "packages/claw/tests/test_goal_host.py::test_bound_reports_work_in_parent_readonly_without_granting_filesystem_mutation"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "current installed both-host permissions/reviewer evidence",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "GOAL-06",
+      "source_mechanism": "Report transitions to submitted; accept_task requires selected real settled attempt/revision/report digest. Worker report cannot change criteria or complete Goal.",
+      "runtime_cases": [
+        "packages/goal/tests/test_service.py::test_assignment_report_acceptance_and_dependencies_are_distinct"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "one wholebranch review and final scope rerun",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "GOAL-07",
+      "source_mechanism": "Only explicit request_complete calls ReviewLifecycle.request; ordinary status/reconcile/wait/turn ends cannot create reviewer or planner.",
+      "runtime_cases": [
+        "packages/claw/tests/test_goal_host.py::test_ordinary_status_turns_and_goal_wait_do_not_start_a_reviewer"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "one wholebranch review and final scope rerun",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "GOAL-08",
+      "source_mechanism": "Review validates ordered exact criteria findings, successful actual reviewer, current revision/fingerprint/Goal version; parent raw verdict and script exit alone rejected.",
+      "runtime_cases": [
+        "packages/goal/tests/test_review.py::test_stale_incomplete_or_script_verdict_cannot_finish_goal"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "one wholebranch review and final scope rerun",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "GOAL-09",
+      "source_mechanism": "Stable notice hashes from original Goal/fact/revision; owned outbox receipt reconciliation does not retry unknown blindly or poll active Goal with models.",
+      "runtime_cases": [
+        "packages/goal/tests/test_service.py::test_child_terminal_fact_notifies_once_without_acceptance_or_restart"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "one wholebranch review and final scope rerun",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "GOAL-10",
+      "source_mechanism": "Actual consumed human message identity controls OperationContext; revise/pause release require_user; automatic labels and display queries cannot provide authority.",
+      "runtime_cases": [
+        "packages/coding/tests/test_goal_lifecycle.py::test_exact_session_notice_has_no_human_authority_even_if_source_and_text_claim_it"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "one wholebranch review and final scope rerun",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "GOAL-11",
+      "source_mechanism": "Same GoalService/Store/tools/roles/GoalDisplay used by Claw group namespace and Coding exact session/branch adapters; no cross-host owner transfer.",
+      "runtime_cases": [
+        "packages/claw/tests/test_goal_host.py::test_actual_claw_worker_explicit_acceptance_independent_readonly_review_and_notices"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "same current Goal wheel actual both-host cold execution",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "GOAL-12",
+      "source_mechanism": "Group context rotation preserves Goal owner but rebinds display/current parent; Coding navigation closes old owner and opens new private scope; actual busy resources, not unfinished Goal, block rotation.",
+      "runtime_cases": [
+        "packages/coding/tests/test_goal_lifecycle.py::test_idle_session_navigation_keeps_old_goal_private_and_releases_old_journal"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "current installed scope-rotation cases",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "GOAL-13",
+      "source_mechanism": "Supervisor has no fixed child lifetime/token/call/concurrency/record business quota; F06 aggregate snapshot cap/recursive graph limit removed; transport/individual report bounds stay exact pages.",
+      "runtime_cases": [
+        "packages/goal/tests/test_cumulative_state.py::test_aggregate_goal_over_old_megabyte_cap_roundtrips_reopens_and_preserves_versions"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "one wholebranch review and final scope rerun",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "UI-01",
+      "source_mechanism": "One packaged goal_ui Python worker queries granted GoalDisplay data and publishes generic status UI; native source no longer hides Goal-like ordinary text or interprets Goal progress.",
+      "runtime_cases": [
+        "packages/goal/tests/test_ui_views.py::test_same_packaged_goal_worker_uses_view_port_without_ui_or_a_business_host_loop"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "same current packaged extension digest in actual both hosts",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "UI-02",
+      "source_mechanism": "Tui distribution depends only wcwidth and generic extension models/rendering; host TUI connects/layouts generic snapshots without Goal imports/state.",
+      "runtime_cases": [
+        "packages/claw/tests/test_goal_extension_views.py::test_actual_group_goal_grants_headless_display_and_never_starts_work_for_queries"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "current wheel metadata/renderer consumer",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "UI-03",
+      "source_mechanism": "ViewRegistry tokens bind actual configured extension+view+owner; strict bounded finite JSON, post-await binding check, no host method/owner selector; hints coalesced/non-authoritative.",
+      "runtime_cases": [
+        "packages/agent/tests/test_extension_views.py::test_registry_checks_real_owner_after_read_and_clones_query_and_result"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "one wholebranch review and final scope rerun",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "UI-04",
+      "source_mechanism": "Validated display_only cannot register hooks/tools/providers/entries/actions; only its failures are non-veto. Unknown/default required guards remain fail-closed; unload retires view/UI not Goal service.",
+      "runtime_cases": [
+        "packages/agent/tests/test_extension_display_profile.py::test_failed_display_is_nonblocking_but_the_real_required_guard_still_blocks"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "current installed unload/crash/reconnect under running worker",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "UI-05",
+      "source_mechanism": "Display is text/allowed generic components, no arbitrary renderer/layout or business mutation; Goal tools/notices work headless; reading views starts no model.",
+      "runtime_cases": [
+        "packages/coding/tests/test_goal_extension_views.py::test_actual_coding_goal_owner_grants_headless_display_and_reading_never_calls_a_model"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "current Goal-only no installed/imported TUI consumer",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "VERIFY-01",
+      "source_mechanism": "Real data-fsync/transaction/crash/lease/corruption and owned IO probes cover actual original scopes; actor-loop constructors adopt frozen facts; pure UI receiver thread is not Core ownership.",
+      "runtime_cases": [
+        "packages/claw/tests/test_owned_child_restore_io.py::test_existing_child_catalog_restore_reads_off_loop_without_replay_or_repair"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "final fresh all9 after review fixes",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "VERIFY-02",
+      "source_mechanism": "Journal/committed receipts authority differs from readonly exports/UI/hints; failed display cannot undo facts; output unknown stays unknown; F06 pages preserve exact original revision and committed result.",
+      "runtime_cases": [
+        "packages/goal/tests/test_data_pages.py::test_parent_pages_keep_committed_version_after_another_actual_mutation"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "one wholebranch review and final scope rerun",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "VERIFY-03",
+      "source_mechanism": "Retired Claw queue configs/Goal planner/native Goal widgets/aggregate report sender removed; single GroupController/Agent runtime path, Agent own queue semantics intact.",
+      "runtime_cases": [
+        "packages/claw/tests/test_owned_source_io.py::test_generic_source_preserves_actual_ordinary_input_without_goal_policy"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "wholebranch deletion/callgraph review",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "VERIFY-04",
+      "source_mechanism": "Current full9 source/strict/Ruff/Flow/lock gates run on changed source, not inferred from focus; retained timing/root-full observations and original real terminals/sockets.",
+      "runtime_cases": [],
+      "source_verdict": "gate_or_operation_audit",
+      "remaining_final_proof": "final command receipts after last review fix",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "VERIFY-05",
+      "source_mechanism": "Earlier cold snapshots are explicitly stale; all current affected distributions must rebuild and run actual Goal-only/both-host/ACP/native consumers with byte parity.",
+      "runtime_cases": [],
+      "source_verdict": "gate_or_operation_audit",
+      "remaining_final_proof": "current artifact build/Twine/parity/cold consumers",
+      "overall_acceptance": "pending"
+    },
+    {
+      "id": "VERIFY-06",
+      "source_mechanism": "Source audit is not overall completion; all rows, one wholebranch review, important fixes and final current artifacts must settle before goal complete.",
+      "runtime_cases": [],
+      "source_verdict": "gate_or_operation_audit",
+      "remaining_final_proof": "wholebranch review/fix receipts plus complete47 audit",
+      "overall_acceptance": "pending"
+    }
+  ],
+  "implementation_head": "f2b0725bd1115a7e1e9a4cfc26b4339a37fc36eb"
+}
