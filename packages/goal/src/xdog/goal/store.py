@@ -125,7 +125,7 @@ def _validate(db: sqlite3.Connection, owner: Owner) -> None:
         if receipt.send_id:
             if not attempts or (attempts[-1]["send_id"], attempts[-1]["status"], attempts[-1]["error"]) != (
                 receipt.send_id,
-                receipt.status,
+                "pending" if receipt.status == "cancelled" else receipt.status,
                 receipt.error,
             ):
                 raise ValueError("Goal notification and attempt facts disagree")
@@ -212,6 +212,7 @@ class GoalStore:
         expected_version: int,
         notices: tuple[Notice, ...] = (),
         artifacts: tuple[tuple[str, object], ...] = (),
+        cancel_pending_notices: bool = False,
     ) -> Goal:
         # Validate and sever all external references before any thread admission.
         saved = decode_goal(encode_goal(goal))
@@ -237,6 +238,8 @@ class GoalStore:
                 db.execute(
                     "INSERT OR IGNORE INTO artifacts VALUES (?,?,?,?)", (saved.id, key, payload, _digest(payload))
                 )
+            if cancel_pending_notices:
+                db.execute("UPDATE notices SET status='cancelled' WHERE goal_id=? AND status='pending'", (saved.id,))
             return saved
 
         return await self._database.disk(write)
@@ -273,7 +276,12 @@ class GoalStore:
 
         def write(db: sqlite3.Connection) -> None:
             row = db.execute("SELECT * FROM notices WHERE id=?", (identifier,)).fetchone()
-            if row is None or row["status"] != "sending" or row["send_id"] != send_id:
+            if (
+                row is None
+                or row["send_id"] != send_id
+                or row["status"] != "sending"
+                and not (row["status"] == "unknown" and status == "accepted")
+            ):
                 raise ValueError("Goal notification send attempt changed")
             db.execute("UPDATE notices SET status=?,error=? WHERE id=?", (status, error[:4096], identifier))
             db.execute("UPDATE notice_attempts SET status=?,error=? WHERE send_id=?", (status, error[:4096], send_id))
