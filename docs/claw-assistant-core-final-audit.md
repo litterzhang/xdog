@@ -32,6 +32,13 @@ includes its bounded reproducer/fix. See `docs/claw-owned-tool-io-verification.m
 F-04 optional paths and parent47/review/artifacts remain open. No requirements
 have been promoted merely because this suite is green.
 
+New optional-memory/application-cleanup source checkpoint: **6979 passed,34
+skipped**,193.12s; strict9 mypy600, full Ruff packages/scripts, Flow17, lock/diff
+pass. Declared-minimum aiosqlite0.20 plus actual native vec/BM25:36 passed2.64s.
+See `docs/claw-owned-hybrid-memory-verification.md`. Remaining ACP/source spool
+IO and actual F-05 ordinary user-text hiding keep Task3 and acceptance open;
+these source passes do not promote47 rows or validate old cold artifacts.
+
 ## Confirmed closed findings
 
 - R-01: actual old extension owners retained by the application until shutdown.
@@ -138,14 +145,36 @@ real fix: a presentation callback could settle cancellation, then dispatch
 waited on its next FIFO item forever. Two bounded cases reproduce that failure;
 the monitor now owns an explicit stop token and settled cleanup task.
 
-These are source fixes under current regression verification, not a completed
-VERIFY-01. Remaining explicit inspection includes optional hybrid indexer file
-reads/directory enumeration, lazy embedding load/encode and aiosqlite connection
-acquisition/late-close ownership, plus cached-workspace/projection metadata path
-IO. Existing source uses direct file reads there, so these cannot be declared
-safe merely because the default keyword path passed. Preserve exact source,
-permissions, corruption/lease and no-replay checks; no new search engine or
-model/tool execution loop is authorized. Task3 and parent47 audit remain open.
+Optional hybrid/indexer/embedding/SQLite and cached workspace/cleanup counterexamples
+now have tracked source fixes and actual IO/transaction/physical-thread proofs;
+see `docs/claw-owned-hybrid-memory-verification.md` for observed RED and current
+bounded/source/native-positive evidence. This is not a completed VERIFY-01.
+Remaining Task3 source inspection includes actual ACP endpoint start/close and
+workspace resolution, plus SourceSender chunk reads/spool close/repeated-cancel
+settlement. Existing source has direct or unowned IO there. The parent UI/source
+acceptance audit also needs a ruling on legacy Goal-prefix/channel filtering of
+ordinary source text. No new search engine/model loop or weakened permission/
+canonical route/private endpoint policy is authorized. Task3 and parent47 audit
+remain open until those current counterexamples are settled and proved.
+
+### F-05 — generic source projection still interprets Goal-like user text
+
+Actual application audit probe sends ordinary `UserInput` beginning `[Goal:`
+through the real Orchestrator, Inbox, Agent and durable transcript, with one
+scripted model response. The canonical user row is present unchanged, but
+`runtime.capture_source` -> `source_records` returns only the assistant response.
+`/data/t.Vy5SaQ/claw-neutral-source-audit-red.log` records the actual source and
+failing assertion. No Goal was created, no old data was migrated, and no TUI or
+real provider was started. The private fixture was removed after actual cleanup.
+
+`transcript_source.py` filters user content using legacy Goal prefixes and also
+skips goal_runner/scheduler channels. This remains an active Goal-specific rule
+in a generic readonly source projection and hides legitimate ordinary input.
+It is an unclosed parent UI/core-neutrality acceptance finding, not evidence
+that a new Goal backend should be added. Port the actual probe to a bounded
+tracked regression, preserve ordinary source text/identity, and remove only the
+obsolete business filtering without changing tool redaction or source leases.
+Task3/source47/review/artifact completion is still unproven.
 
 ## 47-item source/test inventory
 

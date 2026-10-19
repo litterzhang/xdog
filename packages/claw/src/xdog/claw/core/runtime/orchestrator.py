@@ -96,6 +96,7 @@ class Orchestrator:
         self._runtimes: dict[str, GroupRuntime] = {}
         self._group_start_lock = asyncio.Lock()
         self._group_initializers: set[asyncio.Task[None]] = set()
+        self._stop_task: asyncio.Task[None] | None = None
         self._navigation_groups: set[str] = set()
         self._background_slots = asyncio.Semaphore(config.max_concurrent_agents)
         self._controllers: dict[str, GroupController] = {}
@@ -1288,9 +1289,9 @@ class Orchestrator:
         return list(self._runtimes.keys())
 
     def get_group_workspace(self, group_id: str) -> Path | None:
-        """Resolve a registered group without constructing/loading its agent session."""
+        """Return the already canonical registered root without filesystem IO or an Agent."""
         runtime = self._runtimes.get(group_id)
-        return runtime.workspace_dir.resolve() if runtime is not None else None
+        return runtime.workspace_dir if runtime is not None else None
 
     def get_session_info(self, group_id: str) -> dict[str, Any]:
         """Session metadata + history for a group (delegates to runtime)."""
@@ -1360,7 +1361,13 @@ class Orchestrator:
             await channel.connect()
 
     async def stop(self) -> None:
+        """One cleanup result; repeated cancellation cannot skip later resources."""
         self.request_stop()
+        if self._stop_task is None:
+            self._stop_task = asyncio.create_task(self._stop(), name="claw-application-close")
+        await wait_owned(self._stop_task)
+
+    async def _stop(self) -> None:
         group_closed = await asyncio.gather(*tuple(self._group_initializers), return_exceptions=True)
         if self._input_start_task is not None:
             await asyncio.gather(self._input_start_task, return_exceptions=True)
@@ -1372,21 +1379,19 @@ class Orchestrator:
         disconnected = await asyncio.gather(
             *(channel.disconnect() for channel in self._channels), return_exceptions=True,
         )
-        if self._inputs is not None:
-            await self._inputs.close()
-        if self._outputs is not None:
-            await self._outputs.close()
+        input_closed = await asyncio.gather(self._inputs.close(), return_exceptions=True) if self._inputs else []
+        output_closed = await asyncio.gather(self._outputs.close(), return_exceptions=True) if self._outputs else []
         if self._output_resume is not None:
             await asyncio.gather(self._output_resume, return_exceptions=True)
         children = [runtime._active_session.children.supervisor for runtime in self._runtimes.values()
                     if runtime._active_session is not None]
-        await asyncio.gather(*(owner.aclose() for owner in children), return_exceptions=True)
+        children_closed = await asyncio.gather(*(owner.aclose() for owner in children), return_exceptions=True)
         goal_closed = await asyncio.gather(*(runtime.goal_host.aclose() for runtime in self._runtimes.values()
             if runtime.goal_host is not None), return_exceptions=True)
         owners = [owner for runtime in self._runtimes.values() for owner in runtime._retired_extensions]
         owners.extend(runtime._active_session.extensions for runtime in self._runtimes.values()
                       if runtime._active_session is not None)
-        await asyncio.gather(*(owner.aclose() for owner in owners), return_exceptions=True)
+        extensions_closed = await asyncio.gather(*(owner.aclose() for owner in owners), return_exceptions=True)
         mcp_closed = await asyncio.gather(
             *(runtime.mcp.aclose() for runtime in self._runtimes.values()), return_exceptions=True,
         )
@@ -1394,6 +1399,10 @@ class Orchestrator:
             *(runtime.memory.close() for runtime in self._runtimes.values() if runtime.memory is not None),
             return_exceptions=True,
         )
-        for result in (*group_closed, *disconnected, *goal_closed, *mcp_closed, *memory_closed):
-            if isinstance(result, BaseException):
-                raise result
+        errors = [result for result in (*group_closed, *disconnected, *input_closed, *output_closed,
+            *children_closed, *goal_closed, *extensions_closed, *mcp_closed, *memory_closed)
+            if isinstance(result, BaseException)]
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise BaseExceptionGroup("Application resource cleanup failed", errors)

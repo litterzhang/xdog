@@ -137,8 +137,7 @@ class HybridMemorySearch:
         ws = self._workspace_dir
 
         memory_file = ws / "MEMORY.md"
-        if memory_file.exists():
-            await self._indexer.index_file(memory_file, "MEMORY.md")
+        await self._indexer.index_file(memory_file, "MEMORY.md")
 
         await self._indexer.index_directory(ws / "memory")
         await self._indexer.index_directory(ws / "conversations")

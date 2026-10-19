@@ -186,7 +186,9 @@
         "docs/claw-owned-tool-io-verification.md",
         "packages/claw/tests/test_owned_dynamic_group_io.py",
         "packages/claw/tests/test_owned_reset_io.py",
-        "packages/claw/tests/test_weixin_monitor.py"
+        "packages/claw/tests/test_weixin_monitor.py",
+        "docs/claw-owned-hybrid-memory-verification.md",
+        "packages/claw/tests/test_owned_application_projection.py"
       ]
     },
     {
@@ -454,7 +456,10 @@
         "docs/claw-owned-dynamic-controls-verification.md",
         "docs/claw-owned-tool-io-verification.md",
         "packages/claw/tests/test_owned_memory_io.py",
-        "packages/claw/tests/test_owned_image_io.py"
+        "packages/claw/tests/test_owned_image_io.py",
+        "docs/claw-owned-hybrid-memory-verification.md",
+        "packages/claw/tests/test_owned_hybrid_memory_io.py",
+        "packages/claw/tests/test_owned_application_projection.py"
       ],
       "audit_note": "Ordinary preparation and history transaction now have actual off-loop/data-durability/rollback/cancel/process-death proofs; F-02 native active-index fix preserved. Remaining startup/status/MCP/image/custom-context/compaction IO and missing-pointer/sidecar recovery audit still prevent full acceptance. No additional passed verdict before final47 review/current artifacts."
     },
@@ -468,7 +473,9 @@
         "docs/claw-retired-extension-verification.md",
         "docs/claw-assistant-core-final-audit.md",
         "docs/claw-owned-transcript-commit-verification.md",
-        "packages/claw/tests/test_owned_transcript_commit.py"
+        "packages/claw/tests/test_owned_transcript_commit.py",
+        "docs/claw-owned-hybrid-memory-verification.md",
+        "packages/claw/tests/test_owned_hybrid_memory_io.py"
       ]
     },
     {
