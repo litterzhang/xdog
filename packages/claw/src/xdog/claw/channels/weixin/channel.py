@@ -313,8 +313,16 @@ class WeixinChannel(Channel):
         if text:
             await self._send_text(user_id, context, text)
 
-    async def _send_text(self, real_user_id: str, context_token: str, text: str) -> None:
-        client_id = _generate_client_id()
+    async def send_output(self, original: UserInput, output_id: str, text: str) -> None:
+        if not self.accepts_saved_reply(original):
+            raise ValueError("Saved Weixin output belongs to another account or group")
+        user_id, context = original.metadata.get("weixin_user_id"), original.metadata.get("context_token")
+        if not isinstance(user_id, str) or user_id != original.sender or not user_id or not isinstance(context, str):
+            raise ValueError("Invalid original Weixin output binding")
+        await self._send_text(user_id, context, text, client_id=output_id)
+
+    async def _send_text(self, real_user_id: str, context_token: str, text: str, *, client_id: str = '') -> None:
+        client_id = client_id or _generate_client_id()
         item_list = (
             MessageItem(
                 type=MessageItemType.TEXT,

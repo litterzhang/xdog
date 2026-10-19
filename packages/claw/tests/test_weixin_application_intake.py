@@ -47,11 +47,11 @@ def text(index, sender, body, *, client_id=""):
     )
 
 
-async def application(tmp_path, model, *, eyes_enabled=False):
+async def application(tmp_path, model, *, eyes_enabled=False, enabled_tools=()):
     orch = Orchestrator(
         ClawConfig(data_dir=str(tmp_path / "data"), eyes_enabled=eyes_enabled), model="test/dummy", stream_fn=model
     )
-    orch.register_group(Group(id="main", workspace=str(tmp_path), enabled_tools=()))
+    orch.register_group(Group(id="main", workspace=str(tmp_path), enabled_tools=enabled_tools))
     channel = WeixinChannel(tmp_path / "channel", "account", "https://example.invalid", "")
     await channel._api_client.close()
     api = ChannelApi()

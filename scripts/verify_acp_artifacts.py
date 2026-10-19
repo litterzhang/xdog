@@ -317,6 +317,10 @@ def main() -> None:
             peer.write_text(AGENT_PEER)
             args.append(str(peer))
         subprocess.run(args, env=environment, cwd=work, check=True, timeout=30)
+        if name == 'claw':
+            output_probe = work / 'output_consumer.py'
+            output_probe.write_text(Path(__file__).with_name('verify_claw_output_artifact.py').read_text())
+            subprocess.run([str(python), str(output_probe)], env=environment, cwd=work, check=True, timeout=30)
         if name == 'eyes':
             subprocess.run([str(env / 'bin' / 'xdog-eyes'), '--help'],
                            env=environment, cwd=work, check=True, stdout=subprocess.DEVNULL)

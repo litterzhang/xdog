@@ -18,6 +18,7 @@ from xdog.claw.channels.weixin.types import (
     parse_get_updates_resp,
     send_message_req_to_dict,
 )
+from xdog.claw.core.outputs.delivery import DeliveryNotSent
 
 logger = logging.getLogger(__name__)
 
@@ -236,4 +237,4 @@ def _check_send_response(response: httpx.Response) -> None:
     if not isinstance(payload, dict):
         raise RuntimeError("Invalid Weixin send response")
     if payload.get("ret", 0) != 0 or payload.get("errcode", 0) != 0:
-        raise RuntimeError(f"Weixin delivery rejected: {payload}")
+        raise DeliveryNotSent(f"Weixin delivery rejected: {payload}")

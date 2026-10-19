@@ -24,7 +24,10 @@ from xdog.claw.core.chunker import BlockChunker
 from xdog.claw.core.inputs.consumer import Admit, InputOutcome, InputService
 from xdog.claw.core.inputs.models import InputEnvelope, InputScope, ReplyTarget
 from xdog.claw.core.inputs.store import InputRecord, InputStore
+from xdog.claw.core.outputs.delivery import OutputDelivery
+from xdog.claw.core.outputs.store import OutputStore
 from xdog.claw.core.queue import MessageQueue
+from xdog.claw.core.runtime.channel_adapter import ChannelReplies, ChannelReply, durable_reply
 from xdog.claw.core.runtime.group import GroupRuntime
 from xdog.claw.core.runtime.input_adapter import freeze_input, restore_input
 from xdog.claw.core.runtime.session import AgentSession, TurnResult
@@ -76,6 +79,9 @@ class Orchestrator:
         self._stream_fn = stream_fn
         self._data_dir = Path(data_dir or config.data_dir)
         self._channels: list[Channel] = []
+        self._channel_replies = ChannelReplies()
+        self._outputs: OutputDelivery | None = None
+        self._output_resume: asyncio.Task[None] | None = None
         self._runtimes: dict[str, GroupRuntime] = {}
         self._goal_wake: Callable[[], None] = lambda: None
         self._goal_jobs: dict[str, asyncio.Task[None]] = {}
@@ -126,18 +132,17 @@ class Orchestrator:
     def add_channel(self, channel: Channel) -> None:
         """Add a messaging channel."""
         self._channels.append(channel)
+        self._channel_replies.register(channel)
 
         async def accept(message: GroupInput) -> None:
             await self.route_message(message, message_id=self._channel_message_id(message),
                 wait_for_result=False,
-                on_assistant_message=partial(self._send_channel_reply, channel, message),
-                on_execution_error=partial(self._send_channel_error, channel, message))
+                on_assistant_message=self._channel_replies.reply(channel, message))
 
         async def dispatch(message: GroupInput) -> None:
             await self.route_message(message, message_id=self._channel_message_id(message),
                 reserved=self._channel_message_id(message) is not None,
-                on_assistant_message=partial(self._send_channel_reply, channel, message),
-                on_execution_error=partial(self._send_channel_error, channel, message))
+                on_assistant_message=self._channel_replies.reply(channel, message))
 
         channel.set_on_accept(accept)
         channel.set_on_message(dispatch)
@@ -146,16 +151,6 @@ class Orchestrator:
     def _channel_message_id(message: GroupInput) -> str | None:
         identifier = message.metadata.get('channel_message_id')
         return identifier if isinstance(identifier, str) and identifier else None
-
-    async def _send_channel_reply(self, channel: Channel, original: GroupInput, text: str) -> None:
-        for chunk in self._chunker.chunk(text) or [text]:
-            if isinstance(original, UserInput):
-                await channel.send_reply(original, chunk)
-            else:
-                await channel.send_message(original.group_id, chunk)
-
-    async def _send_channel_error(self, channel: Channel, original: GroupInput, error: str) -> None:
-        await self._send_channel_reply(channel, original, f'Error: {error}')
 
     def auto_register_group(self, group_id: str) -> None:
         """Auto-register a group on first message (e.g. from WeChat users)."""
@@ -177,24 +172,44 @@ class Orchestrator:
             opening = self._input_start_task
         return await wait_owned(opening)
 
+    async def output_service(self) -> OutputDelivery:
+        await self.input_service()
+        if self._outputs is None:
+            raise RuntimeError('Application output receipts are unavailable')
+        return self._outputs
+
     async def _initialize_inputs(self) -> InputService:
         store = await InputStore.open(self._data_dir / 'inputs' / 'inbox.sqlite3')
         service = InputService(store, self._execute_input, on_settled=self._input_settled,
                                paused=self._config.eyes_enabled)
-        scopes = [InputScope(group, workspace) for group in tuple(self._runtimes)
-                  if (workspace := self.get_group_workspace(group)) is not None]
+        outputs: OutputDelivery | None = None
         try:
+            output_store = await OutputStore.open(self._data_dir / 'outputs' / 'journal.sqlite3')
+            outputs = OutputDelivery(output_store, self._channel_replies.resolve)
+            scopes = [InputScope(group, workspace) for group in tuple(self._runtimes)
+                      if (workspace := self.get_group_workspace(group)) is not None]
             for scope in scopes:
                 await service.activate(scope, wake=False)
             if self._inputs_stopping:
                 raise RuntimeError('Application stopped during input initialization')
+            self._outputs = outputs
             self._inputs = service
+            # Transport recovery is owned and independent of input acceptance.
+            self._output_resume = asyncio.create_task(outputs.resume(), name='claw-output-resume')
+            self._output_resume.add_done_callback(self._output_recovered)
             for scope in scopes:
                 service.wake(scope)
             return service
         except BaseException:
             await service.close()
+            if outputs is not None:
+                await outputs.close()
             raise
+
+    @staticmethod
+    def _output_recovered(task: asyncio.Task[None]) -> None:
+        if not task.cancelled() and task.exception() is not None:
+            logger.error('Application output recovery failed; inspect durable receipts', exc_info=task.exception())
 
     def request_stop(self) -> None:
         """Fence intake and signal owned execution before transport cleanup waits."""
@@ -249,7 +264,7 @@ class Orchestrator:
         if record.envelope.admission_key and call is None:
             raise ValueError('Original live admission binding unavailable; inspect before retry')
         options = dict(call.options) if call is not None else {}
-        on_error = options.pop('on_execution_error', None)
+        on_error: Callable[[str], Awaitable[None]] | None = None
         display = options.get('on_display_event')
         if call is not None and display is not None:
             def publish(event: Any) -> None:
@@ -260,15 +275,18 @@ class Orchestrator:
             value = restore_input(record.envelope)
             for project in tuple(self._input_projectors):
                 value = await project(record, value)
-            if call is None and isinstance(value, UserInput) and record.envelope.reply is not None:
-                # Only explicitly restorable channels may bind recovered replies.
-                # In particular, a new TUI connection is never an old reply owner.
-                channels = [channel for channel in self._channels if channel.accepts_saved_reply(value)]
-                if len(channels) > 1:
-                    raise ValueError('Ambiguous saved channel reply binding')
-                if channels:
-                    options['on_assistant_message'] = partial(self._send_channel_reply, channels[0], value)
-                    on_error = partial(self._send_channel_error, channels[0], value)
+            reply = options.get('on_assistant_message')
+            recovered = (call is None and isinstance(value, UserInput) and not isinstance(value, ExternalInput)
+                         and record.envelope.reply is not None)
+            if isinstance(reply, ChannelReply) or recovered:
+                if self._outputs is None:
+                    raise RuntimeError('Application output receipts were not initialized')
+                binding = reply.binding if isinstance(reply, ChannelReply) else 'saved-original-channel'
+                send = durable_reply(self._outputs, record, binding)
+                options['on_assistant_message'] = send
+                async def send_error(error: str) -> None:
+                    await send(f'Error: {error}')
+                on_error = send_error
             result = await self._execute_with_queue(value, admit=admit, **options)
             if result is None:
                 # A host fence explicitly refused this unstarted submission.
@@ -291,7 +309,6 @@ class Orchestrator:
         command_menu: CommandMenuHost | None = None, message_id: str | None = None,
         on_accepted: Callable[[], None] | None = None, reply_target: ReplyTarget | None = None,
         wait_for_result: bool = True,
-        on_execution_error: Callable[[str], Awaitable[None]] | None = None,
     ) -> TurnResult | None:
         """Persist ordinary input before ACK; busy never implicitly means steering."""
         group_id = message.group_id
@@ -318,8 +335,7 @@ class Orchestrator:
         if call is None:
             call = _InputCall(envelope, {'on_display_event': on_display_event, 'on_text_delta': on_text_delta,
                 'on_assistant_message': on_assistant_message, 'child_ui': child_ui, 'input_alive': input_alive,
-                'before_admission': before_admission, 'command_menu': command_menu,
-                'on_execution_error': on_execution_error},
+                'before_admission': before_admission, 'command_menu': command_menu},
                 asyncio.get_running_loop().create_future(), asyncio.Event())
             self._input_calls[key] = call
         try:
@@ -1206,6 +1222,10 @@ class Orchestrator:
         )
         if self._inputs is not None:
             await self._inputs.close()
+        if self._outputs is not None:
+            await self._outputs.close()
+        if self._output_resume is not None:
+            await asyncio.gather(self._output_resume, return_exceptions=True)
         children = [runtime._active_session.children.supervisor for runtime in self._runtimes.values()
                     if runtime._active_session is not None]
         await asyncio.gather(*(owner.aclose() for owner in children), return_exceptions=True)

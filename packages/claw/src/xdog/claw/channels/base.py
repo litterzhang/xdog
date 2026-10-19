@@ -49,6 +49,10 @@ class Channel(ABC):
         """Reply through the original live channel, not all group channels."""
         await self.send_message(original.group_id, text)
 
+    async def send_output(self, original: UserInput, output_id: str, text: str) -> None:
+        """Stable transport correlation where the channel supports it."""
+        await self.send_reply(original, text)
+
     def accepts_saved_reply(self, original: UserInput) -> bool:
         """Opt in to restoring a persisted destination without a live connection.
 

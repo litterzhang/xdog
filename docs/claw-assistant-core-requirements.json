@@ -38,7 +38,10 @@
       "area": "input",
       "requirement": "TUI/微信/ACP 普通新输入共享应用持久 Inbox，先提交再 ACK",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/claw-channel-handoff-verification.md",
+        "docs/claw-output-receipts-verification.md"
+      ]
     },
     {
       "id": "IN-02",
@@ -73,7 +76,10 @@
       "area": "input",
       "requirement": "固定可信回复目的地；用户、内部通知和其他连接不串线或错误广播",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/claw-channel-handoff-verification.md",
+        "docs/claw-output-receipts-verification.md"
+      ]
     },
     {
       "id": "IN-07",
@@ -87,7 +93,10 @@
       "area": "input",
       "requirement": "执行结果与渠道送达分离，逐消息回复不与最终聚合重复，未知发送不自动重发",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/claw-channel-handoff-verification.md",
+        "docs/claw-output-receipts-verification.md"
+      ]
     },
     {
       "id": "IN-09",
