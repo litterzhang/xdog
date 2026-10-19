@@ -56,3 +56,26 @@ no validation/tool/provider authority, so its failure cannot veto execution.
 Cold installed same-extension validation and final architecture acceptance remain
 in progress. See `docs/shared-goal-extension-verification.md` for source/runtime
 evidence and limits. Headless Goal tools and durable notices remain independent.
+
+## Cumulative state and bounded data reads
+
+Authoritative Goal revisions retain accumulated tasks, attempts and reports
+without an aggregate business byte/count quota. Individual field/report/evidence
+safety checks and the256KiB tool frame remain. Large responses use an explicit
+`xdog.goal_data_page.v1` envelope with a readable canonical JSON fragment `text`,
+selector, `sha256`, byte `offset`, `total_bytes`, `next_offset` and `next_query`.
+Each raw fragment is at most64KiB. Join exact bytes in offset order and verify
+the checksum/total before treating the data as complete.
+
+A mutation response marked `snapshot_committed` is successful: retrieve its
+remaining data rather than replay the action. `goal` action `read` takes an
+explicit Goal/version plus optional offset/limit; current later changes do not
+replace that historical snapshot. Lists use a revision-fenced continuation; a
+changed collection is an explicit error requiring a fresh listing, never a torn
+merged list. Small unpaged complete responses retain their existing JSON shape.
+
+Bound worker/reviewer `goal_context` accepts only section/offset/limit and always
+uses its original role contract/version. The same read-only host/extension/MCP
+gates still apply. This does not add a journal format upgrade, second store,
+business polling/model loop or automatic task delegation. SQLite/machine storage
+limits remain physical constraints, not a package-imposed cumulative quota.

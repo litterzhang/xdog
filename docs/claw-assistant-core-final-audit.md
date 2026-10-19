@@ -204,9 +204,12 @@ Task1 removes only the aggregate authoritative byte cap, preserves typed exact
 format/individual field/report/notice/artifact bounds, makes DAG validation
 iterative/order-preserving, and prepares immutable large snapshots on the owned
 leased worker. Actual Goal81 pass7.33s include close/cancel/reopen-no-write.
-Task2 must still prove bounded complete tool transfers, original-version/context
-pages and successful receipts after large committed mutations. GOAL13/VERIFY02
-remain unaccepted until both storage and usable bounded APIs are verified. No
+Task2 now has actual exact bounded tool/context/list page reconstruction,
+original version/criteria after concurrent mutation, real SDK worker/reviewer,
+post-render owner fencing and known-committed successful receipt proofs. Current
+source:7035 passed34 skipped212.21s, strict602/fullRuff/Flow17/lock/diff. See
+`docs/goal-cumulative-data-verification.md`. This closes the bounded F06 source
+counterexample, not all47/final review/current artifact acceptance. No
 new goal, migration, enable flag or reviewer was introduced; parent47 is active.
 
 ## 47-item source/test inventory

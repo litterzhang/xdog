@@ -143,6 +143,16 @@ class GoalService:
         self._owner()
         return result
 
+    async def snapshot(self, identifier: str, version: int) -> Goal:
+        from xdog.goal.models import number
+        number(version)
+        await self._get(identifier)
+        original = await self.store.at_version(identifier, version)
+        self._owner()
+        if original.id != identifier or original.version != version:
+            raise ValueError("Goal snapshot does not match its immutable selector")
+        return original
+
     async def list(self) -> tuple[Goal, ...]:
         self._owner()
         result = await self.store.list()

@@ -3,19 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import Callable
 from dataclasses import asdict
 from typing import Any
 
+from xdog.agent.async_work import run_owned
 from xdog.agent.core import AgentTool, AgentToolResult
 from xdog.goal.codec import json_text
+from xdog.goal.data_pages import Page, response
 from xdog.goal.host import OperationContext
 from xdog.goal.models import Goal, Report, report_digest
 from xdog.goal.service import GoalService
 
 _ACTIONS: dict[str, set[str]] = {
     "create": {"title", "outcome", "criteria"},
-    "list": set(),
+    "list": {"offset", "limit", "revision"},
+    "read": {"goal_id", "version", "offset", "limit"},
     "status": {"goal_id"},
     "add_task": {"goal_id", "description", "depends_on"},
     "assign": {"goal_id", "task_id", "assignment", "access"},
@@ -60,6 +64,13 @@ def _status(goal: Goal) -> dict[str, object]:
     }
 
 
+async def _data_result(service: GoalService, build: Callable[[], object], selector: dict[str, object],
+                       continuation: dict[str, object], page: Page, *, committed: bool = False) -> AgentToolResult:
+    rendered = await run_owned(response, build, selector, continuation, page, committed=committed)
+    service._owner()  # A yield in data encoding cannot transfer a reader to another host.
+    return AgentToolResult.from_text(rendered)
+
+
 def create_goal_tool(service: GoalService, context: Callable[[], OperationContext]) -> AgentTool:
     properties: dict[str, Any] = {"action": {"type": "string", "enum": list(_ACTIONS)}}
     for key in set().union(*_ACTIONS.values()):
@@ -67,7 +78,7 @@ def create_goal_tool(service: GoalService, context: Callable[[], OperationContex
             {"type": "array", "items": {"type": "string"}}
             if key in _ARRAYS
             else {"type": "integer"}
-            if key == "report_revision"
+            if key in {"report_revision", "version", "offset", "limit"}
             else {"type": "string"}
         )
 
@@ -90,12 +101,24 @@ def create_goal_tool(service: GoalService, context: Callable[[], OperationContex
                     params["title"], params["outcome"], _array(params, "criteria"), context=context()
                 )
             elif action == "list":
-                return _result(
-                    [
-                        {"id": goal.id, "title": goal.title, "status": goal.status, "version": goal.version}
-                        for goal in await service.list()
-                    ]
-                )
+                page = Page.read(params, force="revision" in params)
+                goals = await service.list()
+                owner_key = service.store.owner.key
+                revision = await run_owned(lambda: hashlib.sha256(json_text(
+                    {"owner": owner_key, "versions": [(goal.id, goal.version) for goal in goals]},
+                    maximum=None).encode()).hexdigest())
+                if "revision" in params and params["revision"] != revision:
+                    raise ValueError("Goal collection changed; restart list rather than splice different snapshots")
+                return await _data_result(service,
+                    lambda: [{"id": goal.id, "title": goal.title, "status": goal.status, "version": goal.version}
+                             for goal in goals],
+                    {"kind": "goal_list", "revision": revision}, {"action": "list", "revision": revision}, page)
+            elif action == "read":
+                page = Page.read(params, force=True)
+                value = await service.snapshot(identifier, params["version"])
+                return await _data_result(service, lambda: _status(value),
+                    {"kind": "goal_status", "goal_id": value.id, "version": value.version},
+                    {"action": "read", "goal_id": value.id, "version": value.version}, page)
             elif action == "status":
                 value = await service.status(identifier)
             elif action == "add_task":
@@ -141,14 +164,19 @@ def create_goal_tool(service: GoalService, context: Callable[[], OperationContex
                 return _result({"derived_path": str(await service.export_views(identifier)), "authority": "GoalStore"})
             else:
                 value = await service.reconcile(identifier)
-            return _result(_status(value))
+            return await _data_result(service, lambda: _status(value),
+                {"kind": "goal_status", "goal_id": value.id, "version": value.version},
+                {"action": "read", "goal_id": value.id, "version": value.version}, Page(),
+                committed=action != "status")
         except Exception as exc:
             return _result({"error": str(exc)}, error=True)
 
     return AgentTool(
         "goal",
         "Explicit optional Goal contracts/tasks/acceptance/independent completion. "
-        "Capability availability is not user delegation. No turn-end reviewer or source cleanup.",
+        "Capability availability is not user delegation. No turn-end reviewer or source cleanup. "
+        "Large results are explicit exact data pages: follow next_query with read/list; "
+        "never repeat a committed action.",
         {"type": "object", "required": ["action"], "additionalProperties": False, "properties": properties},
         execute=execute,
     )
@@ -227,33 +255,42 @@ def create_context_tool(
         ctx: Any = None,
     ) -> AgentToolResult:
         try:
-            if set(params) - {"section"}:
-                raise ValueError("Bound context cannot select another owner or Goal")
+            if set(params) - {"section", "offset", "limit"}:
+                raise ValueError("Bound context cannot select another owner or Goal/version")
+            page = Page.read(params)
             section = params.get("section", "goal")
             goal = (
                 await service.review_context(goal_id, review_id)
                 if review_id
                 else await service.worker_context(goal_id, task_id, attempt_id)
             )
-            if section == "criteria":
-                return _result(goal.criteria)
-            if section == "task" and task_id:
-                return _result(asdict(service._task(goal, task_id)))
-            if section == "review" and goal.review is not None:
-                return _result(asdict(goal.review))
-            if section != "goal":
-                raise ValueError("Unknown bound context section")
-            return _result(asdict(goal))
+            def build() -> object:
+                if section == "criteria":
+                    return goal.criteria
+                if section == "task" and task_id:
+                    return asdict(GoalService._task(goal, task_id))
+                if section == "review" and goal.review is not None:
+                    return asdict(goal.review)
+                if section != "goal":
+                    raise ValueError("Unknown bound context section")
+                return asdict(goal)
+            return await _data_result(service, build,
+                {"kind": "goal_context", "goal_id": goal.id, "version": goal.version, "section": section,
+                 "task_id": task_id, "attempt_id": attempt_id, "review_id": review_id},
+                {"section": section}, page)
         except Exception as exc:
             return _result({"error": str(exc)}, error=True)
 
     return AgentTool(
         "goal_context",
-        "Read this role's original canonical Goal contract; files are derived views only.",
+        "Read this role's original canonical Goal contract; files are derived views only. "
+        "Large sections return exact pages; follow next_query on this same bound tool until next_offset is null.",
         {
             "type": "object",
             "additionalProperties": False,
-            "properties": {"section": {"type": "string", "enum": ["goal", "criteria", "task", "review"]}},
+            "properties": {"section": {"type": "string", "enum": ["goal", "criteria", "task", "review"]},
+                           "offset": {"type": "integer", "minimum": 0},
+                           "limit": {"type": "integer", "minimum": 1, "maximum": 65536}},
         },
         execute=execute,
     )

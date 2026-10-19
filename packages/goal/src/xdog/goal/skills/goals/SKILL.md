@@ -1,6 +1,6 @@
 ---
 name: goals
-description: Reference for explicitly delegated outcomes, scoped worker reports and independent evidence-backed completion. Use only when the host enabled Goal tools.
+description: Reference for explicitly delegated outcomes, scoped worker reports and independent evidence-backed completion. Use when Goal tools are available.
 metadata:
   scope: session
 ---
@@ -48,3 +48,28 @@ and role-bound original context are authority; editing views cannot accept or
 finish work. Goal tools and headless business state remain available without the
 optional display extension. All host readonly/permissions/MCP/extension policy
 continues to apply; a role instruction is not a security exception.
+
+
+## Exact data continuation
+
+Accumulated Goal tasks/attempts/reports are not a lifetime quota. Large tool
+responses are explicit `xdog.goal_data_page.v1` envelopes instead of truncated
+contracts. Read their canonical JSON fragment in `text`, then call the **same
+tool** with `next_query` until `next_offset` is null. `offset` counts encoded
+bytes; `sha256`, selector and total size identify the complete data. A smaller
+`limit` may be used when a model context needs shorter pages. Do not treat one
+fragment or a preview as the full original contract/evidence.
+
+A successful mutation page with `snapshot_committed=true` means the operation's
+snapshot was saved. Follow its read continuation; **never repeat assign, create
+or another mutation merely to obtain its full response**. Parent `goal.read`
+pins `goal_id` and `version`, so later facts cannot silently enter earlier pages.
+Collection list pages pin a revision; if it changes, explicitly restart listing
+rather than splice different snapshots.
+
+Bound `goal_context` accepts only section/offset/limit. Its original Goal/task/
+attempt/review and version remain fixed by the role, even after a parent revises
+current criteria. Use criteria/task/review sections to inspect relevant data;
+follow their continuation too when paged. No page authorizes another owner,
+changes criteria, accepts work or completes a Goal. Existing per-report, evidence
+and wire safety limits remain; pagination does not grant more tool permissions.
