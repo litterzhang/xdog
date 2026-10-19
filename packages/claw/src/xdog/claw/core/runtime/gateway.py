@@ -30,7 +30,7 @@ from xdog.ai.types import ImageContent, StreamOptions, ThinkingLevel
 from xdog.claw.channels.tui.image_upload import ImageUploads
 from xdog.claw.config import ClawConfig
 from xdog.claw.core.inputs.models import InputScope, ReplyTarget
-from xdog.claw.core.runtime.group_controller import GroupReservation
+from xdog.claw.core.runtime.group_controller import GroupReservation, InputExecution
 from xdog.claw.core.runtime.input_queries import NativeInputReceipts
 from xdog.claw.core.runtime.mcp_protocol import McpSender
 from xdog.claw.core.runtime.orchestrator import Orchestrator
@@ -54,6 +54,8 @@ class _ClientRun:
     group_id: str
     task: asyncio.Task[None]
     started: asyncio.Event
+    execution: asyncio.Future[InputExecution]
+    binding: Callable[[InputExecution], None]
 
 
 def _history_chunks(history: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
@@ -313,6 +315,7 @@ class GatewayServer:
         reserved: GroupReservation | None = None
         receipts: dict[str, tuple[str, dict[str, Any]]] = {}
         native_reads: set[asyncio.Task[None]] = set()
+        native_aborts: dict[str, asyncio.Task[None]] = {}
         extension_jobs: set[asyncio.Task[None]] = set()
         extension_controls: dict[str, tuple[asyncio.Task[None], str, str]] = {}
         extension_started: set[str] = set()
@@ -1696,7 +1699,8 @@ class GatewayServer:
                         })
                         continue
                     run = runs.get(run_id)
-                    if valid and run is not None and run.group_id == group_id and not run.task.done():
+                    if (valid and run is not None and run.group_id == group_id and not run.task.done()
+                            and run.execution.done() and not run.execution.cancelled()):
                         assert isinstance(action, str) and isinstance(external_id, str)
                         assert self._orchestrator is not None
                         prefix = hashlib.sha256(f"{client_id}:{run_id}".encode()).hexdigest()[:16] + ":"
@@ -1709,7 +1713,7 @@ class GatewayServer:
                             success = not run.task.done() and runs.get(run_id) is run and (
                                 self._orchestrator.control_input(
                                     group_id, action, prefix + external_id, content, delivery, direction, images,
-                                    images_validated=True,
+                                    images_validated=True, expected_execution=run.execution.result(),
                                 )
                             )
                             response["success"] = success
@@ -1720,7 +1724,8 @@ class GatewayServer:
                             response["snapshot"] = [
                                 dict(id=item.id[len(prefix):], delivery=item.delivery,
                                      selected=item.selected, image_count=len(item.images))
-                                for item in self._orchestrator.pending_inputs(group_id, prefix)
+                                for item in self._orchestrator.pending_inputs(group_id, prefix,
+                                                                              expected_execution=run.execution.result())
                             ]
                         except Exception as exc:
                             response["error"] = str(exc)
@@ -1789,28 +1794,17 @@ class GatewayServer:
                         })
                         continue
                     assert self._orchestrator is not None
-                    native_lease = self._orchestrator.try_reserve_group(group_id)
-                    busy = native_lease is None
-                    stale_session = False
-                    if native_lease is not None:
-                        current_session = self._orchestrator.get_new_session_id(group_id) or ""
-                        stale_session = "session_id" in request and request["session_id"] != current_session
-                        if stale_session:
-                            self._orchestrator.release_group_reservation(native_lease)
-                    request['_accepted_lease'] = native_lease
-                    if stale_session:
+                    if ("session_id" in request and request["session_id"]
+                            != (self._orchestrator.get_new_session_id(group_id) or "")):
                         await write({"type": "error", "run_id": run_id,
                                      "message": "Active session changed; refresh and resume before sending"})
                         continue
-                    if busy:
-                        await write({
-                            "type": "busy",
-                            "group_id": group_id,
-                            "run_id": run_id,
-                        })
-                        continue
-                    assert self._orchestrator is not None
                     started = asyncio.Event()
+                    execution: asyncio.Future[InputExecution] = asyncio.get_running_loop().create_future()
+                    def admitted(identity: InputExecution, future: asyncio.Future[InputExecution] = execution) -> None:
+                        if not future.done():
+                            future.set_result(identity)
+                    request['_on_execution_started'] = admitted
                     task = asyncio.create_task(
                         self._handle_chat_message(
                             request,
@@ -1823,16 +1817,13 @@ class GatewayServer:
                     runs[run_id] = _ClientRun(
                         group_id=group_id,
                         task=task,
-                        started=started,
+                        started=started, execution=execution, binding=admitted,
                     )
                     # The handler publishes run_ack only after durable intake.
                     # Do not block the socket reader on a filesystem commit.
 
-                    def _remove_run(done: asyncio.Task[None], rid: str = run_id,
-                                    lease: GroupReservation | None = native_lease) -> None:
+                    def _remove_run(done: asyncio.Task[None], rid: str = run_id) -> None:
                         runs.pop(rid, None)
-                        if self._orchestrator is not None:
-                            self._orchestrator.release_group_reservation(lease)
                         if not done.cancelled():
                             done.exception()
 
@@ -1853,20 +1844,35 @@ class GatewayServer:
                     run_id = str(request.get("run_id", ""))
                     group_id = str(request.get("group_id", "main"))
                     run = runs.get(run_id)
-                    requested = bool(
-                        run
-                        and run.group_id == group_id
-                        and self._orchestrator
-                        and self._orchestrator.abort_group(run.group_id)
-                    )
-                    await write({
-                        "type": "abort_ack",
-                        "group_id": group_id,
-                        "run_id": run_id,
-                        "status": "requested" if requested else "not_active",
-                    })
+                    if run is None or run.group_id != group_id or self._orchestrator is None:
+                        await write({'type': 'abort_ack', 'group_id': group_id, 'run_id': run_id,
+                                     'status': 'not_active'})
+                        continue
+                    if run_id in native_aborts:
+                        continue  # One original cancellation receipt, not another producer/approval.
+                    async def abort_original(original: _ClientRun, rid: str) -> None:
+                        assert self._orchestrator is not None
+                        detached = not original.started.is_set()
+                        if detached:
+                            original.task.cancel()
+                            await asyncio.gather(original.task, return_exceptions=True)
+                        identity = (original.execution.result() if original.execution.done()
+                                    and not original.execution.cancelled() else None)
+                        requested = await self._orchestrator.abort_native_input(
+                            original.group_id, 'native:' + rid, original.binding, identity)
+                        await write({'type': 'abort_ack', 'group_id': original.group_id, 'run_id': rid,
+                                     'status': 'requested' if requested else 'not_active'})
+                        if requested and detached:
+                            await write({'type': 'aborted', 'group_id': original.group_id, 'run_id': rid})
+                    job = asyncio.create_task(abort_original(run, run_id), name='claw-native-abort')
+                    native_aborts[run_id] = job
+                    def abort_done(done: asyncio.Task[None], rid: str = run_id) -> None:
+                        if native_aborts.get(rid) is done:
+                            native_aborts.pop(rid, None)
+                        if not done.cancelled():
+                            done.exception()
+                    job.add_done_callback(abort_done)
                     continue
-
                 if msg_type == 'input_status':
                     if len(native_reads) >= 16:
                         await write({'type': 'input_status_result', 'request_id': request.get('request_id', ''),
@@ -1932,6 +1938,9 @@ class GatewayServer:
                     for job in tuple(child_jobs):
                         job.cancel()
                     await asyncio.gather(*child_jobs, return_exceptions=True)
+                    for job in tuple(native_aborts.values()):
+                        job.cancel()
+                    await asyncio.gather(*native_aborts.values(), return_exceptions=True)
                     for job in tuple(native_reads):
                         job.cancel()
                     await asyncio.gather(*native_reads, return_exceptions=True)
@@ -2147,7 +2156,6 @@ class GatewayServer:
                 'session_id': orchestrator.get_new_session_id(group_id) or ''})
 
         def accepted() -> None:
-            orchestrator.release_group_reservation(request.get('_accepted_lease'))
             if started is not None:
                 started.set()
                 pending_writes.append(asyncio.create_task(publish_accepted()))
@@ -2188,7 +2196,7 @@ class GatewayServer:
                 input_alive=request.get("_message_alive"),
                 command_menu=request.get("_command_menu"),
                 message_id='native:' + run_id,
-                on_accepted=accepted,
+                on_accepted=accepted, on_execution_started=request.get('_on_execution_started'),
                 reply_target=ReplyTarget('tui', run_id),
             )
         except ValueError as exc:
@@ -2213,7 +2221,7 @@ class GatewayServer:
                 "run_id": run_id,
             })
         elif result.error:
-            if result.error == "aborted" and not result.retain_partial:
+            if (result.error == "aborted" or result.canceled) and not result.retain_partial:
                 await write_response({
                     "type": "aborted",
                     "group_id": group_id,

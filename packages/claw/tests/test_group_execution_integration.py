@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 
+import pytest
 from xdog.claw.config import ClawConfig
 from xdog.claw.core.inputs.consumer import InputOutcome, InputService
 from xdog.claw.core.inputs.models import InputScope
@@ -170,3 +171,114 @@ async def test_real_application_group_stays_owned_until_terminal_disk_commit(tmp
         release.set()
         await asyncio.gather(*(item for item in (task, successor) if item is not None), return_exceptions=True)
         await orch.stop()
+
+
+async def test_pending_withdrawal_settles_cache_after_commit_even_when_the_view_is_cancelled(tmp_path):
+    store = await InputStore.open(tmp_path / "private" / "inputs.sqlite3")
+
+    async def no_execution(*args):
+        raise AssertionError("Paused intake never starts a model")
+
+    service = InputService(store, no_execution, paused=True)
+    value = freeze_input(UserInput(group_id="main", content="queued"), tmp_path, message_id="one")
+    committed, release = asyncio.Event(), asyncio.Event()
+    cancel = store.cancel
+
+    async def delayed_ack(*args):
+        result = await cancel(*args)
+        committed.set()
+        await release.wait()
+        return result
+
+    store.cancel = delayed_ack
+    withdrawing = None
+    try:
+        await service.submit(value)
+        withdrawing = asyncio.create_task(service.withdraw(value.scope, "one"))
+        await asyncio.wait_for(committed.wait(), 3)
+        withdrawing.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await withdrawing
+        assert (await store.get(value.scope, "one")).status == "cancelled"
+        assert not service.has_work(value.scope), "A lost cancel ACK left phantom pending work"
+    finally:
+        release.set()
+        if withdrawing is not None:
+            await asyncio.gather(withdrawing, return_exceptions=True)
+        await service.close()
+
+
+async def test_queue_snapshot_cannot_borrow_a_later_execution_even_when_labels_match(tmp_path):
+    model = ScriptedModel()
+    entered, release = asyncio.Event(), asyncio.Event()
+    model.gates["second"] = entered, release
+    app = Orchestrator(ClawConfig(data_dir=str(tmp_path / "data")), model="test/dummy", stream_fn=model)
+    app.register_group(Group(id="main", workspace=str(tmp_path), enabled_tools=()))
+    identities = []
+    second = None
+    try:
+        await app.route_message(
+            UserInput(group_id="main", content="first"), message_id="first", on_execution_started=identities.append
+        )
+        second = asyncio.create_task(
+            app.route_message(
+                UserInput(group_id="main", content="second"),
+                message_id="second",
+                on_execution_started=identities.append,
+            )
+        )
+        await asyncio.wait_for(entered.wait(), 3)
+        assert app.control_input("main", "add", "same-label:one", "current input", "follow_up", 0)
+        assert app.pending_inputs("main", "same-label:", expected_execution=identities[0]) == ()
+        assert [
+            item.content for item in app.pending_inputs("main", "same-label:", expected_execution=identities[1])
+        ] == ["current input"]
+    finally:
+        await app.stop()
+        if second is not None:
+            await asyncio.gather(second, return_exceptions=True)
+
+
+async def test_early_stop_then_close_does_not_recancel_actual_producer_cleanup(tmp_path):
+    store = await InputStore.open(tmp_path / "private" / "inputs.sqlite3")
+    entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    cleanup_finished = False
+    finish = store.finish
+
+    async def checked_finish(record, status, **kwargs):
+        assert cleanup_finished, "Owner was released before the actual producer cleanup finished"
+        return await finish(record, status, **kwargs)
+
+    store.finish = checked_finish
+
+    async def execute(record, admit):
+        nonlocal cleanup_finished
+        await admit("session")
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaning.set()
+            await release.wait()
+            cleanup_finished = True
+
+    service = InputService(store, execute)
+    value = freeze_input(UserInput(group_id="main", content="hold"), tmp_path, message_id="one")
+    closing = None
+    try:
+        await service.submit(value)
+        await asyncio.wait_for(entered.wait(), 3)
+        service.request_stop()
+        await asyncio.wait_for(cleaning.wait(), 3)
+        closing = asyncio.create_task(service.close())
+        # Actual disk work yields to the owned close without a sleep/timer race.
+        await store.get(value.scope, "one")
+        release.set()
+        await asyncio.wait_for(closing, 3)
+        assert cleanup_finished
+    finally:
+        release.set()
+        if closing is not None:
+            await asyncio.gather(closing, return_exceptions=True)
+        await service.close()

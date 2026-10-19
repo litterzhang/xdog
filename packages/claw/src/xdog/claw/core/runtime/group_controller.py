@@ -19,6 +19,13 @@ class GroupReservation:
 
 
 @dataclass(frozen=True)
+class InputExecution:
+    message_id: str
+    attempt_id: str
+    session_id: str
+
+
+@dataclass(frozen=True)
 class _Owner:
     reservation: GroupReservation
     task: asyncio.Task[Any] | None = None
@@ -132,6 +139,12 @@ class GroupController:
         return bool(owner is not None and owner.admitted and owner.input_key is not None
                     and owner.input_key[0] == message_id and (attempt_id is None or owner.input_key[1] == attempt_id)
                     and owner.task is not None and not owner.task.done())
+
+    def execution_for(self, message_id: str) -> InputExecution | None:
+        if not self.owns_input(message_id):
+            return None
+        assert self._owner is not None and self._owner.input_key is not None
+        return InputExecution(*self._owner.input_key, self._owner.session_id)
 
     def cancel_input(self, message_id: str, attempt_id: str) -> bool:
         if not self.owns_input(message_id, attempt_id):

@@ -146,10 +146,14 @@ class InputService:
                 self._waiters.pop(key, None)
 
     async def withdraw(self, scope: InputScope, message_id: str) -> InputRecord:
-        record = await self.store.cancel(scope, message_id)
-        self._pending.discard((scope, message_id))
-        self._notify(scope, message_id)
-        return record
+        async def commit() -> InputRecord:
+            record = await self.store.cancel(scope, message_id)
+            self._pending.discard((scope, message_id))
+            self._notify(scope, message_id)
+            return record
+        # A lost protocol/caller ACK cannot leave an actually cancelled input
+        # occupying application capacity or suppressing the next idle operation.
+        return await wait_owned(asyncio.create_task(commit()))
 
     def _notify(self, scope: InputScope, identifier: str | None = None) -> None:
         for (owner, message_id), waiters in tuple(self._waiters.items()):
@@ -222,7 +226,7 @@ class InputService:
                 # An explicit withdrawal won this same unstarted attempt.
                 # Storage errors and a different/new attempt still fail closed.
         elif current.status == 'running':
-            await self.store.finish(current, 'interrupted', error='Application stopped; inspect prior effects')
+            await self.store.finish(current, 'interrupted', error='Execution interrupted; inspect prior effects')
         # A terminal commit can finish while cancellation loses its result. Its
         # actual receipt wins; never overwrite success with interrupted.
         if not self._closing:
@@ -293,8 +297,9 @@ class InputService:
 
     async def _close(self) -> None:
         tasks = tuple(self._tasks.values())
-        for task in tasks:
-            task.cancel()
+        # request_stop already signalled each original producer. Cancelling it
+        # again here could interrupt its actual tool/Agent cleanup and release
+        # group ownership before those effects have settled.
         try:
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for result in results:

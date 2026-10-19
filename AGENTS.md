@@ -109,7 +109,7 @@ The main path is:
 TUI Unix socket / Weixin / existing ACP bridge
   -> Orchestrator.route_message
   -> core/inputs InputStore + application-owned InputService
-  -> existing per-group execution exclusion
+  -> per-group GroupController (fenced operation/input owner through receipt settlement)
   -> GroupRuntime's active AgentSession
   -> prompt rebuild and pre-turn compaction
   -> xdog.agent stream/tools
@@ -123,13 +123,18 @@ and crashed started work is never automatically replayed. Busy ordinary input is
 not implicit steering. Explicit steer/follow-up remains Agent-owned input control.
 Native `run_ack` follows the actual durable commit; the reader stays responsive
 during that commit. Native/ACP connection detachment does not cancel accepted
-application work; explicit abort and application shutdown have separate owners.
+application work. Busy Native intake commits into the same Inbox; connection-local
+result waiters are not execution authority. Native controls/snapshots/abort bind
+the original admitted message+attempt+session, so a queued or delayed old view
+cannot touch another run or an explicit retry. Commands reserve fenced tokens;
+pre-start cancellation and late cleanup can release only their original token.
+The old mixed MessageQueue and global Gateway running table are removed.
 
 ACP is now a thin adapter over the application-owned input service: it has no
 receipt database, consumer, observer/Goal query or report-delivery policy. Its
 namespace/status are the exact same facts used by native intake. Closing an ACP
-endpoint detaches waiters, not application execution or storage. Only actual
-application shutdown/crash interrupts started work. No old-format upgrade is
+endpoint detaches waiters, not application execution or storage. Endpoint lifecycle does not interrupt work; explicit original-input cancellation
+and actual application shutdown/crash use their separate execution owners. No old-format upgrade is
 provided; the retired `acp/inbox.py` and shared observer store are removed.
 Managed observers own `<data_dir>/observers/journal.sqlite3`; core input receipts
 live in `<data_dir>/inputs/inbox.sqlite3`. Source cursors and immutable outboxes
@@ -139,10 +144,15 @@ its report. `eyes cancel_notifications` is separate; actual pending withdrawal
 uses the core input owner. No operation reverses started effects. A schema-neutral
 Agent `LeasedSqlite` helper owns IO only, never domain schema or planning policy.
 The broader assistant-core refactor remains in progress: optional standalone Goal,
-its Coding adapter/shared extension UI and final channel handoff are still pending.
+its Coding adapter/shared extension UI and observer-created reply capture remain pending.
+Ordinary output receipts live in `<data_dir>/outputs/journal.sqlite3`: per-message
+send attempts distinguish delivered/pending/proven-not-sent/unknown independently
+from Agent execution. Unknown sends are never automatically replayed. Native
+staged submissions retain original IDs/images over ACK loss; local editable
+unsent drafts remain process-memory state, not an implicit plaintext disk spool.
 See `docs/claw-assistant-core-requirements.json` for exact acceptance status.
 
-Eyes callbacks enter through the existing leased ACP group inbox as canonical external input; goal work remains system input. Each group has one logical main Agent and one execution route; session files are context/history storage, never Goal ownership or event destinations. Both paths use the same Orchestrator group lock and current AgentSession. A group runtime owns its workspace, tools, memory, goals, prompt builder, transcript store, and one active cached agent session. Transcripts are JSONL with a `sessions.json` index; `SessionManager` is a compatibility alias for `TranscriptStore`, not an LRU multi-session manager.
+Eyes callbacks use thin ACP intake into the application-owned Core Inbox as canonical external input; goal work remains system input. Each group has one logical main Agent and one execution route; session files are context/history storage, never Goal ownership or event destinations. Both paths use the same GroupController and current AgentSession. A group runtime owns its workspace, tools, memory, goals, prompt builder, transcript store, and one active cached agent session. Transcripts are JSONL with a `sessions.json` index; `SessionManager` is a compatibility alias for `TranscriptStore`, not an LRU multi-session manager.
 
 Prompt construction intentionally separates a cacheable static prefix from mutable workspace, memory, environment, and goal content. Compaction flushes durable memory, summarizes through the LLM, archives the transcript, then replaces older history. Memory uses vector+BM25 search when optional dependencies initialize and falls back to keyword search otherwise.
 

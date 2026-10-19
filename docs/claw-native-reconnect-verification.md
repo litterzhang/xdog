@@ -62,9 +62,9 @@ plan ledger, not hidden as successful full-suite evidence.
 Local queued/unsubmitted drafts and staged identity are still process-memory
 state, not an automatic private disk spool. The existing explicit parent-draft
 feature is unchanged; no per-keystroke plaintext persistence is silently enabled.
-The old Native Gateway busy/reservation gate still needs the sole-controller
-cutover so online/busy ordinary intake is consistently committed through Core.
-Online busy preserves the original separately; `/status` can refresh its receipt,
-not an approval. Observer-created callback destinations, final controller cleanup,
+The subsequent sole-controller/busy-intake cutover is now documented in
+`docs/claw-group-controller-verification.md`: online busy intake commits through
+Core and controls bind the original actual execution attempt. This earlier
+milestone's counts remain historical, not the current final test count. Observer-created callback destinations, final controller cleanup,
 optional standalone Goal, two host adapters and shared Goal extension UI remain
 open. No goal completion, publish, push or merge is implied.

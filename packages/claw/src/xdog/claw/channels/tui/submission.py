@@ -21,6 +21,7 @@ class NativeSubmission:
     text: str
     images: tuple[Attachment, ...] = ()
     acknowledged: bool = False
+    cancel_requested: bool = False
     phase: Literal['awaiting_ack', 'accepted', 'unknown'] = 'awaiting_ack'
 
     def __post_init__(self) -> None:

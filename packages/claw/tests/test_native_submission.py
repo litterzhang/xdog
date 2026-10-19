@@ -275,3 +275,15 @@ def test_host_aborted_terminal_receipt_does_not_suppress_unrelated_queued_input(
     app._handle_response({"type": "aborted", "run_id": original["run_id"]})
     (sent,) = [row for row in drain(app) if row["type"] == "message"]
     assert sent["content"] == "unrelated queued input" and sent["run_id"] != original["run_id"]
+
+
+def test_cancel_intent_survives_ack_loss_and_never_resubmits_a_known_absent_original():
+    app, original = active()
+    app._handle_escape()
+    (abort,) = drain(app)
+    assert abort["type"] == "abort" and abort["run_id"] == original["run_id"]
+    disconnect(app)
+    (query,) = [row for row in reconnect(app) if row["type"] == "input_status"]
+    app._handle_response(result(query, None))
+    assert not any(row["type"] == "message" for row in drain(app))
+    assert app._native_submission is None

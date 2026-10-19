@@ -2806,6 +2806,8 @@ class ChatApp:
         if run_id is None or self._aborting_run_id == run_id:
             return
         self._aborting_run_id = run_id
+        if self._native_submission is not None and self._native_submission.run_id == run_id:
+            self._native_submission = replace(self._native_submission, cancel_requested=True)
         self._queue_request({
             "type": "abort",
             "group_id": self._state.get("group_id", "main"),
@@ -3683,6 +3685,12 @@ class ChatApp:
             self._native_query = None
             if submission.acknowledged:
                 self._chat_log.add_system('Acknowledged input missing from its journal; inspect, no replay')
+                return
+            if submission.cancel_requested:
+                self._native_submission = None
+                self._set_waiting(False)
+                self._chat_log.add_system('Cancel requested; no accepted input found, original not replayed')
+                self._dispatch_next_pending()
                 return
             # Positive absence in the original namespace permits exactly the
             # original ID/body/images, never a new-ID reconstruction of a draft.

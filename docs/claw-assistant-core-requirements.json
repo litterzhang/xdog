@@ -40,7 +40,8 @@
       "status": "pending",
       "evidence": [
         "docs/claw-channel-handoff-verification.md",
-        "docs/claw-output-receipts-verification.md"
+        "docs/claw-output-receipts-verification.md",
+        "docs/claw-group-controller-verification.md"
       ]
     },
     {
@@ -48,28 +49,36 @@
       "area": "input",
       "requirement": "稳定 message ID 去重，同 ID 不同内容拒绝，attempt 与消息身份分离",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/claw-group-controller-verification.md"
+      ]
     },
     {
       "id": "IN-03",
       "area": "input",
       "requirement": "容量满背压/明确拒绝，不能删除已经接收的输入",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/claw-group-controller-verification.md"
+      ]
     },
     {
       "id": "IN-04",
       "area": "input",
       "requirement": "claimed 与 running 分离，取消在 admission 边界阻止未开始工作",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/claw-group-controller-verification.md"
+      ]
     },
     {
       "id": "IN-05",
       "area": "input",
       "requirement": "pending/unstarted 安全恢复，running 转 interrupted，未知副作用不自动重放",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/claw-group-controller-verification.md"
+      ]
     },
     {
       "id": "IN-06",
@@ -86,7 +95,9 @@
       "area": "input",
       "requirement": "微信部分提交/游标与 TUI ACK 丢失安全；接收前附件可恢复且维持原边界",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/claw-group-controller-verification.md"
+      ]
     },
     {
       "id": "IN-08",
@@ -103,35 +114,45 @@
       "area": "input",
       "requirement": "断线不是已接收普通消息的撤回；明确取消仍绑定原执行",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/claw-group-controller-verification.md"
+      ]
     },
     {
       "id": "IN-10",
       "area": "input",
       "requirement": "Claw 首阶段不顺便改变 per-turn 语义；Coding 既有独立输入批处理不回退",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/claw-group-controller-verification.md"
+      ]
     },
     {
       "id": "RUN-01",
       "area": "runtime",
       "requirement": "steer/follow-up 队列、checkpoint 和消费收据仅由 xdog.agent 管理",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/claw-group-controller-verification.md"
+      ]
     },
     {
       "id": "RUN-02",
       "area": "runtime",
       "requirement": "无忙时自动 steering、steer-backlog 双重入队或 run 结束后的隐式新 turn",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/claw-group-controller-verification.md"
+      ]
     },
     {
       "id": "RUN-03",
       "area": "runtime",
       "requirement": "每 group 一个执行 owner，Gateway/ACP/UI 不另维护执行权威",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/claw-group-controller-verification.md"
+      ]
     },
     {
       "id": "RUN-04",
@@ -145,7 +166,9 @@
       "area": "runtime",
       "requirement": "取消与 shutdown 等待真实 producer/存储结算，保留用户优先与跨 group 隔离",
       "status": "pending",
-      "evidence": []
+      "evidence": [
+        "docs/claw-group-controller-verification.md"
+      ]
     },
     {
       "id": "BOUND-01",

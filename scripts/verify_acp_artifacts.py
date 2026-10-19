@@ -321,6 +321,9 @@ def main() -> None:
             output_probe = work / 'output_consumer.py'
             output_probe.write_text(Path(__file__).with_name('verify_claw_output_artifact.py').read_text())
             subprocess.run([str(python), str(output_probe)], env=environment, cwd=work, check=True, timeout=30)
+            native_probe = work / 'native_consumer.py'
+            native_probe.write_text(Path(__file__).with_name('verify_claw_native_artifact.py').read_text())
+            subprocess.run([str(python), str(native_probe)], env=environment, cwd=work, check=True, timeout=30)
         if name == 'eyes':
             subprocess.run([str(env / 'bin' / 'xdog-eyes'), '--help'],
                            env=environment, cwd=work, check=True, stdout=subprocess.DEVNULL)

@@ -29,7 +29,7 @@ from xdog.claw.core.outputs.delivery import OutputDelivery
 from xdog.claw.core.outputs.store import OutputStore
 from xdog.claw.core.runtime.channel_adapter import ChannelReplies, ChannelReply, durable_reply
 from xdog.claw.core.runtime.group import GroupRuntime
-from xdog.claw.core.runtime.group_controller import GroupController, GroupReservation
+from xdog.claw.core.runtime.group_controller import GroupController, GroupReservation, InputExecution
 from xdog.claw.core.runtime.input_adapter import freeze_input, restore_input
 from xdog.claw.core.runtime.session import AgentSession, TurnResult
 from xdog.claw.core.runtime.transcript_source import SourceCapture
@@ -268,6 +268,7 @@ class Orchestrator:
         if record.envelope.admission_key and call is None:
             raise ValueError('Original live admission binding unavailable; inspect before retry')
         options = dict(call.options) if call is not None else {}
+        options.pop('on_execution_started', None)
         on_error: Callable[[str], Awaitable[None]] | None = None
         display = options.get('on_display_event')
         if call is not None and display is not None:
@@ -313,6 +314,7 @@ class Orchestrator:
         command_menu: CommandMenuHost | None = None, message_id: str | None = None,
         on_accepted: Callable[[], None] | None = None, reply_target: ReplyTarget | None = None,
         wait_for_result: bool = True,
+        on_execution_started: Callable[[InputExecution], None] | None = None,
     ) -> TurnResult | None:
         """Persist ordinary input before ACK; busy never implicitly means steering."""
         group_id = message.group_id
@@ -339,7 +341,8 @@ class Orchestrator:
         if call is None:
             call = _InputCall(envelope, {'on_display_event': on_display_event, 'on_text_delta': on_text_delta,
                 'on_assistant_message': on_assistant_message, 'child_ui': child_ui, 'input_alive': input_alive,
-                'before_admission': before_admission, 'command_menu': command_menu},
+                'before_admission': before_admission, 'command_menu': command_menu,
+                'on_execution_started': on_execution_started},
                 asyncio.get_running_loop().create_future(), asyncio.Event())
             self._input_calls[key] = call
         try:
@@ -355,6 +358,9 @@ class Orchestrator:
             if busy and not reserved:
                 return None
             receipt = await service.wait(envelope.scope, identifier)
+            if receipt.status in {'cancelled', 'interrupted'}:
+                return TurnResult(error='aborted' if receipt.status == 'cancelled' else receipt.error,
+                                  session_id=receipt.session_id, canceled=True)
             if call.result.done():
                 return call.result.result()
             result = TurnResult(response_text=receipt.response, error=receipt.error or None,
@@ -506,6 +512,44 @@ class Orchestrator:
         runtime.abort()
         return True
 
+    async def abort_native_input(self, group_id: str, message_id: str,
+                                 binding: Callable[[InputExecution], None],
+                                 expected_execution: InputExecution | None = None) -> bool:
+        """Withdraw an original pending call or cancel its exact actual producer."""
+        runtime = self._runtimes.get(group_id)
+        workspace = self.get_group_workspace(group_id)
+        if runtime is None or workspace is None:
+            return False
+        scope, controller = InputScope(group_id, workspace), self.group_controller(group_id)
+        if expected_execution is not None:
+            if (expected_execution.message_id != message_id
+                    or runtime.get_new_session_id() != expected_execution.session_id
+                    or not controller.owns_input(message_id, expected_execution.attempt_id)):
+                return False
+            runtime.abort()  # Preserve the existing original Agent/child cancellation semantics.
+            return controller.cancel_input(message_id, expected_execution.attempt_id)
+        key = scope, message_id
+        call = self._input_calls.get(key)
+        if call is None or call.options.get('on_execution_started') is not binding:
+            return False  # A duplicate result waiter cannot borrow the original caller's controls.
+        inputs = await self.input_service()
+        try:
+            await inputs.withdraw(scope, message_id)
+            return True
+        except ValueError:
+            # Admission may have won the same explicit pending withdrawal. The
+            # original live binding must still match before selecting its attempt.
+            if self._input_calls.get(key) is not call:
+                return False
+            execution = controller.execution_for(message_id)
+            if execution is not None:
+                runtime.abort()
+                return controller.cancel_input(message_id, execution.attempt_id)
+            if call.detached.is_set() and await inputs.store.get(scope, message_id) is None:
+                if self._input_calls.get(key) is call:
+                    self._input_calls.pop(key, None)
+            return False
+
     async def wait_group_idle(self, group_id: str) -> None:
         runtime = self._runtimes.get(group_id)
         if runtime:
@@ -526,6 +570,14 @@ class Orchestrator:
     def _input_admitted(self, record: InputRecord, session_id: str) -> None:
         self.group_controller(record.envelope.scope.group_id).confirm_input(
             record.envelope.message.id, record.attempt_id, session_id)
+        call = self._input_calls.get((record.envelope.scope, record.envelope.message.id))
+        if call is not None and call.envelope == record.envelope:
+            notify = call.options.get('on_execution_started')
+            if notify is not None:
+                try:
+                    notify(InputExecution(record.envelope.message.id, record.attempt_id, session_id))
+                except Exception:
+                    logger.warning('Execution admitted; optional original view notification failed', exc_info=True)
 
     def is_group_running(self, group_id: str) -> bool:
         controller = self._controllers.get(group_id)
@@ -1102,9 +1154,14 @@ class Orchestrator:
 
     def control_input(self, group_id: str, action: str, input_id: str, content: str = "",
                       delivery: str = "", direction: int = 0, images: tuple[ImageContent, ...] = (),
-                      *, images_validated: bool = False) -> bool:
+                      *, images_validated: bool = False, expected_execution: InputExecution | None = None) -> bool:
         runtime = self._runtimes.get(group_id)
         if runtime is None or not self.is_group_running(group_id):
+            return False
+        if expected_execution is not None and (
+                not self.group_controller(group_id).owns_input(expected_execution.message_id,
+                                                              expected_execution.attempt_id)
+                or runtime.get_new_session_id() != expected_execution.session_id):
             return False
         return runtime.control_input(action, input_id, content, delivery, direction, images,
                                      images_validated=images_validated)
@@ -1115,8 +1172,14 @@ class Orchestrator:
             raise ValueError("Unknown group")
         runtime.validate_images(images)
 
-    def pending_inputs(self, group_id: str, prefix: str) -> tuple[Any, ...]:
+    def pending_inputs(self, group_id: str, prefix: str, *, expected_execution: InputExecution | None = None
+                       ) -> tuple[Any, ...]:
         runtime = self._runtimes.get(group_id)
+        if expected_execution is not None and (runtime is None
+                or runtime.get_new_session_id() != expected_execution.session_id
+                or not self.group_controller(group_id).owns_input(expected_execution.message_id,
+                                                                 expected_execution.attempt_id)):
+            return ()
         return runtime.pending_inputs(prefix) if runtime is not None else ()
 
     def drain_inputs(self, group_id: str, prefix: str) -> tuple[Any, ...]:
