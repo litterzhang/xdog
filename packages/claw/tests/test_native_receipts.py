@@ -227,3 +227,48 @@ async def test_outstanding_receipt_waits_are_bounded_without_blocking_controls(g
         source_writer.close()
         await writer.wait_closed()
         await source_writer.wait_closed()
+
+
+async def test_actual_tui_reconciles_ack_loss_over_unix_without_replaying_the_agent(gateway):
+    from xdog.claw.channels.tui.tui_app import ChatApp
+
+    from packages.claw.tests.test_native_submission import drain
+
+    server, entered, release, contexts, socket_path = gateway
+    app = ChatApp(socket_path)
+    reader, writer = await asyncio.open_unix_connection(socket_path)
+    try:
+        await send(writer, {"type": "ping", "group_id": "main"})
+        greeting = await receive(reader, "pong")
+        # Consume the actual receipt negotiation without starting unrelated TUI
+        # catalogs/path-completion workers; the native route is unmodified.
+        fields = ("type", "group_id", "session_id", "input_receipts", "inbox_namespace")
+        app._handle_response({key: greeting[key] for key in fields if key in greeting})
+        app._start_message("HOLD", ())
+        (original,) = [row for row in drain(app) if row["type"] == "message"]
+        await send(writer, {key: value for key, value in original.items() if not key.startswith("_")})
+        await asyncio.wait_for(entered.wait(), 3)
+        app._handle_response({"type": "internal_error", "message": "lost ACK connection"})
+        writer.close()
+        await writer.wait_closed()
+        reader, writer = await asyncio.open_unix_connection(socket_path)
+        await send(writer, {"type": "ping", "group_id": "main"})
+        greeting = await receive(reader, "pong")
+        app._handle_response({"type": "internal_reconnected"})
+        app._handle_response({key: greeting[key] for key in fields if key in greeting})
+        outgoing = drain(app)
+        (query,) = [row for row in outgoing if row["type"] == "input_status"]
+        assert query["message_id"] == "native:" + original["run_id"]
+        assert not any(row["type"] == "message" for row in outgoing)
+        await send(writer, {key: value for key, value in query.items() if not key.startswith("_")})
+        release.set()
+        terminal = await receive(reader, "input_status_result", request_id=query["request_id"])
+        app._handle_response(terminal)
+        assert app._native_submission is None
+        assert not any(row["type"] == "message" for row in drain(app))
+        assert contexts == [["HOLD"]]
+        assert "answer" in "\n".join(app._chat_log.render(100))
+    finally:
+        release.set()
+        writer.close()
+        await writer.wait_closed()

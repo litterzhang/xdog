@@ -54,6 +54,7 @@ from xdog.ai.types import ImageContent
 from xdog.claw.channels.tui.history_panel import HistoryPanel
 from xdog.claw.channels.tui.mcp_data import McpDataReceiver
 from xdog.claw.channels.tui.source_reader import SourceReceiver
+from xdog.claw.channels.tui.submission import TERMINAL, NativeSubmission, valid_namespace, validate_receipt
 from xdog.claw.config import get_config_dir, get_data_dir
 from xdog.tui.attachments import Attachment, AttachmentComposer
 from xdog.tui.child_browser import child_entries
@@ -697,6 +698,10 @@ class ChatApp:
 
         # Active run tracking (matching OpenClaw)
         self._active_run_id: str | None = None
+        self._native_submission: NativeSubmission | None = None
+        self._native_namespace = ''
+        self._native_supported = False
+        self._native_query: tuple[str, int] | None = None
         self._pending_messages: deque[str] = deque()
         self._pending_ids = LocalQueueIds()
         self._transformed_inputs: dict[str, str] = {}
@@ -1154,7 +1159,9 @@ class ChatApp:
 
     def _retained_image_bytes(self) -> int:
         items = {item.id: item for group in (*self._local_images.values(), *self._routed_images.values(),
-                                           self._active_images) for item in group}
+                                           self._active_images,
+                                           self._native_submission.images if self._native_submission else ())
+                 for item in group}
         return sum(len(item.data) for item in items.values()) + self._child_draft_bytes() + self._parent_saved_bytes()
 
     def _child_draft_bytes(self) -> int:
@@ -2804,7 +2811,8 @@ class ChatApp:
             "group_id": self._state.get("group_id", "main"),
             "run_id": run_id,
         })
-        self._restore_pending_draft(run_id, runtime=False)
+        if self._native_submission is None or self._native_submission.run_id != run_id:
+            self._restore_pending_draft(run_id, runtime=False)
         self._chat_log.add_system("cancelling run; runtime inputs await consumption/return receipts")
         self._chat_log.drop_assistant(run_id)
         for tool in self._chat_log._tools.values():
@@ -3587,8 +3595,8 @@ class ChatApp:
                 self._set_waiting(True)
             return
 
-        if self._active_run_id is not None:
-            if self._aborting_run_id == self._active_run_id:
+        if self._active_run_id is not None or self._native_submission is not None:
+            if self._active_run_id is not None and self._aborting_run_id == self._active_run_id:
                 self._composer.restore(images)
                 self._editor.set_text(value)
                 self._tui.request_render()
@@ -3615,6 +3623,9 @@ class ChatApp:
         self._chat_log.add_user(value + (f"\n[Images: {image_count}]" if image_count else ""))
         self._active_run_id = f"run-{uuid.uuid4().hex}"
         self._active_text = value
+        if self._native_supported:
+            self._native_submission = NativeSubmission(self.group_id, self._native_namespace,
+                                                       self._active_run_id, value, images)
         self._aborting_run_id = None
         self._set_waiting(True)
         self._streaming_output_chars = 0
@@ -3631,7 +3642,7 @@ class ChatApp:
     def _dispatch_next_pending(self) -> None:
         if (
             self._exit_requested or not self._connection_ready or self._pending_command is not None
-            or self._active_run_id is not None or not self._pending_messages
+            or self._active_run_id is not None or self._native_submission is not None or not self._pending_messages
         ):
             return
         keys = self._pending_ids.sync(len(self._pending_messages))
@@ -3640,6 +3651,71 @@ class ChatApp:
         self._pending_ids.pop()
         self._update_queue_summary()
         self._handle_submit(next_message, queued=True, images=images)
+
+    def _request_native_receipt(self) -> None:
+        submission = self._native_submission
+        if (submission is None or submission.phase != 'unknown' or self._native_query is not None
+                or not self._connection_ready):
+            return
+        if (not self._native_supported or submission.namespace != self._native_namespace
+                or submission.group_id != self.group_id):
+            self._chat_log.add_system('Original message retained: receipt owner unavailable/changed; no replay')
+            return
+        identifier = 'receipt-' + uuid.uuid4().hex
+        self._native_query = identifier, self._connection_generation
+        self._queue_request({'type': 'input_status', 'request_id': identifier, 'group_id': submission.group_id,
+                             'namespace': submission.namespace, 'message_id': 'native:' + submission.run_id,
+                             'wait': True})
+        self._set_activity_status('reconciling input receipt')
+
+    def _native_receipt_result(self, message: Mapping[str, Any]) -> None:
+        submission, query = self._native_submission, self._native_query
+        if (submission is None or query is None or message.get('request_id') != query[0]
+                or query[1] != self._connection_generation or submission.phase != 'unknown'):
+            return
+        if (message.get('success') is not True or message.get('namespace') != submission.namespace
+                or self._native_namespace != submission.namespace or self.group_id != submission.group_id):
+            self._native_query = None
+            self._chat_log.add_system('Original message retained: receipt unavailable; no automatic replay')
+            return
+        receipt = message.get('message')
+        if receipt is None:
+            self._native_query = None
+            if submission.acknowledged:
+                self._chat_log.add_system('Acknowledged input missing from its journal; inspect, no replay')
+                return
+            # Positive absence in the original namespace permits exactly the
+            # original ID/body/images, never a new-ID reconstruction of a draft.
+            self._native_submission = replace(submission, phase='awaiting_ack')
+            self._active_run_id, self._active_text = submission.run_id, submission.text
+            self._active_images = submission.images
+            self._set_waiting(True)
+            self._queue_request({'type': 'message', 'group_id': submission.group_id,
+                'run_id': submission.run_id, 'content': submission.text,
+                **({'session_id': self._gateway_session_id} if self._session_controls_supported else {})},
+                submission.images)
+            return
+        try:
+            checked = validate_receipt(receipt, submission)
+        except ValueError:
+            return  # A stale/wrong-input payload cannot retire the original query.
+        self._native_query = None
+        if checked['status'] not in TERMINAL:
+            self._native_submission = replace(submission, acknowledged=True)
+            self._chat_log.add_system('Original input remains queued/running; no new submission')
+            return
+        if checked['response']:
+            self._chat_log.add_assistant(checked['response'])
+        self._chat_log.add_system('Original input receipt: ' + checked['status']
+                                  + (': ' + checked['error'] if checked['error'] else ''))
+        self._native_submission = None
+        self._set_waiting(False)
+        self._dispatch_next_pending()
+
+    def _native_finished(self, run_id: str) -> None:
+        if self._native_submission is not None and self._native_submission.run_id == run_id:
+            self._native_submission = None
+            self._native_query = None
 
     # ── Per-frame polling (matching OpenClaw's event loop) ──
 
@@ -3846,6 +3922,15 @@ class ChatApp:
             self._access_supported = False
             self._access_read_only, self._access_revision, self._access_session = None, -1, ''
             self._connection_generation = generation
+            self._native_query = None
+            self._native_supported = False
+            self._native_namespace = ''
+            if self._native_submission is not None:
+                self._native_submission = replace(self._native_submission, phase='unknown')
+                self._chat_log.drop_assistant(self._native_submission.run_id)
+                self._active_run_id, self._active_text = None, None
+                self._active_images = ()
+                self._set_waiting(False)
             self._tools_request = ''
             self._tools_deadline = 0.0
             self._tool_inventory_supported = False
@@ -3910,6 +3995,9 @@ class ChatApp:
             return
         event_generation = msg.get("_connection_generation")
         if event_generation is not None and event_generation != self._connection_generation:
+            return
+        if msg_type == 'input_status_result':
+            self._native_receipt_result(msg)
             return
         if msg_type == 'access_control_result':
             self._access_result(msg)
@@ -4572,6 +4660,9 @@ class ChatApp:
                 self._finish_session_sync()
             self._state["session_name"] = msg.get("session_name", "")
             self._input_controls_supported = msg.get("input_controls") == 1
+            namespace = msg.get('inbox_namespace')
+            self._native_supported = msg.get('input_receipts') == 1 and valid_namespace(namespace)
+            self._native_namespace = str(namespace) if self._native_supported else ''
             # The local socket peer owns the group's workspace. Never suggest
             # paths relative to the directory from which the TUI was launched.
             workspace = msg.get("workspace_dir")
@@ -4647,6 +4738,7 @@ class ChatApp:
             self._update_header()
             self._update_footer()
             self._set_connection_status(connection_status)
+            self._request_native_receipt()
             if self._active_run_id is None:
                 self._set_activity_status("idle")
             return
@@ -4665,6 +4757,7 @@ class ChatApp:
             self._history_loading = False
             self._connection_ready = True
             self._set_connection_status("connected")
+            self._request_native_receipt()
             if self._session_mutation_id is not None:
                 self._finish_session_sync()
             return
@@ -4728,28 +4821,42 @@ class ChatApp:
                 if msg_type in {"response", "final", "aborted", "error"} or (
                     msg_type == "abort_ack" and msg.get("status") == "not_active"
                 ):
+                    self._native_finished(run_id)
                     self._restore_uncertain_inputs(run_id)
                     self._chat_log.drop_assistant(run_id)
                     self._active_run_id = None
                     self._active_text = None
+                    self._active_images = ()
                     self._aborting_run_id = None
                     self._set_waiting(False)
                     if msg_type == "aborted":
                         self._chat_log.add_system("run aborted")
+                    self._dispatch_next_pending()
                 return
 
         if msg_type in ("busy", "queued"):
             run_id = str(msg.get("run_id", ""))
             if run_id == self._active_run_id:
-                self._restore_pending_draft(run_id)
+                if self._native_submission is not None and self._native_submission.run_id == run_id:
+                    self._native_submission = replace(self._native_submission, phase='unknown')
+                else:
+                    self._restore_pending_draft(run_id)
                 self._active_run_id = None
                 self._active_text = None
                 self._aborting_run_id = None
                 self._set_waiting(False)
-                self._chat_log.add_system("group is busy; message restored to editor")
+                self._active_images = ()
+                self._chat_log.add_system('Group busy; original input retained separately; /status refreshes receipt'
+                    if self._native_submission is not None else 'group is busy; message restored to editor')
             return
 
         if msg_type == "run_ack":
+            staged = self._native_submission
+            if (staged is not None and msg.get('run_id') == staged.run_id
+                    and msg.get('message_id') == 'native:' + staged.run_id
+                    and msg.get('inbox_namespace') == staged.namespace):
+                self._native_submission = replace(staged, acknowledged=True,
+                    phase='unknown' if staged.phase == 'unknown' else 'accepted')
             if msg.get("run_id") == self._active_run_id and msg.get("session_id"):
                 actual = str(msg["session_id"])
                 if self._source_request_id is not None and actual != self._source_session_id:
@@ -4817,6 +4924,7 @@ class ChatApp:
         # Final response (matching OpenClaw's chat event: state=final)
         if msg_type == "response" or msg_type == "final":
             run_id = msg.get("run_id", "default")
+            self._native_finished(str(run_id))
             self._restore_uncertain_inputs(str(run_id))
             content = msg.get("content", "")
             self._set_waiting(False)
@@ -4864,6 +4972,7 @@ class ChatApp:
         # Aborted (matching OpenClaw's chat event: state=aborted)
         if msg_type == "aborted":
             run_id = msg.get("run_id", "default")
+            self._native_finished(str(run_id))
             self._restore_uncertain_inputs(str(run_id))
             self._set_waiting(False)
             self._active_run_id = None
@@ -4872,6 +4981,8 @@ class ChatApp:
             self._clear_todos()
             self._chat_log.add_system("run aborted")
             self._chat_log.drop_assistant(run_id)
+            self._active_images = ()
+            self._dispatch_next_pending()
             return
 
         # Error (matching OpenClaw's chat event: state=error)
@@ -4883,6 +4994,7 @@ class ChatApp:
                 self._pending_output = None
                 self._output_epoch += 1
             if msg_type == "internal_error":
+                self._native_query = None
                 self._connection_ready = False
                 self._pending_command = None
                 if self._session_mutation_id is not None:
@@ -4917,16 +5029,29 @@ class ChatApp:
             run_id = str(msg.get("run_id", "default"))
             if msg_type == "internal_error" and self._active_run_id is not None:
                 run_id = self._active_run_id
-                self._restore_pending_draft(run_id)
+                if self._native_submission is not None and self._native_submission.run_id == run_id:
+                    self._native_submission = replace(self._native_submission, phase='unknown')
+                    self._active_images = ()
+                    self._chat_log.add_system('Original input retained for receipt reconciliation; no new-ID replay')
+                else:
+                    self._restore_pending_draft(run_id)
+                    self._chat_log.add_system(
+                        "drafts restored; prior tool effects may have completed — review before resending")
                 self._active_text = None
-                self._chat_log.add_system(
-                    "drafts restored; prior tool effects may have completed — review before resending"
-                )
                 for tool in self._chat_log._tools.values():
                     tool.set_canceled()
                 self._update_queue_summary()
             if msg_type == "error" and self._active_run_id == run_id:
-                self._restore_pending_draft(run_id)
+                staged = self._native_submission
+                if staged is not None and staged.run_id == run_id:
+                    self._restore_uncertain_inputs(run_id)
+                    if staged.acknowledged:
+                        self._native_finished(run_id)
+                    else:
+                        self._native_submission = replace(staged, phase='unknown')
+                    self._active_images = ()
+                else:
+                    self._restore_pending_draft(run_id)
                 self._active_text = None
             if msg_type == "internal_error":
                 orphaned = [item.content for item in self._routed_inputs.values()]
@@ -4953,6 +5078,7 @@ class ChatApp:
                 self._chat_log.retain_assistant(run_id)
             else:
                 self._chat_log.drop_assistant(run_id)
+            self._dispatch_next_pending()
             return
 
         if msg_type == "reset_ack":
@@ -4991,6 +5117,7 @@ class ChatApp:
             self._chat_log.add_system(
                 f"Gateway running (PID: {pid}) — groups: {groups}"
             )
+            self._request_native_receipt()
             self._dispatch_next_pending()
             return
 
@@ -5168,7 +5295,7 @@ class ChatApp:
 
                          "tool_inventory": 1,
                          "skill_controls": 1, "session_compaction": 1, "saved_source": 1, "saved_timeline": 1,
-                         "acp_updates": 1}
+                         "acp_updates": 1, "input_receipts": 1}
                 writer.write((json.dumps(hello) + "\n").encode("utf-8"))
                 await asyncio.wait_for(writer.drain(), timeout=self._TRANSPORT_TIMEOUT)
                 await asyncio.wait_for(ready.wait(), timeout=self._TRANSPORT_TIMEOUT)
