@@ -1,4 +1,5 @@
 """Installed-wheel probes must cover data-only intake and a real independent-message owner turn."""
+import asyncio
 import runpy
 from pathlib import Path
 
@@ -31,11 +32,14 @@ async def test_sdk_session_retains_writer_between_calls_and_releases_on_dispose(
     directory = runtime_directory(coding_session.session_manager._dir)
     try:
         await coding_session.send_message('one actual turn')
-        assert coding_session.runtime is None and coding_session._sdk_controller is None
+        assert coding_session.runtime is None
+        controller = coding_session._sdk_controller
+        assert controller is not None and coding_session.children.goal_host.loop is controller._loop
         assert coding_session._lease is not None and coding_session._lease._fd>=0
         with pytest.raises(RuntimeError,match='owned'):
             SessionLease.acquire(directory,coding_session.session_id)
         coding_session.dispose()
+        await asyncio.wrap_future(controller.close())
         assert coding_session._lease is None
         another = SessionLease.acquire(directory,coding_session.session_id)
         another.close()

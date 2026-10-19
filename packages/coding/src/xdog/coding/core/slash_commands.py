@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from functools import lru_cache
@@ -101,6 +102,16 @@ async def execute_command(
 ) -> CommandResult:
     """Execute a slash command."""
     cmd = command.lower().strip()
+    synchronous_controls = {"readonly", "model", "thinking", "clear", "name", "resume", "new",
+                            "goto", "fork", "branch", "unload"}
+    requires_owner = cmd in synchronous_controls or (
+        cmd not in BUILTIN_COMMANDS and not cmd.startswith("ext-") and _load_skill(cmd) is not None)
+    controller = (session.runtime.controller if session.runtime is not None else session._sdk_controller
+                  ) if requires_owner else None
+    if controller is not None and not controller.owns_current_task:
+        async def owned() -> CommandResult:
+            return await execute_command(command, args, session)
+        return await asyncio.wrap_future(controller.control(owned, name="slash-command"))
     if cmd == 'login':
         from xdog.agent.extensions.provider_oauth_host import login_arguments
         cmd, args = 'extensions', 'auth ' + login_arguments(args)
@@ -113,8 +124,6 @@ async def execute_command(
         from xdog.coding.core.inbox_commands import inbox_command
         return await inbox_command(session, args)
     if cmd == 'tools':
-        import asyncio
-
         from xdog.agent.extensions.tool_inventory import page
         snapshot = await asyncio.to_thread(session._extension_tools)
         if snapshot is None:

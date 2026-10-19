@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
+from unittest.mock import patch
 
 import pytest
 from xdog.ai.types import AssistantMessage, DoneEvent, TextContent, ToolCall
@@ -93,20 +94,23 @@ class Model:
 
 
 @asynccontextmanager
-async def application(tmp_path, *, enabled=True):
+async def application(tmp_path, *, installed=True):
     model = Model()
-    config = ClawConfig(data_dir=str(tmp_path / "data"), goals_enabled=enabled)
+    config = ClawConfig(data_dir=str(tmp_path / "data"))
     app = Orchestrator(config, stream_fn=model, data_dir=tmp_path / "data")
     app.register_group(Group(id="main", workspace=str(tmp_path / "workspace")))
     runtime = app._runtimes["main"]
     runtime.workspace_dir.joinpath("result.txt").write_text("actual result")
-    try:
-        await app.start()
-        yield app, runtime, model
-    finally:
-        if model.worker_gate is not None:
-            model.worker_gate.set()
-        await app.stop()
+    from contextlib import nullcontext
+    absence = nullcontext() if installed else patch("xdog.claw.core.runtime.group.find_spec", return_value=None)
+    with absence:
+        try:
+            await app.start()
+            yield app, runtime, model
+        finally:
+            if model.worker_gate is not None:
+                model.worker_gate.set()
+            await app.stop()
 
 
 async def activate(app, group="main"):
@@ -134,9 +138,8 @@ async def submitted(host, session):
     return await s.status(goal.id)
 
 
-async def test_default_claw_is_an_ordinary_assistant_without_goal_storage_or_tool(tmp_path):
-    assert ClawConfig().goals_enabled is False
-    async with application(tmp_path, enabled=False) as (app, runtime, model):
+async def test_without_goal_package_claw_is_an_ordinary_assistant_without_goal_storage_or_tool(tmp_path):
+    async with application(tmp_path, installed=False) as (app, runtime, model):
         await activate(app)
         assert runtime.goal_host is None
         reference = runtime.skill_manager.load_skill("goals")
@@ -146,12 +149,6 @@ async def test_default_claw_is_an_ordinary_assistant_without_goal_storage_or_too
         assert all(tool.name != "goal" for _, context in model.calls for tool in context.tools)
         assert runtime.transcript_store.load_transcript(runtime.get_new_session_id())
         assert runtime.memory is not None
-
-
-@pytest.mark.parametrize("value", ["true", 1, None, []])
-def test_goal_enable_setting_is_a_strict_global_boolean(value):
-    with pytest.raises(ValueError, match="goals_enabled"):
-        ClawConfig(goals_enabled=value)
 
 
 async def test_actual_claw_worker_explicit_acceptance_independent_readonly_review_and_notices(tmp_path):
@@ -331,9 +328,27 @@ async def test_bound_reports_work_in_parent_readonly_without_granting_filesystem
 
 
 async def test_legacy_files_are_not_opened_by_disabled_ordinary_assistant(tmp_path):
-    async with application(tmp_path, enabled=False) as (app, runtime, _):
+    async with application(tmp_path, installed=False) as (app, runtime, _):
         old = runtime.data_dir / "groups/main/goals.json"
         original = b"not-even-valid-json; do not touch\n"
         old.write_bytes(original)
         await activate(app)
         assert old.read_bytes() == original and runtime.goal_host is None
+
+
+async def test_installed_goal_is_available_without_a_feature_flag_but_never_delegates_ordinary_chat(tmp_path):
+    model = Model()
+    app = Orchestrator(ClawConfig(data_dir=str(tmp_path / "data")), stream_fn=model, data_dir=tmp_path / "data")
+    app.register_group(Group(id="main", workspace=str(tmp_path / "workspace")))
+    runtime = app._runtimes["main"]
+    try:
+        await app.start()
+        assert runtime.skill_manager.load_skill("goals").packaged
+        await activate(app)
+        assert runtime.goal_host is not None
+        assert any(tool.name == "goal" for tool in runtime._active_session.agent.state.tools)
+        assert await runtime.goal_host.service.list() == ()
+        assert not runtime._active_session.children.supervisor.active
+        assert all(role == "parent" for role, _ in model.calls)
+    finally:
+        await app.stop()

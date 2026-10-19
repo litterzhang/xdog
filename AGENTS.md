@@ -94,11 +94,11 @@ The core invariant in `models.py` and `loader.py` is node-private typed ports co
 
 `core/agent_session.py` rebuilds the prompt and checks compaction before each turn, then adapts agent events to the selected UI mode. Session history, settings, summaries, and branches are persisted as JSON by `core/session_manager.py`. `core/sessions/` owns the single controller, writer lease, route ownership and separate durable automatically consumed inbox; TUI/SDK/ACP share that execution path, and offline ingress never constructs a second Agent. Project context discovery is non-recursive from the working directory: `AGENTS.md`, `AGENTS.md`, `.coding/INSTRUCTIONS.md`, and `.coding/instructions.md`, each capped at 64 KiB. Permissions belong in the coding client's pre-tool hook, not in the generic agent runtime. Preserve the default fail-closed behavior: read-only calls may run automatically, mutating calls require approval, and unattended execution may mutate only when `allow-all` was explicitly selected. Permission gates are not an OS sandbox.
 
-Coding optionally reuses `xdog-goal` through the `goals` extra and strict trusted
-**global-only** `goals_enabled` (default false). Lazy startup runs on the same
+Coding reuses optional `xdog-goal` through the `goals` extra. Installed package
+presence supplies the capability; there is no Goal enable setting. Startup runs on the same
 session owner, not import/TUI/ACP. CodingGoalHost binds exact inbox namespace,
 session/branch/workspace, existing supervised role children and original-ID durable
-intake; source labels grant no authority. SDK opt-in retains the same controller's
+intake; source labels grant no authority. SDK capability ownership retains the same controller's
 supported own-thread callback loop across awaits; callers dispose their session
 and teardown joins actual children/Goal commits before releasing that owner.
 Idle navigation retires the original capability without moving stored Goals.
@@ -161,9 +161,10 @@ No creator destination means not-required, not group broadcast; unavailable orig
 recipient remains known-not-sent/pending. Stop notifications separately; source stop
 still does not retract accepted reports. No old journal upgrade is performed.
 The broader assistant-core refactor remains in progress: Coding now adopts the
-standalone optional Goal; Claw has a group-owned opt-in adapter replacing its
-legacy Goal manager. Optional Claw packaging, shared extension UI and final
-feature-output streaming remain pending.
+standalone optional Goal; Claw has a group-owned optional adapter replacing its
+legacy Goal manager. Claw has optional goals/eyes/acp install extras and cold
+base/two-host evidence; shared extension UI and final feature-output streaming
+remain pending.
 Ordinary output receipts live in `<data_dir>/outputs/journal.sqlite3`: per-message
 send attempts distinguish delivered/pending/proven-not-sent/unknown independently
 from Agent execution. Unknown sends are never automatically replayed. Native
@@ -171,7 +172,7 @@ staged submissions retain original IDs/images over ACK loss; local editable
 unsent drafts remain process-memory state, not an implicit plaintext disk spool.
 See `docs/claw-assistant-core-requirements.json` for exact acceptance status.
 
-Eyes callbacks use thin ACP intake into the application-owned Core Inbox as canonical external input; optional Goal notices use the same application intake directly as canonical automatic inputs. Each group has one logical main Agent and one execution route; session files are context/history storage, never Goal ownership or event destinations. Both paths use the same GroupController and current AgentSession. A group runtime owns its workspace, tools, memory, prompt builder, transcript store, one active cached agent session and explicitly enabled capability bindings; Goal owns its separate domain storage. Transcripts are JSONL with a `sessions.json` index; `SessionManager` is a compatibility alias for `TranscriptStore`, not an LRU multi-session manager.
+Eyes callbacks use thin ACP intake into the application-owned Core Inbox as canonical external input; optional Goal notices use the same application intake directly as canonical automatic inputs. Each group has one logical main Agent and one execution route; session files are context/history storage, never Goal ownership or event destinations. Both paths use the same GroupController and current AgentSession. A group runtime owns its workspace, tools, memory, prompt builder, transcript store, one active cached agent session and optional capability bindings; Goal owns its separate domain storage. Transcripts are JSONL with a `sessions.json` index; `SessionManager` is a compatibility alias for `TranscriptStore`, not an LRU multi-session manager.
 
 Prompt construction intentionally separates a cacheable static prefix from mutable workspace, memory and environment content. Goal facts are queried through the optional capability, never a hardcoded per-turn summary. Compaction flushes durable memory, summarizes through the LLM, archives the transcript, then replaces older history. Memory uses vector+BM25 search when optional dependencies initialize and falls back to keyword search otherwise.
 
@@ -206,12 +207,13 @@ no permanent Eyes daemon or second Agent loop is started.
 See `docs/claw-eyes-scheduler-{plan.md,requirements.json}` for retired scheduler
 scope; `docs/claw-assistant-core-requirements.json` tracks the current refactor.
 
-Claw's optional `xdog-goal` capability requires strict global `goals_enabled: true`
-(default false). Enabled application startup opens only its data capability and
-recovers committed notifications; active Goals alone never cause model polling.
-Package presence automatically exposes the built-in `goals` skill through existing
-namespace discovery, independently of that flag; loading its body does not enable
-tools, storage or work. No skill copy/registration is needed.
+Claw's optional `xdog-goal` capability is available automatically when installed;
+there is no global/project/session Goal enable switch. Without the distribution,
+ordinary assistant use opens no Goal journal. Application startup opens installed
+Goal data and recovers committed notifications; active Goals alone never cause
+model polling. Package presence also exposes the built-in `goals` skill through
+existing namespace discovery; its body loads on demand without copying or manual
+registration. Availability is not user delegation and creates no Goal/worker.
 The adapter attaches parent tools to the existing active AgentSession and starts
 workers/reviewers only through its existing ChildSupervisor. Core ordinary turns,
 Gateway, ACP, prompt builder and native TUI contain no Goal lifecycle policy.
@@ -223,8 +225,9 @@ history/evidence/outbox. Its owner is stable group + canonical workspace + Core
 inbox namespace, unlike Coding's exact session/branch binding. Original worker
 references retain their actual transcript/branch/child identity; after rotation,
 terminal facts come from validated off-loop ChildStore reads, never an offline
-Agent or replay. `goals.json` is refused byte-preserving when enabled, without
-creating a substitute empty Goal journal; disabled ordinary chat does not read it.
+Agent or replay. `goals.json` is refused byte-preserving when the Goal package is installed,
+without creating a substitute empty Goal journal; package-absent ordinary chat
+does not read it.
 
 Only explicit `request_complete` creates independent review. Reports are proposals,
 not acceptance or completion; actual user input authorizes protected user changes.
@@ -234,7 +237,7 @@ notification cancellation and child cancellation are independent explicit action
 Unfinished Goals do not veto daily/idle context rotation; actual active children
 still hold generic context ownership. `/new` rotates chat context, not group scope.
 Shutdown settles admitted capability startup and actual children before releasing
-Goal storage. Shared extension UI and cold optional Claw packaging remain work in
+Goal storage. Shared extension UI and final acceptance remain work in
 progress; the old native Goal display is not retained as a fallback.
 
 Child supervision has no fixed runtime deadline, model-call/token lifetime budget,
@@ -303,15 +306,15 @@ models/codecs and GoalStore own private leased/versioned Goal history, reports,
 review snapshots, evidence artifacts and notification outbox. Owner/workspace is
 host-supplied, not tool JSON/provenance; wrong-owner/old-format/corrupt data is
 refused byte-preserving. Recovery interrupts started/unknown work, never starts
-an Agent or replays side effects. Workspace install/import enables no host/UI.
+an Agent or replays side effects. Package import starts no host/UI; real host ownership attaches an installed
+capability automatically without delegating work.
 GoalService uses small async host ports, explicit task acceptance and independent
 review only on request_complete. Bound role tools read original history; Goal-local
 no-follow evidence fingerprints reject stale completion. Skills and derived views
 do not activate execution. See docs/goal-kernel-verification.md for the real SDK
-Supervisor and cold Goal-only lifecycle evidence. Coding has an opt-in real host
+Supervisor and cold Goal-only lifecycle evidence. Coding has an optional real host
 adapter and cold installed lifecycle (docs/coding-goal-lifecycle-verification.md).
-Claw has the group-owned adapter and no legacy backend; cold optional Claw
-packaging and the shared extension UI remain pending.
+Claw has the group-owned adapter and no legacy backend; the shared extension UI and final acceptance remain pending.
 
 ### `xdog.tui` and `xdog.site`
 

@@ -5,8 +5,10 @@ Optional host-neutral Goal contracts and storage. Direct dependencies are
 not start a model, receiver, observer, worker or UI.
 
 This package is being implemented under the approved assistant-core design.
-The independent kernel precedes the explicit Claw/Coding adapter and shared UI
-cutover; it does not claim those hosts have already adopted this implementation.
+Claw and Coding reuse the same kernel through small host adapters. Shared UI
+cutover and final acceptance remain in progress. Package presence automatically
+provides their built-in skill and Goal capability without an enable setting;
+availability is not delegation to create a Goal or worker.
 No legacy Goal data is imported or upgraded. A host supplies an opaque owner and
 workspace; the package owns its private versioned storage and refuses a different
 owner, corruption, unsupported format or concurrent writer.
@@ -21,4 +23,4 @@ Packaged session-scoped `goals` skill and worker/reviewer roles describe the
 explicit workflow. Tool operation authority and readonly boundaries are supplied
 by the host; instruction text or source labels do not grant permissions.
 See `docs/goal-kernel-verification.md` in the repository for verification and
-remaining actual host/UI adoption work.
+remaining shared UI/final acceptance work.

@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import subprocess
 import sys
 
 import pytest
-from xdog.coding.config import GlobalConfig
 from xdog.goal.host import OperationContext
 from xdog.goal.models import Notice
 
@@ -17,7 +15,6 @@ from packages.coding.tests.test_goal_adapter import scripted
 
 
 def enabled(tmp_path, *, mode="ask"):
-    (tmp_path / "settings.json").write_text(json.dumps({"goals_enabled": True}))
     session, _ = create(tmp_path, mode)
     (tmp_path / "result.txt").write_text("actual output")
     contexts = []
@@ -36,15 +33,7 @@ async def dispose(session):
         await asyncio.wrap_future(controller.close())
 
 
-@pytest.mark.parametrize("value", ["true", 1, None, [], {}])
-def test_goal_enable_setting_rejects_coercion_instead_of_enabling_or_silently_defaulting(tmp_path, value):
-    path = tmp_path / "settings.json"
-    path.write_text(json.dumps({"goals_enabled": value}))
-    with pytest.raises(ValueError, match="goals_enabled"):
-        GlobalConfig.load(path)
-
-
-async def test_disabled_session_never_opens_goal_storage_or_imports_optional_package(tmp_path):
+async def test_absent_package_never_opens_goal_storage_or_imports_optional_package(tmp_path, monkeypatch):
     result = subprocess.run(
         [
             sys.executable,
@@ -56,9 +45,9 @@ async def test_disabled_session_never_opens_goal_storage_or_imports_optional_pac
         text=True,
     )
     assert result.returncode == 0, result.stderr
+    monkeypatch.setattr("xdog.coding.core.agent_session.find_spec", lambda name: None)
     session, _ = create(tmp_path)
     try:
-        assert session.settings.goals_enabled is False
         await session.send_message("ordinary")
         assert session.children.goal_host is None
         assert not (tmp_path / "goals").exists()
@@ -174,22 +163,6 @@ async def test_exact_session_notice_has_no_human_authority_even_if_source_and_te
         await dispose(session)
 
 
-async def test_project_or_saved_session_cannot_enable_optional_goal_capability(tmp_path):
-    from xdog.coding.core.settings_manager import SettingsManager
-
-    (tmp_path / ".coding").mkdir()
-    (tmp_path / ".coding/settings.json").write_text(json.dumps({"goals_enabled": True}))
-    session, _ = create(tmp_path)
-    session.settings = SettingsManager(global_path=tmp_path / "settings.json", project_dir=tmp_path)
-    session.settings.load_session_settings({"goals_enabled": True})
-    try:
-        await session.send_message("ordinary")
-        assert not session.settings.goals_enabled
-        assert session.children.goal_host is None and not (tmp_path / "goals").exists()
-    finally:
-        await dispose(session)
-
-
 async def test_shutdown_joins_actual_worker_before_callback_loop_exit_and_reopen_never_replays(tmp_path):
     import threading
 
@@ -278,5 +251,18 @@ async def test_optional_sdk_callback_owner_is_not_borrowed_from_an_ephemeral_cal
         host = session.children.goal_host
         assert host.loop is not asyncio.get_running_loop()
         assert session._sdk_controller._thread.is_alive()
+    finally:
+        await dispose(session)
+
+
+async def test_installed_goal_is_available_without_a_feature_flag_but_never_delegates_ordinary_chat(tmp_path):
+    session, _ = create(tmp_path)
+    try:
+        await session.send_message("ordinary")
+        host = session.children.goal_host
+        assert host is not None
+        assert any(tool.name == "goal" for tool in session.agent.state.tools)
+        assert await owned(session._sdk_controller, host.service.list) == ()
+        assert not session.children.supervisor.active
     finally:
         await dispose(session)

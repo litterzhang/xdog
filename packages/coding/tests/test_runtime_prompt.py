@@ -1,6 +1,7 @@
 """Runtime facts must reach the model, not just the native UI or saved settings."""
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 
 import pytest
@@ -59,8 +60,8 @@ async def test_real_turn_context_reflects_model_thinking_permission_changes(codi
     coding_session.permissions.set_mode('ask')
     await coding_session.send_message('First turn')
 
-    coding_session.set_model('copilot/second-model')
-    coding_session.set_thinking_level(None)
+    await asyncio.to_thread(coding_session.set_model, 'copilot/second-model')
+    await asyncio.to_thread(coding_session.set_thinking_level, None)
     coding_session.permissions.set_mode('deny')
     await coding_session.send_message('After switching')
 

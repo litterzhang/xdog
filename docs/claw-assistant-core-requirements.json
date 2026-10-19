@@ -15,7 +15,7 @@
     {
       "id": "CORE-01",
       "area": "product",
-      "requirement": "Goals 默认关闭；无 Goals/ACP/Eyes 时普通聊天、记忆、工具与历史独立完整",
+      "requirement": "Goal 包未安装时普通聊天/记忆/工具/历史完整，无 Goal/ACP/Eyes 依赖；包存在自动提供 built-in skill 与能力，无 Goal enable 开关，不自动委托任务",
       "status": "pending",
       "evidence": []
     },

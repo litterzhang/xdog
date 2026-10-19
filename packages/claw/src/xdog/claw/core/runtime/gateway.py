@@ -18,6 +18,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
+from importlib.util import find_spec
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -164,6 +165,12 @@ class GatewayServer:
 
     async def start(self) -> None:
         """Start the gateway: orchestrator + socket server."""
+        # Diagnose explicitly requested optional features before opening services.
+        if self._config.eyes_enabled and find_spec("xdog.eyes") is None:
+            raise RuntimeError("Eyes requires the optional package: install xdog-claw[eyes]")
+        if (self._config.acp_socket_path or self._config.eyes_enabled) and find_spec("acp") is None:
+            feature = "eyes" if self._config.eyes_enabled else "acp"
+            raise RuntimeError(f"ACP transport requires the optional SDK: install xdog-claw[{feature}]")
         logger.info("Starting claw gateway...")
         if self._stop_task is not None:
             if not self._stop_task.done():

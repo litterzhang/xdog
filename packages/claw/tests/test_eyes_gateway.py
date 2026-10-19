@@ -90,7 +90,7 @@ async def test_disabled_gateway_creates_neither_acp_nor_eyes(tmp_path, monkeypat
     try:
         assert gateway._observers is None and gateway._acp_server is None
         assert not (tmp_path / 'data' / 'acp').exists()
-        assert gateway._orchestrator._runtimes['main'].goal_host is None
+        assert await gateway._orchestrator._runtimes['main'].goal_host.service.list() == ()
     finally:
         await gateway.stop()
 

@@ -50,7 +50,9 @@ async def test_owner_activation_waits_for_setup_not_message_approval(coding_sess
         await asyncio.wrap_future(runtime.close())
 
 
-async def test_sdk_only_transient_owner_consumes_pending_with_its_human_message(coding_session):
+async def test_sdk_only_transient_owner_consumes_pending_with_its_human_message(coding_session, monkeypatch):
+    # This transient-owner contract is the package-absent path.
+    monkeypatch.setattr("xdog.coding.core.agent_session.find_spec", lambda name: None)
     store = seed(coding_session, 2)
     calls = []
     coding_session.agent.set_stream_fn(lambda model, context, options: calls.append(tuple(context.messages))
@@ -351,7 +353,8 @@ async def test_stopping_intake_prevents_new_claims_before_owner_resource_shutdow
 
 async def test_direct_sdk_prompt_activates_the_borrowed_owner(coding_session):
     assert await asyncio.wait_for(coding_session.send_message('human'), 1) is not None
-    assert coding_session._sdk_controller is None
+    assert coding_session._sdk_controller is not None
+    assert coding_session.children.goal_host.loop is coding_session._sdk_controller._loop
 
 
 async def test_duplicate_prompt_intake_joins_one_controller_attempt(coding_session):

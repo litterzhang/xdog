@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Current checkout, preserve unrelated changes; no user-service/data/provider access, old-format upgrade, worktree, push/merge/publish.
-- Strict global `goals_enabled=False`; loading/installing skills or a TUI/ACP callback never enables autonomy. Ordinary chat/memory/tools/history remain usable without Goal/Eyes/ACP packages configured or installed.
+- Updated user decision after Task1: remove `goals_enabled` from both hosts. Installed Goal automatically supplies capability and built-in skill; no package means ordinary chat/memory/tools/history without Goal storage. Package presence never delegates autonomy or starts workers. The completed Task1 below records its original flag-based acceptance; Task2 replaces that obsolete control.
 - Exactly one group execution owner and existing child tool loops. No Goal polling/planner/turn-end reviewer, second main Agent or unfinished-Goal context-rotation veto.
 - Parent readonly/MCP/extension gates unchanged; only actual bound context/report objects obtain their narrow data capability, never a tool-name exemption. Reviewer readonly is real.
 - Reports submitted != accepted task != completed Goal. Only explicit request_complete reviews; source/notification/worker cancellation stay explicit and separate.

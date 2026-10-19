@@ -114,7 +114,6 @@ class ClawConfig:
 
     # Explicit opt-in: only this gateway's managed time observers recover.
     eyes_enabled: bool = False
-    goals_enabled: bool = False
 
     # Gateway settings (flattened from gateway: section)
     max_concurrent_agents: int = 3
@@ -162,8 +161,6 @@ class ClawConfig:
         if self.extension_dir:
             root = Path(self.extension_dir).expanduser()
             object.__setattr__(self, "extension_dir", str(root if root.is_absolute() else get_config_dir() / root))
-        if type(self.goals_enabled) is not bool:
-            raise ToolConfigError('goals_enabled must be a boolean; invalid settings never enable autonomy')
         if type(self.eyes_enabled) is not bool:
             raise ToolConfigError('eyes_enabled must be a boolean; invalid settings never enable observation')
         if not isinstance(self.acp_socket_path, str) or (self.acp_socket_path and (

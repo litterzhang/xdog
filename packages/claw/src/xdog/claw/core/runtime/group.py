@@ -12,6 +12,7 @@ import logging
 import threading
 import time
 from dataclasses import replace
+from importlib.util import find_spec
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
@@ -100,7 +101,6 @@ class GroupRuntime:
         workspace_dir: Path | None = None,
         transcript_store: TranscriptStore | None = None,
         memory: MemoryManager | None = None,
-        goals_enabled: bool = False,
         skill_manager: SkillManager | None = None,
         flush_runner: FlushRunner | None = None,
         summarizer: Summarizer | None = None,
@@ -128,7 +128,6 @@ class GroupRuntime:
             data_dir / "groups" / group.id / "sessions", owner_group=group.id,
         )
         self.memory = memory
-        self.goals_enabled = goals_enabled
         self.goal_host: ClawGoalHost | None = None
         self.capability_tools: tuple[AgentTool, ...] = ()
         self._goal_start: asyncio.Task[None] | None = None
@@ -179,7 +178,6 @@ class GroupRuntime:
         extension_settings: dict[str, dict[str, Any]] | None = None,
         extension_allow_tools: tuple[str, ...] = (),
         child_presets: dict[str, Any] | None = None,
-        goals_enabled: bool = False,
     ) -> GroupRuntime:
         """Build a fully-initialized GroupRuntime from a Group config."""
         cfg = group.agent_config
@@ -219,7 +217,6 @@ class GroupRuntime:
             workspace_dir=ws,
             transcript_store=TranscriptStore(group_dir / "sessions", owner_group=group.id),
             memory=memory,
-            goals_enabled=goals_enabled,
             skill_manager=SkillManager(
                 shared_dir=data_dir / "skills",
                 group_dir=ws / "skills",
@@ -239,15 +236,20 @@ class GroupRuntime:
     def tools(self) -> list[AgentTool]:
         if self._tools is None:
             enabled = self._enabled_tools
-            if self.goals_enabled and enabled is not None:
+            if self.goal_available and enabled is not None:
                 enabled = tuple(name for name in enabled if name != "goal")
             self._tools = create_tools(
                 enabled=enabled, workspace_dir=self.workspace_dir, image_model=self.group.image_model,
             )
         return [*self._tools, *self.mcp.tools(), *self.capability_tools]
 
+    @property
+    def goal_available(self) -> bool:
+        """Installed capability, not a configuration or task-delegation switch."""
+        return find_spec("xdog.goal") is not None
+
     async def initialize_goals(self, inputs: InputService) -> None:
-        if not self.goals_enabled:
+        if not self.goal_available:
             return
         if self.goal_host is None:
             if self._goal_start is None:
@@ -256,10 +258,11 @@ class GroupRuntime:
                     self.goal_host = await ClawGoalHost.open(self, inputs)
                 self._goal_start = asyncio.create_task(start())
             from xdog.agent.async_work import wait_owned
+            opening = self._goal_start
             try:
-                await wait_owned(self._goal_start)
+                await wait_owned(opening)
             finally:
-                if self._goal_start.done():
+                if opening.done() and self._goal_start is opening:
                     self._goal_start = None
         if self._active_session is not None:
             assert self.goal_host is not None

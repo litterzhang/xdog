@@ -86,6 +86,10 @@ def main() -> None:
         key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"}
     }
     environment["UV_NO_PROJECT"] = "1"
+    environment["HOME"] = str(root / "home")
+    environment["XDG_CONFIG_HOME"] = str(root / "home" / ".config")
+    environment["CODEX_HOME"] = str(root / "home" / ".codex")
+    Path(environment["HOME"]).mkdir(mode=0o700)
     uv = shutil.which("uv")
     if uv is None:
         raise RuntimeError("uv is required for isolated artifact verification")

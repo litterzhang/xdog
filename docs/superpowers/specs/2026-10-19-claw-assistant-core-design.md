@@ -12,7 +12,7 @@ Goal UI 由同一个 Python 扩展提供，通用渲染在 `xdog.tui`，两宿�
 本设计把这些结论展开为可实现的协议与边界。下文的内部接口名、存储组织、配置及阶段划分是
 此次书面设计的具体建议，须随本文审核，不把此前口头确认视为这些细节已经获批。
 
-成功不是更换目录或增加抽象，而是：关闭 Goals 后助手仍完整；三类入口共享可信接收语义；
+成功不是更换目录或增加抽象，而是：未安装 Goal 包时助手仍完整；三类入口共享可信接收语义；
 执行状态没有多个权威所有者；Goal 实现在 Claw 和 Coding 中实际运行；取消、断线、崩溃及
 权限边界仍然可靠；主 TUI、ACP 和 Session 无 Goal 专用状态机。
 
@@ -67,12 +67,13 @@ Claw application: InputService -> GroupController -> AgentSession -> xdog.agent
 
 新增发行包 `xdog-goal` / namespace `xdog.goal`，仅直接依赖 `xdog-agent` 与标准库。
 不得 import Claw、Coding、TUI、Eyes、ACP 或 Flow。Agent 不反向依赖 Goal。
-Claw/Coding 各以显式 opt-in 的 `goals` extra 安装 Goal，并以 `goals_enabled` 启用业务，
-默认 false；展示扩展再通过现有显式 extensions 配置加载。缺依赖时启用失败，不静默回退。
-工作区/root 开发安装包含 Goal 供测试，但安装不等于自动启用。
+Claw/Coding 各以可选 `goals` extra 安装 Goal；包存在时自动提供能力，不再有 Goal 配置开关。
+展示扩展通过现有显式 extensions 配置加载。未安装包时普通助手完整可用，不创建 Goal 存储；
+已安装但数据/装配损坏应明确失败，不静默回退。工作区/root 开发安装包含 Goal 供测试。
 2026-10-19 用户补充：Goal 包存在时，与 Flow/Eyes 一样自动发现为 built-in skill，无需复制、
-单独安装或注册 skill，且不受 goals_enabled 控制。完整正文仍走现有按需加载机制；
-skill 可发现/加载与宿主工具/存储启用、实际用户任务委托是三个不同边界。
+单独安装或注册 skill。随后用户明确要求去掉 goals_enabled：两宿主仅根据包是否存在
+提供能力，不以全局/项目/会话设置控制。完整正文仍走现有按需加载机制；安装/skill 可用
+不等于实际任务委托。宿主拥有的数据恢复不会因为普通聊天而创建新的任务意图。
 现有 Eyes 的显式启用保持独立：普通提醒不依赖 Goal。
 
 不新建大而全的 service locator/event bus/plugin framework。应用入口按命令职责拆分，
@@ -204,7 +205,7 @@ Goal 的角色资料/工具说明经现有 Agent skills 与通用上下文贡献
 Goal 能力提供。业务可用性不依赖展示扩展：Session 不直接读取 GoalStore，也不在每轮硬编码
 GoalManager 摘要；关闭展示扩展不删除 Agent 可查询的 Goal 事实。
 
-Goals 默认不启用；安装或启用工具不等于用户委托长期工作。任务可以自然语言明确委托，
+默认没有自治任务；包已安装时 Goal 工具自动可用，但安装/工具可用不等于用户委托长期工作。任务可以自然语言明确委托，
 意图不明先询问。主 Agent 规划、分配、接受报告、等待和决定是否继续，不另设 planner。
 宿主验证实际用户输入才能授权 criteria 修改及释放用户暂停，来源标签不能授权。
 主 Agent 显式取消不再需要的观察/通知/worker；三个动作不能相互代替。
@@ -230,7 +231,9 @@ Claw 上下文轮换不改变 group 身份，Goal 视图由可选能力重建；
 
 ## 10. 一个 Goal Python 扩展，通用 UI 在 tui
 
-Goal wheel 包含 `extensions/goal-ui/extension.yaml` 和 `main.py`、skill 及 worker/reviewer 角色资料。
+Goal wheel 将包含 `extensions/goal_ui/extension.yaml` 和 `main.py`、skill 及 worker/reviewer 角色资料。
+实现对齐现有扩展标识符规则：ID/目录使用 goal_ui（而非示意拼写 goal-ui），查询命令
+使用现有 namespaced `ext-goal_ui-goals`，不覆盖 built-in skill 的 `/goals` 命令。
 同一扩展通过现有可信 worker 在两宿主运行，输出 bounded status/notice/命令结果，
 使用现有 input/select/confirm，不发送 Python renderer 或导入主 TUI。
 

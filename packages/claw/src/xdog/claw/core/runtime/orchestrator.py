@@ -116,7 +116,6 @@ class Orchestrator:
             extensions=self._config.extensions, extension_dir=self._config.extension_dir,
             extension_settings=self._config.extension_settings,
             extension_allow_tools=self._config.extension_allow_tools, child_presets=self._config.child_presets,
-            goals_enabled=self._config.goals_enabled,
         )
         self._runtimes[group.id] = runtime
 
@@ -397,7 +396,7 @@ class Orchestrator:
             session = runtime.get_or_create_session(allow_reset=input_alive is None)
             if admit is not None and not await admit(session.meta.session_id):
                 return None
-            if runtime.goals_enabled:
+            if runtime.goal_available:
                 await runtime.initialize_goals(await self.input_service())
             session.agent.set_tool_context({**session.agent.tool_context, '_eyes': runtime.observers,
                                             '_reply_reference': reply_reference})
@@ -1267,7 +1266,7 @@ class Orchestrator:
         for runtime in tuple(self._runtimes.values()):
             if self._inputs_stopping:
                 return
-            if runtime.goals_enabled:
+            if runtime.goal_available:
                 await runtime.initialize_goals(inputs)
                 if self._inputs_stopping:
                     return

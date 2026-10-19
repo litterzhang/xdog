@@ -52,13 +52,14 @@ async def test_host_read_only_blocks_actual_writes_and_explicit_release_keeps_po
         assert session.permissions.mode == mode and not session.access.state.read_only
         await session.send_message("write")
         assert (tmp_path / "target").exists() == (mode == "allow-all")
-        branch = session.create_branch()
+        branch = await asyncio.to_thread(session.create_branch)
         await execute_command("readonly", "on", session)
         # History navigation cannot release a live host read-only restriction.
-        assert session.restore_branch(branch) and session.access.state.read_only
-        session.access_control(False)
+        assert await asyncio.to_thread(session.restore_branch, branch)
+        assert session.access.state.read_only
+        await asyncio.to_thread(session.access_control, False)
         old = session.access
-        session.new_session()
+        await asyncio.to_thread(session.new_session)
         assert not session.access.state.read_only
         with pytest.raises(RuntimeError, match="closed"):
             old.set_read_only(False)
@@ -84,7 +85,7 @@ async def test_legacy_planning_restore_retains_material_and_restricts_until_expl
         assert session.session_data.legacy_plan == legacy
         await session.send_message('write')
         assert not (tmp_path / 'target').exists()
-        session.access_control(False)
+        await asyncio.to_thread(session.access_control, False)
         loaded = session.session_manager.load_session(target.session_id)
         assert not loaded.access['read_only'] and loaded.legacy_plan == legacy
         await session.send_message('write')

@@ -30,8 +30,9 @@ def test_agent_wheel_declares_bounded_optional_sdk_and_ships_protocol(artifacts)
         requirements=[Requirement(line) for line in metadata.get_all('Requires-Dist',[])]
         sdk=next(r for r in requirements if r.name=='agent-client-protocol')
         assert '0.12.1' in sdk.specifier and '0.13.0' not in sdk.specifier
-        assert sdk.marker.evaluate({'python_version':'3.14'})
-        assert not sdk.marker.evaluate({'python_version':'3.15'})
+        assert not sdk.marker.evaluate({'python_version':'3.14', 'extra':''})
+        assert sdk.marker.evaluate({'python_version':'3.14', 'extra':'acp'})
+        assert not sdk.marker.evaluate({'python_version':'3.15', 'extra':'acp'})
         assert any(n.endswith('/licenses/LICENSE') for n in names)
 
 

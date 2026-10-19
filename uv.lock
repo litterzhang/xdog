@@ -1989,7 +1989,6 @@ name = "xdog-agent"
 version = "2.4.2"
 source = { editable = "packages/agent" }
 dependencies = [
-    { name = "agent-client-protocol", marker = "python_full_version < '3.15'" },
     { name = "fastjsonschema" },
     { name = "httpx" },
     { name = "jsonschema" },
@@ -1998,9 +1997,14 @@ dependencies = [
     { name = "xdog-ai" },
 ]
 
+[package.optional-dependencies]
+acp = [
+    { name = "agent-client-protocol", marker = "python_full_version < '3.15'" },
+]
+
 [package.metadata]
 requires-dist = [
-    { name = "agent-client-protocol", marker = "python_full_version < '3.15'", specifier = ">=0.12.1,<0.13" },
+    { name = "agent-client-protocol", marker = "python_full_version < '3.15' and extra == 'acp'", specifier = ">=0.12.1,<0.13" },
     { name = "fastjsonschema" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "jsonschema", specifier = ">=4.18" },
@@ -2008,6 +2012,7 @@ requires-dist = [
     { name = "referencing", specifier = ">=0.30" },
     { name = "xdog-ai", editable = "packages/ai" },
 ]
+provides-extras = ["acp"]
 
 [[package]]
 name = "xdog-ai"
@@ -2044,7 +2049,6 @@ name = "xdog-claw"
 version = "2.4.2"
 source = { editable = "packages/claw" }
 dependencies = [
-    { name = "agent-client-protocol", marker = "python_full_version < '3.15'" },
     { name = "aiosqlite" },
     { name = "click" },
     { name = "httpx" },
@@ -2052,15 +2056,26 @@ dependencies = [
     { name = "qrcode" },
     { name = "xdog-agent" },
     { name = "xdog-ai", extra = ["openai"] },
-    { name = "xdog-eyes" },
     { name = "xdog-tui" },
 ]
 
 [package.optional-dependencies]
+acp = [
+    { name = "agent-client-protocol", marker = "python_full_version < '3.15'" },
+]
 all = [
+    { name = "agent-client-protocol", marker = "python_full_version < '3.15'" },
     { name = "rank-bm25" },
     { name = "sentence-transformers" },
     { name = "sqlite-vec" },
+    { name = "xdog-eyes" },
+    { name = "xdog-goal" },
+]
+eyes = [
+    { name = "xdog-eyes" },
+]
+goals = [
+    { name = "xdog-goal" },
 ]
 search = [
     { name = "rank-bm25" },
@@ -2070,7 +2085,8 @@ search = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-client-protocol", marker = "python_full_version < '3.15'", specifier = ">=0.12.1,<0.13" },
+    { name = "agent-client-protocol", marker = "python_full_version < '3.15' and extra == 'acp'", specifier = ">=0.12.1,<0.13" },
+    { name = "agent-client-protocol", marker = "python_full_version < '3.15' and extra == 'all'", specifier = ">=0.12.1,<0.13" },
     { name = "aiosqlite", specifier = ">=0.20.0" },
     { name = "click", specifier = ">=8.1.0" },
     { name = "httpx", specifier = ">=0.27" },
@@ -2084,10 +2100,13 @@ requires-dist = [
     { name = "sqlite-vec", marker = "extra == 'search'", specifier = ">=0.1.1" },
     { name = "xdog-agent", editable = "packages/agent" },
     { name = "xdog-ai", extras = ["openai"], editable = "packages/ai" },
-    { name = "xdog-eyes", editable = "packages/eyes" },
+    { name = "xdog-eyes", marker = "extra == 'all'", editable = "packages/eyes" },
+    { name = "xdog-eyes", marker = "extra == 'eyes'", editable = "packages/eyes" },
+    { name = "xdog-goal", marker = "extra == 'all'", editable = "packages/goal" },
+    { name = "xdog-goal", marker = "extra == 'goals'", editable = "packages/goal" },
     { name = "xdog-tui", editable = "packages/tui" },
 ]
-provides-extras = ["search", "all"]
+provides-extras = ["goals", "eyes", "acp", "search", "all"]
 
 [[package]]
 name = "xdog-coding"

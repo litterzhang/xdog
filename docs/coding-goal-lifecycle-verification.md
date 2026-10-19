@@ -1,5 +1,11 @@
 # Coding optional Goal lifecycle — actual host and wheel verification
 
+> Historical lifecycle milestone at736705c. The user subsequently removed the
+> Goal enable setting: installed package presence now supplies the capability
+> automatically in both hosts. See `docs/coding-goals.md` and
+> `docs/claw-goal-cutover-verification.md` for the current boundary and evidence.
+> Counts below remain the original milestone snapshot, not final branch results.
+
 Date: 2026-10-19. Coding adoption milestone, not whole assistant-core completion.
 
 ## Delivered

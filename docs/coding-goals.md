@@ -1,26 +1,23 @@
 # Optional Goals in Coding
 
-The assistant-core development branch provides a `goals` install extra and a
-strict global `goals_enabled` boolean. This capability is not enabled by merely
-installing/importing Coding or Goal, loading a skill, opening a TUI, or receiving
-an ACP callback. It does not turn ordinary requests into long-term delegation.
-These changes are local development work, not a published release.
+Coding reuses the optional `xdog-goal` distribution through its `goals` extra:
 
-In Coding's trusted global settings (`$XDG_CONFIG_HOME/xdog/coding/settings.json`,
-or `$CODING_DIR/settings.json`), opt in explicitly:
-
-```json
-{"goals_enabled": true}
+```bash
+pip install 'xdog-coding[goals]'
 ```
 
-The Goal distribution must also be installed (the Coding `goals` extra declares
-that optional dependency). Strings/numbers/null are rejected rather than coerced;
-project settings and saved session JSON cannot enable the capability. The shipped
-session-scoped `goals` skill is automatically discovered whenever the package is
-installed, just like Flow/Eyes, independently of `goals_enabled`. No copying or
-manual registration is needed; the normal skill mechanism loads its full body
-on demand. It describes the explicit workflow. Loading instructions
-is not authorization to create a Goal or to run tools.
+There is **no Goal enable setting**. If the package is installed, its built-in
+`goals` skill is automatically discovered like Flow/Eyes and the actual session
+owner attaches the Goal tool/data capability. No copying, registration, project
+setting or saved-session toggle is needed. Without the package, ordinary Coding
+chat/tools/history work without importing Goal or opening its journal.
+
+The existing skill mechanism loads full session-scoped instructions on demand.
+Installation, skill loading and tool availability are not user delegation to start
+a Goal, worker or independent reviewer. Normal chat never silently becomes a Goal.
+The same session controller owns initialization, committed-notice recovery and
+teardown; import or opening a UI/ACP ingress does not create another owner.
+These changes are local development work, not a published release.
 
 ## Execution and storage
 
@@ -75,3 +72,9 @@ user service, real credentials or receiver is used.
 Claw's equivalent adapter/legacy Goal removal, shared read-only extension views,
 same packaged Goal Python UI extension and final architecture acceptance remain
 separate required milestones of this refactor; this document does not claim them.
+
+Synchronous session-control methods called from a live non-owner async event loop
+reject rather than block that loop behind admitted work. Submit an owner control
+or use `await asyncio.to_thread(session.restore_branch, branch_id)` as appropriate;
+this does not create another Agent/controller. Shutdown/disposal still waits for
+the existing controller, children and actual Goal commits to settle.

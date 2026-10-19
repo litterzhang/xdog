@@ -1,11 +1,33 @@
 """Confirmed independent-review defects: public adapters must respect final owner state."""
 import asyncio
+import threading
 
 import pytest
 from xdog.ai.types import AssistantMessage, TextContent, UserMessage
 from xdog.ai.utils.event_stream import EventStream
 
 from packages.coding.tests.batch_helpers import single_input_execute
+
+
+class ThreadSignal:
+    """Test gate usable by the caller loop and the actual SDK owner loop.
+
+    asyncio.Event is loop-owned; setting it from another thread does not wake
+    that loop. Poll a real threading.Event without a leaked blocking executor.
+    """
+    def __init__(self):
+        self._event = threading.Event()
+
+    def set(self):
+        self._event.set()
+
+    def is_set(self):
+        return self._event.is_set()
+
+    async def wait(self):
+        while not self._event.is_set():
+            await asyncio.sleep(.001)
+        return True
 
 
 def answer(session,text='NEW ANSWER'):
@@ -116,13 +138,14 @@ async def test_sdk_failed_status_without_exception_cause_is_not_success(coding_s
 async def test_sdk_only_navigation_cannot_mutate_branch_while_admitted_turn_is_preparing(coding_session,monkeypatch):
     target=coding_session.create_branch(label='saved')
     original_branch=coding_session.session_data.active_branch
-    entered,release=asyncio.Event(),asyncio.Event()
+    entered,release=ThreadSignal(),threading.Event()
+    caller_loop=asyncio.get_running_loop()
     original=coding_session.initialize_extensions
     executed=[]
 
     async def initialize():
-        entered.set()
-        await release.wait()
+        caller_loop.call_soon_threadsafe(entered.set)
+        await asyncio.to_thread(release.wait)
         await original()
 
     def model(*args):
@@ -132,7 +155,7 @@ async def test_sdk_only_navigation_cannot_mutate_branch_while_admitted_turn_is_p
     monkeypatch.setattr(coding_session,'initialize_extensions',initialize)
     coding_session.agent.set_stream_fn(model)
     first=asyncio.create_task(coding_session.send_message('first',input_origin='system'))
-    second=None
+    second=navigation=None
     try:
         await asyncio.wait_for(entered.wait(),3)
         controller=coding_session._sdk_controller
@@ -140,27 +163,35 @@ async def test_sdk_only_navigation_cannot_mutate_branch_while_admitted_turn_is_p
         async with asyncio.timeout(3):
             while len(controller.store.records())<2:
                 await asyncio.sleep(0.01)
-        with pytest.raises(RuntimeError,match='owner|control'):
-            coding_session.restore_branch(target)
+        async def navigate_in_foreign_loop():
+            with pytest.raises(RuntimeError,match='owner|control'):
+                coding_session.restore_branch(target)
+        # Exercise a running non-owner event loop without deadlocking the test
+        # runner itself if synchronous control incorrectly blocks that loop.
+        navigation=asyncio.create_task(asyncio.to_thread(lambda:asyncio.run(navigate_in_foreign_loop())))
+        await asyncio.sleep(.05)
+        assert navigation.done(), 'Synchronous controls must reject a live non-owner event loop'
+        await navigation
         release.set()
         await asyncio.gather(first,second)
         assert executed==[original_branch,original_branch]
         assert all(r.branch_id==original_branch for r in controller.store.records())
     finally:
         release.set()
-        await asyncio.gather(*(t for t in (first,second) if t is not None),return_exceptions=True)
+        await asyncio.gather(*(t for t in (first,second,navigation) if t is not None),return_exceptions=True)
 
 
 async def test_sdk_only_threaded_navigation_fences_old_queued_input(coding_session,monkeypatch):
     target=coding_session.create_branch(label='saved')
     before=coding_session.session_data.active_branch
-    entered,release=asyncio.Event(),asyncio.Event()
+    entered,release=ThreadSignal(),threading.Event()
+    caller_loop=asyncio.get_running_loop()
     original=coding_session.initialize_extensions
     executed=[]
 
     async def initialize():
-        entered.set()
-        await release.wait()
+        caller_loop.call_soon_threadsafe(entered.set)
+        await asyncio.to_thread(release.wait)
         await original()
 
     def model(*args):
@@ -206,7 +237,7 @@ async def test_public_compact_waits_for_owner_preparation_reservation(coding_ses
 
     runtime=SessionRuntime(coding_session,bound=False)
     runtime.start()
-    entered,release=asyncio.Event(),asyncio.Event()
+    entered,release=ThreadSignal(),ThreadSignal()
     compacted=[]
 
     async def prepare(value):
@@ -244,7 +275,7 @@ async def test_public_compact_cannot_write_after_owner_closes_and_releases_lease
 
     seed_compaction(coding_session)
     original=coding_session.session_manager._session_path(coding_session.session_id).read_bytes()
-    entered,release,cleaning,settle=asyncio.Event(),asyncio.Event(),asyncio.Event(),asyncio.Event()
+    entered,release,cleaning,settle=ThreadSignal(),ThreadSignal(),ThreadSignal(),ThreadSignal()
 
     def stream(*args):
         future=asyncio.get_running_loop().create_future()
@@ -299,7 +330,7 @@ async def test_public_compact_cannot_write_after_owner_closes_and_releases_lease
 
 
 async def test_enabling_runtime_cannot_replace_an_active_sdk_owner(coding_session,monkeypatch):
-    entered,release=asyncio.Event(),asyncio.Event()
+    entered,release=ThreadSignal(),ThreadSignal()
     original=coding_session.initialize_extensions
 
     async def initialize():

@@ -25,11 +25,13 @@ def _toml(path):
     return tomllib.loads((REPO / path).read_text())
 
 
-def test_claw_requires_eyes_and_eyes_owns_bounded_croniter():
+def test_claw_optional_eyes_and_eyes_owns_bounded_croniter():
     claw = _toml("packages/claw/pyproject.toml")["project"]
     eyes = _toml("packages/eyes/pyproject.toml")["project"]
     requirements = [Requirement(value) for value in claw["dependencies"]]
-    requirement = next(value for value in requirements if value.name == "xdog-eyes")
+    assert not {"xdog-eyes", "xdog-goal", "agent-client-protocol"} & {r.name for r in requirements}
+    requirement = next(Requirement(value) for value in claw["optional-dependencies"]["eyes"]
+                       if Requirement(value).name == "xdog-eyes")
     assert str(requirement.specifier) == ">=2.4.2"
     assert Version(eyes["version"]) in requirement.specifier
     assert requirement.marker is None and not requirement.extras
@@ -45,8 +47,11 @@ def test_claw_requires_eyes_and_eyes_owns_bounded_croniter():
 def test_editable_lock_records_eyes_edge_and_no_direct_claw_croniter():
     packages = {value["name"]: value for value in _toml("uv.lock")["package"]}
     claw = packages["xdog-claw"]
-    assert {"name": "xdog-eyes"} in claw["dependencies"]
-    assert {"name": "xdog-eyes", "editable": "packages/eyes"} in claw["metadata"]["requires-dist"]
+    assert {"name": "xdog-eyes"} not in claw["dependencies"]
+    assert {"name": "xdog-eyes"} in claw["optional-dependencies"]["eyes"]
+    for extra in ("eyes", "all"):
+        assert {"name": "xdog-eyes", "marker": f"extra == '{extra}'",
+                "editable": "packages/eyes"} in claw["metadata"]["requires-dist"]
     edges = (
         claw["dependencies"] + claw["metadata"]["requires-dist"]
         + [edge for extra in claw["optional-dependencies"].values() for edge in extra]
@@ -85,7 +90,7 @@ def artifacts(tmp_path_factory):
 
 
 @pytest.mark.parametrize("kind", ["wheel", "sdist"])
-def test_built_claw_metadata_requires_eyes_without_direct_croniter(artifacts, kind):
+def test_built_claw_metadata_optional_eyes_without_direct_croniter(artifacts, kind):
     if kind == "wheel":
         with zipfile.ZipFile(next(artifacts.glob("xdog_claw-*.whl"))) as archive:
             name = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
@@ -98,10 +103,12 @@ def test_built_claw_metadata_requires_eyes_without_direct_croniter(artifacts, ki
             content = stream.read()
     metadata = email.message_from_bytes(content)
     requirements = [Requirement(value) for value in metadata.get_all("Requires-Dist", [])]
-    eyes = next(value for value in requirements if value.name == "xdog-eyes")
-    assert str(eyes.specifier) == ">=2.4.2" and eyes.marker is None
+    eyes = [value for value in requirements if value.name == "xdog-eyes"]
+    assert eyes and all(str(value.specifier) == ">=2.4.2" and value.marker is not None for value in eyes)
+    for extra, expected in (("", False), ("search", False), ("eyes", True), ("all", True)):
+        assert any(value.marker.evaluate({"extra": extra}) for value in eyes) is expected
     assert not any(value.name == "croniter" for value in requirements)
-    assert set(metadata.get_all("Provides-Extra", [])) == {"search", "all"}
+    assert set(metadata.get_all("Provides-Extra", [])) == {"search", "goals", "eyes", "acp", "all"}
     assert "group-scoped `eyes` tool" in metadata.get_payload()
 
 

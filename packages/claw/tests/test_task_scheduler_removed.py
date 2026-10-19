@@ -99,7 +99,7 @@ async def test_gateway_never_reads_imports_or_modifies_old_scheduled_tasks(tmp_p
             gateway = GatewayServer(config)
             try:
                 await gateway.start()
-                assert gateway._orchestrator._runtimes['main'].goal_host is None
+                assert await gateway._orchestrator._runtimes['main'].goal_host.service.list() == ()
                 assert not hasattr(gateway._orchestrator, 'scheduler')
                 if enabled:
                     service = gateway._observers

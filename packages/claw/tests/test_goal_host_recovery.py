@@ -71,7 +71,7 @@ async def test_legacy_goal_truth_is_refused_byte_preserving_without_empty_replac
 
     model = Model()
     app = Orchestrator(
-        ClawConfig(data_dir=str(tmp_path / "data"), goals_enabled=True), stream_fn=model, data_dir=tmp_path / "data"
+        ClawConfig(data_dir=str(tmp_path / "data")), stream_fn=model, data_dir=tmp_path / "data"
     )
     app.register_group(Group(id="main", workspace=str(tmp_path / "workspace")))
     legacy = tmp_path / "data/groups/main/goals.json"
@@ -168,7 +168,7 @@ async def test_relative_configured_workspace_binds_canonical_group_goal_owner(tm
     from packages.claw.tests.test_goal_host import Model
 
     workspace = tmp_path / "relative-workspace"
-    config = ClawConfig(data_dir=str(tmp_path / "data"), goals_enabled=True)
+    config = ClawConfig(data_dir=str(tmp_path / "data"))
     app = Orchestrator(config, stream_fn=Model(), data_dir=tmp_path / "data")
     app.register_group(Group(id="main", workspace=os.path.relpath(workspace, Path.cwd())))
     try:
@@ -182,7 +182,7 @@ async def test_relative_configured_workspace_binds_canonical_group_goal_owner(tm
         await app.stop()
 
 
-async def test_enabled_application_owner_opens_capability_without_constructing_or_polling_agent(tmp_path):
+async def test_installed_application_owner_opens_capability_without_constructing_or_polling_agent(tmp_path):
     async with application(tmp_path) as (app, runtime, model):
         assert runtime.goal_host is not None
         assert runtime._active_session is None and not model.calls
@@ -248,7 +248,7 @@ async def test_shutdown_joins_admitted_capability_open_before_releasing_goal_lea
     monkeypatch.setattr(GoalStore, "open", delayed)
     model = Model()
     app = Orchestrator(
-        ClawConfig(data_dir=str(tmp_path / "data"), goals_enabled=True), stream_fn=model, data_dir=tmp_path / "data"
+        ClawConfig(data_dir=str(tmp_path / "data")), stream_fn=model, data_dir=tmp_path / "data"
     )
     for group_id in group_ids:
         app.register_group(Group(id=group_id, workspace=str(tmp_path / group_id)))

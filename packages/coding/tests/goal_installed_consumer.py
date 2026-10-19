@@ -92,7 +92,6 @@ async def main():
     assert not names.intersection({"xdog-claw", "xdog-eyes", "xdog-flow", "xdog-site"})
     root = Path.cwd()
     base_only = "--base-only" in sys.argv
-    root.joinpath("settings.json").write_text(json.dumps({"goals_enabled": not base_only}))
     root.joinpath("result.txt").write_text("real installed result")
     store = SessionManager(root / "sessions")
     skills = SkillManager(root / "not-created-skills")

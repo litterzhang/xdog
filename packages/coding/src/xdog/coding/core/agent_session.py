@@ -10,6 +10,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from functools import wraps
+from importlib.util import find_spec
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar
 
@@ -81,11 +82,14 @@ def _idle_change(method: Callable[Concatenate["AgentSession", P], R]) -> Callabl
             async def owned() -> R:
                 return wrapped(self, *args, **kwargs)
             try:
-                same_loop = asyncio.get_running_loop() is controller._loop
+                asyncio.get_running_loop()
             except RuntimeError:
-                same_loop = False
-            if same_loop:
-                raise RuntimeError("Session controls must be submitted to the session owner")
+                pass
+            else:
+                # A synchronous wait would block this caller's loop, which may
+                # own the admitted producer's completion/cancellation signal.
+                raise RuntimeError("Session controls must be submitted to the session owner; "
+                                   "use an owner operation or asyncio.to_thread from async callers")
             borrowed = runtime is None
             if borrowed:
                 with self._sdk_lock:
@@ -387,8 +391,8 @@ class AgentSession:
             await self._sync_extension_tools()
 
     async def initialize_goals(self) -> None:
-        """Explicit global opt-in on the existing session execution owner only."""
-        if not self.settings.goals_enabled:
+        """Attach an installed capability on the existing session execution owner."""
+        if find_spec("xdog.goal") is None:
             return
         await self._settle_retired_goals()
         if self.children.goal_host is not None:
@@ -717,7 +721,7 @@ class AgentSession:
                         # Optional callback capabilities outlive an individual
                         # SDK await/asyncio.run; retain the one controller's own
                         # supported loop, never a second controller or daemon.
-                        controller.start(own_thread=self.settings.goals_enabled)
+                        controller.start(own_thread=find_spec("xdog.goal") is not None)
                         self._sdk_controller = controller
                     self._sdk_users += 1
                     return self._sdk_controller, True

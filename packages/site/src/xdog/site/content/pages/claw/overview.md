@@ -17,7 +17,8 @@ belong to `xdog.agent`; Claw's group/session adapters are internal application c
 
 ## Highlights
 
-- Optional Goal autonomy is disabled by default. When explicitly delegated,
+- Optional Goal tools/skill are available when the package is installed. No task is
+  created automatically. When explicitly delegated,
   the group main Agent plans, assigns, waits for and accepts task work itself;
   there is no mandatory automatic planner or second main-Agent loop.
 - Dedicated task workers write host-bound attempt reports. `submitted` is not task

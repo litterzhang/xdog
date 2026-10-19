@@ -146,13 +146,16 @@ acceptance of this decision. Current status is tracked in
 
 ## Optional group-owned Goals
 
-Claw is a long-term personal assistant; task autonomy is optional. Goals default
-**off**. In this development branch, explicitly install `xdog-goal` and set the
-trusted global YAML flag `goals_enabled: true` to enable its tools. Loading a
-skill, opening a TUI or receiving a callback does not create a Goal.
-The installed package automatically contributes the built-in `goals` skill,
-just like Flow/Eyes, even while `goals_enabled` is false. No skill copying or
-registration is needed; the existing skill mechanism loads its body on demand.
+Claw is a long-term personal assistant; task autonomy is optional. Install the
+optional distribution with `pip install 'xdog-claw[goals]'`. Package presence
+provides the Goal capability automatically; there is **no Goal enable setting**.
+The built-in `goals` skill is discovered just like Flow/Eyes, without copying or
+registration, and its full body loads through the existing skill mechanism.
+Without the package, ordinary chat/memory/tools/history open no Goal storage.
+
+Availability is not delegation: ordinary conversation, loading a skill, opening
+a TUI or receiving a callback does not create a Goal or worker. An explicit user
+outcome is still required before the Agent creates a contract.
 
 The same independent GoalService is used by Coding and Claw. Goal owns its private
 leased journal at `<data_dir>/groups/<id>/goals/journal.sqlite3`; Claw owns ordinary

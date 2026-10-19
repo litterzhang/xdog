@@ -21,16 +21,6 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
 
-class InvalidGoalsSetting(ValueError):
-    """An invalid optional feature flag cannot become an implicit enable/default."""
-
-
-def validate_goals_enabled(value: object) -> bool:
-    if type(value) is not bool:
-        raise InvalidGoalsSetting('goals_enabled must be a strict boolean')
-    return value
-
-
 class InvalidBatchLimit(ValueError):
     """An explicit malformed owner setting must not fall back silently."""
 
@@ -196,13 +186,6 @@ class PlatformInfo:
 class GlobalConfig(BaseModel):
     """Top-level configuration loaded from settings.json."""
 
-    goals_enabled: bool = False
-
-    @field_validator('goals_enabled', mode='before')
-    @classmethod
-    def _goals_enabled(cls, value: object) -> bool:
-        return validate_goals_enabled(value)
-
     max_messages_per_turn: int = 10
 
     @field_validator('max_messages_per_turn', mode='before')
@@ -230,12 +213,10 @@ class GlobalConfig(BaseModel):
             return cls()
         try:
             raw = json.loads(target.read_text(encoding="utf-8"))
-            if isinstance(raw, dict) and 'goals_enabled' in raw:
-                validate_goals_enabled(raw['goals_enabled'])
             if isinstance(raw, dict) and 'max_messages_per_turn' in raw:
                 validate_max_messages_per_turn(raw['max_messages_per_turn'])
             return cls.model_validate(raw)
-        except (InvalidBatchLimit, InvalidGoalsSetting):
+        except InvalidBatchLimit:
             raise
         except Exception:
             return cls()

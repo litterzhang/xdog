@@ -97,8 +97,8 @@ interrupted side effects are not automatically replayed. Coding branching is unc
 
 ## Optional Goal tool and roles
 
-Goals default disabled; an explicit trusted global `goals_enabled: true` and the
-optional Goal distribution enable the capability, not automatic delegation. The
+Installing the optional Goal distribution makes the capability and built-in skill
+available automatically, with no enable setting. Availability is not delegation. The
 same `xdog-goal` service/skill is reused by Coding. Parent actions include create,
 list/status, add_task, assign, accept_task, revise, wait/pause/resume, abandon,
 cancel_task, cancel_notifications and request_complete. Workers have separately

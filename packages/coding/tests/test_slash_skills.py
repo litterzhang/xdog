@@ -23,6 +23,8 @@ class FakeSession:
     """Just the surface the skill commands touch."""
 
     def __init__(self) -> None:
+        self.runtime = None
+        self._sdk_controller = None
         self.active_skills: frozenset[str] = frozenset()
         self.rebuilds = 0
 
