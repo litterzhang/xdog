@@ -12,6 +12,7 @@ import datetime
 import json
 import os
 import re
+import stat
 import tempfile
 import threading
 import uuid
@@ -192,14 +193,52 @@ class TranscriptStore:
                     os.unlink(temporary)
 
     def _load_index(self) -> dict[str, dict[str, Any]]:
-        if self._index_file.exists():
-            try:
-                with open(self._index_file, "r", encoding="utf-8") as f:
-                    loaded: dict[str, dict[str, Any]] = json.load(f)
-                    return loaded if isinstance(loaded, dict) else {}
-            except (json.JSONDecodeError, OSError, TypeError):
-                pass
-        return {}
+        def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("Duplicate current index field")
+                result[key] = value
+            return result
+
+        try:
+            descriptor = os.open(self._index_file, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                                 | getattr(os, "O_NONBLOCK", 0))
+        except FileNotFoundError:
+            return {}  # Genuine absence is not a malformed or unreadable existing owner.
+        except OSError as exc:
+            raise ValueError("Current session index is unavailable; original data retained") from exc
+        try:
+            with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    raise ValueError("Current index is not a regular file")
+                loaded = json.load(stream, object_pairs_hook=unique)
+            if not isinstance(loaded, dict):
+                raise ValueError("Invalid current index object")
+            sessions: set[str] = set()
+            for group, row in loaded.items():
+                if (not isinstance(group, str) or not group.strip() or "\x00" in group
+                        or len(group.encode()) > 256 or not isinstance(row, dict)
+                        or row.get("group_id") != group):
+                    raise ValueError("Invalid current index group owner")
+                identifier = row.get("session_id")
+                if (not isinstance(identifier, str)
+                        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", identifier) is None):
+                    raise ValueError("Invalid current index session owner")
+                if identifier in sessions:
+                    raise ValueError("Current index session file has multiple group owners")
+                sessions.add(identifier)
+                for key in ("created_at", "last_active"):
+                    value = row.get(key)
+                    if not isinstance(value, str):
+                        raise ValueError("Invalid current index timestamp")
+                    datetime.datetime.fromisoformat(value)
+                count = row.get("turn_count", 0)
+                if type(count) is not int or count < 0 or not isinstance(row.get("label", ""), str):
+                    raise ValueError("Invalid current index metadata")
+            return loaded
+        except (ValueError, TypeError, OSError) as exc:
+            raise ValueError("Invalid current session index; original data retained") from exc
 
     def _atomic(self, path: Path, value: Any, *, jsonl: bool = False,
                 before_replace: Callable[[], None] | None = None) -> None:

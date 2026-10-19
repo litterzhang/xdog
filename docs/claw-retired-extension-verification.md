@@ -1,6 +1,6 @@
 # Retired extension ownership and actual close settlement
 
-Date: 2026-10-19. This is a source-runtime milestone, not final acceptance of the
+Date: 2026-10-19. Milestone through977eabd. This is not final acceptance of the
 assistant-core objective or proof of rebuilt final wheels.
 
 ## Findings and changes

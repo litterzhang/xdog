@@ -36,7 +36,7 @@ the one review is deferred until known required implementation gaps are closed.
 All three have observed behavioral RED and GREEN, actual stdio/atomic persistence
 or weakref/context-rotation proofs, not fake backend/store/close replacements.
 
-## Confirmed open findings — no completion claim
+## Acceptance findings — source fixes and still-open obligations
 
 ### F-01 — ordinary Claw persistence still blocks its event-loop owner
 
@@ -56,7 +56,7 @@ history or execution receipts publish, and preserve cancellation/no-replay/owner
 fences. Do not solve this by moving Agent execution to a second loop or by merely
 wrapping the entire mutable Session in a worker.
 
-### F-02 — corrupt authoritative active index can be ignored and overwritten
+### F-02 — corrupt authoritative active index: source fix verified
 
 `TranscriptStore._load_index` catches malformed JSON/IO errors and returns an
 empty index. A fresh private fixture seeded with malformed `sessions.json` was
@@ -65,11 +65,25 @@ original bytes**. Actual receipt:
 `/data/t.Vy5SaQ/claw-active-index-corruption-probe-red.log`, fixture root
 `/data/t.Vy5SaQ/claw-active-index-probe-x9v8ez_h`.
 
-Required next work: distinguish genuine absence from unreadable/corrupt/invalid
-current-owner data, reject fail-closed before publication or recovery mutations,
-and preserve original files. Derived historical catalog reconstruction must not
-silently replace authoritative current bindings. No old-format upgrade, migration,
-user-file conversion or automatic repair is authorized.
+The source fix distinguishes true absence from unreadable/corrupt/invalid data,
+uses a no-follow/nonblocking regular-file read, rejects duplicate JSON keys and
+invalid group-key/session/basic metadata bindings, and refuses two groups sharing
+the same current session file. No original bytes are replaced. Native shared
+indexes with distinct sessions remain valid: `owner_group` is only the existing
+uncatalogued historical archive recovery hint, not a new authorization flag.
+There is no repair/migration/conversion or new format compatibility layer.
+
+Tracked integrity cases:13 behavioral negatives plus the native positive, with
+actual original-directory byte snapshots and real normal/dangling symlinks.
+The first proposed loader overinterpreted the historical archive hint and failed
+an existing valid shared-index test; that restriction was removed, preserving the
+positive. The real cross-group session-file alias then failed its own RED before
+adding uniqueness validation. Existing related catalog/access/navigation/name
+suites plus the new tests:61 passed6.27s. Fresh all9:6890 passed/34 skipped,
+169.59s (`claw-active-index-root9.log`); strict9/Ruff/Flow/lock/diff are recorded
+by the current ledger. The final whole-objective current-pointer/derived-catalog
+and lease/recovery audit, including genuinely missing pointers, remains open;
+passing this bounded fix does not satisfy all of VERIFY-01.
 
 ### F-03 — ordinary appended transcript durability needs its own proof
 
@@ -82,7 +96,7 @@ sync actual history and publish its cursor/metadata only after commit. Failure o
 cancellation cannot silently append the same partial batch again or rerun tools.
 No hardware power-loss/exactly-once guarantee is claimed or required.
 
-These findings keep VERIFY-01 open and prevent final acceptance, even though the
+F-01/F-03 and the remaining recovery audit keep VERIFY-01 open, even though the
 existing whole-nine suite passes. Formal remaining IO work must include actual
 thread/commit barriers, corruption byte-preservation and original-ID/no-replay
 proofs, not relaxed tests, deadlines or a narrower interpretation of the spec.
@@ -147,7 +161,7 @@ Prefixes below expand to actual repository paths:
 | UI-03 | 最小通用只读 extension view；bounded snapshot/提示，跨 owner 读取拒绝且无任意调用 | `A:extensions/views.py`; `G:ui_views.py`; `a:test_extension_views.py`; `g:test_ui_views.py` | 待逐项终验 |
 | UI-04 | 扩展禁用/故障/卸载仅影响展示，清理 UI/订阅但不改变 Goal 执行状态 | `A:extensions/runtime.py`; `G:ui_binding.py`; `c:test_goal_extension_views.py`; `k:test_goal_extension_views.py`; `c:test_retired_extensions.py` | 待逐项终验 |
 | UI-05 | 不恢复任意 renderer、复杂 widget/layout，headless 不依赖 TUI 或展示扩展 | `G:extensions/goal_ui/extension.yaml`; `S:verify_goal_artifact.py`; `D:shared-goal-extension-verification.md` | 待逐项终验 |
-| VERIFY-01 | 所有关键 fsync/阻塞 I/O off-loop 且取消后提交结算；corruption/lease 失败关闭 | `C:persistence/transcript_store.py`; `C:runtime/session.py`; `c:test_input_store_ownership.py`; `c:test_retired_extensions.py`; `g:test_store.py` | 不满足：F-01/F-02；F-03 尚无充分持久化证明 |
+| VERIFY-01 | 所有关键 fsync/阻塞 I/O off-loop 且取消后提交结算；corruption/lease 失败关闭 | `C:persistence/transcript_store.py`; `C:runtime/session.py`; `c:test_input_store_ownership.py`; `c:test_retired_extensions.py`; `g:test_store.py` | 不满足：F-01/F-03；F-02 有源运行时证明，整体恢复仍待核查 |
 | VERIFY-02 | 权威状态与派生视图分离，视图失败可重建且不产生第二权威 | `G:views.py`; `C:observers/journal.py`; `g:test_ui_views.py`; `c:test_observer_journal.py` | 待逐项终验 |
 | VERIFY-03 | 最终删除活动旧队列/Goal runner/原生 Goal UI，不保留双 owner 或双业务实现 | `c:test_group_config_contract.py`; `D:claw-retired-extension-verification.md` | 待逐项终验 |
 | VERIFY-04 | 九包源测试、Ruff、九 namespace strict mypy、Flow examples 与 lock 检查实际通过 | `S:test.py`; `D:claw-retired-extension-verification.md` | 待逐项终验 |
@@ -156,7 +170,7 @@ Prefixes below expand to actual repository paths:
 
 ## Exit gates still required
 
-1. Close confirmed IO/current-index/durability findings with actual RED-to-GREEN
+1. Close remaining owned-IO/durability findings and complete current-index recovery audit with RED-to-GREEN
    tests and ordered ownership, without changing ordinary per-turn semantics or
    Coding's independent input batching.
 2. Finish source/test/artifact inspection for every row, source authority vs
@@ -166,3 +180,11 @@ Prefixes below expand to actual repository paths:
 4. Fresh unfiltered9/strict9/Ruff/Flow/lock/diff and rebuilt current runtime/resource
    wheel+sdist parity/Twine/actual external consumers. Only then update passed/
    remaining counts and consider overall goal completion. No push/merge/publish.
+
+## Required implementation before final review
+
+`docs/superpowers/plans/2026-10-19-claw-owned-transcript-io.md` implements the
+still-unmet original section11 contract. It preserves the full objective and all47
+rows; it is not a new/reduced goal, an approval request or a reason to declare the
+final audit complete. It must finish before the single whole-branch reviewer and
+parent final-artifact gates.

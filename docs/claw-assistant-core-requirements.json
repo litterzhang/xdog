@@ -435,9 +435,11 @@
         "docs/claw-observer-recipients-verification.md",
         "docs/goal-storage-verification.md",
         "docs/claw-retired-extension-verification.md",
-        "docs/claw-assistant-core-final-audit.md"
+        "docs/claw-assistant-core-final-audit.md",
+        "packages/claw/tests/test_transcript_owner_integrity.py",
+        "docs/superpowers/plans/2026-10-19-claw-owned-transcript-io.md"
       ],
-      "audit_note": "Actual ordinary-input fsync trace remains on-loop (F-01); malformed active index silently ignored/rewritten (F-02); actual appended history durability needs proof (F-03). Existing passing suites do not satisfy this requirement."
+      "audit_note": "F-02 malformed/aliased active index now source-verified fail closed with native shared-index positive preserved. F-01 ordinary first-turn fsync remains on-loop; F-03 actual appended history durability and broader recovery still unproved. Required owned-transcript-io plan precedes final review; status remains pending."
     },
     {
       "id": "VERIFY-02",
