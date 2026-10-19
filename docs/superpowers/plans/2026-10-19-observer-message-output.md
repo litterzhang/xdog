@@ -59,7 +59,7 @@ assert (await store.records(envelope.scope))[0].status == "cancelled"
 assert not transport_calls
 ```
 
-Run: `uv run pytest packages/claw/tests/test_output_source_routes.py packages/claw/tests/test_output_receipts.py -q -n 0` (use the actual existing output test filename when checking repository collection). Expected missing route/control RED, then all cases pass with ordinary behavior unchanged. Resolve any filename mismatch before executing, not by adding a facade.
+Run: `uv run pytest packages/claw/tests/test_output_source_routes.py packages/claw/tests/test_output_store.py packages/claw/tests/test_output_delivery.py -q -n 0`. Expected missing route/control RED, then all cases pass with ordinary behavior unchanged.
 
 - [ ] Implement small generic ports, protected route projection and output cancellation. Observe actual old-format refusal preserving bytes. Validate sender/result receipt distinctions and cancelled emitter cleanup without replay. Run whole9/strict9/Ruff/Flow/lock/diff; commit `feat(claw): route automatic replies through owned output receipts`.
 
