@@ -1,0 +1,98 @@
+{
+  "objective": "将Claw收口为应用，移除独立公共Python SDK设计但不破坏产品功能",
+  "status": "active",
+  "total": 5,
+  "remaining": 1,
+  "counts": {
+    "待实现": 0,
+    "待验证": 1,
+    "缺外部环境": 0,
+    "已完成": 4,
+    "延期": 0
+  },
+  "requirements": [
+    {
+      "id": "CA-01",
+      "title": "移除根级公共SDK导出",
+      "acceptance": "xdog.claw不再重导出运行时/配置/渠道类；根import不初始化应用；内部模块仍可用。",
+      "status": "已完成",
+      "evidence": [
+        "packages/claw/tests/test_application_boundary.py",
+        "packages/claw/src/xdog/claw/__init__.py"
+      ]
+    },
+    {
+      "id": "CA-02",
+      "title": "保留应用装配与通信",
+      "acceptance": "CLI、gateway、TUI、微信、MCP、扩展worker、ACP/Eyes、group主Agent与Goal路径回归通过；保留core工具注册。",
+      "status": "已完成",
+      "evidence": [
+        "packages/claw/tests/test_application_boundary.py",
+        "/tmp/xdog-claw-application-boundary/failure-targeted.log"
+      ]
+    },
+    {
+      "id": "CA-03",
+      "title": "收口支持声明与包定位",
+      "acceptance": "README/官网移除Claw SDK/API产品承诺；明确内部模块不承诺稳定，Agent SDK不变；元数据定位应用。",
+      "status": "已完成",
+      "evidence": [
+        "packages/claw/README.md",
+        "packages/site/src/xdog/site/content/pages/claw/reference.md",
+        "packages/claw/pyproject.toml"
+      ]
+    },
+    {
+      "id": "CA-04",
+      "title": "当前Linux完整验收",
+      "acceptance": "八包测试、Ruff、strict mypy、Flow例、锁检查、构建与wheel隔离应用启动验证；保护用户dirty。",
+      "status": "已完成",
+      "evidence": [
+        "/tmp/xdog-claw-application-boundary/first-run/tests.log",
+        "/tmp/xdog-claw-application-boundary/failure-targeted.log",
+        "/tmp/xdog-claw-application-boundary/tests.log"
+      ]
+    },
+    {
+      "id": "CA-05",
+      "title": "提交推送",
+      "acceptance": "显式分离前置已完成Goal和本次改动；只stage已核查文件，正常push并验证远端SHA；不发布/tag/重启。",
+      "status": "待验证",
+      "evidence": [
+        "/tmp/xdog-claw-application-boundary/prerequisite-staged-files.json"
+      ]
+    }
+  ],
+  "scope_exclusions": [
+    "不删除xdog.agent SDK",
+    "不删必要内部接口或通信",
+    "不新增禁止导入的运行时拦截",
+    "不做非Linux原生验证",
+    "不发布版本/tag或重启服务"
+  ],
+  "baseline": "fcacaa4",
+  "evidence_root": "/tmp/xdog-claw-application-boundary/",
+  "validation_notes": [
+    "首轮全套：Claw SIGTERM peer未在5s内ready、独立Node MCP SDK未在5s内握手，均发生于启动阶段；原日志保留，不计为通过。",
+    "不修改生产/测试的超时或断言；两失败所属文件定向复验20 passed。降低包级并发至2完整复验，所有配置testpaths与原测试用例不变。"
+  ],
+  "verification": {
+    "tests_passed": 6700,
+    "optional_external_cli_skipped": 7,
+    "full_test_seconds": 140.81,
+    "package_parallel_jobs": 2,
+    "new_boundary_tests": 15,
+    "ruff": "passed",
+    "strict_mypy_source_files": 560,
+    "flow_examples": 17,
+    "lock": "passed offline",
+    "built_artifacts": 18,
+    "wheel_imports": 32,
+    "source_members_verified": 837,
+    "claw_wheel_root_and_console_entrypoint": "passed isolated wheel-only code",
+    "frozen_package_files": 1362,
+    "unrelated_preserved": 9,
+    "non_linux_native": "not performed",
+    "real_wechat_live": "not performed; offline channel regressions passed"
+  }
+}

@@ -5,6 +5,21 @@ title: Design
 Claw coordinates a persistent group main Agent, its task Agents and durable memory
 through one gateway and the existing Agent runtime—not another task/Agent engine.
 
+## Application boundary and shared runtime
+
+Claw owns application lifecycle, configuration, channels and group policy. The
+reusable SDK is `xdog.agent`, including its MCP client, extension API and child
+supervision. Claw adapts those facilities internally; `Orchestrator`, `GroupRuntime`
+and `AgentSession` are implementation wiring, not a separately supported public
+Claw embedding API. The root `xdog.claw` package does not re-export runtime classes.
+Coding's SDK remains distinct.
+
+The product entry points are the `xdog-claw` CLI, configuration and channels. The
+native gateway socket serves the local terminal client; optional private ACP serves
+explicit group-addressed inputs. These necessary communication paths retain
+capability/ownership checks and do not create a general-purpose remote control
+plane or imply a public Python runtime embedding contract.
+
 ## One gateway and one route per group
 
 The long-lived gateway (`core/runtime/gateway.py`) exposes a private Unix socket

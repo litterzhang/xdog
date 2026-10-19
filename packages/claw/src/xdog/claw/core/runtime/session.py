@@ -363,7 +363,7 @@ class AgentSession:
 
     async def _extension_context(self, messages: list[Any]) -> list[Any]:
         try:
-            # SDK-owned transient projection is shared with direct SDK callers.
+            # Use the Agent extension runtime's transient context projection.
             result = await self.extensions.transform(messages)
             return result
         finally:

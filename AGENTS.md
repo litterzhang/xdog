@@ -96,6 +96,13 @@ The core invariant in `models.py` and `loader.py` is node-private typed ports co
 
 ### `xdog.claw`: persistent multi-channel assistant
 
+Claw is an application, not a public Python SDK. Its supported user surfaces are
+`xdog-claw`, configuration, channels and the explicitly documented gateway/ACP
+protocols. The root package deliberately re-exports no runtime classes. Internal
+modules remain importable for application composition and tests, without a stable
+embedding API promise. Reusable agent functionality belongs in `xdog.agent`.
+Do not remove required gateway/MCP/extension-worker communication as SDK cleanup.
+
 The main path is:
 
 ```text

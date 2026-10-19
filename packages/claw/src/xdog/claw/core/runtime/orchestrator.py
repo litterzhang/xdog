@@ -56,7 +56,7 @@ class Orchestrator:
         data_dir: Path | None = None,
     ) -> None:
         self._config = config
-        # SDK callers may supply metadata; downstream sessions and alias routing
+        # Application bootstrap/tests may supply metadata; sessions and alias routing
         # use model IDs exclusively, including when a group has no override.
         self._model = model.id if isinstance(model, Model) else model or ""
         self._stream_fn = stream_fn
@@ -318,7 +318,7 @@ class Orchestrator:
                     'error': str(exc)})
         return results
 
-    # -- Group operations (public API for Gateway) -----------------------------
+    # -- Group operations (internal gateway boundary) -----------------------------
 
     def reset_group(self, group_id: str) -> bool:
         """Reset the active session. Returns True on success."""

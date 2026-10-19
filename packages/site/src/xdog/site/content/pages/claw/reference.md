@@ -2,22 +2,40 @@
 title: Reference
 ---
 
-The top-level API, the workspace files that shape the prompt, the `xdog-claw` CLI, and
-the input queue modes.
+Application boundaries, the `xdog-claw` CLI, workspace files, private local
+communication and input queue modes.
 
-## Top-level API
+## Application boundary
 
-Exported from `claw/__init__.py`.
+Claw is operated as an application through its CLI, configuration, terminal and
+messaging channels. It does not offer a separately supported public Python SDK
+for embedding its gateway or group/session runtime. The root `xdog.claw` package
+does not re-export runtime classes. Internal runtime/session adapters remain
+importable for application composition and tests, not as a public API contract or
+recommended direct embedding entry point.
 
-| Name | Kind | Purpose |
-|---|---|---|
-| `Orchestrator` | class | Single dispatch path over all groups. |
-| `GroupRuntime` | class | One group's workspace, memory, goals, tools. |
-| `AgentSession / TurnResult` | class | The cached current context and a turn result; not separate group owners. |
-| `MessageQueue` | class | Per-group input queueing. |
-| `TranscriptStore / SessionManager` | class | Persistence of conversations. |
-| `build_system_prompt / init_workspace` | function | Assemble the prompt / seed the workspace files. |
-| `ClawConfig / GroupDef` | type | Global and per-group configuration. |
+For reusable Python Agent functionality, use **`xdog.agent`**. Its Agent runtime,
+MCP client (`xdog.agent.mcp.McpManager`), extension API and child supervision are
+shared SDK facilities; their existence does not make Claw an independent SDK.
+Coding's SDK is separate and is not removed by this boundary.
+
+## Private local communication
+
+- **Native gateway Unix socket**: the terminal client's private transport for
+  messages, status, reset and negotiated product controls. Capabilities, request/
+  connection/group ownership and context revisions fence control requests. It is
+  not a general public embedding API; unsupported controls must not be guessed.
+- **Optional Unix ACP ingress**: enable explicitly with `acp_socket_path` or
+  `gateway start --acp-socket PATH` (also host-owned when `eyes_enabled: true`).
+  ACP uses explicit `group:<id>` addresses and exact workspace validation. Prompt
+  and negotiated durable enqueue enter the existing group inbox/queue and active
+  Agent, not a second loop or a historical-session activation route.
+- Pending ACP inputs survive receiver restart; interrupted execution and uncertain
+  effects are not automatically replayed. No socket/capability bypasses tool policy
+  or grants approval. There is no hosted control plane or public TCP endpoint.
+
+See the [ACP setup and recovery boundaries](https://github.com/litterzhang/xdog/blob/main/docs/claw-eyes-acp.md)
+for the private endpoint contract and receipt/cancellation limits.
 
 ## Workspace files
 
@@ -41,10 +59,11 @@ Subcommands of the claw console script (`cli/cli.py`).
 | Command | Does |
 |---|---|
 | `onboard` | Setup wizard: provider login, model, agent name, workspace. |
-| `gateway start [--config] [--foreground]` | Start the gateway daemon. |
+| `gateway start [--config PATH] [--foreground] [--acp-socket PATH]` | Start the gateway daemon. |
 | `gateway stop · gateway status` | Stop / inspect the gateway. |
 | `tui [--group]` | Attach a terminal client to a group. |
 | `channel login --weixin [--base-url]` | Authenticate the WeChat channel. |
+| `generate-image PROMPT [--workspace PATH] [--output-dir PATH]` | Generate local image assets with the configured image model. |
 
 ## Queue modes
 
@@ -53,7 +72,7 @@ How a burst of input to one group is folded together.
 | Mode | Behaviour |
 |---|---|
 | `collect` | Batch pending inputs into the next turn. |
-| `steer` | Deliver input at an SDK/tool checkpoint, not an abort or rollback. |
+| `steer` | Deliver input at an `xdog.agent`/tool checkpoint, not an abort or rollback. |
 | `steer-backlog` | Steer, keeping a bounded backlog of the rest. |
 
 

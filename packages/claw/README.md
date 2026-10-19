@@ -3,12 +3,34 @@
 > Platform scope: **Linux only**. Non-Linux adapters and native-platform support
 > are outside the current product scope; historical audit evidence is not a support promise.
 
-**Agent orchestration runtime.**
+**Persistent multi-channel assistant application.**
 
 A local-first gateway with one logical main Agent per group, durable Goals,
 supervised task Agents, long-term memory, and JSON/JSONL conversation persistence.
 Eyes provides opt-in observations and scheduling through the existing private group
 ACP inbox; SQLite is used for that inbox and optional memory-search indexes.
+
+## Application and SDK boundaries
+
+Claw is an application, not a separately supported public Python SDK for embedding
+its gateway or group/session runtime. Use `xdog-claw` CLI/configuration, the terminal
+and messaging channels, and the explicitly enabled private ACP ingress below.
+The `xdog.claw` root package does not re-export runtime classes. Classes such as
+`Orchestrator`, `GroupRuntime` and `AgentSession` in internal modules are application
+wiring, not a stable embedding contract.
+Its session methods adapt the shared runtime for the gateway; they are not a second
+client SDK alongside Coding's SDK.
+
+The reusable Agent SDK is **`xdog.agent`**. Its MCP client
+(`xdog.agent.mcp.McpManager`), extension API (`xdog.agent.extensions.ExtensionAPI`)
+and child supervision (`xdog.agent.supervision.ChildSupervisor`) live in that
+layer. SDK/embedding examples below refer to those shared interfaces or explicitly
+to Coding's SDK, not to a public Claw SDK.
+Claw retains its product controls for MCP, trusted extensions, children, Goals,
+memory and history; its internal adapters apply group ownership and tool policy.
+The native gateway socket and opt-in ACP endpoint are private local communication
+surfaces, not a hosted API or permission bypass. Native clients must negotiate
+capabilities and preserve ownership, cancellation and no-blind-replay fences.
 
 ## Interactive terminal
 
@@ -351,9 +373,9 @@ remains unverified.
 ### Steering and queue controls
 
 Enter retains the client-owned FIFO of new full turns. During a ready owned run,
-**Alt+S / `/steer TEXT`** delivers at the next SDK checkpoint and
+**Alt+S / `/steer TEXT`** delivers at the next Agent SDK checkpoint and
 **Alt+F / `/follow-up TEXT`** delivers after active tools/steering finish, within
-that SDK run. Neither choice interrupts a running tool or implies rollback.
+that Agent run. Neither choice interrupts a running tool or implies rollback.
 The shortcuts are configurable (`steer`, `follow_up`, `queue`).
 
 **Ctrl+Q / `/queue`** lists stable local `qN` and runtime `iN` IDs. Commands are
@@ -372,7 +394,7 @@ Cancellation waits for consumed/returned receipts before restoring runtime text.
 Disconnect, missing/malformed final receipts or uncertain edits preserve text for
 manual inspection, **never automatically replay it**. Inspect conversation and
 prior tool effects before explicitly resending. Local and runtime queues each
-allow 50 pending messages; runtime text is limited to 64 KiB. SDK receipts are
+allow 50 pending messages; runtime text is limited to 64 KiB. Agent SDK receipts are
 bounded individual frames, not one huge text snapshot. Rejected oversized or
 malformed protocol frames do not cancel an unrelated owned run.
 
@@ -599,7 +621,7 @@ retains its group reservation while management settles. Older gateways receive n
 unknown operation; uncertain controls are not replayed on reconnect—inspect status.
 
 Connections are group-owned across cached conversation sessions and close at
-runtime shutdown/disconnect command. Tools enter that group's one SDK runtime.
+runtime shutdown/disconnect command. Tools enter that group's one `xdog.agent` runtime.
 External execution defaults to **blocked** even after discovery; explicitly set
 `allow_tools: true` for a trusted server to authorize unattended tool use. This can
 permit filesystem/network effects outside built-in tools; permission gates are not
@@ -674,7 +696,7 @@ remain fenced; continuation rounds, embedded inputs, bytes and deadlines are
 bounded. An unsupported sibling input rejects the round before any partial Roots
 disclosure. Disconnect/cancel settles the original owner, not a successor.
 
-**Sampling, Elicitation and MCP Tasks are removed** from SDK/native/gateway
+**Sampling, Elicitation and MCP Tasks are removed** from Agent MCP SDK/native/gateway
 registration, capability advertisement and review/control surfaces. Legacy
 requests are refused; modern embedded unsupported families/task augmentation fail
 closed, with no callback, model/tool work or partial completion. The former
@@ -1131,7 +1153,8 @@ resource, actual grant scopes, pinned endpoints, client ID and public method
 refresh POST, not a new browser login or client registration. Claw requires
 `mcp_refresh:1`; unsupported gateways cannot submit it.
 
-SDK hosts use `manage_auth("remote", "refresh_prepare")` followed by
+On an `xdog.agent.mcp.McpManager` instance, Agent MCP SDK hosts use
+`manage_auth("remote", "refresh_prepare")` followed by
 `manage_auth("remote", "refresh", review_id)` under the same live consent lease.
 Receipts are single-use and expire after five minutes. Refresh uses the previous
 grant's scopes, not the broader configured ceiling. Valid replies may narrow,
@@ -1259,8 +1282,9 @@ platform gaps remain separate from the retained tool-result contract.
 
 Extension command callbacks now accept the same typed text/image/structured JSON/
 details result builder as tool callbacks. Legacy string commands remain strings.
-The SDK `runtime.command()` returns either str or a frozen `ExtensionCommandResult`
-with extension/command identity, a validated result snapshot and safe summary.
+The shared `xdog.agent` extension runtime's `runtime.command()` returns either str
+or a frozen `ExtensionCommandResult` with extension/command identity, a validated
+result snapshot and safe summary.
 For example, a command can return:
 
 ```python
@@ -1336,7 +1360,8 @@ Loaded artifacts become owned display data and can be re-exported after a new re
 
 Both actual clients and private-tmux workflows verify binary save/reload, explicit
 review, private mode/no overwrite, owner fencing and no-model/draft non-mutation.
-SDK artifact_bytes/artifact_from_bytes/read_artifact expose the same validated codec.
+The shared `xdog.agent.extensions.command_result` helpers
+`artifact_bytes`/`artifact_from_bytes`/`read_artifact` expose the same validated codec.
 Artifact export/reload does not restore removed extension custom rendering, host
 mutations or terminal interception. Further MCP/credential and native-platform
 interoperability remains separate work.
@@ -1395,9 +1420,12 @@ async def complete(prefix, context):
 api.command("deploy", "Deploy command", execute_deploy, complete=complete)
 ```
 
-`runtime.command_completions()` exposes current registration identities, and
-`await session.complete_command(command, prefix, identity)` in BOTH client SDKs
-queries the corresponding worker without executing its command callback or model.
+The shared Agent extension runtime's `runtime.command_completions()` exposes
+current registration identities. Coding's SDK and Claw's internal application
+session adapter delegate `complete_command(command, prefix, identity)` to that
+runtime, querying the corresponding worker without executing its command callback
+or model. For Claw this is gateway-owned application wiring, not a public Python
+embedding entry point.
 The callback has no interactive UI/editor/navigation/session-mutation authority.
 Items are plain single-line text (32 unique entries/64 KiB result); the prefix and
 value/label/description bounds are validated on both sides. Failed/timed-out
@@ -1406,8 +1434,9 @@ no retry/replay or fallback callback is implied.
 
 Replacement/disposal changes the command completion identity. Stale references
 and registration changes during callback execution yield no completion data;
-an old disposer cannot remove a replacement. Both client SDK wrappers settle
-their owning Agent's tool projection if that worker fails.
+an old disposer cannot remove a replacement. Coding's SDK wrapper and Claw's
+internal session adapter settle their owning Agent's tool projection if that
+worker fails.
 
 Both interactive parent editors now query registered argument callbacks in the
 background. Suggestions replace only the cursor-local token (including its right
@@ -1452,14 +1481,15 @@ on preceding choices without reading the rest of a session or granting editor
 mutation authority. Host selection still replaces its original cursor-local span.
 Callback edits to this dict do not change the editor or its captured request.
 
-Prefix-only SDK/legacy queries explicitly supply `None` for that context; they
-cannot impersonate a full draft. New Claw editor queries independently negotiate
+Prefix-only queries through the Agent extension runtime or legacy callers explicitly
+supply `None` for that context; they cannot impersonate a full draft. New Claw editor queries independently negotiate
 `extension_argument_context: 1`. Unnegotiated/invalid/foreign-scope metadata is
 refused before callback admission. Withdrawing support cancels captured contextual
 jobs (including before task startup), refuses late contextual output and does not
 silently replay the query as prefix-only. A user may explicitly edit/Tab to request
 new data under the remaining capability. Existing prefix-only callbacks remain
-supported; `argument_input=` is optional on both SDK wrappers.
+supported; `argument_input=` is optional on Coding's SDK wrapper and Claw's internal
+session adapter, without making the latter a public embedding API.
 
 More expressive suffix semantics and broader argument API interoperability remain
 open. Callback-supplied spaces/quotes are literal replacement data; the host
@@ -1709,8 +1739,8 @@ fields are rejected. Handled is NOT rejection and NOT canonical/model history
 admission. It stops the remaining input-hook chain for that request and emits a
 separate `InputHandledEvent` logical-consumption receipt with original source/ID/
 attachments. Identified inputs are removed exactly once; they do not also emit
-InputConsumedEvent or return for automatic replay. SDK callers can inspect/drain
-handled receipts with `agent.drain_handled_inputs()`.
+InputConsumedEvent or return for automatic replay. `xdog.agent` SDK callers can
+inspect/drain handled receipts with `agent.drain_handled_inputs()`.
 
 If all newly supplied input is handled, the host does not invoke the response model
 with old history just to obtain an answer. Other genuinely queued unhandled requests
@@ -1751,7 +1781,7 @@ boundaries; remaining MCP/credential/platform interoperability is separate.
 
 ### MCP browsing and manual refresh
 
-Active resource/catalog/combined notification watches are removed from the SDK,
+Active resource/catalog/combined notification watches are removed from the Agent MCP SDK,
 transports and native UI. There are no watch/unwatch methods, editable subscription
 filters, watch jobs or background subscription listeners. Former **w** resource
 watch and **Alt+T/P/U/W** catalog/combined controls are not supported.
@@ -1805,7 +1835,7 @@ claims remote revocation. Save/erase cancellation revokes storage admission and 
 for the actual writer to settle; if an operation committed before cancellation,
 inspect local state rather than automatically retrying it.
 
-SDK callers can opt in with `McpManager(..., credential_dir=...)` and prepare/confirm
+Agent MCP SDK callers can opt in with `McpManager(..., credential_dir=...)` and prepare/confirm
 `credentials_save`, `credentials_restore`, or `credentials_forget` through the
 existing owned `manage_auth` API. A manager without a credential directory remains
 memory-only. Actual client restart/consent and private-tmux tests cover the file
@@ -1817,7 +1847,8 @@ Set the top-level `mcp_credential_backend: secret-service` in
 `~/.config/xdog/claw/config.yaml`, then restart the gateway to load configuration.
 The default remains `file`; each group has a separate native storage namespace.
 
-SDK hosts select `McpManager(..., credential_dir=..., credential_backend="secret-service")`.
+Agent MCP SDK hosts select
+`McpManager(..., credential_dir=..., credential_backend="secret-service")`.
 The directory is used only to derive a stable namespace; this backend creates no
 local token files. Moving that directory changes which saved credentials are found.
 
@@ -2269,7 +2300,8 @@ This native view has no editor, reorder/remove/return control, recovery-copy but
 or permission-confirmation action. Paste cannot submit or adopt a draft.
 
 The ordinary main-Agent `agent_control` tool retains `action="queue"` with a typed
-JSON `text` request. SDK `ChildSupervisor.control("queue", ...)` also remains.
+JSON `text` request. The `xdog.agent` SDK
+`ChildSupervisor.control("queue", ...)` also remains.
 Their edit/remove/move/text-return and explicit stopped recovery operations use the
 real owner loop and existing identity, revision, selected-input, image-byte and
 write-before-publication safeguards. They are not native UI actions and do not
@@ -2299,8 +2331,8 @@ cancellation waits for actual writer settlement, without claiming rollback.
 
 The main-Agent tool returns image parts as `ImageContent` with bounded receipt
 metadata, never raw base64 in model-facing text or a silently lossy text fallback.
-An embedder owns later adoption/submission and its policy. Inspect prior history
-and workspace effects before deciding whether to run a recovered copy.
+An `xdog.agent` SDK embedder owns later adoption/submission and its policy. Inspect
+prior history and workspace effects before deciding whether to run a recovered copy.
 
 ### Child rendered-image admission
 
@@ -2356,7 +2388,7 @@ but uses a rough image allowance alongside the conservative text guard. This is
 not exact provider token accounting or a promise that any image fits any model.
 Final actual-context model validation, permissions and protocol/resource guards still apply.
 
-SDK callers can pass `images=tuple[ImageContent, ...]` to `ChildSupervisor.start`
+`xdog.agent` SDK callers can pass `images=tuple[ImageContent, ...]` to `ChildSupervisor.start`
 or its steering/follow-up `control` methods. The application child APIs propagate
 these same typed inputs. No file URI, remote fetch or implicit text fallback is
 introduced. Claw requires the gateway's exact `child_images:1` capability and sends
@@ -2478,8 +2510,8 @@ The tool supplies its private nonserialized supervisor owner; models cannot pick
 one. Cancellation/abort/close revoke that owner. The existing token expiry,
 selection/revision/receipt checks and retained-byte limits remain. Durable removal
 and return-backup writes keep their existing owned settlement/no-automatic-replay
-rules. A generic SDK embedder still owns typed-history retention, persistence and
-ordinary tool permission hooks. A process-local token is not a promise of
+rules. A generic `xdog.agent` SDK embedder still owns typed-history retention,
+persistence and ordinary tool permission hooks. A process-local token is not a promise of
 exactly-once side effects across crashes.
 
 ### Concurrent return capacity and malformed queue transport
@@ -2612,8 +2644,8 @@ explicit resubmission. Startup never reinserts backups into a live queue.
 
 Existing bounds remain 32 backup rows / 40 MiB images, separate from pending-input
 retention. Capacity exhaustion refuses new commits rather than dropping bytes.
-The main-Agent wrapper emits typed images and bounded receipts; an SDK embedder
-owns retention and adoption. Native child edits remain same-session transient;
+The main-Agent wrapper emits typed images and bounded receipts; an `xdog.agent`
+SDK embedder owns retention and adoption. Native child edits remain same-session transient;
 this backend durability is not a child disk-save UI or an exactly-once/power-loss
 guarantee.
 

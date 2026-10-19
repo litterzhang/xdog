@@ -10,6 +10,11 @@ history, memory and **one execution route**. Sessions are persisted context/hist
 units, not separate main-Agent identities. New/reset can rotate idle context without
 changing the group's Goal owner; saved history is read-only, not a route to resume.
 
+Claw is an application, not an independent public Python embedding SDK. Operate
+it through `xdog-claw`, configuration and its channels; explicitly enabled ACP is
+a private local ingress to the same group route. Reusable Agent/MCP SDK interfaces
+belong to `xdog.agent`; Claw's group/session adapters are internal application code.
+
 ## Highlights
 
 - The group main Agent plans, assigns, waits for and accepts task work itself;
