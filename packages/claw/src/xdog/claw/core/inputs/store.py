@@ -330,6 +330,26 @@ class InputStore:
             return _record(_select(db, scope, message_id))
         return await self._disk(cancel)
 
+    async def release(self, record: InputRecord) -> InputRecord:
+        """Return only this unstarted claim; never replay a running attempt."""
+        def release(db: sqlite3.Connection) -> InputRecord:
+            row = self._attempt(db, record, 'claimed')
+            db.execute("UPDATE attempts SET status='released' WHERE attempt_id=?", (record.attempt_id,))
+            db.execute("UPDATE inputs SET status='pending',attempt_id='' WHERE sequence=?", (row['sequence'],))
+            return _record(_select(db, record.envelope.scope, record.envelope.message.id))
+        return await self._disk(release)
+
+    async def reject(self, record: InputRecord, error: str) -> InputRecord:
+        """Persist a failed preparation without pretending Agent admission occurred."""
+        if not isinstance(error, str) or not error.strip() or len(error.encode()) > 1024 * 1024:
+            raise ValueError('Preparation failure requires a bounded reason')
+        def reject(db: sqlite3.Connection) -> InputRecord:
+            row = self._attempt(db, record, 'claimed')
+            db.execute("UPDATE inputs SET status='failed',error=? WHERE sequence=?", (error, row['sequence']))
+            db.execute("UPDATE attempts SET status='failed',error=? WHERE attempt_id=?", (error, record.attempt_id))
+            return _record(_select(db, record.envelope.scope, record.envelope.message.id))
+        return await self._disk(reject)
+
     async def retry(self, scope: InputScope, message_id: str) -> InputRecord:
         def retry(db: sqlite3.Connection) -> InputRecord:
             row = _select(db, scope, message_id)
