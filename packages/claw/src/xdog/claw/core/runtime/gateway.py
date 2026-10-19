@@ -255,7 +255,7 @@ class GatewayServer:
             raise
 
         try:
-            from xdog.claw.core.runtime.unix_endpoint import bind, close
+            from xdog.claw.core.runtime.unix_endpoint import bind, close, listen
             binding = asyncio.create_task(asyncio.to_thread(bind, self._socket_path))
             try:
                 bound_endpoint = await wait_owned(binding)
@@ -264,9 +264,7 @@ class GatewayServer:
                     await run_owned(close, binding.result())
                 raise
             self._bound_endpoint = bound_endpoint
-            self._server = await asyncio.start_unix_server(
-                self._on_client_connect, sock=bound_endpoint.socket, limit=_MAX_LINE_LENGTH
-            )
+            self._server = await listen(self._on_client_connect, bound_endpoint, limit=_MAX_LINE_LENGTH)
 
             # Write PID file
             await run_owned(self._write_pid)

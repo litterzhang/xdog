@@ -26,6 +26,7 @@ from xdog.agent.extensions.dialogs import REMOVED_HOST_CAPABILITIES, validate_an
 from xdog.agent.extensions.hooks import FLAGS
 from xdog.agent.extensions.hooks import declaration as hook_declaration
 from xdog.agent.extensions.input import InputRejected, decision, input_text
+from xdog.agent.extensions.location import ExtensionRoot
 from xdog.agent.extensions.shortcuts import registrations, snapshot_rows
 from xdog.agent.extensions.state import ExtensionEntries
 from xdog.agent.extensions.tool_result import details_snapshot, host_result
@@ -468,8 +469,10 @@ class ExtensionRuntime:
     def __init__(self, enabled: Any, root: Path, cwd: Path, *, settings: Mapping[str, Any] | None = None,
                  context: Callable[[], dict[str, Any]] | None = None, timeout: float = 3,
                  entries: ExtensionEntries | None = None,
-                 inspection: Callable[[], dict[str, Any] | None] | None = None) -> None:
-        self.enabled, self.root, self.cwd = names(enabled), root.resolve(), cwd
+                 inspection: Callable[[], dict[str, Any] | None] | None = None,
+                 prepared_root: ExtensionRoot | None = None) -> None:
+        location = prepared_root or ExtensionRoot.read(root)
+        self.enabled, self.root, self.cwd = names(enabled), location.adopt(root), cwd
         self.settings = dict(settings or {})
         self.entries = entries or ExtensionEntries({}, lambda value: None)
         self._context_lock = asyncio.Lock()

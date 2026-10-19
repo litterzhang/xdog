@@ -58,14 +58,10 @@ def source_records(capture: SourceCapture, canceled: threading.Event) -> tuple[T
             records.append(TranscriptRecord(f"m{index}:external", "user", "external input",
                                             display_result(entry_text(entry), bounded=False)))
             continue
-        if entry.get("channel") in {"goal_runner", "scheduler"}:
-            continue
         parts = content if isinstance(content, list) else []
         text = content if isinstance(content, str) else "".join(
             str(part.get("text", "")) for part in parts if isinstance(part, dict) and part.get("type") == "text"
         )
-        if role == "user" and text.startswith(("Continue working on your active goals:", "[Goal:", "Goal completed:")):
-            continue
         if role in {"user", "assistant"}:
             images = sum(isinstance(part, dict) and part.get("type") == "image" for part in parts)
             if images:

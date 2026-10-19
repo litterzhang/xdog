@@ -176,6 +176,20 @@ tracked regression, preserve ordinary source text/identity, and remove only the
 obsolete business filtering without changing tool redaction or source leases.
 Task3/source47/review/artifact completion is still unproven.
 
+### F-04/F-05 — source implementation verified, final acceptance still pending
+
+`docs/claw-owned-ingress-source-verification.md` records actual fixes and current
+proof for the remaining ACP/path/source/MCP/child-restore/constructor/native-model
+IO counterexamples and literal Goal-like user-text projection. Known source
+counterexamples F-01 through F-05 are now closed at their scoped implementation
+boundary. All9 current:7022 passed34 skipped199.49s, strict601/fullRuff/Flow17/
+lock/diff. This supersedes the preceding **historical finding** descriptions;
+those RED receipts remain authentic, not claims that their old code is current.
+
+Complete the existing owned-IO Task3 gate, then return to all47 row inspection.
+No row is promoted by a green suite alone. Source availability is not final
+artifact parity, and wholebranch review/current consumers remain unperformed.
+
 ## 47-item source/test inventory
 
 Prefixes below expand to actual repository paths:

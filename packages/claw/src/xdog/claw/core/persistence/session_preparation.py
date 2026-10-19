@@ -6,11 +6,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from xdog.agent import AgentMessage
+from xdog.agent import AgentMessage, StreamFn
 from xdog.agent.access import AccessState
 from xdog.agent.extensions.compaction import saved_record
+from xdog.agent.extensions.location import ExtensionRoot
 from xdog.agent.skills.types import SkillPlacement
-from xdog.ai.types import SystemPromptBlock
+from xdog.agent.supervision_store import ChildStore
+from xdog.ai.types import Model, SystemPromptBlock
 from xdog.claw.core.persistence.transcript_convert import transcript_to_messages
 from xdog.claw.core.persistence.transcript_store import TranscriptStore
 from xdog.claw.core.types import SessionMeta
@@ -28,6 +30,48 @@ class PreparedHistory:
 
 
 @dataclass(frozen=True)
+class PreparedChildren:
+    branch: str
+    records_json: str
+    diagnostic: str = ""
+
+
+def children(store: TranscriptStore, identifier: str) -> PreparedChildren:
+    branch = store.active_branch(identifier) or "head"
+    reader = ChildStore.scoped(store._sessions_dir, identifier, branch)
+    diagnostic = ""
+    try:
+        records = reader.load()
+    except (ValueError, TypeError, OSError, UnicodeError) as exc:
+        records = []
+        diagnostic = "Child catalog unavailable; repair saved records before delegation: " + str(exc)[:500]
+    return PreparedChildren(branch, json.dumps(records), diagnostic)
+
+
+@dataclass(frozen=True)
+class PreparedModel:
+    model_id: str
+    metadata: Model | None
+    supports_tool_calls: bool | None
+
+
+def default_stream() -> StreamFn:
+    """Unpublished provider adapter resource; never a model call or Agent loop."""
+    import xdog.ai as ai
+    from xdog.agent.helpers import stream_fn_from_provider
+    return stream_fn_from_provider(ai.load())
+
+
+def model_info(model_id: str, stream: StreamFn) -> PreparedModel:
+    from xdog.agent.core import ModelStreamFn
+    from xdog.agent.helpers import model_supports_tool_calls
+    metadata = (stream.resolve_model(model_id) if isinstance(stream, ModelStreamFn)
+                and not model_id.startswith("ext-") else None)
+    return PreparedModel(model_id, metadata,
+        metadata.supports_tool_calls if metadata is not None else model_supports_tool_calls(model_id))
+
+
+@dataclass(frozen=True)
 class PreparedSession:
     meta: SessionMeta
     workspace: Path
@@ -40,6 +84,9 @@ class PreparedSession:
     entries_json: str
     history: PreparedHistory | None
     skills: SkillPlacement
+    children: PreparedChildren
+    extension_root: ExtensionRoot
+    model: PreparedModel
 
 
 def history(store: TranscriptStore, identifier: str) -> PreparedHistory:
@@ -52,7 +99,8 @@ def history(store: TranscriptStore, identifier: str) -> PreparedHistory:
 
 
 def read(store: TranscriptStore, meta: SessionMeta, workspace: Path, configured_model: str,
-         *, include_history: bool = True, skills: SkillManager | None = None) -> PreparedSession:
+         *, include_history: bool = True, skills: SkillManager | None = None,
+         extension_root: Path, stream_fn: StreamFn) -> PreparedSession:
     with store._lock:
         model = store.get_model(meta.session_id)
         active_skills = tuple(sorted(store.get_active_skills(meta.session_id)))
@@ -61,7 +109,9 @@ def read(store: TranscriptStore, meta: SessionMeta, workspace: Path, configured_
             store.get_active_tools(meta.session_id), active_skills,
             AccessState.from_dict(store.get_access(meta.session_id)),
             json.dumps(store.get_extension_entries(meta.session_id)),
-            history(store, meta.session_id) if include_history else None, SkillPlacement.read(skills, active_skills))
+            history(store, meta.session_id) if include_history else None, SkillPlacement.read(skills, active_skills),
+            children(store, meta.session_id), ExtensionRoot.read(extension_root),
+            model_info(model or configured_model, stream_fn))
 
 
 @dataclass(frozen=True)
@@ -82,12 +132,14 @@ def check(store: TranscriptStore, group: str, daily_hour: int, idle_seconds: int
 
 
 def prepare(store: TranscriptStore, group: str, workspace: Path, configured_model: str,
-            expected: SessionMeta | None, *, reset: bool, skills: SkillManager | None = None) -> PreparedSession:
+            expected: SessionMeta | None, *, reset: bool, skills: SkillManager | None = None,
+            extension_root: Path, stream_fn: StreamFn) -> PreparedSession:
     with store._lock:
         if store.get_active_session(group) != expected:
             raise ValueError('Session preparation owner changed before persistence')
         meta = store.reset_session(group) if reset else expected or store.create_session(group)
-        return read(store, meta, workspace, configured_model, skills=skills)
+        return read(store, meta, workspace, configured_model, skills=skills,
+                    extension_root=extension_root, stream_fn=stream_fn)
 
 
 @dataclass(frozen=True)

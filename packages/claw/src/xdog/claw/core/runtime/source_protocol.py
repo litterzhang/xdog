@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import threading
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from xdog.agent.async_work import run_owned, wait_owned
 from xdog.claw.core.runtime.transcript_source import SourceCapture, SourceSpool, prepare_source
+
+logger = logging.getLogger(__name__)
 
 SOURCE_BLOCK_BYTES = 64 * 1024
 
@@ -24,6 +28,7 @@ class SourceSender:
         self._cancel = threading.Event()
         self._task: asyncio.Task[None] | None = None
         self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
 
     def request(self, request_id: str, group: str, session: str, *,
                 capture: Callable[[], SourceCapture] | None = None, scope: dict[str, str] | None = None) -> None:
@@ -33,6 +38,14 @@ class SourceSender:
         self._cancel.set()
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._work())
+            self._task.add_done_callback(self._done)
+
+    @staticmethod
+    def _done(task: asyncio.Task[None]) -> None:
+        if not task.cancelled() and (error := task.exception()) is not None:
+            # A readonly display failure cannot alter accepted input outcomes,
+            # but its actual late cleanup error must remain observable.
+            logger.warning("Source cleanup failed", exc_info=error)
 
     def cancel(self, request_id: str) -> None:
         if self._pending is not None and self._pending[0] == request_id:
@@ -50,6 +63,11 @@ class SourceSender:
         self._closed = True
         self._pending = None
         self._cancel.set()
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close())
+        await wait_owned(self._close_task)
+
+    async def _close(self) -> None:
         if self._task is not None:
             self._task.cancel()
             await asyncio.gather(self._task, return_exceptions=True)
@@ -82,7 +100,7 @@ class SourceSender:
                 while not canceled.is_set():
                     if self.current(group) != (session, captured.revision):
                         raise ValueError("Active session changed during source transfer")
-                    block = await asyncio.to_thread(spool.file.read, SOURCE_BLOCK_BYTES)
+                    block = await run_owned(spool.file.read, SOURCE_BLOCK_BYTES)
                     if self.current(group) != (session, captured.revision):
                         raise ValueError("Active session/context changed during source transfer")
                     if not block:
@@ -102,14 +120,20 @@ class SourceSender:
                         pass
             finally:
                 canceled.set()
-                # to_thread cannot forcibly interrupt filesystem work. Settle
-                # this one owner before another request can open another spool.
-                if preparing is not None and spool is None:
-                    try:
-                        spool = await asyncio.shield(preparing)
-                    except Exception:
-                        pass
-                if spool is not None:
-                    spool.file.close()
-                self._active = ""
-                self._active_scope = {}
+                async def release_spool() -> None:
+                    actual = spool
+                    if preparing is not None and actual is None:
+                        try:
+                            actual = await preparing
+                        except Exception:
+                            return  # Preparation owns failed partial spools; body reports its error.
+                    if actual is not None:
+                        await run_owned(actual.file.close)
+
+                # A late prepared spool is still ours. Join actual read/close
+                # work despite repeated cancellation before clearing its scope.
+                try:
+                    await wait_owned(asyncio.create_task(release_spool()))
+                finally:
+                    self._active = ""
+                    self._active_scope = {}

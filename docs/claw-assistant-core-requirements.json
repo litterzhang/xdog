@@ -188,7 +188,8 @@
         "packages/claw/tests/test_owned_reset_io.py",
         "packages/claw/tests/test_weixin_monitor.py",
         "docs/claw-owned-hybrid-memory-verification.md",
-        "packages/claw/tests/test_owned_application_projection.py"
+        "packages/claw/tests/test_owned_application_projection.py",
+        "docs/claw-owned-ingress-source-verification.md"
       ]
     },
     {
@@ -394,7 +395,9 @@
       "status": "pending",
       "evidence": [
         "docs/goal-ui-extension-verification.md",
-        "docs/shared-goal-extension-verification.md"
+        "docs/shared-goal-extension-verification.md",
+        "docs/claw-owned-ingress-source-verification.md",
+        "packages/claw/tests/test_owned_source_io.py"
       ]
     },
     {
@@ -459,7 +462,13 @@
         "packages/claw/tests/test_owned_image_io.py",
         "docs/claw-owned-hybrid-memory-verification.md",
         "packages/claw/tests/test_owned_hybrid_memory_io.py",
-        "packages/claw/tests/test_owned_application_projection.py"
+        "packages/claw/tests/test_owned_application_projection.py",
+        "docs/claw-owned-ingress-source-verification.md",
+        "packages/claw/tests/test_owned_acp_io.py",
+        "packages/claw/tests/test_owned_source_io.py",
+        "packages/claw/tests/test_owned_child_restore_io.py",
+        "packages/claw/tests/test_owned_constructor_metadata_io.py",
+        "packages/claw/tests/test_owned_mcp_spool_io.py"
       ],
       "audit_note": "Ordinary preparation and history transaction now have actual off-loop/data-durability/rollback/cancel/process-death proofs; F-02 native active-index fix preserved. Remaining startup/status/MCP/image/custom-context/compaction IO and missing-pointer/sidecar recovery audit still prevent full acceptance. No additional passed verdict before final47 review/current artifacts."
     },

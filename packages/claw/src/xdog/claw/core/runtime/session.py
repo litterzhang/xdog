@@ -30,6 +30,7 @@ from xdog.agent import (
     InputTransformedEvent,
     MessageEndEvent,
     MessageUpdateEvent,
+    StreamFn,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
     ToolExecutionUpdateEvent,
@@ -122,19 +123,27 @@ class AgentSession:
     children: ClawChildren
 
     def __init__(self, *, runtime: GroupRuntime, session_meta: SessionMeta,
-                 prepared: PreparedSession | None = None) -> None:
+                 prepared: PreparedSession | None = None, prepared_stream: StreamFn | None = None) -> None:
         self._runtime = runtime
         self._meta = session_meta
         self._group_id = runtime.group.id
-        from xdog.claw.core.persistence.session_preparation import read
+        from xdog.claw.core.persistence.session_preparation import default_stream, read
+        effective_stream_fn = prepared_stream if prepared_stream is not None else runtime.stream_fn
+        if prepared is None and effective_stream_fn is None:
+            effective_stream_fn = default_stream()  # Explicit synchronous composition only.
+        if effective_stream_fn is None:
+            raise ValueError("Model adapter must be prepared before Agent construction")
         data = prepared or read(runtime.transcript_store, session_meta, runtime.workspace_dir,
-                                runtime.model, include_history=False, skills=runtime.skill_manager)
+                                runtime.model, include_history=False, skills=runtime.skill_manager,
+                                extension_root=runtime.extension_root, stream_fn=effective_stream_fn)
         if (data.meta != session_meta or data.workspace != runtime.workspace_dir
                 or data.store_root != runtime.transcript_store._sessions_dir
                 or session_meta.group_id != self._group_id):
             raise ValueError('Prepared session belongs to another context/workspace/store')
         self._prepared_history = data.history
         self._prepared_entries = data.entries_json
+        self._prepared_extension_root = data.extension_root
+        self._model_metadata = data.model
         self._human_inputs: dict[str, str] = {}
         self._authorized_messages: dict[int, UserMessage] = {}
         self._user_operation_authorized = False
@@ -160,16 +169,9 @@ class AgentSession:
             raise ValueError("agent_spawn/agent_control are reserved for session-owned metadata")
         self._load_extensions()
         # Create the long-lived Agent
-        effective_stream_fn = runtime.stream_fn
-        if effective_stream_fn is None:
-            import xdog.ai as ai
-            from xdog.agent.helpers import stream_fn_from_provider
-            effective_stream_fn = stream_fn_from_provider(ai.load())
-
-        from xdog.agent.core import ModelStreamFn
-        native_metadata = (effective_stream_fn.resolve_model(runtime.model)
-                           if isinstance(effective_stream_fn, ModelStreamFn) and not runtime.model.startswith("ext-")
-                           else None)
+        if data.model.model_id != runtime.model:
+            raise ValueError("Prepared model belongs to another context configuration")
+        native_metadata = data.model.metadata
         if (data.saved_model and not runtime.model.startswith("ext-")
                 and native_metadata is None):
             raise ValueError("Saved native model unavailable on configured adapter; no fallback")
@@ -181,7 +183,6 @@ class AgentSession:
             runtime.context_window = native_metadata.context_window or runtime.context_window
             runtime.max_prompt_tokens = native_metadata.max_prompt_tokens
         from xdog.agent.extensions.providers import ExtensionProviderStream
-        from xdog.agent.helpers import model_supports_tool_calls
         saved_thinking = data.thinking
         options = runtime.agent_config.options
         if saved_thinking is not None:
@@ -191,9 +192,7 @@ class AgentSession:
             options = replace(options,
                               thinking=None if saved_thinking == "off" else cast(ThinkingLevel, saved_thinking))
             if options.thinking is not None and not (runtime.model or "").startswith("ext-"):
-                from xdog.agent.core import ModelStreamFn
-                metadata = (effective_stream_fn.resolve_model(runtime.model)
-                            if isinstance(effective_stream_fn, ModelStreamFn) else None)
+                metadata = native_metadata
                 if (metadata is None or not metadata.reasoning or metadata.supported_efforts is not None
                         and options.thinking not in metadata.supported_efforts):
                     raise ValueError("Saved reasoning is unavailable on the selected model; no fallback")
@@ -201,8 +200,7 @@ class AgentSession:
             ExtensionProviderStream(self.extensions, effective_stream_fn),
             config=AgentConfig(
                 model=runtime.model or "test/dummy",
-                supports_tool_calls=(native_metadata.supports_tool_calls if native_metadata is not None
-                                     else model_supports_tool_calls(runtime.model or "")),
+                supports_tool_calls=data.model.supports_tool_calls,
                 system_prompt="",  # rebuilt each turn
                 context_window=runtime.context_window,
                 max_prompt_tokens=runtime.max_prompt_tokens,
@@ -236,7 +234,7 @@ class AgentSession:
         )
 
         self._human_input_unsubscribe = self._agent.subscribe(self._observe_human_input)
-        self.children = ClawChildren(self)
+        self.children = ClawChildren(self, data.children)
         self._agent.set_tools((*self._agent.state.tools, *self.children.supervisor.tools()))
         if self._tool_selection_restore_pending:
             self._agent.set_active_tools([], expected_revision=self._agent.tool_selection_revision)
@@ -415,7 +413,7 @@ class AgentSession:
             settings=self._runtime.extension_settings, context=lambda: {"session_id": self._meta.session_id,
                 "group_id": self._group_id, "cwd": str(self._runtime.workspace_dir), "model": self._runtime.model,
                 "read_only": self.access.state.read_only, "permission_mode": "configured"}, entries=entries,
-            inspection=self._extension_inspection)
+            inspection=self._extension_inspection, prepared_root=self._prepared_extension_root)
         self.extensions.tool_inventory = self._extension_tools
         self.extensions.session_name = self._extension_session_name
         if hasattr(self, "_agent"):
@@ -447,11 +445,12 @@ class AgentSession:
     def _extension_inspection(self) -> dict[str, Any] | None:
         if not hasattr(self, "_agent"):
             return None
-        from xdog.agent.core import ModelStreamFn
         from xdog.agent.extensions.inspection import capture
         from xdog.ai.types import Model
-        stream = self._agent.stream_fn
-        selected = stream.resolve_model(self._agent.state.model) if isinstance(stream, ModelStreamFn) else None
+        model_id = self._agent.state.model
+        metadata = self._model_metadata
+        selected = (self.extensions.provider_model(model_id) if model_id.startswith("ext-") else
+                    metadata.metadata if metadata.model_id == model_id else None)
         return capture(self._agent, self._meta.session_id, self._meta.session_id,
                        selected if isinstance(selected, Model) else None,
                        context_window=self._runtime.context_window, max_prompt_tokens=self._runtime.max_prompt_tokens)

@@ -13,7 +13,7 @@ except ImportError as exc:
     raise ImportError('Claw ACP requires Python3.12-3.14 and agent-client-protocol>=0.12.1,<0.13') from exc
 
 from xdog.agent.acp.contracts import JsonValue, Peer, SessionRef, UpdateSink, finite_json, invalid
-from xdog.agent.async_work import wait_owned
+from xdog.agent.async_work import run_owned, wait_owned
 from xdog.agent.session_input import decode_input
 from xdog.claw.core.inputs.consumer import InputService
 from xdog.claw.core.inputs.models import InputScope
@@ -52,11 +52,11 @@ class ClawBackend:
             if not isinstance(cwd, (str, Path)):
                 raise ValueError("Expected absolute workspace path")
             path = Path(cwd)
-            if not path.is_absolute() or path.resolve() != workspace:
+            if not path.is_absolute() or path != workspace:
                 raise ValueError("Group workspace mismatch")
         return group, workspace
 
-    def _bound(self, ref: SessionRef, peer: Peer) -> tuple[str, Path]:
+    def _binding(self, ref: SessionRef, peer: Peer) -> tuple[str, Path]:
         self._active(peer)
         if self._bindings.get((peer.id, ref.id)) != ref:
             raise invalid("Unknown group binding")
@@ -65,22 +65,43 @@ class ClawBackend:
         except ValueError as exc:
             raise invalid(str(exc)) from exc
 
+    async def _resolved_target(self, session_id: object, cwd: object, peer: Peer) -> tuple[str, Path]:
+        self._active(peer)
+        expected = self._target(session_id)  # Capture original registry identity on its loop.
+        if not isinstance(cwd, (str, Path)) or not Path(cwd).is_absolute():
+            raise ValueError("Expected absolute workspace path")
+        resolved = await run_owned(Path(cwd).resolve)
+        self._active(peer)
+        target = self._target(session_id, resolved)
+        if target != expected:
+            raise ValueError("Group workspace changed during validation")
+        return target
+
+    async def _bound(self, ref: SessionRef, peer: Peer) -> tuple[str, Path]:
+        expected = self._binding(ref, peer)
+        try:
+            target = await self._resolved_target(ref.id, ref.cwd, peer)
+            if self._binding(ref, peer) != expected or target != expected:
+                raise ValueError("Group binding changed during validation")
+            return target
+        except ValueError as exc:
+            raise invalid(str(exc)) from exc
+
     async def new_session(self, cwd: Path, peer: Peer) -> SessionRef:
         raise invalid("Claw ACP never creates groups; load an explicit group:<id>")
 
     async def load_session(self, session_id: str, cwd: Path, peer: Peer, emit: UpdateSink) -> SessionRef:
-        self._active(peer)
         try:
-            self._target(session_id, cwd)
+            _group, workspace = await self._resolved_target(session_id, cwd, peer)
         except ValueError as exc:
             raise invalid(str(exc)) from exc
-        ref = SessionRef(session_id, cwd.resolve(), self.generation)
+        ref = SessionRef(session_id, workspace, self.generation)
         self._bindings[peer.id, session_id] = ref
         return ref
 
     async def prompt(self, ref: SessionRef, peer: Peer, text: str,
                      metadata: dict[str, JsonValue], emit: UpdateSink) -> PromptResponse:
-        group, cwd = self._bound(ref, peer)
+        group, cwd = self._binding(ref, peer)
         scope, key = InputScope(group, cwd), (peer.id, ref.id)
         if key in self._prompts:
             raise invalid('A prompt is already pending for this peer/group')
@@ -89,6 +110,7 @@ class ClawBackend:
         self._prompts[key] = task
         identifier = uuid.uuid4().hex
         try:
+            await self._bound(ref, peer)
             details = metadata.get('xdog', {})
             if not isinstance(details, dict):
                 raise ValueError('Invalid external input metadata')
@@ -118,7 +140,7 @@ class ClawBackend:
             self._prompts.pop(key, None)
 
     async def cancel(self, ref: SessionRef, peer: Peer) -> None:
-        self._bound(ref, peer)
+        self._binding(ref, peer)  # Cancel the original waiter even while path validation is pending.
         task = self._prompts.get((peer.id, ref.id))
         if task is not None:
             self._cancelled_requests.add((peer.id, ref.id))
@@ -144,11 +166,11 @@ class ClawBackend:
                 ref = self._bindings.get((peer.id, params['session_id']))
                 if ref is None:
                     raise ValueError('Unknown bound group')
-                self._bound(ref, peer)
+                await self._bound(ref, peer)
                 return {'session_id': ref.id, 'cwd': str(ref.cwd), 'generation': ref.generation}
             if method not in {'xdog/enqueue', 'xdog/inbox_status'}:
                 raise RequestError(-32601, 'Unsupported Claw ACP extension')
-            group, cwd = self._target(params.get('session_id'), params.get('cwd', ''))
+            group, cwd = await self._resolved_target(params.get('session_id'), params.get('cwd', ''), peer)
             scope = InputScope(group, cwd)
             if method == 'xdog/enqueue':
                 fields = {'session_id', 'cwd', 'message_id', 'instruction', 'source', 'evidence', 'provenance'}

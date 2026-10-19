@@ -11,6 +11,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from xdog.agent.async_work import run_owned
+
 logger = logging.getLogger(__name__)
 
 
@@ -117,7 +119,7 @@ async def connect_tui(socket_path: str, group_id: str = "main") -> None:
     """
     sock = Path(socket_path)
 
-    if not sock.exists():
+    if not await run_owned(sock.exists):
         raise GatewayConnectionError(
             f"Gateway socket not found at {sock}. "
             "Is the gateway running? Start it with: xdog-claw gateway start"

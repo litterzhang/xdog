@@ -3,15 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
-import stat
 from pathlib import Path
 
 from xdog.agent.acp.adapter import AcpAdapter
 from xdog.agent.acp.transport import serve
-from xdog.agent.async_work import wait_owned
+from xdog.agent.async_work import run_owned, wait_owned
 from xdog.claw.acp.backend import ClawBackend
 from xdog.claw.core.runtime.orchestrator import Orchestrator
+from xdog.claw.core.runtime.unix_endpoint import BoundEndpoint, bind_private, close, listen
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +19,7 @@ class ClawAcpServer:
     def __init__(self, path: Path, backend: ClawBackend) -> None:
         self.path, self.backend = path, backend
         self._server: asyncio.Server | None = None
-        self._identity: tuple[int, int] | None = None
+        self._endpoint: BoundEndpoint | None = None
         self._writers: set[asyncio.StreamWriter] = set()
         self._tasks: set[asyncio.Task[None]] = set()
         self._closing = False
@@ -31,20 +30,22 @@ class ClawAcpServer:
         maximum = 107  # Current Linux Unix-domain path limit; no non-Linux transport adapter.
         if not path.is_absolute() or "\x00" in str(path) or len(str(path).encode()) > maximum:
             raise ValueError("ACP socket must have a bounded absolute Unix path")
-        path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-        directory = path.parent.lstat()
-        if (path.parent.resolve() != path.parent or not stat.S_ISDIR(directory.st_mode)
-                or directory.st_uid != os.getuid() or stat.S_IMODE(directory.st_mode) != 0o700):
-            raise ValueError("ACP endpoint directory must be owned and private (0700), without symlinks")
-        if path.exists() or path.is_symlink():
-            raise ValueError("ACP endpoint already exists; stop its owner/remove a confirmed stale socket explicitly")
-        backend = await ClawBackend.open(orchestrator)
-        result = cls(path, backend)
+        acquiring = asyncio.create_task(asyncio.to_thread(bind_private, path))
         try:
-            result._server = await asyncio.start_unix_server(result._accept, path=str(path), limit=1024 * 1024)
-            info = path.lstat()
-            result._identity = info.st_dev, info.st_ino
-            os.chmod(path, 0o600)
+            endpoint = await wait_owned(acquiring)
+        except BaseException:
+            if acquiring.done() and not acquiring.cancelled() and acquiring.exception() is None:
+                await run_owned(close, acquiring.result())
+            raise
+        try:
+            backend = await ClawBackend.open(orchestrator)
+        except BaseException:
+            await run_owned(close, endpoint)
+            raise
+        result = cls(path, backend)
+        result._endpoint = endpoint
+        try:
+            result._server = await listen(result._accept, endpoint, limit=1024 * 1024)
             return result
         except BaseException:
             await result.close()
@@ -89,10 +90,9 @@ class ClawAcpServer:
         await asyncio.gather(*tasks, return_exceptions=True)
         if self._server is not None:
             await self._server.wait_closed()
-        await self.backend.close()
         try:
-            info = self.path.lstat()
-            if stat.S_ISSOCK(info.st_mode) and (info.st_dev, info.st_ino) == self._identity:
-                self.path.unlink()
-        except FileNotFoundError:
-            pass
+            await self.backend.close()
+        finally:
+            if self._endpoint is not None:
+                endpoint, self._endpoint = self._endpoint, None
+                await run_owned(close, endpoint)

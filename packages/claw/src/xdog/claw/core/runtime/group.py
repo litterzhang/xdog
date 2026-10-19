@@ -239,6 +239,7 @@ class GroupRuntime:
         )
         # Acquire optional search workers last: a failed constructor must not
         # orphan resources that the unpublished runtime never came to own.
+        runtime._tools = runtime._builtin_tools()
         runtime.memory = MemoryManager(ws, group_dir, group.id, embed_fn=embed_fn)
         return runtime
 
@@ -247,13 +248,14 @@ class GroupRuntime:
     @property
     def tools(self) -> list[AgentTool]:
         if self._tools is None:
-            enabled = self._enabled_tools
-            if self.goal_available and enabled is not None:
-                enabled = tuple(name for name in enabled if name != "goal")
-            self._tools = create_tools(
-                enabled=enabled, workspace_dir=self.workspace_dir, image_model=self.group.image_model,
-            )
+            self._tools = self._builtin_tools()  # Explicit synchronous fixture/composition fallback.
         return [*self._tools, *self.mcp.tools(), *self.capability_tools]
+
+    def _builtin_tools(self) -> list[AgentTool]:
+        enabled = self._enabled_tools
+        if self.goal_available and enabled is not None:
+            enabled = tuple(name for name in enabled if name != "goal")
+        return create_tools(enabled=enabled, workspace_dir=self.workspace_dir, image_model=self.group.image_model)
 
     @property
     def goal_available(self) -> bool:
@@ -377,7 +379,7 @@ class GroupRuntime:
         from functools import partial
 
         from xdog.agent.async_work import run_owned
-        from xdog.claw.core.persistence.session_preparation import check, prepare
+        from xdog.claw.core.persistence.session_preparation import check, default_stream, prepare
         from xdog.claw.core.runtime.session import AgentSession
 
         async with self._session_prepare_lock:
@@ -404,13 +406,20 @@ class GroupRuntime:
             if previous is not None:
                 self._drop_session()
             generation = self._source_revision
+            configured_stream = self.stream_fn
+            adapter: StreamFn = configured_stream if configured_stream is not None else await run_owned(default_stream)
+            if (self._source_revision != generation or self._active_session is not None
+                    or self.stream_fn is not configured_stream):
+                raise ValueError("Model adapter owner changed during preparation")
             data = await run_owned(partial(prepare, self.transcript_store, self.group.id,
-                self.workspace_dir, self._configured_model, plan.meta, reset=plan.reset_due, skills=self.skill_manager))
-            if self._active_session is not None or self._source_revision != generation:
+                self.workspace_dir, self._configured_model, plan.meta, reset=plan.reset_due, skills=self.skill_manager,
+                extension_root=self.extension_root, stream_fn=adapter))
+            if (self._active_session is not None or self._source_revision != generation
+                    or self.stream_fn is not configured_stream):
                 raise ValueError('Session preparation owner changed before publication')
             self.model = data.saved_model or self._configured_model
             self.context_window, self.max_prompt_tokens = self._configured_limits
-            session = AgentSession(runtime=self, session_meta=data.meta, prepared=data)
+            session = AgentSession(runtime=self, session_meta=data.meta, prepared=data, prepared_stream=adapter)
             self._active_session = session
             self._session_last_active = time.time()
             return session

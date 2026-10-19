@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from xdog.agent import Agent, AgentConfig, AgentMessage, BeforeToolCallContext, BeforeToolCallResult
 from xdog.agent.access import read_only_call
+from xdog.agent.async_work import run_owned
 from xdog.agent.core import AgentState, AgentTool, AgentToolResult
 from xdog.agent.history import history_points
 from xdog.agent.messages import dicts_to_messages, messages_to_dicts
@@ -20,32 +21,30 @@ from xdog.agent.types import AfterToolCallContext, AfterToolCallResult, HandledI
 from xdog.ai.types import UserMessage
 
 if TYPE_CHECKING:
+    from xdog.claw.core.persistence.session_preparation import PreparedChildren
     from xdog.claw.core.runtime.goal_adapter import ClawGoalHost
     from xdog.claw.core.runtime.session import AgentSession
 
 
 class ClawChildren:
     supervisor: ChildSupervisor
-    def __init__(self, session: AgentSession) -> None:
+    def __init__(self, session: AgentSession, prepared: PreparedChildren) -> None:
         self.session = session
         self.goal_host: ClawGoalHost | None = None
         branch = session._store.active_branch(session.meta.session_id) or "head"
+        if branch != prepared.branch:
+            raise ValueError("Prepared child catalog belongs to another context branch")
         self.store = ChildStore.scoped(session._store._sessions_dir, session.meta.session_id, branch)
         self.snapshots: dict[str, AgentState] = {}
         self.tool_limits: dict[str, tuple[str, ...] | None] = {}
         self.extensions = ChildExtensions(session.extensions, self.store)
-        diagnostic = ""
-        try:
-            records = self.store.load()
-        except (ValueError, TypeError, OSError, UnicodeError) as exc:
-            records = []
-            diagnostic = "Child catalog unavailable; repair saved records before delegation: " + str(exc)[:500]
+        records = json.loads(prepared.records_json)
         self.supervisor = ChildSupervisor(self.create, self.store.save, capture=self.capture, begin=self.store.begin,
             persist_inputs=self.store.save_inputs, persist_return=self.store.save_return,
             persist_admission=self.store.save_admission, archive_compaction=self.store.archive_compaction,
             forget=self.store.forget, finalize=self.finish,
             on_event=self.extensions.event, records=records, presets=session._runtime.child_presets)
-        self.supervisor.diagnostic = diagnostic
+        self.supervisor.diagnostic = prepared.diagnostic
     def capture(self, spec: ChildSpec) -> None:
         role = None
         if self.goal_host is not None:
@@ -83,7 +82,7 @@ class ClawChildren:
         points = history_points(state.messages)
         prefix = state.messages[:points[-1].index + 1] if spec.inherit_context and points else ()
         inherited = dicts_to_messages(json.loads(json.dumps(messages_to_dicts(list(prefix)))))
-        selected = await asyncio.to_thread(resolve_child_model, session.agent.stream_fn, state.model,
+        selected = await run_owned(resolve_child_model, session.agent.stream_fn, state.model,
             session.agent.options,
             spec.config(), runtime.context_window,
             session.agent.supports_tool_calls, parent_max_prompt_tokens=session.agent.max_prompt_tokens)

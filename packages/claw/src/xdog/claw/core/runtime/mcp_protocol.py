@@ -3,12 +3,16 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, BinaryIO
 
+from xdog.agent.async_work import run_owned, wait_owned
 from xdog.agent.mcp.completion import McpCompletion
 from xdog.agent.mcp.context import McpDocument, McpEntry
 from xdog.claw.channels.tui.mcp_data import spool_mcp_data
+
+logger = logging.getLogger(__name__)
 
 
 class McpSender:
@@ -23,6 +27,7 @@ class McpSender:
         self._task: asyncio.Task[None] | None = None
         self._operation: asyncio.Task[None] | None = None
         self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
 
     def request(self, request: dict[str, Any]) -> None:
         if self._closed:
@@ -45,6 +50,11 @@ class McpSender:
         self._closed = True
         self._pending = None
         self.cancel(self._active)
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close())
+        await wait_owned(self._close_task)
+
+    async def _close(self) -> None:
         if self._task is not None:
             await asyncio.gather(self._task, return_exceptions=True)
 
@@ -53,7 +63,10 @@ class McpSender:
             request, self._pending = self._pending, None
             self._active = str(request["request_id"])
             self._operation = asyncio.create_task(self._transfer(request))
-            await asyncio.gather(self._operation, return_exceptions=True)
+            results = await asyncio.gather(self._operation, return_exceptions=True)
+            for result in results:
+                if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+                    logger.warning("MCP preview cleanup failed", exc_info=result)
             self._operation = None
             self._active = ""
 
@@ -104,14 +117,16 @@ class McpSender:
             except (OSError, TimeoutError):
                 pass
         finally:
-            # Threads cannot be force-canceled. Retain their one file owner until
-            # creation/read settles, even on browser close or connection teardown.
-            if preparing is not None and file is None:
-                try:
-                    file, _size, _checksum = await asyncio.shield(preparing)
-                except Exception:
-                    pass
-            if reading is not None:
-                await asyncio.gather(reading, return_exceptions=True)
-            if file is not None:
-                file.close()
+            async def release_spool() -> None:
+                actual = file
+                if preparing is not None and actual is None:
+                    try:
+                        actual, _size, _checksum = await preparing
+                    except Exception:
+                        return
+                if reading is not None:
+                    await asyncio.gather(reading, return_exceptions=True)
+                if actual is not None:
+                    await run_owned(actual.close)
+
+            await wait_owned(asyncio.create_task(release_spool()))

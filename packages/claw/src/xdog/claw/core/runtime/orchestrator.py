@@ -821,7 +821,11 @@ class Orchestrator:
             session._children_idle()
         model_id = session.agent.state.model
         stream = session.agent.stream_fn
-        model = stream.resolve_model(model_id) if isinstance(stream, ModelStreamFn) else None
+        model = await run_owned(stream.resolve_model, model_id) if isinstance(stream, ModelStreamFn) else None
+        if (runtime._active_session is not session or runtime.get_new_session_id() != owner_session
+                or session.agent.state.model != model_id or session.agent.stream_fn is not stream
+                or session.agent.state.is_streaming):
+            raise ValueError("Reasoning owner changed during metadata read")
         levels = ("minimal", "low", "medium", "high", "xhigh")
         available = (model.supported_efforts if model is not None and model.supported_efforts is not None
                      else levels if model is not None and model.reasoning else ())
@@ -842,6 +846,7 @@ class Orchestrator:
             def apply() -> None:
                 session.agent.set_options(replace(session.agent.options,
                     thinking=None if level == "off" else cast(ThinkingLevel, level)))
+                session._model_metadata = replace(session._model_metadata, metadata=model)
                 runtime._source_revision += 1
             try:
                 await run_owned(persist)
@@ -869,7 +874,16 @@ class Orchestrator:
         owner_session = session.meta.session_id
         await session.initialize_extensions()
         stream = session.agent.stream_fn
-        models = stream.models() if isinstance(stream, CatalogStreamFn) else session.extensions.provider_models()
+        original_model = session.agent.state.model
+
+        def owner_current() -> bool:
+            return (runtime._active_session is session and runtime.get_new_session_id() == owner_session
+                    and session.agent.state.model == original_model and session.agent.stream_fn is stream)
+
+        models = (await run_owned(stream.models) if isinstance(stream, CatalogStreamFn)
+                  else session.extensions.provider_models())
+        if not owner_current():
+            raise ValueError("Model catalog owner changed during metadata read")
         if len(models) > 576 or len({model.id for model in models}) != len(models):
             raise ValueError("Invalid/duplicate/oversized configured model catalog")
         for model in models:
@@ -880,7 +894,9 @@ class Orchestrator:
             session._children_idle()
             if session.agent.state.is_streaming:
                 raise ValueError("Model selection requires an idle session")
-            resolved = stream.resolve_model(selected) if isinstance(stream, ModelStreamFn) else None
+            resolved = await run_owned(stream.resolve_model, selected) if isinstance(stream, ModelStreamFn) else None
+            if not owner_current() or session.agent.state.is_streaming:
+                raise ValueError("Model selection owner changed during metadata read")
             if (resolved is None or resolved.model_type != "chat" or not resolved.supports_streaming
                     or resolved.context_window <= 0):
                 raise ValueError("Model is not an available streaming chat model on configured adapter; no fallback")
@@ -890,6 +906,8 @@ class Orchestrator:
             if selected != session.agent.state.model:
                 saved = await run_owned(runtime.transcript_store.get_reasoning,
                                                 session.meta.session_id, selected)
+                if not owner_current() or session.agent.state.is_streaming:
+                    raise ValueError("Model selection owner changed during saved reasoning read")
                 target_thinking = (None if saved == "off" else cast(ThinkingLevel, saved) if saved is not None
                                    else runtime.agent_config.options.thinking)
             if not model.reasoning:
@@ -913,6 +931,8 @@ class Orchestrator:
                 session.agent.set_model_capabilities(context_window=model.context_window,
                                                      max_prompt_tokens=model.max_prompt_tokens,
                                                      supports_tool_calls=model.supports_tool_calls)
+                session._model_metadata = replace(session._model_metadata, model_id=selected,
+                    metadata=model, supports_tool_calls=model.supports_tool_calls)
                 runtime.model, runtime.context_window = selected, model.context_window
                 runtime.max_prompt_tokens = model.max_prompt_tokens
                 runtime._source_revision += 1
@@ -925,7 +945,11 @@ class Orchestrator:
             if not owner_alive():
                 raise ValueError("Model session changed before applying stored selection")
             apply()
-        active_model = (stream.resolve_model(session.agent.state.model) if isinstance(stream, ModelStreamFn) else None)
+        active_id = session.agent.state.model
+        active_model = await run_owned(stream.resolve_model, active_id) if isinstance(stream, ModelStreamFn) else None
+        if (runtime._active_session is not session or runtime.get_new_session_id() != owner_session
+                or session.agent.state.model != active_id or session.agent.stream_fn is not stream):
+            raise ValueError("Active model owner changed during metadata read")
         context_window = (active_model.context_window if active_model is not None else
                           0 if session.agent.state.model.startswith("ext-") else session.agent.context_window)
         return {"session_id": runtime.get_new_session_id() or "", "model": session.agent.state.model,

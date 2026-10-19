@@ -31,6 +31,7 @@ try:
 except ImportError as exc:
     raise ImportError("ACP requires Python 3.12–3.14 and agent-client-protocol>=0.12.1,<0.13") from exc
 from xdog.agent.acp.contracts import MAX_INPUT_BYTES, Backend, Peer, SessionRef, invalid, metadata
+from xdog.agent.async_work import run_owned
 
 
 class AcpAdapter(SdkAgent):
@@ -84,18 +85,26 @@ class AcpAdapter(SdkAgent):
     async def new_session(
         self, cwd: str, additional_directories: Any = None, mcp_servers: Any = None, **kwargs: Any
     ) -> NewSessionResponse:
-        path = self._cwd(cwd, mcp_servers, additional_directories)
-        ref = await self.backend.new_session(path, self._peer())
+        peer = self._peer()
+        path = await run_owned(self._cwd, cwd, mcp_servers, additional_directories)
+        if self._peer() is not peer:
+            raise invalid("ACP peer changed during workspace validation")
+        ref = await self.backend.new_session(path, peer)
+        if self._peer() is not peer:
+            raise invalid("ACP peer changed during session creation")
         self.sessions[ref.id] = ref
         return NewSessionResponse.model_validate({"sessionId": ref.id})
 
     async def load_session(
         self, cwd: str, session_id: str, mcp_servers: Any = None, additional_directories: Any = None, **kwargs: Any
     ) -> LoadSessionResponse:
-        path = self._cwd(cwd, mcp_servers, additional_directories)
-        ref = await self.backend.load_session(
-            session_id, path, self._peer(), lambda update: self._emit(session_id, update)
-        )
+        peer = self._peer()
+        path = await run_owned(self._cwd, cwd, mcp_servers, additional_directories)
+        if self._peer() is not peer:
+            raise invalid("ACP peer changed during workspace validation")
+        ref = await self.backend.load_session(session_id, path, peer, lambda update: self._emit(session_id, update))
+        if self._peer() is not peer:
+            raise invalid("ACP peer changed during session loading")
         self.sessions[ref.id] = ref
         return LoadSessionResponse()
 
