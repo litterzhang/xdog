@@ -1,15 +1,15 @@
 name: publish
 
-# Publishes the seven distributions to PyPI via Trusted Publishing (OIDC) — no API
+# Publishes the eight distributions to PyPI via Trusted Publishing (OIDC) — no API
 # token is stored anywhere. PyPI verifies the request came from this repository,
 # this workflow file, and the named environment.
 #
 # Two ways in:
-#   * push a tag `v0.57.1`  → builds and publishes every package
+#   * push a tag `vX.Y.Z`  → builds and publishes every package
 #   * Run workflow…         → publish a subset, for a staged first release
 #
 # Publish order does not matter: PyPI does not resolve Requires-Dist at upload
-# time, only at install time, and all seven land in the same run.
+# time, only at install time, and all eight land in the same run.
 
 on:
   push:
@@ -18,10 +18,9 @@ on:
     inputs:
       packages:
         description: >-
-          JSON array of packages to publish. PyPI allows only three *pending*
-          trusted publishers at a time, so a first release has to go in waves —
-          publish three, which converts their pending publishers to regular ones
-          and frees the slots, then register and publish the rest.
+          JSON array of packages to publish, e.g. ["xdog-skills"].
+          Use a subset for a new package after configuring its PyPI pending
+          trusted publisher and matching per-package GitHub environment.
         default: '["xdog-ai","xdog-tui","xdog-agent","xdog-flow","xdog-claw","xdog-coding","xdog-eyes","xdog-skills"]'
 
 permissions:
@@ -60,14 +59,14 @@ jobs:
       - run: uv sync
       - run: uv run pytest -q
       - run: uv run ruff check packages
-      - run: uv run mypy --strict -p xdog.flow
+      - run: uv run mypy --strict -p xdog.flow -p xdog.skills
 
   publish:
     needs: [build, test]
     runs-on: ubuntu-latest
     strategy:
       # One environment per package: PyPI keys a *pending* publisher on
-      # (owner, repository, workflow, environment), so seven packages sharing one
+      # (owner, repository, workflow, environment), so packages sharing one
       # environment name is ambiguous — it cannot tell which project an upload
       # should create — and registering the second one is rejected outright.
       # Per-package environments also mean one package failing does not block
