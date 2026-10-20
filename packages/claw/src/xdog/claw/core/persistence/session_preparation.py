@@ -125,6 +125,8 @@ def check(store: TranscriptStore, group: str, daily_hour: int, idle_seconds: int
         meta = store.get_active_session(group)
         if meta is None and store.list_sessions(group):
             raise ValueError('Committed current pointer missing; archives are readonly data, not an executable context')
+        if meta is not None:
+            store.load_transcript(meta.session_id)  # Check before reset can replace its pointer.
         restricted = meta is not None and AccessState.from_dict(store.get_access(meta.session_id)).read_only
         due = allow_reset and not restricted and (store.needs_daily_reset(group, daily_hour)
                                                   or store.needs_idle_reset(group, idle_seconds))

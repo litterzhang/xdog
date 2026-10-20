@@ -161,6 +161,8 @@ class GroupRuntime:
         self._session_last_active: float = 0.0
         self._session_prepare_lock = asyncio.Lock()
         self._source_revision = 0
+        self._closing = False
+        self._close_task: asyncio.Task[None] | None = None
 
         # Memory snapshot cache (frozen per-turn, reload on mtime change)
         self._memory_snapshot: str | None = None
@@ -263,6 +265,7 @@ class GroupRuntime:
         return find_spec("xdog.skills") is not None
 
     async def initialize_goals(self, inputs: InputService) -> None:
+        self.require_open()
         if not self.goal_available:
             return
         if self.goal_host is None:
@@ -339,26 +342,21 @@ class GroupRuntime:
 
     # -- Session lifecycle -----------------------------------------------------
 
-    def get_or_create_session(self, *, allow_reset: bool = True) -> Any:
+    def get_or_create_session(self, *, allow_reset: bool = True) -> AgentSession:
+        """Synchronous fixture/composition helper; application routes use prepare_session."""
+        from xdog.claw.core.persistence.session_preparation import check
         from xdog.claw.core.runtime.session import AgentSession
-
+        self.require_open()
         group_id = self.group.id
         config = self.group.config
-
-        from xdog.agent.access import AccessState
-        current = self.transcript_store.get_active_session(group_id)
-        read_only = (current is not None and AccessState.from_dict(
-            self.transcript_store.get_access(current.session_id)).read_only)
         children_active = self._active_session is not None and self._active_session.children.supervisor.active
-        if (allow_reset and not read_only and not children_active
-                and (self.transcript_store.needs_daily_reset(group_id, config.daily_reset_hour)
-                     or self.transcript_store.needs_idle_reset(group_id, config.idle_reset_seconds))):
+        plan = check(self.transcript_store, group_id, config.daily_reset_hour, config.idle_reset_seconds,
+                     allow_reset=allow_reset and not children_active)
+        if plan.reset_due:
             self._drop_session()
-            self.transcript_store.reset_session(group_id)
-
-        meta = self.transcript_store.get_active_session(group_id)
-        if meta is None:
-            meta = self.transcript_store.create_session(group_id)
+            meta = self.transcript_store.reset_session(group_id)
+        else:
+            meta = plan.meta or self.transcript_store.create_session(group_id)
 
         if self._active_session is not None and self._active_session.meta.session_id == meta.session_id:
             self._session_last_active = time.time()
@@ -382,14 +380,10 @@ class GroupRuntime:
         from xdog.claw.core.persistence.session_preparation import check, default_stream, prepare
         from xdog.claw.core.runtime.session import AgentSession
 
+        self.require_open()
         async with self._session_prepare_lock:
+            self.require_open()
             previous = self._active_session
-            if previous is not None and not allow_reset:
-                current = self.transcript_store.get_active_session(self.group.id)  # Committed in-memory binding only.
-                if current is None or current.session_id != previous.meta.session_id:
-                    raise ValueError('Cached session owner changed; no implicit parent replacement')
-                self._session_last_active = time.time()
-                return previous
             generation = self._source_revision
             config = self.group.config
             children_active = previous is not None and previous.children.supervisor.active
@@ -503,7 +497,8 @@ class GroupRuntime:
         self.reset_session()
 
     def reset_session(self) -> None:
-        """Rotate an idle group's context without deleting or reassigning Goals."""
+        """Synchronous composition only; application reset uses reset_context."""
+        self.require_open()
         if (self.transcript_store.get_active_session(self.group.id) is None
                 and self.transcript_store.list_sessions(self.group.id)):
             raise ValueError('Committed current pointer missing; recover its original binding or use a fresh data root')
@@ -513,6 +508,29 @@ class GroupRuntime:
                 raise RuntimeError("Context reset requires an idle agent")
         self._drop_session()
         self.transcript_store.reset_session(self.group.id)
+
+    def require_open(self) -> None:
+        if self._closing:
+            raise RuntimeError('Group runtime is closing or closed')
+
+    async def reset_context(self, expected_session: str) -> None:
+        from xdog.claw.core.runtime.group_lifecycle import reset_context
+        await reset_context(self, expected_session)
+
+    async def settle_capabilities(self) -> None:
+        """Settle publication before the application closes the capability input port."""
+        from xdog.agent.async_work import wait_owned
+        if self._goal_start is not None:
+            await wait_owned(self._goal_start)
+
+    async def aclose(self) -> None:
+        """A single owned close survives detached/repeatedly canceled callers."""
+        from xdog.agent.async_work import wait_owned
+        from xdog.claw.core.runtime.group_lifecycle import close
+        if self._close_task is None:
+            self._closing = True
+            self._close_task = asyncio.create_task(close(self), name=f'claw-group-close:{self.group.id}')
+        await wait_owned(self._close_task)
 
     def steer(self, content: str) -> None:
         if self._active_session is not None:

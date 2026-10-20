@@ -1259,25 +1259,7 @@ class Orchestrator:
         self._navigation_groups.add(group_id)
         try:
             async with self.group_controller(group_id).acquire(is_user=True):
-                from functools import partial
-
-                from xdog.claw.core.persistence.session_preparation import check, reset
-                if (runtime.get_new_session_id() or '') != expected_session:
-                    raise ValueError('Active context changed; refresh before creating a new context')
-                if runtime._active_session is not None:
-                    runtime._active_session._children_idle()
-                    if runtime._active_session.agent.is_streaming:
-                        raise RuntimeError('Context reset requires an idle agent')
-                previous = runtime._active_session
-                generation = runtime._source_revision
-                config = runtime.group.config
-                plan = await run_owned(partial(check, runtime.transcript_store, group_id,
-                    config.daily_reset_hour, config.idle_reset_seconds, allow_reset=False))
-                if (runtime._active_session is not previous or runtime._source_revision != generation
-                        or (runtime.get_new_session_id() or '') != expected_session):
-                    raise ValueError('Reset owner changed during preparation')
-                runtime._drop_session()  # Session/Agent lifecycle stays on its actual owner loop.
-                await run_owned(reset, runtime.transcript_store, group_id, plan.meta)
+                await runtime.reset_context(expected_session)
         finally:
             self._navigation_groups.discard(group_id)
 
@@ -1441,8 +1423,8 @@ class Orchestrator:
             await asyncio.gather(self._input_start_task, return_exceptions=True)
         # Settle capability publication before closing either its input port or its lease.
         # start() fences later group admissions once request_stop() has run.
-        await asyncio.gather(*(runtime._goal_start for runtime in self._runtimes.values()
-            if runtime._goal_start is not None), return_exceptions=True)
+        capability_started = await asyncio.gather(
+            *(runtime.settle_capabilities() for runtime in self._runtimes.values()), return_exceptions=True)
         # Stop ingress and settle channel-owned turns before closing their resources.
         disconnected = await asyncio.gather(
             *(channel.disconnect() for channel in self._channels), return_exceptions=True,
@@ -1451,25 +1433,10 @@ class Orchestrator:
         output_closed = await asyncio.gather(self._outputs.close(), return_exceptions=True) if self._outputs else []
         if self._output_resume is not None:
             await asyncio.gather(self._output_resume, return_exceptions=True)
-        children = [runtime._active_session.children.supervisor for runtime in self._runtimes.values()
-                    if runtime._active_session is not None]
-        children_closed = await asyncio.gather(*(owner.aclose() for owner in children), return_exceptions=True)
-        goal_closed = await asyncio.gather(*(runtime.goal_host.aclose() for runtime in self._runtimes.values()
-            if runtime.goal_host is not None), return_exceptions=True)
-        owners = [owner for runtime in self._runtimes.values() for owner in runtime._retired_extensions]
-        owners.extend(runtime._active_session.extensions for runtime in self._runtimes.values()
-                      if runtime._active_session is not None)
-        extensions_closed = await asyncio.gather(*(owner.aclose() for owner in owners), return_exceptions=True)
-        mcp_closed = await asyncio.gather(
-            *(runtime.mcp.aclose() for runtime in self._runtimes.values()), return_exceptions=True,
-        )
-        memory_closed = await asyncio.gather(
-            *(runtime.memory.close() for runtime in self._runtimes.values() if runtime.memory is not None),
-            return_exceptions=True,
-        )
-        errors = [result for result in (*group_closed, *disconnected, *input_closed, *output_closed,
-            *children_closed, *goal_closed, *extensions_closed, *mcp_closed, *memory_closed)
-            if isinstance(result, BaseException)]
+        runtime_closed = await asyncio.gather(
+            *(runtime.aclose() for runtime in self._runtimes.values()), return_exceptions=True)
+        errors = [result for result in (*group_closed, *capability_started, *disconnected,
+            *input_closed, *output_closed, *runtime_closed) if isinstance(result, BaseException)]
         if len(errors) == 1:
             raise errors[0]
         if errors:

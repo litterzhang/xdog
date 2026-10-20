@@ -20,7 +20,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from xdog.claw.core.persistence.transcript_validation import validate_entry
 from xdog.claw.core.types import SessionMeta
+
+
+class TranscriptUnavailable(ValueError):
+    """Unavailable history is never an empty conversation or a new owner."""
 
 
 class SessionNameOwnerChanged(ValueError):
@@ -232,11 +237,13 @@ class TranscriptStore:
                 if identifier in sessions:
                     raise ValueError("Current index session file has multiple group owners")
                 sessions.add(identifier)
-                for key in ("created_at", "last_active"):
+                for key in ("created_at", "last_active", *(("resumed_at",) if "resumed_at" in row else ())):
                     value = row.get(key)
                     if not isinstance(value, str):
                         raise ValueError("Invalid current index timestamp")
-                    datetime.datetime.fromisoformat(value)
+                    parsed = datetime.datetime.fromisoformat(value)
+                    if parsed.utcoffset() is None:
+                        raise ValueError("Current index timestamp requires a timezone")
                 count = row.get("turn_count", 0)
                 if type(count) is not int or count < 0 or not isinstance(row.get("label", ""), str):
                     raise ValueError("Invalid current index metadata")
@@ -343,7 +350,7 @@ class TranscriptStore:
                        expected_name: str | None = None) -> SessionMeta:
         """Journal catalog/index metadata together; never rewrite transcript or sidecars."""
         from xdog.agent.session_name import session_name
-        from xdog.claw.core.persistence.navigation_journal import JOURNAL, NavigationJournal, ownership
+        from xdog.claw.core.persistence.managed_files import transaction
         selected = session_name(name)
         with self._lock:
             self._require_navigation_ready()
@@ -354,29 +361,13 @@ class TranscriptStore:
                 raise ValueError('Session name owner changed; refresh before retrying')
             if expected_name is not None and session_name(expected_name) != active.label:
                 raise ValueError('Session name changed since review; inspect before retrying')
-            cached = copy.deepcopy(self._catalog), copy.deepcopy(self._index)
-            with ownership(self._sessions_dir):
-                if not alive():
-                    from asyncio import CancelledError
-                    raise CancelledError
-                try:
-                    journal = NavigationJournal(self._sessions_dir, {self._catalog_file, self._index_file})
-                except BaseException:
-                    self._navigation_recovery_required = (self._sessions_dir / JOURNAL).exists()
-                    raise
-                try:
-                    self._index[group_id] = {**self._index[group_id], 'label': selected}
-                    self._save_index()
-                    journal.commit()
-                except BaseException:
-                    try:
-                        journal.rollback()
-                    except BaseException:
-                        self._navigation_recovery_required = True
-                        raise
-                    finally:
-                        self._catalog, self._index = cached
-                    raise
+            catalog, index = copy.deepcopy(self._catalog), copy.deepcopy(self._index)
+            index[group_id] = {**index[group_id], 'label': selected}
+            catalog['sessions'][session_id] = {**catalog['sessions'][session_id], **index[group_id]}
+            with transaction(self, {self._catalog_file, self._index_file}, alive=alive):
+                self._atomic(self._catalog_file, catalog)
+                self._atomic(self._index_file, index)
+            self._catalog, self._index = catalog, index
             result = self.get_active_session(group_id)
             assert result is not None
             return result
@@ -400,11 +391,15 @@ class TranscriptStore:
         is needed; failed commits recover through the shared metadata journal.
         """
         from xdog.agent.access import AccessState
-        from xdog.claw.core.persistence.navigation_journal import JOURNAL, NavigationJournal, ownership
+        from xdog.claw.core.persistence.context_preferences import inherited
+        from xdog.claw.core.persistence.managed_files import transaction
         with self._lock:
             self._require_navigation_ready()
             current = self.get_active_session(group_id)
+            if current is not None:
+                self.load_transcript(current.session_id)  # Rotation cannot hide unavailable history.
             access = self.get_access(current.session_id) if current is not None else AccessState().to_dict()
+            preferences = inherited(self, current.session_id) if current is not None else {}
             session_id = str(uuid.uuid4())
             now = datetime.datetime.now(datetime.timezone.utc).isoformat()
             meta = SessionMeta(session_id=session_id, group_id=group_id, created_at=now,
@@ -418,24 +413,13 @@ class TranscriptStore:
             transcript = self._path(session_id)
             if transcript.exists():
                 raise ValueError('New context transcript already exists; no history was overwritten')
-            with ownership(self._sessions_dir):
-                try:
-                    journal = NavigationJournal(self._sessions_dir, {self._catalog_file, self._index_file, transcript})
-                except BaseException:
-                    self._navigation_recovery_required = (self._sessions_dir / JOURNAL).exists()
-                    raise
-                try:
-                    self._atomic(transcript, [], jsonl=True)
-                    self._atomic(self._catalog_file, catalog)
-                    self._atomic(self._index_file, index)
-                    journal.commit()
-                except BaseException:
-                    try:
-                        journal.rollback()
-                    except BaseException:
-                        self._navigation_recovery_required = True
-                        raise
-                    raise
+            destinations = {transcript.with_suffix(f".{key}.json"): value for key, value in preferences.items()}
+            with transaction(self, {self._catalog_file, self._index_file, transcript, *destinations}):
+                self._atomic(transcript, [], jsonl=True)
+                for path, value in destinations.items():
+                    self._atomic(path, value)
+                self._atomic(self._catalog_file, catalog)
+                self._atomic(self._index_file, index)
             # Publish only after all managed files and their commit marker settle.
             self._catalog, self._index = catalog, index
             return meta
@@ -475,20 +459,34 @@ class TranscriptStore:
                 if isinstance(content, str) and content:
                     meta["summary"] = content[:160]
 
-    def load_transcript(self, session_id: str) -> list[dict[str, Any]]:
-        """Load all turns from a session."""
-        with self._lock:
-            transcript_file = self._path(session_id)
-            if not transcript_file.exists():
-                return []
+    def _read_transcript(self, path: Path) -> list[dict[str, Any]]:
+        """No-follow, nonblocking open: missing/invalid is unavailable, not empty."""
+        try:
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                                 | getattr(os, "O_NONBLOCK", 0))
+            with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    raise ValueError("Transcript is not a regular file")
+                turns = []
+                for line in stream:
+                    if not line.strip():
+                        continue
+                    row = json.loads(line)
+                    if not isinstance(row, dict):
+                        raise ValueError("Transcript row must be an object")
+                    validate_entry(row)
+                    turns.append(row)
+                return turns
+        except (OSError, ValueError, UnicodeError) as exc:
+            raise TranscriptUnavailable(f"Transcript unavailable: {path.name}; original context retained") from exc
 
-            turns = []
-            with open(transcript_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        turns.append(json.loads(line))
-            return turns
+    def load_transcript(self, session_id: str) -> list[dict[str, Any]]:
+        """Only an existing empty regular file represents an empty context."""
+        with self._lock:
+            path = self._path(session_id)
+            if session_id not in self._catalog["sessions"]:
+                raise TranscriptUnavailable("Transcript unavailable: unknown context identity")
+            return self._read_transcript(path)
 
     def increment_turn(self, session_id: str) -> SessionMeta:
         """Bump turn count + last_active."""
@@ -557,12 +555,19 @@ class TranscriptStore:
         return elapsed >= idle_seconds
 
     def replace_transcript(self, session_id: str, turns: list[dict[str, Any]]) -> None:
+        from xdog.claw.core.persistence.managed_files import transaction
         with self._lock:
-            self._atomic(self._path(session_id), turns, jsonl=True)
-            meta = self._catalog["sessions"].get(session_id)
-            if meta is not None:
-                meta["message_count"] = len(turns)
-            self._save_catalog()
+            self.load_transcript(session_id)  # Destructive replacement cannot repair missing history.
+            catalog = copy.deepcopy(self._catalog)
+            meta = catalog["sessions"].get(session_id)
+            if meta is None:
+                raise ValueError("Unknown transcript context")
+            meta["message_count"] = len(turns)
+            path = self._path(session_id)
+            with transaction(self, {path, self._catalog_file}):
+                self._atomic(path, turns, jsonl=True)
+                self._atomic(self._catalog_file, catalog)
+            self._catalog = catalog
 
     # -- Current-context metadata and read-only historical archives ---------------
 
@@ -609,68 +614,61 @@ class TranscriptStore:
     def branch_access(self, session_id: str, branch_id: str) -> dict[str, Any]:
         return self._saved_access(session_id, branch_id)
 
-    def _archive_checkpoint(self, session_id: str, branch_id: str, transcript: list[dict[str, Any]],
-                    *, metadata: dict[str, Any] | None = None) -> None:
-        with self._lock:
-            from xdog.agent.access import AccessState
-            access = (AccessState.saved(metadata).to_dict() if metadata is not None
-                      and ("access" in metadata or "plan" in metadata) else self.get_access(session_id))
-            if access is None:
-                access = {"read_only": False, "revision": 0}
-            from xdog.agent.extensions.active_tools import names
-            selected = (names(metadata['active_tools']) if metadata is not None and 'active_tools' in metadata
-                        else self.get_active_tools(session_id))
-            self._atomic(self._path(session_id, branch_id).with_suffix('.tools.json'),
-                         {'active': list(selected) if selected is not None else None})
-            entries = (metadata or {}).get("extension_entries", self.get_extension_entries(session_id))
-            entries_path = self._path(session_id, branch_id).with_suffix(".extensions.json")
-            self._atomic(entries_path, entries)
-            self._extension_entries[entries_path.name] = entries
-            access_path = self._path(session_id, branch_id).with_suffix(".access.json")
-            # Access scope must be durable before the branch becomes discoverable.
-            self._atomic(access_path, access)
-            self._access[access_path.name] = access
-            self._atomic(self._path(session_id, branch_id), transcript, jsonl=True)
-            self._catalog["branches"].setdefault(session_id, {})[branch_id] = {
-                "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "message_count": len(transcript), "parent_branch": self.active_branch(session_id),
-                **{key: value for key, value in (metadata or {}).items() if key not in {"plan", "access"}},
-                **({"legacy_plan": metadata["plan"]} if metadata is not None and "plan" in metadata else {}),
-                "access": access,
-            }
-            self._save_catalog()
-
     def save_compaction_checkpoint(self, session_id: str, branch_id: str, transcript: list[dict[str, Any]],
                                    *, metadata: dict[str, Any]) -> None:
-        """Durably index the complete original BEFORE destructive context replacement."""
+        """Commit the complete original archive before destructive replacement."""
+        from xdog.agent.access import AccessState
+        from xdog.agent.extensions.active_tools import names
+        from xdog.claw.core.persistence.managed_files import transaction
         with self._lock:
+            self.load_transcript(session_id)
             destination = self._path(session_id, branch_id)
-            if destination.exists() or branch_id in self._catalog['branches'].get(session_id, {}):
+            if not branch_id or destination.exists() or branch_id in self._catalog['branches'].get(session_id, {}):
                 raise ValueError('Compaction recovery checkpoint already exists; no overwrite')
-            self._archive_checkpoint(session_id, branch_id, transcript, metadata=metadata)
+            access = (AccessState.saved(metadata).to_dict() if "access" in metadata or "plan" in metadata
+                      else self.get_access(session_id))
+            selected = (names(metadata['active_tools']) if 'active_tools' in metadata
+                        else self.get_active_tools(session_id))
+            entries = copy.deepcopy(metadata.get("extension_entries", self.get_extension_entries(session_id)))
+            entries_path = destination.with_suffix(".extensions.json")
+            access_path = destination.with_suffix(".access.json")
+            tools_path = destination.with_suffix(".tools.json")
+            catalog = copy.deepcopy(self._catalog)
+            catalog["branches"].setdefault(session_id, {})[branch_id] = {
+                "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "message_count": len(transcript), "parent_branch": self.active_branch(session_id),
+                **{key: value for key, value in metadata.items() if key not in {"plan", "access"}},
+                **({"legacy_plan": metadata["plan"]} if "plan" in metadata else {}),
+                "access": access,
+            }
+            with transaction(self, {destination, tools_path, entries_path, access_path, self._catalog_file}):
+                self._atomic(tools_path, {'active': list(selected) if selected is not None else None})
+                self._atomic(entries_path, entries)
+                self._atomic(access_path, access)
+                self._atomic(destination, transcript, jsonl=True)
+                self._atomic(self._catalog_file, catalog)
+            self._catalog = catalog
+            self._extension_entries[entries_path.name] = entries
+            self._access[access_path.name] = access
 
     def load_branch(self, session_id: str, branch_id: str) -> list[dict[str, Any]] | None:
-        """Load a conversation branch. Returns None if not found."""
-        branch_file = self._path(session_id, branch_id)
-        if not branch_file.exists():
-            return None
-        turns = []
-        with open(branch_file, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    turns.append(json.loads(line))
-        return turns
+        """Unknown branch is absent; known but unavailable history is an error."""
+        with self._lock:
+            path = self._path(session_id, branch_id)
+            if not path.exists() and branch_id not in self._catalog["branches"].get(session_id, {}):
+                return None
+            return self._read_transcript(path)
 
     def list_branches(self, session_id: str) -> list[str]:
         """List all branch IDs for a session."""
-        self._path(session_id)
-        prefix = f"{session_id}_branch_"
-        branches = []
-        for path in self._sessions_dir.glob(f"{prefix}*.jsonl"):
-            branch_id = path.stem.removeprefix(prefix)
-            branches.append(branch_id)
-        return sorted(branches)
+        with self._lock:
+            self._path(session_id)
+            prefix = f"{session_id}_branch_"
+            branches = set(self._catalog["branches"].get(session_id, {}))
+            branches.update(path.stem.removeprefix(prefix) for path in self._sessions_dir.glob(f"{prefix}*.jsonl"))
+            for branch in branches:
+                self._path(session_id, branch)  # Validate catalog identities as well as discovered files.
+            return sorted(branches)
 
 
 # Backward compatibility alias

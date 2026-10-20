@@ -66,7 +66,13 @@ async def test_restart_preserves_selection_new_context_does_not_switch_back(tmp_
         assert reopened.transcript_store.list_branches(identifier) == []
         reopened.reset_session()
         fresh = reopened.get_or_create_session(allow_reset=False)
-        assert fresh.meta.session_id != identifier and fresh.agent.active_tool_selection is None
+        assert fresh.meta.session_id != identifier
+        # A new conversation is not a preference reset. Restore the inherited
+        # selection after extension tools have registered, with no model call.
+        assert fresh.agent.active_tool_selection == (None if expected is None else ())
+        await fresh.initialize_extensions()
+        assert fresh.agent.active_tool_selection == expected
+        assert reopened.transcript_store.load_transcript(fresh.meta.session_id) == []
         with pytest.raises(ValueError, match='read-only'):
             await asyncio.to_thread(reopened.navigate_session, 'resume', identifier, '', -1, fresh.meta.session_id)
         assert reopened._active_session is fresh

@@ -475,6 +475,17 @@ identity and reject stale or historical target fields. `/resume ID`, `/fork`,
 `/branch` and `/goto` are removed; the gateway and runtime explicitly reject their
 old route-switching operations rather than merely hiding them in the UI.
 
+Both explicit rotation and automatic daily/idle reset keep selected model,
+model-bound reasoning, active tools/skills and access restrictions. They start
+fresh messages, counters and Context-owned extension entries; selecting tools is
+not a permission grant. Daily reset is 04:00 **UTC** by default (not local time).
+Known missing/unreadable history is an error, never an empty conversation or a
+reason to silently reset. An existing empty regular transcript remains valid.
+Persisted reset timestamps require explicit timezones; invalid data is retained
+for repair rather than silently migrated. Compaction commits a complete indexed
+original checkpoint before journaled history replacement; recovery does not run
+models or replay tools. See [the design and inheritance table](../../docs/superpowers/specs/2026-10-20-claw-context-reliability-design.md).
+
 A durable catalog retains archived conversations instead of losing metadata on
 reset. Older orphan JSONL archives are recovered only inside an explicitly owned
 group directory, never guessed across shared stores. Existing branch/checkpoint

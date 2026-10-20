@@ -17,7 +17,7 @@ from typing import Any
 JOURNAL = '.navigation-journal.json'
 _BACKUP = re.compile(r'\.navigation-backup-[a-f0-9]{32}-[0-9]{1,3}\.bak')
 _TARGET = re.compile(
-    r'[A-Za-z0-9][A-Za-z0-9_.-]{0,269}\.(?:jsonl|plan\.json|access\.json|extensions\.json|tools\.json)')
+    r'[A-Za-z0-9][A-Za-z0-9_.-]{0,269}\.(?:jsonl|plan\.json|access\.json|extensions\.json|tools\.json|model\.json|thinking\.json|skills\.json)')
 
 
 class NavigationRecoveryError(RuntimeError):

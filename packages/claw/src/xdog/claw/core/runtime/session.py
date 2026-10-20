@@ -272,27 +272,16 @@ class AgentSession:
         """Load existing session messages into the agent. Called once on first turn."""
         if self._restored:
             return
-        self._restored = True
-        if self._prepared_history is not None:
-            data, self._prepared_history = self._prepared_history, None
-            self._has_compaction_entry = data.has_compaction
-            self._compaction_metadata = json.loads(data.compaction_json) if data.compaction_json is not None else None
-            self._source_channels = dict(data.channels)
-            self._agent.replace_messages(list(data.messages))
-            self._persisted_count = len(data.messages)
-            return
-        transcript = self._store.load_transcript(self._meta.session_id)
-        if not transcript:
-            return
-        from xdog.agent.extensions.compaction import saved_record
-        self._has_compaction_entry = bool(transcript and transcript[0].get('is_compaction') is True)
-        self._compaction_metadata = next((saved_record(entry.get('compaction')) for entry in reversed(transcript)
-                                         if entry.get('is_compaction') is True), None)
-        messages = transcript_to_messages(transcript)
-        self._source_channels = {index: str(entry.get("channel", "")) for index, entry in enumerate(transcript)}
-        if messages:
-            self._agent.replace_messages(messages)
-            self._persisted_count = len(messages)
+        from xdog.claw.core.persistence.session_preparation import history
+        data = self._prepared_history or history(self._store, self._meta.session_id)
+        metadata = json.loads(data.compaction_json) if data.compaction_json is not None else None
+        self._agent.replace_messages(list(data.messages))
+        self._source_channels = dict(data.channels)
+        self._has_compaction_entry = data.has_compaction
+        self._compaction_metadata = metadata
+        self._persisted_count = len(data.messages)
+        self._prepared_history = None
+        self._restored = True  # A failed read/conversion must remain unavailable on the next attempt.
 
     def clear_messages(self) -> None:
         self._children_idle()
@@ -311,7 +300,6 @@ class AgentSession:
         self.extension_dialogs.close()
         self.extensions.close()
         self.access.close()
-        pass
 
     def require_history_ready(self) -> None:
         if self._history_fault or self.context_messages.uncertain:
