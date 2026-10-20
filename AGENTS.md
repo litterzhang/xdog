@@ -4,7 +4,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ## Repository and toolchain
 
-XDOG is a local-first Python 3.12+ `uv` workspace; its core tools do not require a hosted control plane or database. Nine distributions share the `xdog.*` namespace under `packages/`: `ai`, `agent`, `flow`, `coding`, `claw`, `tui`, `site`, `eyes`, and `goal`. Run development commands from the repository root so the root `pyproject.toml` configuration applies.
+XDOG is a local-first Python 3.12+ `uv` workspace; its core tools do not require a hosted control plane or database. Nine distributions share the `xdog.*` namespace under `packages/`: `ai`, `agent`, `flow`, `coding`, `claw`, `tui`, `site`, `eyes`, and `skills`. Run development commands from the repository root so the root `pyproject.toml` configuration applies.
 
 ```bash
 # Create/update the workspace environment
@@ -16,7 +16,7 @@ uv run pytest -q              # direct pytest alternative; supports normal selec
 uv run ruff check packages
 uv run mypy --strict \
   -p xdog.ai -p xdog.agent -p xdog.tui -p xdog.flow \
-  -p xdog.site -p xdog.claw -p xdog.coding -p xdog.eyes -p xdog.goal
+  -p xdog.site -p xdog.claw -p xdog.coding -p xdog.eyes -p xdog.skills
 
 # Package, file, and individual-test examples
 uv run pytest packages/flow/tests -q
@@ -104,7 +104,7 @@ The core invariant in `models.py` and `loader.py` is node-private typed ports co
 
 `core/agent_session.py` rebuilds the prompt and checks compaction before each turn, then adapts agent events to the selected UI mode. Session history, settings, summaries, and branches are persisted as JSON by `core/session_manager.py`. `core/sessions/` owns the single controller, writer lease, route ownership and separate durable automatically consumed inbox; TUI/SDK/ACP share that execution path, and offline ingress never constructs a second Agent. Project context discovery is non-recursive from the working directory: `AGENTS.md`, `AGENTS.md`, `.coding/INSTRUCTIONS.md`, and `.coding/instructions.md`, each capped at 64 KiB. Permissions belong in the coding client's pre-tool hook, not in the generic agent runtime. Preserve the default fail-closed behavior: read-only calls may run automatically, mutating calls require approval, and unattended execution may mutate only when `allow-all` was explicitly selected. Permission gates are not an OS sandbox.
 
-Coding reuses optional `xdog-goal` through the `goals` extra. Installed package
+Coding reuses optional `xdog-skills` through the `skills` extra. Installed package
 presence supplies the capability; there is no Goal enable setting. Startup runs on the same
 session owner, not import/TUI/ACP. CodingGoalHost binds exact inbox namespace,
 session/branch/workspace, existing supervised role children and original-ID durable
@@ -188,7 +188,7 @@ recipient remains known-not-sent/pending. Stop notifications separately; source 
 still does not retract accepted reports. No old journal upgrade is performed.
 The broader assistant-core refactor remains in progress: Coding now adopts the
 standalone optional Goal; Claw has a group-owned optional adapter replacing its
-legacy Goal manager. Claw has optional goals/eyes/acp install extras and cold
+legacy Goal manager. Claw has optional skills/eyes/acp install extras and cold
 base/two-host evidence. The same packaged Goal display and generic owner-bound
 views are verified in both actual source and cold installed hosts. Managed
 observers now use generic Core per-message output receipts, not an aggregate
@@ -239,11 +239,11 @@ no permanent Eyes daemon or second Agent loop is started.
 See `docs/claw-eyes-scheduler-{plan.md,requirements.json}` for retired scheduler
 scope; `docs/claw-assistant-core-requirements.json` tracks the current refactor.
 
-Claw's optional `xdog-goal` capability is available automatically when installed;
+Claw's optional `xdog-skills` capability is available automatically when installed;
 there is no global/project/session Goal enable switch. Without the distribution,
 ordinary assistant use opens no Goal journal. Application startup opens installed
 Goal data and recovers committed notifications; active Goals alone never cause
-model polling. Package presence also exposes the built-in `goals` skill through
+model polling. Package presence also exposes the built-in `goal` skill through
 existing namespace discovery; its body loads on demand without copying or manual
 registration. Availability is not user delegation and creates no Goal/worker.
 The adapter attaches parent tools to the existing active AgentSession and starts
@@ -284,7 +284,7 @@ context management, never a replacement task budget.
 ### `xdog.eyes`: observation and ACP activation layer
 
 Like flow, eyes owns a versioned JSON definition, frozen models, whole-definition
-validation, asynchronous executor, CLI and packaged `eyes-observers` skill.
+validation, asynchronous executor, CLI and packaged `eyes` skill.
 Sources collect evidence, detectors emit events, and EventRouter dispatches
 explicit routes to registered EventHandler implementations; ACP is one built-in
 handler. Its connection/payload details stay outside the generic executor/runtime. Regular-file content changes use bounded no-follow polling. Scheduler sources
@@ -331,7 +331,16 @@ number representation. Busy managed schedules skip ticks without overlapping;
 accepted one-offs survive downtime. Claw restores only its managed time observers,
 never automatically restarts ordinary file observation. Eyes still imports no harness.
 
-### `xdog.goal`: optional host-neutral Goal kernel
+### `xdog.skills`: common medium-level skills and extension code
+
+The `xdog-skills` distribution is an inert hub, not an agent harness. Domain code
+lives in independent modules; shared `skills/<slug>` and `extensions/<id>` use
+Agent’s existing generic discovery. It currently ships the `goal` skill and the
+`xdog.skills.goal` domain, plus `goal_ui`. Flow and Eyes remain independent
+packages; their engines/skills are not copied here. Installing/listing skills
+does not start execution, storage or display workers.
+
+#### Goal domain
 
 The ninth distribution depends directly only on `xdog-agent` and stdlib. Frozen
 models/codecs and GoalStore own private leased/versioned Goal history, reports,
@@ -353,8 +362,7 @@ GoalDisplay owns only readonly data-read settlement, never business lifetime.
 Known display_only profiles have no validation/tool/provider/entry authority;
 unknown/default extensions keep fail-closed gates. Both native TUIs use generic
 ExtensionView, not Goal schema. Same-wheel/same-extension cold Coding/Claw and
-Goal-only-without-TUI consumers are verified; final whole-objective acceptance
-remains pending. See `docs/shared-goal-extension-verification.md`.
+Goal-only-without-TUI consumers are verified; both-host owner/resource boundaries are verified. See `docs/shared-goal-extension-verification.md`.
 
 ### `xdog.tui` and `xdog.site`
 

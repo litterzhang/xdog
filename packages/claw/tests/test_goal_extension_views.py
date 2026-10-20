@@ -9,7 +9,7 @@ from xdog.agent.mcp.stdio import McpError
 from xdog.claw.config import ClawConfig
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.types import Group
-from xdog.goal.host import OperationContext
+from xdog.skills.goal.host import OperationContext
 from xdog.tui.components.extension_view import ExtensionView
 
 from packages.claw.tests.test_goal_host import Model, activate
@@ -121,7 +121,7 @@ async def test_display_loss_never_cancels_or_blocks_real_group_worker_reports_an
 
 
 async def test_claw_shutdown_keeps_goal_lease_until_actual_display_disk_read_settles(tmp_path, monkeypatch):
-    from xdog.goal.store import GoalStore
+    from xdog.skills.goal.store import GoalStore
 
     app, runtime, _ = application_with_display(tmp_path)
     entered, release = threading.Event(), threading.Event()

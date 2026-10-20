@@ -23,13 +23,13 @@ from xdog.claw.core.inputs.models import InputEnvelope, InputScope
 from xdog.claw.core.inputs.store import InputRecord
 from xdog.claw.core.runtime.input_adapter import freeze_input
 from xdog.claw.core.types import ExternalInput
-from xdog.goal.host import ChildStatus, EnqueueReceipt, OperationContext, ReviewerSpec, WorkerSpec
-from xdog.goal.models import Notice, Owner, WorkerRef
-from xdog.goal.resources import role_instructions
-from xdog.goal.service import GoalService
-from xdog.goal.store import GoalStore
-from xdog.goal.tools import create_context_tool, create_goal_tool, create_report_tool
-from xdog.goal.ui_binding import GoalDisplay
+from xdog.skills.goal.host import ChildStatus, EnqueueReceipt, OperationContext, ReviewerSpec, WorkerSpec
+from xdog.skills.goal.models import Notice, Owner, WorkerRef
+from xdog.skills.goal.resources import role_instructions
+from xdog.skills.goal.service import GoalService
+from xdog.skills.goal.store import GoalStore
+from xdog.skills.goal.tools import create_context_tool, create_goal_tool, create_report_tool
+from xdog.skills.goal.ui_binding import GoalDisplay
 
 if TYPE_CHECKING:
     from xdog.claw.core.inputs.consumer import InputService

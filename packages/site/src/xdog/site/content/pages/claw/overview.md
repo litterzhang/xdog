@@ -38,7 +38,7 @@ belong to `xdog.agent`; Claw's group/session adapters are internal application c
 
 ## Goal workflow and boundaries
 
-The same independent `xdog-goal` package supplies Claw/Coding tools, storage,
+The same independent `xdog-skills` package supplies Claw/Coding tools, storage,
 worker reporting and explicit independent review. The shared `goals` skill describes
 its workflow. Installing/loading it is not autonomy delegation. Goal truth belongs
 to its leased journal; workspace files are derived views. Only actual consumed

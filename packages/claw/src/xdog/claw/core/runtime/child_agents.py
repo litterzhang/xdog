@@ -59,7 +59,7 @@ class ClawChildren:
                 raise ValueError('Child tool profile exceeds captured parent active-tool selection')
             allowed = ceiling if allowed is None else allowed
         if role is not None:
-            from xdog.goal.host import ReviewerSpec
+            from xdog.skills.goal.host import ReviewerSpec
             reviewer = isinstance(role, ReviewerSpec)
             allowed = tuple(tool.name for tool in agent.active_tools
                 if tool.name not in RESERVED_TOOLS | {'goal', 'eyes', 'task_report', 'goal_context'}

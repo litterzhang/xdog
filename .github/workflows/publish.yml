@@ -22,7 +22,7 @@ on:
           trusted publishers at a time, so a first release has to go in waves —
           publish three, which converts their pending publishers to regular ones
           and frees the slots, then register and publish the rest.
-        default: '["xdog-ai","xdog-tui","xdog-agent","xdog-flow","xdog-claw","xdog-coding","xdog-eyes","xdog-goal"]'
+        default: '["xdog-ai","xdog-tui","xdog-agent","xdog-flow","xdog-claw","xdog-coding","xdog-eyes","xdog-skills"]'
 
 permissions:
   contents: read
@@ -32,9 +32,9 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # Publish the seven library/client distributions, excluding the website
+        # Publish the eight library/client distributions, excluding the website
         # (`xdog-site`) and the workspace umbrella (`xdog`).
-        package: ${{ fromJSON(inputs.packages || '["xdog-ai","xdog-tui","xdog-agent","xdog-flow","xdog-claw","xdog-coding","xdog-eyes","xdog-goal"]') }}
+        package: ${{ fromJSON(inputs.packages || '["xdog-ai","xdog-tui","xdog-agent","xdog-flow","xdog-claw","xdog-coding","xdog-eyes","xdog-skills"]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v9.0.0
@@ -74,7 +74,7 @@ jobs:
       # the rest, and each can carry its own approval gate.
       fail-fast: false
       matrix:
-        package: ${{ fromJSON(inputs.packages || '["xdog-ai","xdog-tui","xdog-agent","xdog-flow","xdog-claw","xdog-coding","xdog-eyes","xdog-goal"]') }}
+        package: ${{ fromJSON(inputs.packages || '["xdog-ai","xdog-tui","xdog-agent","xdog-flow","xdog-claw","xdog-coding","xdog-eyes","xdog-skills"]') }}
     environment: pypi-${{ matrix.package }}
     permissions:
       # Mints the short-lived OIDC token PyPI trades for an upload token.

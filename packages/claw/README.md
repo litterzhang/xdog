@@ -156,9 +156,9 @@ acceptance of this decision. Current status is tracked in
 ## Optional group-owned Goals
 
 Claw is a long-term personal assistant; task autonomy is optional. Install the
-optional distribution with `pip install 'xdog-claw[goals]'`. Package presence
+optional distribution with `pip install 'xdog-claw[skills]'`. Package presence
 provides the Goal capability automatically; there is **no Goal enable setting**.
-The built-in `goals` skill is discovered just like Flow/Eyes, without copying or
+The built-in `goal` skill is discovered just like Flow/Eyes, without copying or
 registration, and its full body loads through the existing skill mechanism.
 Without the package, ordinary chat/memory/tools/history open no Goal storage.
 
@@ -169,15 +169,15 @@ outcome is still required before the Agent creates a contract.
 The same independent GoalService is used by Coding and Claw. Goal owns its private
 leased journal at `<data_dir>/groups/<id>/goals/journal.sqlite3`; Claw owns ordinary
 input, execution receipts and conversation history, not Goal tables. The packaged
-[goals skill](../goal/src/xdog/goal/skills/goals/SKILL.md) and its
-[worker](../goal/src/xdog/goal/roles/worker.md)/[reviewer](../goal/src/xdog/goal/roles/reviewer.md)
+[goal skill](../skills/src/xdog/skills/skills/goal/SKILL.md) and its
+[worker](../skills/src/xdog/skills/goal/roles/worker.md)/[reviewer](../skills/src/xdog/skills/goal/roles/reviewer.md)
 roles describe explicit planning, assignment, reporting, acceptance and review.
 Derived workspace files are projections, not execution authority.
 
 For the shared Python display, include `goal_ui` in the existing trusted global
 `extensions` list. It loads directly from the Goal package; no copy or separate
 Goal enable flag. `/ext-goal_ui-goals [GOAL_ID | page OFFSET]` queries the actual
-group-owned read-only view, while `/goals` remains skill loading. The generic
+group-owned read-only view, while `/goal` remains skill loading. The generic
 shared TUI ExtensionView renders its status text; the main TUI knows no Goal
 schema or lifecycle. Context rotation rebinds the fresh parent to the same group
 service. Actual child runtimes do not inherit its grant, and unloading/crashing

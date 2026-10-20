@@ -7,8 +7,8 @@ import subprocess
 import sys
 
 import pytest
-from xdog.goal.host import OperationContext
-from xdog.goal.models import Notice
+from xdog.skills.goal.host import OperationContext
+from xdog.skills.goal.models import Notice
 
 from packages.coding.tests.test_child_agents import create
 from packages.coding.tests.test_goal_adapter import scripted
@@ -39,7 +39,7 @@ async def test_absent_package_never_opens_goal_storage_or_imports_optional_packa
             sys.executable,
             "-c",
             "import sys; import xdog.coding.core.agent_session; assert not any("
-            'n=="xdog.goal" or n.startswith("xdog.goal.") for n in sys.modules)',
+            'n=="xdog.skills.goal" or n.startswith("xdog.skills.goal.") for n in sys.modules)',
         ],
         capture_output=True,
         text=True,
@@ -116,7 +116,7 @@ async def test_idle_session_navigation_keeps_old_goal_private_and_releases_old_j
         assert await owned(session._sdk_controller, successor.service.list) == ()
         with pytest.raises(ValueError, match="owner"):
             await old.service.list()
-        from xdog.goal.store import GoalStore
+        from xdog.skills.goal.store import GoalStore
 
         store = await GoalStore.open(old.service.store.path, old.service.store.owner)
         try:

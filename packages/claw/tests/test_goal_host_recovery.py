@@ -8,8 +8,8 @@ import threading
 import pytest
 from xdog.claw.core.inputs.models import InputScope
 from xdog.claw.core.types import Group
-from xdog.goal.host import OperationContext
-from xdog.goal.models import report_digest
+from xdog.skills.goal.host import OperationContext
+from xdog.skills.goal.models import report_digest
 
 from packages.claw.tests.test_goal_host import activate, application, submitted
 
@@ -230,7 +230,7 @@ async def test_restart_drains_persisted_notice_without_waiting_for_tui_or_anothe
 async def test_shutdown_joins_admitted_capability_open_before_releasing_goal_lease(tmp_path, monkeypatch, group_ids):
     from xdog.claw.config import ClawConfig
     from xdog.claw.core.runtime.orchestrator import Orchestrator
-    from xdog.goal.store import GoalStore
+    from xdog.skills.goal.store import GoalStore
 
     from packages.claw.tests.test_goal_host import Model
 

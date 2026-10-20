@@ -8,7 +8,7 @@ from xdog.eyes.loader import parse
 
 
 def skill():
-    return (files('xdog.eyes')/'skills'/'eyes-observers'/'SKILL.md').read_text()
+    return (files('xdog.eyes')/'skills'/'eyes'/'SKILL.md').read_text()
 
 
 def examples():

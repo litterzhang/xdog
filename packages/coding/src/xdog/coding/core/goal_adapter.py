@@ -21,13 +21,13 @@ from xdog.agent.core import AgentTool, AgentToolResult
 from xdog.agent.supervision import ChildSpec, settle_on
 from xdog.coding.core.sessions.inbox_models import InboxMessage, message_data
 from xdog.coding.core.sessions.inbox_store import InboxStore
-from xdog.goal.host import ChildStatus, EnqueueReceipt, OperationContext, ReviewerSpec, WorkerSpec
-from xdog.goal.models import Notice, Owner, WorkerRef
-from xdog.goal.resources import role_instructions
-from xdog.goal.service import GoalService
-from xdog.goal.store import GoalStore
-from xdog.goal.tools import create_context_tool, create_goal_tool, create_report_tool
-from xdog.goal.ui_binding import GoalDisplay
+from xdog.skills.goal.host import ChildStatus, EnqueueReceipt, OperationContext, ReviewerSpec, WorkerSpec
+from xdog.skills.goal.models import Notice, Owner, WorkerRef
+from xdog.skills.goal.resources import role_instructions
+from xdog.skills.goal.service import GoalService
+from xdog.skills.goal.store import GoalStore
+from xdog.skills.goal.tools import create_context_tool, create_goal_tool, create_report_tool
+from xdog.skills.goal.ui_binding import GoalDisplay
 
 if TYPE_CHECKING:
     from xdog.coding.core.agent_session import AgentSession

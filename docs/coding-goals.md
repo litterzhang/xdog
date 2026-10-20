@@ -1,13 +1,13 @@
 # Optional Goals in Coding
 
-Coding reuses the optional `xdog-goal` distribution through its `goals` extra:
+Coding reuses the optional `xdog-skills` distribution through its `skills` extra:
 
 ```bash
-pip install 'xdog-coding[goals]'
+pip install 'xdog-coding[skills]'
 ```
 
 There is **no Goal enable setting**. If the package is installed, its built-in
-`goals` skill is automatically discovered like Flow/Eyes and the actual session
+`goal` skill is automatically discovered like Flow/Eyes and the actual session
 owner attaches the Goal tool/data capability. No copying, registration, project
 setting or saved-session toggle is needed. Without the package, ordinary Coding
 chat/tools/history work without importing Goal or opening its journal.
@@ -89,7 +89,7 @@ With the Goal package installed, list `goal_ui` in trusted global `extensions`
 ```
 
 The package resource is loaded directly; no copying or registration is needed.
-`/ext-goal_ui-goals [GOAL_ID | page OFFSET]` queries it, while `/goals` remains the
+`/ext-goal_ui-goals [GOAL_ID | page OFFSET]` queries it, while `/goal` remains the
 built-in skill command. The actual session/branch owns its read-only view. Existing
 context navigation clears/replaces the old generic extension runtime rather than
 moving Goal data. The main TUI uses its generic shared ExtensionView and has no

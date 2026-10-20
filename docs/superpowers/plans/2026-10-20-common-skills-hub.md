@@ -30,7 +30,8 @@ must not be renamed; real archives must exclude local nested .claude state.
 ### Task 2: Move Goal into common Skills package
 - [ ] Add inert hub/resource/layout/optional-package tests, observe old package RED.
 - [ ] Move package/domain/tests and root resources; update imports selectively,
-  preserve xdog.goal.* wire/data constants. Rename dependency/workspace/extras/CI
+  preserve xdog.goal.* wire/data constants. Rename skill slugs to goal and eyes
+  per user clarification, with Eyes resources remaining in xdog-eyes. Rename dependency/workspace/extras/CI
   and verifiers, update active README/AGENTS/docs, regenerate lock via uv sync.
 - [ ] Run new tests, all actual Goal/Claw/Coding regressions; inspect stale runtime
   imports/metadata/resource selectors. Commit independently verified changes.

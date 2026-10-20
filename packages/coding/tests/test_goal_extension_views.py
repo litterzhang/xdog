@@ -9,7 +9,7 @@ import pytest
 from xdog.agent.mcp.stdio import McpError
 from xdog.ai.types import DoneEvent
 from xdog.ai.utils.event_stream import EventStream
-from xdog.goal.host import OperationContext
+from xdog.skills.goal.host import OperationContext
 from xdog.tui.components.extension_view import ExtensionView
 
 from packages.coding.tests.test_child_agents import create
@@ -168,7 +168,7 @@ async def test_actual_coding_worker_reports_and_notices_survive_display_loss(tmp
 
 
 async def test_coding_shutdown_keeps_goal_lease_until_actual_display_disk_read_settles(tmp_path, monkeypatch):
-    from xdog.goal.store import GoalStore
+    from xdog.skills.goal.store import GoalStore
 
     session, _ = session_with_display(tmp_path)
     entered, release = threading.Event(), threading.Event()

@@ -76,7 +76,7 @@ class CodingChildren:
         if self.goal_host is not None and self.goal_host.role(spec.id) is not None:
             # Roles never inherit the parent Goal tool, arbitrary service tools or
             # extension aliases. Keep the actual parent tool-selection ceiling.
-            from xdog.goal.host import ReviewerSpec
+            from xdog.skills.goal.host import ReviewerSpec
             reviewer = isinstance(self.goal_host.role(spec.id), ReviewerSpec)
             allowed = tuple(tool.name for tool in agent.active_tools
                             if tool.name not in RESERVED_TOOLS | {"goal", "eyes", "task_report", "goal_context"}

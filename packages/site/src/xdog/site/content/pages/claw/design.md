@@ -67,8 +67,8 @@ Python/process code is not an OS sandbox.
 ## Optional reusable Goals
 
 Claw is a long-term personal assistant with optional task autonomy. Installing
-`xdog-goal` supplies the capability and built-in skill automatically, with no enable
-setting; ordinary conversation never silently delegates a Goal. The independent `xdog-goal` service owns leased storage, historical
+`xdog-skills` supplies the capability and built-in skill automatically, with no enable
+setting; ordinary conversation never silently delegates a Goal. The independent `xdog-skills` service owns leased storage, historical
 contracts, reports/reviews and notification outbox. Claw's thin host binds a stable
 group/workspace/inbox owner to existing supervised children and Core durable
 intake; Coding uses the same service with its intentionally exact session/branch
@@ -104,7 +104,7 @@ uses sentence-transformers/sqlite-vec vectors plus BM25; keyword search remains 
 fallback. Compaction archives original context and rebuilds the current one; its
 saved checkpoints are historical evidence, not a branch switch operation.
 
-See the shared Goal skill in `packages/goal` and the assistant-core design and
+See the shared Goal skill in `packages/skills` and the assistant-core design and
 47-item acceptance checklist in the repository. Shared Python extension UI,
 packaging isolation and final whole-branch acceptance remain separate gates;
 this page does not claim those unfinished milestones are complete.

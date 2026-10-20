@@ -45,7 +45,7 @@ jobs:
           import importlib, sys
           mods = ["xdog.ai", "xdog.agent", "xdog.agent.skills", "xdog.tui",
                   "xdog.flow", "xdog.flow.cli", "xdog.claw.core",
-                  "xdog.coding.core.slash_commands", "xdog.eyes", "xdog.eyes.cli", "xdog.goal"]
+                  "xdog.coding.core.slash_commands", "xdog.eyes", "xdog.eyes.cli", "xdog.skills.goal"]
           bad = []
           for m in mods:
               try:
@@ -71,7 +71,7 @@ jobs:
         run: >
           uv run mypy --strict
           -p xdog.ai -p xdog.agent -p xdog.tui -p xdog.flow
-          -p xdog.site -p xdog.claw -p xdog.coding -p xdog.eyes -p xdog.goal
+          -p xdog.site -p xdog.claw -p xdog.coding -p xdog.eyes -p xdog.skills
 
       # The examples are executable artifacts, not decoration: this catches a
       # workflow whose companion suite stopped passing after a kernel change.
@@ -106,7 +106,7 @@ jobs:
           python - <<'PY'
           import glob, zipfile
           wheel = zipfile.ZipFile(glob.glob("/tmp/eyes-wheelcheck/xdog_eyes-*.whl")[0])
-          need = {"xdog/eyes/skills/eyes-observers/SKILL.md",
+          need = {"xdog/eyes/skills/eyes/SKILL.md",
                   "xdog/eyes/examples/source-test-review.json", "xdog/eyes/py.typed",
                   "xdog/eyes/examples/scheduled-review.json", "xdog/eyes/sources/scheduler.py",
                   "xdog/eyes/detectors/scheduler_due.py"}
@@ -119,6 +119,26 @@ jobs:
           expected = ["agent-client-protocol<0.13,>=0.12.1; python_version < '3.15'", "croniter<7,>=2.0"]
           assert sorted(metadata.get_all("Requires-Dist", [])) == sorted(expected), metadata.get_all("Requires-Dist")
           PY
+
+      - name: Common skills hub ships domain and extension resources
+        run: |
+          uv build --package xdog-skills --out-dir /tmp/skills-wheelcheck
+          python - <<'PYCODE'
+          import glob, zipfile
+          from email.parser import Parser
+          wheel = zipfile.ZipFile(glob.glob("/tmp/skills-wheelcheck/xdog_skills-*.whl")[0])
+          names = set(wheel.namelist())
+          need = {"xdog/skills/__init__.py", "xdog/skills/py.typed",
+                  "xdog/skills/goal/service.py", "xdog/skills/goal/roles/worker.md",
+                  "xdog/skills/goal/roles/reviewer.md", "xdog/skills/skills/goal/SKILL.md",
+                  "xdog/skills/extensions/goal_ui/extension.yaml",
+                  "xdog/skills/extensions/goal_ui/main.py"}
+          assert need <= names, need - names
+          assert not any(n.startswith(("xdog/goal/", "xdog/eyes/", "xdog/flow/")) for n in names)
+          metadata = Parser().parsestr(wheel.read(next(n for n in names if n.endswith("METADATA"))).decode())
+          assert metadata["Name"] == "xdog-skills"
+          assert metadata.get_all("Requires-Dist") == ["xdog-agent>=2.4.2"]
+          PYCODE
 
       # A dependency named `ai` or `flow` on PyPI is somebody else's package.
       # Publishing metadata that points at one is a supply-chain bug, so fail

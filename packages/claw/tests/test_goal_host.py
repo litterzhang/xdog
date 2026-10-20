@@ -14,9 +14,9 @@ from xdog.claw.config import ClawConfig
 from xdog.claw.core.inputs.models import InputScope
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.types import Group, UserInput
-from xdog.goal.host import OperationContext
-from xdog.goal.models import Notice, WorkerRef, report_digest
-from xdog.goal.service import GoalService
+from xdog.skills.goal.host import OperationContext
+from xdog.skills.goal.models import Notice, WorkerRef, report_digest
+from xdog.skills.goal.service import GoalService
 
 
 class Model:
@@ -142,7 +142,7 @@ async def test_without_goal_package_claw_is_an_ordinary_assistant_without_goal_s
     async with application(tmp_path, installed=False) as (app, runtime, model):
         await activate(app)
         assert runtime.goal_host is None
-        reference = runtime.skill_manager.load_skill("goals")
+        reference = runtime.skill_manager.load_skill("goal")
         assert reference is not None and reference.packaged and reference.content
         assert not (runtime.data_dir / "groups/main/goals").exists()
         assert not (runtime.data_dir / "groups/main/goals.json").exists()
@@ -343,7 +343,7 @@ async def test_installed_goal_is_available_without_a_feature_flag_but_never_dele
     runtime = app._runtimes["main"]
     try:
         await app.start()
-        assert runtime.skill_manager.load_skill("goals").packaged
+        assert runtime.skill_manager.load_skill("goal").packaged
         await activate(app)
         assert runtime.goal_host is not None
         assert any(tool.name == "goal" for tool in runtime._active_session.agent.state.tools)

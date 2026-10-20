@@ -11,8 +11,8 @@ members = [
     "xdog-coding",
     "xdog-eyes",
     "xdog-flow",
-    "xdog-goal",
     "xdog-site",
+    "xdog-skills",
     "xdog-tui",
 ]
 
@@ -1944,8 +1944,8 @@ dependencies = [
     { name = "xdog-coding" },
     { name = "xdog-eyes" },
     { name = "xdog-flow" },
-    { name = "xdog-goal" },
     { name = "xdog-site" },
+    { name = "xdog-skills" },
 ]
 
 [package.dev-dependencies]
@@ -1968,8 +1968,8 @@ requires-dist = [
     { name = "xdog-coding", editable = "packages/coding" },
     { name = "xdog-eyes", editable = "packages/eyes" },
     { name = "xdog-flow", editable = "packages/flow" },
-    { name = "xdog-goal", editable = "packages/goal" },
     { name = "xdog-site", editable = "packages/site" },
+    { name = "xdog-skills", editable = "packages/skills" },
 ]
 
 [package.metadata.requires-dev]
@@ -2069,18 +2069,18 @@ all = [
     { name = "sentence-transformers" },
     { name = "sqlite-vec" },
     { name = "xdog-eyes" },
-    { name = "xdog-goal" },
+    { name = "xdog-skills" },
 ]
 eyes = [
     { name = "xdog-eyes" },
-]
-goals = [
-    { name = "xdog-goal" },
 ]
 search = [
     { name = "rank-bm25" },
     { name = "sentence-transformers" },
     { name = "sqlite-vec" },
+]
+skills = [
+    { name = "xdog-skills" },
 ]
 
 [package.metadata]
@@ -2102,11 +2102,11 @@ requires-dist = [
     { name = "xdog-ai", extras = ["openai"], editable = "packages/ai" },
     { name = "xdog-eyes", marker = "extra == 'all'", editable = "packages/eyes" },
     { name = "xdog-eyes", marker = "extra == 'eyes'", editable = "packages/eyes" },
-    { name = "xdog-goal", marker = "extra == 'all'", editable = "packages/goal" },
-    { name = "xdog-goal", marker = "extra == 'goals'", editable = "packages/goal" },
+    { name = "xdog-skills", marker = "extra == 'all'", editable = "packages/skills" },
+    { name = "xdog-skills", marker = "extra == 'skills'", editable = "packages/skills" },
     { name = "xdog-tui", editable = "packages/tui" },
 ]
-provides-extras = ["goals", "eyes", "acp", "search", "all"]
+provides-extras = ["skills", "eyes", "acp", "search", "all"]
 
 [[package]]
 name = "xdog-coding"
@@ -2123,8 +2123,8 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-goals = [
-    { name = "xdog-goal" },
+skills = [
+    { name = "xdog-skills" },
 ]
 
 [package.metadata]
@@ -2135,10 +2135,10 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "xdog-agent", editable = "packages/agent" },
     { name = "xdog-ai", extras = ["openai"], editable = "packages/ai" },
-    { name = "xdog-goal", marker = "extra == 'goals'", editable = "packages/goal" },
+    { name = "xdog-skills", marker = "extra == 'skills'", editable = "packages/skills" },
     { name = "xdog-tui", editable = "packages/tui" },
 ]
-provides-extras = ["goals"]
+provides-extras = ["skills"]
 
 [[package]]
 name = "xdog-eyes"
@@ -2179,17 +2179,6 @@ requires-dist = [
 ]
 
 [[package]]
-name = "xdog-goal"
-version = "2.4.2"
-source = { editable = "packages/goal" }
-dependencies = [
-    { name = "xdog-agent" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "xdog-agent", editable = "packages/agent" }]
-
-[[package]]
 name = "xdog-site"
 version = "2.4.2"
 source = { editable = "packages/site" }
@@ -2209,6 +2198,17 @@ requires-dist = [
     { name = "pygments", specifier = ">=2.17" },
     { name = "python-frontmatter", specifier = ">=1.0" },
 ]
+
+[[package]]
+name = "xdog-skills"
+version = "2.4.2"
+source = { editable = "packages/skills" }
+dependencies = [
+    { name = "xdog-agent" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "xdog-agent", editable = "packages/agent" }]
 
 [[package]]
 name = "xdog-tui"

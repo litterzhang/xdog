@@ -5,7 +5,7 @@
 
 A local-first, declarative observation layer, shaped like flow: versioned JSON,
 frozen models, whole-definition validation, async execution, CLI and a packaged
-**eyes-observers** skill. Sources collect evidence, detectors emit events, explicit
+**eyes** skill. Sources collect evidence, detectors emit events, explicit
 EventRouter dispatches explicit routes to extensible EventHandler implementations.
 ACP is one built-in handler, not the routing abstraction. Eyes never imports a harness or runs an agent
 loop; coding never imports a concrete Eyes source.

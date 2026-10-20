@@ -10,8 +10,8 @@ import pytest
 from xdog.ai.types import AssistantMessage, DoneEvent, TextContent, ToolCall
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core.goal_adapter import CodingGoalHost
-from xdog.goal.host import OperationContext
-from xdog.goal.models import Notice, WorkerRef, report_digest
+from xdog.skills.goal.host import OperationContext
+from xdog.skills.goal.models import Notice, WorkerRef, report_digest
 
 from packages.coding.tests.test_child_agents import create
 

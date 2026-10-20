@@ -15,9 +15,9 @@ from packaging.requirements import Requirement
 from packaging.version import Version
 
 REPO = Path(__file__).resolve().parents[3]
-SKILL = Path("packages/eyes/src/xdog/eyes/skills/eyes-observers/SKILL.md")
+SKILL = Path("packages/eyes/src/xdog/eyes/skills/eyes/SKILL.md")
 PUBLISHED = {
-    "xdog-ai", "xdog-tui", "xdog-agent", "xdog-flow", "xdog-claw", "xdog-coding", "xdog-eyes", "xdog-goal",
+    "xdog-ai", "xdog-tui", "xdog-agent", "xdog-flow", "xdog-claw", "xdog-coding", "xdog-eyes", "xdog-skills",
 }
 
 
@@ -29,7 +29,7 @@ def test_claw_optional_eyes_and_eyes_owns_bounded_croniter():
     claw = _toml("packages/claw/pyproject.toml")["project"]
     eyes = _toml("packages/eyes/pyproject.toml")["project"]
     requirements = [Requirement(value) for value in claw["dependencies"]]
-    assert not {"xdog-eyes", "xdog-goal", "agent-client-protocol"} & {r.name for r in requirements}
+    assert not {"xdog-eyes", "xdog-skills", "agent-client-protocol"} & {r.name for r in requirements}
     requirement = next(Requirement(value) for value in claw["optional-dependencies"]["eyes"]
                        if Requirement(value).name == "xdog-eyes")
     assert str(requirement.specifier) == ">=2.4.2"
@@ -116,12 +116,12 @@ def test_built_claw_metadata_optional_eyes_without_direct_croniter(artifacts, ki
 def test_built_eyes_includes_updated_host_skill(artifacts, kind):
     if kind == "wheel":
         with zipfile.ZipFile(next(artifacts.glob("xdog_eyes-*.whl"))) as archive:
-            content = archive.read("xdog/eyes/skills/eyes-observers/SKILL.md")
+            content = archive.read("xdog/eyes/skills/eyes/SKILL.md")
     else:
         with tarfile.open(next(artifacts.glob("xdog_eyes-*.tar.gz"))) as archive:
             name = next(
                 name for name in archive.getnames()
-                if name.endswith("/src/xdog/eyes/skills/eyes-observers/SKILL.md")
+                if name.endswith("/src/xdog/eyes/skills/eyes/SKILL.md")
             )
             stream = archive.extractfile(name)
             assert stream is not None

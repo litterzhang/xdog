@@ -44,7 +44,7 @@ def main() -> None:
     base_work.mkdir(mode=0o700)
     subprocess.run([str(python), str(consumer), "--base-only"], cwd=base_work, env=environment, check=True, timeout=40)
     subprocess.run(
-        [uv, "pip", "install", "--python", str(python), str(next(dist.glob("xdog_goal-*.whl")))],
+        [uv, "pip", "install", "--python", str(python), str(next(dist.glob("xdog_skills-*.whl")))],
         cwd=root,
         env=environment,
         check=True,

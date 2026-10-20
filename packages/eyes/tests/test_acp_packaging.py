@@ -33,7 +33,7 @@ def test_eyes_wheel_has_only_approved_dependencies_and_no_harness_host(artifacts
         assert sdk.marker.evaluate({'python_version':'3.14'})
         assert not sdk.marker.evaluate({'python_version':'3.15'})
         for name in ('local_control.py','acp_client.py','handlers/acp.py','py.typed',
-                     'skills/eyes-observers/SKILL.md','examples/source-test-review.json',
+                     'skills/eyes/SKILL.md','examples/source-test-review.json',
                      'sources/scheduler.py','detectors/scheduler_due.py','examples/scheduled-review.json'):
             assert 'xdog/eyes/'+name in names
         assert not any('/transport/' in n or n.endswith('/session_notify.py') for n in names)
@@ -49,6 +49,6 @@ def test_eyes_wheel_has_only_approved_dependencies_and_no_harness_host(artifacts
 def test_eyes_sdist_retains_skill_example_and_clean_runtime_sources(artifacts):
     with tarfile.open(next(artifacts.glob('*.tar.gz'))) as archive:
         names=archive.getnames()
-        assert any(n.endswith('/src/xdog/eyes/skills/eyes-observers/SKILL.md') for n in names)
+        assert any(n.endswith('/src/xdog/eyes/skills/eyes/SKILL.md') for n in names)
         assert any(n.endswith('/src/xdog/eyes/local_control.py') for n in names)
         assert not any('/xdog/eyes/transport/' in n or n.endswith('/session_notify.py') for n in names)

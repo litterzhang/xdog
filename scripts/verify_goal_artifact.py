@@ -13,9 +13,9 @@ from pathlib import Path
 PROBE = r"""
 import asyncio,importlib.metadata as md,json,sys
 from pathlib import Path
-from xdog.goal.models import Goal,Notice,Owner
-from xdog.goal import store as installed
-from xdog.goal.store import GoalStore
+from xdog.skills.goal.models import Goal,Notice,Owner
+from xdog.skills.goal import store as installed
+from xdog.skills.goal.store import GoalStore
 assert Path(installed.__file__).is_relative_to(Path(sys.prefix))
 names={d.metadata['Name'].lower().replace('_','-') for d in md.distributions()}
 assert not names.intersection({'xdog-claw','xdog-coding','xdog-eyes','xdog-flow','xdog-tui','xdog-site'})
@@ -40,11 +40,11 @@ async def main():
                    'model_calls':0,'path':str(root)}))
 async def lifecycle():
  from agent_host import AgentHost
- from xdog.goal.host import OperationContext
- from xdog.goal.models import report_digest
- from xdog.goal.service import GoalService
+ from xdog.skills.goal.host import OperationContext
+ from xdog.skills.goal.models import report_digest
+ from xdog.skills.goal.service import GoalService
  from xdog.agent.skills.manager import SkillManager
- from xdog.goal.resources import skill_directory,role_instructions
+ from xdog.skills.goal.resources import skill_directory,role_instructions
  root=Path.cwd();root.joinpath('result.txt').write_text('actual installed result')
  owner=Owner('goal-only-lifecycle',root);host=AgentHost(owner)
  service=GoalService(await GoalStore.open(root/'lifecycle-private'/'goal.sqlite3',owner),host)
@@ -66,12 +66,12 @@ async def lifecycle():
   assert host.accepted and all(n.status=='accepted' for n in await service.store.notices())
   view=await service.export_views(goal.id)
   assert view.joinpath('status.json').is_file()
-  skill=SkillManager(root/'not-created',packaged={'goals':skill_directory()}).load_skill('goals')
+  skill=SkillManager(root/'not-created',packaged={'goal':skill_directory()}).load_skill('goal')
   assert skill is not None and skill.scope=='session' and not (root/'not-created').exists()
   assert await role_instructions('worker') and await role_instructions('reviewer')
   assert len(host.model_calls)==5
   from xdog.agent.extensions.runtime import ExtensionRuntime
-  from xdog.goal.ui_binding import GoalDisplay
+  from xdog.skills.goal.ui_binding import GoalDisplay
   runtime=ExtensionRuntime(('goal_ui',),root/'not-copied-ui',root,
                            context=lambda:{'session_id':'goal-only-owner'})
   display=GoalDisplay(service,runtime.views,valid=lambda:True,notify=runtime.notify_view_changed)
@@ -110,12 +110,12 @@ def main() -> None:
     target = root / "venv"
     subprocess.run([uv, "venv", str(target), "--python", sys.executable], cwd=root, env=environment, check=True)
     python = target / "bin" / "python"
-    wheels = [str(next(dist.glob("xdog_" + package + "-*.whl"))) for package in ("ai", "agent", "goal")]
+    wheels = [str(next(dist.glob("xdog_" + package + "-*.whl"))) for package in ("ai", "agent", "skills")]
     subprocess.run([uv, "pip", "install", "--python", str(python), *wheels], cwd=root, env=environment, check=True)
     work = root / "work"
     work.mkdir(mode=0o700)
     # This copies the external consuming host, never Goal runtime source.
-    consumer_host = Path(__file__).parents[1] / "packages/goal/tests/agent_host.py"
+    consumer_host = Path(__file__).parents[1] / "packages/skills/tests/goal/agent_host.py"
     (work / "agent_host.py").write_text(consumer_host.read_text())
     probe = work / "consumer.py"
     probe.write_text(PROBE)

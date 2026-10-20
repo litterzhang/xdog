@@ -95,7 +95,7 @@ async def settled(app, runtime):
 
 async def base(root):
     names = {dist.metadata["Name"].lower().replace("_", "-") for dist in metadata.distributions()}
-    assert not names.intersection({"xdog-goal", "xdog-eyes", "agent-client-protocol"}), names
+    assert not names.intersection({"xdog-skills", "xdog-eyes", "agent-client-protocol"}), names
     model = Model(ordinary=True)
     app, runtime = application(root, model)
     old = root / "data/groups/main/goals.json"
@@ -109,7 +109,7 @@ async def base(root):
         history = runtime.transcript_store.load_transcript(runtime.get_new_session_id())
         assert any(row.get("role") == "assistant" for row in history)
         assert old.read_bytes() == b"unsupported legacy bytes; never open or migrate\n"
-        assert not any(n.startswith(("xdog.goal", "xdog.eyes", "acp", "xdog.claw.acp")) for n in sys.modules)
+        assert not any(n.startswith(("xdog.skills.goal", "xdog.eyes", "acp", "xdog.claw.acp")) for n in sys.modules)
     finally:
         await app.stop()
     from xdog.claw.core.runtime.gateway import GatewayServer
@@ -130,9 +130,9 @@ async def base(root):
 
 
 async def lifecycle(root):
-    from xdog.goal.host import OperationContext
-    from xdog.goal.models import report_digest
-    from xdog.goal.store import GoalStore
+    from xdog.skills.goal.host import OperationContext
+    from xdog.skills.goal.models import report_digest
+    from xdog.skills.goal.store import GoalStore
 
     model = Model()
     model.worker_gate = threading.Event()
@@ -144,7 +144,7 @@ async def lifecycle(root):
                              + resource.joinpath("main.py").read_bytes()).hexdigest()
     runtime.workspace_dir.joinpath("result.txt").write_text("actual installed result")
     try:
-        reference = runtime.skill_manager.load_skill("goals")
+        reference = runtime.skill_manager.load_skill("goal")
         assert reference is not None and reference.packaged and reference.content
         await app.start()
         await activate(app)
@@ -217,7 +217,7 @@ async def lifecycle(root):
     app, runtime = application(root / "fresh-with-package", model)
     try:
         await app.start()
-        assert runtime.skill_manager.load_skill("goals").packaged
+        assert runtime.skill_manager.load_skill("goal").packaged
         assert runtime.goal_host is not None and await runtime.goal_host.service.list() == ()
     finally:
         await app.stop()

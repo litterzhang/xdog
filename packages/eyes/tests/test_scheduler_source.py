@@ -131,7 +131,7 @@ def test_packaged_scheduler_definition_and_skill_examples_use_real_loader(tmp_pa
     parsed = parse(data, base_dir=tmp_path)
     assert parsed.sources[0].type == 'scheduler'
     assert parsed.sources[0].schedule.timezone == 'Asia/Shanghai'
-    body = root.joinpath('skills/eyes-observers/SKILL.md').read_text()
+    body = root.joinpath('skills/eyes/SKILL.md').read_text()
     definitions = [parse(json.loads(block), base_dir=tmp_path)
                    for block in re.findall(r'```json\s*(.*?)```', body, re.S)]
     assert any(source.type == 'scheduler' for item in definitions for source in item.sources)

@@ -32,7 +32,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-goals = ["xdog-goal>=2.4.2"]
+skills = ["xdog-skills>=2.4.2"]
 
 [project.urls]
 Homepage = "https://xdog.942295.xyz"

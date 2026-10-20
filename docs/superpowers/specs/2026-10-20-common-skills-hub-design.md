@@ -23,7 +23,7 @@ packages/skills/src/xdog/skills/
     __init__.py
     roles/worker.md, reviewer.md
     resources.py             # skill from hub root; roles from goal module
-  skills/goals/SKILL.md       # generic packaged skill discovery convention
+  skills/goal/SKILL.md       # generic packaged skill discovery convention
   extensions/goal_ui/         # existing generic extension discovery convention
 
 Goal tests move to packages/skills/tests/goal. Hub/discovery/packaging tests sit
@@ -39,14 +39,14 @@ xdog.goal Python imports with xdog.skills.goal. Coding/Claw optional extra becom
 skills; all/full includes it. Availability checks probe top-level xdog.skills,
 which does not throw if absent and does not import a nested Goal module.
 
-Keep business identifiers: goals skill, goal tool, goal_context/task_report,
+Keep business identifiers except requested skill rename: goal skill, goal tool, goal_context/task_report,
 goal_ui extension, view IDs, journal paths, schema strings xdog.goal.*, original
 owner bindings, approval policies, exact input/message/attempt identities and
 notification semantics. No old import/distribution shim; no data migration or
 schema rewrite. Merely installing/discovering the hub starts no model/storage/UI.
 Goal code remains owned and lifecycle-bound through existing thin host adapters.
 
-Eyes remains independent and ships eyes-observers using the same namespace-based
+Eyes remains independent and ships eyes using the same namespace-based
 packaged_skills and progressive loading as flow-workflows. Add actual discovery,
 manager and cold wheel evidence rather than a second registration mechanism.
 
@@ -59,9 +59,9 @@ Git ignore alone has already proved insufficient. No directory deletion.
 ## Acceptance
 
 1. Real root wheel/sdist exclude every .claude path, preserving canonical source.
-2. Existing Eyes test and real default SkillManager find/load eyes-observers and
+2. Existing Eyes test and real default SkillManager find/load eyes and
    flow-workflows as packaged skills, no local copies or work activation.
-3. New skills wheel contains inert root, Goal domain/roles, goals skill and goal_ui;
+3. New skills wheel contains inert root, Goal domain/roles, goal skill and goal_ui;
    no old xdog.goal module or xdog-goal dependency/namespace in current runtime.
 4. Goal formats and actual on-disk history remain unchanged; existing real
    worker/report/reviewer/notice/rotation/readonly tests pass after namespace move.
@@ -78,3 +78,11 @@ skills/extensions to hub root so generic discovery needs no nested special case.
 Check absence of the optional parent without nested find_spec exceptions. Update
 external verifier wheel globs and helper paths; preserve historical proof files
 and business receipts as historical rather than retroactively rewriting them.
+
+## User clarification during implementation
+
+Rename Eyes packaged skill eyes-observers to eyes in its OWN independent package;
+rename the hub Goal skill goals to goal. No aliases. Flow/Eyes runtime or skill
+resources must not move into xdog-skills. The hub includes medium-level skills
+and their extension/support code, with Goal as the first domain. Preserve plural
+Goal view keys and namespaced UI commands: those are not the skill slug.

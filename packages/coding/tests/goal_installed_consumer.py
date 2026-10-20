@@ -102,7 +102,7 @@ async def main():
     store = SessionManager(root / "sessions")
     skills = SkillManager(root / "not-created-skills")
     if not base_only:
-        assert skills.load_skill("goals").scope == "session"
+        assert skills.load_skill("goal").scope == "session"
     calls = []
     gate, entered = threading.Event(), threading.Event()
     if not base_only:
@@ -137,14 +137,14 @@ async def main():
         host = session.children.goal_host
         controller = session._sdk_controller
         if base_only:
-            assert host is None and "xdog-goal" not in names and not (root / "goals").exists()
-            assert not any(name == "xdog.goal" or name.startswith("xdog.goal.") for name in sys.modules)
+            assert host is None and "xdog-skills" not in names and not (root / "goals").exists()
+            assert not any(name == "xdog.skills.goal" or name.startswith("xdog.skills.goal.") for name in sys.modules)
             print(
                 json.dumps({"installed_coding_base_only": "actual ordinary SDK turn without Goal installed/imported"})
             )
             return
-        from xdog.goal.host import OperationContext
-        from xdog.goal.models import report_digest
+        from xdog.skills.goal.host import OperationContext
+        from xdog.skills.goal.models import report_digest
 
         assert host is not None and controller is not None and host.loop is controller._loop
 

@@ -260,7 +260,7 @@ class GroupRuntime:
     @property
     def goal_available(self) -> bool:
         """Installed capability, not a configuration or task-delegation switch."""
-        return find_spec("xdog.goal") is not None
+        return find_spec("xdog.skills") is not None
 
     async def initialize_goals(self, inputs: InputService) -> None:
         if not self.goal_available:

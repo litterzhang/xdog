@@ -11,7 +11,7 @@ from xdog.claw.core.inputs.models import InputScope
 from xdog.claw.core.outputs.delivery import DeliveryNotSent
 from xdog.claw.core.runtime.gateway import GatewayServer
 from xdog.claw.core.types import UserInput
-from xdog.goal.host import OperationContext
+from xdog.skills.goal.host import OperationContext
 
 from packages.claw.tests.eyes_helpers import ScriptedModel
 from packages.claw.tests.test_goal_host import activate, application

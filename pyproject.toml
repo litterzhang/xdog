@@ -35,7 +35,7 @@ dependencies = [
     "xdog-claw>=2.4.2",
     "xdog-coding>=2.4.2",
     "xdog-eyes>=2.4.2",
-    "xdog-goal>=2.4.2",
+    "xdog-skills>=2.4.2",
 ]
 
 [project.urls]
@@ -83,7 +83,7 @@ members = [
     "packages/claw",
     "packages/coding",
     "packages/eyes",
-    "packages/goal",
+    "packages/skills",
 ]
 
 [tool.uv.sources]
@@ -95,7 +95,7 @@ xdog-site = { workspace = true }
 xdog-claw = { workspace = true }
 xdog-coding = { workspace = true }
 xdog-eyes = { workspace = true }
-xdog-goal = { workspace = true }
+xdog-skills = { workspace = true }
 
 [tool.pytest.ini_options]
 # Cross-package test fixtures import the repository namespace, not runtime source paths.
@@ -109,7 +109,7 @@ testpaths = [
     "packages/coding/tests",
     "packages/tui/tests",
     "packages/eyes/tests",
-    "packages/goal/tests",
+    "packages/skills/tests",
 ]
 asyncio_mode = "auto"
 # Run every retained test; concurrency, not deselection, keeps the feedback loop short.

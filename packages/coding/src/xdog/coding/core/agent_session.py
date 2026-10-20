@@ -392,7 +392,7 @@ class AgentSession:
 
     async def initialize_goals(self) -> None:
         """Attach an installed capability on the existing session execution owner."""
-        if find_spec("xdog.goal") is None:
+        if find_spec("xdog.skills") is None:
             return
         await self._settle_retired_goals()
         if self.children.goal_host is not None:
@@ -400,7 +400,7 @@ class AgentSession:
         if self._goal_start is None:
             async def start() -> None:
                 from xdog.coding.core.goal_adapter import CodingGoalHost
-                from xdog.goal.host import OperationContext
+                from xdog.skills.goal.host import OperationContext
                 host = await CodingGoalHost.open(
                     self, context=lambda: OperationContext(self._user_operation_authorized))
                 await host.flush()  # Durable obligations only; no model/Goal-state polling.
@@ -721,7 +721,7 @@ class AgentSession:
                         # Optional callback capabilities outlive an individual
                         # SDK await/asyncio.run; retain the one controller's own
                         # supported loop, never a second controller or daemon.
-                        controller.start(own_thread=find_spec("xdog.goal") is not None)
+                        controller.start(own_thread=find_spec("xdog.skills") is not None)
                         self._sdk_controller = controller
                     self._sdk_users += 1
                     return self._sdk_controller, True

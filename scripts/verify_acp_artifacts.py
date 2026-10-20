@@ -31,7 +31,7 @@ timer=SchedulerSource(timed.sources[0],wall_now=1893456000,monotonic_now=0)
 occurrence,=timer.poll(wall_now=1893459600,monotonic_now=3600).occurrences
 assert occurrence.scheduled_at==1893459600 and occurrence.timezone=='Asia/Shanghai'
 assert 'acp' not in sys.modules
-assert (resources.files('xdog.eyes')/'skills'/'eyes-observers'/'SKILL.md').is_file()
+assert (resources.files('xdog.eyes')/'skills'/'eyes'/'SKILL.md').is_file()
 from xdog.eyes.cli import main
 assert main(['validate',str(example)])==0
 assert not any(n.startswith(('xdog.ai','xdog.agent','xdog.coding')) for n in sys.modules)
