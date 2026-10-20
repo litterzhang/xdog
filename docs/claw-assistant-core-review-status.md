@@ -33,3 +33,15 @@ fixes. Overall goal remains active; no push/merge/publish or user service/data
 change. Existing root free space is insufficient for the tool's writer-lock
 initialization. It requires external space to be made available; this task does
 not authorize deleting existing user data.
+
+## 2026-10-20 update — actual independent review completed
+
+The environment block above is historical. Only same-goal superseded inactive
+verifier SOFTWARE installations were copied/hash-verified into `/data` with old
+paths preserved as links; workdirs/reports/DBs/user caches/logs were not changed.
+After stable278MiB root space, the ONE actual reviewer session
+01a15688-a10f-71c2-aca8-4c0c018dd1c1 started and completed full33df908..ef3e0db.
+Report: `docs/claw-assistant-core-independent-review.md`. Verdict:five Important
+findings, no Critical, two deferred Minor. Review is performed but acceptance
+remains pending the single TDD fix pass and fresh final gates/artifacts. No
+second review requested; actual reviewer closed after its final result.

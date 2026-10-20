@@ -10,6 +10,7 @@ from typing import Protocol
 
 from xdog.agent.async_work import wait_owned
 from xdog.claw.core.inputs.models import InputEnvelope, InputScope
+from xdog.claw.core.inputs.receipt_projection import project
 from xdog.claw.core.inputs.store import InputRecord, InputStore
 
 logger = logging.getLogger(__name__)
@@ -150,10 +151,25 @@ class InputService:
             record = await self.store.cancel(scope, message_id)
             self._pending.discard((scope, message_id))
             self._notify(scope, message_id)
+            self._publish_terminal(record)
             return record
         # A lost protocol/caller ACK cannot leave an actually cancelled input
         # occupying application capacity or suppressing the next idle operation.
         return await wait_owned(asyncio.create_task(commit()))
+
+    def _publish_terminal(self, record: InputRecord) -> None:
+        if record.status not in _TERMINAL:
+            return
+        if self.on_settled is not None:
+            try:
+                self.on_settled(record.envelope.scope)
+            except Exception:
+                logger.warning('Input result committed; optional settled hint failed', exc_info=True)
+        for callback in tuple(self._completed):
+            try:
+                callback(record)
+            except Exception:
+                logger.warning('Committed input display listener failed', exc_info=True)
 
     def _notify(self, scope: InputScope, identifier: str | None = None) -> None:
         for (owner, message_id), waiters in tuple(self._waiters.items()):
@@ -201,8 +217,10 @@ class InputService:
             return current
         if not admitted:
             return await self.store.reject(record, error)
-        return await self.store.finish(record, 'failed' if error else 'succeeded', response=outcome.response,
-                                       error=error, session_id=outcome.session_id)
+        session_id = outcome.session_id or current.session_id
+        response, receipt_error = project(outcome.response, error, session_id)
+        return await self.store.finish(record, 'failed' if error else 'succeeded', response=response,
+                                       error=receipt_error, session_id=session_id)
 
     async def _settle(self, scope: InputScope, record: InputRecord | None,
                       claim: asyncio.Task[InputRecord | None] | None) -> None:
@@ -232,6 +250,9 @@ class InputService:
         if not self._closing:
             self._pending.discard((scope, current.envelope.message.id))
         self._notify(scope, current.envelope.message.id)
+        settled = await self.store.get(scope, current.envelope.message.id)
+        if settled is not None:
+            self._publish_terminal(settled)
 
     async def _consume(self, scope: InputScope) -> None:
         record: InputRecord | None = None
@@ -257,17 +278,8 @@ class InputService:
                             raise
                     self._pending.discard((scope, record.envelope.message.id))
                     self._active.discard(scope)
-                    if self.on_settled is not None:
-                        try:
-                            self.on_settled(scope)
-                        except Exception:
-                            logger.warning('Input result committed; optional settled hint failed', exc_info=True)
                     self._notify(scope, record.envelope.message.id)
-                    for callback in tuple(self._completed):
-                        try:
-                            callback(completed)
-                        except Exception:
-                            logger.warning('Committed input display listener failed', exc_info=True)
+                    self._publish_terminal(completed)
                     record, claim = None, None
                 if self._closing:
                     break

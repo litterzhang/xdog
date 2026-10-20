@@ -227,6 +227,7 @@ class Orchestrator:
         service = InputService(store, self._execute_input, on_settled=self._input_settled,
                                paused=self._config.eyes_enabled, execution_scope=self._input_execution_scope,
                                on_admitted=self._input_admitted)
+        service.subscribe_completed(self._retire_withdrawn_call)
         outputs: OutputDelivery | None = None
         try:
             output_store = await OutputStore.open(self._data_dir / 'outputs' / 'journal.sqlite3')
@@ -250,6 +251,21 @@ class Orchestrator:
             if outputs is not None:
                 await outputs.close()
             raise
+
+    def _retire_withdrawn_call(self, record: InputRecord) -> None:
+        if record.status != 'cancelled':
+            return
+        key = record.envelope.scope, record.envelope.message.id
+        call = self._input_calls.get(key)
+        if call is None or call.envelope != record.envelope:
+            return
+        # Cancelled unstarted input cannot acquire a new retry attempt. This
+        # retires only its current matching live display binding, never the
+        # controller/producer or another input's active execution.
+        if self._input_calls.get(key) is call:
+            self._input_calls.pop(key, None)
+        if not call.result.done():
+            call.result.set_result(TurnResult(error='aborted', session_id=record.session_id, canceled=True))
 
     @staticmethod
     def _output_recovered(task: asyncio.Task[None]) -> None:
@@ -454,10 +470,15 @@ class Orchestrator:
                 return None
             receipt = await service.wait(envelope.scope, identifier)
             if receipt.status in {'cancelled', 'interrupted'}:
-                return TurnResult(error='aborted' if receipt.status == 'cancelled' else receipt.error,
-                                  session_id=receipt.session_id, canceled=True)
+                result = TurnResult(error='aborted' if receipt.status == 'cancelled' else receipt.error,
+                                    session_id=receipt.session_id, canceled=True)
+                if not call.result.done():
+                    call.result.set_result(result)
+                if self._input_calls.get(key) is call:
+                    self._input_calls.pop(key, None)
+                return result
             if call.result.done():
-                return call.result.result()
+                return replace(call.result.result(), response_text=receipt.response, error=receipt.error or None)
             result = TurnResult(response_text=receipt.response, error=receipt.error or None,
                                 session_id=receipt.session_id, canceled=receipt.status in {'cancelled', 'interrupted'})
             call.result.set_result(result)
