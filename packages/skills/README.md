@@ -1,8 +1,9 @@
 # xdog-skills
 
 Common medium-level skills with their domain support and extension code. The hub
-currently contains **goal**: explicit outcomes, worker reports, evidence-backed
-review and an optional shared read-only display. Other common skills can add
+currently contains **goal** (explicit outcomes, worker reports, evidence-backed
+review and a shared read-only display) and **xdog-planning** (ordinary task
+planning guidance, previously shipped in Agent). Other common skills can add
 independent modules/resources here without becoming another distribution.
 
 Flow and Eyes remain **independent engine packages**, not hub contents:
@@ -14,6 +15,7 @@ Flow and Eyes remain **independent engine packages**, not hub contents:
 xdog.skills/
   goal/                 # Goal domain contracts/store/service/tools and role resources
   skills/goal/SKILL.md   # Built-in goal skill, discovered by existing Agent SkillManager
+  skills/xdog-planning/  # Ordinary planning guidance, no separate tool/state machine
   extensions/goal_ui/    # Explicitly configured shared read-only Python display
 ```
 

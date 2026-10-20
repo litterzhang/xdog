@@ -131,6 +131,7 @@ jobs:
           need = {"xdog/skills/__init__.py", "xdog/skills/py.typed",
                   "xdog/skills/goal/service.py", "xdog/skills/goal/roles/worker.md",
                   "xdog/skills/goal/roles/reviewer.md", "xdog/skills/skills/goal/SKILL.md",
+                  "xdog/skills/skills/xdog-planning/SKILL.md",
                   "xdog/skills/extensions/goal_ui/extension.yaml",
                   "xdog/skills/extensions/goal_ui/main.py"}
           assert need <= names, need - names

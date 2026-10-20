@@ -197,8 +197,9 @@ unchanged. Real third-party replay retention behavior remains unverified.
 
 ### Task planning skill and host access scope
 
-`xdog-planning` is a builtin packaged skill for ordinary objective/scope/dependency
-notes, acceptance criteria and evidence-backed progress. It grants no permissions,
+`xdog-planning`, supplied by optional `xdog-skills`, is discovered through the
+normal packaged-skill mechanism for objective/scope/dependency notes, acceptance
+criteria and evidence-backed progress. It grants no permissions,
 creates no parallel task database and starts no second Agent loop. The former
 `xdog.agent.planning`/`PlanOwner`/`PlanState`, dedicated plan inspector and
 `update_plan` tool are removed.

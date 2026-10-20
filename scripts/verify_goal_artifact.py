@@ -18,11 +18,22 @@ from xdog.skills.goal import store as installed
 from xdog.skills.goal.store import GoalStore
 assert Path(installed.__file__).is_relative_to(Path(sys.prefix))
 names={d.metadata['Name'].lower().replace('_','-') for d in md.distributions()}
+assert 'xdog-skills' in names and 'xdog-goal' not in names
 assert not names.intersection({'xdog-claw','xdog-coding','xdog-eyes','xdog-flow','xdog-tui','xdog-site'})
 blocked=('xdog.claw','xdog.coding','xdog.eyes','xdog.flow','xdog.tui','xdog.site')
 assert not any(n.startswith(blocked) for n in sys.modules)
 async def main():
- root=Path.cwd();owner=Owner('goal-only-host-binding',root)
+ from xdog.agent.skills import SkillManager,packaged_skills
+ root=Path.cwd()
+ manager=SkillManager(root/'not-created-shared-skills')
+ discovered=packaged_skills()
+ for slug in ('goal','xdog-planning'):
+  item=manager.load_skill(slug)
+  assert item is not None and item.packaged and item.content
+  assert discovered[slug].is_relative_to(Path(sys.prefix)) and '/xdog/skills/skills/' in str(discovered[slug])
+ assert not {'goals','eyes','eyes-observers','flow-workflows'}.intersection(discovered)
+ assert not (root/'not-created-shared-skills').exists()
+ owner=Owner('goal-only-host-binding',root)
  s=await GoalStore.open(root/'private'/'goals.sqlite3',owner)
  goal=Goal('goal','Portable','Inspect real output',('Evidence is present',))
  await s.put(goal,expected_version=0,notices=(Notice('notice','goal','Inspect report'),),
@@ -119,6 +130,11 @@ def main() -> None:
     (work / "agent_host.py").write_text(consumer_host.read_text())
     probe = work / "consumer.py"
     probe.write_text(PROBE)
+    subprocess.run(
+        [str(python), "-c", "import sys,xdog.skills; "
+         "assert not any(n.startswith(('xdog.skills.goal','xdog.agent','xdog.ai','xdog.tui')) for n in sys.modules)"],
+        cwd=work, env=environment, check=True, timeout=10,
+    )
     subprocess.run([str(python), str(probe)], cwd=work, env=environment, check=True, timeout=30)
     result = {"root": str(root), "distribution": str(dist), "environment": str(target), "kernel_only": False}
     (root / "verification.json").write_text(json.dumps(result, indent=2) + "\n")

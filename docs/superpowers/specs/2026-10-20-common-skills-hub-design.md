@@ -24,6 +24,7 @@ packages/skills/src/xdog/skills/
     roles/worker.md, reviewer.md
     resources.py             # skill from hub root; roles from goal module
   skills/goal/SKILL.md       # generic packaged skill discovery convention
+  skills/xdog-planning/      # existing common planning guidance moved from Agent
   extensions/goal_ui/         # existing generic extension discovery convention
 
 Goal tests move to packages/skills/tests/goal. Hub/discovery/packaging tests sit
@@ -86,3 +87,11 @@ rename the hub Goal skill goals to goal. No aliases. Flow/Eyes runtime or skill
 resources must not move into xdog-skills. The hub includes medium-level skills
 and their extension/support code, with Goal as the first domain. Preserve plural
 Goal view keys and namespaced UI commands: those are not the skill slug.
+
+## Source-discovered completion details
+
+Existing xdog-planning is common medium-level guidance and moves unchanged from
+Agent into the hub; its name remains xdog-planning. No new skill is invented.
+Flow’s tracked development .claude/skills is excluded from its OWN artifacts as
+well as root archives, without deleting the local/tracked file. Both changes
+have actual pre-change failing discovery/archive regressions.

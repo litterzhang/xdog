@@ -57,7 +57,7 @@ colliding with anything else on PyPI.
 ## Eyes · 主动观察
 
 `xdog-eyes` follows flow's file-first shape: versioned JSON, frozen models,
-validation, asynchronous execution, CLI and the packaged **eyes-observers** skill.
+validation, asynchronous execution, CLI and the packaged **eyes** skill.
 Sources collect evidence, detectors emit events and routes invoke generic ACP
 handlers. Coding never needs to know a concrete source or start an event host.
 

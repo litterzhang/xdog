@@ -53,7 +53,7 @@ packages = ["src/xdog"]
 "examples" = "xdog/flow/examples"
 
 [tool.hatch.build]
-exclude = ["**/__pycache__", "**/*.pyc"]
+exclude = ["**/.claude", "**/.claude/**", "**/__pycache__", "**/*.pyc"]
 
 [tool.mypy]
 python_version = "3.12"

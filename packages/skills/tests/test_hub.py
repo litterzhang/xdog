@@ -36,10 +36,11 @@ def test_generic_discovery_finds_hub_skill_and_existing_flow_eyes_without_copyin
     assert not (root / 'skills' / 'flow-workflows').exists()
     paths = packaged_skills()
     assert paths['goal'] == root / 'skills' / 'goal'
+    assert paths['xdog-planning'] == root / 'skills' / 'xdog-planning'
     assert 'goals' not in paths and 'eyes-observers' not in paths
     manager = SkillManager(tmp_path / 'not-created')
     available = {item.slug: item for item in manager.list_skills()}
-    for slug in ('goal', 'eyes', 'flow-workflows'):
+    for slug in ('goal', 'xdog-planning', 'eyes', 'flow-workflows'):
         assert available[slug].packaged and not available[slug].content
         loaded = manager.load_skill(slug)
         assert loaded is not None and loaded.content and loaded.packaged

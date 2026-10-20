@@ -335,8 +335,8 @@ never automatically restarts ordinary file observation. Eyes still imports no ha
 
 The `xdog-skills` distribution is an inert hub, not an agent harness. Domain code
 lives in independent modules; shared `skills/<slug>` and `extensions/<id>` use
-Agent’s existing generic discovery. It currently ships the `goal` skill and the
-`xdog.skills.goal` domain, plus `goal_ui`. Flow and Eyes remain independent
+Agent’s existing generic discovery. It currently ships `goal` and `xdog-planning` skills, the
+`xdog.skills.goal` domain, and `goal_ui`. Flow and Eyes remain independent
 packages; their engines/skills are not copied here. Installing/listing skills
 does not start execution, storage or display workers.
 

@@ -747,7 +747,8 @@ continuation silently reconnects, replays POSTs or expands configured disclosure
 
 ### Task planning and host read-only scope
 
-The builtin **`xdog-planning`** skill uses ordinary conversation or task documents
+The builtin **`xdog-planning`** skill, supplied by `xdog-skills` (install the
+`skills` extra), uses ordinary conversation or task documents
 for objectives, dependencies, acceptance criteria and evidence-backed progress.
 It does not create a separate plan database, inspector, execution mode or model
 loop. The former `/plan`, `PlanPanel` and `update_plan` UI/tool APIs are removed.
