@@ -61,7 +61,7 @@ def _update_config_weixin(config_file: Path, account_id: str) -> None:
 def _get_version() -> str:
     try:
         from importlib.metadata import version
-        return version("claw")
+        return version("xdog-claw")
     except Exception:
         return "0.1.0"
 

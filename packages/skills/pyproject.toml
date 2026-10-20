@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "xdog-skills"
-version = "2.4.2"
+version = "2.4.3"
 description = "Common medium-level agent skills with isolated support and extension code"
 requires-python = ">=3.12"
 readme = "README.md"
@@ -12,7 +12,7 @@ license = "AGPL-3.0-or-later"
 license-files = ["LICENSE", "LICENSE-EXCEPTION.md"]
 authors = [{ name = "HugeMan" }]
 classifiers = ["Operating System :: POSIX :: Linux", "Typing :: Typed", "Programming Language :: Python :: 3"]
-dependencies = ["xdog-agent>=2.4.2"]
+dependencies = ["xdog-agent>=2.4.3"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/xdog"]

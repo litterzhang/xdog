@@ -12,8 +12,10 @@ In `litterzhang/xdog`, open **Settings → Environments → New environment** an
 pypi-xdog-skills
 ```
 
-Keep this spelling exact. Restrict deployment branches to main if that matches
-your release policy; configure approval reviewers if desired. This repo's publish
+Keep this spelling exact. For manual publishing from main, allow main in the
+environment deployment policy. For the tag-triggered release workflow, also
+allow `v*` tags; a main-only policy rejects tag deployments. Configure approval
+reviewers if desired. This repo's publish
 job already uses `environment: pypi-${{ matrix.package }}` and job-scoped
 `id-token: write`. It consumes built artifacts in a separate upload job; no PyPI
 API token, password or new repository secret is needed for Trusted Publishing.
@@ -62,7 +64,8 @@ gh workflow run publish.yml --ref main -f 'packages=["xdog-skills"]'
 
 The workflow builds xdog-skills wheel/sdist, runs workspace tests/lint and the
 Flow+Skills strict type gate, then requests the short-lived OIDC upload credential.
-Current source version is 2.4.2; no version bump was made for this package rename.
+The authorized release version is now **2.4.3**, with workspace versions and
+internal minimum dependencies aligned for the new Agent/host APIs.
 
 **A normal main push does not publish.** A `v*` tag publishes the default matrix,
 so do not create a broad release tag merely to first-upload xdog-skills: already
@@ -91,5 +94,6 @@ Before an actual release, align versions and minimum dependencies for any newly
 used Agent/Coding/Claw APIs with the versions you publish. The isolated consumers
 used the matching locally rebuilt wheels, NOT independently installed existing
 PyPI dependency versions. Publishing configuration and a pending publisher do
-not themselves establish registry dependency compatibility; this task intentionally
-neither bumped versions nor uploaded packages.
+not themselves establish registry dependency compatibility; the initial workflow-setup step
+neither bumped versions nor uploaded packages. A subsequent explicitly authorized
+2.4.3 release performs the version alignment and tag-triggered workflow.

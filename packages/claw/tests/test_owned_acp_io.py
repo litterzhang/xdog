@@ -23,7 +23,7 @@ async def test_private_acp_endpoint_io_is_off_loop_and_private_before_listen(tmp
     owner, calls, modes = threading.get_ident(), [], []
     server = None
     original_listen = socket.socket.listen
-    with tempfile.TemporaryDirectory(prefix='acp-io-', dir='/data/t.Vy5SaQ') as directory:
+    with tempfile.TemporaryDirectory(prefix='acp-io-') as directory:
         endpoint = Path(directory) / 'peer.sock'
         originals = {name: getattr(os, name) for name in ('mkdir', 'lstat', 'chmod', 'unlink')}
 
@@ -177,7 +177,7 @@ async def test_cancelled_private_bind_closes_actual_late_descriptor_before_retur
         return value
 
     work = None
-    with tempfile.TemporaryDirectory(prefix='acp-late-', dir='/data/t.Vy5SaQ') as directory:
+    with tempfile.TemporaryDirectory(prefix='acp-late-') as directory:
         endpoint = Path(directory) / 'peer.sock'
         try:
             monkeypatch.setattr(module, 'bind_private', actual_bind)
@@ -204,7 +204,7 @@ async def test_cancelled_private_bind_closes_actual_late_descriptor_before_retur
 @pytest.mark.parametrize('kind', ['file', 'stale-socket', 'symlink'])
 async def test_private_acp_refuses_existing_endpoint_without_native_stale_cleanup(tmp_path, kind):
     app, backend, model = await make_backend(tmp_path)
-    with tempfile.TemporaryDirectory(prefix='acp-old-', dir='/data/t.Vy5SaQ') as directory:
+    with tempfile.TemporaryDirectory(prefix='acp-old-') as directory:
         endpoint = Path(directory) / 'peer.sock'
         target = Path(directory) / 'target'
         target.write_bytes(b'Original unrelated target')
@@ -231,7 +231,7 @@ async def test_private_acp_refuses_existing_endpoint_without_native_stale_cleanu
 
 async def test_private_acp_cleanup_preserves_replacement_and_reports_actual_backend_error(tmp_path, monkeypatch):
     app, backend, model = await make_backend(tmp_path)
-    with tempfile.TemporaryDirectory(prefix='acp-end-', dir='/data/t.Vy5SaQ') as directory:
+    with tempfile.TemporaryDirectory(prefix='acp-end-') as directory:
         endpoint = Path(directory) / 'peer.sock'
         server = await ClawAcpServer.start(app, endpoint)
         original = server.backend.close
@@ -307,7 +307,7 @@ async def test_endpoint_replacement_during_actual_bind_is_not_chmodded_or_publis
     app, backend, model = await make_backend(tmp_path)
     original = socket.socket.bind
     server = None
-    with tempfile.TemporaryDirectory(prefix='acp-race-', dir='/data/t.Vy5SaQ') as directory:
+    with tempfile.TemporaryDirectory(prefix='acp-race-') as directory:
         endpoint = Path(directory) / 'peer.sock'
 
         def bind(sock, address):

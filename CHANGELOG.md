@@ -1,6 +1,6 @@
 # Changelog
 
-Notable changes from 1.0.0 onwards. All eight workspace packages and the umbrella project share one
+Notable changes from 1.0.0 onwards. All nine workspace packages and the umbrella project share one
 version number.
 
 The format is loosely [Keep a Changelog](https://keepachangelog.com/), and the
@@ -9,6 +9,46 @@ project follows [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 Nothing yet.
+
+---
+
+## [2.4.3] — 2026-10-20
+
+### Added
+
+- `xdog-skills`: a common medium-level skills hub containing the `goal` and
+  `xdog-planning` skills, the host-neutral `xdog.skills.goal` domain and its shared
+  read-only `goal_ui` extension. Coding and Claw reuse the same explicit
+  worker/report/acceptance/independent-review implementation.
+- Application-owned durable Claw input receipts, per-group execution ownership
+  and independent original-target output delivery. ACP stays a thin ingress
+  adapter; explicit Agent steering/follow-ups retain native runtime semantics.
+
+### Changed
+
+- Goal's former standalone distribution/import becomes `xdog-skills` /
+  `xdog.skills.goal`; Coding/Claw use the `skills` extra. Skill names are now
+  `goal` and independent Eyes' `eyes`; Flow/Eyes engines and skills are not bundled
+  into the common hub. Existing `xdog-planning` moves unchanged from Agent.
+- Goal availability follows installed package presence without an enable setting;
+  ordinary chat and skill discovery never delegate autonomous work implicitly.
+  Existing Goal data formats/paths and tool permissions remain unchanged; old
+  distribution/import/skill aliases are not provided.
+- Align all workspace versions, internal minimum dependencies, lockfile and
+  runtime/protocol client identities to 2.4.3 for the new Agent/host APIs.
+
+### Fixed
+
+- Oversized successful Claw output produces an explicit bounded receipt preview
+  without losing full history or faulting the group. Queued withdrawal retires
+  the original live callback without releasing another execution owner.
+- Abandoned Goal outcomes survive late reviewers; actual channel readiness and
+  released Inbox capacity recover original outputs/notices without model replay.
+- Root and Flow artifacts exclude local `.claude` state and nested worktrees.
+- Private ACP I/O regressions use the platform temporary directory instead of
+  a developer-specific absolute path, restoring clean-runner CI portability.
+- `xdog-claw --version` resolves the actual `xdog-claw` distribution rather than
+  the retired bare name and fallback version.
 
 ---
 
