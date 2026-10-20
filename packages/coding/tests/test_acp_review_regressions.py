@@ -270,7 +270,7 @@ async def test_public_compact_waits_for_owner_preparation_reservation(coding_ses
 @pytest.mark.parametrize('owner_mode',['runtime','sdk'])
 async def test_public_compact_cannot_write_after_owner_closes_and_releases_lease(coding_session,owner_mode):
     from xdog.ai.types import DoneEvent
-    from xdog.coding.core.sessions.ownership import SessionLease, runtime_directory
+    from xdog.coding.core.sessions.ownership import SessionLease, lease_directory
     from xdog.coding.core.sessions.runtime import SessionRuntime
 
     seed_compaction(coding_session)
@@ -305,13 +305,11 @@ async def test_public_compact_cannot_write_after_owner_closes_and_releases_lease
         if runtime is not None:
             closing=runtime.close()
         else:
-            controller=coding_session._sdk_controller
-            coding_session.dispose()
-            closing=controller.close()
+            closing=coding_session.dispose()
         await asyncio.sleep(0.03)
         assert not closing.done(), 'close must cancel and settle the compaction writer before releasing its lease'
         with pytest.raises(RuntimeError,match='owned'):
-            other=SessionLease.acquire(runtime_directory(coding_session.session_manager._dir),coding_session.session_id)
+            other=SessionLease.acquire(lease_directory(coding_session.session_manager._dir),coding_session.session_id)
             other.close()
         assert cleaning.is_set()
         settle.set()
@@ -319,7 +317,7 @@ async def test_public_compact_cannot_write_after_owner_closes_and_releases_lease
         release.set()
         await asyncio.gather(compact,return_exceptions=True)
         assert coding_session.session_manager._session_path(coding_session.session_id).read_bytes()==original
-        other=SessionLease.acquire(runtime_directory(coding_session.session_manager._dir),coding_session.session_id)
+        other=SessionLease.acquire(lease_directory(coding_session.session_manager._dir),coding_session.session_id)
         other.close()
     finally:
         release.set()

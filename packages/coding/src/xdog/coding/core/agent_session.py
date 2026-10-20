@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar
 from xdog.agent import (
     AfterToolCallContext,
     AfterToolCallResult,
-    AgentEndEvent,
     AgentEvent,
     AgentMessage,
     BeforeToolCallContext,
@@ -73,6 +72,8 @@ R = TypeVar("R")
 def _idle_change(method: Callable[Concatenate["AgentSession", P], R]) -> Callable[Concatenate["AgentSession", P], R]:
     @wraps(method)
     def wrapped(self: AgentSession, /, *args: P.args, **kwargs: P.kwargs) -> R:
+        if self._sdk_disposing:
+            raise RuntimeError('Session is closing or closed')
         runtime = self.runtime
         controller = runtime.controller if runtime is not None else self._sdk_controller
         if (controller is None and runtime is None and self._sdk_closing is not None
@@ -80,7 +81,8 @@ def _idle_change(method: Callable[Concatenate["AgentSession", P], R]) -> Callabl
             raise RuntimeError('SDK owner cleanup is still settling; wait before changing session controls')
         if controller is not None and not controller.owns_current_task:
             async def owned() -> R:
-                return wrapped(self, *args, **kwargs)
+                from xdog.agent.async_work import run_owned
+                return await run_owned(wrapped, self, *args, **kwargs)
             try:
                 asyncio.get_running_loop()
             except RuntimeError:
@@ -104,6 +106,7 @@ def _idle_change(method: Callable[Concatenate["AgentSession", P], R]) -> Callabl
                     if closing is not None:
                         closing.result()
         before_scope = (self.session_id, self.session_data.active_branch)
+        before_resources = (self.children, self.extensions, self.mcp)
         if self._tool_selection_retiring:
             raise RuntimeError("Tool retirement persistence owns this session")
         if self._compacting:
@@ -113,34 +116,34 @@ def _idle_change(method: Callable[Concatenate["AgentSession", P], R]) -> Callabl
         with self.children.supervisor.idle_scope():
             if method.__name__ in {'switch_session', 'restore_branch', 'navigate_checkpoint'}:
                 self._navigation_cancel.clear()
+            navigation = method.__name__ in {'new_session', 'switch_session', 'restore_branch', 'navigate_checkpoint'}
+            self._navigating += int(navigation)
             self._context_changes += 1
             target_lease = None
             try:
                 if method.__name__ in {'switch_session', 'navigate_checkpoint'}:
                     target = args[0] if args else kwargs.get('session_id')
                     if isinstance(target, str) and target != self.session_id:
-                        from xdog.coding.core.sessions.ownership import SessionLease, runtime_directory
+                        from xdog.coding.core.sessions.ownership import SessionLease, lease_directory
                         pending = self._pending_lease
                         target_lease = (pending if pending is not None and pending.session_id == target else
-                            SessionLease.acquire(runtime_directory(self.session_manager._dir), target))
+                            SessionLease.acquire(lease_directory(self.session_manager._dir), target))
                 result = method(self, *args, **kwargs)
                 if target_lease is not None and self.session_id == target_lease.session_id:
                     previous, self._lease = self._lease, target_lease
                     if previous is not None:
-                        if self.runtime is not None:
-                            self.runtime.retain_lease(previous)
-                        elif controller is not None:
-                            self._sdk_retiring_leases.add(previous)
-                        else:
-                            previous.close()
+                        self._retiring_leases.add(previous)
                 return result
             finally:
                 if target_lease is not None and self._lease is not target_lease:
                     target_lease.close()
                 self._context_changes -= 1
+                self._navigating -= int(navigation)
                 self._refresh_session_hint()
                 if (self._context_changes == 0
-                        and before_scope != (self.session_id, self.session_data.active_branch)):
+                        and (before_scope != (self.session_id, self.session_data.active_branch)
+                             or any(before is not after for before, after in zip(
+                                 before_resources, (self.children, self.extensions, self.mcp), strict=True)))):
                     if self.runtime is not None:
                         self.runtime.context_changed()
                     elif controller is not None:
@@ -150,6 +153,7 @@ def _idle_change(method: Callable[Concatenate["AgentSession", P], R]) -> Callabl
                             from xdog.coding.core.sessions.store import InputStore
                             await asyncio.wrap_future(discarded)
                             await self._settle_retired_goals()
+                            await self._settle_retired_resources()
                             previous = controller.inbox
                             if previous is not None:
                                 await previous.retire()
@@ -159,6 +163,13 @@ def _idle_change(method: Callable[Concatenate["AgentSession", P], R]) -> Callabl
                             await inbox.activate()
 
                         controller.settle_before_release(rebind_sdk())
+                    else:
+                        from xdog.coding.core.session_staging import settle
+                        async def retire_cold() -> None:
+                            from xdog.agent.async_work import settle_cleanup
+                            await settle_cleanup(self._settle_retired_goals, self._settle_retired_resources)
+                        settle(retire_cold)
+                        self._release_retired_leases()
     return wrapped
 
 
@@ -198,8 +209,12 @@ class AgentSession:
     _sdk_controller: SessionController | None = field(default=None, init=False, repr=False)
     _sdk_users: int = field(default=0, init=False, repr=False)
     _sdk_closing: Future[None] | None = field(default=None, init=False, repr=False)
-    _sdk_retiring_leases: set[SessionLease] = field(default_factory=set, init=False, repr=False)
+    _retiring_leases: set[SessionLease] = field(default_factory=set, init=False, repr=False)
     _sdk_disposing: bool = field(default=False, init=False, repr=False)
+    _close_receipt: Future[None] | None = field(default=None, init=False, repr=False)
+    _resource_closing: Future[None] | None = field(default=None, init=False, repr=False)
+    _retired_resources: list[tuple[CodingChildren, ExtensionRuntime, McpManager | None]] = field(
+        default_factory=list, init=False, repr=False)
     _retired_goal_hosts: list[CodingGoalHost] = field(default_factory=list, init=False, repr=False)
     _goal_start: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
     _user_prompt_messages: dict[int, UserMessage] = field(default_factory=dict, init=False, repr=False)
@@ -209,6 +224,7 @@ class AgentSession:
     _lease: SessionLease | None = field(default=None, init=False, repr=False)
     _pending_lease: SessionLease | None = field(default=None, init=False, repr=False)
     _unsubscribe: Any = field(default=None, init=False, repr=False)
+    _navigating: int = field(default=0, init=False, repr=False)
     _context_changes: int = field(default=0, init=False, repr=False)
     _auth_changing: bool = field(default=False, init=False, repr=False)
     #: Slugs of skills whose instructions are currently in the system prompt.
@@ -216,7 +232,10 @@ class AgentSession:
     #: taken back out — see `activate_skill`.
     _navigation_alive: Callable[[], bool] = field(default_factory=lambda: (lambda: True), init=False, repr=False)
     _navigation_cancel: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
+    _history_error: BaseException | None = field(default=None, init=False, repr=False)
     _compacting: bool = field(default=False, init=False, repr=False)
+    _project_files: tuple[Any, ...] = field(default=(), init=False, repr=False)
+    _project_directory: Path | None = field(default=None, init=False, repr=False)
     _active_skills: frozenset[str] = field(default=frozenset(), init=False, repr=False)
     _tool_selection_restore_pending: bool = field(default=False, init=False, repr=False)
     _tool_selection_retiring: bool = field(default=False, init=False, repr=False)
@@ -259,13 +278,12 @@ class AgentSession:
     def _load_access(self) -> None:
         data = self.session_data
         def persist(state: AccessState) -> None:
-            previous = data.access
-            data.access = state.to_dict()
-            try:
-                self.session_manager.save_session(data)
-            except BaseException:
-                data.access = previous
-                raise
+            with self.session_manager._write_lock:
+                if self.session_data is not data:
+                    raise RuntimeError('Original access owner changed')
+                staged = replace(data, access=state.to_dict())
+                self.session_manager.save_session(staged)
+                data.access, data.updated_at = staged.access, staged.updated_at
         self.access = AccessScope(AccessState.from_dict(data.access), persist)
 
     async def _transform_user_input(self, message: UserMessage, source: str,
@@ -286,14 +304,20 @@ class AgentSession:
 
     def _load_extensions(self, prepared: ExtensionRuntime | None = None) -> None:
         data = self.session_data
+        branch = data.active_branch
         def persist(value: dict[str, Any]) -> None:
-            previous = data.extension_entries
-            data.extension_entries = value
-            try:
-                self.session_manager.save_session(data)
-            except BaseException:
-                data.extension_entries = previous
-                raise
+            from xdog.coding.core.session_history import HistorySnapshot
+            def guard() -> None:
+                if (self._navigating or self.session_data is not data or data.active_branch != branch
+                        or entries._closed.is_set()):
+                    raise RuntimeError('Original extension entry owner changed or closed')
+            with self.session_manager._write_lock:
+                guard()
+                snapshot = HistorySnapshot.capture(replace(data, extension_entries=value))
+                saved = snapshot.commit(self.session_manager, guard)
+                guard()
+                data.extension_entries = saved.extension_entries
+                data.updated_at = saved.updated_at
         entries = ExtensionEntries(data.extension_entries, persist) if prepared is None else prepared.entries
         if prepared is not None:
             entries.bind_persistence(persist)
@@ -304,6 +328,9 @@ class AgentSession:
         self.extensions = prepared or ExtensionRuntime(self.settings.trusted_extensions, self.settings.extension_root,
             self.working_dir, settings=self.settings.extension_settings, context=context, entries=entries,
             inspection=self._extension_inspection)
+        from xdog.coding.core.command_names import UI_COMMANDS
+        from xdog.coding.core.slash_commands import BUILTIN_COMMANDS
+        self.extensions.reserve_commands(frozenset({*BUILTIN_COMMANDS, *UI_COMMANDS, 'draft'}))
         self.extensions.context = context
         self.extensions.inspection = self._extension_inspection
         self.extensions.tool_inventory = self._extension_tools
@@ -421,14 +448,24 @@ class AgentSession:
             host.loop.call_soon_threadsafe(lambda: asyncio.create_task(host.aclose()))
 
     async def _settle_retired_goals(self) -> None:
+        from functools import partial
+
+        from xdog.agent.async_work import settle_cleanup
         from xdog.agent.supervision import settle_on
-        for host in tuple(self._retired_goal_hosts):
-            await settle_on(host.loop, host.aclose())
-            self._retired_goal_hosts.remove(host)
+        async def close(host: CodingGoalHost) -> None:
+            try:
+                await settle_on(host.loop, host.aclose())
+            finally:
+                self._retired_goal_hosts.remove(host)
+        await settle_cleanup(*(partial(close, host) for host in tuple(self._retired_goal_hosts)),
+                             message='Retired Coding capabilities failed to close')
 
     async def initialize_extensions(self) -> None:
         try:
             if self.extensions.enabled:
+                from xdog.agent.async_work import run_owned
+                from xdog.coding.core.slash_commands import command_reservations
+                self.extensions.reserve_commands(await run_owned(command_reservations))
                 await self.extensions.initialize()
             if self.agent.state.model.startswith("ext-") and not self.agent.state.is_streaming:
                 self.model_info = self.extensions.provider_model(self.agent.state.model)
@@ -607,6 +644,7 @@ class AgentSession:
     def session_id(self) -> str:
         return self.session_data.session_id
 
+    @_idle_change
     def rename_session(self, name: str, *, expected_name: str | None = None,
                        alive: Callable[[], bool] | None = None) -> str:
         """Save metadata before publishing, retaining the data owner used by access/extensions."""
@@ -683,26 +721,53 @@ class AgentSession:
         self._rebuild_system_prompt()
         return True
 
-    def _release_sdk_leases(self) -> None:
-        for lease in tuple(self._sdk_retiring_leases):
+    def _retire_context_resources(self, *, mcp: bool = False) -> None:
+        self._retired_resources.append((self.children, self.extensions, self.mcp if mcp else None))
+        self.children.close()
+        self.extension_dialogs.close()
+        self.extensions.close()
+        if mcp and self.mcp is not None:
+            self.mcp.close()
+
+    async def _settle_retired_resources(self) -> None:
+        from functools import partial
+
+        from xdog.agent.async_work import settle_cleanup
+        async def close(resources: tuple[CodingChildren, ExtensionRuntime, McpManager | None]) -> None:
+            children, extensions, mcp = resources
+            try:
+                await settle_cleanup(children.supervisor.aclose, extensions.aclose,
+                    *((mcp.aclose,) if mcp is not None else ()), message='Retired Coding worker cleanup failed')
+            finally:
+                if not any(owner is not None and owner._thread is not None and owner._thread.is_alive()
+                           for owner in (children.supervisor, extensions._manager, mcp)):
+                    self._retired_resources.remove(resources)
+        await settle_cleanup(*(partial(close, resources) for resources in tuple(self._retired_resources)),
+                             message='Retired Coding context cleanup failed')
+
+    def _release_retired_leases(self) -> None:
+        if self._retired_resources or self._retired_goal_hosts:
+            raise RuntimeError('Retired callback owners have not settled; writer leases retained')
+        for lease in tuple(self._retiring_leases):
             lease.close()
-            self._sdk_retiring_leases.discard(lease)
+            self._retiring_leases.discard(lease)
 
     async def _close_sdk_owner(self, controller: SessionController) -> None:
-        if controller.inbox is not None:
-            await controller.inbox.retire()
-        if self._sdk_disposing or self.children.goal_host is not None or self._retired_goal_hosts:
-            await self._aclose_resources()
-        self._release_sdk_leases()
+        from xdog.coding.core.session_lifecycle import close_input_owner
+        await close_input_owner(self, controller, resources=(self._sdk_disposing
+            or self.children.goal_host is not None or bool(self._retired_goal_hosts)))
 
     async def _acquire_owner(self) -> tuple[SessionController, bool]:
         from xdog.coding.core.sessions.controller import SessionController
-        from xdog.coding.core.sessions.ownership import SessionLease, runtime_directory
+        from xdog.coding.core.sessions.ownership import SessionLease, lease_directory
 
         while True:
             with self._sdk_lock:
                 if self._sdk_disposing:
                     raise RuntimeError('Session owner is closing')
+                if self._history_error is not None:
+                    raise RuntimeError('Session history persistence unavailable; close and reload explicitly'
+                               ) from self._history_error
                 if self.runtime is not None:
                     return self.runtime.controller, False
                 closing = self._sdk_closing
@@ -712,9 +777,9 @@ class AgentSession:
                     if self._sdk_controller is None:
                         if self._lease is None:
                             self._lease = SessionLease.acquire(
-                                runtime_directory(self.session_manager._dir), self.session_id)
+                                lease_directory(self.session_manager._dir), self.session_id)
                         controller = SessionController(self, bound=False)
-                        controller.on_control_settled = self._release_sdk_leases
+                        controller.on_control_settled = self._release_retired_leases
                         from xdog.coding.core.sessions.intake import attach_inbox
                         attach_inbox(controller)
                         controller._close_hook = lambda: self._close_sdk_owner(controller)
@@ -820,6 +885,7 @@ class AgentSession:
         self._user_operation_authorized = False
         self._user_prompt_messages.clear()
         self._authorized_messages.clear()
+        history_started = False
         try:
             self.handled_feedback = []
             await self.initialize_goals()
@@ -838,13 +904,13 @@ class AgentSession:
                 # A turn-start hook may replace the selected provider's vision
                 # profile. Revalidate before history/model/compaction admission.
                 await asyncio.to_thread(validate_references, images, self.model_info)
-            # Rebuild system prompt before each turn
-            self._rebuild_system_prompt()
+            await self._prepare_prompt()
 
             # Check for compaction before the turn
             await self._maybe_compact()
 
             # One lifecycle and one prompt, while retaining each member's message boundary.
+            history_started = True
             if origins == ('custom_context',):
                 from xdog.agent.core import CustomAgentMessage
                 from xdog.agent.extensions.context_message import TYPE
@@ -878,9 +944,6 @@ class AgentSession:
                     last_assistant = event.message
 
             self.agent.drain_handled_inputs()
-            # Persist after turn
-            self._persist()
-
             await self.extensions.event("turn_end")
 
             return last_assistant
@@ -888,8 +951,18 @@ class AgentSession:
             self._user_operation_authorized = False
             self._user_prompt_messages.clear()
             self._authorized_messages.clear()
-            await self._sync_extension_tools()
-            self._expire_turn_scoped_skills()
+            from xdog.agent.async_work import settle_cleanup
+            async def stop_run() -> None:
+                if not self.agent.is_idle:
+                    await self.agent.cancel_and_wait()
+            async def history() -> None:
+                if history_started:
+                    await self._persist_async()
+            try:
+                await settle_cleanup(stop_run, self._sync_extension_tools, history,
+                                     message='Coding turn finalization failed')
+            finally:
+                self._expire_turn_scoped_skills()
 
     def _expire_turn_scoped_skills(self) -> None:
         """Mirror SDK retirement; preparation failures do not consume pending skills."""
@@ -1244,12 +1317,8 @@ class AgentSession:
             staged.close()
             next_mcp.close()
             raise
-        if self.mcp is not None:
-            self.mcp.close()
+        self._retire_context_resources(mcp=True)
         self.mcp = next_mcp
-        self.children.close()
-        self.extension_dialogs.close()
-        self.extensions.close()
         old_ext = self.extensions.aliases
         tools = tuple(tool for tool in tools if tool.name not in old_ext)
         self.access.close()
@@ -1277,9 +1346,9 @@ class AgentSession:
         self._children_idle()
         if self.agent.state.is_streaming:
             raise RuntimeError("Session navigation requires an idle agent")
-        from xdog.coding.core.sessions.ownership import SessionLease, runtime_directory
+        from xdog.coding.core.sessions.ownership import SessionLease, lease_directory
         selected = uuid.uuid4().hex
-        lease = SessionLease.acquire(runtime_directory(self.session_manager._dir), selected)
+        lease = SessionLease.acquire(lease_directory(self.session_manager._dir), selected)
         self._pending_lease = lease
         created = None
         original = b""
@@ -1410,16 +1479,14 @@ class AgentSession:
         self.agent.replace_messages(restored)
         self.access.close()
         self.session_data.access = restored_access.to_dict()
-        self.children.close()
-        self.extension_dialogs.close()
-        self.extensions.close()
+        self._retire_context_resources()
         old_extensions = self.extensions.aliases
         self.agent.set_tools(tuple(tool for tool in self.agent.state.tools if tool.name not in old_extensions))
         self.session_data.compaction = restored_compaction
         self.session_data.extension_entries = committed.extension_entries
+        self.session_data.active_branch = branch_id
         self._load_extensions(staged.runtime)
         self._load_access()
-        self.session_data.active_branch = branch_id
         self.session_data.active_tools = committed.active_tools
         self._load_children()
         self._publish_navigation_model(selected_model, staged.model, staged.thinking)
@@ -1559,6 +1626,18 @@ class AgentSession:
         context['subprocess_env'] = {**environment, 'XDOG_SESSION_ID': self.session_id}
         self.agent.set_tool_context(context)
 
+    async def _prepare_prompt(self) -> None:
+        from xdog.agent.async_work import run_owned
+        from xdog.coding.core.session_preparation import PromptResources
+        scope = (self.session_id, self.session_data.active_branch, self.working_dir)
+        active = tuple(sorted(self._active_skills))
+        prepared = await run_owned(PromptResources.read, self.working_dir, self.agent._skills, active)
+        if scope != (self.session_id, self.session_data.active_branch, self.working_dir) or self._sdk_disposing:
+            raise RuntimeError('Prompt resource owner changed during preparation')
+        self._project_files, self._project_directory = prepared.files, self.working_dir
+        self.agent.set_active_skills(active, prepared_skills=prepared.skills)
+        self._rebuild_system_prompt()
+
     def _rebuild_system_prompt(self) -> None:
         """Rebuild and set the system prompt from config and tools."""
         self._refresh_session_hint()
@@ -1583,7 +1662,10 @@ class AgentSession:
                 platform_info=PlatformInfo.detect(),
             ),
             tool_defs,
-            extra_context=_skills_context(self._active_skills),
+            file_entries=[{'type': 'file_content', 'path': item.relative_path, 'content': item.content}
+                          for item in self._project_files if self._project_directory == self.working_dir],
+            extra_context=_skills_context(frozenset(
+                slug for slug, skill in self.agent._resolved_skills.items() if not skill.expires_after_turn)),
             native_tool_calls=self._native_tool_calls(),
             session_id=self.session_id,
         )
@@ -1593,30 +1675,67 @@ class AgentSession:
         if (isinstance(event, MessageEndEvent) and isinstance(event.message, UserMessage)
                 and self._authorized_messages.get(id(event.message)) is event.message):
             self._user_operation_authorized = True
-        if isinstance(event, AgentEndEvent):
-            self._persist()
+
+    def _history_candidate(self) -> SessionData:
+        if self._history_error is not None:
+            raise RuntimeError('Session history persistence unavailable; close and reload explicitly'
+                               ) from self._history_error
+        summary = self.session_data.summary
+        messages = self.messages
+        if messages and isinstance(messages[-1], AssistantMessage):
+            summary = next((part.text[:120] for part in messages[-1].content if isinstance(part, TextContent)), summary)
+        return replace(self.session_data, messages=messages, settings=self.settings.session_to_dict(),
+                       model=self.agent.state.model or '', summary=summary,
+                       active_tools=(self.session_data.active_tools if self._tool_selection_restore_pending
+                                     else self.agent.active_tool_selection))
+
+    def _publish_history(self, owner: SessionData, saved: SessionData) -> None:
+        if self.session_data is not owner or owner.active_branch != saved.active_branch:
+            raise RuntimeError('History commit no longer belongs to this session owner')
+        owner.messages, owner.settings, owner.model = saved.messages, saved.settings, saved.model
+        owner.summary, owner.active_tools, owner.updated_at = saved.summary, saved.active_tools, saved.updated_at
+
+    async def _persist_async(self) -> None:
+        from xdog.agent.async_work import wait_owned
+        from xdog.coding.core.session_history import HistorySnapshot
+        if self.context_messages.uncertain:
+            return  # A separate context admission receipt already owns this uncertainty.
+        owner, lease = self.session_data, self._lease
+        scope = (self.session_id, owner.active_branch)
+        # Capture the baseline BEFORE the payload: a callback committed during
+        # capture must invalidate the payload, never lend it a newer version.
+        version = owner.updated_at
+        snapshot = HistorySnapshot.capture(self._history_candidate())
+        def guard() -> None:
+            if (self.session_data is not owner or scope != (self.session_id, owner.active_branch)
+                    or self._lease is not lease or lease is not None and lease._fd < 0
+                    or owner.updated_at != version):
+                raise RuntimeError('Original history writer changed during commit')
+        def write() -> None:
+            with self.session_manager._write_lock:
+                saved = snapshot.commit(self.session_manager, guard)
+                guard()
+                self._publish_history(owner, saved)
+        async def commit() -> None:
+            try:
+                await asyncio.to_thread(write)
+            except BaseException as exc:
+                self._history_error = exc
+                controller = self.runtime.controller if self.runtime is not None else self._sdk_controller
+                if controller is not None:
+                    controller._broken = exc
+                raise
+        await wait_owned(asyncio.create_task(commit(), name='coding-history-commit'))
 
     def _persist(self) -> None:
-        """Save session state to disk."""
+        """Synchronous control/bootstrap save; ordinary turns use owned async IO."""
         if hasattr(self, 'context_messages') and self.context_messages.uncertain:
-            return  # Preserve an uncertain atomic history receipt until explicit session reload.
-        self.session_data.messages = self.messages
-        self.session_data.settings = self.settings.session_to_dict()
-        self.session_data.model = self.agent.state.model or ""
-        if not self._tool_selection_restore_pending:
-            self.session_data.active_tools = self.agent.active_tool_selection
-
-        # Update summary from last assistant message
-        msgs = self.messages
-        if msgs:
-            last = msgs[-1]
-            if isinstance(last, AssistantMessage):
-                for part in last.content:
-                    if isinstance(part, TextContent):
-                        self.session_data.summary = part.text[:120]
-                        break
-
-        self.session_manager.save_session(self.session_data)
+            return
+        with self.session_manager._write_lock:
+            owner = self.session_data
+            saved = self._history_candidate()
+            self.session_manager.save_session(saved)
+            self._publish_history(owner, saved)
 
     async def manage_mcp_auth(self, server: str, action: str, receipt: str, lease: str,
                               alive: Callable[[], bool]) -> dict[str, Any]:
@@ -1673,6 +1792,8 @@ class AgentSession:
     def enable_runtime(self, *, bound: bool) -> SessionRuntime:
         from xdog.coding.core.sessions.runtime import SessionRuntime
         with self._sdk_lock:
+            if self._sdk_disposing:
+                raise RuntimeError('Session is closing or closed')
             if self.runtime is None:
                 if self._sdk_controller is not None or self._sdk_closing is not None and not self._sdk_closing.done():
                     raise RuntimeError('An SDK owner is active/settling; cannot create a second session owner')
@@ -1680,86 +1801,49 @@ class AgentSession:
             return self.runtime
 
     async def _aclose_resources(self) -> None:
-        await self.children.supervisor.aclose()
-        if self.children.goal_host is not None:
-            await self.children.goal_host.aclose()
-        await self._settle_retired_goals()
-        self.extension_dialogs.close()
-        await self.extensions.aclose()
-        if self.mcp is not None:
-            await self.mcp.aclose()
+        from xdog.coding.core.session_lifecycle import close_resources
+        await close_resources(self)
 
-    def dispose(self) -> None:
-        """Close the owner before releasing resources and the writer lease."""
-        if self.runtime is not None and not self.runtime.disposing:
-            self.runtime.close()
-            return
-        self._sdk_disposing = True
-        controller = self._sdk_controller
-        closing = controller.close() if controller is not None else self._sdk_closing
-        if closing is not None and not closing.done():
-            def settled(done: Future[None]) -> None:
-                self._release_sdk_leases()
-                self._dispose_resources()
-            closing.add_done_callback(settled)
-            return
-        self._release_sdk_leases()
-        self._dispose_resources()
+    async def aclose(self) -> None:
+        """Await one shared close, including failures, despite repeated cancellation."""
+        from xdog.agent.async_work import wait_owned
+        from xdog.coding.core.session_lifecycle import request_close
+        await wait_owned(asyncio.wrap_future(request_close(self, asynchronous=True)))
+
+    def dispose(self) -> Future[None]:
+        """Request closure; await aclose() (or this receipt) for actual settlement."""
+        from xdog.coding.core.session_lifecycle import request_close
+        return request_close(self)
 
     def _dispose_resources(self) -> None:
-        self.children.close()
-        self.extension_dialogs.close()
-        self.extensions.close()
-        self.access.close()
-        self.permissions.close()
-        if self.mcp is not None:
-            self.mcp.close()
-        if self._unsubscribe:
-            self._unsubscribe()
-            self._unsubscribe = None
-        if self._lease is not None:
-            self._lease.close()
-            self._lease = None
+        from xdog.coding.core.session_lifecycle import settle_sync
+        def unsubscribe() -> None:
+            if self._unsubscribe is not None:
+                self._unsubscribe()
+                self._unsubscribe = None
+        def release_writer() -> None:
+            if self._retired_resources or self._retired_goal_hosts:
+                raise RuntimeError('Retired callback cleanup is incomplete; original writer lease retained')
+            if not self.agent.closed:
+                raise RuntimeError('Agent cleanup is incomplete; original writer lease retained')
+            owners = (self.children.supervisor, self.extensions._manager, self.mcp)
+            if any(owner is not None and owner._thread is not None and owner._thread.is_alive() for owner in owners):
+                raise RuntimeError('Worker cleanup is incomplete; original writer lease retained')
+            if self._lease is not None:
+                self._lease.close()
+                self._lease = None
+        settle_sync(self.extension_dialogs.close, self.access.close, self.permissions.close,
+                    unsubscribe, self._release_retired_leases, release_writer,
+                    message='Coding session finalization failed')
 
 
 def _skills_context(active: frozenset[str] = frozenset()) -> str:
-    """The skills section of the system prompt.
-
-    Two levels, following the format's progressive disclosure: every skill
-    contributes one line so the model knows it exists, and the ones the user
-    has activated contribute their full instructions. Rebuilt from scratch on
-    every turn, which is what makes deactivation work — an activated skill
-    leaves no trace once its slug is dropped.
-
-    Returns an empty string on any failure. A skills directory that cannot be
-    read is not a reason to start without a system prompt.
-    """
-    try:
-        from xdog.coding.core.slash_commands import skill_manager
-
-        manager = skill_manager()
-        summary = manager.skills_summary()
-        # Bodies are the Agent's to place (`set_skills`); this section carries
-        # only the standing note about them. Rendering them here as well was how
-        # three packages ended up with three answers to the same question.
-        fixed = [slug for slug in sorted(active)
-                 if (skill := manager.load_skill(slug)) is not None and not skill.expires_after_turn]
-        bodies = ["(active: " + ", ".join(fixed) + ")"] if fixed else []
-    except Exception:
-        logger.debug("could not build the skills section of the system prompt", exc_info=True)
-        return ""
-
-    sections = []
-    if summary:
-        sections.append(summary + "\nRun one with the /<slug> command, or ask the user to.")
-    if bodies:
-        sections.append(
-            "# Active skills\n\n"
-            "The user activated these; follow them.\n\n"
-            "You cannot deactivate a skill — there is no tool for it, by design. "
-            "Skills are often constraints rather than conveniences, and the party "
-            "being constrained should not hold the release. If one looks finished "
-            "or irrelevant, say so and suggest `/unload <name>`; the user decides.\n\n"
-            + "\n\n".join(bodies)
-        )
-    return "\n\n".join(sections)
+    """Coding's UI instruction only; Agent alone renders skill index and bodies."""
+    if not active:
+        return ''
+    return (
+        '# Active skills\n\nThe user activated these; follow them.\n\n'
+        'You cannot deactivate a skill — there is no tool for it, by design. '
+        'If one looks finished or irrelevant, suggest `/unload <name>`; the user decides.\n\n'
+        '(active: ' + ', '.join(sorted(active)) + ')'
+    )

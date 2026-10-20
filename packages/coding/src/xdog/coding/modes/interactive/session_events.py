@@ -343,13 +343,14 @@ class NativeSessionEvents:
             self.ui._set_busy(False)
 
     def close(self) -> None:
+        if getattr(self, '_closed', False):
+            return
+        self._closed = True
         if self.unsubscribe is not None:
             self.unsubscribe()
             self.unsubscribe = None
+        receipt = self.ui.__dict__.get('_session_close_receipt')
+        if receipt is None:
+            receipt = self.ui._session.dispose()
         if self.runtime is not None:
-            self.runtime.close().result(timeout=15)
-            thread = self.runtime.controller._thread
-            if thread is not None and thread is not threading.current_thread():
-                thread.join(timeout=5)
-                if thread.is_alive():
-                    raise RuntimeError('Session owner thread did not stop after resource settlement')
+            receipt.result(timeout=15)

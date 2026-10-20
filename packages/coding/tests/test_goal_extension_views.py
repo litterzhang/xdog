@@ -30,7 +30,7 @@ async def test_actual_coding_goal_owner_grants_headless_display_and_reading_neve
         goal = await owned(controller, lambda: host.service.create(
             "Coding private goal", "Read actual Coding state", ("Check",), context=OperationContext(True)))
         before = len(calls)
-        result = await owned(controller, lambda: session.extensions.command("ext-goal_ui-goals", ""))
+        result = await owned(controller, lambda: session.extensions.command("goals", ""))
         assert goal.id in str(result) and "Coding private goal" in str(result)
         assert "unavailable" not in str(result).lower()
         rendered = ExtensionView(lambda: session.extensions.snapshot()).render(80)
@@ -51,7 +51,7 @@ async def test_coding_display_rotation_cannot_read_or_render_the_original_exact_
         host, controller = session.children.goal_host, session._sdk_controller
         goal = await owned(controller, lambda: host.service.create(
             "Never transfer this", "Original exact session", ("Check",), context=OperationContext(True)))
-        await owned(controller, lambda: session.extensions.command("ext-goal_ui-goals", ""))
+        await owned(controller, lambda: session.extensions.command("goals", ""))
         previous = session.extensions
         await asyncio.to_thread(session.new_session)
         assert session.extensions is not previous and previous._closed
@@ -61,7 +61,7 @@ async def test_coding_display_rotation_cannot_read_or_render_the_original_exact_
         current = session.children.goal_host
         assert current.owner != host.service.store.owner
         assert await owned(session._sdk_controller, current.service.list) == ()
-        result = await owned(session._sdk_controller, lambda: session.extensions.command("ext-goal_ui-goals", ""))
+        result = await owned(session._sdk_controller, lambda: session.extensions.command("goals", ""))
         assert "no goals" in str(result).lower() and goal.id not in str(result)
     finally:
         await dispose(session)
@@ -75,7 +75,7 @@ async def test_coding_actual_branch_gets_a_new_view_not_the_original_goal(tmp_pa
         branch = await asyncio.to_thread(session.create_branch, label="saved")
         goal = await owned(controller, lambda: host.service.create(
             "Branch private", "Do not transfer", ("Check",), context=OperationContext(True)))
-        await owned(controller, lambda: session.extensions.command("ext-goal_ui-goals", ""))
+        await owned(controller, lambda: session.extensions.command("goals", ""))
         previous = session.extensions
         assert await asyncio.to_thread(session.restore_branch, branch)
         assert previous._closed and session.extensions is not previous
@@ -83,7 +83,7 @@ async def test_coding_actual_branch_gets_a_new_view_not_the_original_goal(tmp_pa
         await session.send_message("On the selected branch")
         current = session.children.goal_host
         assert current.owner != host.service.store.owner
-        result = await owned(session._sdk_controller, lambda: session.extensions.command("ext-goal_ui-goals", ""))
+        result = await owned(session._sdk_controller, lambda: session.extensions.command("goals", ""))
         assert "no goals" in str(result).lower() and goal.id not in str(result)
     finally:
         await dispose(session)
@@ -131,7 +131,7 @@ async def test_actual_coding_worker_reports_and_notices_survive_display_loss(tmp
         assert await asyncio.to_thread(entered.wait, 5)
         child_extensions = session.children.extensions.owners[reference.id]
         assert await child_extensions.views.read("goal_ui", "goals", {}) is None
-        child_output = await child_extensions.command("ext-goal_ui-goals", "")
+        child_output = await child_extensions.command("goals", "")
         assert "unavailable" in str(child_output).lower() and goal.id not in str(child_output)
         if action == "unload":
             await owned(controller, lambda: session.extensions.manage("unload", "goal_ui"))
@@ -143,7 +143,7 @@ async def test_actual_coding_worker_reports_and_notices_survive_display_loss(tmp
                 await process.wait()
             await session.extensions._manager._bridge(crash())
             with pytest.raises((ValueError, McpError)):
-                await owned(controller, lambda: session.extensions.command("ext-goal_ui-goals", ""))
+                await owned(controller, lambda: session.extensions.command("goals", ""))
         assert session.children.supervisor.active
         release.set()
 
@@ -190,7 +190,7 @@ async def test_coding_shutdown_keeps_goal_lease_until_actual_display_disk_read_s
             return result
 
         monkeypatch.setattr(database, "transaction", delayed)
-        reading = asyncio.create_task(session.extensions.command("ext-goal_ui-goals", ""))
+        reading = asyncio.create_task(session.extensions.command("goals", ""))
         assert await asyncio.to_thread(entered.wait, 5)
         path, owner = host.service.store.path, host.service.store.owner
         closing = asyncio.create_task(dispose(session))

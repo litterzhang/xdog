@@ -30,6 +30,7 @@ from xdog.coding.core.sessions.store import InputStore
 if TYPE_CHECKING:
     from xdog.coding.core.agent_session import AgentSession
     from xdog.coding.core.sessions.inbox_runtime import InboxCoordinator
+    from xdog.coding.core.sessions.ownership import SessionLease
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -37,19 +38,36 @@ MAX_PENDING = 128
 _OWNER: ContextVar[tuple[object, str] | None] = ContextVar("coding_session_owner", default=None)
 
 
+@dataclass(frozen=True)
+class _SubmissionOwner:
+    session_id: str
+    branch: str
+    generation: str
+    store: InputStore
+    inbox: InboxCoordinator | None
+    lease: SessionLease | None
+
+
 @dataclass
 class _Job:
     value: SessionInput
     peer: str
     ticket: Submission
-    branch: str
-    generation: str
+    owner: _SubmissionOwner
     finishing: bool = False
     cancelled: bool = False
     images: tuple[ImageContent, ...] = ()
     input_origin: str | None = None
     raw_text: str | None = None
     batch_id: str = ""
+
+    @property
+    def branch(self) -> str:
+        return self.owner.branch
+
+    @property
+    def generation(self) -> str:
+        return self.owner.generation
 
 
 class SessionController:
@@ -66,6 +84,8 @@ class SessionController:
         self.session = session
         self.bound = bound
         self.store = InputStore(session)
+        self.session_id = session.session_id
+        self._rotating = False
         self.generation = uuid.uuid4().hex
         self.branch = session.session_data.active_branch
         self._message_limit_override = (validate_max_messages_per_turn(max_messages_per_turn)
@@ -196,10 +216,10 @@ class SessionController:
             for result in receipt.result():
                 if isinstance(result, BaseException) and error is None:
                     error = result
-        if cancelled:
-            raise asyncio.CancelledError
         if error is not None:
             raise error
+        if cancelled:
+            raise asyncio.CancelledError
 
     def _thread_main(self) -> None:
         try:
@@ -244,7 +264,7 @@ class SessionController:
         return unsubscribe
 
     def _emit(self, kind: str, job: _Job, data: object) -> None:
-        event = SessionEvent(self.session.session_id, job.generation, job.value.id, kind, data, job.batch_id,
+        event = SessionEvent(job.owner.session_id, job.generation, job.value.id, kind, data, job.batch_id,
                              self._batch.request_ids if self._in_active(job) and self._batch is not None else ())
         self._notify(event)
 
@@ -284,6 +304,9 @@ class SessionController:
         try:
             if self._closing:
                 raise RuntimeError("Session controller is closed")
+            if (self._rotating or self.session_id != self.session.session_id
+                    or self.branch != self.session.session_data.active_branch):
+                raise RuntimeError('Session context/navigation is changing; input was not admitted')
             snapshot = decode_input(input_data(value))
             if any(not isinstance(image, ImageContent) for image in images):
                 raise ValueError('Expected typed image attachments')
@@ -293,13 +316,15 @@ class SessionController:
             count = input_size(prepared)
             if count > self.input_byte_limit(prepared):
                 raise ValueError('Input exceeds per-turn byte capacity')
-            job = _Job(snapshot, peer_id, ticket, self.branch, self.generation,
+            owner = _SubmissionOwner(self.session_id, self.branch, self.generation, self.store,
+                                     self.inbox, self.session._lease)
+            job = _Job(snapshot, peer_id, ticket, owner,
                        images=prepared.images, input_origin=input_origin, raw_text=raw_text)
 
             def spawn() -> None:
                 task = asyncio.create_task(self._accept(job))
                 self._admissions.add(task)
-                task.add_done_callback(self._admissions.discard)
+                task.add_done_callback(self._admission_settled)
 
             self._post(spawn)
         except Exception as exc:
@@ -307,19 +332,30 @@ class SessionController:
             self._settle(ticket.result, error=exc)
         return ticket
 
+    def _admission_settled(self, task: asyncio.Task[None]) -> None:
+        self._admissions.discard(task)
+        self._pump()
+
     async def _accept(self, job: _Job) -> None:
         try:
             if self._closing or job.peer in self._revoked:
                 raise RuntimeError("Session connection is closed")
             if self._broken is not None:
                 raise RuntimeError("Session persistence is unavailable") from self._broken
+            if (self._rotating or job.generation != self.generation
+                    or self.branch != self.session.session_data.active_branch
+                    or job.owner.session_id != self.session_id or self.session_id != self.session.session_id
+                    or job.owner.store is not self.store):
+                raise RuntimeError('Session context/navigation changed before admission')
+            if job.owner.lease is not None and job.owner.lease._fd < 0:
+                raise RuntimeError('Original input writer lease is no longer held')
             if len(self._jobs) + len(self._admissions) > MAX_PENDING:
                 raise ValueError("Session queue exceeds capacity")
             if job.value.id in self._jobs or job.value.id in self._admitting_jobs:
                 raise ValueError("Duplicate request identity")
             record = InputRecord(job.value, job.branch, job.generation, "queued")
             self._admitting_jobs[job.value.id] = job
-            await self.store.accept(record)
+            await job.owner.store.accept(record)
             self._jobs[job.value.id] = job
             self._emit("input_" + record.status, job, record)
             self._settle(job.ticket.accepted, None)
@@ -336,7 +372,8 @@ class SessionController:
                 self._admitting_jobs.pop(job.value.id, None)
 
     def _pump(self) -> None:
-        if self._closing or self._active is not None or self._queue_changes or self._producer_receipts:
+        if (self._closing or self._active is not None or self._queue_changes
+                or self._producer_receipts or self._admissions):
             return
         while self._controls:
             operation, name, future = self._controls.popleft()
@@ -344,7 +381,7 @@ class SessionController:
                 self._control_future = future
                 self._active = asyncio.create_task(self._run_control(operation, future))
                 return
-        if not self._inputs_ready:
+        if not self._inputs_ready or self._rotating:
             return
         jobs = [job for job in self._jobs.values() if not job.finishing]
         human = next((job for job in jobs if job.value.origin == "human"), None)
@@ -409,19 +446,24 @@ class SessionController:
         self._owner_token = uuid.uuid4().hex
         token = _OWNER.set((self, self._owner_token))
         try:
-            result = await operation()
-            await self._settle_operations()
-            if self.on_control_settled is not None:
-                self.on_control_settled()
-            self._settle(future, result)
-        except BaseException as exc:
+            errors: list[BaseException] = []
+            result: Any = None
+            try:
+                result = await operation()
+            except BaseException as exc:
+                errors.append(exc)
             try:
                 await self._settle_operations()
-            except BaseException:
-                logger.exception("Session control settlement failed")
-            if self.on_control_settled is not None:
-                self.on_control_settled()
-            self._settle(future, error=exc)
+            except BaseException as exc:
+                errors.append(exc)
+            try:
+                if self.on_control_settled is not None:
+                    self.on_control_settled()
+            except BaseException as exc:
+                errors.append(exc)
+            error = (errors[0] if len(errors) == 1 else
+                     BaseExceptionGroup('Session control failed', errors) if errors else None)
+            self._settle(future, result, error=error)
         finally:
             self._control_future = None
             self._owner_token = None
@@ -490,18 +532,24 @@ class SessionController:
         for job in finishing:
             job.finishing = True
         try:
-            if self.inbox is not None:
-                envelope = batch or TurnBatch('', self.session.session_id, finishing[0].branch,
-                    finishing[0].generation, tuple(TurnInput(job.value) for job in finishing))
-                await self.inbox.finished(envelope, result)
+            owner = finishing[0].owner
+            if any(job.owner != owner for job in finishing):
+                raise RuntimeError('Cannot settle inputs belonging to different original owners')
+            if owner.inbox is not None:
+                envelope = batch or TurnBatch('', owner.session_id, owner.branch,
+                    owner.generation, tuple(TurnInput(job.value) for job in finishing))
+                await owner.inbox.finished(envelope, result)
         except BaseException as exc:
-            self._broken = exc
+            if finishing[0].owner.store is self.store and finishing[0].generation == self.generation:
+                self._broken = exc
             result = replace(result, status='failed', error='Inbox persistence failed: ' + str(exc), cause=exc)
         try:
-            await self.store.transition_batch(tuple(job.value.id for job in finishing), result.status,
-                                              batch_id=result.batch_id, error=result.error)
+            await finishing[0].owner.store.transition_batch(
+                tuple(job.value.id for job in finishing), result.status,
+                batch_id=result.batch_id, error=result.error)
         except BaseException as exc:
-            self._broken = exc
+            if finishing[0].owner.store is self.store and finishing[0].generation == self.generation:
+                self._broken = exc
             result = replace(result, status='failed', error='Session persistence failed: ' + str(exc), cause=exc)
         # All durable receipts settle before any member observes a completed result.
         for job in finishing:
@@ -661,8 +709,14 @@ class SessionController:
     def rotate(self, branch_id: str) -> Future[None]:
         # Publish the fence before scheduling cleanup so a successor cannot start
         # on the already-mutated SessionData with the old generation.
+        self._rotating = True
+        self.session_id = self.session.session_id
         self.branch, self.generation = branch_id, uuid.uuid4().hex
         async def run() -> None:
+            # Intake admitted by an already-running control must settle on its
+            # captured original store before either binding or lease can retire.
+            while self._admissions:
+                await asyncio.gather(*tuple(self._admissions), return_exceptions=True)
             for job in tuple(self._jobs.values()):
                 if not self._in_active(job) and job.generation != self.generation:
                     await self._finish(job, TurnResult("discarded", None))
@@ -703,31 +757,46 @@ class SessionController:
         return self._closed
 
     async def _shutdown(self) -> None:
+        from functools import partial
+
+        from xdog.agent.async_work import settle_cleanup
         if self._readiness_timer is not None:
             self._readiness_timer.cancel()
             self._readiness_timer = None
-        try:
+        async def admissions() -> None:
             if self._admissions:
                 await asyncio.gather(*tuple(self._admissions), return_exceptions=True)
+        async def active() -> None:
             if self._active is not None:
                 task = self._active
                 if not task.cancelling():
                     task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
-            for job in tuple(self._jobs.values()):
-                await self._finish(job, TurnResult("cancelled", None))
-            while self._controls:
-                _, _, future = self._controls.popleft()
-                self._settle(future, error=RuntimeError("Session controller closed"))
-            await self._settle_operations()
-            receipts = tuple(self._producer_receipts.values())
-            for _, cancel in receipts:
-                if cancel is not None:
-                    cancel()
-            if receipts:
-                await asyncio.gather(*(asyncio.wrap_future(receipt) for receipt, _ in receipts))
+        async def queued() -> None:
+            try:
+                await settle_cleanup(*(partial(self._finish, job, TurnResult('cancelled', None))
+                    for job in tuple(self._jobs.values())), message='Pending input retirement failed')
+            finally:
+                while self._controls:
+                    _, _, future = self._controls.popleft()
+                    self._settle(future, error=RuntimeError('Session controller closed'))
+        async def producers() -> None:
+            async def finish(receipt: Future[None], cancel: Callable[[], None] | None) -> None:
+                async def request() -> None:
+                    if cancel is not None:
+                        cancel()
+                async def join() -> None:
+                    await asyncio.wrap_future(receipt)
+                await settle_cleanup(request, join, message='Producer shutdown failed')
+            await settle_cleanup(*(partial(finish, receipt, cancel)
+                for receipt, cancel in tuple(self._producer_receipts.values())),
+                message='Producer cleanup failed')
+        async def resources() -> None:
             if self._close_hook is not None:
                 await self._close_hook()
+        try:
+            await settle_cleanup(admissions, active, queued, self._settle_operations, producers, resources,
+                                 message='Coding controller shutdown failed')
         except BaseException as exc:
             self._settle(self._closed, error=exc)
         finally:

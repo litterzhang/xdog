@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import cast
 
+from xdog.agent.async_work import run_owned
 from xdog.agent.extensions.command_result import ExtensionCommandResult
 from xdog.agent.skills import Skill, SkillManager
 from xdog.ai.types import ThinkingLevel
@@ -31,7 +32,7 @@ class CommandResult:
 
 # Registry of built-in slash commands: name → description
 BUILTIN_COMMANDS: dict[str, str] = {
-    "inbox": "Read/review durable input: /inbox [list [OFFSET]|show ID|approve ID [ID...]|retry ID]",
+    "inbox": "Inspect automatic inbox: /inbox [list [OFFSET]|show ID|cancel ID|retry ID]",
     "help": "Search terminal commands: /help [QUERY]",
     "artifact": "Load a checksummed command artifact read-only: /artifact PATH",
     "terminal-input": "Inspect/restore/discard original rejected terminal input",
@@ -82,6 +83,12 @@ def available_skills() -> list[Skill]:
         return []
 
 
+def command_reservations() -> frozenset[str]:
+    """Caller runs filesystem skill discovery in owned IO, never in a worker RPC reader."""
+    from xdog.coding.core.command_names import UI_COMMANDS
+    return frozenset({*list_commands(), *UI_COMMANDS, 'draft'})
+
+
 def list_commands() -> dict[str, str]:
     """Return every command, built-in and skill-provided.
 
@@ -102,10 +109,19 @@ async def execute_command(
 ) -> CommandResult:
     """Execute a slash command."""
     cmd = command.lower().strip()
+    from xdog.agent.extensions.runtime import ExtensionRuntime
+    extensions = getattr(session, 'extensions', None)
+    public_extension = False
+    if isinstance(extensions, ExtensionRuntime):
+        reservations = await run_owned(command_reservations)
+        extensions.reserve_commands(reservations)
+        if cmd in extensions.command_conflicts():
+            raise ValueError(f'Extension command conflict: /{cmd}; resolve the conflict or unload the extension')
+        public_extension = cmd in extensions.commands()
     synchronous_controls = {"readonly", "model", "thinking", "clear", "name", "resume", "new",
                             "goto", "fork", "branch", "unload"}
-    requires_owner = cmd in synchronous_controls or (
-        cmd not in BUILTIN_COMMANDS and not cmd.startswith("ext-") and _load_skill(cmd) is not None)
+    requires_owner = public_extension or cmd in synchronous_controls or (
+        cmd not in BUILTIN_COMMANDS and not cmd.startswith("ext-") and await run_owned(_load_skill, cmd) is not None)
     controller = (session.runtime.controller if session.runtime is not None else session._sdk_controller
                   ) if requires_owner else None
     if controller is not None and not controller.owns_current_task:
@@ -116,7 +132,7 @@ async def execute_command(
         from xdog.agent.extensions.provider_oauth_host import login_arguments
         cmd, args = 'extensions', 'auth ' + login_arguments(args)
 
-    if cmd == "extensions" or cmd.startswith("ext-"):
+    if cmd == "extensions" or cmd.startswith("ext-") or public_extension:
         result = await session.extension_command(cmd, args)
         return (CommandResult(output=result.summary, rich_output=result) if isinstance(result, ExtensionCommandResult)
                 else CommandResult(output=result))
@@ -146,6 +162,19 @@ async def execute_command(
             ensure_ascii=False))
     if cmd == "agents":
         return CommandResult(output=await session.agents_command(args))
+    if cmd == "mcp":
+        parts = args.split()
+        if len(parts) > 2:
+            return CommandResult(output="Usage: /mcp [list|connect SERVER|disconnect SERVER|refresh SERVER]")
+        return CommandResult(output=await session.manage_mcp(parts[0] if parts else "list",
+                                                            parts[1] if len(parts) > 1 else ""))
+    if cmd == 'compact':
+        return await _cmd_compact(session, args)
+    return await run_owned(_local_command, cmd, args, session)
+
+
+def _local_command(cmd: str, args: str, session: AgentSession) -> CommandResult:
+    """Finite synchronous preparation under the controller's copied owner token."""
     if cmd == "readonly":
         action = args.strip() or "status"
         if action not in {"on", "off", "status"}:
@@ -153,20 +182,12 @@ async def execute_command(
         state = session.access.state if action == "status" else session.access_control(action == "on")
         return CommandResult(output=json.dumps(state.to_dict(), indent=2))
 
-    if cmd == "mcp":
-        parts = args.split()
-        if len(parts) > 2:
-            return CommandResult(output="Usage: /mcp [list|connect SERVER|disconnect SERVER|refresh SERVER]")
-        return CommandResult(output=await session.manage_mcp(parts[0] if parts else "list",
-                                                            parts[1] if len(parts) > 1 else ""))
     if cmd == "help":
         return _cmd_help(session, args)
     elif cmd == "model":
         return _cmd_model(args, session)
     elif cmd == "thinking":
         return _cmd_thinking(args, session)
-    elif cmd == "compact":
-        return await _cmd_compact(session, args)
     elif cmd == "clear":
         return _cmd_clear(session)
     elif cmd == "name":
@@ -335,6 +356,9 @@ def _cmd_help(session: AgentSession | None, query: str = '') -> CommandResult:
     from xdog.tui.command_help import command_help
     commands = {**BUILTIN_COMMANDS, **(session.extensions.commands() if session is not None else {})}
     output = command_help(commands, query)
+    if session is not None and session.extensions.command_conflicts():
+        conflicts = ', '.join('/' + name for name in session.extensions.command_conflicts())
+        output += '\nExtension command conflict (resolve or unload the extension): ' + conflicts
     skills = {skill.slug: skill.description for skill in available_skills()}
     if skills:
         output += '\n\nSkills:\n' + command_help(skills, query)

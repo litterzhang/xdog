@@ -619,3 +619,26 @@ async def test_advancing_service_clock_beyond_old_120_and_600_seconds_does_not_e
         assert (await owner.control("cancel", identifier))["status"] == "canceled"
     finally:
         await owner.aclose()
+
+
+async def test_close_failure_still_joins_actual_supervisor_and_is_reported_again(monkeypatch):
+    owner = ChildSupervisor(factory)
+    await owner.start('actual worker')
+    actual = owner._close_children
+    failure = OSError('children drained but finalization failed')
+    async def fail_after_drain():
+        await actual()
+        raise failure
+    monkeypatch.setattr(owner, '_close_children', fail_after_drain)
+    try:
+        with pytest.raises(OSError) as error:
+            await owner.aclose()
+        assert error.value is failure
+        assert not owner._thread.is_alive(), 'Cleanup failure skipped the actual owner join'
+        with pytest.raises(OSError) as repeated:
+            await owner.aclose()
+        assert repeated.value is failure
+    finally:
+        if owner._thread.is_alive():
+            owner._loop.call_soon_threadsafe(owner._loop.stop)
+            await asyncio.to_thread(owner._thread.join)

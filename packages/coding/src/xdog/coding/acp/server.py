@@ -22,6 +22,7 @@ class LocalServer:
         self.identity: tuple[int, int] | None = None
         self.server: asyncio.AbstractServer | None = None
         self.closing = False
+        self._closing: asyncio.Task[None] | None = None
         self.writers: set[asyncio.StreamWriter] = set()
         self.tasks: set[asyncio.Task[None]] = set()
 
@@ -47,24 +48,38 @@ class LocalServer:
             await writer.wait_closed()
 
     async def close(self) -> None:
-        self.closing = True
-        if self.server is not None:
-            self.server.close()
-        for writer in tuple(self.writers):
-            writer.close()
-        if self.server is not None:
-            # Python >=3.12 waits for client transports too; close them first.
-            await self.server.wait_closed()
-            self.server = None
-        if self.tasks:
-            await asyncio.gather(*tuple(self.tasks), return_exceptions=True)
-        path = self.record.address
-        if path.exists():
-            info = path.lstat()
-            if (stat.S_ISSOCK(info.st_mode) and info.st_uid == os.getuid()
-                    and (info.st_dev, info.st_ino) == self.identity):
-                path.unlink()
-        self.runtime.registry.remove(self.record)
+        from xdog.agent.async_work import wait_owned
+        if self._closing is None:
+            self.closing = True
+            self._closing = asyncio.create_task(self._close(), name='coding-endpoint-close')
+        await wait_owned(self._closing)
+
+    async def _close(self) -> None:
+        from xdog.agent.async_work import settle_cleanup
+        from xdog.coding.core.session_lifecycle import settle_sync
+        async def transports() -> None:
+            steps = [writer.close for writer in tuple(self.writers)]
+            if self.server is not None:
+                steps.insert(0, self.server.close)
+            settle_sync(*steps, message='ACP transport close failed')
+        async def server() -> None:
+            if self.server is not None:
+                await self.server.wait_closed()
+                self.server = None
+        async def peers() -> None:
+            if self.tasks:
+                # Disconnect/request errors are peer outcomes, not cleanup errors.
+                await asyncio.gather(*tuple(self.tasks), return_exceptions=True)
+        async def unlink() -> None:
+            path = self.record.address
+            if path.exists():
+                info = path.lstat()
+                if (stat.S_ISSOCK(info.st_mode) and info.st_uid == os.getuid()
+                        and (info.st_dev, info.st_ino) == self.identity):
+                    path.unlink()
+        async def registry() -> None:
+            self.runtime.registry.remove(self.record)
+        await settle_cleanup(transports, server, peers, unlink, registry, message='ACP endpoint cleanup failed')
 
 
 async def serve_local(runtime: SessionRuntime) -> LocalServer:

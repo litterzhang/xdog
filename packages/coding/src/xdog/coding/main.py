@@ -87,28 +87,28 @@ def run_agent(
 
     session = result.session
 
-    if result.model_fallback_message:
-        print(result.model_fallback_message, file=sys.stderr)
-
-    # Load extensions
-    _load_extensions(session, verbose)
-
-    # Build initial message from CLI args + piped stdin + files
-    initial_images: list[ImageContent] = []
     try:
-        initial_message = _build_initial_message(prompt, files, images=initial_images)
-    except (OSError, ValueError) as exc:
-        print(f"Error loading initial input: {exc}", file=sys.stderr)
-        sys.exit(1)
+        if result.model_fallback_message:
+            print(result.model_fallback_message, file=sys.stderr)
 
-    # Route to the appropriate mode
-    if print_mode and (initial_message or initial_images):
-        _run_print(session, initial_message or "", output_format, verbose, images=initial_images)
-    elif initial_message or initial_images:
-        # Non-interactive with prompt
-        _run_print(session, initial_message or "", "text", verbose, images=initial_images)
-    else:
-        _run_interactive(session, verbose)
+        # Build initial message from CLI args + piped stdin + files
+        initial_images: list[ImageContent] = []
+        try:
+            initial_message = _build_initial_message(prompt, files, images=initial_images)
+        except (OSError, ValueError) as exc:
+            print(f"Error loading initial input: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        # Route to the appropriate mode
+        if print_mode and (initial_message or initial_images):
+            _run_print(session, initial_message or "", output_format, verbose, images=initial_images)
+        elif initial_message or initial_images:
+            # Non-interactive with prompt
+            _run_print(session, initial_message or "", "text", verbose, images=initial_images)
+        else:
+            _run_interactive(session, verbose)
+    finally:
+        asyncio.run(session.aclose())
 
 
 def _build_initial_message(
@@ -122,21 +122,6 @@ def _build_initial_message(
         files=files,
         read_stdin=True, images=images,
     )
-
-
-def _load_extensions(session: Any, verbose: bool) -> None:
-    """Discover and load configured extensions."""
-    try:
-        from xdog.coding.core.extensions.loader import discover_extensions
-
-        extensions = discover_extensions()
-        if verbose and extensions:
-            print(f"Loaded {len(extensions)} extension(s):", file=sys.stderr)
-            for ext in extensions:
-                print(f"  - {ext.name} v{ext.manifest.version}", file=sys.stderr)
-    except Exception as exc:
-        if verbose:
-            print(f"Warning: failed to load extensions: {exc}", file=sys.stderr)
 
 
 def _run_print(
@@ -154,8 +139,7 @@ def _run_print(
             return await run_print_mode(session, message, output_format=output_format,
                                         verbose=verbose, images=tuple(images or ()))
         finally:
-            await session.children.supervisor.aclose()
-            session.dispose()
+            await session.aclose()
     exit_code = asyncio.run(owned_print())
     sys.exit(exit_code)
 
@@ -241,5 +225,4 @@ def _run_simple_repl(session: Any, verbose: bool) -> None:
     finally:
         session.permissions.set_request_handler(None)
         session.cancel()
-        asyncio.run(session.children.supervisor.aclose())
-        session.dispose()
+        asyncio.run(session.aclose())

@@ -71,12 +71,11 @@ def test_old_packets_cannot_start_removed_mode_or_write_drafts(tmp_path, monkeyp
 @pytest.mark.parametrize('prompt,print_mode,expected', [
     (None, False, 'native'), ('one input', False, 'print'), ('one input', True, 'print'),
 ])
-def test_retained_entry_modes_route_without_rpc(monkeypatch, prompt, print_mode, expected):
-    owner = object()
+def test_retained_entry_modes_route_without_rpc(monkeypatch, coding_session, prompt, print_mode, expected):
+    owner = coding_session
     routed = []
     monkeypatch.setattr('xdog.coding.core.sdk.create_agent_session',
                         lambda options: SimpleNamespace(session=owner, model_fallback_message=None))
-    monkeypatch.setattr(main, '_load_extensions', lambda *args: None)
     monkeypatch.setattr(main, '_build_initial_message', lambda *args, **kwargs: prompt)
     monkeypatch.setattr(main, '_run_interactive', lambda session, verbose: routed.append(('native', session)))
     monkeypatch.setattr(main, '_run_print', lambda session, *args, **kwargs: routed.append(('print', session)))

@@ -36,8 +36,8 @@ def session(tmp_path: Path) -> AgentSession:
         agent=agent,
         session_data=SessionData(
             session_id="t",
-            created_at="2026-08-06T00:00:00Z",
-            updated_at="2026-08-06T00:00:00Z",
+            created_at=0.0,
+            updated_at=0.0,
             summary="",
             model="gpt-5.6-sol",
             messages=[],

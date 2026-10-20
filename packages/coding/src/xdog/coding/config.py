@@ -21,6 +21,20 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
 
+class InvalidToolSelection(ValueError):
+    """Explicit invalid tool selection must not silently become all tools."""
+
+
+def validate_tool_selection(value: object) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    from xdog.agent.extensions.active_tools import names
+    try:
+        return names(value)
+    except (TypeError, ValueError) as exc:
+        raise InvalidToolSelection('allowed_tools must be a list of distinct tool names or null') from exc
+
+
 class InvalidBatchLimit(ValueError):
     """An explicit malformed owner setting must not fall back silently."""
 
@@ -202,7 +216,7 @@ class GlobalConfig(BaseModel):
     child_presets: Any = Field(default_factory=dict)
     mcp_servers: dict[str, Any] = Field(default_factory=dict)
     mcp_credential_backend: Any = 'file'  # Validated at the host boundary; never defaults on an invalid native choice.
-    allowed_tools: list[str] = Field(default_factory=list)
+    allowed_tools: list[str] | None = None
     custom_instructions: str = ""
 
     @classmethod
@@ -215,8 +229,10 @@ class GlobalConfig(BaseModel):
             raw = json.loads(target.read_text(encoding="utf-8"))
             if isinstance(raw, dict) and 'max_messages_per_turn' in raw:
                 validate_max_messages_per_turn(raw['max_messages_per_turn'])
+            if isinstance(raw, dict) and 'allowed_tools' in raw:
+                validate_tool_selection(raw['allowed_tools'])
             return cls.model_validate(raw)
-        except InvalidBatchLimit:
+        except (InvalidBatchLimit, InvalidToolSelection):
             raise
         except Exception:
             return cls()
@@ -248,7 +264,7 @@ class ProjectConfig(BaseModel):
     model: str | None = None
     thinking_level: str | None = None
     permission_mode: str | None = None
-    allowed_tools: list[str] = Field(default_factory=list)
+    allowed_tools: list[str] | None = None
     custom_instructions: str = ""
     extensions: list[str] = Field(default_factory=list)
     mcp_servers: dict[str, Any] = Field(default_factory=dict)
@@ -262,8 +278,10 @@ class ProjectConfig(BaseModel):
             raw = json.loads(target.read_text(encoding="utf-8"))
             if isinstance(raw, dict) and 'max_messages_per_turn' in raw:
                 validate_max_messages_per_turn(raw['max_messages_per_turn'])
+            if isinstance(raw, dict) and 'allowed_tools' in raw:
+                validate_tool_selection(raw['allowed_tools'])
             return cls.model_validate(raw)
-        except InvalidBatchLimit:
+        except (InvalidBatchLimit, InvalidToolSelection):
             raise
         except Exception:
             return cls()
@@ -280,7 +298,7 @@ class RuntimeConfig:
     model: str
     thinking_level: str
     permission_mode: str
-    allowed_tools: tuple[str, ...]
+    allowed_tools: tuple[str, ...] | None
     custom_instructions: str
     extensions: tuple[str, ...]
     working_dir: str
@@ -295,19 +313,23 @@ class RuntimeConfig:
         project_cfg: ProjectConfig | None = None,
         working_dir: Path | None = None,
         overrides: dict[str, Any] | None = None,
+        session_settings: dict[str, Any] | None = None,
     ) -> RuntimeConfig:
         """Merge global, project and CLI overrides into a single config."""
         ov = overrides or {}
         pcfg = project_cfg or ProjectConfig()
-        model = ov.get("model") or pcfg.model or global_cfg.default_model
-        thinking = ov.get("thinking_level") or pcfg.thinking_level or global_cfg.thinking_level
+        saved = session_settings or {}
+        model = ov.get('model') or saved.get('model') or pcfg.model or global_cfg.default_model
+        thinking = (ov.get('thinking_level') or saved.get('thinking_level')
+                    or pcfg.thinking_level or global_cfg.thinking_level)
         permission_mode = (
             ov.get("permission_mode")
             or pcfg.permission_mode
             or global_cfg.permission_mode
         )
 
-        merged_tools = list(global_cfg.allowed_tools) + list(pcfg.allowed_tools)
+        selection = next((value for value in (ov.get('allowed_tools'), saved.get('allowed_tools'),
+                         pcfg.allowed_tools, global_cfg.allowed_tools) if value is not None), None)
         merged_ext = list(global_cfg.extensions) + list(pcfg.extensions)
 
         instructions_parts: list[str] = []
@@ -320,13 +342,14 @@ class RuntimeConfig:
             model=model,
             thinking_level=thinking,
             permission_mode=permission_mode,
-            allowed_tools=tuple(merged_tools),
+            allowed_tools=validate_tool_selection(selection),
             custom_instructions="\n\n".join(instructions_parts),
             extensions=tuple(merged_ext),
             working_dir=str(working_dir or Path.cwd()),
             platform_info=PlatformInfo.detect(),
             max_messages_per_turn=validate_max_messages_per_turn(
                 ov['max_messages_per_turn'] if 'max_messages_per_turn' in ov else
+                saved['max_messages_per_turn'] if 'max_messages_per_turn' in saved else
                 pcfg.max_messages_per_turn if pcfg.max_messages_per_turn is not None else
                 global_cfg.max_messages_per_turn),
         )

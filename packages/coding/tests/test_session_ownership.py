@@ -48,30 +48,31 @@ def test_registry_rejects_address_outside_private_directory(tmp_path):
 
 def test_factory_claims_before_build_and_releases_failed_start(tmp_path, monkeypatch):
     from xdog.coding.core import sdk
-    from xdog.coding.core.sessions.ownership import SessionLease, runtime_directory
+    from xdog.coding.core.sessions.ownership import SessionLease, lease_directory
 
     monkeypatch.setattr(sdk, "get_sessions_dir", lambda: tmp_path / "sessions")
 
     def build(options, *, new_session_id):
         with pytest.raises(RuntimeError, match="owned"):
-            SessionLease.acquire(runtime_directory(tmp_path / "sessions"), "s1")
+            SessionLease.acquire(lease_directory(tmp_path / "sessions"), "s1")
         raise ValueError("bootstrap failed")
 
     monkeypatch.setattr(sdk, "_build_agent_session", build, raising=False)
     monkeypatch.setattr(
-        sdk.GlobalConfig, "load", lambda *args: (_ for _ in ()).throw(AssertionError("unexpected builder"))
+        'xdog.coding.config.GlobalConfig.load',
+        lambda *args: (_ for _ in ()).throw(AssertionError("unexpected builder"))
     )
     with pytest.raises(ValueError, match="bootstrap failed"):
         sdk.create_agent_session(sdk.CreateSessionOptions(resume_id="s1"))
-    lease = SessionLease.acquire(runtime_directory(tmp_path / "sessions"), "s1")
+    lease = SessionLease.acquire(lease_directory(tmp_path / "sessions"), "s1")
     lease.close()
 
 
 def test_navigation_cannot_load_another_writers_history(coding_session, monkeypatch):
-    from xdog.coding.core.sessions.ownership import SessionLease, runtime_directory
+    from xdog.coding.core.sessions.ownership import SessionLease, lease_directory
 
     other = coding_session.session_manager.create_session(model="test", working_dir=coding_session.working_dir)
-    directory = runtime_directory(coding_session.session_manager._dir)
+    directory = lease_directory(coding_session.session_manager._dir)
     held = SessionLease.acquire(directory, other.session_id)
     observed = []
     original = coding_session.session_manager.load_session

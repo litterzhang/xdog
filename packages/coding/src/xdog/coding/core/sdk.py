@@ -24,11 +24,8 @@ from xdog.agent import AgentTool as CoreAgentTool
 from xdog.agent.agent import Agent
 from xdog.ai.types import ThinkingLevel
 from xdog.coding.config import (
-    GlobalConfig,
-    ProjectConfig,
     RuntimeConfig,
     get_sessions_dir,
-    validate_max_messages_per_turn,
 )
 from xdog.coding.core.agent_session import AgentSession
 from xdog.coding.core.defaults import DEFAULT_MODEL, DEFAULT_THINKING_LEVEL, MAX_CONTEXT_TOKENS
@@ -83,7 +80,7 @@ class CreateSessionResult:
 
 def create_agent_session(options: CreateSessionOptions | None = None) -> CreateSessionResult:
     """Claim the writer before reading or constructing a writable session."""
-    from xdog.coding.core.sessions.ownership import SessionLease, runtime_directory
+    from xdog.coding.core.sessions.ownership import SessionLease, lease_directory
     opts = options or CreateSessionOptions()
     sessions = get_sessions_dir()
     if opts.resume:
@@ -92,7 +89,7 @@ def create_agent_session(options: CreateSessionOptions | None = None) -> CreateS
             raise RuntimeError("No previous session to resume.")
         opts = replace(opts, resume=False, resume_id=listing[0].session_id)
     selected = opts.resume_id or uuid.uuid4().hex
-    lease = SessionLease.acquire(runtime_directory(sessions), selected)
+    lease = SessionLease.acquire(lease_directory(sessions), selected)
     try:
         result = _build_agent_session(opts, new_session_id=selected)
         result.session._lease = lease
@@ -122,20 +119,13 @@ def _build_agent_session(options: CreateSessionOptions, *, new_session_id: str) 
     opts = options or CreateSessionOptions()
     wd = (opts.working_dir or Path.cwd()).resolve()
 
-    # Load configuration
-    global_cfg = GlobalConfig.load(opts.config_path)
-    project_cfg = ProjectConfig.load(wd)
-    ov = opts.overrides or {}
-
-    config = RuntimeConfig.resolve(
-        global_cfg=global_cfg,
-        project_cfg=project_cfg,
-        working_dir=wd,
-        overrides=ov,
-    )
-
     settings = SettingsManager(global_path=opts.config_path, project_dir=wd)
     session_mgr = SessionManager(sessions_dir=get_sessions_dir())
+    ov = dict(opts.overrides or {})
+    if opts.model_name is not None:
+        ov['model'] = opts.model_name
+    if opts.thinking_level is not None:
+        ov['thinking_level'] = opts.thinking_level
 
     # Validate persisted owner settings under its lease, before provider bootstrap.
     loaded = None
@@ -147,12 +137,11 @@ def _build_agent_session(options: CreateSessionOptions, *, new_session_id: str) 
         loaded = session_mgr.get_most_recent()
         if loaded is None:
             raise RuntimeError('No previous session to resume.')
-    saved_limit = None
-    if loaded is not None and 'max_messages_per_turn' in loaded.settings:
-        saved_limit = validate_max_messages_per_turn(loaded.settings['max_messages_per_turn'])
-    batch_limit = validate_max_messages_per_turn(
-        ov['max_messages_per_turn'] if 'max_messages_per_turn' in ov else
-        saved_limit if saved_limit is not None else config.max_messages_per_turn)
+    saved = ({**loaded.settings, 'model': loaded.model, 'allowed_tools': list(loaded.active_tools)
+                    if loaded.active_tools is not None else None}
+             if loaded is not None else {})
+    config = RuntimeConfig.resolve(global_cfg=settings._global, project_cfg=settings._project,
+                                   working_dir=wd, overrides=ov, session_settings=saved)
 
     # Build model catalog for default model resolution
     import xdog.ai as ai
@@ -181,8 +170,7 @@ def _build_agent_session(options: CreateSessionOptions, *, new_session_id: str) 
             if initial is None:
                 raise ValueError('Requested model unavailable on the configured adapter; no fallback')
             initial = validated(initial)
-            initial_thinking = _as_thinking_level(ov.get('thinking_level') or config.thinking_level
-                                                  or DEFAULT_THINKING_LEVEL)
+            initial_thinking = _as_thinking_level(config.thinking_level or DEFAULT_THINKING_LEVEL)
             if (initial.reasoning and initial_thinking is not None and initial.supported_efforts is not None
                     and initial_thinking not in initial.supported_efforts):
                 raise ValueError('Configured thinking level is not advertised by selected model; no fallback')
@@ -203,16 +191,7 @@ def _build_agent_session(options: CreateSessionOptions, *, new_session_id: str) 
         model = validated(model)
         model_id = model.id
 
-    # CLI override > saved session > project/global configuration. Session
-    # settings must participate here, before AgentSession loads its manager,
-    # because StreamOptions are constructed below.
-    saved_thinking = session_data.settings.get("thinking_level")
-    thinking_level = (
-        ov.get("thinking_level")
-        or saved_thinking
-        or config.thinking_level
-        or DEFAULT_THINKING_LEVEL
-    )
+    thinking_level = config.thinking_level or DEFAULT_THINKING_LEVEL
     effective_thinking = _as_thinking_level(thinking_level)
     if model and not model.reasoning:
         effective_thinking = None
@@ -257,7 +236,9 @@ def _build_agent_session(options: CreateSessionOptions, *, new_session_id: str) 
     if session_data.messages:
         agent.replace_messages(session_data.messages)
 
-    session_data.settings = {**session_data.settings, 'max_messages_per_turn': batch_limit}
+    session_data.settings = {**session_data.settings, 'max_messages_per_turn': config.max_messages_per_turn}
+
+    session_data.active_tools = config.allowed_tools
 
     # Create AgentSession wrapper
     session = AgentSession(
@@ -276,25 +257,18 @@ def _build_agent_session(options: CreateSessionOptions, *, new_session_id: str) 
     try:
         if extension_model:
             async def activate() -> None:
-                try:
-                    await session.initialize_extensions()
-                    declared = session.extensions.provider_model(model_id)
-                    if declared is None:
-                        raise ValueError("Configured extension model is not declared by an explicitly trusted worker")
-                    thinking = session.agent.options.thinking
-                    if (thinking is not None and declared.reasoning and declared.supported_efforts is not None
-                            and thinking not in declared.supported_efforts):
-                        raise ValueError(
-                        "Configured thinking level is not advertised by selected extension model")
-                    session.set_model(model_id)
-                    if not declared.reasoning:
-                        session.agent.set_options(replace(session.agent.options, thinking=None))
-                except BaseException:
-                    await session.children.supervisor.aclose()
-                    await session.extensions.aclose()
-                    if session.mcp is not None:
-                        await session.mcp.aclose()
-                    raise
+                await session.initialize_extensions()
+                declared = session.extensions.provider_model(model_id)
+                if declared is None:
+                    raise ValueError("Configured extension model is not declared by an explicitly trusted worker")
+                thinking = session.agent.options.thinking
+                if (thinking is not None and declared.reasoning and declared.supported_efforts is not None
+                        and thinking not in declared.supported_efforts):
+                    raise ValueError(
+                    "Configured thinking level is not advertised by selected extension model")
+                session.set_model(model_id)
+                if not declared.reasoning:
+                    session.agent.set_options(replace(session.agent.options, thinking=None))
             # This synchronous factory is also called from running event loops. Use
             # one owned bootstrap loop, never nest asyncio.run on the caller's loop.
             with concurrent.futures.ThreadPoolExecutor(
@@ -308,8 +282,12 @@ def _build_agent_session(options: CreateSessionOptions, *, new_session_id: str) 
             session=session,
             model_fallback_message=model_fallback_message,
         )
-    except BaseException:
-        session.dispose()
+    except BaseException as primary:
+        from xdog.coding.core.session_staging import settle
+        try:
+            settle(session.aclose)
+        except BaseException as cleanup:
+            raise BaseExceptionGroup('Coding construction and cleanup failed', [primary, cleanup]) from None
         raise
 
 

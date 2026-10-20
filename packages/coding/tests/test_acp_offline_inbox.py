@@ -18,7 +18,7 @@ ingress = ingress_fixture
 async def test_enqueue_without_load_or_owner_is_durable_and_does_not_construct_agent(ingress, tmp_path, monkeypatch):
     from xdog.coding.core import sdk
     from xdog.coding.core.agent_session import AgentSession
-    from xdog.coding.core.sessions.ownership import runtime_directory
+    from xdog.coding.core.sessions.ownership import lease_directory, runtime_directory
 
     server, config, manager, data = ingress
 
@@ -44,7 +44,7 @@ async def test_enqueue_without_load_or_owner_is_durable_and_does_not_construct_a
     assert len(list(config.inbox_dir.rglob('*.json'))) == 1
     assert manager._session_path(data.session_id).read_bytes() == original_history
     owner_dir = runtime_directory(manager._dir)
-    assert not (owner_dir/(data.session_id+'.lock')).exists()
+    assert not (lease_directory(manager._dir)/(data.session_id+'.lock')).exists()
     assert not (owner_dir/(data.session_id+'.json')).exists()
 
 

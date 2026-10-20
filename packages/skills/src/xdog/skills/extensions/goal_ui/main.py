@@ -39,7 +39,7 @@ def _display(value: dict[str, Any]) -> tuple[str, str]:
     if next_offset is not None:
         if type(next_offset) is not int or next_offset < 0:
             raise ValueError("Goal page cursor unavailable")
-        lines.append(f"Next page: /ext-goal_ui-goals page {next_offset}")
+        lines.append(f"Next page: /goals page {next_offset}")
     return summary, "\n".join(lines)
 
 
@@ -63,7 +63,7 @@ def setup(api: ExtensionAPI) -> None:
             return await refresh({"offset": int(parts[1])})
         if len(parts) == 1 and re.fullmatch("[A-Za-z0-9][A-Za-z0-9_-]{0,127}", parts[0]):
             return await refresh({"goal_id": parts[0]})
-        return "Usage: /ext-goal_ui-goals [GOAL_ID | page OFFSET]"
+        return "Usage: /goals [GOAL_ID | page OFFSET]"
 
     async def start(context: dict[str, Any]) -> None:
         await refresh({})
@@ -72,6 +72,6 @@ def setup(api: ExtensionAPI) -> None:
         if context.get("view") == "goals":
             await refresh({})  # A hint is not the snapshot, status or permission.
 
-    api.command("goals", "Read current owner Goals; no task or permission mutations", command)
+    api.command("goals", "Read current owner Goals; no task or permission mutations", command, public_name="goals")
     api.on("session_start", start)
     api.on("view_changed", changed)

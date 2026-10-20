@@ -1927,3 +1927,12 @@ JSON; actual client/owner/binding identity is checked across awaits and through
 callback publication. Coalesced `view_changed` hints use the existing process
 owner without starting a dormant worker or model. See
 `docs/extension-owner-views.md` in the repository for the contract and limits.
+
+### Public extension command names
+
+`api.command(..., public_name="show-state")` exposes `/show-state` while retaining
+its internal extension/command identity. The same declaration drives execution,
+help, argument completion and shortcuts. Hosts reserve builtin/skill names;
+conflicting names are rejected rather than shadowed. This is a user command, not
+a model tool. See `docs/extension-public-commands.md` in the repository for the
+snapshot, ownership and stable-keybinding contract.

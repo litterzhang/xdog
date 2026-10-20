@@ -65,7 +65,7 @@ counts remain distinct; no preview is completion/permission authority.
 
 The single Python extension reads a host-granted `goals` view and contributes
 ordinary bounded status/command text. Its query command is
-`/ext-goal_ui-goals [GOAL_ID | page OFFSET]`; `/goal` loads the packaged skill.
+`/goals [GOAL_ID | page OFFSET]`; `/goal` loads the packaged skill.
 Missing/malformed views say unavailable, never zero Goals. It imports no host,
 store or TUI and exposes no mutation commands. The normal shared TUI ExtensionView
 renders its generic status output; the main application needs no Goal widget.

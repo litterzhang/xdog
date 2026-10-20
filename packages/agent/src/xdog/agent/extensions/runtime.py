@@ -21,6 +21,7 @@ from xdog.agent.core import AgentMessage, AgentTool, AgentToolResult
 from xdog.agent.cross_loop import submit_remote
 from xdog.agent.extensions.command_result import ExtensionCommandResult
 from xdog.agent.extensions.commands import declaration as command_declaration
+from xdog.agent.extensions.commands import external_name
 from xdog.agent.extensions.context import decode_context
 from xdog.agent.extensions.dialogs import REMOVED_HOST_CAPABILITIES, validate_answer, validate_sdk_dialog
 from xdog.agent.extensions.hooks import FLAGS
@@ -495,6 +496,7 @@ class ExtensionRuntime:
         self._initialized = False
         self._activation_lock = asyncio.Lock()
         self._infos: dict[str, dict[str, Any]] = {}
+        self._reserved_commands: frozenset[str] = frozenset()
         self._input_required: set[str] = set()
         self._provider_lock = asyncio.Lock()
         self._failed: set[str] = set()
@@ -830,6 +832,7 @@ class ExtensionRuntime:
                     and client._command_snapshot != commands):
                 raise ValueError("Conflicting extension command snapshot")
             commands = client._command_snapshot
+        self._command_routes((name, commands['commands']))
         client._command_snapshot = commands
         info.update(commands=commands["commands"], shortcuts=commands["shortcuts"],
                     command_revision=commands["revision"])
@@ -870,18 +873,79 @@ class ExtensionRuntime:
                                  "active" if name in self._infos else "not loaded"}
                                 for name in self.enabled],
                 "commands": self.commands(), "command_completions": self.command_completions(),
+                **({'command_owners': self.command_owners()} if any('public_name' in row
+                    for _, row in self._command_routes().values()) else {}),
                 "ui": dict(self._ui), "shortcuts": self.shortcuts()}
 
+    def _command_routes(self, candidate: tuple[str, list[dict[str, Any]]] | None = None
+                        ) -> dict[str, tuple[str, dict[str, Any]]]:
+        if self._closed:
+            return {}
+        declarations = {name: info['commands'] for name, info in tuple(self._infos.items())
+                        if name not in self._failed | self._unloaded}
+        if candidate is not None:
+            declarations[candidate[0]] = candidate[1]
+        routes = {}
+        for name, rows in declarations.items():
+            for row in rows:
+                selected = external_name(name, row)
+                if selected in self._reserved_commands:
+                    if candidate is not None and name == candidate[0]:
+                        raise ValueError(f'Extension command name conflict: /{selected} is reserved')
+                    continue  # Quarantine a later host/skill conflict without poisoning the catalog.
+                if selected in routes:
+                    raise ValueError(f'Extension command name conflict: /{selected} is already registered')
+                routes[selected] = (name, row)
+        return routes
+
+    def command_conflicts(self) -> dict[str, str]:
+        if self._closed:
+            return {}
+        return {external_name(name, row): name for name, info in tuple(self._infos.items())
+                if name not in self._failed | self._unloaded for row in info['commands']
+                if external_name(name, row) in self._reserved_commands}
+
+    def reserve_commands(self, names: set[str] | frozenset[str]) -> None:
+        """Quarantine later conflicts; keep help/status/unload available for recovery."""
+        previous = self.command_conflicts()
+        self._reserved_commands = frozenset(name.removeprefix('/').lower() for name in names)
+        for command, owner in self.command_conflicts().items():
+            if previous.get(command) != owner:
+                self.publish({'type': 'extension_notice', 'extension': owner,
+                    'text': f'Command conflict: /{command} ({owner}) is unavailable; '
+                            'remove the conflicting skill/configuration or unload this extension.',
+                    'snapshot': self.snapshot()})
+
     def commands(self) -> dict[str, str]:
-        return {f"ext-{name}-{row['name']}".lower(): row["description"]
-                for name, info in tuple(self._infos.items()) if name not in self._failed | self._unloaded
-                for row in info["commands"]}
+        return {name: row['description'] for name, (_, row) in self._command_routes().items()}
+
+    def command_owners(self) -> dict[str, str]:
+        return {name: owner for name, (owner, _) in self._command_routes().items()}
+
+    def _command_route(self, command: str) -> tuple[str, dict[str, Any]] | None:
+        for public, (owner, row) in self._command_routes().items():
+            if command.lower() in {public, f"ext-{owner}-{row['name']}".lower()}:
+                return owner, row
+        return None
+
+    def command_owner(self, command: str) -> str | None:
+        route = self._command_route(command)
+        return route[0] if route is not None else None
 
     def shortcuts(self) -> list[dict[str, str]]:
-        return [{"extension": name, "command": f"ext-{name}-{row['name']}".lower(),
-                 "key": row["key"], "description": row["description"]}
-                for name, info in tuple(self._infos.items()) if name not in self._failed | self._unloaded
-                for row in info.get("shortcuts", [])]
+        routes = {(owner, row['name'].lower()): name for name, (owner, row) in self._command_routes().items()}
+        result = []
+        for name, info in tuple(self._infos.items()):
+            if name in self._failed | self._unloaded:
+                continue
+            for row in info.get('shortcuts', []):
+                command = routes.get((name, row['name'].lower()))
+                if command is None:
+                    continue
+                action = f"ext-{name}-{row['name']}".lower()
+                result.append({'extension': name, 'command': command, 'key': row['key'],
+                               'description': row['description'], **({'action': action} if command != action else {})})
+        return result
 
     def accept_provider_registration(self, name: str, client: _Client, value: Any) -> None:
         """Adopt only current-owner, monotonic, bounded catalog metadata; never a model call."""
@@ -941,6 +1005,7 @@ class ExtensionRuntime:
                 + len(current["commands"]) > 64 or sum(len(info.get("shortcuts", []))
                 for other, info in self._infos.items() if other != name) + len(current["shortcuts"]) > 64):
             raise ValueError("Live extension command/shortcut capacity exceeded")
+        self._command_routes((name, current['commands']))
         client._command_snapshot = current
         info = self._infos.get(name)
         if info is not None and name not in self._failed | self._unloaded:
@@ -1262,11 +1327,9 @@ class ExtensionRuntime:
         return replace(message, content=(TextContent(text=transformed), *images))
 
     def command_completions(self) -> dict[str, str]:
-        """Current callback identities; metadata does not grant editor/command/tool authority."""
-        return {f"ext-{name}-{row['name']}".lower(): row['completion_id']
-                for name, info in tuple(self._infos.items()) if not self._closed
-                and name not in self._failed | self._unloaded
-                for row in info['commands'] if 'completion_id' in row}
+        """Current callback identities; metadata grants no editor/command/tool authority."""
+        return {name: row['completion_id'] for name, (_, row) in self._command_routes().items()
+                if 'completion_id' in row}
 
     async def complete_command(self, command: str, prefix: str, identity: str, *,
                                timeout: float = 1, argument_input: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1279,42 +1342,39 @@ class ExtensionRuntime:
         selected = command.lower()
         if self.command_completions().get(selected) != identity:
             return {'status': 'stale', 'items': []}
-        for name, info in tuple(self._infos.items()):
-            row = next((row for row in info['commands'] if f"ext-{name}-{row['name']}".lower() == selected), None)
-            if row is None:
-                continue
-            # No initialization or UI lease. Completion is not a command callback,
-            # and cannot borrow the owner's approval/editor/navigation interfaces.
-            with silent_extension_ui():
-                async with asyncio.timeout(timeout):
-                    result = await self._manager._bridge(self._rpc(name, 'xdog/command_complete', {
-                        'name': row['name'], 'prefix': prefix, 'completion_id': identity,
-                        'argument_context': argument_input}))
-            if self.command_completions().get(selected) != identity or result.get('status') == 'stale':
-                return {'status': 'stale', 'items': []}
-            if set(result) != {'status', 'items'} or result['status'] != 'ok':
-                raise ValueError('Invalid argument completion callback result')
-            return {'status': 'ok', 'items': items(result['items'])}
-        return {'status': 'stale', 'items': []}
+        route = self._command_route(selected)
+        if route is None:
+            return {'status': 'stale', 'items': []}
+        name, row = route
+        # Resolve the callback on the same current owner used by discovery.
+        with silent_extension_ui():
+            async with asyncio.timeout(timeout):
+                result = await self._manager._bridge(self._rpc(name, 'xdog/command_complete', {
+                    'name': row['name'], 'prefix': prefix, 'completion_id': identity,
+                    'argument_context': argument_input}))
+        if self.command_completions().get(selected) != identity or result.get('status') == 'stale':
+            return {'status': 'stale', 'items': []}
+        if set(result) != {'status', 'items'} or result['status'] != 'ok':
+            raise ValueError('Invalid argument completion callback result')
+        return {'status': 'ok', 'items': items(result['items'])}
 
     async def command(self, command: str, args: str) -> str | ExtensionCommandResult:
         await self.initialize()
-        for name, info in tuple(self._infos.items()):
-            if name in self._failed | self._unloaded:
-                continue
-            for row in info["commands"]:
-                if command.lower() == f"ext-{name}-{row['name']}".lower():
-                    result = await self._manager._bridge(
-                        self._rpc(name, "xdog/command", {"name": row["name"], "args": args}))
-                    if "xdog_command_result" in result:
-                        if type(result["xdog_command_result"]) is not int or result["xdog_command_result"] != 1:
-                            raise ValueError("Unsupported extension command result version")
-                        return ExtensionCommandResult.from_dict({"extension": name, "command": command.lower(),
-                                                                 "result": result.get("command_content")})
-                    if not isinstance(result.get("output"), str):
-                        raise ValueError("Invalid extension command text")
-                    return cast(str, result["output"])
-        raise ValueError("Unknown extension command")
+        if command.lower() in self.command_conflicts():
+            raise ValueError(f'Extension command conflict: /{command}; resolve the conflict or unload the extension')
+        route = self._command_route(command)
+        if route is None:
+            raise ValueError('Unknown extension command')
+        name, row = route
+        result = await self._manager._bridge(self._rpc(name, "xdog/command", {"name": row["name"], "args": args}))
+        if "xdog_command_result" in result:
+            if type(result["xdog_command_result"]) is not int or result["xdog_command_result"] != 1:
+                raise ValueError("Unsupported extension command result version")
+            return ExtensionCommandResult.from_dict({"extension": name,
+                "command": f"ext-{name}-{row['name']}".lower(), "result": result.get("command_content")})
+        if not isinstance(result.get("output"), str):
+            raise ValueError("Invalid extension command text")
+        return cast(str, result["output"])
 
     async def manage(self, action: str, name: str = "") -> dict[str, Any]:
         await self.initialize()
@@ -1370,7 +1430,7 @@ def validate_snapshot(value: Any) -> dict[str, Any]:
         raise ValueError("Invalid extension snapshot")
     if {"terminal_input", "terminal_generation", "terminal_events"} & value.keys():
         raise ValueError("Extension terminal input APIs have been removed")
-    if set(value) - {'extensions', 'commands', 'ui', 'shortcuts', 'command_completions'}:
+    if set(value) - {'extensions', 'commands', 'ui', 'shortcuts', 'command_completions', 'command_owners'}:
         raise ValueError('Extension snapshots cannot restore pending dialogs or host controls')
     rows, commands, ui = value.get("extensions"), value.get("commands"), value.get("ui")
     if (not isinstance(rows, list) or len(rows) > 16 or not isinstance(commands, dict) or len(commands) > 64
@@ -1385,6 +1445,23 @@ def validate_snapshot(value: Any) -> dict[str, Any]:
         if (not isinstance(key, str) or len(key) > 80 or not isinstance(description, str)
                 or len(description.encode("utf-8")) > 1000):
             raise ValueError("Invalid extension command snapshot")
+    owners = value.get('command_owners', {})
+    active_owners = {row['name'] for row in rows if row['state'] == 'active'}
+    if (not isinstance(owners, dict) or len(owners) > 64 or set(owners) - set(commands)
+            or any(not isinstance(owner, str) or owner not in active_owners for owner in owners.values())):
+        raise ValueError('Invalid extension command ownership snapshot')
+    from xdog.agent.extensions.commands import owner_for, public_name
+    for command in commands:
+        qualified_owner = owner_for(command, {})
+        if qualified_owner is None:
+            public_name(command)
+            if command not in owners:
+                raise ValueError('Public extension command requires explicit active owner')
+        elif command in owners and owners[command].lower() != qualified_owner:
+            raise ValueError('Qualified extension command ownership cannot be changed')
+        owner = owner_for(command, owners)
+        if owner is None or owner.lower() not in {name.lower() for name in active_owners}:
+            raise ValueError('Extension command requires an active owner')
     completions = value.get('command_completions', {})
     if not isinstance(completions, dict) or len(completions) > 64 or set(completions) - set(commands):
         raise ValueError('Invalid argument completion command catalog')
@@ -1392,7 +1469,7 @@ def validate_snapshot(value: Any) -> dict[str, Any]:
     for identity in completions.values():
         completion_id(identity)
     active = {row["name"] for row in rows if row["state"] == "active"}
-    snapshot_rows(value.get("shortcuts", []), commands, active)
+    snapshot_rows(value.get("shortcuts", []), commands, active, owners=owners)
     for key, row in ui.items():
         if (not isinstance(key, str) or len(key) > 80 or not isinstance(row, dict)
                 or set(row) - {'kind', 'key', 'lines'} or row.get("kind") not in {"status"}

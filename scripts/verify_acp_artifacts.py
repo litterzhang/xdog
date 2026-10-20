@@ -135,7 +135,7 @@ from xdog.coding.core.agent_session import AgentSession
 from xdog.coding.core.session_manager import SessionManager
 from xdog.coding.core.sessions.inbox_models import InboxMessage,MAX_MESSAGE_BYTES,encoded,message_data
 from xdog.coding.core.sessions.inbox_store import InboxStore
-from xdog.coding.core.sessions.ownership import SessionLease,runtime_directory
+from xdog.coding.core.sessions.ownership import SessionLease,lease_directory
 from xdog.coding.core.sessions.store import InputStore
 from xdog.coding.core.sessions.runtime import SessionRuntime
 from xdog.coding.core.settings_manager import SettingsManager
@@ -202,9 +202,9 @@ async def main():
   assert session.runtime is None and session._sdk_controller is None
   assert session.permissions.mode=='ask' and not session.permissions.has_pending_requests
  finally:
-  session.dispose()
+  await session.aclose()
  assert session._lease is None
- replacement=SessionLease.acquire(runtime_directory(manager._dir),data.session_id)
+ replacement=SessionLease.acquire(lease_directory(manager._dir),data.session_id)
  replacement.close()
  boundary=await maximum_input(manager,root)
  print(json.dumps({'coding_owner':'wheel-only SDK owner, five durable callbacks plus independent human input',

@@ -56,6 +56,7 @@ from xdog.claw.channels.tui.mcp_data import McpDataReceiver
 from xdog.claw.channels.tui.source_reader import SourceReceiver
 from xdog.claw.channels.tui.submission import TERMINAL, NativeSubmission, valid_namespace, validate_receipt
 from xdog.claw.config import get_config_dir, get_data_dir
+from xdog.claw.core.command_names import SLASH_COMMANDS
 from xdog.tui.attachments import Attachment, AttachmentComposer
 from xdog.tui.child_browser import child_entries
 from xdog.tui.child_drafts import ChildDraft
@@ -267,39 +268,6 @@ WAITING_PHRASES = [
 
 # ── Slash Commands ────────────────────────────────────────────────────
 
-SLASH_COMMANDS = {
-    "/help": "Search terminal commands: /help [QUERY]",
-    "/compact": "Summarize older context: /compact [focus instructions] | /compact cancel",
-    "/skills": "List/load/unload actual group skills without a model turn",
-    "/tools": "Read-only configured/active tool/schema browser",
-    "/mcp": "Manage explicit external MCP connections",
-    "/model": "Inspect/select configured native and session-owned extension models",
-    "/thinking": "Inspect/change session reasoning level; no model turn",
-    "/extensions": "Explicit trusted extension status/reload/unload/auth",
-    "/login": "Extension provider authentication menu/login; native provider auth uses xdog-ai",
-    "/readonly": "Host access scope: /readonly on|off|status (not tool approval)",
-    "/draft": "Local parent draft save and recovery",
-    "/agents": "Child browser/controls; start supports --model/--thinking and reviewed specialization settings",
-    "/copy": "Copy response/selected source", "/export": "Save private transcript snapshot",
-    "/share": "Review local shareable HTML (no upload)",
-    "/transcript": "Search/select live or saved source: branch ID | saved SESSION [BRANCH]",
-    "/fullscreen": "Toggle fullscreen transcript viewer",
-    "/quit": "Exit the TUI",
-    "/exit": "Exit the TUI",
-    "/reset": "Reset chat session",
-    "/status": "Show gateway status",
-    "/clear": "Clear screen and chat",
-    "/keys": "Show active keybindings",
-    "/editor": "Open external prompt editor",
-    "/queue": "Inspect/edit/remove/reorder queued inputs",
-    "/sessions": "Read saved history", "/tree": "Read historical checkpoints",
-    "/name": "Inspect/name session: /name [NAME|- to clear]",
-    "/new": "Rotate chat context",
-    "/artifact": "Load a checksummed command artifact read-only",
-    "/attach": "Attach an image file", "/attachments": "Inspect/remove/preview images", "/paste": "Read clipboard",
-    "/steer": "Send input at the next checkpoint",
-    "/follow-up": "Send after active tool continuation",
-}
 
 # ── Ctrl+C handling (matching OpenClaw's resolveCtrlCAction) ──────────
 
@@ -1637,12 +1605,18 @@ class ChatApp:
                     return
         else:
             action, name, text = "command", command, args
+        from xdog.agent.extensions.commands import owner_for
+        source = owner_for(command, self._extension_snapshot.get('command_owners', {})) if action == 'command' else None
+        if action == 'command' and source is None:
+            self._preserve_submission('/' + command + ' ' + args,
+                                      'Extension command owner unavailable; refresh required')
+            return
         identifier = "extensions-" + uuid.uuid4().hex
         self._extension_pending = identifier, self._gateway_session_id
         self._extension_auth_owner = ((identifier, self._mcp_context_key(), self._extension_provider_auth_generation)
                                       if action == "auth" else None)
         self._extension_cancel_scope = identifier, self._gateway_session_id
-        self._extension_command_owner = (identifier, command.split("-", 2)[1].lower()) if action == "command" else None
+        self._extension_command_owner = (identifier, source.lower()) if source is not None else None
         self._queue_request({"type": "extension_control", "request_id": identifier, "group_id": self.group_id,
                              "session_id": self._gateway_session_id, "action": action, "name": name, "args": text})
         self._update_hints()
@@ -3367,7 +3341,8 @@ class ChatApp:
                 except ValueError as exc:
                     self._chat_log.add_system(str(exc))
                 return
-            if command == "/extensions" or command.startswith("/ext-"):
+            if (command == "/extensions" or command.startswith("/ext-")
+                    or command.removeprefix('/') in self._extension_snapshot.get('commands', {})):
                 self._extension_command(command[1:], args)
                 return
             if command == '/draft':

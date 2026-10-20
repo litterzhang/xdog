@@ -75,7 +75,9 @@ def registrations(value: Any) -> list[dict[str, str]]:
     return result
 
 
-def snapshot_rows(value: Any, commands: dict[str, str], active: set[str]) -> list[dict[str, str]]:
+def snapshot_rows(value: Any, commands: dict[str, str], active: set[str], *,
+                  owners: dict[str, str] | None = None) -> list[dict[str, str]]:
+    from xdog.agent.extensions.commands import owner_for
     if not isinstance(value, list) or len(value) > 64:
         raise ValueError("Invalid extension shortcut snapshot capacity")
     result = []
@@ -83,12 +85,15 @@ def snapshot_rows(value: Any, commands: dict[str, str], active: set[str]) -> lis
     for row in value:
         if (
             not isinstance(row, dict)
-            or set(row) != {"extension", "command", "key", "description"}
+            or set(row) not in ({"extension", "command", "key", "description"},
+                                {"extension", "command", "key", "description", "action"})
             or not isinstance(row["extension"], str)
             or row["extension"] not in active
             or not isinstance(row["command"], str)
             or row["command"] not in commands
-            or not row["command"].startswith("ext-" + row["extension"].lower() + "-")
+            or (owner_for(row['command'], owners or {}) or '').lower() != row['extension'].lower()
+            or ('action' in row and (not isinstance(row['action'], str)
+                or (owner_for(row['action'], {}) or '').lower() != row['extension'].lower()))
             or row["command"] in seen
             or not isinstance(row["description"], str)
             or len(row["description"].encode()) > 1000

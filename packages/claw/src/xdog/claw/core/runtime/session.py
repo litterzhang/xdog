@@ -402,6 +402,8 @@ class AgentSession:
                 "group_id": self._group_id, "cwd": str(self._runtime.workspace_dir), "model": self._runtime.model,
                 "read_only": self.access.state.read_only, "permission_mode": "configured"}, entries=entries,
             inspection=self._extension_inspection, prepared_root=self._prepared_extension_root)
+        from xdog.claw.core.command_names import SLASH_COMMANDS
+        self.extensions.reserve_commands(frozenset(SLASH_COMMANDS))
         self.extensions.tool_inventory = self._extension_tools
         self.extensions.session_name = self._extension_session_name
         if hasattr(self, "_agent"):
@@ -461,6 +463,10 @@ class AgentSession:
     async def initialize_extensions(self, *, require_model: bool = False) -> None:
         try:
             if self.extensions.enabled:
+                from xdog.claw.core.command_names import SLASH_COMMANDS
+                skill_names = await run_owned(
+                    lambda: {skill.slug for skill in self._runtime.skill_manager.list_skills()})
+                self.extensions.reserve_commands(frozenset({*SLASH_COMMANDS, *skill_names}))
                 await self.extensions.initialize()
             if self._agent.state.model.startswith("ext-"):
                 model = self.extensions.provider_model(self._agent.state.model)

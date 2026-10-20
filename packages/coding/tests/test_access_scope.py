@@ -104,7 +104,11 @@ def test_invalid_saved_scope_cannot_drop_current_read_only_state(tmp_path):
         raw = json.loads(path.read_text())
         raw['access'] = {'read_only': False, 'revision': True}
         path.write_text(json.dumps(raw))
-        assert not session.switch_session(target.session_id)
+        original = session.session_id
+        before = path.read_bytes()
+        with pytest.raises(ValueError, match='invalid|unavailable'):
+            session.switch_session(target.session_id)
+        assert session.session_id == original and path.read_bytes() == before
         assert session.access.state.read_only
     finally:
         session.dispose()

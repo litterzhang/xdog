@@ -52,3 +52,12 @@ def test_extension_overrides_cannot_take_reserved_routes_even_after_user_unbinds
 def test_case_insensitive_command_overrides_cannot_silently_replace_one_another():
     with pytest.raises(ValueError, match='case-insensitive'):
         PromptKeymap.from_overrides({'ext-Keyed-compose': 'alt+x', 'ext-keyed-compose': 'alt+y'})
+
+
+def test_public_command_uses_existing_qualified_keybinding_identity():
+    rows = [{'extension': 'viewer', 'command': 'show-state', 'action': 'ext-viewer-inspect',
+             'key': 'f6', 'description': 'Inspect'}]
+    keys = PromptKeymap.from_overrides({'ext-viewer-inspect': 'alt+x'})
+    shortcuts = ExtensionShortcuts(rows, keys)
+    assert shortcuts.command(KeyEvent('x', alt=True)) == 'show-state'
+    assert '/show-state' in shortcuts.help_text()

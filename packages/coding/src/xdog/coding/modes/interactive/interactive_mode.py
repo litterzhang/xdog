@@ -667,7 +667,7 @@ class InteractiveMode:
         command = self._command
         owner = str(command.id) if command is not None else ""
         allowed = (not item.get("child_id") and command is not None and not command.cancel_requested
-                   and command.name.lower().startswith("ext-" + str(item.get("extension", "")).lower() + "-")
+                   and self._session.extensions.command_owner(command.name) == str(item.get('extension', ''))
                    and not self._worker_active and not self._exit_requested)
         metadata = {"session_id": self._session.session_id, "workspace": str(self._session.working_dir), "group_id": ""}
         if item.get('operation') == 'commands' and 'command_menu' in item:
@@ -814,7 +814,8 @@ class InteractiveMode:
                     if dispose:
                         self._argument_dispose_pending = False
                 if dispose:
-                    self._session.dispose()  # Cancellation settled BEFORE retiring the extension manager.
+                    # Cancellation settles before retiring the extension manager.
+                    self._session_close_receipt = self._session.dispose()
             if not self._exit_requested:
                 self._event_queue.put({'type': 'argument_completion', 'request': request, 'rows': rows,
                     'status': status, 'snapshot': captured.extensions.snapshot(), 'session_token': id(captured)})
@@ -1748,24 +1749,26 @@ class InteractiveMode:
             try:
                 self._request_exit()
             finally:
-                self._session.permissions.set_request_handler(None)
-                self._session.permissions.deny_all()
-                if self._unsubscribe is not None:
-                    self._unsubscribe()
-                    self._unsubscribe = None
-                events = getattr(self, '_session_events', None)
-                if events is not None:
-                    events.close()
-                asyncio.run(self._session.children.supervisor.aclose())
-                with self._argument_jobs_lock:
-                    argument_threads = tuple(self._argument_threads)
-                for argument_thread in argument_threads:
-                    if argument_thread is not threading.current_thread():
-                        # Terminal has restored; owned async cancellation is settling.
-                        argument_thread.join(timeout=5.0)
-                for thread in (self._worker_thread, self._command_thread):
-                    if thread is not None and thread.ident is not None and thread is not threading.current_thread():
-                        thread.join(timeout=2.0)
+                from xdog.coding.core.session_lifecycle import settle_sync
+                def permissions() -> None:
+                    self._session.permissions.set_request_handler(None)
+                    self._session.permissions.deny_all()
+                def unsubscribe() -> None:
+                    if self._unsubscribe is not None:
+                        self._unsubscribe()
+                        self._unsubscribe = None
+                def events() -> None:
+                    owner = getattr(self, '_session_events', None)
+                    if owner is not None:
+                        owner.close()
+                def threads() -> None:
+                    with self._argument_jobs_lock:
+                        arguments = tuple(self._argument_threads)
+                    for thread in (*arguments, self._worker_thread, self._command_thread):
+                        if (thread is not None and thread.ident is not None
+                                and thread is not threading.current_thread()):
+                            thread.join()
+                settle_sync(permissions, unsubscribe, events, threads, message='Coding terminal cleanup failed')
 
     def _replay_history(self, snapshot: SessionHistory | None = None) -> None:
         self._output_epoch += 1
@@ -2368,6 +2371,8 @@ class InteractiveMode:
     def _run_command(self, command: _CommandState, args: str) -> None:
         session_id = self._session.session_id
         captured = self._session
+        extension_command = (command.name == 'extensions' or command.name.startswith('ext-')
+                             or command.name in captured.extensions.commands())
         context = self._mcp_context_key()
         previous_navigation_guard = captured._navigation_alive
         def navigation_guard() -> bool:
@@ -2382,7 +2387,7 @@ class InteractiveMode:
             def alive() -> bool:
                 return (not self._exit_requested and self._session is captured and self._command is not None
                         and self._command.id == command.id and not self._command.cancel_requested
-                        and command.name.lower().startswith("ext-" + extension.lower() + "-")
+                        and captured.extensions.command_owner(command.name) == extension
                         and context == self._mcp_context_key() and not self._worker_active)
             if not alive():
                 return None
@@ -2422,7 +2427,7 @@ class InteractiveMode:
                                          if changed and captured.runtime is not None else None),
                     "rich_output": result.rich_output, "owner_session": session_id,
                     "extension_snapshot": (captured.extensions.snapshot()
-                                           if command.name == "extensions" or command.name.startswith("ext-")
+                                           if extension_command
                                            else None),
                 }
             finally:
@@ -2443,7 +2448,7 @@ class InteractiveMode:
             payload = {"output": f"Cancelled /{command.name}" + notice, "cancelled": True}
         except Exception as exc:
             payload = {"output": f"Error running /{command.name}: {exc}", "failed": True}
-        if (command.name == 'extensions' or command.name.startswith('ext-')) and (
+        if extension_command and (
                 captured is self._session and captured.session_id == session_id and not captured.extensions._closed):
             payload.update(extension_snapshot=captured.extensions.snapshot(), owner_session=session_id)
         if captured._navigation_alive is navigation_guard:
@@ -2627,7 +2632,7 @@ class InteractiveMode:
                 defer = bool(self._argument_jobs)
                 self._argument_dispose_pending = defer
             if not defer:
-                self._session.dispose()
+                self._session_close_receipt = self._session.dispose()
 
     # -- Agent execution --
 

@@ -17,6 +17,24 @@ if TYPE_CHECKING:
     from xdog.coding.core.agent_session import AgentSession
 
 
+MAX_HISTORY_BYTES = 64 * 1024 * 1024
+MAX_ERROR_CHARS = 4096
+MAX_BATCH_BYTES = 256
+
+
+def _diagnostic(value: str) -> str:
+    if len(value) <= MAX_ERROR_CHARS:
+        return value
+    marker = ' [truncated]'
+    return value[:MAX_ERROR_CHARS - len(marker)] + marker
+
+
+def _batch_id(value: str) -> str:
+    if not isinstance(value, str) or '\x00' in value or len(value.encode()) > MAX_BATCH_BYTES:
+        raise ValueError('Invalid input history batch identity')
+    return value
+
+
 class InputStore:
     def __init__(self, session: AgentSession) -> None:
         self.path = session.session_manager.input_history_path(session.session_id)
@@ -32,7 +50,7 @@ class InputStore:
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
                 raise ValueError("Input history must be a private regular file")
-            if info.st_size > 64 * 1024 * 1024:
+            if info.st_size > MAX_HISTORY_BYTES:
                 raise ValueError("Input history exceeds capacity")
             with os.fdopen(fd, "r", closefd=False) as stream:
                 rows = json.load(stream)
@@ -53,8 +71,7 @@ class InputStore:
             ):
                 raise ValueError("Invalid input history state")
             batch_id = row.get('batch_id', '')
-            if not isinstance(batch_id, str) or '\x00' in batch_id or len(batch_id.encode()) > 256:
-                raise ValueError('Invalid input history batch identity')
+            _batch_id(batch_id)
             value = decode_input(row["input"])
             if value.id in identifiers:
                 raise ValueError("Duplicate input history identity")
@@ -67,28 +84,40 @@ class InputStore:
     def records(self) -> tuple[InputRecord, ...]:
         return self._records
 
+    @staticmethod
+    def _encode(records: tuple[InputRecord, ...], *, reserve: bool = False) -> bytes:
+        rows = []
+        for row in records:
+            pending = reserve and row.status not in TERMINAL
+            rows.append({
+                'input': input_data(row.input), 'branch_id': row.branch_id, 'generation': row.generation,
+                'status': 'interrupted' if pending else row.status,
+                # Non-BMP diagnostics require two JSON escapes per character. Reserve all final metadata
+                # for every accepted unfinished input, not just the next batch.
+                'error': '\U00010000' * MAX_ERROR_CHARS if pending else row.error,
+                'batch_id': '\x01' * MAX_BATCH_BYTES if pending else row.batch_id,
+            })
+        return json.dumps(rows, ensure_ascii=True, allow_nan=False).encode('ascii')
+
     def _commit(self, records: tuple[InputRecord, ...]) -> None:
+        payload = self._encode(records)
+        if max(len(payload), len(self._encode(records, reserve=True))) > MAX_HISTORY_BYTES:
+            raise ValueError('Input history capacity exhausted; start an explicit new session')
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if self.path.is_symlink():
-            raise ValueError("Input history must not be a symbolic link")
-        rows = [
-            {
-                "input": input_data(row.input),
-                "branch_id": row.branch_id,
-                "generation": row.generation,
-                "status": row.status,
-                "error": row.error,
-                "batch_id": row.batch_id,
-            }
-            for row in records
-        ]
+            raise ValueError('Input history must not be a symbolic link')
         fd, name = tempfile.mkstemp(prefix=".inputs-", dir=self.path.parent)
         try:
-            with os.fdopen(fd, "w") as stream:
-                json.dump(rows, stream, ensure_ascii=True, allow_nan=False)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(payload)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(name, self.path)
+            directory = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
         finally:
             if os.path.exists(name):
                 os.unlink(name)
@@ -110,7 +139,8 @@ class InputStore:
         async with self._lock:
             if record.status not in STATES or any(row.input.id == record.input.id for row in self._records):
                 raise ValueError("Invalid or duplicate input record")
-            checked = replace(record, input=decode_input(input_data(record.input)))
+            checked = replace(record, input=decode_input(input_data(record.input)),
+                              error=_diagnostic(record.error), batch_id=_batch_id(record.batch_id))
             await self._save((*self._records, checked))
 
     async def edit_pending(self, value: SessionInput) -> bool:
@@ -131,7 +161,8 @@ class InputStore:
             ):
                 raise ValueError("Cannot reactivate a terminal input")
             rows = tuple(
-                replace(row, status=status, error=error) if row.input.id == identifier else row for row in self._records
+                replace(row, status=status, error=_diagnostic(error)) if row.input.id == identifier else row
+                for row in self._records
             )
             await self._save(rows)
 
@@ -146,6 +177,6 @@ class InputStore:
             if any(row.input.id in selected and row.status in TERMINAL and row.status != status
                    for row in self._records):
                 raise ValueError('Cannot reactivate a terminal input')
-            rows = tuple(replace(row, status=status, error=error, batch_id=batch_id)
+            rows = tuple(replace(row, status=status, error=_diagnostic(error), batch_id=_batch_id(batch_id))
                          if row.input.id in selected else row for row in self._records)
             await self._save(rows)

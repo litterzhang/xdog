@@ -89,17 +89,19 @@ class CodingBackend:
         try:
             session = await asyncio.shield(task)
         except asyncio.CancelledError:
-            session = await task
-            session.dispose()
+            from xdog.agent.async_work import wait_owned
+            async def settle_construction() -> None:
+                late_session = await task
+                await late_session.aclose()
+            await wait_owned(asyncio.create_task(settle_construction(), name='coding-acp-canceled-construction'))
             raise
-        runtime = SessionRuntime(session, bound=False, router=self.router)
-        runtime.start()
         try:
+            runtime = SessionRuntime(session, bound=False, router=self.router)
+            runtime.start()
             from xdog.coding.acp.server import serve_local
-
             server = await serve_local(runtime)
         except BaseException:
-            await asyncio.wrap_future(runtime.close())
+            await session.aclose()
             raise
         self._owned[session.session_id] = peer.id, runtime, server
         ref = SessionRef(session.session_id, session.working_dir, runtime.controller.generation)
@@ -300,31 +302,51 @@ class CodingBackend:
                 await asyncio.wrap_future(running.controller.cancel(running.ticket.id, peer_id=peer.id))
 
     async def disconnect(self, peer: Peer) -> None:
-        await self._inbox.disconnect(peer)
+        from functools import partial
+
+        from xdog.agent.async_work import settle_cleanup
         pending = tuple(row for key, row in self._running.items() if key[0] == peer.id)
-        for row in pending:
-            if row.ticket is None and not row.task.cancelling():
-                row.task.cancel()
-        for controller in {row.controller for row in pending}:
-            await asyncio.wrap_future(controller.disconnect(peer.id))
-        tasks = [row.task for row in pending if row.task is not asyncio.current_task()]
-        if tasks:
-            for task in tasks:
-                if not task.done() and not task.cancelling():
-                    task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-        for key, remote in tuple(self._remote.items()):
-            if key[0] == peer.id:
-                await remote.close()
-                del self._remote[key]
-        for identifier, (owner, runtime, server) in tuple(self._owned.items()):
-            if owner == peer.id:
-                await server.close()
-                await asyncio.wrap_future(runtime.close())
-                del self._owned[identifier]
-        for key in tuple(self._refs):
-            if key[0] == peer.id:
-                del self._refs[key]
+        async def ingress() -> None:
+            await self._inbox.disconnect(peer)
+        async def requests() -> None:
+            for row in pending:
+                if row.ticket is None and not row.task.cancelling():
+                    row.task.cancel()
+            async def disconnect(controller: SessionController) -> None:
+                await asyncio.wrap_future(controller.disconnect(peer.id))
+            async def join() -> None:
+                tasks = [row.task for row in pending if row.task is not asyncio.current_task()]
+                for task in tasks:
+                    if not task.done() and not task.cancelling():
+                        task.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+            controllers = {row.controller for row in pending}
+            await settle_cleanup(*(partial(disconnect, controller) for controller in controllers),
+                                 join, message='ACP request retirement failed')
+        async def remote(key: tuple[str, str], attachment: AcpAttachment) -> None:
+            try:
+                await attachment.close()
+            finally:
+                self._remote.pop(key, None)
+        async def owned(identifier: str, runtime: SessionRuntime) -> None:
+            try:
+                # The session owns its CURRENT endpoint too. Closing the saved
+                # old endpoint first would bypass all remaining resource cleanup.
+                await runtime.session.aclose()
+            finally:
+                if runtime.session._lease is None:
+                    self._owned.pop(identifier, None)
+        async def references() -> None:
+            for key in tuple(self._refs):
+                if key[0] == peer.id:
+                    self._refs.pop(key, None)
+        owned_sessions = tuple(self._owned.items())
+        await settle_cleanup(ingress, requests,
+            *(partial(remote, key, attachment) for key, attachment in tuple(self._remote.items()) if key[0] == peer.id),
+            *(partial(owned, identifier, runtime) for identifier, (owner, runtime, _server) in owned_sessions
+              if owner == peer.id), references, message='ACP peer cleanup failed')
+
     async def extension(self, peer: Peer, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method in {'xdog/enqueue', 'xdog/inbox_status'}:
             target = params.get('session_id')

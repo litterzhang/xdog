@@ -176,7 +176,7 @@ Derived workspace files are projections, not execution authority.
 
 For the shared Python display, include `goal_ui` in the existing trusted global
 `extensions` list. It loads directly from the Goal package; no copy or separate
-Goal enable flag. `/ext-goal_ui-goals [GOAL_ID | page OFFSET]` queries the actual
+Goal enable flag. `/goals [GOAL_ID | page OFFSET]` queries the actual
 group-owned read-only view, while `/goal` remains skill loading. The generic
 shared TUI ExtensionView renders its status text; the main TUI knows no Goal
 schema or lifecycle. Context rotation rebinds the fresh parent to the same group

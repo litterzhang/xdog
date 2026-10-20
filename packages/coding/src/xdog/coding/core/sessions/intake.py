@@ -17,5 +17,6 @@ def attach_inbox(controller: SessionController, store: InboxStore | None = None)
     selected = store or InboxStore(session.session_manager._dir, session.session_manager._dir.parent / 'inbox')
     coordinator = InboxCoordinator(controller, selected)
     controller.inbox = coordinator
+    controller._rotating = False  # New store + exact coordinator binding are published together.
     controller._inputs_ready = False
     return coordinator

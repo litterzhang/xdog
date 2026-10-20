@@ -242,6 +242,7 @@ class ChildSupervisor:
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
         self._closed = False
+        self._close_future: concurrent.futures.Future[None] | None = None
         # Process-local main-Agent ownership, never an argument, result or durable record.
         # tools() is refreshed by hosts; the nonce must survive those refreshes.
         self._tool_return_owner = uuid.uuid4().hex
@@ -1198,42 +1199,32 @@ class ChildSupervisor:
                 child.agent.abort()
             if child.task is not None and not child.task.done() and not child.task.cancelling():
                 child.task.cancel()
-        for child in children:
-            if child.task is not None:
-                await self._join(child.task)
-            while child.queue_work:
-                await asyncio.sleep(0.005)  # Already admitted recovery writes settle before owner-loop shutdown.
+        from functools import partial
+
+        from xdog.agent.async_work import settle_cleanup
+        async def settle_child(child: _Child) -> None:
+            async def join() -> None:
+                if child.task is not None:
+                    await self._join(child.task)
+            async def metadata() -> None:
+                while child.queue_work:
+                    await asyncio.sleep(0.005)
+            await settle_cleanup(join, metadata, message='Child cleanup failed')
+        await settle_cleanup(*(partial(settle_child, child) for child in children),
+                             message='Supervisor children cleanup failed')
 
     async def aclose(self) -> None:
-        # Serialize creation/closure. Mark closed BEFORE draining, rejecting new starts.
-        with self._start_lock:
-            loop = self._loop
-            first = not self._closed
-            self._closed = True
-            self._tool_return_owner = uuid.uuid4().hex
-            future = (asyncio.run_coroutine_threadsafe(self._close_children(), loop)
-                      if first and loop is not None else None)
-        canceled = False
-        if future is not None:
-            wrapped = asyncio.wrap_future(future)
-            while not wrapped.done():
-                try:
-                    await asyncio.shield(wrapped)
-                except asyncio.CancelledError:
-                    canceled = True
-            wrapped.result()
-            assert loop is not None
-            loop.call_soon_threadsafe(loop.stop)
-        if self._thread is not None:
-            joining = asyncio.create_task(asyncio.to_thread(self._thread.join))
-            while not joining.done():
-                try:
-                    await asyncio.shield(joining)
-                except asyncio.CancelledError:
-                    canceled = True
-            joining.result()
-        if canceled:
-            raise asyncio.CancelledError
+        from xdog.agent.async_work import wait_owned
+        self.close()
+        thread = self._thread
+        if thread is None:
+            return
+        async def settle() -> None:
+            # Joining is mandatory even when actual child draining failed.
+            await asyncio.to_thread(thread.join)
+            if self._close_future is not None:
+                self._close_future.result()
+        await wait_owned(asyncio.create_task(settle()))
 
     def abort(self) -> None:
         """Cancel current children without closing the session's reusable supervisor."""
@@ -1259,13 +1250,13 @@ class ChildSupervisor:
             loop = self._loop
             if loop is None:
                 return
-            future = asyncio.run_coroutine_threadsafe(self._close_children(), loop)
+            self._close_future = asyncio.run_coroutine_threadsafe(self._close_children(), loop)
         def done(value: concurrent.futures.Future[None]) -> None:
             try:
-                value.result()
+                value.exception()  # aclose reports the same actual failure after joining.
             finally:
                 loop.call_soon_threadsafe(loop.stop)
-        future.add_done_callback(done)
+        self._close_future.add_done_callback(done)
 
     def tools(self) -> tuple[AgentTool, ...]:
         async def spawn(call_id: str, args: dict[str, Any], *extra: Any, **kwargs: Any) -> AgentToolResult:

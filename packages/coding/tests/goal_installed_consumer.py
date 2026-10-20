@@ -157,7 +157,9 @@ async def main():
             assert await asyncio.to_thread(entered.wait, 5)
             from xdog.tui.components.extension_view import ExtensionView
             count = len(calls)
-            display = str(await session.extensions.command("ext-goal_ui-goals", ""))
+            assert session.extensions.command_owner('goals') == 'goal_ui'
+            assert 'goals' in session.extensions.commands() and 'ext-goal_ui-goals' not in session.extensions.commands()
+            display = str(await session.extensions.command("goals", ""))
             assert goal.id in display and "Output" in display and len(calls) == count
             assert any("Goals: 1" in line for line in ExtensionView(lambda: session.extensions.snapshot()).render(80))
             await session.extensions.manage("unload", "goal_ui")
@@ -189,7 +191,9 @@ async def main():
         assert not any(name.startswith(("xdog.claw", "xdog.eyes", "xdog.flow", "xdog.site")) for name in sys.modules)
         async def query_completed():
             await session.extensions.manage("reload", "goal_ui")
-            output = str(await session.extensions.command("ext-goal_ui-goals", ""))
+            assert session.extensions.command_owner('goals') == 'goal_ui'
+            assert 'goals' in session.extensions.commands() and 'ext-goal_ui-goals' not in session.extensions.commands()
+            output = str(await session.extensions.command("goals", ""))
             assert goal.id in output and "completed" in output
         count = len(calls)
         await asyncio.wrap_future(controller.control(query_completed, name="consumer-read-display"))
@@ -201,7 +205,7 @@ async def main():
         controller = session._sdk_controller
         async def query_new():
             assert await session.children.goal_host.service.list() == ()
-            output = str(await session.extensions.command("ext-goal_ui-goals", ""))
+            output = str(await session.extensions.command("goals", ""))
             assert "no goals" in output.lower() and goal.id not in output
         await asyncio.wrap_future(controller.control(query_new, name="consumer-new-view"))
         print(

@@ -346,21 +346,25 @@ class CodingGoalHost:
     async def aclose(self) -> None:
         if self._close_task is None:
             self._closing = True
-            self._unsubscribe()
-            if self._display is not None:
-                self._display.retire()
-
             async def close() -> None:
-                if self._display is not None:
-                    await self._display.aclose()
-                await asyncio.gather(*tuple(self._jobs), return_exceptions=True)
-                await self.service.close()
-                if self.session.children is self.children:
-                    self.children.goal_host = None
-                    if not self.session.agent.state.is_streaming:
-                        self.session.agent.set_tools(
-                            tuple(t for t in self.session.agent.state.tools if t is not self.tool)
-                        )
-
+                from xdog.agent.async_work import settle_cleanup
+                async def retire() -> None:
+                    self._unsubscribe()
+                    if self._display is not None:
+                        self._display.retire()
+                async def display() -> None:
+                    if self._display is not None:
+                        await self._display.aclose()
+                async def jobs() -> None:
+                    await asyncio.gather(*tuple(self._jobs), return_exceptions=True)
+                try:
+                    await settle_cleanup(retire, display, jobs, self.service.close,
+                                         message='Coding Goal binding cleanup failed')
+                finally:
+                    if self.session.children is self.children:
+                        self.children.goal_host = None
+                        if not self.session.agent.state.is_streaming:
+                            self.session.agent.set_tools(
+                                tuple(t for t in self.session.agent.state.tools if t is not self.tool))
             self._close_task = asyncio.create_task(close())
         await wait_owned(self._close_task)

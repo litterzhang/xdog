@@ -48,6 +48,9 @@ def prepare(settings: SettingsManager, directory: Path, session_id: str, model: 
         try:
             if not alive():
                 raise asyncio.CancelledError
+            from xdog.agent.async_work import run_owned
+            from xdog.coding.core.slash_commands import command_reservations
+            staged.reserve_commands(await run_owned(command_reservations))
             await staged.initialize()
             if not alive():
                 raise asyncio.CancelledError

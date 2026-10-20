@@ -93,7 +93,7 @@ async def test_same_packaged_goal_worker_uses_view_port_without_ui_or_a_business
 
         try:
             runtime.views.bind("goal_ui", "goals", read, valid=lambda: True)
-            result = await runtime.command("ext-goal_ui-goals", "")
+            result = await runtime.command("goals", "")
             assert goal.id in str(result) and "Actual goal" in str(result) and "active" in str(result)
             assert runtime.snapshot()["ui"]["goal_ui:goals"]["kind"] == "status"
             assert runtime.dialog_handler is None and not host.started and not host.reviewed
@@ -104,7 +104,7 @@ async def test_same_packaged_goal_worker_uses_view_port_without_ui_or_a_business
         unavailable = ExtensionRuntime(("goal_ui",), tmp_path / "no-copy", tmp_path,
                                        context=lambda: {"session_id": "no-view-grant", "host_views": True})
         try:
-            result = str(await unavailable.command("ext-goal_ui-goals", ""))
+            result = str(await unavailable.command("goals", ""))
             assert "unavailable" in result.lower() and "no goals" not in result.lower()
         finally:
             await unavailable.aclose()
@@ -119,7 +119,7 @@ async def test_packaged_worker_never_turns_a_malformed_snapshot_into_no_goals(tm
 
     try:
         runtime.views.bind("goal_ui", "goals", read, valid=lambda: True)
-        result = str(await runtime.command("ext-goal_ui-goals", ""))
+        result = str(await runtime.command("goals", ""))
         assert "unavailable" in result.lower() and "no goals" not in result.lower()
         assert runtime.snapshot()["ui"]["goal_ui:goals"]["lines"] == ["Goal view unavailable"]
     finally:

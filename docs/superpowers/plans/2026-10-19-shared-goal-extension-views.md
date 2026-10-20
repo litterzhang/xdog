@@ -1,5 +1,8 @@
 # Shared Goal Python extension and owner-bound views implementation plan
 
+> Command naming update: the current display command is `/goals`; the skill is `/goal`.
+> See `docs/extension-public-commands.md`. Qualified names below are historical/internal identities.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:executing-plans inline, with TDD and a per-task ledger. The user authorized continuous implementation without further stage approvals. One fresh-context whole-branch review follows the complete objective, not each task.
 
 **Goal:** Run the same packaged read-only Goal display extension in Coding and Claw through a small generic Agent view capability and the existing shared TUI renderer.

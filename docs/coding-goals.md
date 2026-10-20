@@ -89,7 +89,7 @@ With the Goal package installed, list `goal_ui` in trusted global `extensions`
 ```
 
 The package resource is loaded directly; no copying or registration is needed.
-`/ext-goal_ui-goals [GOAL_ID | page OFFSET]` queries it, while `/goal` remains the
+`/goals [GOAL_ID | page OFFSET]` queries it, while `/goal` remains the
 built-in skill command. The actual session/branch owns its read-only view. Existing
 context navigation clears/replaces the old generic extension runtime rather than
 moving Goal data. The main TUI uses its generic shared ExtensionView and has no

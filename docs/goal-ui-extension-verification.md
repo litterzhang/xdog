@@ -1,5 +1,8 @@
 # Shared packaged Goal display — projection/resource milestone
 
+> Command naming update: the current display command is `/goals`; the skill is `/goal`.
+> See `docs/extension-public-commands.md`. Qualified names below are historical/internal identities.
+
 Date: 2026-10-19. Scope: Task2 of the approved shared Goal extension plan. This is
 **not yet proof of actual Coding/Claw view bindings or final whole-goal acceptance**.
 
@@ -22,7 +25,7 @@ Date: 2026-10-19. Scope: Task2 of the approved shared Goal extension plan. This 
   bounded status text, namespaced query command and session_start/view_changed
   refresh. It imports no TUI, storage or harness and executes no Goal mutation.
   Hint values are not truth. Unavailable/malformed snapshots are not empty Goals.
-- `ext-goal_ui-goals` queries the display; `/goals` remains skill loading. Existing
+- `/goals` queries the display; `/goal` remains skill loading. Existing
   configured ID and manifest identity rules are unchanged; no new renderer or
   plugin framework is introduced. Unload clears UI, not the Goal/service state.
 

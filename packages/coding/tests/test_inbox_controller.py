@@ -62,7 +62,7 @@ async def test_failed_control_still_waits_for_every_registered_cleanup(inbox_own
 async def test_failed_retirement_reports_error_but_releases_the_stopped_owner(coding_session,tmp_path,monkeypatch):
     from xdog.coding.core.sessions.inbox_models import InboxMessage
     from xdog.coding.core.sessions.inbox_store import InboxStore
-    from xdog.coding.core.sessions.ownership import SessionLease, runtime_directory
+    from xdog.coding.core.sessions.ownership import SessionLease, lease_directory
     from xdog.coding.core.sessions.runtime import SessionRuntime
 
     store = InboxStore(coding_session.session_manager._dir,tmp_path/'inbox')
@@ -79,7 +79,7 @@ async def test_failed_retirement_reports_error_but_releases_the_stopped_owner(co
         with pytest.raises(OSError,match='retirement disk failure'):
             await asyncio.wait_for(asyncio.wrap_future(runtime.close()),3)
         assert coding_session._lease is None, 'settled failed shutdown must not strand a writer lease'
-        lease = SessionLease.acquire(runtime_directory(coding_session.session_manager._dir),coding_session.session_id)
+        lease = SessionLease.acquire(lease_directory(coding_session.session_manager._dir),coding_session.session_id)
         lease.close()
     finally:
         runtime.disposing = True

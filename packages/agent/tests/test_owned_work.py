@@ -135,3 +135,39 @@ assert callable(run_owned) and callable(wait_owned)
 '''
     result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+async def test_cleanup_steps_join_all_resources_and_preserve_actual_failures_after_cancel():
+    from xdog.agent import async_work
+
+    entered, release, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    first_error, last_error = OSError('first actual close failed'), ValueError('last actual close failed')
+    order = []
+    async def first():
+        order.append('first')
+        raise first_error
+    async def middle():
+        entered.set()
+        await release.wait()
+        finished.set()
+        order.append('middle')
+    async def last():
+        order.append('last')
+        raise last_error
+    caller = None
+    try:
+        caller = asyncio.create_task(async_work.settle_cleanup(first, middle, last, message='owned cleanup'))
+        await asyncio.wait_for(entered.wait(), 3)
+        for _ in range(3):
+            caller.cancel()
+            await asyncio.sleep(0)
+        assert not caller.done() and not finished.is_set()
+        release.set()
+        with pytest.raises(BaseExceptionGroup) as error:
+            await caller
+        assert error.value.exceptions == (first_error, last_error)
+        assert order == ['first', 'middle', 'last'] and finished.is_set()
+    finally:
+        release.set()
+        if caller is not None:
+            await asyncio.gather(caller, return_exceptions=True)

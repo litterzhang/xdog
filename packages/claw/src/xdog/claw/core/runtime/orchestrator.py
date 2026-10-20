@@ -1052,6 +1052,7 @@ class Orchestrator:
         async with self.group_controller(group_id).acquire(is_user=True):
             session = await runtime.prepare_session(allow_reset=False)
             session._children_idle()
+            await session.initialize_extensions()
             if action == "auth":
                 return await self._manage_provider_auth(session, args, on_dialog, provider_auth_alive)
             notices: list[str] = []
@@ -1068,7 +1069,7 @@ class Orchestrator:
                     notices.append(str(event.get("text", ""))[:4000])
             async def catalog(extension: str, request: dict[str, Any]) -> dict[str, Any] | None:
                 from xdog.agent.extensions.catalog import page
-                if (action != "command" or not name.lower().startswith("ext-" + extension.lower() + "-")
+                if (action != "command" or session.extensions.command_owner(name) != extension
                         or not owner_session or not owned()):
                     return None
                 scope = ("sessions" if request["scope"] == "sessions" else
@@ -1080,7 +1081,7 @@ class Orchestrator:
                 from xdog.agent.extensions.dialogs import validate_sdk_dialog
                 from xdog.agent.supervision import settle_on
                 validate_sdk_dialog(dialog)  # Retired writes cannot borrow this read-only bridge.
-                if not owned() or not name.lower().startswith("ext-" + extension.lower() + "-"):
+                if not owned() or session.extensions.command_owner(name) != extension:
                     return None
                 if dialog.get('kind') == 'session' and dialog.get('operation') == 'active_tools':
                     from xdog.agent.extensions.active_tools import snapshot

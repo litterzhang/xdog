@@ -58,7 +58,7 @@ def test_goal_roles_and_shared_extension_resolve_from_correct_domain_and_hub_roo
     assert (root / 'goal' / 'roles' / 'reviewer.md').is_file()
     assert extension_directory('goal_ui', tmp_path / 'absent') == root / 'extensions' / 'goal_ui'
     assert hashlib.sha256((root / 'extensions' / 'goal_ui' / 'main.py').read_bytes()).hexdigest() == (
-        '03aeadc3169031113ed48a6b90571f2eba41e74f5215e02a3b31a30d74819124'
+        '8eef6b34bd726682d30b3a6c65dd6ca6327cd37d201df248f67199ec015724ce'
     )
 
 

@@ -7,7 +7,7 @@ and shared close-task creation at the call site.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import ParamSpec, TypeVar
 
 P = ParamSpec('P')
@@ -51,3 +51,26 @@ async def run_owned(work: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> 
         except (Exception, asyncio.CancelledError):
             pass  # Settle/retrieve the late result, never publish a canceled delivery.
         raise
+
+
+async def settle_cleanup(*steps: Callable[[], Awaitable[object]], message: str = 'Resource cleanup failed') -> None:
+    """Join every ordered cleanup step; actual errors win over waiter cancellation.
+
+    Callers decide which resources/order they own. This adds no resource/session
+    policy, retry, service loop or domain lifetime to the reusable runtime.
+    """
+    errors: list[BaseException] = []
+    cancelled = False
+    for step in steps:
+        try:
+            await wait_owned(asyncio.ensure_future(step()))
+        except asyncio.CancelledError:
+            cancelled = True
+        except BaseException as exc:
+            errors.append(exc)
+    if len(errors) == 1:
+        raise errors[0]
+    if errors:
+        raise BaseExceptionGroup(message, errors)
+    if cancelled:
+        raise asyncio.CancelledError

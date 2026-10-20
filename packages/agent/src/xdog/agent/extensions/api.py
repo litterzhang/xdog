@@ -43,6 +43,7 @@ class ExtensionAPI:
         self._tool_ids: dict[str, str] = {}
         self.commands: dict[str, tuple[str, Callable[..., Any]]] = {}
         self._command_revision = 0
+        self._command_public_names: dict[str, str] = {}
         self._command_completions: dict[str, tuple[str, Callable[..., Any]]] = {}
         self.shortcuts: list[dict[str, str]] = []
         self.events: dict[str, list[Callable[..., Any]]] = {}
@@ -393,13 +394,20 @@ class ExtensionAPI:
     def command_snapshot(self) -> dict[str, Any]:
         return {"revision": self._command_revision,
                 "commands": [{"name": name, "description": row[0],
+                    **({'public_name': self._command_public_names[name]} if name in self._command_public_names else {}),
                     **({'completion_id': self._command_completions[name][0]}
                        if name in self._command_completions else {})} for name, row in self.commands.items()],
                 "shortcuts": [dict(row) for row in self.shortcuts]}
 
     def command(self, name: str, description: str, callback: Callable[..., Any], *,
-                replace: bool = False, complete: Callable[..., Any] | None = None) -> Callable[[], None]:
+                replace: bool = False, complete: Callable[..., Any] | None = None,
+                public_name: str | None = None) -> Callable[[], None]:
         name = identifier(name)
+        if public_name is not None:
+            from xdog.agent.extensions.commands import public_name as validate_public_name
+            public_name = validate_public_name(public_name)
+            if any(key != name and value == public_name for key, value in self._command_public_names.items()):
+                raise ValueError('Duplicate public extension command name')
         if (not callable(callback) or complete is not None and not callable(complete)
                 or type(replace) is not bool or not isinstance(description, str)
                 or len(description.encode()) > 1000 or name in self.commands and not replace
@@ -409,6 +417,9 @@ class ExtensionAPI:
         entry = (description, callback)
         self._advance_command_revision()
         self.commands[name] = entry
+        self._command_public_names.pop(name, None)
+        if public_name is not None:
+            self._command_public_names[name] = public_name
         self._command_completions.pop(name, None)
         if complete is not None:
             self._command_completions[name] = uuid.uuid4().hex, complete
@@ -416,18 +427,20 @@ class ExtensionAPI:
             if self.commands.get(name) is entry:
                 self._advance_command_revision()
                 self.commands.pop(name)
+                self._command_public_names.pop(name, None)
                 self._command_completions.pop(name, None)
                 self.shortcuts[:] = [row for row in self.shortcuts if row["name"].lower() != name.lower()]
         return dispose
 
-    def shortcut(self, name: str, key: str, description: str, callback: Callable[..., Any]) -> Callable[[], None]:
+    def shortcut(self, name: str, key: str, description: str, callback: Callable[..., Any], *,
+                 public_name: str | None = None) -> Callable[[], None]:
         """Owned command+binding; removal cannot consume typing or mutate host key policy."""
         name, key = identifier(name), shortcut_key(key)
         if len(self.shortcuts) >= 32 or any(row["key"] == key for row in self.shortcuts):
             raise ValueError("Extension shortcut capacity/duplicate key")
         if not isinstance(description, str) or len(description.encode()) > 1000:
             raise ValueError("Invalid extension shortcut description")
-        command_dispose = self.command(name, description, callback)
+        command_dispose = self.command(name, description, callback, public_name=public_name)
         row = {"name": name, "key": key, "description": description}
         self.shortcuts.append(row)
         def dispose() -> None:

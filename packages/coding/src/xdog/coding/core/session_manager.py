@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
+import math
 import os
-import re
+import stat
 import tempfile
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -22,6 +25,36 @@ from xdog.agent.session_name import session_name
 from xdog.coding.config import get_sessions_dir
 from xdog.coding.core.defaults import SESSION_FILE_PREFIX, SESSION_FILE_SUFFIX
 from xdog.coding.core.messages import dicts_to_messages, messages_to_dicts
+from xdog.coding.core.sessions.ownership import identifier
+
+logger = logging.getLogger(__name__)
+
+
+class SessionUnavailable(ValueError):
+    """Existing owner data cannot be treated as missing or an empty session."""
+
+
+def _validate_snapshot(data: Any) -> None:
+    if not isinstance(data, dict):
+        raise ValueError('Invalid session snapshot object')
+    selected = data.get('session_id')
+    if not isinstance(selected, str):
+        raise ValueError('Invalid session identity')
+    identifier(selected)
+    for key in ('created_at', 'updated_at'):
+        value = data.get(key, 0.0)
+        if type(value) not in (int, float) or not math.isfinite(value):
+            raise ValueError('Invalid session timestamp')
+    for key in ('model', 'summary', 'working_dir', 'active_branch'):
+        if not isinstance(data.get(key, ''), str):
+            raise ValueError('Invalid session metadata')
+    if not isinstance(data.get('settings', {}), dict):
+        raise ValueError('Invalid session settings')
+    for key in ('messages', 'branches'):
+        rows = data.get(key, [])
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise ValueError('Invalid session ' + key)
+
 
 
 @dataclass(frozen=True)
@@ -81,6 +114,7 @@ class SessionData:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SessionData:
+        _validate_snapshot(data)
         validate_entries(data.get("extension_entries", {}))
         access = AccessState.saved(data)
         return cls(
@@ -108,13 +142,14 @@ class SessionManager:
 
     def __init__(self, sessions_dir: Path | None = None) -> None:
         self._dir = sessions_dir or get_sessions_dir()
+        self.listing_errors: tuple[str, ...] = ()
+        self._write_lock = threading.RLock()
 
     def _ensure_dir(self) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)
 
     def _session_path(self, session_id: str) -> Path:
-        if not isinstance(session_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", session_id):
-            raise ValueError("Invalid session ID")
+        identifier(session_id)
         path = self._dir / f"{SESSION_FILE_PREFIX}{session_id}{SESSION_FILE_SUFFIX}"
         if path.is_symlink():
             raise ValueError("Session files must not be symbolic links")
@@ -145,23 +180,46 @@ class SessionManager:
 
     def save_session(self, session: SessionData, *, before_replace: Callable[[], None] | None = None) -> None:
         """Write *session* to disk, updating the timestamp."""
-        self._ensure_dir()
-        session.updated_at = time.time()
-        if before_replace is None:
-            self._write(session)
-        else:
-            self._write(session, before_replace=before_replace)
+        with self._write_lock:
+            self._ensure_dir()
+            session.updated_at = time.time()
+            if before_replace is None:
+                self._write(session)
+            else:
+                self._write(session, before_replace=before_replace)
+
+    def _read_snapshot(self, session_id: str) -> dict[str, Any] | None:
+        path = self._session_path(session_id)
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise SessionUnavailable('Session snapshot unavailable: ' + session_id) from exc
+        try:
+            with os.fdopen(descriptor, 'r', encoding='utf-8', closefd=False) as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    raise ValueError('Session snapshot must be a regular file')
+                raw = json.load(stream)
+            _validate_snapshot(raw)
+            if raw['session_id'] != session_id:
+                raise ValueError('Saved session identity does not match its requested filename')
+            result: dict[str, Any] = raw
+            return result
+        except (ValueError, TypeError, KeyError, OSError, OverflowError) as exc:
+            raise SessionUnavailable('Session snapshot invalid/unavailable: ' + session_id) from exc
+        finally:
+            os.close(descriptor)
 
     def load_session(self, session_id: str) -> SessionData | None:
-        """Load a session by id.  Returns ``None`` if not found."""
-        path = self._session_path(session_id)
-        if not path.exists():
+        """Only genuine absence returns None; invalid/unreadable owners fail closed."""
+        raw = self._read_snapshot(session_id)
+        if raw is None:
             return None
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
             return SessionData.from_dict(raw)
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError, OSError):
-            return None
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise SessionUnavailable('Session snapshot invalid/unavailable: ' + session_id) from exc
 
     def delete_session(self, session_id: str) -> bool:
         """Delete a session file.  Returns ``True`` if it existed."""
@@ -178,12 +236,14 @@ class SessionManager:
         """List sessions ordered by most-recently-updated first."""
         self._ensure_dir()
         metas: list[SessionMeta] = []
+        errors: list[str] = []
         for path in self._dir.glob(f"{SESSION_FILE_PREFIX}*{SESSION_FILE_SUFFIX}"):
-            if path.is_symlink():
-                continue
+            selected = path.name.removeprefix(SESSION_FILE_PREFIX).removesuffix(SESSION_FILE_SUFFIX)
             try:
-                raw = json.loads(path.read_text(encoding="utf-8"))
-                directory = raw.get("working_dir", "")
+                raw = self._read_snapshot(selected)
+                if raw is None:
+                    continue
+                directory = raw.get('working_dir', '')
                 if working_dir is not None:
                     if directory:
                         if Path(directory).resolve() != working_dir.resolve():
@@ -191,17 +251,15 @@ class SessionManager:
                     elif not include_unknown:
                         continue
                 metas.append(SessionMeta(
-                    session_id=raw["session_id"],
-                    created_at=raw.get("created_at", 0.0),
-                    updated_at=raw.get("updated_at", 0.0),
-                    summary=raw.get("summary", ""),
-                    name=session_name(raw.get("name", "")),
-                    model=raw.get("model", ""),
-                    message_count=len(raw.get("messages", [])),
-                    working_dir=directory,
-                ))
-            except (json.JSONDecodeError, KeyError, TypeError, ValueError, OSError):
-                continue
+                    session_id=selected, created_at=raw.get('created_at', 0.0),
+                    updated_at=raw.get('updated_at', 0.0), summary=raw.get('summary', ''),
+                    name=session_name(raw.get('name', '')), model=raw.get('model', ''),
+                    message_count=len(raw.get('messages', [])), working_dir=directory))
+            except (ValueError, TypeError, OSError, OverflowError) as exc:
+                diagnostic = f'{selected!r}: {exc}'
+                errors.append(diagnostic)
+                logger.warning('Saved session excluded from listing: %s', diagnostic)
+        self.listing_errors = tuple(errors)
         metas.sort(key=lambda m: m.updated_at, reverse=True)
         return metas[:limit]
 
@@ -225,6 +283,11 @@ class SessionManager:
             if before_replace is not None:
                 before_replace()
             os.replace(name, path)
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
         finally:
             if os.path.exists(name):
                 os.unlink(name)

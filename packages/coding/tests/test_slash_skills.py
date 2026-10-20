@@ -263,7 +263,7 @@ def test_the_system_prompt_gains_and_loses_the_body(
     monkeypatch.setattr(slash_commands, "skill_manager", lambda: manager)
 
     idle = _skills_context(frozenset())
-    assert "write a workflow" in idle, "the one-line description is always advertised"
+    assert idle == '', 'Coding must not render a second Agent-owned skill index'
     assert "STEP ONE" not in idle, "the body must wait to be asked for"
 
     agent = Agent(
@@ -303,7 +303,8 @@ def test_an_unreadable_skills_directory_does_not_break_the_system_prompt(
         raise OSError("permission denied")
 
     monkeypatch.setattr(slash_commands, "skill_manager", _boom)
-    assert _skills_context(frozenset({"flow"})) == ""
+    assert 'cannot deactivate' in _skills_context(frozenset({'flow'}))
+    # Rendering this product note must not consult a filesystem skill manager.
 
 
 # -- Declared lifetime, and who is allowed to end it --

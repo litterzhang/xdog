@@ -11,10 +11,13 @@ async def test_post_model_finalization_error_is_not_success(coding_session, monk
     coding_session.agent.set_stream_fn(lambda *_: EventStream.empty(
         AssistantMessage(content=(TextContent(text='REAL-PARTIAL-ANSWER'),))))
 
-    def fail():
-        raise OSError('post-model finalization failed')
+    save = coding_session.session_manager.save_session
+    def fail(snapshot, **kwargs):
+        if snapshot.messages:
+            raise OSError('post-model finalization failed')
+        return save(snapshot, **kwargs)
 
-    monkeypatch.setattr(coding_session, '_persist', fail)
+    monkeypatch.setattr(coding_session.session_manager, 'save_session', fail)
     if mode == 'sdk':
         with pytest.raises(OSError, match='post-model finalization failed'):
             await coding_session.send_message('one input')

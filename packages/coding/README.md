@@ -2623,3 +2623,68 @@ and widget layouts are removed. Native approval and recovery reviews remain host
 owned; they expose no plugin layout or editor/session-mutation authority. Core TUI
 overlays, transcript fullscreen, Unicode, clipping, cursor and tool-approval behavior
 remain.
+
+## Session ownership and reliable shutdown
+
+Coding's TUI, print, SDK and ACP ingress share one session controller and Agent.
+Persistent writer locks live under `<sessions>/.owners`; they do not depend on
+`TMPDIR`. Short private Linux Unix socket/discovery files are separate, under
+`/tmp/xdog-coding-<uid>/<store-hash>`. Stop older Coding processes before upgrading:
+old binaries do not participate in this store-anchored writer-lock protocol. Do
+not run mixed old/new writers against the same session store.
+
+SDK applications should `await session.aclose()` in `finally`. Closure is
+idempotent, waits for actual child/Goal/extension/MCP cleanup, and reports cleanup
+errors only after attempting the other resources. Cancellation of a waiter does
+not abandon the underlying close. `session.dispose()` requests the same close
+and returns a concurrent Future; synchronous applications can wait on `.result()`.
+Do not block an asynchronous caller loop with `.result()`; await `aclose()` instead.
+Synchronous construction and controls can be called with `asyncio.to_thread` when
+used from an async application. A receiver accepting a queued message does not
+require message approval; existing approval applies to tool execution only.
+
+Automatic project instructions come **only** from the working directory's
+`AGENTS.md`, `.coding/INSTRUCTIONS.md` and `.coding/instructions.md`. There is no
+parent walk. Other harness configuration files are not automatic instruction
+sources; they remain ordinary files that users can explicitly read or attach under
+normal file-access and permission rules. There is no filename denylist.
+Each automatic source must be a regular UTF-8 file of at most 64 KiB; symlinks,
+special files and unreadable/oversized sources cause an explicit preparation error. Missing files are optional. These
+instructions are refreshed in owned off-loop preparation before a turn, reach the
+actual model prompt, and never grant tool permissions. The Agent alone renders
+skill indexes and session/turn-scoped bodies; loading a skill starts no observer,
+model, receiver or daemon.
+
+`CreateSessionOptions.thinking_level` is honored, including explicit `"off"`.
+Initial `allowed_tools` configuration is a **tool selection**, not authorization:
+absent/null falls through to a lower layer, `[]` selects no tools, and a nonempty
+list selects those configured names. Caller options/overrides take precedence
+over saved explicit choices, then project and global configuration. Choices are
+not unioned. Unavailable saved names do not create tools or gain authority later;
+normal permission checks still apply to the selected tools.
+
+The separate input history ledger has a common **64 MiB** read/write bound.
+Admission reserves final-state, batch-ID and bounded diagnostic space for every
+unfinished input; if it cannot fit, it is refused before acknowledgement. Errors
+retain up to 4096 characters with an explicit truncation marker; batch IDs are
+limited to 256 UTF-8 bytes. Accepted execution facts are never silently deleted.
+At capacity, explicitly start another session rather than automatically archiving
+or replaying requests. Recovery marks unfinished execution interrupted and never
+replays potentially executed tool effects automatically.
+
+Ordinary turn history uses one immutable, original-owner disk commit, off the
+model loop, before publishing saved state and completing producer receipts.
+File replacement synchronizes the file and parent directory. A failed or
+uncertain history commit retains the live executed tail and fences further turns;
+close and explicitly reload/inspect the saved state before continuing. Concurrent
+metadata revision conflicts fail closed instead of overwriting newer facts.
+These are local filesystem/process guarantees, not hardware power-loss
+exactly-once execution or an OS security sandbox. No existing user data is migrated
+or discarded automatically.
+
+Enabled extensions may declare a public slash name. The packaged `goal_ui`
+display exposes `/goals [GOAL_ID | page OFFSET]`; `/goal` remains the skill name.
+This is generic extension routing, not a Coding-specific Goal command. Public
+names appear in help/completion and cannot shadow builtin or skill commands;
+model tool names and permissions do not change. See
+`docs/extension-public-commands.md` for the shared Coding/Claw contract.

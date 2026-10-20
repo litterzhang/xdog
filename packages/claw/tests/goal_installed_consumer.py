@@ -158,7 +158,9 @@ async def lifecycle(root):
         assert await asyncio.to_thread(model.worker_entered.wait, 5)
         session = runtime._active_session
         before = len(model.calls)
-        output = str(await session.extensions.command("ext-goal_ui-goals", ""))
+        assert session.extensions.command_owner('goals') == 'goal_ui'
+        assert 'goals' in session.extensions.commands() and 'ext-goal_ui-goals' not in session.extensions.commands()
+        output = str(await session.extensions.command("goals", ""))
         assert goal.id in output and "Output" in output and len(model.calls) == before
         from xdog.tui.components.extension_view import ExtensionView
         assert any("Goals: 1" in line for line in ExtensionView(lambda: session.extensions.snapshot()).render(80))
@@ -177,7 +179,7 @@ async def lifecycle(root):
         assert runtime._active_session is not old_session and runtime.goal_host.owner == owner
         assert (await host.child_status(worker)).state == "succeeded"
         count = len(model.calls)
-        output = str(await runtime._active_session.extensions.command("ext-goal_ui-goals", ""))
+        output = str(await runtime._active_session.extensions.command("goals", ""))
         assert goal.id in output and len(model.calls) == count
         # Goal status is active and task acceptance is still explicitly zero here.
         assert "active" in output and "accepted tasks 0/1" in output
@@ -194,7 +196,7 @@ async def lifecycle(root):
         notices = [row for row in rows if row.envelope.message.source == "goal"]
         assert len(notices) == 3 and all(row.status == "succeeded" for row in notices)
         path = host.service.store.path
-        output = str(await runtime._active_session.extensions.command("ext-goal_ui-goals", ""))
+        output = str(await runtime._active_session.extensions.command("goals", ""))
         assert goal.id in output and "completed" in output
     finally:
         model.worker_gate.set()

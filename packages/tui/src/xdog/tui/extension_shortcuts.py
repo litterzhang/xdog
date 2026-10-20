@@ -17,7 +17,7 @@ class ExtensionShortcuts:
         reserved = {key: action for action, keys in keymap.bindings if not action.startswith("ext-") for key in keys}
         effective: list[dict[str, Any]] = []
         for row in rows:
-            keys = overrides.get(row["command"], (normalize_key(row["key"]),))
+            keys = overrides.get(row.get('action', row['command']), (normalize_key(row['key']),))
             if not keys:
                 self.blocked.append((row["command"], "explicitly unbound by user keybindings"))
             effective.extend({**row, "key": key} for key in keys)
@@ -30,7 +30,7 @@ class ExtensionShortcuts:
                 self.blocked.append((row["command"], f"{format_key(key)} conflicts between extensions; all disabled"))
             else:
                 self.active.append(row)
-        known = {row["command"] for row in rows}
+        known = {row.get('action', row['command']) for row in rows}
         self.blocked.extend(
             (command, "configured binding has no active shortcut registration")
             for command in overrides

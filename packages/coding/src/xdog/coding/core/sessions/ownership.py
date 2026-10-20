@@ -31,10 +31,16 @@ def private_directory(path: Path) -> Path:
 
 
 def runtime_directory(sessions: Path) -> Path:
-    # Short paths avoid Unix sun_path limits even for deeply nested project roots.
-    root = private_directory(Path(tempfile.gettempdir()) / f"xdog-coding-{os.getuid()}")
+    # Linux-only transient discovery namespace: independent of process TMPDIR.
+    # Authoritative writer locks live at lease_directory(), never at this endpoint.
+    root = private_directory(Path('/tmp') / f"xdog-coding-{os.getuid()}")
     key = hashlib.sha256(str(sessions.resolve()).encode()).hexdigest()[:16]
     return private_directory(root / key)
+
+
+def lease_directory(sessions: Path) -> Path:
+    """Stable authority shared by every process targeting this canonical store."""
+    return private_directory(sessions.resolve() / '.owners')
 
 
 def private_open(path: Path, flags: int) -> int:
