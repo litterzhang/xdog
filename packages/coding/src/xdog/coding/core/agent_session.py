@@ -19,6 +19,7 @@ from xdog.agent import (
     AfterToolCallResult,
     AgentEvent,
     AgentMessage,
+    AgentTool,
     BeforeToolCallContext,
     BeforeToolCallResult,
     InputHandledEvent,
@@ -202,6 +203,7 @@ class AgentSession:
     extension_dialogs: DialogBroker = field(init=False)
     provider_auth_handler: Callable[[str], Awaitable[dict[str, Any]]] | None = field(
         default=None, init=False, repr=False)
+    _session_info_tool: AgentTool | None = field(default=None, init=False, repr=False)
     _base_context_transform: TransformContextFn | None = field(default=None, init=False, repr=False)
     handled_feedback: list[str] = field(default_factory=list, init=False)
     _base_input_transform: InputTransformFn | None = field(default=None, init=False, repr=False)
@@ -341,6 +343,21 @@ class AgentSession:
         self.agent.set_stream_fn(ExtensionProviderStream(self.extensions, base))
         self.agent.set_transform_context(self._extension_context)
         self.agent.set_input_transform(self._transform_user_input)
+        self._bind_session_info_tool()
+
+    def session_info(self) -> dict[str, Any]:
+        """Read current public facts on the existing owner; no TUI, files or model call."""
+        from xdog.coding.core.session_info import snapshot
+        return snapshot(self)
+
+    def _bind_session_info_tool(self) -> None:
+        from xdog.coding.core.session_info import TOOL_NAME, create_tool
+        previous = self._session_info_tool
+        if any(tool.name == TOOL_NAME and tool is not previous for tool in self.agent.state.tools):
+            raise ValueError('Session inspection tool name is reserved for its actual host binding')
+        tool = create_tool(self)
+        self._session_info_tool = tool
+        self.agent.set_tools((*[item for item in self.agent.state.tools if item is not previous], tool))
 
     def _extension_session_name(self) -> dict[str, str] | None:
         from xdog.agent.session_name import name_snapshot
@@ -482,6 +499,9 @@ class AgentSession:
             await self._persist_tool_retirement()
 
     async def _sync_extension_tools(self) -> None:
+        from xdog.coding.core.session_info import TOOL_NAME
+        if any(tool.name == TOOL_NAME for tool in self.extensions.tools()):
+            raise ValueError('Extension cannot replace the host session inspection binding')
         self.extensions.sync_tools(self.agent)
         await self._persist_tool_retirement()
 
@@ -594,8 +614,18 @@ class AgentSession:
 
     async def _before_tool_call(self, ctx: BeforeToolCallContext,
                                 cancel: asyncio.Event | None = None) -> BeforeToolCallResult | None:
+        from xdog.coding.core.session_info import TOOL_NAME
+        def session_query() -> bool:
+            selected = self._session_info_tool
+            return (selected is not None and ctx.tool_call.name == TOOL_NAME and type(ctx.args) is dict
+                    and not ctx.args and not self._sdk_disposing
+                    and len([tool for tool in self.agent.active_tools if tool.name == TOOL_NAME]) == 1
+                    and any(tool is selected for tool in self.agent.active_tools)
+                    and ctx.context.tools is not None and any(tool is selected for tool in ctx.context.tools))
         try:
-            if self.access.state.read_only and not read_only_call(ctx.tool_call.name, ctx.args):
+            if ctx.tool_call.name == TOOL_NAME and not session_query():
+                return BeforeToolCallResult(block=True, reason="Session inspection binding is unavailable")
+            if self.access.state.read_only and not (session_query() or read_only_call(ctx.tool_call.name, ctx.args)):
                 return BeforeToolCallResult(block=True, reason="Host access scope is read-only")
             if self.extensions.enabled:
                 await self.extensions.event("tool_start", {"tool_name": ctx.tool_call.name})
@@ -615,6 +645,9 @@ class AgentSession:
                     ctx.args.update(effective)
                 except Exception as exc:
                     return BeforeToolCallResult(block=True, reason=str(exc))
+            if ctx.tool_call.name == TOOL_NAME:
+                return None if session_query() else BeforeToolCallResult(
+                    block=True, reason="Session inspection binding changed during validation")
             if self.access.state.read_only and not read_only_call(ctx.tool_call.name, ctx.args):
                 return BeforeToolCallResult(block=True, reason="Host access scope is read-only")
             result = await self.permissions.before_tool_call(ctx, cancel)

@@ -5,10 +5,10 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+from xdog.tui.components.panel import ThemedPanel
 from xdog.tui.editor_layout import grapheme_clusters, layout_editor
 from xdog.tui.keys import KeyEvent
-from xdog.tui.tui import Component
-from xdog.tui.utils import sanitize_terminal_text, string_width, truncate_to_width
+from xdog.tui.utils import sanitize_terminal_text, string_width
 
 
 def streaming_preview(text: str, *, max_cells: int = 200, max_lines: int = 3) -> str:
@@ -43,7 +43,7 @@ class DetailRecord:
 DetailProvider = Callable[[], Sequence[DetailRecord]]
 
 
-class DetailsPanel(Component):
+class DetailsPanel(ThemedPanel):
     """Render one detail record in a bounded scrolling panel."""
 
     focused = False
@@ -111,7 +111,7 @@ class DetailsPanel(Component):
             return []
         records = tuple(self._provider())
         if not records:
-            return [truncate_to_width("No details available · Esc return to input", max(0, width), "")]
+            return self._styled_rows(["No details available · Esc return to input"], width)
         index = len(records) - 1 if self._entry_index is None else min(self._entry_index, len(records) - 1)
         record = records[index]
         key = (record.kind, record.title)
@@ -135,4 +135,4 @@ class DetailsPanel(Component):
             "• ←/→ entry · PgUp/PgDn · End latest · Esc close"
         )
         rows = (header, *visible) if self._budget > 1 else tuple(visible)
-        return [truncate_to_width(line, max(0, width), "") for line in rows]
+        return self._styled_rows(rows, width, header=self._budget > 1, footer=False, selection=False)

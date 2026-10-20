@@ -115,7 +115,8 @@ class CodingChildren:
                 self.approver(spec.id, value)
         manager.set_request_handler(request)
         tools = tuple(tool for tool in state.tools
-                      if tool.name not in RESERVED_TOOLS | {"goal"} and tool.name not in session.extensions.aliases
+                      if tool is not session._session_info_tool
+                      and tool.name not in RESERVED_TOOLS | {"goal"} and tool.name not in session.extensions.aliases
                       and tool.name not in {tool.name for tool in role_tools})
         tools = (*tools, *role_tools, *extension.tools())
         async def before(ctx: BeforeToolCallContext, cancel: asyncio.Event | None = None

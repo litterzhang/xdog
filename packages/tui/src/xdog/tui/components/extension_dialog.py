@@ -5,16 +5,12 @@ from collections.abc import Callable
 from typing import Any
 
 from xdog.tui.components.input_panel import InputPanel
+from xdog.tui.components.panel import ThemedPanel
 from xdog.tui.keys import KeyEvent, KeyEventType
-from xdog.tui.tui import Component
-from xdog.tui.utils import sanitize_terminal_text, truncate_to_width, wrap_text_with_ansi
+from xdog.tui.utils import sanitize_terminal_text, wrap_text_with_ansi
 
 
-class _Theme:
-    accent = bold = dim = border = staticmethod(lambda text: text)
-
-
-class ExtensionDialog(Component):
+class ExtensionDialog(ThemedPanel):
     requires_visible_confirmation = True
 
     def __init__(self, extension: str, dialog: dict[str, Any], answer: Callable[[Any], None]) -> None:
@@ -30,7 +26,7 @@ class ExtensionDialog(Component):
         self._scroll = 0
         self._visible = False
         self._resolved = False
-        self._input = InputPanel(_Theme(), max_rows=3)
+        self._input = InputPanel(self.panel_theme, max_rows=3)
         self._input.set_text(dialog.get("default", ""))
         self._input.on_submit = self._submit
         self._input.on_escape = lambda: self._finish(None)
@@ -98,10 +94,10 @@ class ExtensionDialog(Component):
         rows = [sanitize_terminal_text(title), *body[self._scroll:self._scroll + budget]]
         if self.dialog["kind"] == "input":
             self._input.set_render_budget(max(1, min(3, self._budget - len(rows) - 1)), show_borders=False)
-            rows.extend(self._input.render(width))
+            rows.extend(self._render_child(self._input, width))
         else:
             choices = ["No", "Yes"] if self.dialog["kind"] == "confirm" else self.dialog["choices"]
             rows.append(f"▶ {self._selected + 1}/{len(choices)} · {sanitize_terminal_text(choices[self._selected])}")
         rows.append("Enter answers this dialog only · Esc cancels · PgUp/PgDn details")
         self._visible = self._budget >= 4 and budget >= 1 and width >= 24 and len(rows) <= self._budget
-        return [truncate_to_width(row, max(0, width), "") for row in rows[:self._budget]]
+        return self._styled_rows(rows[:self._budget], width)

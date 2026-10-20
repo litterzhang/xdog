@@ -103,3 +103,42 @@ def test_synchronous_navigation_reply_is_not_replaced_by_a_false_pending_or_empt
     feed = NavigationFeed(response)
     panel = NavigationPanel(feed, lambda value: None, lambda: None)
     assert not panel._view.busy and panel._view.entries == (entry,)
+
+
+def test_session_rows_are_single_terminal_lines_before_and_after_arrow_navigation():
+    from xdog.tui.main_buffer_renderer import MainBufferRenderer
+
+    from packages.tui.tests.test_main_buffer_renderer import Screen
+
+    feed = NavigationFeed()
+    panel = NavigationPanel(feed, lambda entry: None, lambda: None)
+    panel.set_render_budget(5)
+    feed.publish(feed.snapshot().serial, NavigationSnapshot(total=3, entries=(
+        NavigationEntry('one', 'first\ncontinued', detail='model\tworkspace'),
+        NavigationEntry('two', 'second\r\ncontinued', detail='detail\nnext'),
+        NavigationEntry('three', '\x1b[31mthird\x1b[0m\tname'),
+    )))
+    panel.poll()
+    renderer = MainBufferRenderer(origin_row=2)
+    screen = Screen(height=10, width=80)
+    for key in (None, 'down', 'down', 'up', 'up'):
+        if key is not None:
+            panel.handle_input(KeyEvent(key))
+        rows = panel.render(80)
+        assert all('\n' not in row and '\r' not in row and '\t' not in row for row in rows)
+        screen.feed(renderer.render(rows, 80, 10, transient_start=0))
+        assert screen.rows[2:2 + len(rows)] == rows
+        assert not screen.history
+    screen.feed(renderer.render([], 80, 10, transient_start=0))
+    assert screen.rows == ['shell before 1', 'shell before 2'] + [''] * 8
+
+
+def test_navigation_error_and_search_are_single_terminal_lines():
+    feed = NavigationFeed()
+    panel = NavigationPanel(feed, lambda entry: None, lambda: None)
+    feed.publish(feed.snapshot().serial, NavigationSnapshot(error='read failed\npath\tname'))
+    panel.poll()
+    panel.focused = True
+    panel.handle_input(KeyEvent('/'))
+    panel.handle_paste('query\twith\nwhitespace')
+    assert all('\n' not in row and '\r' not in row and '\t' not in row for row in panel.render(80))

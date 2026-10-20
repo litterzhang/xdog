@@ -35,6 +35,15 @@ capabilities and preserve ownership, cancellation and no-blind-replay fences.
 
 ## Interactive terminal
 
+Auxiliary browsers use the main UI's existing semantic colors: warm accent
+headings and current selection, muted metadata/hints, and green/red status cues.
+This covers session/history, transcript/tool inventory, details, child/draft,
+MCP/OAuth, export review and attachment chrome, including existing nested/fullscreen
+viewers. Coding's pre-start resume picker follows the same theme. Plain mode and
+`NO_COLOR` keep these panels unstyled. Colors do not change row budgets,
+keybindings, visible-confirmation requirements, original source or exported data.
+See [panel theming](../../docs/panel-theming.md).
+
 `uv run xdog-claw tui` connects to the configured gateway using the main terminal
 buffer and native scrollback. It shares Coding's Unicode multiline editor and
 bounded layout. Native todos summarize transient work; optional feature display

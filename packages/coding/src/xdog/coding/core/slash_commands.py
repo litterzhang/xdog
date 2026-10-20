@@ -425,16 +425,15 @@ def _cmd_clear(session: AgentSession) -> CommandResult:
 
 
 def _cmd_session(session: AgentSession) -> CommandResult:
-    model_name = session.model or "unknown"
-    thinking = session.agent.options.thinking or "off"
+    info = session.session_info()
     lines = [
-        f"Session ID: {session.session_id}",
-        f"Name:       {session.session_data.name or '(unnamed)'}",
-        f"Messages:   {len(session.messages)}",
-        f"Model:      {model_name}",
-        f"Thinking:   {thinking}",
-        f"Permissions: {session.permissions.mode}",
-        f"Working dir: {session.working_dir}",
+        f"Session ID: {info['session_id']}",
+        f"Name:       {info['name'] or '(unnamed)'}",
+        f"Messages:   {info['usage']['message_count']}",
+        f"Model:      {info['model']['id'] or 'unknown'}",
+        f"Thinking:   {info['model']['thinking']}",
+        f"Permissions: {info['permission_mode']}",
+        f"Working dir: {info['cwd']}",
     ]
     return CommandResult(output="\n".join(lines))
 

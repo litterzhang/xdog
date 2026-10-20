@@ -6,18 +6,14 @@ from typing import Any
 
 from xdog.tui.components.input_panel import InputPanel
 from xdog.tui.components.oauth_panel import OAuthPanel
+from xdog.tui.components.panel import ThemedPanel
 from xdog.tui.components.transcript_panel import TranscriptPanel
 from xdog.tui.keys import KeyEvent, KeyEventType
 from xdog.tui.transcript_browser import TranscriptRecord
-from xdog.tui.tui import Component
-from xdog.tui.utils import sanitize_terminal_text, truncate_to_width
+from xdog.tui.utils import sanitize_terminal_text
 
 
-class _Theme:
-    accent = bold = dim = border = staticmethod(lambda text: text)
-
-
-class McpPanel(Component):
+class McpPanel(ThemedPanel):
 
     def __init__(self, send: Callable[[str, str, str, dict[str, str]], None], on_close: Callable[[], None],
                  on_insert: Callable[[], None], on_export: Callable[[], None],
@@ -41,7 +37,7 @@ class McpPanel(Component):
         self._filtering = False
         self._preview: TranscriptPanel | None = None
         self._argument_name = ""
-        self._arguments = InputPanel(_Theme(), max_rows=1)
+        self._arguments = InputPanel(self.panel_theme, max_rows=1)
         self._arguments.on_submit = self._submit_arguments
         self._arguments.on_escape = lambda: self._back()
         self.send("list", "", "", {})
@@ -306,17 +302,21 @@ class McpPanel(Component):
             return []
         if self.auth is not None:
             self.auth.set_render_budget(self._budget)
-            return self.auth.render(width)
+            return self._render_child(self.auth, width)
+        def safe(text: str) -> str:
+            return " ".join(sanitize_terminal_text(text).split())
+
         title = f"MCP {self._mode} · {self._server or 'configured servers'} · "
         title += "loading" if self._busy else "explicit external connections/data"
+        title = safe(title)
         if self._mode == "preview" and self._preview is not None:
             self._preview.set_render_budget(max(0, self._budget - 2 - int(bool(self._message))))
-            rows = [title, *([self._message] if self._message else []), *self._preview.render(width),
+            rows = [title, *([safe(self._message)] if self._message else []), *self._render_child(self._preview, width),
                     "Untrusted data · i inserts into editable draft · e raw export · Esc back"]
         elif self._mode in {"arguments", "uri"}:
             self._arguments.set_render_budget(max(1, min(3, self._budget - 3)), show_borders=False)
             hint = "Enter retrieves preview only · Esc back"
-            rows = [title, self._message, *self._arguments.render(width), hint]
+            rows = [title, safe(self._message), *self._render_child(self._arguments, width), hint]
         else:
             visible = self._visible()
             budget = max(1, self._budget - 3)
@@ -325,8 +325,11 @@ class McpPanel(Component):
             for index, row in enumerate(visible[top:top + budget], top):
                 name = str(row.get("server", "") if self._mode == "servers" else row.get("name", ""))
                 detail = str(row.get("state", row.get("title", "")))
-                body.append(f"{'▶' if index == self._selected else ' '} {name} · {detail}")
-            rows = [title, *(body or ["No entries"]), self._message or f"Filter /{self._query}",
+                name = safe(name)
+                detail = safe(detail)
+                state = str(row.get('state', ''))
+                body.append(f"{'▶' if index == self._selected else ' '} {name} · "
+                            + self.panel_theme.status(detail, state))
+            rows = [title, *(body or ["No entries"]), safe(self._message) or f"Filter /{safe(self._query)}",
                     "c/d/r connection/refresh · u/t/p catalogs · Enter preview · Esc"]
-        return [truncate_to_width(sanitize_terminal_text(row) if "\x1b_pi:c" not in row else row,
-                                  max(0, width), "") for row in rows[:self._budget]]
+        return self._styled_rows(rows[:self._budget], width)

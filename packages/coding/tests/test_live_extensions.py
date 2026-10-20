@@ -62,7 +62,11 @@ async def test_project_config_cannot_activate_python_extensions(tmp_path):
     try:
         await session.send_message("normal")
         assert not marker.exists() and not session.extensions.enabled
-        assert not any(tool.name.startswith("ext_") for tool in session.agent.state.tools)
+        # The built-in host query is not Python code activated by project settings.
+        # No project-selected worker tool may appear alongside that exact binding.
+        prefixed = [tool for tool in session.agent.state.tools if tool.name.startswith("ext_")]
+        assert len(prefixed) == 1 and prefixed[0] is session._session_info_tool
+        assert prefixed[0].name == 'ext_coding_session'
     finally:
         await session.extensions.aclose()
         session.dispose()

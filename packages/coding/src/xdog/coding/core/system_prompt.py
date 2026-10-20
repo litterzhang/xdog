@@ -50,14 +50,17 @@ def build_tool_section(tools: list[dict[str, Any]]) -> str:
     return "\n".join(parts)
 
 
-def build_runtime_section(config: RuntimeConfig, *, session_id: str | None = None) -> str:
-    """Describe live host settings without claiming verified provider internals."""
-    return RUNTIME_SECTION.format(
-        model=config.model,
-        thinking_level=config.thinking_level,
-        permission_mode=config.permission_mode,
-        session_line=f"\n- Session ID: {session_id}" if session_id is not None else "",
-    )
+def build_runtime_section(config: RuntimeConfig, *, session_id: str | None = None,
+                          session_tool_available: bool = False) -> str:
+    """Static query instructions; mutable model/session facts are never embedded."""
+    query = ("Call `ext_coding_session` with `{}` when you need the current session, selected provider/model, "
+             "thinking level, permissions, capabilities or measured context usage. Query again after settings "
+             "change; an earlier result is only a snapshot. Use it only when exposed in your own tool definitions; "
+             "never substitute another agent/session's information. This read-only tool does not switch sessions."
+             if session_tool_available else
+             "Session inspection is not available in the selected tools. Do not guess current model/session "
+             "configuration or attempt to bypass the tool selection.")
+    return RUNTIME_SECTION.format(session_query=query)
 
 
 def build_environment_section(config: RuntimeConfig) -> str:
@@ -114,7 +117,7 @@ def build_system_prompt(
     extra_context:
         Optional extra text appended at the end.
     session_id:
-        Optional host session identity; omitted for standalone prompt builders.
+        Retained call metadata; session identity is queried through the session tool, not embedded.
     native_tool_calls:
         True when the model receives tool definitions through the API, in which
         case describing them again in the prompt sends every name, description
@@ -129,7 +132,8 @@ def build_system_prompt(
     sections: list[str] = [
         SYSTEM_PROMPT_HEADER,
         build_environment_section(config),
-        build_runtime_section(config, session_id=session_id),
+        build_runtime_section(config, session_id=session_id, session_tool_available=any(
+            tool.get("name") == "ext_coding_session" for tool in tools)),
     ]
     if not native_tool_calls:
         sections.append(build_tool_section(tools))

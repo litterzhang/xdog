@@ -506,3 +506,43 @@ def test_actual_registered_argument_tab_enter_inserts_only_and_native_parent_res
 ])
 def test_visible_json_generation_assertion_handles_wrapping_without_scalar_coercion(rendered, expected):
     assert _displayed_json_field(rendered, 'terminal_generation', 1) is expected
+
+
+def test_sessions_with_multiline_summaries_clear_after_arrow_navigation(terminal):
+    from xdog.coding.core.session_manager import SessionManager
+
+    directory = terminal.directory / 'coding-data'
+    terminal.child_env['CODING_DIR'] = str(directory)
+    manager = SessionManager(directory / 'sessions')
+    for index in range(3):
+        manager.create_session(model='terminal-fixture', working_dir=terminal.directory,
+                               summary=f'NAV-ROW-{index}\ncontinuation\twith-tab')
+    terminal.start('coding')
+    terminal.text('/sessions')
+    terminal.keys('Enter')
+    terminal.wait('NAV-ROW-0 continuation with-tab')
+    terminal.keys('Down', 'Down', 'Up', 'Up')
+    terminal.keys('Escape')
+    terminal.wait_hidden('Sessions ·')
+    assert 'NAV-ROW-' not in terminal.pane(), 'Transient session rows leaked into the terminal or scrollback'
+    terminal.finish()
+
+
+def test_session_and_transcript_panels_keep_main_ui_colors_in_real_terminal(terminal):
+    # The test runner may itself request plain output; opt this owned shell into colors.
+    terminal.text('unset NO_COLOR')
+    terminal.keys('Enter')
+    terminal.child_env['TERM'] = 'xterm-256color'
+    terminal.child_env['XDOG_TUI_THEME'] = 'dark'
+    terminal.child_env['XDOG_TUI_COLOR'] = 'truecolor'
+    terminal.start('coding')
+    for command, heading in (('/sessions', 'Sessions ·'), ('/transcript', 'Transcript (inline)')):
+        terminal.text(command)
+        terminal.keys('Enter')
+        terminal.wait(heading)
+        colored = terminal.call('capture-pane', '-p', '-e', '-t', 'test')
+        row = next(row for row in colored.splitlines() if heading in row)
+        assert '\x1b[38;2;246;196;83m' in row, row
+        terminal.keys('Escape')
+        terminal.wait_hidden(heading)
+    terminal.finish()

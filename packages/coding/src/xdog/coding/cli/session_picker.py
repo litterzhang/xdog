@@ -8,10 +8,11 @@ from pathlib import Path
 
 import click
 from xdog.coding.core.session_manager import SessionManager, SessionMeta
+from xdog.coding.modes.interactive.theme import create_default_theme
 from xdog.tui.components.select_list import SelectItem, SelectList
 from xdog.tui.keys import KeyEvent
 from xdog.tui.tui import TUI
-from xdog.tui.utils import sanitize_terminal_text, truncate_to_width
+from xdog.tui.utils import sanitize_terminal_text
 
 
 def _format_session(meta: SessionMeta, idx: int) -> str:
@@ -30,8 +31,10 @@ class SessionPicker(SelectList[str]):
     def __init__(self, sessions: list[SessionMeta], directory: Path) -> None:
         # Preserve newest-first ordering within each group, without claiming legacy ownership.
         sessions = sorted(sessions, key=lambda meta: not bool(meta.working_dir))
+        self.theme = create_default_theme()
         super().__init__([SelectItem(label=_format_session(meta, idx), value=meta.session_id)
-                          for idx, meta in enumerate(sessions, 1)])
+                          for idx, meta in enumerate(sessions, 1)],
+                         selected_fn=lambda text: text, description_fn=lambda text: text, scroll_fn=lambda text: text)
         self.directory = directory
         self.height = 24
 
@@ -39,11 +42,12 @@ class SessionPicker(SelectList[str]):
         self.height = max(1, height)
 
     def render(self, width: int) -> list[str]:
-        title = [f"Resume session · {sanitize_terminal_text(str(self.directory))}"] if self.height >= 4 else []
+        title = ["Resume session · " + " ".join(
+            sanitize_terminal_text(str(self.directory)).split())] if self.height >= 4 else []
         hints = ["↑/↓ choose · PgUp/PgDn page · Enter resume · Esc cancel"] if self.height >= 3 else []
         self._max_visible = max(1, self.height - len(title) - len(hints) - 1)
         rows = title + super().render(width)[:self.height - len(title) - len(hints)] + hints
-        return [truncate_to_width(row, max(0, width), "…") for row in rows]
+        return self.theme.panel_theme().rows(rows, width, header=bool(title), footer=bool(hints), ellipsis="…")
 
     def handle_input(self, event: KeyEvent) -> bool:
         if event.key in ("pageup", "pagedown", "home", "end"):

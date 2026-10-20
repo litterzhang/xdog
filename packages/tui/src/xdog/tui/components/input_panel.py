@@ -199,6 +199,11 @@ class InputPanel(Component):
         self._hist_idx = -1
         self._hist_stash = ""
 
+    def set_panel_theme(self, theme: InputPanelTheme) -> None:
+        """Reuse host styles in a nested form without replacing editor state."""
+        self._theme = theme
+        self.border_color = theme.border
+
     def set_render_budget(self, max_rows: int, show_borders: bool = True) -> None:
         """Set the total number of rows available to this editor."""
         self._max_rows = max(1, max_rows)

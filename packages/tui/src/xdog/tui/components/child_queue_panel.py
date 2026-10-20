@@ -6,12 +6,12 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+from xdog.tui.components.panel import ThemedPanel
 from xdog.tui.keys import KeyEvent, KeyEventType
-from xdog.tui.tui import Component
-from xdog.tui.utils import sanitize_terminal_text, truncate_to_width, wrap_text_with_ansi
+from xdog.tui.utils import sanitize_terminal_text, wrap_text_with_ansi
 
 
-class ChildQueuePanel(Component):
+class ChildQueuePanel(ThemedPanel):
     def __init__(self, child: str, refresh: Callable[[], None], back: Callable[[], None]) -> None:
         self.owner_token = uuid.uuid4().hex
         self.child, self._refresh, self.back = child, refresh, back
@@ -144,6 +144,6 @@ class ChildQueuePanel(Component):
                 rows.append('No retained child inputs · no automatic recovery or replay')
             hint = '↑/↓ choose · Enter inspect · r refresh · Esc back · READ ONLY'
         if self._error:
-            rows.append(self._error)
+            rows.append(self.panel_theme.error(self._error))
         rows.append(hint)
-        return [truncate_to_width(row, max(0, width), '') for row in rows[:self._budget]]
+        return self._styled_rows(rows[:self._budget], width)

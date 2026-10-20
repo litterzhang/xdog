@@ -19,18 +19,15 @@ from xdog.tui.components.attachment_panel import AttachmentPanel
 from xdog.tui.components.child_draft_panel import ChildDraftPanel, DraftEntry, draft_entries
 from xdog.tui.components.child_queue_panel import ChildQueuePanel
 from xdog.tui.components.input_panel import InputPanel
+from xdog.tui.components.panel import ThemedPanel
 from xdog.tui.components.transcript_panel import TranscriptPanel
 from xdog.tui.keys import KeyEvent, KeyEventType
 from xdog.tui.transcript_browser import TranscriptRecord
-from xdog.tui.tui import CURSOR_MARKER, Component
+from xdog.tui.tui import CURSOR_MARKER
 from xdog.tui.utils import sanitize_terminal_text, truncate_to_width, wrap_text_with_ansi
 
 
-class _Theme:
-    accent = bold = dim = border = staticmethod(lambda text: text)
-
-
-class ChildPanel(Component):
+class ChildPanel(ThemedPanel):
     requires_visible_confirmation = True
 
     def __init__(self, send: Callable[[str, str, str, str], None], read: Callable[[str], None],
@@ -85,7 +82,7 @@ class ChildPanel(Component):
         self.preview: TranscriptPanel | None = None
         self.queue_enabled = False
         self.queue: ChildQueuePanel | None = None
-        self._input = InputPanel(_Theme(), max_rows=3)
+        self._input = InputPanel(self.panel_theme, max_rows=3)
         self._input.on_submit = self._submit
         self._input.on_escape = self.back
 
@@ -716,33 +713,34 @@ class ChildPanel(Component):
         title = f"Child agents · {len(self._entries)} · {'updating' if self._busy else 'live roster'}"
         if self._mode == 'drafts' and self.draft_panel is not None:
             self.draft_panel.set_render_budget(self._budget)
-            return self.draft_panel.render(width)
+            return self._render_child(self.draft_panel, width)
         if self._mode == 'pending':
-            return ['Child image input settling · draft retained until exact acceptance receipt'][:self._budget]
+            return self._styled_rows(
+                ['Child image input settling · draft retained until exact acceptance receipt'][:self._budget], width)
         if self._mode == 'image-preview' and self._image_preview is not None:
             self._image_preview.set_render_budget(self._budget)
-            return self._image_preview.render(width)
+            return self._render_child(self._image_preview, width)
         if self._mode == 'images' and self.composer is not None:
             images = tuple(self.composer.items.values())
             rows = ['Child draft images · NOT sent',
                     *(f'{"▶" if index == self._image_selected else " "} {item.summary}'
                       for index, item in enumerate(images)),
                     '↑/↓ choose · Enter preview · x remove · c clear · Esc task']
-            return [truncate_to_width(row, max(0, width), '') for row in rows[:self._budget]]
+            return self._styled_rows(rows[:self._budget], width)
         if self._mode == 'attach':
             self._input.set_render_budget(max(1, min(3, self._budget - 3)), show_borders=False)
-            rows = ['Attach image to CHILD draft · enter a literal path', *self._input.render(width),
+            rows = ['Attach image to CHILD draft · enter a literal path', *self._render_child(self._input, width),
                     'Enter reads asynchronously · Esc preserves task']
             self._visible = self._budget >= 4 and width >= 24
-            return [truncate_to_width(row, max(0, width), '') for row in rows[:self._budget]]
+            return self._styled_rows(rows[:self._budget], width)
         if self._mode == 'queue' and self.queue is not None:
             self.queue.enabled = self.queue_enabled
             self.queue.set_render_budget(self._budget)
-            return self.queue.render(width)
+            return self._render_child(self.queue, width)
         if self._mode == "preview" and self.preview is not None:
             self.preview.set_render_budget(max(0, self._budget - 1))
             rows = [f"Child {self.child_id} · {'LIVE' if self._live else 'snapshot'} · Ctrl+S steer · Ctrl+T follow-up",
-                    *self.preview.render(width)]
+                    *self._render_child(self.preview, width)]
         elif self._mode == "presets":
             rows = ["Child specialist presets · Enter applies draft only"]
             count = max(0, self._budget - 2)
@@ -757,23 +755,23 @@ class ChildPanel(Component):
             self._visible = bool(self._presets) and self._budget >= 3 and width >= 24
         elif self._mode == "config":
             self._input.set_render_budget(max(1, min(4, self._budget - 3)), show_borders=False)
-            rows = ["Child settings JSON · no work starts", *self._input.render(width)]
+            rows = ["Child settings JSON · no work starts", *self._render_child(self._input, width)]
             if self._error:
-                rows.append(sanitize_terminal_text(self._error))
+                rows.append(self.panel_theme.error(sanitize_terminal_text(self._error)))
             rows.append("label/tools/context/budgets/model/thinking · Enter applies draft · Esc back")
             self._visible = self._budget >= 4 and width >= 24
         elif self._mode == "form":
             title = f"Child {self._form_action} {self._form_child} · {self._access}"
             self._input.set_render_budget(max(1, min(3, self._budget - 3)), show_borders=False)
             rows = [f"Child {self._form_action} {self._form_child}", f"Access: {self._access}",
-                    *self._input.render(width),
+                    *self._render_child(self._input, width),
                     ("Enter reviews · Tab access · Ctrl+G settings · Ctrl+P presets"
                      if self.composer is not None else
                      "Enter reviews · Tab access · Ctrl+G settings · Ctrl+P presets · Esc back")]
             if self.composer is not None:
                 rows.append('Ctrl+O attach · Ctrl+V clipboard · Ctrl+B images · Esc back')
             if self._error:
-                rows.insert(-1, sanitize_terminal_text(self._error))
+                rows.insert(-1, self.panel_theme.error(sanitize_terminal_text(self._error)))
             self._visible = self._budget >= 4 and width >= 24
         elif self._mode == "confirm" and self._confirm is not None:
             action, child, text, access = self._confirm
@@ -817,14 +815,15 @@ class ChildPanel(Component):
             count = max(0, self._budget - len(rows) - 1 - bool(self._error))
             start = max(0, min(selected - count // 2, len(entries) - count))
             for entry in entries[start:start + count]:
-                rows.append(f"{'▶' if entry.id == self._selected_id else ' '} {entry.id} [{entry.status}] "
+                rows.append(f"{'▶' if entry.id == self._selected_id else ' '} {entry.id} "
+                            + self.panel_theme.status(f"[{entry.status}]", entry.status) + " "
                             f"{entry.access} · {entry.calls} calls · {entry.tokens} tokens · "
                             f"{entry.label + ' · ' if entry.label else ''}{entry.task}")
             if not entries and count:
                 rows.append("No matching children · n starts read-only work")
             if self._error:
-                rows.append("Child error: " + self._error)
+                rows.append(self.panel_theme.error("Child error: " + sanitize_terminal_text(self._error)))
             rows.append("Enter inspect · / filter · n new · s steer · t follow-up · q inspect inputs · "
                         "d recover unsent · c cancel · x close · Esc back")
             self._visible = self._budget >= 3 and width >= 24 and bool(entries)
-        return [truncate_to_width(row, max(0, width), "") for row in rows[:self._budget]]
+        return self._styled_rows(rows[:self._budget], width)
