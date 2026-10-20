@@ -225,6 +225,7 @@ class GatewayServer:
                     channel = await self._start_weixin_channel()
                     if channel is not None:
                         await channel.connect()
+                        self._orchestrator.channels_ready()
                 except Exception:
                     if channel is not None:
                         await channel.disconnect()

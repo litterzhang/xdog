@@ -93,6 +93,7 @@ class Orchestrator:
         self._channel_replies = ChannelReplies()
         self._outputs: OutputDelivery | None = None
         self._output_resume: asyncio.Task[None] | None = None
+        self._output_recovery_requested = False
         self._runtimes: dict[str, GroupRuntime] = {}
         self._group_start_lock = asyncio.Lock()
         self._group_initializers: set[asyncio.Task[None]] = set()
@@ -241,8 +242,7 @@ class Orchestrator:
             self._outputs = outputs
             self._inputs = service
             # Transport recovery is owned and independent of input acceptance.
-            self._output_resume = asyncio.create_task(outputs.resume(), name='claw-output-resume')
-            self._output_resume.add_done_callback(self._output_recovered)
+            self.channels_ready()
             for scope in scopes:
                 service.wake(scope)
             return service
@@ -266,6 +266,28 @@ class Orchestrator:
             self._input_calls.pop(key, None)
         if not call.result.done():
             call.result.set_result(TurnResult(error='aborted', session_id=record.session_id, canceled=True))
+
+    def channels_ready(self) -> None:
+        """Advisory transport readiness; coalesced and owned, never awaits a sender.
+
+        Channels registered after application startup must announce their actual
+        successful connection. Original output routes and send receipts remain
+        authoritative; missing peers and outcome-unknown are never retargeted.
+        """
+        if self._inputs_stopping or self._outputs is None:
+            return
+        self._output_recovery_requested = True
+        if self._output_resume is not None and not self._output_resume.done():
+            return
+        outputs = self._outputs
+
+        async def recover() -> None:
+            while self._output_recovery_requested and not self._inputs_stopping:
+                self._output_recovery_requested = False
+                await outputs.resume()
+
+        self._output_resume = asyncio.create_task(recover(), name='claw-output-resume')
+        self._output_resume.add_done_callback(self._output_recovered)
 
     @staticmethod
     def _output_recovered(task: asyncio.Task[None]) -> None:
@@ -1404,6 +1426,7 @@ class Orchestrator:
             if self._inputs_stopping:
                 return
             await channel.connect()
+            self.channels_ready()
 
     async def stop(self) -> None:
         """One cleanup result; repeated cancellation cannot skip later resources."""

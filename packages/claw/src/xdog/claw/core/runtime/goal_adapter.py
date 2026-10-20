@@ -20,6 +20,7 @@ from xdog.agent.session_input import SessionInput
 from xdog.agent.supervision import ChildSpec, settle_on
 from xdog.agent.supervision_store import ChildStore
 from xdog.claw.core.inputs.models import InputEnvelope, InputScope
+from xdog.claw.core.inputs.store import InputRecord
 from xdog.claw.core.runtime.input_adapter import freeze_input
 from xdog.claw.core.types import ExternalInput
 from xdog.goal.host import ChildStatus, EnqueueReceipt, OperationContext, ReviewerSpec, WorkerSpec
@@ -69,6 +70,9 @@ class ClawGoalHost:
         self._display: GoalDisplay | None = None
         self._retired_displays: set[GoalDisplay] = set()
         self._jobs: set[asyncio.Task[None]] = set()
+        self._drain_queued = False
+        self._drain_requested = False
+        self._input_unsubscribe: Callable[[], None] | None = None
         self._closing = False
         self._close_task: asyncio.Task[None] | None = None
 
@@ -118,6 +122,7 @@ class ClawGoalHost:
         except BaseException:
             await store.close()
             raise
+        host._input_unsubscribe = inputs.subscribe_completed(host._input_completed)
         return host
 
     @property
@@ -404,8 +409,38 @@ class ClawGoalHost:
 
         self.loop.call_soon_threadsafe(admit)
 
+    def _input_completed(self, record: InputRecord) -> None:
+        if record.envelope.scope == self.scope and self.inputs.accepting:
+            self._request_drain()
+
+    def _request_drain(self) -> None:
+        if self._closing or self.loop.is_closed():
+            return
+
+        def admit() -> None:
+            if self._closing or not self.inputs.accepting:
+                return
+            self._drain_requested = True
+            if self._drain_queued:
+                return
+            self._drain_queued = True
+
+            async def drain() -> None:
+                try:
+                    while self._drain_requested and not self._closing and self.inputs.accepting:
+                        self._drain_requested = False
+                        # Existing Goal outbox checks original receipts before
+                        # same-ID idempotent handoff. No model or capacity polling.
+                        await self.service.drain_notifications()
+                finally:
+                    self._drain_queued = False
+
+            self._schedule(drain)
+
+        self.loop.call_soon_threadsafe(admit)
+
     def _changed(self) -> None:
-        self._schedule(self.service.drain_notifications)
+        self._request_drain()
         if self._display is not None:
             self._display.changed()
 
@@ -432,6 +467,9 @@ class ClawGoalHost:
     async def aclose(self) -> None:
         if self._close_task is None:
             self._closing = True
+            if self._input_unsubscribe is not None:
+                self._input_unsubscribe()
+                self._input_unsubscribe = None
             for remove in self._subscriptions.values():
                 remove()
             self._subscriptions.clear()

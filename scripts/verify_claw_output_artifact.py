@@ -9,18 +9,17 @@ import json
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from xdog.ai.types import AssistantMessage, DoneEvent, StartEvent, TextContent
 from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.channels.weixin.api import WeixinApiClient
-from xdog.claw.channels.weixin.channel import WeixinChannel
 from xdog.claw.channels.weixin.types import MessageItem, MessageItemType, MessageType, TextItem, WeixinMessage
-from xdog.claw.config import ClawConfig
+from xdog.claw.config import ClawConfig, GroupDef
 from xdog.claw.core.inputs.models import InputScope
 from xdog.claw.core.outputs import delivery as installed
 from xdog.claw.core.outputs.delivery import DeliveryNotSent
-from xdog.claw.core.runtime.orchestrator import Orchestrator
-from xdog.claw.core.types import Group
+from xdog.claw.core.runtime.gateway import GatewayServer
 
 assert Path(installed.__file__).is_relative_to(Path(sys.prefix))
 
@@ -35,6 +34,9 @@ class API(WeixinApiClient):
         if self.reject:
             raise DeliveryNotSent("explicit network-boundary rejection")
         self.accepted.append(request.msg)
+
+    async def get_updates(self, *args, **kwargs):
+        await asyncio.Event().wait()  # No real network polling, including startup.
 
     async def get_config(self, *args, **kwargs):
         return {}
@@ -64,19 +66,22 @@ def no_model(*args, **kwargs):
 
 
 async def app(root, stream, reject):
-    runtime = Orchestrator(ClawConfig(data_dir=str(root / "data")), model="test/dummy", stream_fn=stream)
-    runtime.register_group(Group(id="main", workspace=str(root), enabled_tools=()))
-    channel = WeixinChannel(root / "channel", "account", "https://example.invalid", "")
-    await channel._api_client.close()
-    api = API(reject)
-    channel._api_client = api
-    runtime.add_channel(channel)
-    return runtime, channel, api
+    config = ClawConfig(
+        data_dir=str(root / "data"), socket_path=str(root / "gateway.sock"), pid_file=str(root / "gateway.pid"),
+        weixin_enabled=True, weixin_account_id="account", weixin_token="fixture-only",
+        weixin_base_url="https://example.invalid", eyes_enabled=False,
+        groups=(GroupDef(id="main", workspace=str(root), is_main=True),),
+    )
+    server, api = GatewayServer(config), API(reject)
+    with patch("xdog.claw.core.runtime.gateway._build_model_and_options", return_value=("test/dummy", stream)), \
+         patch("xdog.claw.channels.weixin.channel.WeixinApiClient", return_value=api):
+        await server.start()
+    return server, server._orchestrator, server._orchestrator._channels[0], api
 
 
 async def main():
     root = Path(tempfile.mkdtemp(prefix="installed-channel-output-"))
-    runtime, channel, api = await app(root, model, True)
+    server, runtime, channel, api = await app(root, model, True)
     try:
         inbound = WeixinMessage(
             message_id=1,
@@ -95,12 +100,14 @@ async def main():
         assert output.status == "pending"
         identifier = output.id
     finally:
-        await runtime.stop()
-    runtime, channel, api = await app(root, no_model, False)
+        await server.stop()
+    server, runtime, channel, api = await app(root, no_model, False)
     channel._user_id_map["main"] = "different-person"
     try:
         outputs = await runtime.output_service()
-        await outputs.resume()
+        async with asyncio.timeout(5):
+            while not api.accepted or (await outputs.store.records(scope))[0].status != "delivered":
+                await asyncio.sleep(0.005)
         (message,) = api.accepted
         assert (message.to_user_id, message.context_token, message.client_id) == (
             "original",
@@ -108,19 +115,24 @@ async def main():
             identifier,
         )
         assert (await outputs.store.records(scope))[0].status == "delivered"
-        await outputs.resume()
+        runtime.channels_ready()
+        runtime.channels_ready()
+        await asyncio.sleep(0.03)
         assert len(api.accepted) == 1 and len(calls) == 1
         print(
             json.dumps(
                 {
-                    "installed_output": "same output ID, original peer/context, pending recovery, no model replay",
+                    "installed_output": (
+                        "real Gateway startup, Eyes disabled, same output ID, original peer/context, "
+                        "no manual resume/model replay"
+                    ),
                     "model_calls": len(calls),
                     "root": str(root),
                 }
             )
         )
     finally:
-        await runtime.stop()
+        await server.stop()
 
 
 if __name__ == "__main__":

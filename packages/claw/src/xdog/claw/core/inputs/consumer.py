@@ -54,6 +54,11 @@ class InputService:
         self._closing = False
         self._close_task: asyncio.Task[None] | None = None
 
+    @property
+    def accepting(self) -> bool:
+        """Whether this owner still accepts input; terminal hints may outlive intake."""
+        return not self._closing
+
     def subscribe_completed(self, callback: Callable[[InputRecord], None]) -> Callable[[], None]:
         self._completed.add(callback)
         return lambda: self._completed.discard(callback)
