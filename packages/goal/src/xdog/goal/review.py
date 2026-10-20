@@ -182,7 +182,7 @@ class ReviewLifecycle:
                     current,
                     review=replace(review, state="invalid"),
                     status="waiting" if current.status == "reviewing" else current.status,
-                    wait_reason=str(exc),
+                    wait_reason=(current.wait_reason if current.status in {"completed", "abandoned"} else str(exc)),
                     artifacts=(
                         (
                             f"review-result:{review.id}",
@@ -205,12 +205,14 @@ class ReviewLifecycle:
             verdict=verdict,
             summary=summary,
         )
-        status = "completed" if verdict == "passed" else "blocked" if verdict == "blocked" else "waiting"
+        status = (goal.status if goal.status in {"completed", "abandoned"} else
+                  "completed" if verdict == "passed" else "blocked" if verdict == "blocked" else "waiting")
         async with s._lock(identifier):
             current = await s._get(identifier)
+            target_status = current.status if current.status in {"completed", "abandoned"} else status
             if current.version != goal.version or current.review != review:
                 if (current.version == goal.version + 1 and current.review == result
-                        and current.status == status and current.criteria_revision == goal.criteria_revision):
+                        and current.status == target_status and current.criteria_revision == goal.criteria_revision):
                     return current  # The exact same execution/evidence was already committed once.
                 raise ValueError("Goal changed before applying independent review")
             if current.status == "paused":
@@ -219,9 +221,10 @@ class ReviewLifecycle:
             return await s._save(
                 current,
                 review=result,
-                status=status,
-                summary=summary,
-                wait_reason="" if verdict == "passed" else summary,
+                status=target_status,
+                summary=current.summary if current.status in {"completed", "abandoned"} else summary,
+                wait_reason=(current.wait_reason if current.status in {"completed", "abandoned"} else
+                             "" if verdict == "passed" else summary),
                 artifacts=((f"review-result:{review.id}", {"worker": asdict(child.worker), "result": raw}),),
                 notices=s._notice(current, "review:" + review.id, f"Independent review verdict: {verdict}. {summary}"),
             )
