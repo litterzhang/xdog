@@ -1,7 +1,8 @@
 # Common Skills Hub Implementation Plan
 
 > Execute inline with superpowers:executing-plans and TDD. User's prior autonomous
-> instruction applies; current checkout only, no new worktree/delegated agents.
+> instruction applies; current checkout only, no new worktree or implementation
+> delegation. One bounded final read-only reviewer follows requesting-code-review.
 
 **Goal:** Safely exclude .claude, verify Eyes built-in parity, and replace
 xdog-goal with a reusable xdog-skills distribution without business changes.
@@ -22,23 +23,30 @@ inert; roles/UI resources must ship at expected paths; business format identifie
 must not be renamed; real archives must exclude local nested .claude state.
 
 ### Task 1: Exclude local state and verify Eyes discovery
-- [ ] Add real root sdist assertion excluding .claude paths and compare current
+- [x] Add real root sdist assertion excluding .claude paths and compare current
   default-manager Eyes/Flow listing/loading without filesystem writes or runtime.
-- [ ] Run behavioral RED for archive exclusion; explicit Hatch exclude, retain
+- [x] Run behavioral RED for archive exclusion; explicit Hatch exclude, retain
   existing Git ignore and directory; run focused GREEN and build archive proof.
 
 ### Task 2: Move Goal into common Skills package
-- [ ] Add inert hub/resource/layout/optional-package tests, observe old package RED.
-- [ ] Move package/domain/tests and root resources; update imports selectively,
+- [x] Add inert hub/resource/layout/optional-package tests, observe old package RED.
+- [x] Move package/domain/tests and root resources; update imports selectively,
   preserve xdog.goal.* wire/data constants. Rename skill slugs to goal and eyes
   per user clarification, with Eyes resources remaining in xdog-eyes. Rename dependency/workspace/extras/CI
   and verifiers, update active README/AGENTS/docs, regenerate lock via uv sync.
-- [ ] Run new tests, all actual Goal/Claw/Coding regressions; inspect stale runtime
+- [x] Run new tests, all actual Goal/Claw/Coding regressions; inspect stale runtime
   imports/metadata/resource selectors. Commit independently verified changes.
 
 ### Task 3: Whole workspace and installed evidence
-- [ ] Full unfiltered9 with independent SDK fixtures, strict9/Ruff/Flow17/lock/diff.
-- [ ] Fresh build all distributions, Twine/source/resource parity and root exclusion.
+- [x] Full unfiltered9 with independent SDK fixtures, strict9/Ruff/Flow17/lock/diff.
+- [x] Fresh build all distributions, Twine/source/resource parity and root exclusion.
   Actual cold Skills-only/Coding/Claw/ACP consumers prove resources/no old package.
-- [ ] Inline scope audit (no delegated reviewer): preserve owner/permissions/data
+- [x] Inline scope audit plus one bounded final read-only review: preserve owner/permissions/data
   identities, identify limitations, record evidence and keep branch local.
+
+## Subsequent integration authorization
+
+After final verification the user explicitly requests commit and push to main,
+then Skills trusted-publisher workflow/setup instructions. This overrides the
+original local-only constraint for ordinary non-force main integration, NOT
+PyPI upload/tag creation or credential handling.

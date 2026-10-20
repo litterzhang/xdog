@@ -1,0 +1,174 @@
+{
+  "dist": "/data/skills-hub-final-dist.SD6XJI",
+  "packages": {
+    "ai": {
+      "source_members": 53,
+      "force_included_members": 0,
+      "wheel": "xdog_ai-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_ai-2.4.2.tar.gz"
+    },
+    "agent": {
+      "source_members": 124,
+      "force_included_members": 0,
+      "wheel": "xdog_agent-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_agent-2.4.2.tar.gz"
+    },
+    "tui": {
+      "source_members": 89,
+      "force_included_members": 0,
+      "wheel": "xdog_tui-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_tui-2.4.2.tar.gz"
+    },
+    "flow": {
+      "source_members": 57,
+      "force_included_members": 29,
+      "wheel": "xdog_flow-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_flow-2.4.2.tar.gz"
+    },
+    "coding": {
+      "source_members": 98,
+      "force_included_members": 0,
+      "wheel": "xdog_coding-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_coding-2.4.2.tar.gz"
+    },
+    "claw": {
+      "source_members": 100,
+      "force_included_members": 0,
+      "wheel": "xdog_claw-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_claw-2.4.2.tar.gz"
+    },
+    "eyes": {
+      "source_members": 37,
+      "force_included_members": 0,
+      "wheel": "xdog_eyes-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_eyes-2.4.2.tar.gz"
+    },
+    "site": {
+      "source_members": 63,
+      "force_included_members": 0,
+      "wheel": "xdog_site-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_site-2.4.2.tar.gz"
+    },
+    "skills": {
+      "source_members": 24,
+      "force_included_members": 0,
+      "wheel": "xdog_skills-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_skills-2.4.2.tar.gz"
+    }
+  },
+  "artifacts": {
+    "xdog-2.4.2-py3-none-any.whl": "282a8f6a4b72e3f041f79e2ae73d210e7d77900e9301be96ee3ed007b345aec2",
+    "xdog-2.4.2.tar.gz": "94e00d820c8cd0a1679a9f6bb8ebbe8c24353ce2f398daf8de6b805e3d3a7231",
+    "xdog_agent-2.4.2-py3-none-any.whl": "3f27570f6afc77ddbc210b08f3ec9ab4e421c52217bf7de07769ccd44030f02f",
+    "xdog_agent-2.4.2.tar.gz": "1f5fb427fbb05a699a7c79851d7cd88a97cf5e12cc0fed1e18cf2bf25be9490e",
+    "xdog_ai-2.4.2-py3-none-any.whl": "8f423ef40763def8800b82ce1232264c89564b7571ce57a530103b49bc6dd061",
+    "xdog_ai-2.4.2.tar.gz": "84b4043a1e19ed51dfd7a0657ae86d2931b17fcdf435f35f7624b7a72d6c9c85",
+    "xdog_claw-2.4.2-py3-none-any.whl": "f0d19cba03b310e56b251746fd319378c79067de77e7f863b0ec187c09f321a0",
+    "xdog_claw-2.4.2.tar.gz": "3b554d9e337d254099029c30bd2d8e136c1c33105578b2e05e547bcb1de0860c",
+    "xdog_coding-2.4.2-py3-none-any.whl": "ec246bd130f66741cfad0305451eb9dfb798ec1acb8d05b3ca56ac450b8610a3",
+    "xdog_coding-2.4.2.tar.gz": "a6c06e452d6705f3846f6c967eb5050d6993833a501a99bcb1efcd0e0df93192",
+    "xdog_eyes-2.4.2-py3-none-any.whl": "0449d49f35d2ea4644740d5aa1acf5d6b61de596b0c0d50e0e9a9a022cf06211",
+    "xdog_eyes-2.4.2.tar.gz": "f85d741f00dfd3254034b04685f0a529d8b861c420b6439fa33b88e6c3e9d090",
+    "xdog_flow-2.4.2-py3-none-any.whl": "285b4a498d96cea5501dfba438c1fb5af7bc047fcbf57d1accb39bf9d6d922da",
+    "xdog_flow-2.4.2.tar.gz": "c0cc54cee5c2c56a473ad23aeb80b3666bced71536a4eb09c3c187a0a1d0288a",
+    "xdog_site-2.4.2-py3-none-any.whl": "2b59b7b9ea57f119c8a4dfa164d938dd7cc575b5f88a02a01a66fdb37d1607a0",
+    "xdog_site-2.4.2.tar.gz": "87a5570355a256190da54742d3419ec32400de554b691dcddb42ac61674c2907",
+    "xdog_skills-2.4.2-py3-none-any.whl": "7a1cb9ee42420c3c01c11cdd9c45c5289033cd8341f2de7e4fa88fb34a69c5d3",
+    "xdog_skills-2.4.2.tar.gz": "5539ad7f2989bfc38d4794624e7ec6397ab1ba40627f0d2b0e3732e1d883d2c2",
+    "xdog_tui-2.4.2-py3-none-any.whl": "e4df08890bfec5e3729e54fba7fb8b8d82c72206dbe5080923ec57770390b2c6",
+    "xdog_tui-2.4.2.tar.gz": "fb085fa44f2eea1c882025441406c11a11d6d965c7c47e540956d90d355a8f9e"
+  },
+  "all_archives_exclude_claude": true,
+  "umbrella_canonical_runtime_parity": true,
+  "skills_has_no_flow_eyes_or_old_goal_namespace": true,
+  "date": "2026-10-20",
+  "source_commit": "92a6a7605bac001c31dbbbdc91e0f9dc21a292cf",
+  "scope": "Common medium-level Skills hub, independent Eyes skill rename and local-state exclusion; all earlier snapshots superseded for current package/resources",
+  "gates": {
+    "full9": {
+      "passed": 7085,
+      "skipped": 7,
+      "elapsed_seconds": 241.38,
+      "jobs": 2,
+      "independent_sdk_cases_enabled": 27,
+      "log": "/data/t.Vy5SaQ/skills-hub-final-full9.log"
+    },
+    "strict9": {
+      "source_files": 605,
+      "log": "/data/t.Vy5SaQ/skills-hub-final-strict.log"
+    },
+    "ruff": "packages/scripts passed",
+    "flow_examples": 17,
+    "lock_check": "passed",
+    "diff_check": "passed",
+    "twine": {
+      "artifacts": 20,
+      "log": "/data/t.Vy5SaQ/skills-hub-final-twine.log",
+      "warnings": "Existing Site wheel/sdist description metadata warnings only"
+    }
+  },
+  "cold": {
+    "skills_only": {
+      "root": "/data/t.Vy5SaQ/goal-only-installed-2m4kzyjf",
+      "distribution": "/data/skills-hub-final-dist.SD6XJI",
+      "environment": "/data/t.Vy5SaQ/goal-only-installed-2m4kzyjf/venv",
+      "kernel_only": false,
+      "passed": true,
+      "log": "/data/t.Vy5SaQ/skills-hub-final-cold-skills.log"
+    },
+    "coding": {
+      "root": "/data/t.Vy5SaQ/coding-goal-installed-if53at5f",
+      "distribution": "/data/skills-hub-final-dist.SD6XJI",
+      "environment": "/data/t.Vy5SaQ/coding-goal-installed-if53at5f/venv",
+      "real_host": "coding",
+      "passed": true,
+      "log": "/data/t.Vy5SaQ/skills-hub-final-cold-coding.log"
+    },
+    "claw": {
+      "root": "/data/t.Vy5SaQ/claw-goal-installed-v_t473co",
+      "distribution": "/data/skills-hub-final-dist.SD6XJI",
+      "environment": "/data/t.Vy5SaQ/claw-goal-installed-v_t473co/venv",
+      "real_host": "claw",
+      "passed": true,
+      "log": "/data/t.Vy5SaQ/skills-hub-final-cold-claw.log"
+    },
+    "acp": {
+      "root": "/data/t.Vy5SaQ/xdog-acp-isolated.y7dpkrzh",
+      "passed": true,
+      "log": "/data/t.Vy5SaQ/skills-hub-final-cold-acp.log",
+      "environments": [
+        "eyes",
+        "agent",
+        "coding",
+        "coding-owner",
+        "claw"
+      ]
+    },
+    "combined_discovery_and_same_format_journal": {
+      "root": "/data/t.Vy5SaQ/skills-hub-discovery-a0_hxjtu",
+      "distribution": "/data/skills-hub-final-dist.SD6XJI",
+      "combined_discovery": true,
+      "old_new_same_format_journal": true,
+      "passed": true,
+      "log": "/data/t.Vy5SaQ/skills-hub-final-cold-discovery.log"
+    }
+  },
+  "skill_owners": {
+    "goal": "xdog-skills",
+    "xdog-planning": "xdog-skills",
+    "eyes": "xdog-eyes",
+    "flow-workflows": "xdog-flow"
+  },
+  "shared_goal_ui_sha256": "2959d6de1764806ef3b078b0149d3f633164b4b4a37679eda47a09c40a90f3c7",
+  "review": {
+    "agent": "01a156db-9293-7991-a090-07877ebcbe42",
+    "range": "ebecb87..92a6a76",
+    "findings": {
+      "critical": 0,
+      "important": 0,
+      "minor": 0
+    },
+    "scope": "One read-only final review of this new task, not prior assistant-core history",
+    "no_provider_or_publish": true
+  }
+}
