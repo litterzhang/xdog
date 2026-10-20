@@ -32,33 +32,33 @@ Minors stay deferred; all reviewer Declined items retain explicit spec rulings.
    recovery call that would conceal the production path.
 
 ### Task 1: Fix I-1 and I-5 terminal receipts/live-call lifetime
-- [ ] Actual >1MiB successful aggregate and UTF8/error projection + successor
+- [x] Actual >1MiB successful aggregate and UTF8/error projection + successor
   regressions; actual queued native cancel and detached callback/attachment weakref
   regressions. Observe correct RED before source changes.
-- [ ] Use existing terminal receipt path with explicit bounded projection/reference
+- [x] Use existing terminal receipt path with explicit bounded projection/reference
   to durable session transcript, no false storage failure or schema migration.
   Retire exact original live-call on terminal withdrawal; preserve other attempt
   and running producer fences. Keep actual store failures fail-closed.
-- [ ] Existing Inbox/native/admission/outputs/lease/no-replay suites and fresh
+- [x] Existing Inbox/native/admission/outputs/lease/no-replay suites and fresh
   focused regression. Record actual RED->GREEN, commit; no overall completion.
 
 ### Task 2: Fix I-2 terminal Goal authority
-- [ ] Real SDK reviewer held through abandon; passed/continue/blocked/failure
+- [x] Real SDK reviewer held through abandon; passed/continue/blocked/failure
   outcomes and concurrent final-check scenario RED as applicable.
-- [ ] Keep abandoned/completed state authoritative under final locked apply while
+- [x] Keep abandoned/completed state authoritative under final locked apply while
   retaining late review facts/evidence and original reference; no implicit cancel.
-- [ ] Goal review/service/store + actual two-host review suites; commit proof.
+- [x] Goal review/service/store + actual two-host review suites; commit proof.
 
 ### Task 3: Fix I-3/I-4 readiness and capacity obligations
-- [ ] Actual GatewayServer restart Eyes disabled with durable pending original
+- [x] Actual GatewayServer restart Eyes disabled with durable pending original
   Weixin output, no manual resume/new input/model. Actual Claw child report under
   sustained Inbox cap1 then release, cancellation/shutdown. Observe RED first.
-- [ ] Owned output recovery after actual channel ready. Generic Core terminal/capacity
+- [x] Owned output recovery after actual channel ready. Generic Core terminal/capacity
   advisory hook drives coalesced Goal outbox receipt-first idempotent retry, scoped
   owner/lifetime subscription. No Goal/Eyes policy in ACP/Controller or new polling.
-- [ ] Update installed regression consumer to exercise real production gateway path.
+- [x] Update installed regression consumer to exercise real production gateway path.
   Preserve known-unsent/unknown and no arbitrary Native peer destination.
-- [ ] Full unfiltered9 with pinned independent SDK(optional27 now explicitly tested),
+- [x] Full unfiltered9 with pinned independent SDK(optional27 now explicitly tested),
   strict9/Ruff/Flow17/lock/diff, focused gate and commit. Return parentTask2 grade/
   fix receipt then final Task3 rebuild/Twine/parity/real isolated consumers after
   last runtime change; all47 actual verdicts before goal complete. No re-review.

@@ -137,5 +137,7 @@
     ],
     "log": "/data/t.Vy5SaQ/assistant-core-candidate-twine.log"
   },
-  "acceptance": "CANDIDATE ONLY: independent review not performed; cannot claim whole47/goal complete"
+  "acceptance": "CANDIDATE ONLY: independent review not performed; cannot claim whole47/goal complete",
+  "superseded_by": "docs/claw-assistant-core-final-artifacts.json",
+  "historical_only": true
 }

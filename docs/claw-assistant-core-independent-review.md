@@ -78,3 +78,12 @@ and scripted model/network boundaries, not fake business implementations.
 
 No reviewer Source/index/HEAD/worktree/service/provider/user-data modifications.
 Final source/artifact/47 acceptance remains open pending I-1..I-5 settlement.
+
+## 2026-10-20 implementation resolution (not a second review)
+
+All five accepted Important findings were reproduced and corrected in the one
+TDD pass, commits1e243af/fc0c23f/67120ee. Final full9:7077 passed/7 skipped;
+strict603/Ruff/Flow17/lock and fresh20-artifact/isolated-consumer gates pass.
+See `claw-assistant-core-review-fixes.md` and final artifact manifest. Original
+review verdict above is retained as an authentic historical result. No new
+reviewer approval is claimed. Deferred minors and declined-scope rulings stand.

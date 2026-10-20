@@ -1,3 +1,13 @@
+# Assistant-core review status — final local fix pass verified
+
+2026-10-20: the one actual independent reviewer completed; all five Important
+findings now have observed behavioral RED->GREEN and current full9 + isolated
+artifact gates. No second review was dispatched. See independent review, review
+fixes and final artifact manifest; original reviewer verdict remains historical,
+not rewritten as a fresh approval. Original minors/non-goals remain explicit.
+
+## Historical failed initialization and subsequent actual review
+
 # Assistant-core independent review — not performed
 
 Date: 2026-10-19. This is an explicit unmet gate, not a code review verdict.

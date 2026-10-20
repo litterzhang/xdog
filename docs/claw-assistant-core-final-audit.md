@@ -1,4 +1,93 @@
-# Claw assistant-core final audit — in progress
+# Claw assistant-core final local acceptance
+
+**2026-10-20: 47/47 original requirements passed; zero remaining required
+assistant-core items.** The records below this final section are chronological
+historical findings/checkpoints, not current open gates. Authority remains the
+original design plus `claw-assistant-core-requirements.json`; exact current
+runtime/artifact evidence is `claw-assistant-core-final-artifacts.json`.
+
+## Final verification
+
+- Final runtime commit `67120ee`, following `1e243af` and `fc0c23f`. No subsequent
+  runtime edits: final changes only record audit/proof. Both Claw and Coding have
+  no Goal enable setting: package presence supplies builtin skill/capability,
+  ordinary chat never implicitly delegates, UI extension remains separately
+  explicit. Goal journal belongs to Goal, canonical inputs/history to hosts.
+- All9 configured test paths, unfiltered, jobs2 with pinned independent MCP SDK:
+  **7077 passed, 7 skipped / 225.80s**. All27 previously optional SDK fixtures ran;
+  seven remaining skips are real Codex/Claude CLI opt-ins, intentionally not
+  activated. No real provider, credentials, account delivery or user service ran.
+- Strict9 mypy603, Ruff packages/scripts, Flow17, `uv lock --check`, current
+  `git diff --check`: pass. Whole-range cosmetic EOF blanks are explicitly
+  deferred below, not falsely reported absent.
+- Ten distributions /20 fresh wheels+sdists built under
+  `/data/assistant-core-final-dist.grR66i`. Twine20 passes, retaining existing
+  Site description metadata warnings. Exact644 canonical package source/resource
+  members plus29 explicitly force-included Flow examples match wheel and sdist
+  bytes. Umbrella canonical wheel/source trees also match; ancillary archive
+  contents are NOT covered by canonical runtime parity (caveat below).
+- Four fresh outside-checkout consumers pass: Goal-only with no installed/imported
+  harness/TUI/ACP; actual Coding and Claw base without Goal then real worker,
+  report, acceptance, independent reviewer, notices and owner/view lifecycle;
+  Eyes/Agent/Coding/Coding-owner/Claw ACP plus Native and per-message output paths.
+  Claw installed output uses actual Gateway restart with Eyes disabled, no manual
+  resume or model/new input, same output ID/original recipient/context once.
+- Both hosts load the same packaged Goal UI digest
+  `2959d6de1764806ef3b078b0149d3f633164b4b4a37679eda47a09c40a90f3c7`.
+  Separate installed >1MiB cumulative actual SDK probe reads20 parent +20 exact
+  original-role context pages; no installed/imported harness/TUI/ACP.
+- The ONE fresh wholebranch reviewer completed33df908..ef3e0db (66commits), found
+  five Important and no Critical. All five have actual behavioral RED->GREEN
+  in the single fix pass: oversized terminal receipt/withdrawn callback lifetime,
+  abandoned Goal vs late reviewer, channel readiness, capacity-driven notices.
+  Related task final suites65/60/99 passed, then the current full suite above.
+  No second reviewer and no fabricated new reviewer approval.
+
+## Rulings made (chronological, including cost)
+
+1. Remove inert max_concurrent/trigger_pattern beside old queue_mode/debounce,
+   preserving real global semaphore, capacity and reset settings. Cost if wrong:
+   undocumented internal constructor clients fail explicitly, no compatibility.
+2. Track retired closed extension owners weakly; actual unsettled work strongly
+   owns its runtime and shutdown takes strong snapshots. Cost if wrong: premature
+   resource loss; actual held fsync/join/cancellation probes specifically cover it.
+3. Join one actual MCP/extension cleanup owner, without arbitrary thread-join
+   timeout, and report original late failure. Cost: shutdown can wait on a genuinely
+   unsettled owner rather than falsely claim cleanup; tool RPC deadlines remain.
+4. Treat legacy owner_group metadata as an archive hint, not an authorization gate
+   rejecting valid native multi-group catalogs. Actual session-file alias checks
+   and controller/group binding remain required. Cost if wrong: cross-scope access;
+   genuine duplicate-file binding is explicitly rejected by regression tests.
+5. No paid-provider/real-account conformance: prohibited scope. Cost: no production
+   account/provider certification, only actual scripted transport boundaries.
+6. Hardware power-loss exactly-once/device guarantees excluded. Cost: process
+   crash/fsync ordering is verified, not hardware certification.
+7. Non-Linux/TCP, migration and cross-host Goal takeover excluded. Cost: those
+   capabilities are unavailable; supported ownership/rejection is verified.
+
+## Deferred minors
+
+- Claw README reconnect paragraph still describes old draft/resubmission wording;
+  the actual Native original-ID reconciliation/control fences are correct.
+- Cosmetic extra blank EOF in observers/models.py and Goal LICENSE. Not mixed into
+  runtime fixes and not silently changed.
+
+## Existing packaging caveat (not publication approval)
+
+The root umbrella sdist's pre-existing broad Hatch default includes local
+`.claude` ancillary trees, including old checkouts, in addition to the canonical
+current sources. The first additional umbrella parity probe incorrectly matched
+nested checkout paths; an anchored canonical-path check proves actual current
+runtime bytes, not ancillary content cleanliness. These ancillary files are not
+installed by the package wheels and do not alter the verified runtime contract.
+No such directory was edited/deleted, and no artifact was published. **Do not
+publish the local umbrella sdist** without a separate packaging-exclusion audit.
+This is an existing distribution-scope limitation, not a claim that ancillary
+user/worktree contents were certified by this assistant-core verification.
+
+## Historical audit and checkpoints (superseded where marked)
+
+# Historical assistant-core audit — in progress at 2026-10-19
 
 Date: 2026-10-19. Full objective remains active. This is a requirement/proof
 inventory plus concrete audit findings, **not** a final47/47 pass or a replacement

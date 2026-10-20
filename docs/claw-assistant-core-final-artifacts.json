@@ -1,0 +1,185 @@
+{
+  "dist": "/data/assistant-core-final-dist.grR66i",
+  "packages": {
+    "ai": {
+      "source_members": 53,
+      "force_included_members": 0,
+      "wheel": "xdog_ai-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_ai-2.4.2.tar.gz"
+    },
+    "agent": {
+      "source_members": 125,
+      "force_included_members": 0,
+      "wheel": "xdog_agent-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_agent-2.4.2.tar.gz"
+    },
+    "tui": {
+      "source_members": 89,
+      "force_included_members": 0,
+      "wheel": "xdog_tui-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_tui-2.4.2.tar.gz"
+    },
+    "flow": {
+      "source_members": 57,
+      "force_included_members": 29,
+      "wheel": "xdog_flow-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_flow-2.4.2.tar.gz"
+    },
+    "coding": {
+      "source_members": 98,
+      "force_included_members": 0,
+      "wheel": "xdog_coding-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_coding-2.4.2.tar.gz"
+    },
+    "claw": {
+      "source_members": 100,
+      "force_included_members": 0,
+      "wheel": "xdog_claw-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_claw-2.4.2.tar.gz"
+    },
+    "eyes": {
+      "source_members": 37,
+      "force_included_members": 0,
+      "wheel": "xdog_eyes-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_eyes-2.4.2.tar.gz"
+    },
+    "site": {
+      "source_members": 63,
+      "force_included_members": 0,
+      "wheel": "xdog_site-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_site-2.4.2.tar.gz"
+    },
+    "goal": {
+      "source_members": 22,
+      "force_included_members": 0,
+      "wheel": "xdog_goal-2.4.2-py3-none-any.whl",
+      "sdist": "xdog_goal-2.4.2.tar.gz"
+    }
+  },
+  "artifacts": {
+    "xdog-2.4.2-py3-none-any.whl": "5243fae5b9ddfbdda61d41b0c59d4561181f82c6fa1274f32e75aca9a537aa79",
+    "xdog-2.4.2.tar.gz": "96ad2a04ab96a0e747de39b8452c9e186c2be678be249238c052b4e65602d064",
+    "xdog_agent-2.4.2-py3-none-any.whl": "cd3b2be29edc942531c7bdeb8753a4b5e9eafb5a17fe47924bbd4d6b95254ee2",
+    "xdog_agent-2.4.2.tar.gz": "513e8caa73653997cd73624770b00882e449e8ebfdd140362bb31d4224216bfd",
+    "xdog_ai-2.4.2-py3-none-any.whl": "8f423ef40763def8800b82ce1232264c89564b7571ce57a530103b49bc6dd061",
+    "xdog_ai-2.4.2.tar.gz": "84b4043a1e19ed51dfd7a0657ae86d2931b17fcdf435f35f7624b7a72d6c9c85",
+    "xdog_claw-2.4.2-py3-none-any.whl": "318d61cfb68e33e573a0c6efd63071b4d7099a65c3c646ad5d1e40d257ac3a76",
+    "xdog_claw-2.4.2.tar.gz": "883e48fb51d0595b00682d001718eb3e4e67a06ae13d9dcdaa47c341b37df81a",
+    "xdog_coding-2.4.2-py3-none-any.whl": "68244cf2291bd2b2b1e38b30ba74ba5bc4e4e0b6df3b6a440ec533408eedc0d8",
+    "xdog_coding-2.4.2.tar.gz": "18cea3a2764a27143bcac7ce2ef833612bfed95823bdcebbef463d38d9262de4",
+    "xdog_eyes-2.4.2-py3-none-any.whl": "d37a2ec41098994ac2500859360c474a53152d43f97ed47ff003b183ce0697b7",
+    "xdog_eyes-2.4.2.tar.gz": "99640c75668431729583a9d4c5166babe22848d5d963593b7c236d554f43bc0c",
+    "xdog_flow-2.4.2-py3-none-any.whl": "285b4a498d96cea5501dfba438c1fb5af7bc047fcbf57d1accb39bf9d6d922da",
+    "xdog_flow-2.4.2.tar.gz": "4ec2538fe5890f4c0caed6658ac312eee70ddc8035c3f0f0326fb91677cddba8",
+    "xdog_goal-2.4.2-py3-none-any.whl": "085659cc3b4e2f2c0ad8664301fcfc9693fb92bb7c6bc4620889fd6a457c7672",
+    "xdog_goal-2.4.2.tar.gz": "6784ee02e5423a48e50c9719a9e2e9b3c10f3aef4abb9a68d42ab81ea6e9bd92",
+    "xdog_site-2.4.2-py3-none-any.whl": "58d8d0868082b0065a86bc85bbca446e8f47d3c7eac7bd6bc6f47e0f1cc6902a",
+    "xdog_site-2.4.2.tar.gz": "af82ae1ecef2bfcd3cb9bf2c84810f55642957e8a79460db0a71a2708a877b25",
+    "xdog_tui-2.4.2-py3-none-any.whl": "e4df08890bfec5e3729e54fba7fb8b8d82c72206dbe5080923ec57770390b2c6",
+    "xdog_tui-2.4.2.tar.gz": "fb085fa44f2eea1c882025441406c11a11d6d965c7c47e540956d90d355a8f9e"
+  },
+  "umbrella_runtime_parity": "exact canonical wheel ai/agent/flow and all nine canonical sdist source/resource trees",
+  "umbrella_ancillary_caveat": "Existing root Hatch default sdist also includes local .claude ancillary trees. No release/publish authorized; canonical runtime byte parity is not an audit of ancillary archive contents.",
+  "kind": "final_local_verification",
+  "date": "2026-10-20",
+  "source_commit": "67120ee5d5b1b5ac641bb4be92b2dd0796fa3884",
+  "source_scope": "All nine canonical runtime/resource trees; docs-only acceptance records follow. Not release/publish authorization.",
+  "review": {
+    "status": "one_independent_review_completed_five_important_fixed_by_single_tdd_pass",
+    "reviewer_started": true,
+    "agent": "01a15688-a10f-71c2-aca8-4c0c018dd1c1",
+    "range": "33df9083c95e4f838e0eaf34532d3cd3ea6deee0..ef3e0db5b59abd619724b3be7040b46e13c01d49",
+    "report": "docs/claw-assistant-core-independent-review.md",
+    "fix_evidence": "docs/claw-assistant-core-review-fixes.md",
+    "fix_commits": [
+      "1e243af",
+      "fc0c23f",
+      "67120ee"
+    ],
+    "unresolved_important": 0,
+    "unresolved_critical": 0,
+    "second_review": false
+  },
+  "source_gates": {
+    "command": "XDOG_MCP_OFFICIAL_SDK_ROOT=<pinned fixture> uv run python scripts/test.py --jobs 2",
+    "passed": 7077,
+    "skipped": 7,
+    "all_configured_paths": 9,
+    "elapsed_seconds": 225.8,
+    "independent_sdk_cases_enabled": 27,
+    "skipped_scope": "7 opt-in real Codex/Claude CLI cases; no provider/credentials used",
+    "strict_source_files": 603,
+    "ruff": "packages scripts passed",
+    "flow_examples": 17,
+    "uv_lock_check": "passed",
+    "current_diff_check": "passed",
+    "logs": {
+      "full9": "/data/t.Vy5SaQ/task3-full9.log",
+      "strict9": "/data/t.Vy5SaQ/task3-mypy.log",
+      "flow": "/data/t.Vy5SaQ/task3-flow.log",
+      "focus": "/data/t.Vy5SaQ/task3-focus.log",
+      "behavioral_red": "/data/t.Vy5SaQ/task3-red.log",
+      "behavioral_green": "/data/t.Vy5SaQ/task3-green.log"
+    }
+  },
+  "cold_consumers": {
+    "goal_only": {
+      "root": "/data/t.Vy5SaQ/goal-only-installed-ra2ab613",
+      "distribution": "/data/assistant-core-final-dist.grR66i",
+      "environment": "/data/t.Vy5SaQ/goal-only-installed-ra2ab613/venv",
+      "kernel_only": false,
+      "passed": true,
+      "log": "/data/t.Vy5SaQ/assistant-core-final-goal-only.log"
+    },
+    "coding_goal": {
+      "root": "/data/t.Vy5SaQ/coding-goal-installed-tl27ky29",
+      "distribution": "/data/assistant-core-final-dist.grR66i",
+      "environment": "/data/t.Vy5SaQ/coding-goal-installed-tl27ky29/venv",
+      "real_host": "coding",
+      "passed": true,
+      "log": "/data/t.Vy5SaQ/assistant-core-final-coding-goal.log"
+    },
+    "claw_goal": {
+      "root": "/data/t.Vy5SaQ/claw-goal-installed-udzi4_hb",
+      "distribution": "/data/assistant-core-final-dist.grR66i",
+      "environment": "/data/t.Vy5SaQ/claw-goal-installed-udzi4_hb/venv",
+      "real_host": "claw",
+      "passed": true,
+      "log": "/data/t.Vy5SaQ/assistant-core-final-claw-goal.log"
+    },
+    "acp": {
+      "root": "/data/t.Vy5SaQ/xdog-acp-isolated.yfi1eyeq",
+      "log": "/data/t.Vy5SaQ/assistant-core-final-acp.log",
+      "passed": true,
+      "environments": [
+        "eyes",
+        "agent",
+        "coding",
+        "coding-owner",
+        "claw"
+      ],
+      "actual_gateway_output_recovery": "Eyes disabled; no manual resume/new input/model; original output ID/recipient/context exactly once",
+      "native": "actual busy intake, exact pending cancellation, original control fences",
+      "observer": "per-message output; source and notification stop independent"
+    },
+    "cumulative": {
+      "root": "/data/t.Vy5SaQ/final-installed-cumulative-7zzbvioi",
+      "environment": "/data/t.Vy5SaQ/goal-only-installed-ra2ab613/venv",
+      "log": "/data/t.Vy5SaQ/assistant-core-final-cumulative-cold.log",
+      "passed": true,
+      "parent_pages": 20,
+      "original_context_pages": 20,
+      "scripted_actual_worker_calls": 3,
+      "no_installed_harness_tui_acp": true
+    }
+  },
+  "same_ui_digest": "2959d6de1764806ef3b078b0149d3f633164b4b4a37679eda47a09c40a90f3c7",
+  "twine": {
+    "artifacts_passed": 20,
+    "warnings": [
+      "Existing xdog-site wheel/sdist missing long_description and content type"
+    ],
+    "log": "/data/t.Vy5SaQ/assistant-core-final-twine.log"
+  },
+  "acceptance": "47/47 assistant-core contract locally verified; no merge/push/publish, no real-provider/account or hardware certification. Umbrella ancillary archive caveat is outside canonical runtime verification; do not publish this local umbrella sdist."
+}
