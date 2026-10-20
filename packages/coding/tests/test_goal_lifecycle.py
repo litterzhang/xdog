@@ -27,10 +27,9 @@ async def owned(controller, operation):
 
 
 async def dispose(session):
-    controller = session._sdk_controller
-    session.dispose()
-    if controller is not None:
-        await asyncio.wrap_future(controller.close())
+    # Controller shutdown precedes the session's final writer-lease release.
+    # Await the public receipt, including its finite owner-thread joiner.
+    await session.aclose()
 
 
 async def test_absent_package_never_opens_goal_storage_or_imports_optional_package(tmp_path, monkeypatch):

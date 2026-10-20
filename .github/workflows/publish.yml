@@ -41,6 +41,36 @@ jobs:
           enable-cache: true
       - name: Build sdist + wheel
         run: uv build --package ${{ matrix.package }} --out-dir dist
+      - name: Verify Eyes release artifact
+        if: matrix.package == 'xdog-eyes'
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          python - <<'PY'
+          import os, tomllib, zipfile
+          from email.parser import Parser
+          from pathlib import Path
+
+          project = tomllib.loads(Path("packages/eyes/pyproject.toml").read_text())["project"]
+          wheels = list(Path("dist").glob("*.whl"))
+          assert len(wheels) == 1, wheels
+          with zipfile.ZipFile(wheels[0]) as wheel:
+              names = set(wheel.namelist())
+              need = {"xdog/eyes/skills/eyes/SKILL.md", "xdog/eyes/py.typed",
+                      "xdog/eyes/examples/source-test-review.json",
+                      "xdog/eyes/examples/scheduled-review.json",
+                      "xdog/eyes/sources/scheduler.py", "xdog/eyes/detectors/scheduler_due.py"}
+              assert need <= names, need - names
+              metadata = Parser().parsestr(wheel.read(
+                  next(name for name in names if name.endswith(".dist-info/METADATA"))).decode())
+          assert metadata["Name"] == project["name"] == "xdog-eyes"
+          assert metadata["Version"] == project["version"]
+          tag = os.environ.get("RELEASE_TAG", "")
+          assert not tag or tag == "v" + project["version"], (tag, project["version"])
+          expected = ["agent-client-protocol<0.13,>=0.12.1; python_version < '3.15'", "croniter<7,>=2.0"]
+          assert sorted(metadata.get_all("Requires-Dist", [])) == sorted(expected)
+          print("Verified Eyes version, tag, standalone dependencies, skill and scheduler resources")
+          PY
       - name: Check metadata renders on PyPI
         run: uvx twine check dist/*
       - uses: actions/upload-artifact@v7
@@ -59,7 +89,7 @@ jobs:
       - run: uv sync
       - run: uv run pytest -q
       - run: uv run ruff check packages
-      - run: uv run mypy --strict -p xdog.flow -p xdog.skills
+      - run: uv run mypy --strict -p xdog.flow -p xdog.skills -p xdog.eyes
 
   publish:
     needs: [build, test]

@@ -12,6 +12,32 @@ Nothing yet.
 
 ---
 
+## [2.4.4] — 2026-10-20
+
+### Added
+
+- Public extension slash commands and shortcuts shared by Coding and Claw;
+  Goal's read-only extension now exposes `/goals`, `/goals <ID>` and
+  `/goals page <OFFSET>` without hardcoded host business logic.
+- Eyes release artifact checks and publishing instructions for its existing
+  per-package GitHub OIDC workflow and PyPI Trusted Publisher.
+
+### Fixed
+
+- Coding session writer ownership, navigation/admission fencing, cancellable
+  resource teardown, durable inbox capacity and original-owner history commits.
+- Coding resolves effective settings once, honors explicit empty tool selection
+  and disabled thinking, and prepares supported project instructions off-loop.
+- Extension startup no longer eagerly imports the retired Coding loader;
+  public command collisions and stale ownership fail closed.
+
+### Changed
+
+- Align workspace versions, internal dependency floors, lockfile and runtime
+  protocol identities to 2.4.4. Include Eyes in the publishing strict type gate.
+
+---
+
 ## [2.4.3] — 2026-10-20
 
 ### Added
