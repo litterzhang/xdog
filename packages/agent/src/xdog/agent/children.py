@@ -11,9 +11,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from xdog.agent.child_config import ChildConfig, ChildPresets
 from xdog.agent.core import AgentMessage, AgentTool, AgentToolResult
 from xdog.agent.messages import messages_to_dicts
-from xdog.agent.supervision_config import ChildConfig, ChildPresets
 from xdog.ai.types import AssistantMessage, ImageContent, SystemPrompt, TextContent, ToolCall
 
 RESERVED_TOOLS = frozenset({"agent", "agent_spawn", "agent_control", "update_plan"})
@@ -35,12 +35,13 @@ class ChildSpec:
     system_prompt: str = ""
     skills: tuple[str, ...] | None = ()
     tool_actions: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    tool_scopes: dict[str, Any] = field(default_factory=dict)
 
     def config(self) -> ChildConfig:
         return ChildConfig(label=self.label, instructions=self.instructions, tools=self.tools,
                            inherit_context=self.inherit_context, model=self.model, thinking=self.thinking,
                            preset=self.preset, system_prompt=self.system_prompt, skills=self.skills,
-                           tool_actions=self.tool_actions)
+                           tool_actions=self.tool_actions, tool_scopes=self.tool_scopes)
 
 
 def child_prompt(prompt: SystemPrompt | None, spec: ChildSpec) -> SystemPrompt:
@@ -261,9 +262,14 @@ class ChildClient:
                 "Manage this session's child Agents. action=spawn requires task, defaults to read-only, "
                 "and optionally accepts access/inherit_context/config. Other actions use id/text: "
                 "list/presets/inspect/steer/follow-up/cancel/wait/close/queue/set_system_prompt. "
+                "steer/follow-up queue input to a running child or explicitly start a fresh execution of a safely "
+                "completed child conversation; wait awaits its current round. Interrupted work is not replayed. "
                 "Children never inherit parent history/system prompt; put task knowledge in task. "
                 "config.system_prompt is child-owned. skills defaults to []; null is host-bounded catalog selection. "
-                "tool_actions narrows existing tool actions, never grants permissions. "
+                'config.tool_actions narrows literal action values only, e.g. {"filesystem": ["read"]}; '
+                "'*' is not a wildcard. bash is NOT a multi-action tool: sleep is command text, not an action. "
+                'To select bash use config.tools=["bash"] and omit bash from tool_actions; '
+                "this never grants a missing parent tool or bypasses approval/read-only access. "
                 "set_system_prompt uses text and is idle-only: queued before startup or stopped metadata only; "
                 "busy changes are rejected, never restart/replay work. "
                 "Legacy instructions is first-user task material, never parent system authority. "
@@ -288,7 +294,18 @@ class ChildClient:
                                 "system_prompt": {"type": "string", "maxLength": 16000},
                                 "skills": {"type": ["array", "null"], "default": [], "maxItems": 128,
                                            "items": {"type": "string"}, "uniqueItems": True},
+                                "tool_scopes": {"type": "object", "default": {}, "maxProperties": 128,
+                                                "additionalProperties": {"type": "object"},
+                                                "description": "Explicit data-only scopes for selected capability "
+                                                    "tools. Requires tools to include each key and a live provider "
+                                                    "delegation hook; never grants permissions."},
                                 "tool_actions": {"type": "object", "default": {}, "maxProperties": 128,
+                                                 "description": (
+                                                     "Literal action subsets for tools declaring action, e.g. "
+                                                     '{"filesystem": ["read"]}. No wildcard semantics. '
+                                                     "bash has command, not action: omit its entry; "
+                                                     "select tools separately. Parent permissions and read-only "
+                                                     "access still apply. Invalid profiles fail before creation."),
                                                  "additionalProperties": {"type": "array", "maxItems": 128,
                                                                           "items": {"type": "string"},
                                                                           "uniqueItems": True}},

@@ -4,7 +4,7 @@ from __future__ import annotations
 import inspect
 
 import pytest
-from xdog.agent.supervision import ChildSpec
+from xdog.agent.children import ChildSpec
 
 from packages.claw.tests.test_child_agents import setup as claw_setup
 from packages.coding.tests.test_child_agents import create as coding_setup
@@ -22,8 +22,8 @@ async def test_child_model_and_executor_never_regain_parent_unselected_tools(tmp
         parent = server._orchestrator._runtimes['main'].get_or_create_session(allow_reset=False)
     try:
         parent.agent.set_active_tools(selection, expected_revision=parent.agent.tool_selection_revision)
-        child = await parent.children.supervisor.start('write', access='inherit')
-        result = await parent.children.supervisor.control('wait', child)
+        child = await parent.children.runtime.start('write', access='inherit')
+        result = await parent.children.runtime.control('wait', child)
         assert result['status'] == 'completed'
         assert contexts and all([tool.name for tool in context.tools or ()] == selection for context in contexts)
         assert not (tmp_path / 'target').exists() and not (tmp_path / 'workspace/target').exists()
@@ -35,7 +35,7 @@ async def test_child_model_and_executor_never_regain_parent_unselected_tools(tmp
         if server is not None:
             await server.stop()
         else:
-            await parent.children.supervisor.aclose()
+            await parent.children.runtime.aclose()
             await parent.extensions.aclose()
             parent.dispose()
 
@@ -61,6 +61,6 @@ async def test_child_capture_rejects_profile_outside_parent_selection_before_wor
         if server is not None:
             await server.stop()
         else:
-            await parent.children.supervisor.aclose()
+            await parent.children.runtime.aclose()
             await parent.extensions.aclose()
             parent.dispose()

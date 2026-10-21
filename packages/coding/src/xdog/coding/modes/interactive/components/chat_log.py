@@ -14,20 +14,65 @@ from xdog.tui.components.extension_command import ExtensionCommand
 from xdog.tui.components.messages import ThinkingMessage, Transcript
 from xdog.tui.components.text import Text
 from xdog.tui.tui import Component
-from xdog.tui.utils import sanitize_terminal_text
+from xdog.tui.utils import sanitize_terminal_text, truncate_to_width, wrap_text_with_ansi
 
 
-class SessionInputComponent(Text):
-    """Keyed preview and complete read-only details of an external request."""
+class SessionInputComponent(Component):
+    """Literal compact input with a complete, presentation-independent artifact."""
+
+    transcript_role = "system"
 
     def __init__(self, identifier: str, theme: Theme) -> None:
-        super().__init__('', 1, 0)
         self.identifier, self.theme = identifier, theme
+        self._preview = ''
         self.detail_body = ''
+        self._expanded = False
+        self._rows_cache: tuple[tuple[object, ...], list[str]] | None = None
+
+    @property
+    def detail_title(self) -> str:
+        return 'External input ' + sanitize_terminal_text(self.identifier)
 
     def update(self, preview: str, details: str) -> None:
-        self.set_text(self.theme.system('  ' + sanitize_terminal_text(preview)))
-        self.detail_body = sanitize_terminal_text(details)
+        preview, details = sanitize_terminal_text(preview), sanitize_terminal_text(details)
+        if (preview, details) != (self._preview, self.detail_body):
+            self._preview, self.detail_body = preview, details
+            self.invalidate()
+
+    def set_expanded(self, expanded: bool) -> None:
+        if self._expanded != expanded:
+            self._expanded = expanded
+            self.invalidate()
+
+    def invalidate(self) -> None:
+        self._rows_cache = None
+
+    def render(self, width: int) -> list[str]:
+        if width <= 0:
+            return []
+        key = (width, self._expanded, self._preview, self.detail_body)
+        if self._rows_cache is not None and self._rows_cache[0] == key:
+            return self._rows_cache[1]
+        gutter = 3 if width >= 4 else 0
+        content_width = width - gutter
+        if self._expanded:
+            rows = wrap_text_with_ansi(self.detail_body, content_width)
+        else:
+            metadata, separator, body = self._preview.partition('\nHandling instruction:\n')
+            if not separator:
+                metadata, body = '', self._preview
+            rows = [self.theme.dim(row) if gutter else row
+                    for row in wrap_text_with_ansi(metadata, content_width)] if metadata else []
+            rows.extend(wrap_text_with_ansi(body, content_width)[:3])
+            rows.extend(self.theme.dim(row) if gutter else row for row in wrap_text_with_ansi(
+                '[Preview only · Ctrl+O Details /details / transcript: full input]', content_width))
+        rendered = [
+            (f' {self.theme.dim("•")} ' if gutter and index == 0 else ' ' * gutter)
+            + truncate_to_width(row, content_width, '')
+            for index, row in enumerate(rows)
+        ]
+        self._rows_cache = (key, rendered)
+        return rendered
 
 
 class ChatLog(Transcript):
@@ -52,7 +97,7 @@ class ChatLog(Transcript):
     def add_system(self, text: str) -> None:
         """Add a system/info message."""
         safe_text = sanitize_terminal_text(text)
-        self._append(Text(self._theme.system(f"  {safe_text}"), 1, 0))
+        self._append(Text(self._theme.system(safe_text), 3, 0))
 
     def update_session_input(self, identifier: str, preview: str, details: str) -> None:
         component = self._session_inputs.get(identifier)

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 from xdog.agent import Agent, AgentConfig
-from xdog.agent.supervision import ChildSpec
+from xdog.agent.children import ChildSpec
 from xdog.ai.types import AssistantMessage
 from xdog.ai.utils.event_stream import EventStream
 

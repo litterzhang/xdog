@@ -75,7 +75,9 @@ async def owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     forbidden = Mock(side_effect=AssertionError("ambient provider access"))
     monkeypatch.setattr(ai, "load", forbidden)
     monkeypatch.setattr(ai, "provider", forbidden)
-    manager = SkillManager(tmp_path / "skills", packaged={})
+    # Real installed capabilities may select packaged defaults (e.g. goal). Keep
+    # their trusted skill identities available for versioned dump/restore too.
+    manager = SkillManager(tmp_path / "skills")
     for slug, scope, body in (("guard", "session", "SESSION-BODY-ONCE"), ("task", "turn", "TURN-BODY-ONCE")):
         directory = tmp_path / "skills" / slug
         directory.mkdir(parents=True)
@@ -95,7 +97,7 @@ async def owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         yield session, stream
     finally:
         await session.agent.aclose()
-        await session.children.supervisor.aclose()
+        await session.children.runtime.aclose()
         await session.extensions.aclose()
         session.dispose()
         forbidden.assert_not_called()
@@ -135,7 +137,10 @@ async def test_two_turns_drain_bounded_events_keep_skills_and_product_persistenc
             assert "TURN-BODY-ONCE" not in (system_prompt_text(context.system_prompt) or "")
         assert _message_text(stream.contexts[0]).count("TURN-BODY-ONCE") == 1
         assert "TURN-BODY-ONCE" not in _message_text(stream.contexts[1])
-        assert session.active_skills == frozenset({"guard"})
+        # Explicit selections retire turn skills independently of live defaults.
+        assert session._active_skills == frozenset({"guard"})
+        assert session.active_skills == frozenset({"guard"}) | session.capabilities.default_skills
+        assert session.agent.active_skills == tuple(sorted(session.active_skills))
         loaded = session.session_manager.load_session(session.session_id)
         assert loaded is not None
         assert messages_to_dicts(loaded.messages) == messages_to_dicts(session.messages)
@@ -205,21 +210,31 @@ async def test_versioned_sdk_restore_does_not_bypass_coding_tool_permission_hook
         executed.append(args["action"])
         return AgentToolResult(content=(TextContent(text="read result"),))
 
+    # Path-aware host classification needs a real workspace-relative target;
+    # an action-only call is unknown scope, not a valid read-only fixture.
     session.agent.set_tools([*session.agent.state.tools, AgentTool(name="filesystem", execute=execute, parameters={
-        "type": "object", "properties": {"action": {"type": "string"}}, "required": ["action"],
+        "type": "object", "properties": {"action": {"type": "string"}, "path": {"type": "string"}},
+        "required": ["action", "path"],
     })])
     for turn in range(2):
         stream.responses = [AssistantMessage(content=(
-            ToolCall(id=f"read-{turn}", name="filesystem", arguments={"action": "read"}),
-            ToolCall(id=f"write-{turn}", name="filesystem", arguments={"action": "write"}),
+            ToolCall(id=f"read-{turn}", name="filesystem", arguments={"action": "read", "path": "target.txt"}),
+            ToolCall(id=f"write-{turn}", name="filesystem", arguments={"action": "write", "path": "target.txt"}),
         )), AssistantMessage(content=(TextContent(text="finished"),))]
         await asyncio.wait_for(session.send_message("inspect; mutation requires approval"), 5)
         if turn == 0:
+            before_restore = messages_to_dicts(session.messages)
             snapshot = session.agent.dump()
             assert snapshot["format"] == "xdog.agent.snapshot"
+            assert snapshot["version"] == 1
+            assert {skill["slug"] for skill in snapshot["skills"]} == session.active_skills
             session.agent.restore(snapshot)
+            assert messages_to_dicts(session.messages) == before_restore
     assert executed == ["read", "read"]
     denied = [message for message in session.messages if isinstance(message, ToolResultMessage)
               and message.tool_call_id.startswith("write-")]
     assert len(denied) == 2 and all(message.is_error for message in denied)
+    assert {message.tool_call_id for message in denied} == {"write-0", "write-1"}
+    assert all(any(isinstance(part, TextContent) and "requires approval" in part.text
+                   for part in message.content) for message in denied)
     assert session.permissions.mode == "ask" and not session.permissions._pending

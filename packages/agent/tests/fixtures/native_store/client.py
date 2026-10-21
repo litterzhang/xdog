@@ -166,7 +166,7 @@ async def native_ui(kind):
     finally:
         ui._request_exit()
         if kind == 'coding':
-            await session.children.supervisor.aclose()
+            await session.children.runtime.aclose()
             await session.extensions.aclose()
             await actual.aclose()
             session.dispose()

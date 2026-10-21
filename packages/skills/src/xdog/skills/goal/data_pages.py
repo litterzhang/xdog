@@ -40,10 +40,15 @@ class Page:
 def response(build: Callable[[], object], selector: dict[str, object], continuation: dict[str, object],
              page: Page, *, committed: bool = False) -> str:
     """Run on an owned worker over immutable facts, never a mutable actor/runtime."""
-    payload = json_text(build(), maximum=None)
+    value = build()
+    if not page.explicit:
+        # Human-facing results use real Unicode, never blindly unescape JSON text.
+        readable = json_text(value, maximum=None, ensure_ascii=False)
+        if len(readable.encode('utf-8')) <= TOOL_BYTES:
+            return readable
+    # Keep the existing ASCII byte-page codec, offsets and hashes unchanged.
+    payload = json_text(value, maximum=None)
     data = payload.encode('utf-8')
-    if not page.explicit and len(data) <= TOOL_BYTES:
-        return payload
     if page.offset > len(data):
         raise ValueError('Data page offset exceeds the selected immutable snapshot')
     end = min(len(data), page.offset + page.limit)

@@ -44,13 +44,13 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from xdog.agent.child_config import ChildConfig, ChildPresets, parse_child_options
 from xdog.agent.extensions.artifact_export import ArtifactLoader, export_snapshot
 from xdog.agent.extensions.command_result import ExtensionCommandResult
 from xdog.agent.extensions.dialogs import validate_dialog
 from xdog.agent.extensions.runtime import validate_snapshot
 from xdog.agent.mcp.context import McpDocument, McpEntry
 from xdog.agent.mcp.oauth import normalize_auth_reply
-from xdog.agent.supervision_config import ChildConfig, ChildPresets, parse_child_options
 from xdog.ai.types import ImageContent
 from xdog.claw.channels.tui.history_panel import HistoryPanel
 from xdog.claw.channels.tui.mcp_data import McpDataReceiver
@@ -383,14 +383,13 @@ class ToolMessage(Container):
         self.add_child(Image(data=data, alt=image.mime_type))
 
     def render(self, width: int) -> list[str]:
+        if self._header_mode != ToolMessageView.ascii_only():
+            self._render()
         if self._expanded:
             return super().render(width)
-        summary = " ".join(", ".join(f"{key}={value}" for key, value in self._arguments.items()).split())
         header = self._header.text
-        if summary:
-            header += theme_dim(f" · {summary}")
         self._view.update(
-            header=header, summary=summary, output=self._result,
+            header=header, summary=self._argument_summary, output=self._result,
             running=self._state == "running",
             style=theme_error if self._is_error else theme_dim,
         )
@@ -440,25 +439,26 @@ class ToolMessage(Container):
         self._expanded = expanded
         self._render()
 
+    def invalidate(self) -> None:
+        self._view.invalidate()
+        self._render()
+        super().invalidate()
+
     def _render(self) -> None:
-        icons = {"running": "⚡", "success": "✓", "error": "✗", "canceled": "■"}
-        icon = icons[self._state]
-        header = f"  {icon} {self._name}"
+        self._header_mode = ToolMessageView.ascii_only()
+        summary = ToolMessageView.summarize_args(self._arguments, self._name)
+        self._argument_summary = summary
+        header = ToolMessageView.make_header(self._name, summary, self._state)
         if self._state == "error":
             self._header.set_text(theme_error(header))
         elif self._state == "canceled":
             self._header.set_text(theme_dim(header))
         else:
             self._header.set_text(theme_accent(header))
-        if not self._result:
-            if self._completed:
-                self._body.set_text(theme_dim("    → (no output)"))
-            else:
-                arguments = ", ".join(f"{key}={value}" for key, value in self._arguments.items())
-                self._body.set_text(theme_dim(f"    {arguments}" if arguments else ""))
-            return
         result_lines = self._result.splitlines()
-        if self._state == "running" and not self._expanded:
+        if not self._result:
+            display = "(no output)" if self._completed else "(waiting for output)"
+        elif self._state == "running" and not self._expanded:
             display = streaming_preview(self._result)
         elif self._expanded or (len(self._result) <= 500 and len(result_lines) <= 3):
             display = self._result
@@ -468,6 +468,8 @@ class ToolMessage(Container):
             remaining = len(self._result) - len(excerpt)
             line_count = len(result_lines)
             display = f"{preview} [...{remaining} more chars, {line_count} lines; Ctrl+O for details]"
+        if self._expanded and self._arguments:
+            display = f"Arguments:\n{json.dumps(self._arguments, ensure_ascii=False)}\n\nOutput:\n{display}"
         self._body.set_text(theme_error(f"    → {display}") if self._is_error else theme_dim(f"    → {display}"))
 
 
@@ -880,7 +882,7 @@ class ChatApp:
         self._queue_summary = CompactText("", 0, 0)
         self._queue_container.add_child(self._queue_summary)
         self._details_panel = DetailsPanel(self._detail_records, max_rows=8)
-        self._hints = CompactText("", 0, 0)
+        self._hints = CompactText("", 0, 0, style=theme_dim)
         self._update_hints()
         self._banner_added = False
 

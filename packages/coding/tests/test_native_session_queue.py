@@ -112,7 +112,7 @@ def test_child_control_cleanup_holds_automatic_successor(coding_session, monkeyp
     async def execute(value):
         started.set()
         return TurnResult('succeeded', None)
-    monkeypatch.setattr(coding_session.children.supervisor, 'control', child_control)
+    monkeypatch.setattr(coding_session.children.runtime, 'control', child_control)
     controller.max_messages_per_turn = 1
     controller._execute_batch = single_input_execute(execute)
     try:

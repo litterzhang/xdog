@@ -397,8 +397,8 @@ class ChildPanel(ThemedPanel):
             raise ValueError('Unsupported retained draft action')
         if action != 'start':
             child = next((row for row in self._entries if row.id == slot), None)
-            if child is None or child.status != 'running':
-                raise ValueError('Child no longer running; transient input kept, no automatic replay')
+            if child is None or child.status not in {'running', 'completed'}:
+                raise ValueError('Child no longer running or safely completed; input kept, no automatic replay')
             self._selected_id = slot
         self._close_draft_recovery()
         self._form(action, draft_slot=slot)

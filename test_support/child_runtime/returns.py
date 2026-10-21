@@ -373,7 +373,7 @@ class TestChildReturns:
     async def test_real_cancelled_image_thread_retains_preparation_slot_until_worker_exits(
         self, monkeypatch, *, runtime_factory
     ):
-        import xdog.agent.supervision_transfer as transfer
+        import xdog.agent.child_transfer as transfer
 
         owner, child, calls = await setup(runtime_factory=runtime_factory)
         entered, release, exited = threading.Event(), threading.Event(), threading.Event()
@@ -528,7 +528,7 @@ class TestChildReturns:
     async def test_actual_main_agent_abort_during_preparation_settles_bytes_without_removal(
         self, monkeypatch, *, runtime_factory
     ):
-        import xdog.agent.supervision_transfer as transfer
+        import xdog.agent.child_transfer as transfer
 
         owner, child, calls = await setup(runtime_factory=runtime_factory)
         entered, release, exited = threading.Event(), threading.Event(), threading.Event()
@@ -703,8 +703,8 @@ class TestChildReturns:
     async def test_main_tool_retained_image_bytes_still_count_after_explicit_queue_removal(
         self, tmp_path, monkeypatch, phase, *, runtime_factory, child_store_type
     ):
-        import xdog.agent.supervision_images as image_module
-        import xdog.agent.supervision_transfer as transfer
+        import xdog.agent.child_images as image_module
+        import xdog.agent.child_transfer as transfer
 
         owner, child, _ = await setup(runtime_factory=runtime_factory)
         body = base64.b64decode(PNG)

@@ -135,7 +135,7 @@ async def lifecycle(root):
         assert goal.id in str(output) and len(model.calls) == before
         assert any('Goals: 1' in line for line in ExtensionView(lambda: session.extensions.snapshot()).render(80))
         await session.extensions.manage('unload', 'goal_ui')
-        assert not session.extensions.snapshot()['ui'] and not session.children.supervisor._children
+        assert not session.extensions.snapshot()['ui'] and not session.children.runtime._children
         old_tool, owner = host.tools[0], host.owner
         runtime.reset_session()
         model.actions = ()
@@ -169,7 +169,9 @@ async def lifecycle(root):
         assert 'plan' not in summary and 'tasks' not in summary
         assert Path(summary['report_path']).read_text().count('```json goal-report-v1') == 2
         session = runtime._active_session
-        assert not session.children.supervisor._children and await host.service.current() is None
+        current = await host.service.current()
+        assert current.id == goal.id and current.status == 'completed'
+        assert not session.children.runtime._children
         session.access.set_read_only(True)
         model.actions = (('filesystem', {'action': 'write', 'path': 'forbidden.txt', 'content': 'not authorized'}),)
         await activate(app)
@@ -188,6 +190,8 @@ async def lifecycle(root):
         await app.start()
         host = runtime.capabilities.get('goal')
         assert host.owner == owner and (await host.service.status(goal.id))['current']['status'] == 'completed'
+        current = await host.service.current()
+        assert current.id == goal.id and current.status == 'completed'
         assert runtime._active_session is None and len(model.calls) == count
     finally:
         await app.stop()

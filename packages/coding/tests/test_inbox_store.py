@@ -5,6 +5,9 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
 import pytest
@@ -221,6 +224,9 @@ def test_parallel_processes_share_one_durable_identity(box):
     store, message, manager, data = box
     script = '''
 import sys
+import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from xdog.coding.core.sessions.inbox_models import InboxMessage
 from xdog.coding.core.sessions.inbox_store import InboxStore
@@ -259,14 +265,22 @@ def test_disk_failures_never_acknowledge_or_overwrite_another_identity(box, monk
 def test_each_fsync_boundary_reports_failure_and_same_id_can_be_recovered(box, monkeypatch, boundary):
     store, message, manager, data = box
     original, calls = os.fsync, []
+    owner_thread = threading.get_ident()
 
     def fail_at(fd):
-        calls.append(fd)
-        if len(calls) == boundary:
-            raise OSError('injected publication failure')
+        # InboxStore.enqueue is synchronous on this thread. Other tests' owned
+        # cleanup IO must neither consume this boundary nor receive our fault.
+        if threading.get_ident() == owner_thread:
+            calls.append(fd)
+            if len(calls) == boundary:
+                raise OSError('injected publication failure')
         return original(fd)
 
     monkeypatch.setattr(os, 'fsync', fail_at)
+    # Prove a concurrent, unrelated fsync cannot steal the targeted boundary.
+    with tempfile.TemporaryFile() as unrelated, ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(os.fsync, unrelated.fileno()).result(timeout=3)
+    assert not calls
     failed = False
     try:
         store.enqueue(message)
@@ -314,6 +328,9 @@ def test_inbox_import_and_intake_do_not_require_acp_or_construct_agent(box):
     store, message, manager, data = box
     script = '''
 import sys
+import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from importlib.abc import MetaPathFinder
 class Block(MetaPathFinder):

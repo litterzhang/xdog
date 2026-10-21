@@ -34,7 +34,7 @@ def create(tmp_path, *, extensions=()):
 
 async def close(runtime):
     if runtime._active_session is not None:
-        await runtime._active_session.children.supervisor.aclose()
+        await runtime._active_session.children.runtime.aclose()
         await runtime._active_session.extensions.aclose()
         runtime._active_session.dispose()
     for extension in runtime._retired_extensions:

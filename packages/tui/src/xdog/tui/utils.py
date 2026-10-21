@@ -763,4 +763,9 @@ def apply_background_to_line(
     vis_len = visible_width(line)
     padding_needed = max(0, width - vis_len)
     with_padding = line + " " * padding_needed
+    # Markdown emphasis/code may emit full resets inside the line. Restore only
+    # the outer background after those resets, without disturbing foregrounds.
+    prefix = bg_fn("\x00").split("\x00", 1)[0]
+    if prefix:
+        with_padding = re.sub(r"\x1b\[(?:0|49)?m", lambda match: match[0] + prefix, with_padding)
     return bg_fn(with_padding)

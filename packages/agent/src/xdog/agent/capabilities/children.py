@@ -12,11 +12,11 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from xdog.agent.capabilities.runtime import ParentPort
+from xdog.agent.child_policy import _matches
+from xdog.agent.children import ChildBackend, ChildSpec
 from xdog.agent.core import AgentTool, AgentToolResult
 from xdog.agent.cross_loop import settle_on
 from xdog.agent.session_input import SessionInput
-from xdog.agent.supervision import ChildBackend, ChildSpec
-from xdog.agent.supervision_policy import _matches
 
 
 class CapabilityHost(Protocol):
@@ -72,7 +72,7 @@ class ChildPort:
         self.session, self.branch = session, branch
         self.parent_tools = parent_tools
         self._parent_valid = parent_valid
-        self.supervisor: ChildBackend
+        self.runtime: ChildBackend
         self._lock = threading.Lock()
         self._roles: dict[str, _Admission] = {}
         self._bound: dict[str, tuple[AgentTool, ...]] = {}
@@ -86,7 +86,7 @@ class ChildPort:
         ticket = _Admission(self, narrow, tools, admitted, asyncio.get_running_loop())
         token = _admission.set(ticket)
         try:
-            identifier = await self.supervisor.start(prompt, access=access, inherit_context=False, config=config)
+            identifier = await self.runtime.start(prompt, access=access, inherit_context=False, config=config)
             if not ticket.claimed:
                 raise ValueError('Capability child did not receive actual admission')
             return identifier
@@ -133,7 +133,7 @@ class ChildPort:
                     raise asyncio.CancelledError
                 if self.closed or not self._parent_valid(spec.id):
                     raise ValueError("Original child capability parent retired before execution")
-                state = self.supervisor.capture_source(spec.id)
+                state = self.runtime.capture_source(spec.id)
                 if (not state.settling or state.status != 'running'
                         or not self.permits(spec.id, tool.name, (bound,))):
                     raise ValueError("Original child capability admission is no longer running")
@@ -176,20 +176,20 @@ class ChildPort:
 
     @property
     def active(self) -> bool:
-        return bool(self.supervisor.active)
+        return bool(self.runtime.active)
 
     @property
     def closed(self) -> bool:
-        return self.supervisor.closed
+        return self.runtime.closed
 
     async def inspect(self, identifier: str) -> dict[str, Any]:
-        return await self.supervisor.control('inspect', identifier)
+        return await self.runtime.control('inspect', identifier)
 
     async def cancel(self, identifier: str) -> None:
-        await self.supervisor.control('cancel', identifier)
+        await self.runtime.control('cancel', identifier)
 
     def subscribe(self, callback: Callable[[dict[str, Any]], None]) -> Callable[[], None]:
-        return self.supervisor.subscribe(callback)
+        return self.runtime.subscribe(callback)
 
     def settled(self, identifier: str) -> bool:
-        return not self.supervisor.capture_source(identifier).settling
+        return not self.runtime.capture_source(identifier).settling

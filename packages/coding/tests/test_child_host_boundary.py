@@ -19,7 +19,7 @@ from packages.coding.tests.test_child_agents import create, wait
 
 
 async def close(session):
-    await session.children.supervisor.aclose()
+    await session.children.runtime.aclose()
     await session.extensions.aclose()
     session.dispose()
 
@@ -39,8 +39,8 @@ def install_skills(session, tmp_path):
 
 async def test_coding_owns_runtime_and_child_keeps_no_parent_conversation_transform_or_tool_context(tmp_path):
     session, contexts = create(tmp_path)
-    assert isinstance(session.children.supervisor, CodingChildRuntime)
-    assert session.children.supervisor._thread is None
+    assert isinstance(session.children.runtime, CodingChildRuntime)
+    assert session.children.runtime._thread is None
     session.agent.set_system_prompt('PARENT SYSTEM SECRET')
     session.agent.append_message(UserMessage(content='PARENT HISTORY SECRET'))
     calls, agents, events = [], [], []
@@ -58,12 +58,12 @@ async def test_coding_owns_runtime_and_child_keeps_no_parent_conversation_transf
         child = await original(spec, publish)
         agents.append(child)
         return child
-    session.children.supervisor.factory = factory
-    session.children.supervisor.subscribe(events.append)
+    session.children.runtime.factory = factory
+    session.children.runtime.subscribe(events.append)
     try:
-        identifier = await session.children.supervisor.start('TASK KNOWLEDGE', config={
+        identifier = await session.children.runtime.start('TASK KNOWLEDGE', config={
             'system_prompt': 'INDEPENDENT CHILD ROLE', 'instructions': 'LEGACY TASK MATERIALS', 'tools': []})
-        record = await session.children.supervisor.control('wait', identifier)
+        record = await session.children.runtime.control('wait', identifier)
         assert record['status'] == 'completed', record['error']
         assert not calls and len(contexts) == 1 and len(contexts[0].messages) == 1
         assert 'INDEPENDENT CHILD ROLE' in str(contexts[0].system_prompt)
@@ -97,10 +97,10 @@ async def test_actual_child_skill_catalog_is_selected_readonly_and_never_copies_
         agent = await original(spec, publish)
         agents.append(agent)
         return agent
-    session.children.supervisor.factory = factory
+    session.children.runtime.factory = factory
     try:
-        identifier = await session.children.supervisor.start('task', access='inherit', config={'skills': selected})
-        record = await session.children.supervisor.control('wait', identifier)
+        identifier = await session.children.runtime.start('task', access='inherit', config={'skills': selected})
+        record = await session.children.runtime.control('wait', identifier)
         assert record['status'] == 'completed', record['error']
         catalog = agents[0]._skills
         assert catalog is not manager and tuple(sorted(catalog.slugs)) == expected
@@ -122,8 +122,8 @@ async def test_unknown_skill_fails_before_any_child_model_call(tmp_path):
     install_skills(session, tmp_path)
     try:
         with pytest.raises(ValueError, match='catalog'):
-            await session.children.supervisor.start('task', config={'skills': ['unavailable']})
-        assert not contexts and not session.children.supervisor.snapshot()['children']
+            await session.children.runtime.start('task', config={'skills': ['unavailable']})
+        assert not contexts and not session.children.runtime.snapshot()['children']
         assert not session.children.store.root.exists()
         assert not session.children.parents and not session.children.snapshots and not session.children.skill_limits
     finally:
@@ -133,9 +133,9 @@ async def test_unknown_skill_fails_before_any_child_model_call(tmp_path):
 async def test_coding_action_subset_blocks_mutation_without_widening_parent_policy(tmp_path):
     session, contexts = create(tmp_path, 'allow-all')
     try:
-        identifier = await session.children.supervisor.start('write', access='inherit', config={
+        identifier = await session.children.runtime.start('write', access='inherit', config={
             'tools': ['filesystem'], 'tool_actions': {'filesystem': ['read', 'ls']}})
-        record = await session.children.supervisor.control('wait', identifier)
+        record = await session.children.runtime.control('wait', identifier)
         assert record['status'] == 'completed' and not (tmp_path / 'target').exists()
         assert 'outside delegated permissions' in str(record['messages'])
         assert contexts and session.permissions.mode == 'allow-all'
@@ -150,7 +150,7 @@ async def test_waiting_child_approval_cannot_cross_parent_epoch_identity_or_mana
     requests = []
     session.children.approver = lambda child, request: requests.append(request)
     try:
-        identifier = await session.children.supervisor.start('write', access='inherit')
+        identifier = await session.children.runtime.start('write', access='inherit')
         await wait(lambda: bool(requests))
         if change == 'permission_epoch':
             session.permissions.set_mode('deny')
@@ -161,7 +161,7 @@ async def test_waiting_child_approval_cannot_cross_parent_epoch_identity_or_mana
             session.agent.set_tools(tuple(replace(tool) if tool.name == 'filesystem' else tool
                                           for tool in session.agent.state.tools))
         assert session.children.resolve(identifier, requests[0].id, 'allow_once')
-        record = await session.children.supervisor.control('wait', identifier)
+        record = await session.children.runtime.control('wait', identifier)
         assert not (tmp_path / 'target').exists()
         assert ('policy changed' in str(record['messages']) or 'owner retired' in str(record['messages'])
                 or 'original/current parent delegation' in str(record['messages']))
@@ -189,15 +189,15 @@ async def test_model_boundary_rechecks_actual_parent_and_skill_revocation_before
         return EventStream.from_async_generator(generate(), result_future=completed)
     session.agent.set_stream_fn(stream)
     try:
-        identifier = await session.children.supervisor.start('task', config={'skills': ['review']})
+        identifier = await session.children.runtime.start('task', config={'skills': ['review']})
         assert await asyncio.to_thread(entered.wait, 3)
-        await session.children.supervisor.control('follow-up', identifier, 'must not enter a revoked model')
+        await session.children.runtime.control('follow-up', identifier, 'must not enter a revoked model')
         if change == 'owner':
             session.children._closed = True
         else:
             (root / 'review/SKILL.md').write_text('---\nname: review\n---\nREPLACED CONTENT')
         release.set()
-        record = await session.children.supervisor.control('wait', identifier)
+        record = await session.children.runtime.control('wait', identifier)
         assert record['status'] == 'failed' and len(calls) == 1
         assert 'retired' in record['error'] if change == 'owner' else 'changed' in record['error']
     finally:
@@ -213,15 +213,15 @@ async def test_failed_unadmitted_legacy_task_image_recovery_keeps_all_materials(
     original = session.children.create
     async def unavailable(spec, publish):
         raise RuntimeError('factory unavailable before first input admission')
-    session.children.supervisor.factory = unavailable
+    session.children.runtime.factory = unavailable
     try:
-        identifier = await session.children.supervisor.start('TASK', config={'instructions': 'LEGACY MATERIALS'},
+        identifier = await session.children.runtime.start('TASK', config={'instructions': 'LEGACY MATERIALS'},
             images=(ImageContent(data=PNG, mime_type='image/png'),))
-        record = await session.children.supervisor.control('wait', identifier)
+        record = await session.children.runtime.control('wait', identifier)
         assert record['status'] == 'failed' and not contexts
-        queue = (await session.children.supervisor.control('queue', identifier, '{"action":"list"}'))['queue']
+        queue = (await session.children.runtime.control('queue', identifier, '{"action":"list"}'))['queue']
         initial = queue['inputs'][0]
-        recovered = await session.children.supervisor.control('queue', identifier, json.dumps({
+        recovered = await session.children.runtime.control('queue', identifier, json.dumps({
             'action': 'recover_task', 'id': initial['id'], 'revision': queue['revision']}))
         assert 'TASK' in recovered['queue']['recovered']['content']
         assert 'LEGACY MATERIALS' in recovered['queue']['recovered']['content']
@@ -229,7 +229,7 @@ async def test_failed_unadmitted_legacy_task_image_recovery_keeps_all_materials(
         assert 'LEGACY MATERIALS' in recovered['image_recovery']['receipt']['content']
         assert not contexts and record['messages'] == []
     finally:
-        session.children.supervisor.factory = original
+        session.children.runtime.factory = original
         await close(session)
 
 
@@ -246,14 +246,14 @@ async def test_parallel_prepared_call_cannot_execute_old_approval_after_later_ca
         return EventStream.empty(message)
     session.agent.set_stream_fn(stream)
     try:
-        identifier = await session.children.supervisor.start('work', access='inherit')
+        identifier = await session.children.runtime.start('work', access='inherit')
         await wait(lambda: len(requests) == 1)
         assert session.children.resolve(identifier, requests[0].id, 'allow_once')
         await wait(lambda: len(requests) == 2)
         session.permissions.set_mode('deny')
         session.permissions.set_mode('ask')
         assert session.children.resolve(identifier, requests[1].id, 'allow_once')
-        record = await session.children.supervisor.control('wait', identifier)
+        record = await session.children.runtime.control('wait', identifier)
         assert record['status'] == 'completed', record['error']
         assert not (tmp_path / 'first').exists() and not (tmp_path / 'second').exists()
         assert 'policy changed before child tool execution' in str(record['messages'])
@@ -264,7 +264,7 @@ async def test_parallel_prepared_call_cannot_execute_old_approval_after_later_ca
 @pytest.mark.parametrize('outcome', ['pause', 'close', 'cancel'])
 async def test_admission_catalog_io_has_no_child_registry_begin_or_lock_and_settles_before_shutdown(
         tmp_path, monkeypatch, outcome):
-    from xdog.agent.supervision_policy import ParentHandle
+    from xdog.agent.child_policy import ParentHandle
     session, contexts = create(tmp_path)
     entered, release = threading.Event(), threading.Event()
     original = ParentHandle.capture_skills
@@ -273,11 +273,11 @@ async def test_admission_catalog_io_has_no_child_registry_begin_or_lock_and_sett
         assert release.wait(5)
         return original(handle, selected)
     monkeypatch.setattr(ParentHandle, 'capture_skills', held)
-    operation = asyncio.create_task(session.children.supervisor.start('must not start before admission'))
+    operation = asyncio.create_task(session.children.runtime.start('must not start before admission'))
     closing = None
     try:
         assert await asyncio.to_thread(entered.wait, 3)
-        owner = session.children.supervisor
+        owner = session.children.runtime
         assert not owner.active and not owner.snapshot()['children'] and not contexts
         assert not session.children.store.root.exists()
         if outcome == 'pause':
@@ -322,7 +322,7 @@ async def test_delegable_skill_metadata_is_readonly_and_live_owner_bound(tmp_pat
                         {'slug': 'review', 'description': 'review description'}]
         assert all(set(row) == {'slug', 'description'} for row in rows)
         assert not contexts and session.agent.active_skills == before
-        assert not session.children.supervisor.active
+        assert not session.children.runtime.active
         from xdog.agent.skills.tool import _Reader
         original = _Reader.listing
         def retire_during_read(reader, stopped):
@@ -345,15 +345,15 @@ async def test_assistant_tool_preamble_is_received_not_completed_and_tool_result
     def stream(model, context, options):
         if context.messages[-1].role == 'user':
             message = AssistantMessage(content=(TextContent(text='Working on your request'),
-                ToolCall(id='clock', name='current_time', arguments={})), stop_reason='tool_use')
+                ToolCall(id='clock', name='current_time', arguments={})), stop_reason='toolUse')
         else:
             message = AssistantMessage(content=(TextContent(text='Completed findings'),))
         return EventStream.empty(message)
     session.agent.set_stream_fn(stream)
-    session.children.supervisor.subscribe(events.append)
+    session.children.runtime.subscribe(events.append)
     try:
-        identifier = await session.children.supervisor.start('request', access='inherit')
-        record = await session.children.supervisor.control('wait', identifier)
+        identifier = await session.children.runtime.start('request', access='inherit')
+        record = await session.children.runtime.control('wait', identifier)
         assert record['status'] == 'completed', record['error']
         replies = [row for row in events if row['type'] == 'child_message' and row['direction'] == 'child_to_parent']
         assert [(row['text'], row['status']) for row in replies] == [
@@ -383,7 +383,7 @@ async def test_completed_side_effect_result_survives_parent_revocation_without_r
         return EventStream.empty(message)
     session.agent.set_stream_fn(stream)
     try:
-        identifier = await session.children.supervisor.start('work', access='inherit', config={'tools': ['effect']})
+        identifier = await session.children.runtime.start('work', access='inherit', config={'tools': ['effect']})
         assert await asyncio.to_thread(entered.wait, 3)
         if revocation == 'tool':
             session.agent.set_tools(tuple(tool for tool in session.agent.state.tools if tool is not original))
@@ -392,7 +392,7 @@ async def test_completed_side_effect_result_survives_parent_revocation_without_r
         else:
             session.children._closed = True
         release.set()
-        record = await session.children.supervisor.control('wait', identifier)
+        record = await session.children.runtime.control('wait', identifier)
         result = next(row for row in record['messages'] if row['role'] == 'toolResult')
         assert result.get('is_error', False) is False and 'ACTUAL SIDE EFFECT COMMITTED' in str(result['content'])
         assert effects == ['COMMITTED']
@@ -438,9 +438,9 @@ async def test_child_extension_executor_is_independent_but_stays_bound_to_origin
         agent = await original(spec, publish)
         agents.append(agent)
         return agent
-    session.children.supervisor.factory = factory
+    session.children.runtime.factory = factory
     try:
-        identifier = await session.children.supervisor.start('work', access='inherit', config={'tools': [name]})
+        identifier = await session.children.runtime.start('work', access='inherit', config={'tools': [name]})
         assert await asyncio.to_thread(entered.wait, 3)
         assert session.children.extensions.owners[identifier] is not session.extensions
         assert agents[0].state.tools[0] is not next(tool for tool in session.agent.active_tools if tool.name == name)
@@ -450,7 +450,7 @@ async def test_child_extension_executor_is_independent_but_stays_bound_to_origin
             # alone cannot keep an unloaded extension registration delegated.
             assert any(tool.name == name for tool in session.agent.active_tools)
         release.set()
-        record = await session.children.supervisor.control('wait', identifier)
+        record = await session.children.runtime.control('wait', identifier)
         assert record['status'] == 'completed', record['error']
         result = next(row for row in record['messages'] if row['role'] == 'toolResult')
         if revoke_before_call:

@@ -37,7 +37,7 @@ async def test_actual_group_goal_grants_headless_display_and_never_starts_work_f
         assert "unavailable" not in str(result).lower()
         rendered = ExtensionView(lambda: session.extensions.snapshot()).render(80)
         assert rendered and any("Goals: 1" in line for line in rendered)
-        assert len(model.calls) == before and not session.children.supervisor.active
+        assert len(model.calls) == before and not session.children.runtime.active
         await session.extensions.manage("unload", "goal_ui")
         assert not session.extensions.snapshot()["ui"]
         assert (await host.service.status(goal.id))["current"]["status"] == "active"
@@ -94,7 +94,7 @@ async def test_display_loss_never_owns_main_task_progress_or_goal_completion(tmp
         await host.service.change("complete", summary="Main verified actual output")
         status = await host.service.status(goal.id)
         assert status["current"]["status"] == "completed" and status["tasks"][0]["status"] == "completed"
-        assert len(model.calls) == before and not session.children.supervisor._children
+        assert len(model.calls) == before and not session.children.runtime._children
         assert not session.extensions.snapshot()["ui"]
     finally:
         await app.stop()

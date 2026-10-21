@@ -104,7 +104,7 @@ async def test_both_native_ui_catalog_canonical_id_caps_unknown_denial_no_global
     finally:
         ui._request_exit()
         if 'session' in locals():
-            await session.children.supervisor.aclose()
+            await session.children.runtime.aclose()
             await session.extensions.aclose()
         if kind == 'coding':
             session.dispose()

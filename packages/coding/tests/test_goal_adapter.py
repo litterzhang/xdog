@@ -67,8 +67,9 @@ async def test_main_agent_updates_authoritative_plan_tasks_and_completes_without
         assert status['tasks'][0]['worker'] == 'main' and status['plan'].startswith('Read result.txt')
         task = json.loads((Path(status['task_dir']) / 'inspect.json').read_text())
         assert task['format'] == 'xdog.goal_task.v2' and task['version'] == 2
-        assert await owned(session._sdk_controller, host.service.current) is None
-        assert not session.children.supervisor.active and not session.children.supervisor._children
+        current = await owned(session._sdk_controller, host.service.current)
+        assert current.id == goal.id and current.status == 'completed'
+        assert not session.children.runtime.active and not session.children.runtime._children
         assert all(not {'task_report', 'goal_context'}.intersection(t.name for t in c.tools) for c in contexts)
         assert not hasattr(host.service, 'assign') and not hasattr(host.service, 'request_complete')
     finally:
@@ -85,9 +86,11 @@ async def test_model_goal_tool_and_filesystem_keep_actual_permission_policy(tmp_
             'task': {'id': 'work', 'title': 'Main work', 'expected_version': 0}},)))
         await session.send_message('Record the main task')
         status = await owned(session._sdk_controller, lambda: host.service.status(goal.id))
-        assert bool(status['tasks']) == (mode == 'allow-all')
+        assert bool(status['tasks']) == (mode in {'ask', 'allow-all'})
+        if mode == 'ask':
+            assert status['tasks'][0]['id'] == 'work'  # bound tool state, not arbitrary workspace writes
         assert (tmp_path / 'forbidden.txt').exists() == (mode == 'allow-all')
-        assert not session.children.supervisor.active
+        assert not session.children.runtime.active
     finally:
         await close(session)
 
@@ -97,9 +100,9 @@ async def test_ordinary_child_forged_goal_label_has_no_parent_tool_or_role_exemp
     try:
         session.agent.set_stream_fn(scripted(contexts, try_write=True))
         async def start():
-            return await session.children.supervisor.start('ordinary', config={'label': 'goal-worker'})
+            return await session.children.runtime.start('ordinary', config={'label': 'goal-worker'})
         child = await owned(session._sdk_controller, start)
-        row = await session.children.supervisor.control('wait', child)
+        row = await session.children.runtime.control('wait', child)
         assert row['status'] == 'completed' and not (tmp_path / 'forbidden.txt').exists()
         child_calls = contexts[1:]
         assert child_calls and all('goal' not in {t.name for t in c.tools} for c in child_calls)
@@ -108,11 +111,33 @@ async def test_ordinary_child_forged_goal_label_has_no_parent_tool_or_role_exemp
         await close(session)
 
 
-async def test_current_goal_occupies_paused_slot_and_user_clear_releases_it(tmp_path):
+@pytest.mark.parametrize('wait_for', ['tasks', 'user', 'host'])
+async def test_current_goal_occupies_paused_slot_and_user_clear_releases_it(tmp_path, wait_for):
     session, host, _ = await setup(tmp_path)
     try:
         async def changes():
             goal = await host.service.create('One', 'One target', context=OperationContext(True))
+            waiting = await host.service.change('wait', until=wait_for, reason='Need actual wait evidence')
+            with pytest.raises(ValueError, match='only restores paused'):
+                await host.service.change('resume', context=OperationContext(True))
+            activation = {'action': 'activate', 'goal_id': goal.id, 'version': waiting.version,
+                          'reason': 'Inspected the actual wait evidence'}
+            # Even an otherwise valid model activation must identify the exact
+            # Goal, observed version and assessment; no field is optional.
+            for omitted in ('goal_id', 'version', 'reason'):
+                result = await host.tools[0].execute('missing-' + omitted,
+                    {key: value for key, value in activation.items() if key != omitted})
+                assert result.is_error and await host.service.current() == waiting
+            result = await host.tools[0].execute('automatic-activate', activation)
+            assert result.is_error == (wait_for != 'tasks')
+            if wait_for != 'tasks':
+                assert await host.service.current() == waiting
+                # The real host binding outside a user operation cannot release
+                # user/host waits; explicit actual-user context is still needed.
+                await host.service.change('activate', goal.id, version=waiting.version,
+                    reason=activation['reason'], context=OperationContext(True))
+            current = await host.service.current()
+            assert current.id == goal.id and current.status == 'active'
             await host.service.change('pause', context=OperationContext(True), reason='User pause')
             with pytest.raises(ValueError, match='current Goal'):
                 await host.service.create('Two', 'Not delegated', context=OperationContext(True))
@@ -123,7 +148,7 @@ async def test_current_goal_occupies_paused_slot_and_user_clear_releases_it(tmp_
             assert (await host.service.status(goal.id))['current']['status'] == 'cleared'
             return await host.service.create('Two', 'New explicit target', context=OperationContext(True))
         successor = await owned(session._sdk_controller, changes)
-        assert successor.title == 'Two' and not session.children.supervisor.active
+        assert successor.title == 'Two' and not session.children.runtime.active
     finally:
         await close(session)
 

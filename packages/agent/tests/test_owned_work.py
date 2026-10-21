@@ -7,7 +7,7 @@ import threading
 
 import pytest
 from xdog.agent.async_work import run_owned
-from xdog.agent.supervision_transfer import settled_image_work
+from xdog.agent.child_transfer import settled_image_work
 
 
 @pytest.mark.parametrize('run', [run_owned, settled_image_work])
@@ -127,7 +127,7 @@ def test_owned_work_import_has_no_extension_image_or_acp_runtime_dependency():
 import importlib.abc, sys
 class Guard(importlib.abc.MetaPathFinder):
     def find_spec(self, name, path=None, target=None):
-        if name == 'acp' or name.startswith(('acp.', 'xdog.agent.extensions', 'xdog.agent.supervision_transfer')):
+        if name == 'acp' or name.startswith(('acp.', 'xdog.agent.extensions', 'xdog.agent.child_transfer')):
             raise AssertionError('Unexpected feature dependency: ' + name)
 sys.meta_path.insert(0, Guard())
 from xdog.agent.async_work import run_owned, wait_owned

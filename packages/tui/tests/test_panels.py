@@ -85,3 +85,30 @@ def test_hidden_or_clipped_permission_actions_cannot_be_confirmed():
     panel.render(80)
     panel.handle_input(KeyEvent(key="escape"))
     assert selected == ["yes", "cancel"]
+
+
+def test_permission_summary_uses_dim_on_every_wrapped_and_scrolled_line_without_dim_title():
+    from xdog.tui.utils import strip_ansi
+
+    class Colored(Theme):
+        dim = staticmethod(lambda text: f"\x1b[90m{text}\x1b[39m")
+        bold = staticmethod(lambda text: f"\x1b[1m{text}\x1b[22m")
+
+    decisions = []
+    summary = 'Run goal: ' + '具体指令与参数，保留审批保护。' * 30
+    panel = PermissionPanel(summary, 'goal', [SelectItem('Allow once', 'yes'), SelectItem('Deny', 'no')],
+                            Colored(), decisions.append, lambda: decisions.append('no'))
+    for width in (24, 60, 120):
+        panel.set_render_budget(10)
+        for _ in range(3):
+            rows = panel.render(width)
+            assert all(visible_width(row) <= width for row in rows)
+            content_rows = [row for row in rows if 'Run goal:' in strip_ansi(row)
+                            or any(char in strip_ansi(row) for char in '具体指令参数保护')]
+            assert content_rows and all('\x1b[90m' in row for row in content_rows)
+            title = next(row for row in rows if 'Tool permission required' in row)
+            assert '\x1b[1m' in title and '\x1b[90m' not in title
+            panel.handle_input(KeyEvent(key='pagedown'))
+    assert panel.summary == summary and not decisions
+    panel.handle_input(KeyEvent(key='escape'))
+    assert decisions == ['no']

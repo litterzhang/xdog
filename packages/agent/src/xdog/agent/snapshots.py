@@ -566,7 +566,11 @@ def decode_snapshot(value: str | bytes | dict[str, Any]) -> Snapshot:
     Such candidates fail ``require_resumable``. Compatibility aliases are optional
     and checked against canonical fields; they never override them.
     """
-    raw = _read(value)
+    return _decode_snapshot(_read(value))
+
+
+def _decode_snapshot(raw: dict[str, Any], messages: tuple[AgentMessage, ...] | None = None) -> Snapshot:
+    """Shared schema and whole-history checks after bounded JSON detachment."""
     _object(raw, "snapshot", {
         "format", "version", "messages", "base_system_prompt", "model", "options", "settings", "skills",
         "compaction", "session_id", "run_id", "run_active", "cwd", "error", "interrupted", "interrupted_tools",
@@ -591,7 +595,8 @@ def decode_snapshot(value: str | bytes | dict[str, Any]) -> Snapshot:
     for key, setting in raw["settings"].items():
         _enum(setting, f"settings.{key}", _SETTING_VALUES[key])
     _list(raw["messages"], "messages")
-    messages = tuple(_message(message, f"messages[{i}]") for i, message in enumerate(raw["messages"]))
+    if messages is None:
+        messages = tuple(_message(message, f"messages[{i}]") for i, message in enumerate(raw["messages"]))
     _boolean(raw["interrupted"], "interrupted")
     pending = _tool_pairs(messages, diagnostic=raw["interrupted"])
     _boolean(raw["run_active"], "run_active")
@@ -648,6 +653,85 @@ def decode_snapshot(value: str | bytes | dict[str, Any]) -> Snapshot:
     )
 
 
+def decode_snapshot_parts(
+    metadata: str | bytes | dict[str, Any], messages: Sequence[AgentMessage],
+) -> Snapshot:
+    """Decode bounded metadata and separately bounded, detached typed history.
+
+    Metadata uses the same bounded JSON reader and v1 decoder as a whole snapshot,
+    but must omit ``messages``. Each message header (or string/custom message) and
+    each content part has its own existing JSON byte/item/depth bound. Neither a
+    complete history nor a multi-part message is submitted to the whole-document
+    JSON copier. Full-history tool pairing and interrupted checks remain identical.
+    This is data validation only; no tool, provider or application codec is loaded.
+    """
+    raw = _read(metadata)
+    if "messages" in raw:
+        _fail("metadata", "parts metadata must omit messages")
+    raw["messages"] = []
+    # Recovery references need the actual history, so both routes use the same
+    # decoder instead of validating those references against an empty history.
+    detached = tuple(_detach_message(message, index) for index, message in enumerate(messages))
+    return _decode_snapshot(raw, detached)
+
+
+def _detach_message_row(raw: dict[str, Any], index: int) -> dict[str, Any]:
+    if type(raw) is not dict:
+        _fail(f"messages[{index}]", "expected message object")
+    content = raw.get("content")
+    if type(content) is list:
+        header: dict[str, Any] = _json_copy({key: value for key, value in raw.items() if key != "content"})
+        header["content"] = [_json_copy(part) for part in content]
+        return header
+    detached: dict[str, Any] = _json_copy(raw)
+    return detached
+
+
+def _detach_message(message: AgentMessage, index: int) -> AgentMessage:
+    return _message(_detach_message_row(_encode_message(message), index), f"messages[{index}]")
+
+
+def _check_message_boundary(messages: Sequence[AgentMessage], *, interrupted: bool) -> None:
+    pending = _tool_pairs(messages, diagnostic=interrupted)
+    if pending and not interrupted:
+        _fail("messages", "unfinished tool pairs require an interrupted diagnostic boundary")
+
+
+def encode_snapshot_messages(
+    messages: Sequence[AgentMessage], *, interrupted: bool = False,
+) -> list[dict[str, Any]]:
+    """Encode detached, lossless v1 message rows without a whole-history byte cap.
+
+    Each message header and content part uses the bounded snapshot JSON codec.
+    User string content, timestamps and protocol signatures retain their types.
+    Full-history pairs are checked, including duplicate call IDs and orphan or
+    mismatched results. With interrupted=True, unfinished batches and the SDK's
+    diagnostic error boundary are permitted for inspection, never replay. Such
+    rows still need matching metadata and decode_snapshot_parts before adoption.
+    This is not a codec for arbitrary chunks beginning with orphan tool results.
+    """
+    rows = [_detach_message_row(_encode_message(message), index) for index, message in enumerate(messages)]
+    typed = tuple(_message(row, f"messages[{index}]") for index, row in enumerate(rows))
+    _check_message_boundary(typed, interrupted=interrupted)
+    return rows
+
+
+def decode_snapshot_messages(
+    rows: Sequence[dict[str, Any]], *, interrupted: bool = False,
+) -> tuple[AgentMessage, ...]:
+    """Decode v1 message rows with per-header/part bounds and whole-history pairs.
+
+    Returned messages do not alias nested JSON in rows. interrupted=True admits
+    only diagnostic boundaries, not authority to resume unconfirmed effects;
+    decode_snapshot_parts must still validate the original recovery metadata.
+    No executable codec is selected by data, and legacy formats are not inferred.
+    """
+    messages = tuple(_message(_detach_message_row(row, index), f"messages[{index}]")
+                     for index, row in enumerate(rows))
+    _check_message_boundary(messages, interrupted=interrupted)
+    return messages
+
+
 def encode_snapshot(
     state: AgentState,
     *,
@@ -662,6 +746,7 @@ def encode_snapshot(
     cwd: str | None = None,
     interrupted: bool = False,
     interrupted_tools: Sequence[InterruptedTool] = (),
+    omit_messages: bool = False,
 ) -> dict[str, Any]:
     """Export a checked JSON dict, dropping live state and non-whitelisted options.
 
@@ -669,6 +754,8 @@ def encode_snapshot(
     cannot establish that boundary. With ``interrupted=True`` uncommitted stream
     fragments are deliberately omitted; committed history is retained and gated.
     All pending IDs need explicit status metadata (default status is unknown).
+    With omit_messages, export metadata only but still validate all original
+    history through the per-part codec and the same whole-history pair checks.
     """
     if not interrupted and (state.is_streaming or state.stream_message is not None or state.pending_tool_calls):
         _fail("state", "busy state cannot be exported as resumable")
@@ -687,7 +774,7 @@ def encode_snapshot(
             option_data[key] = asdict(item)
     raw = {
         "format": SNAPSHOT_FORMAT, "version": SNAPSHOT_VERSION,
-        "messages": [_encode_message(message) for message in state.messages],
+        **({} if omit_messages else {"messages": [_encode_message(message) for message in state.messages]}),
         "base_system_prompt": _encode_prompt(base_system_prompt), "model": state.model,
         "options": option_data, "settings": dict(settings or {}),
         "skills": [asdict(record) for record in skills], "compaction": asdict(compaction),
@@ -700,7 +787,10 @@ def encode_snapshot(
                temperature=option_data["temperature"], max_tokens=option_data["max_tokens"])
     # Decode once before returning anything, so encoder and decoder have the same
     # validation boundary. The final copy detaches nested arguments/custom data.
-    decode_snapshot(raw)
+    if omit_messages:
+        decode_snapshot_parts(raw, state.messages)
+    else:
+        decode_snapshot(raw)
     return _read(raw)
 
 

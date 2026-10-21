@@ -5,7 +5,7 @@ import asyncio
 import threading
 
 import pytest
-from xdog.agent.supervision_transfer import settled_image_work
+from xdog.agent.child_transfer import settled_image_work
 
 
 @pytest.mark.parametrize('fails', [False, True])
@@ -46,7 +46,7 @@ async def test_worker_result_and_uncancelled_error_are_preserved():
 
 
 async def test_cancel_during_actual_sender_decode_emits_no_frames(monkeypatch):
-    import xdog.agent.supervision_transfer as module
+    import xdog.agent.child_transfer as module
     from xdog.ai.utils.image_files import decode_image
     entered, release, exited = threading.Event(), threading.Event(), threading.Event()
     def held(*args, **kwargs):

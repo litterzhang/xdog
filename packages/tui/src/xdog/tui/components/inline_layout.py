@@ -2,17 +2,26 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from xdog.tui.components.panel import PanelTheme
 from xdog.tui.components.text import Text
 from xdog.tui.tui import Component
-from xdog.tui.utils import truncate_to_width
+from xdog.tui.utils import strip_ansi, truncate_to_width
 
 
 class CompactText(Text):
     """A short summary whose logical lines never wrap into extra rows."""
 
+    def __init__(
+        self, text: str = "", padding_x: int = 1, padding_y: int = 1,
+        bg_fn: Callable[[str], str] | None = None, *, style: Callable[[str], str] | None = None,
+    ) -> None:
+        super().__init__(text, padding_x, padding_y, bg_fn)
+        self._style = style or (lambda value: value)
+
     def render(self, width: int) -> list[str]:
-        return [truncate_to_width(line, max(0, width), "…") for line in self.text.splitlines()]
+        return [self._style(truncate_to_width(line, max(0, width), "…")) for line in self.text.splitlines()]
 
 
 class InlineLayout(Component):
@@ -80,15 +89,17 @@ class InlineLayout(Component):
         transcript_lines = self.transcript.render(width)
         self.transient_start = len(transcript_lines)
 
+        inset = min(max(0, getattr(self.editor, "content_column", 0)), max(0, width - 1))
+        content_width = max(0, width - inset)
         auxiliary = self._auxiliary()
         # On a one-row terminal the editor takes priority over metadata.
         show_status = self.render_height > (2 if self.permission is not None else 1)
-        status_lines = self.status.render(width)[:1] if show_status else []
+        status_lines = self.status.render(content_width)[:1] if show_status else []
         work_lines = self.work.render(width) if self.work is not None else []
 
         # Status and editor stay visible. The auxiliary surface is bounded first,
         # then any remaining rows are offered to the work summary.
-        hint_lines = self.hints.render(width)[:1] if self.hints is not None and self.render_height >= 10 else []
+        hint_lines = self.hints.render(content_width)[:1] if self.hints is not None and self.render_height >= 10 else []
         minimum_editor_rows = 1
         auxiliary_budget = max(
             0,
@@ -120,11 +131,17 @@ class InlineLayout(Component):
         omitted = len(work_lines) - len(bounded_work)
         if omitted and status_lines:
             status_lines = [truncate_to_width(
-                f"{omitted} work summaries hidden | " + status_lines[0], width, "…",
+                f"{omitted} work summaries hidden | " + status_lines[0], content_width, "…",
             )]
+        # The editor supplies geometry; the layout knows no host/prompt policy.
+        status_lines = [" " * inset + line for line in status_lines]
+        hint_lines = [" " * inset + line for line in hint_lines]
         # Decorative spacing uses spare rows only; never displace input or panels.
+        before_status = bounded_work or transcript_lines
+        if auxiliary is not self.details and auxiliary is not self.permission:
+            before_status = auxiliary_lines or before_status
         status_gap = [""] if (
-            transcript_lines and status_lines
+            before_status and strip_ansi(before_status[-1]).strip() and status_lines
             and fixed_rows + len(bounded_work) < self.render_height
         ) else []
         if auxiliary is self.details or auxiliary is self.permission:

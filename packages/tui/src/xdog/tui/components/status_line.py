@@ -67,5 +67,5 @@ class StatusLine(Text):
         available = width - string_width(left) - 3
         if self._model and available >= 4:
             model = truncate_to_width(self._model, available, "…")
-            left += " " * max(3, width - string_width(left) - string_width(model)) + self._dim(model)
-        return [truncate_to_width(left, width, "…")]
+            left += " " * max(3, width - string_width(left) - string_width(model)) + model
+        return [self._dim(truncate_to_width(left, width, "…"))]

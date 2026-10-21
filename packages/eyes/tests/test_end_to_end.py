@@ -330,7 +330,7 @@ async def sdk_file_batch(tmp_path,observer_data,route_count):
             # observer intake does not construct another session or execution loop.
             controller = session._sdk_controller
             assert controller is not None and session._capability_loop is controller._loop
-            assert not session.children.supervisor.active
+            assert not session.children.runtime.active
             assert session.permissions.mode=='ask' and not session.permissions.has_pending_requests
         finally:
             if session is not None:

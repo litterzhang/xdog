@@ -151,7 +151,7 @@ class GroupRuntime:
         self.extension_root = Path(extension_dir) if extension_dir else data_dir / "extensions"
         self.extension_settings = extension_settings or {}
         self.extension_allow_tools = extension_allow_tools
-        from xdog.agent.supervision_config import ChildPresets
+        from xdog.agent.child_config import ChildPresets
         self.child_presets = ChildPresets(child_presets)
         # Closing worker/callbacks own their lifetime; do not retain settled histories.
         self._retired_extensions: WeakSet[ExtensionRuntime] = WeakSet()
@@ -188,8 +188,8 @@ class GroupRuntime:
     ) -> GroupRuntime:
         """Build a fully-initialized GroupRuntime from a Group config."""
         # Validate pure descriptors before any optional worker/resource allocation.
+        from xdog.agent.child_config import ChildPresets
         from xdog.agent.mcp.config import parse_servers
-        from xdog.agent.supervision_config import ChildPresets
         parse_servers(mcp_servers or {})
         ChildPresets(child_presets)
         cfg = group.agent_config
@@ -322,7 +322,7 @@ class GroupRuntime:
         if self._active_session is not None:
             self._active_session.agent.set_tools((*self.tools,
                                                   *self._active_session.extensions.tools(),
-                                                  *self._active_session.children.supervisor.tools()))
+                                                  *self._active_session.children.runtime.tools()))
             await self._active_session._persist_tool_retirement()
         return self.mcp.status()
 
@@ -368,7 +368,7 @@ class GroupRuntime:
         self.require_open()
         group_id = self.group.id
         config = self.group.config
-        children_active = self._active_session is not None and self._active_session.children.supervisor.active
+        children_active = self._active_session is not None and self._active_session.children.runtime.active
         plan = check(self.transcript_store, group_id, config.daily_reset_hour, config.idle_reset_seconds,
                      allow_reset=allow_reset and not children_active)
         if plan.reset_due:
@@ -406,7 +406,7 @@ class GroupRuntime:
             previous = self._active_session
             generation = self._source_revision
             config = self.group.config
-            children_active = previous is not None and previous.children.supervisor.active
+            children_active = previous is not None and previous.children.runtime.active
             plan = await run_owned(partial(check, self.transcript_store, self.group.id,
                 config.daily_reset_hour, config.idle_reset_seconds, allow_reset=allow_reset and not children_active))
             if self._active_session is not previous or self._source_revision != generation:

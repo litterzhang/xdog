@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 from xdog.agent import Agent, AgentConfig
-from xdog.agent.supervision_config import ChildPresets
+from xdog.agent.child_config import ChildPresets
 from xdog.ai.types import AssistantMessage
 from xdog.ai.utils.event_stream import EventStream
 

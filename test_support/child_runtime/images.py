@@ -35,7 +35,7 @@ class TestChildImages:
     async def test_repeated_identical_queue_images_are_bounded_before_admission_and_remain_durable(
         self, tmp_path, monkeypatch, *, runtime_factory, child_store_type
     ):
-        import xdog.agent.supervision_images as module
+        import xdog.agent.child_images as module
 
         body = PNG + b"\0" * 500
         monkeypatch.setattr(module, "MAX_CHILD_IMAGE_BYTES", len(body) * 3)

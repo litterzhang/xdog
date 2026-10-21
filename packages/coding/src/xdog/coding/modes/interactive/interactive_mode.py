@@ -141,6 +141,8 @@ def _command_is_read_only(command: str, args: str) -> bool:
         return True
     if command == "agents":
         return args.strip().partition(" ")[0] != "start"
+    if command == "permissions":
+        return args.strip() in {"", "status"}
     if command == "readonly":
         return args.strip() in {"", "status"}
     if command == "mcp":
@@ -367,7 +369,7 @@ class InteractiveMode:
         # now occupy one stable footer row.
         self._status_text: Text | None = None
         self._status_loader = None
-        self._hints = CompactText("", 0, 0)
+        self._hints = CompactText("", 0, 0, style=self._theme.dim)
         self._layout = InlineLayout(
             transcript=self._chat_log,
             work=self._work_container,
@@ -521,7 +523,8 @@ class InteractiveMode:
                 self._tui.request_render()
                 return {"consume": True}
         if event.matches("escape") and self._is_busy:
-            self._handle_escape()
+            if event.event_type is KeyEventType.PRESS:
+                self._handle_escape()
             return {"consume": True}
         if action == "suspend":
             if not self._tui.suspend():
@@ -998,7 +1001,7 @@ class InteractiveMode:
         def alive() -> bool:
             return (not auth_stop.is_set() and not self._exit_requested and self._session is owner_session
                     and owner_session.mcp is manager and auth_context == self._mcp_context_key()
-                    and not owner_session.agent.is_streaming and not owner_session.children.supervisor.active)
+                    and not owner_session.agent.is_streaming and not owner_session.children.runtime.active)
         async def request() -> Any:
             if action.startswith("auth_"):
                 return await owner_session.manage_mcp_auth(
@@ -1075,7 +1078,7 @@ class InteractiveMode:
         self._layout.details = self._child_panel
         self._tui.set_focus(self._child_panel)
         self._child_publish_roster()
-        self._child_panel.publish_presets(self._session.children.supervisor.presets.snapshot(),
+        self._child_panel.publish_presets(self._session.children.runtime.presets.snapshot(),
                                           self._session.children.preset_error)
         self._update_hints()
         self._tui.request_render()
@@ -1084,7 +1087,7 @@ class InteractiveMode:
         panel = self._child_panel
         if panel is None:
             return False
-        value = self._session.children.supervisor.snapshot()
+        value = self._session.children.runtime.snapshot()
         if value == self._child_roster:
             return False
         self._child_roster = value
@@ -1205,9 +1208,9 @@ class InteractiveMode:
                     if (self._exit_requested or self._session is not session
                             or session.children is not owner or self._child_context_key() != context):
                         raise ValueError('Child image session changed before admission; no replay')
-                    child_id = await owner.supervisor.start(text, access=access, config=config, images=typed)
-                    return {'child_id': child_id, 'accepted_input': owner.supervisor.admission_receipt(child_id)}
-                result = await owner.supervisor.control(action, child, text, images=typed)
+                    child_id = await owner.runtime.start(text, access=access, config=config, images=typed)
+                    return {'child_id': child_id, 'accepted_input': owner.runtime.admission_receipt(child_id)}
+                result = await owner.runtime.control(action, child, text, images=typed)
                 return {'id': child, 'accepted_input': result['accepted_input']}
             try:
                 data = asyncio.run(run())
@@ -1222,7 +1225,7 @@ class InteractiveMode:
         threading.Thread(target=work, daemon=True, name='xdog-child-image-control').start()
 
     def _child_resolve_config(self, value: dict[str, Any]) -> dict[str, Any]:
-        return self._session.children.supervisor.presets.resolve(value).to_dict()
+        return self._session.children.runtime.presets.resolve(value).to_dict()
 
     def _child_configured_start(self, task: str, access: str, config: dict[str, Any]) -> None:
         # Use the existing owned child admission path, including for text-only
@@ -1268,7 +1271,7 @@ class InteractiveMode:
                     data = owner.delegable_skills()
                 else:
                     operation = 'inspect' if action == 'prompt' else action
-                    data = asyncio.run(owner.supervisor.control(operation, child, text))
+                    data = asyncio.run(owner.runtime.control(operation, child, text))
             except (Exception, asyncio.CancelledError) as exc:
                 error = str(exc) or "Child control canceled after settlement"
             finally:
@@ -1284,7 +1287,7 @@ class InteractiveMode:
             return
         self._child_source_id = uuid.uuid4().hex
         try:
-            captured = self._session.children.supervisor.capture_source(child)
+            captured = self._session.children.runtime.capture_source(child)
             self._child_panel.reading()
             self._child_source_worker.request(self._child_source_id, child, self._child_context, captured.to_dict)
         except Exception as exc:
@@ -1868,7 +1871,7 @@ class InteractiveMode:
         elif self._is_busy:
             hint = (
                 f"{self._keymap.label('send')} queue · {self._keymap.label('steer')} steer · "
-                f"{self._keymap.label('follow_up')} follow-up · Esc cancel · /queue"
+                f"{self._keymap.label('follow_up')} follow-up · Esc steer queued / cancel · /queue"
             )
         else:
             hint = (
@@ -1948,7 +1951,8 @@ class InteractiveMode:
     def _queue_entries(self) -> tuple[QueueEntry, ...]:
         with self._queue_lock:
             ids = self._pending_ids.sync(len(self._pending_messages))
-            local = tuple(QueueEntry(key, text, "next_turn")
+            deliveries = getattr(self, '_native_queue_deliveries', {})
+            local = tuple(QueueEntry(key, text, deliveries.get(key, "next_turn"))
                           for key, (text, _echo) in zip(ids, self._pending_messages))
         return (*local, *self._routed_inputs.values())
 
@@ -2538,7 +2542,7 @@ class InteractiveMode:
         self._tui.request_render()
 
     def _handle_escape(self) -> None:
-        """Escape cancels the active model turn or running tool task."""
+        """Dismiss protected views, steer queued human input, otherwise cancel."""
         if self._attachment_panel is not None:
             self._close_attachment_preview()
             return
@@ -2549,6 +2553,11 @@ class InteractiveMode:
             self._close_details()
             return
         if self._is_busy:
+            if (self._permission_prompt is not None or self._permission_waiters
+                    or self._tui.has_overlay() or not self._editor.focused):
+                return
+            if self._session_events.promote_pending():
+                return
             self._cancel_active_work()
 
     def _draft_write_failures(self) -> tuple[int, ...]:
@@ -2798,14 +2807,14 @@ class InteractiveMode:
     def _child_message_owner(self) -> tuple[Any, ...]:
         session = self._session
         return (id(session), session.session_id, session.session_data.active_branch,
-                session.children.token, id(session.children.supervisor))
+                session.children.token, id(session.children.runtime))
 
     def _bind_child_approvals(self) -> None:
         owner = self._session.children
         if not self._exit_requested:
             if not hasattr(self, '_child_messages'):
                 self._child_messages = ChildMessagePresenter(self._chat_log, self._event_queue.put)
-            self._child_messages.bind(owner.supervisor, self._child_message_owner())
+            self._child_messages.bind(owner.runtime, self._child_message_owner())
         if self._exit_requested:
             return
         key = self._child_message_owner()
@@ -3029,7 +3038,7 @@ class InteractiveMode:
             if not self._exit_requested:
                 message = event.get('message')
                 if isinstance(message, dict) and not message.get('label'):
-                    roster = self._session.children.supervisor.snapshot()
+                    roster = self._session.children.runtime.snapshot()
                     rows = roster.get('children', ())
                     message['label'] = next((row.get('config', {}).get('label', '') for row in rows
                                              if row.get('id') == message.get('child_id')), '')
@@ -3038,6 +3047,11 @@ class InteractiveMode:
             return
         if event_type == 'native_admission_failed':
             self._session_events.admission_failed(event['id'], event['error'])
+            return
+        if event_type == 'native_steer_ack':
+            self._chat_log.add_system(event['text'])
+            self._session_events.refresh_queue()
+            self._tui.request_render()
             return
         if event_type == 'native_queue_ack':
             if not event['success']:

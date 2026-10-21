@@ -164,7 +164,7 @@ class AgentSession:
         self.access = AccessScope(data.access,
                               lambda state: runtime.transcript_store.save_access(
                                   session_meta.session_id, state.to_dict()))
-        from xdog.agent.supervision import RESERVED_TOOLS
+        from xdog.agent.children import RESERVED_TOOLS
         if any(tool.name in RESERVED_TOOLS for tool in runtime.tools):
             raise ValueError("agent delegation tools are reserved for session-owned metadata")
         self._load_extensions()
@@ -234,7 +234,7 @@ class AgentSession:
 
         self._human_input_unsubscribe = self._agent.subscribe(self._observe_human_input)
         self.children = ClawChildren(self, data.children)
-        self._agent.set_tools((*self._agent.state.tools, *self.children.supervisor.tools()))
+        self._agent.set_tools((*self._agent.state.tools, *self.children.runtime.tools()))
         if self._tool_selection_restore_pending:
             self._agent.set_active_tools([], expected_revision=self._agent.tool_selection_revision)
         self._input_is_user = True
@@ -295,7 +295,7 @@ class AgentSession:
     def dispose(self) -> None:
         self._human_input_unsubscribe()
         self._human_inputs.clear()
-        self.children.supervisor.close()
+        self.children.runtime.close()
         self.extension_dialogs.close()
         self.extensions.close()
         self.access.close()
@@ -535,7 +535,7 @@ class AgentSession:
                 raise ValueError('Active-tool selection owner changed before commit')
             agent.validate_active_tools(selected, expected_revision=expected_revision)
         def commit() -> None:
-            with self.children.supervisor.idle_scope():
+            with self.children.runtime.idle_scope():
                 precommit()
                 self._store.save_active_tools(session_id, selected, before_replace=precommit)
                 # No cancellation/connection check after an admitted atomic replace:
@@ -623,7 +623,7 @@ class AgentSession:
             raise RuntimeError('Active-tool persistence owns this session; wait/cancel before changing context')
         if self._compacting:
             raise RuntimeError("Compaction owns this session; cancel/wait before changing context")
-        if self.children.supervisor.active:
+        if self.children.runtime.active:
             raise RuntimeError("Child work is active; cancel/wait before changing session context/policy")
 
     async def manage_children(self, action: str, identifier: str = "", text: str = "", access: str = "read-only",
@@ -635,16 +635,16 @@ class AgentSession:
         self._host_loop = asyncio.get_running_loop()
         self._restore_messages()
         if action == "list":
-            return self.children.supervisor.snapshot()
+            return self.children.runtime.snapshot()
         if action == "presets":
-            return {"presets": self.children.supervisor.presets.snapshot()}
+            return {"presets": self.children.runtime.presets.snapshot()}
         if action == "start":
             await self.initialize_extensions()
             self._agent.set_system_prompt(await self._prompt_blocks())
-            child_id = await self.children.supervisor.start(text, access=access, config=config, images=images)
-            return {"child_id": child_id, 'accepted_input': self.children.supervisor.admission_receipt(child_id),
-                    **self.children.supervisor.snapshot()}
-        return await self.children.supervisor.control(action, identifier, text, images=images,
+            child_id = await self.children.runtime.start(text, access=access, config=config, images=images)
+            return {"child_id": child_id, 'accepted_input': self.children.runtime.admission_receipt(child_id),
+                    **self.children.runtime.snapshot()}
+        return await self.children.runtime.control(action, identifier, text, images=images,
                                                       return_owner=return_owner, return_alive=return_alive)
 
     # -- Public API -----------------------------------------------------------
@@ -677,9 +677,10 @@ class AgentSession:
             chosen = tuple(sorted(active))
             await self._save_selected_skills(chosen)
         skills = await run_owned(manager.list_skills)
-        return {'session_id': self._meta.session_id, 'active': sorted(self._active_skills), 'skills': [
+        effective = self._active_skills | self._runtime.capabilities.default_skills
+        return {'session_id': self._meta.session_id, 'active': sorted(effective), 'skills': [
             {'slug': skill.slug, 'name': skill.name, 'description': skill.description,
-             'scope': skill.scope, 'packaged': skill.packaged, 'active': skill.slug in self._active_skills}
+             'scope': skill.scope, 'packaged': skill.packaged, 'active': skill.slug in effective}
             for skill in skills], 'notice': 'Selection changes instructions only; no model/tool/permission grant'}
 
     async def _save_selected_skills(self, chosen: tuple[str, ...], *, update_agent: bool = True) -> None:
@@ -687,11 +688,12 @@ class AgentSession:
         # releasing the group reservation, even if its receipt is disconnected.
         async def commit() -> None:
             from xdog.agent.skills.types import SkillPlacement
-            placement = await run_owned(SkillPlacement.read, self._runtime.skill_manager, chosen)
+            effective = tuple(sorted(set(chosen) | self._runtime.capabilities.default_skills))
+            placement = await run_owned(SkillPlacement.read, self._runtime.skill_manager, effective)
             await run_owned(self._store.save_active_skills, self._meta.session_id, chosen)
             self._active_skills = frozenset(chosen)
             if update_agent:
-                self._agent.set_active_skills(chosen, prepared_skills=placement)
+                self._agent.set_active_skills(effective, prepared_skills=placement)
         task = asyncio.create_task(commit())
         try:
             await asyncio.shield(task)
@@ -745,7 +747,7 @@ class AgentSession:
         self._agent.follow_up(content)
 
     def abort(self) -> None:
-        self.children.supervisor.abort()
+        self.children.runtime.abort()
         self._agent.abort()
 
     # -- Turn execution --------------------------------------------------------
@@ -913,6 +915,14 @@ class AgentSession:
         return blocks
 
     async def _rebuild_system_prompt(self, input: GroupInput) -> str:
+        active = tuple(sorted(self._active_skills | self._runtime.capabilities.default_skills))
+        if self._agent.active_skills != active:
+            from xdog.agent.skills.types import SkillPlacement
+            agent = self._agent
+            placement = await run_owned(SkillPlacement.read, self._runtime.skill_manager, active)
+            if self._agent is not agent or self.extensions._closed:
+                raise RuntimeError('Skill prompt owner retired during preparation')
+            agent.set_active_skills(active, prepared_skills=placement)
         blocks = await self._prompt_blocks(bootstrap=True)
         if self.access.state.read_only:
             blocks = (*blocks, SystemPromptBlock(text=self.access.state.prompt(), cache=False))

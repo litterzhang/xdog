@@ -270,13 +270,18 @@ class InputPanel(Component):
             self._insert(normalized)
         return True
 
+    @property
+    def content_column(self) -> int:
+        """Zero-based start column of editable text, after the prompt marker."""
+        return 2
+
     def layout(self, width: int) -> EditorLayout:
         self._render_width = width
-        return layout_editor(self._value, max(1, width - 2))
+        return layout_editor(self._value, max(1, width - self.content_column))
 
     def render(self, width: int) -> list[str]:
         self._render_width = width
-        layout = layout_editor(self._value, max(1, width - 2))
+        layout = layout_editor(self._value, max(1, width - self.content_column))
         border_rows = 2 if self._show_borders and len(layout.rows) + 2 <= self._max_rows else 0
         show_status = bool(self._completion_status and self.autocomplete_active and self._autocomplete_visible)
         selection_budget = min(
@@ -489,7 +494,7 @@ class InputPanel(Component):
         return tuple(sorted({0, len(self._value), *(end for _start, end, _cluster in grapheme_clusters(self._value))}))
 
     def _move_vertical(self, direction: int) -> bool:
-        layout = layout_editor(self._value, max(1, self._render_width - 2))
+        layout = layout_editor(self._value, max(1, self._render_width - self.content_column))
         row_index, column = layout.position(self._cursor)
         target_index = row_index + direction
         if target_index < 0 or target_index >= len(layout.rows):

@@ -35,8 +35,8 @@ async def test_group_close_joins_current_and_retired_workers_and_fences_reuse(tm
     finally:
         await old.aclose()
         await second.extensions.aclose()
-        await first.children.supervisor.aclose()
-        await second.children.supervisor.aclose()
+        await first.children.runtime.aclose()
+        await second.children.runtime.aclose()
         first.dispose()
         second.dispose()
         await runtime.mcp.aclose()
@@ -89,7 +89,7 @@ async def test_group_close_repeated_cancel_settles_actual_extension_commit(tmp_p
         release.set()
         await asyncio.gather(*(task for task in (command, closing) if task is not None), return_exceptions=True)
         await extension.aclose()
-        await session.children.supervisor.aclose()
+        await session.children.runtime.aclose()
         session.dispose()
         await runtime.mcp.aclose()
 
@@ -124,7 +124,7 @@ async def test_group_close_keeps_cleanup_error_and_still_closes_later_resources(
         assert errors == [True] and settled == [True]
         assert client.process is None and not session.extensions._manager._thread.is_alive()
     finally:
-        await session.children.supervisor.aclose()
+        await session.children.runtime.aclose()
         session.dispose()
         await runtime.mcp.aclose()
         await memory_close()

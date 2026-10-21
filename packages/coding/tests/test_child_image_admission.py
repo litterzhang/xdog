@@ -59,27 +59,27 @@ async def test_actual_host_child_checkpoint_is_durable_before_provider_and_cance
     cancellation = None
     try:
         children = session.children
-        assert children.supervisor.persist_admission == children.store.save_admission
-        original = children.supervisor.persist_admission
+        assert children.runtime.persist_admission == children.store.save_admission
+        original = children.runtime.persist_admission
         def checkpoint(record):
             original(record)
             entered.set()
             assert release.wait(5)
-        children.supervisor.persist_admission = checkpoint
-        identifier = await children.supervisor.start('NATIVE HOST CHECKPOINT',
+        children.runtime.persist_admission = checkpoint
+        identifier = await children.runtime.start('NATIVE HOST CHECKPOINT',
             images=(ImageContent(data=PNG, mime_type='image/png'),))
         assert await asyncio.to_thread(entered.wait, 3)
         saved = ChildStore(children.store.root).load()[0]
         assert saved['initial_state'] == 'admitted' and 'NATIVE HOST CHECKPOINT' in str(saved['messages'])
         assert PNG in str(saved['messages']) and saved['status'] == 'interrupted'
         assert not adapter.calls and not session.agent.messages
-        cancellation = asyncio.create_task(children.supervisor.control('cancel', identifier))
+        cancellation = asyncio.create_task(children.runtime.control('cancel', identifier))
         await asyncio.sleep(0.05)
         assert not cancellation.done()  # Actual factory cleanup cannot pass the owned disk writer.
         release.set()
         result = await asyncio.wait_for(cancellation, 3)
         assert result['status'] == 'canceled' and not adapter.calls
-        assert not children.supervisor.active
+        assert not children.runtime.active
         assert not children.store._path(identifier, '.admission').exists()
     finally:
         release.set()
@@ -88,6 +88,6 @@ async def test_actual_host_child_checkpoint_is_durable_before_provider_and_cance
         if server is not None:
             await server.stop()
         else:
-            await session.children.supervisor.aclose()
+            await session.children.runtime.aclose()
             await session.extensions.aclose()
             session.dispose()

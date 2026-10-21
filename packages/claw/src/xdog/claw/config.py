@@ -133,7 +133,7 @@ class ClawConfig:
         object.__setattr__(self, "extension_allow_tools", names(self.extension_allow_tools))
         if not set(self.extension_allow_tools) <= set(self.extensions):
             raise ToolConfigError("extension_allow_tools must be explicitly enabled extension IDs")
-        from xdog.agent.supervision_config import ChildPresets
+        from xdog.agent.child_config import ChildPresets
         try:
             ChildPresets(self.child_presets)
         except (ValueError, TypeError) as exc:

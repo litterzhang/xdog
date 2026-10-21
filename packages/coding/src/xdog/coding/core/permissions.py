@@ -9,9 +9,11 @@ import threading
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal, cast
 
 from xdog.agent import BeforeToolCallContext, BeforeToolCallResult
+from xdog.agent.tool_effects import ToolEffect
 
 PermissionMode = Literal["ask", "ask-all", "allow-all", "deny"]
 PermissionDecision = Literal["allow_once", "allow_session", "deny"]
@@ -20,6 +22,7 @@ PermissionRequestHandler = Callable[["PermissionRequest"], None]
 _PERMISSION_MODES: tuple[PermissionMode, ...] = ("ask", "ask-all", "allow-all", "deny")
 _ALLOW_DECISIONS = ("allow_once", "allow_session")
 _READ_ONLY_FS_ACTIONS = frozenset({"read", "ls", "grep", "find"})
+_WRITE_FS_ACTIONS = frozenset({"write", "edit", "delete"})
 _SECRET_KEY = re.compile(r"(?:password|passwd|secret|token|authorization|api[_-]?key|credential)", re.I)
 _MAX_DISPLAY_STRING = 2_000
 
@@ -32,6 +35,7 @@ class PermissionRequest:
     tool_name: str
     arguments: dict[str, Any]
     summary: str
+    effect: ToolEffect | None = None
 
 
 @dataclass(slots=True)
@@ -48,10 +52,54 @@ def normalize_permission_mode(raw: object) -> PermissionMode:
     return "deny"
 
 
+def classify_tool_call(
+    tool_name: str,
+    args: Mapping[str, Any],
+    workspace: Path,
+    *,
+    effect: ToolEffect | None = None,
+) -> ToolEffect:
+    """Describe effects, not authority; *effect* must come from a trusted binding.
+
+    Path resolution performs synchronous filesystem IO. Hosts must run this
+    classifier as owned IO, not directly on the agent event loop. The result is
+    a policy description, not a filesystem confinement or a TOCTOU guarantee.
+    Model-supplied arguments never supply effect metadata.
+    """
+    if effect is not None:
+        return effect
+    if tool_name == "current_time":
+        return ToolEffect(access="read", scope="tool_data")
+    if tool_name == "filesystem":
+        action = args.get("action")
+        path = args.get("path")
+        if (
+            isinstance(action, str)
+            and action in _READ_ONLY_FS_ACTIONS | _WRITE_FS_ACTIONS
+            and isinstance(path, str)
+            and path
+        ):
+            try:
+                # Join before resolving: symlink/.. must follow real filesystem
+                # semantics rather than a lexical normalization of the path.
+                target = (workspace / path).resolve(strict=False)
+                root = workspace.resolve(strict=False)
+            except (OSError, RuntimeError, ValueError):
+                pass
+            else:
+                return ToolEffect(
+                    access="read" if action in _READ_ONLY_FS_ACTIONS else "write",
+                    scope="workspace" if target.is_relative_to(root) else "outside",
+                )
+    return ToolEffect(access="execute", scope="unknown")
+
+
 def tool_call_requires_approval(
     mode: PermissionMode,
     tool_name: str,
     arguments: Mapping[str, Any],
+    *,
+    effect: ToolEffect | None = None,
 ) -> bool:
     """Classify whether a call needs an external decision under *mode*."""
     if mode == "allow-all":
@@ -59,6 +107,15 @@ def tool_call_requires_approval(
     if mode == "ask-all":
         return True
 
+    if effect is not None:
+        if effect.access == "read":
+            return False
+        if mode == "ask" and effect.access == "write" and effect.scope == "tool_data":
+            return effect.requires_approval
+        return True
+
+    # Legacy callers have no owned path classification; preserve the native
+    # read-only allowlist without doing synchronous IO in the approval hook.
     # `deny` shares the safe read-only allowlist with `ask`; everything else is
     # blocked without prompting.
     if tool_name == "current_time":
@@ -92,7 +149,26 @@ def _request_arguments(tool_name: str, arguments: Mapping[str, Any]) -> dict[str
     return displayed
 
 
-def _summary(tool_name: str, arguments: Mapping[str, Any]) -> str:
+def _summary(
+    tool_name: str, arguments: Mapping[str, Any], *, effect: ToolEffect | None = None,
+) -> str:
+    summary = _call_summary(tool_name, arguments)
+    if effect is None:
+        return summary
+    scope_labels = {
+        "workspace": "workspace",
+        "outside": "outside workspace",
+        "tool_data": "tool-owned data",
+        "external": "external system",
+        "unknown": "unknown scope",
+    }
+    label = f"Effect: {effect.access} / {scope_labels[effect.scope]} ({effect.scope})"
+    if effect.requires_approval:
+        label += "; explicit approval required"
+    return f"{summary}\n{label}"
+
+
+def _call_summary(tool_name: str, arguments: Mapping[str, Any]) -> str:
     if tool_name == "bash":
         command = str(arguments.get("command", "")).strip()
         if len(command) > 500:
@@ -116,13 +192,19 @@ def _summary(tool_name: str, arguments: Mapping[str, Any]) -> str:
     return f"Run {tool_name}: {rendered}"
 
 
-def _rule_key(tool_name: str, arguments: Mapping[str, Any]) -> str:
+def _rule_key(
+    tool_name: str, arguments: Mapping[str, Any], *, effect: ToolEffect | None = None,
+) -> str:
     """Build a conservative exact-call session rule key."""
     try:
         encoded = json.dumps(dict(arguments), ensure_ascii=False, sort_keys=True, default=repr)
     except (TypeError, ValueError):
         encoded = repr(sorted((str(k), repr(v)) for k, v in arguments.items()))
-    return f"{tool_name}\0{encoded}"
+    key = f"{tool_name}\0{encoded}"
+    if effect is not None:
+        # An exact-call grant must not cross a change in the binding's effects.
+        key += f"\0{effect.access}\0{effect.scope}\0{effect.requires_approval}"
+    return key
 
 
 class PermissionManager:
@@ -186,15 +268,17 @@ class PermissionManager:
         self,
         ctx: BeforeToolCallContext,
         cancel: asyncio.Event | None = None,
+        *,
+        effect: ToolEffect | None = None,
     ) -> BeforeToolCallResult | None:
         """Agent hook that permits, waits for approval, or blocks a tool call."""
         args = dict(ctx.args) if isinstance(ctx.args, Mapping) else {}
         tool_name = ctx.tool_call.name
 
-        rule_key = _rule_key(tool_name, args)
+        rule_key = _rule_key(tool_name, args, effect=effect)
         with self._lock:
             policy_revision = self._policy_revision
-            if not tool_call_requires_approval(self._mode, tool_name, args):
+            if not tool_call_requires_approval(self._mode, tool_name, args, effect=effect):
                 return None
             if self._mode == "deny":
                 return BeforeToolCallResult(block=True, reason="Tool call denied by permission policy")
@@ -212,7 +296,8 @@ class PermissionManager:
             id=uuid.uuid4().hex,
             tool_name=tool_name,
             arguments=_request_arguments(tool_name, args),
-            summary=_summary(tool_name, args),
+            summary=_summary(tool_name, args, effect=effect),
+            effect=effect,
         )
         loop = asyncio.get_running_loop()
         future: asyncio.Future[PermissionDecision] = loop.create_future()

@@ -86,12 +86,12 @@ async def test_all_retired_groups_join_before_error_receipt_and_writer_release(t
     runtime = session.enable_runtime(bound=True)
     runtime.start(own_thread=True, setup_pending=True)
     session._retired_resources.extend((owner.children, owner.extensions, owner.mcp) for owner in (first, second))
-    actual_first = first.children.supervisor.aclose
+    actual_first = first.children.runtime.aclose
     failure = OSError('first retired owner drained but failed')
     async def fail():
         await actual_first()
         raise failure
-    monkeypatch.setattr(first.children.supervisor, 'aclose', fail)
+    monkeypatch.setattr(first.children.runtime, 'aclose', fail)
     client = second.extensions._manager._clients['contextual']
     actual_second = client.close
     entered, release = threading.Event(), threading.Event()

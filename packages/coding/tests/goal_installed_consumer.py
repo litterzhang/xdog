@@ -71,7 +71,7 @@ async def main():
         assert await owned(session, host.host.acp_target) is None  # Bare SDK never constructs a receiver.
         if base_only:
             await session.send_message('Ordinary default chat')
-            assert len(model.calls) == 1 and not session.children.supervisor._children
+            assert len(model.calls) == 1 and not session.children.runtime._children
             print(json.dumps({'installed_coding_default': 'first native /goal status; ordinary chat; no Goal created',
                               'no_eyes': True, 'implicit_receiver': False}))
             return
@@ -101,7 +101,7 @@ async def main():
         assert goal.id in str(output) and 'Output' in str(output) and len(model.calls) == before
         assert any('Goals: 1' in line for line in ExtensionView(lambda: session.extensions.snapshot()).render(80))
         await owned(session, lambda: session.extensions.manage('unload', 'goal_ui'))
-        assert not session.extensions.snapshot()['ui'] and not session.children.supervisor._children
+        assert not session.extensions.snapshot()['ui'] and not session.children.runtime._children
         model.actions = (('goal', {'action': 'report', 'report': {'expected_version': 1, 'progress': 'advanced',
             'summary': 'Read actual output since the baseline', 'completed': ['Read result.txt'],
             'evidence': ['result.txt'], 'blockers': [], 'next_steps': ['Commit task evidence and complete']}}),
@@ -115,7 +115,9 @@ async def main():
         assert summary['latest_report']['version'] == 2 and summary['latest_report']['progress'] == 'advanced'
         assert 'plan' not in summary and 'tasks' not in summary
         assert Path(summary['report_path']).read_text().count('```json goal-report-v1') == 2
-        assert await owned(session, host.service.current) is None and not session.children.supervisor._children
+        current = await owned(session, host.service.current)
+        assert current.id == goal.id and current.status == 'completed'
+        assert not session.children.runtime._children
         # Both ask and read-only keep original pre-tool permission hooks.
         model.actions = (('filesystem', {'action': 'write', 'path': 'forbidden.txt', 'content': 'not authorized'}),)
         session.permissions = PermissionManager('ask')

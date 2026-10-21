@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 import sys
 import threading
@@ -54,7 +55,7 @@ async def test_default_sdk_goal_has_existing_owner_loop_but_no_implicit_receiver
         assert host.automation['status'] == 'unavailable'
         count = len(calls)
         await asyncio.sleep(.01)
-        assert len(calls) == count and not session.children.supervisor._children
+        assert len(calls) == count and not session.children.runtime._children
         assert (await owned(controller, host.service.current)).id == goal.id
     finally:
         await dispose(session)
@@ -97,12 +98,24 @@ async def test_native_goal_command_uses_user_authority_and_current_goal_pause_cl
         assert session.extensions.command_owner('goal') == 'goal'
         await execute_command('goal', 'pause User pause', session)
         assert (await owned(controller, host.service.current)).status == 'paused'
+        paused = json.loads((await execute_command('goal', 'status --json', session)).output)
+        assert paused['last_transition']['origin'] == 'native_command'
+        assert paused['last_transition']['command'] == '/goal pause'
+        assert paused['last_transition']['actor'] == 'user'
+        await execute_command('goal', 'resume', session)
+        resumed = json.loads((await execute_command('goal', 'status --json', session)).output)
+        assert resumed['last_transition']['command'] == '/goal resume'
+        assert resumed['last_transition']['from'] == {'status': 'paused', 'wait_for': ''}
+        assert resumed['last_transition']['to'] == {'status': 'active', 'wait_for': ''}
+        assert resumed['last_transition']['user_authorized'] is True
+        assert not session._user_operation_authorized
+        await execute_command('goal', 'pause User pause', session)
         with pytest.raises(ValueError, match='current Goal'):
             await execute_command('goal', 'create Cannot replace paused target', session)
         await execute_command('goal', 'clear User archive', session)
         assert await owned(controller, host.service.current) is None
         assert len(await owned(controller, host.service.list)) == 1
-        assert not session.children.supervisor._children
+        assert not session.children.runtime._children
     finally:
         await dispose(session)
 
@@ -136,7 +149,7 @@ async def test_shutdown_releases_registry_and_reopen_retains_main_tasks_without_
         saved = await owned(successor._sdk_controller, lambda: next_host.service.status(goal.id))
         assert saved['current']['status'] == 'active' and saved['tasks'][0]['worker'] == 'main'
         assert saved['tasks'][0]['status'] == 'pending' and len(calls) == 1
-        assert not successor.children.supervisor._children
+        assert not successor.children.runtime._children
     finally:
         if successor is not None:
             await dispose(successor)
@@ -162,19 +175,50 @@ async def test_native_goal_status_pause_clear_with_real_child_preserves_worker_e
                     yield event
             return EventStream.from_async_generator(events(), result_future=source._result_future)
         session.agent.set_stream_fn(stream)
-        child = await owned(controller, lambda: session.children.supervisor.start('ordinary optional child'))
+        child = await owned(controller, lambda: session.children.runtime.start('ordinary optional child'))
         assert await asyncio.to_thread(entered.wait, 3)
-        assert session.children.supervisor.active
-        assert 'current' in (await execute_command('goal', 'status', session)).output
+        assert session.children.runtime.active
+        output = (await execute_command('goal', 'status', session)).output
+        assert 'Goal: Main target' in output and 'Status: active' in output
+        raw = (await execute_command('goal', 'status --json', session)).output
+        assert json.loads(raw)['current']['title'] == 'Main target'
         await execute_command('goal', 'pause User pause', session)
         assert (await owned(controller, host.service.current)).status == 'paused'
         await execute_command('goal', 'clear Archive main target', session)
-        assert await owned(controller, host.service.current) is None and session.children.supervisor.active
+        assert await owned(controller, host.service.current) is None and session.children.runtime.active
         with pytest.raises(RuntimeError, match='Child work'):
             await owned(controller, lambda: session.extension_command('extensions', 'list'))
         assert not session._user_operation_authorized
     finally:
         release.set()
         if child is not None:
-            await session.children.supervisor.control('wait', child)
+            await session.children.runtime.control('wait', child)
+        await dispose(session)
+
+
+async def test_default_capability_skill_body_is_in_first_model_context_without_filesystem_search(tmp_path):
+    from xdog.agent.skills import SkillManager
+    from xdog.ai.types import system_prompt_text
+
+    session, contexts = enabled(tmp_path)
+    # The SDK supplies this installed catalog; direct AgentSession fixtures otherwise have no manager.
+    session.agent._skills = SkillManager(shared_dir=tmp_path / 'skills')
+    try:
+        assert not session.capabilities.default_skills
+        await session.send_message('Can you create a goal and test its full loop?')
+        assert contexts
+        prompt = system_prompt_text(contexts[0].system_prompt) or ''
+        assert '# Goal: main-Agent-owned work' in prompt
+        assert 'Before each continuation' in prompt or 'goal.report' in prompt or 'goal(action="report")' in prompt
+        assert 'goal' in session.agent.active_skills and 'goal' in session.active_skills
+        assert 'goal' not in session._active_skills  # never pretend this was user activation/authority
+        assert 'The user activated these' not in prompt
+        assert not session.children.runtime._children
+        binding = session.capabilities.get('goal')
+        assert await owned(session._sdk_controller, binding.service.current) is None
+        assert len(contexts) == 1  # loading instructions does not create a Goal or start another Agent
+        await session.send_message('Continue ordinary chat')
+        next_prompt = system_prompt_text(contexts[-1].system_prompt) or ''
+        assert next_prompt.count('# Goal: main-Agent-owned work') == 1
+    finally:
         await dispose(session)

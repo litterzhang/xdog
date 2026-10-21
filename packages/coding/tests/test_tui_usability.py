@@ -13,7 +13,7 @@ from packages.coding.tests.batch_helpers import single_input_execute
 
 def mode():
     session = MagicMock()
-    session.children.supervisor.aclose = AsyncMock()
+    session.children.runtime.aclose = AsyncMock()
     session.agent.subscribe.return_value = lambda: None
     session.agent.options.thinking = "medium"
     session.permissions.mode = "ask"
@@ -49,7 +49,7 @@ def test_details_below_status_and_editor():
     app._chat_log.add_assistant("answer", thinking="REASONING")
     app._handle_global_input(KeyEvent(key="o", ctrl=True))
     rows = plain(app._layout).splitlines()
-    assert rows.index("REASONING") > next(i for i, row in enumerate(rows) if row.startswith("ready"))
+    assert rows.index("REASONING") > next(i for i, row in enumerate(rows) if row.startswith("  ready"))
     assert rows.index("REASONING") > next(i for i, row in enumerate(rows) if row.startswith(">"))
 
 
@@ -111,8 +111,9 @@ def test_no_color_theme_and_ascii_tool_markers(monkeypatch):
     tool.set_result("ok")
     result = "\n".join(tool.render(80))
     assert "\x1b[" not in result
-    assert "[ok]" in result
-    assert "success" in result
+    assert "* Ran bash" in result
+    assert "success" not in result
+    assert "  -> ok" in result
 
 
 def test_tool_duration_is_frozen_after_completion(monkeypatch):
@@ -123,8 +124,9 @@ def test_tool_duration_is_frozen_after_completion(monkeypatch):
     monkeypatch.setattr("time.monotonic", lambda: 104.0)
     tool.set_result("ok")
     monkeypatch.setattr("time.monotonic", lambda: 200.0)
-    assert "4s" in plain(tool)
-    assert "100s" not in plain(tool)
+    assert "4s" not in plain(tool)
+    assert "4s" in tool.detail_title
+    assert "100s" not in tool.detail_title
 
 
 @pytest.mark.parametrize('terminal', ['xterm-256color', 'dumb'])
@@ -361,11 +363,16 @@ def test_message_spacing_and_subtle_user_background(monkeypatch):
         theme = create_default_theme()
         for width in (24, 80):
             rows = UserMessageComponent("hello", theme).render(width)
-            assert len(rows) == 2  # one separator plus one content row
-            assert "\x1b[48;" in rows[1]
-            rows += AssistantMessageComponent("reply", theme).render(width)
-            text = [strip_ansi(row).strip() for row in rows]
-            assert text.index("reply") - text.index("hello") == 2
+            assert len(rows) == 3  # one blank row above and below the user body
+            assert not strip_ansi(rows[0]).strip() and not strip_ansi(rows[-1]).strip()
+            assert all("\x1b[48;" in row for row in rows)
+            assert all(len(strip_ansi(row)) == width for row in rows)
+            from xdog.tui.components.messages import Transcript
+            transcript = Transcript()
+            transcript.add_child(UserMessageComponent("hello", theme))
+            transcript.add_child(AssistantMessageComponent("reply", theme))
+            text = [strip_ansi(row).strip() for row in transcript.render(width)]
+            assert text.index("• reply") - text.index("› hello") == 3
 
 
 def test_input_hint_prefers_ctrl_enter():
@@ -530,3 +537,25 @@ def test_exit_cancels_controller_before_agent_prompt_or_compaction_finishes(monk
     assert finished.wait(1)
     assert not runtime.controller._thread.is_alive()
     assert app._worker_loop_ref is None and app._worker_task is None
+
+
+def test_coding_status_and_hints_use_model_dim_color_after_updates():
+    app = mode()
+    app._footer.update(model="copilot/model-name", context_tokens=100, max_context=1000)
+    app._set_status_text("ready")
+    app._hints.set_text("Enter send")
+    for component in (app._footer, app._hints):
+        row = component.render(80)[0]
+        assert row == app._theme.dim(strip_ansi(row))
+
+
+def test_coding_status_and_shortcuts_align_with_input_text():
+    app = mode()
+    app._editor.focused = False
+    app._editor.set_text("INPUT")
+    app._set_status_text("ready")
+    app._update_hints()
+    rows = [strip_ansi(row) for row in app._layout.render(100)]
+    assert next(row for row in rows if "ready" in row).index("ready") == 2
+    assert next(row for row in rows if "INPUT" in row).index("INPUT") == 2
+    assert next(row for row in rows if "Enter send" in row).index("Enter send") == 2

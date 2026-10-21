@@ -8,8 +8,8 @@ import textwrap
 
 import pytest
 from xdog.agent import AgentTool, AgentToolResult, BeforeToolCallContext
+from xdog.agent.children import ChildSpec
 from xdog.agent.core import AgentContext
-from xdog.agent.supervision import ChildSpec
 from xdog.ai.types import AssistantMessage, TextContent, ToolCall
 from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.core.runtime.group import GroupRuntime
@@ -92,10 +92,10 @@ async def test_original_async_validator_is_rechecked_after_parallel_sibling_revo
     app = application(tmp_path, stream, tools=())
     try:
         session = await prepared(app)
-        session.agent.set_tools((*sources, *session.children.supervisor.tools()))
-        identifier = await session.children.supervisor.start('parallel tools', access='inherit',
+        session.agent.set_tools((*sources, *session.children.runtime.tools()))
+        identifier = await session.children.runtime.start('parallel tools', access='inherit',
             config={'tools': ['revoke', 'write']})
-        record = await session.children.supervisor.control('wait', identifier)
+        record = await session.children.runtime.control('wait', identifier)
         assert not effects and validation == [True, False]
         assert 'original source permission revoked' in str(record['messages'])
     finally:
@@ -122,13 +122,13 @@ async def test_policy_rechecked_after_effect_validator_await_returns(tmp_path):
     app = application(tmp_path, stream, tools=())
     try:
         session = await prepared(app)
-        session.agent.set_tools((source, *session.children.supervisor.tools()))
-        identifier = await session.children.supervisor.start('write', access='inherit', config={'tools': ['write']})
+        session.agent.set_tools((source, *session.children.runtime.tools()))
+        identifier = await session.children.runtime.start('write', access='inherit', config={'tools': ['write']})
         async with asyncio.timeout(4):
             await entered.wait()
         session.access.set_read_only(True)
         release.set()
-        record = await session.children.supervisor.control('wait', identifier)
+        record = await session.children.runtime.control('wait', identifier)
         assert not effects and len(validation) == 2
         assert 'read-only' in str(record['messages']).lower()
     finally:
@@ -197,9 +197,9 @@ async def test_actual_extension_proxy_preserves_both_parent_and_child_validators
                     raise ValueError('child registration validator denied effect')
             child_source.validate_arguments = child_validate
         session.children.extensions.start = start
-        identifier = await session.children.supervisor.start('use extension', access='inherit',
+        identifier = await session.children.runtime.start('use extension', access='inherit',
             config={'tools': [alias]})
-        record = await session.children.supervisor.control('wait', identifier)
+        record = await session.children.runtime.control('wait', identifier)
         assert record['status'] == 'completed', record['error']
         assert not (runtime.workspace_dir / 'extension-effect').exists()
         assert len(parent_validation) == 2
@@ -225,7 +225,7 @@ async def build_manual_child(tmp_path, effects, *, entered=None, release=None):
     other = AgentTool(name='beta', parameters=source.parameters, execute=execute)
     app = application(tmp_path, lambda *args: EventStream.empty(AssistantMessage()), tools=())
     session = await prepared(app)
-    session.agent.set_tools((source, other, *session.children.supervisor.tools()))
+    session.agent.set_tools((source, other, *session.children.runtime.tools()))
     spec = ChildSpec(id='a' * 12, task='manual prepare boundary', access='inherit', tools=('alpha', 'beta'))
     await session.children.capture(spec)
     child = await session.children.create(spec, lambda event: None)

@@ -126,5 +126,5 @@ async def test_actual_coding_navigation_stages_target_entries_and_preserves_orig
             assert 'TARGET-OWNED-CONTEXT' not in str(ui._chat_log.render(120))
     finally:
         ui._request_exit()
-        await session.children.supervisor.aclose()
+        await session.children.runtime.aclose()
         await session.extensions.aclose()

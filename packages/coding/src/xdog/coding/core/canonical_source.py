@@ -15,8 +15,8 @@ from collections.abc import Iterable, Iterator
 from typing import Any
 
 from xdog.agent import AgentMessage
+from xdog.agent.children import ChildCapture
 from xdog.agent.core import CustomAgentMessage
-from xdog.agent.supervision import ChildCapture
 from xdog.ai.types import AssistantMessage, ToolResultMessage, UserMessage
 from xdog.coding.core.messages import messages_to_dicts
 from xdog.coding.core.session_manager import SessionData, SessionManager

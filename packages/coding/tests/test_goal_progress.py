@@ -32,22 +32,24 @@ async def test_main_reports_baseline_then_no_progress_then_pauses_without_comple
         assert Path(summary['report_path']).read_text().count('```json goal-report-v1') == 2
         assert host._observer is None
         assert summary['automation']['status'] == 'paused'
-        assert not session.children.supervisor.active
+        assert not session.children.runtime.active
     finally:
         await close(session)
 
 
-@pytest.mark.parametrize('mode', ['ask', 'deny'])
-async def test_goal_report_does_not_bypass_actual_coding_permissions(tmp_path, mode):
+@pytest.mark.parametrize('mode', ['ask', 'ask-all', 'deny'])
+async def test_goal_report_uses_own_state_policy_without_bypassing_stricter_modes(tmp_path, mode):
     session, host, contexts = await setup(tmp_path, mode=mode)
     try:
         goal = await owned(session._sdk_controller, lambda: host.service.create(
             'Output', 'No implicit write permissions', context=OperationContext(True)))
         session.agent.set_stream_fn(scripted(contexts, actions=(
-            report(0, 'baseline', 'Must require write permission'),)))
+            report(0, 'baseline', 'Own-state baseline'),)))
         await session.send_message('Inspect only; no write approval')
         summary = await owned(session._sdk_controller, host.service.summary)
-        assert summary['latest_report'] is None
-        assert not host.service.files(goal).progress_path.exists()
+        assert (summary['latest_report'] is not None) == (mode == 'ask')
+        assert host.service.files(goal).progress_path.exists() == (mode == 'ask')
+        if mode == 'ask':
+            assert summary['latest_report']['summary'] == 'Own-state baseline'
     finally:
         await close(session)

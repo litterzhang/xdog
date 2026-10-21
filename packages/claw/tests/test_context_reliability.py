@@ -162,7 +162,7 @@ async def test_cached_runtime_cannot_admit_after_its_transcript_disappears(tmp_p
         assert runtime._active_session is session
     finally:
         session.dispose()
-        await session.children.supervisor.aclose()
+        await session.children.runtime.aclose()
         await session.extensions.aclose()
         await runtime.mcp.aclose()
 

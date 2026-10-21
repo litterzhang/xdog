@@ -26,15 +26,15 @@ async def ready_start():
         runtime = server._orchestrator._runtimes["main"]
         memory = runtime.memory
         await memory._searcher._indexer.get_all_chunks()
-        supervisor = runtime.get_or_create_session().children.supervisor
-        await asyncio.to_thread(supervisor._ensure_loop)
+        child_runtime = runtime.get_or_create_session().children.runtime
+        await asyncio.to_thread(child_runtime._ensure_loop)
     stop = server._orchestrator.stop
     async def slow_stop():
         (root / "cleanup-entered").write_text("yes")
         await asyncio.sleep(0.05)
         await stop()
         if with_memory:
-            assert supervisor.closed and not supervisor.active
+            assert child_runtime.closed and not child_runtime.active
             assert asyncio.get_running_loop().is_running()  # Child disposal never stops the application loop.
         (root / "cleanup-complete").write_text("yes")
     server._orchestrator.stop = slow_stop

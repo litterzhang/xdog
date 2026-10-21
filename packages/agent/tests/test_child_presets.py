@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from xdog.agent.supervision_config import ChildPresets, parse_child_start
+from xdog.agent.child_config import ChildPresets, parse_child_start
 
 PRESETS = {
     "reviewer": {

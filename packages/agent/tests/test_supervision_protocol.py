@@ -6,8 +6,8 @@ import json
 from dataclasses import FrozenInstanceError
 
 import pytest
-from xdog.agent.supervision import ChildSpec, child_message_status, child_prompt, child_task
-from xdog.agent.supervision_config import ChildConfig, ChildPresets, parse_child_start
+from xdog.agent.child_config import ChildConfig, ChildPresets, parse_child_start
+from xdog.agent.children import ChildSpec, child_message_status, child_prompt, child_task
 from xdog.ai.types import AssistantMessage, SystemPromptBlock, TextContent, ToolCall
 
 

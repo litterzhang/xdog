@@ -528,7 +528,7 @@ class TestInteractiveMessageHandling:
             mode._tui.request_render.assert_called_once_with()
         finally:
             mode._request_exit()
-            asyncio.run(session.children.supervisor.aclose())
+            asyncio.run(session.children.runtime.aclose())
             asyncio.run(session.extensions.aclose())
             session.dispose()
 
@@ -714,8 +714,7 @@ class TestInteractiveMessageHandling:
         SessionPresenter(log).replay((), messages)
         rendered = "\n".join(strip_ansi(line) for line in log.render(80))
 
-        assert "bash" in rendered
-        assert "pwd" in rendered
+        assert "• Ran pwd" in rendered
         assert "/workspace" in rendered
 
 

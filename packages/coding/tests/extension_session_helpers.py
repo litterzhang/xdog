@@ -36,7 +36,7 @@ def session(tmp_path, *, extra=()):
 
 
 async def close(owner):
-    await owner.children.supervisor.aclose()
+    await owner.children.runtime.aclose()
     await owner.extensions.aclose()
     owner.dispose()
 

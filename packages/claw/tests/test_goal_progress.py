@@ -51,4 +51,4 @@ async def test_automatic_main_reports_then_self_pauses_and_stale_reminder_cannot
         await automatic('stale-queued-reminder')
         assert (await binding.service.current()).status == 'paused'
         assert binding.service.files(goal).latest_report()['version'] == 2
-        assert not runtime._active_session.children.supervisor.active
+        assert not runtime._active_session.children.runtime.active

@@ -82,8 +82,10 @@ async def main():
   task_path.write_text(json.dumps(raw))
   assert (await service.status())['tasks'][0]['status']=='completed'
   await service.change('complete',summary='Main checked evidence; no reviewer')
-  assert await service.current() is None
+  assert (await service.current()).status=='completed'
   assert (await service.list())[0].status=='completed'
+  assert (await service.summary())['current']['id']==current.id
+  assert (await service.summary())['last_transition']['action']=='complete'
   assert extensions.enabled==() and not agent.messages
   assert not any(n.startswith(blocked) for n in sys.modules)
  finally:

@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
+from xdog.agent.child_config import ChildConfig, parse_child_start
+from xdog.agent.child_model import resolve_child_model
 from xdog.agent.helpers import stream_fn_from_provider
-from xdog.agent.supervision_config import ChildConfig, parse_child_start
-from xdog.agent.supervision_model import resolve_child_model
 from xdog.ai.types import (
     AssistantMessage,
     Context,

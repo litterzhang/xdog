@@ -89,6 +89,6 @@ async def test_retained_plus_new_image_exceeds_actual_model_context_without_prun
         if server is not None:
             await server.stop()
         elif ui is None:
-            await owner.children.supervisor.aclose()
+            await owner.children.runtime.aclose()
             await owner.extensions.aclose()
             owner.dispose()

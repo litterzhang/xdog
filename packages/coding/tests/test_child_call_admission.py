@@ -7,8 +7,8 @@ from contextlib import asynccontextmanager
 import pytest
 from xdog.agent import BeforeToolCallContext
 from xdog.agent.access import AccessScope
+from xdog.agent.children import ChildSpec
 from xdog.agent.core import AgentContext
-from xdog.agent.supervision import ChildSpec
 from xdog.agent.types import AfterToolCallContext
 from xdog.ai.types import AssistantMessage, TextContent, ToolCall
 from xdog.ai.utils.event_stream import EventStream
@@ -149,11 +149,11 @@ async def test_real_model_duplicate_id_write_read_batch_never_writes_after_paren
             return result
         child.set_before_tool_call(revoke_after_write)
         return child
-    session.children.supervisor.factory = factory
+    session.children.runtime.factory = factory
     try:
-        identifier = await session.children.supervisor.start('model batch PoC', access='inherit')
+        identifier = await session.children.runtime.start('model batch PoC', access='inherit')
         async with asyncio.timeout(5):
-            record = await session.children.supervisor.control('wait', identifier)
+            record = await session.children.runtime.control('wait', identifier)
         assert not (tmp_path / 'must-not-exist').exists()
         assert record['status'] == 'failed' and 'duplicate' in str(record['messages']).lower()
         assert not any(row['role'] == 'toolResult' for row in record['messages'])
@@ -315,6 +315,6 @@ async def test_skill_picker_respects_host_narrowed_standard_manager_instance_cat
     try:
         assert await asyncio.to_thread(session.children.delegable_skills) == [
             {'slug': 'review', 'description': 'review description'}]
-        assert not contexts and not session.children.supervisor.active
+        assert not contexts and not session.children.runtime.active
     finally:
         await close(session)

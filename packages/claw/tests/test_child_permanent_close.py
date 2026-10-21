@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from xdog.agent.supervision_queue import recovery_from_dicts
+from xdog.agent.child_queue import recovery_from_dicts
 from xdog.ai.types import AssistantMessage, ImageContent, StartEvent, TextContent
 from xdog.ai.utils.event_stream import EventStream
 
@@ -30,7 +30,7 @@ async def test_retained_actual_child_agent_is_closed_after_settlement_and_cannot
     app = application(tmp_path, stream, tools=())
     try:
         session = await prepared(app)
-        runtime = session.children.supervisor
+        runtime = session.children.runtime
         original_factory, original_finalize = runtime.factory, runtime.finalize
         pending = []
         async def factory(spec, publish):
@@ -95,7 +95,7 @@ async def test_agent_close_failure_is_reported_and_still_finalizes_extensions(tm
     app = application(tmp_path, stream, tools=())
     try:
         session = await prepared(app)
-        runtime = session.children.supervisor
+        runtime = session.children.runtime
         original_factory, original_finalize = runtime.factory, runtime.finalize
         async def factory(spec, publish):
             agent = await original_factory(spec, publish)

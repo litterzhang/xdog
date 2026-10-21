@@ -265,6 +265,7 @@ async def test_close_joins_inflight_start_and_never_publishes_after_close(instal
             return self.binding
 
     provider = Slow("sample")
+    provider.default_skills = ("sample-skill",)
     runtime, _ = installed(provider)
     capabilities = runtime.CapabilitySet("session")
     start = asyncio.create_task(capabilities.start(object()))
@@ -274,9 +275,11 @@ async def test_close_joins_inflight_start_and_never_publishes_after_close(instal
         close = asyncio.create_task(capabilities.aclose())
         await checkpoint()
         assert not close.done(), "Close must join startup before releasing this capability owner"
+        assert capabilities.default_skills == frozenset()
         release.set()
         await asyncio.gather(start, close, return_exceptions=True)
         assert provider.binding.closes == 1
+        assert capabilities.default_skills == frozenset()
         assert capabilities.get("sample") is None and capabilities.tools == ()
     finally:
         release.set()
@@ -353,15 +356,20 @@ async def test_failed_close_settles_other_bindings_and_retires_all_tools(install
             raise ValueError("close-failed")
 
     broken, healthy = BrokenBinding(), Binding()
-    runtime, _ = installed(Provider("a-broken", broken), Provider("z-healthy", healthy))
+    first, second = Provider("a-broken", broken), Provider("z-healthy", healthy)
+    first.default_skills = ("broken-skill",)
+    second.default_skills = ("healthy-skill",)
+    runtime, _ = installed(first, second)
     capabilities = runtime.CapabilitySet("session")
     await capabilities.start(object())
+    assert capabilities.default_skills == frozenset({"broken-skill", "healthy-skill"})
     with pytest.raises(ValueError, match="close-failed"):
         await capabilities.aclose()
     assert broken.closes == healthy.closes == 1
     assert capabilities.get("a-broken") is None and capabilities.get("z-healthy") is None
     assert capabilities.tools == ()
 
+    assert capabilities.default_skills == frozenset()
 
 async def test_parent_port_is_frozen_and_forwarded_without_private_host_objects(installed):
     provider = Provider("sample")
@@ -600,3 +608,173 @@ def test_declared_native_commands_are_inert_and_do_not_claim_builtin_controls(in
     capabilities = runtime.CapabilitySet('session')
     assert capabilities.declared_commands == frozenset({'native-command'})
     assert not provider.hosts and not capabilities.tools
+
+
+@pytest.mark.parametrize("value", [
+    None, "sample", 1, {"sample"}, {"sample": True}, (None,), (1,), ("",),
+    ("two words",), ("../sample",), ("sample.md",), ("-sample",), ("1sample",),
+    ("a" * 65,), ("sample", "sample"), ["sample", "sample"],
+])
+def test_invalid_default_skills_are_rejected_during_discovery(installed, value):
+    provider = Provider("sample")
+    provider.default_skills = value
+    runtime, _ = installed(provider)
+    with pytest.raises(ValueError, match="metadata"):
+        runtime.discover("session")
+    assert not provider.hosts
+
+
+@pytest.mark.parametrize("value", [(), ("Sample-1", "other_skill"), ["sample"], frozenset({"sample"})])
+async def test_default_skills_use_existing_metadata_name_rules(installed, value):
+    provider = Provider("sample")
+    provider.default_skills = value
+    runtime, _ = installed(provider)
+    capabilities = runtime.CapabilitySet("session")
+    assert capabilities.default_skills == frozenset()
+    try:
+        await capabilities.start(object())
+        assert capabilities.default_skills == frozenset(value)
+    finally:
+        await capabilities.aclose()
+    assert capabilities.default_skills == frozenset()
+
+
+async def test_default_skills_are_inert_then_union_only_live_providers_in_scope(installed, monkeypatch):
+    first, second = Provider("first"), Provider("second")
+    first.default_skills = ("shared", "first-skill")
+    second.default_skills = ("shared", "second-skill")
+    legacy = Provider("legacy")  # No optional metadata field remains supported.
+    application = Provider("application", scopes=("application",))
+    application.default_skills = ("application-skill",)
+    runtime, entries = installed(first, second, legacy, application)
+
+    assert runtime.discover("session") == (first, legacy, second)
+    capabilities = runtime.CapabilitySet("session")
+    assert capabilities.default_skills == frozenset()
+    assert all(not provider.hosts for provider in (first, second, legacy, application))
+    assert all(entry.loads == 2 for entry in entries)
+
+    # Metadata access must not open skill files or perform another discovery.
+    def unexpected(*args, **kwargs):
+        pytest.fail("Reading default skill metadata must not do IO or discover providers")
+
+    with monkeypatch.context() as guarded:
+        guarded.setattr("builtins.open", unexpected)
+        guarded.setattr("pathlib.Path.open", unexpected)
+        guarded.setattr(runtime, "entry_points", unexpected)
+        assert capabilities.default_skills == frozenset()
+    try:
+        await capabilities.start(object())
+        with monkeypatch.context() as guarded:
+            guarded.setattr("builtins.open", unexpected)
+            guarded.setattr("pathlib.Path.open", unexpected)
+            guarded.setattr(runtime, "entry_points", unexpected)
+            defaults = capabilities.default_skills
+            assert isinstance(defaults, frozenset)
+            assert defaults == frozenset({"shared", "first-skill", "second-skill"})
+        assert not application.hosts
+    finally:
+        await capabilities.aclose()
+    assert capabilities.default_skills == frozenset()
+
+
+async def test_provider_without_default_skills_remains_compatible(installed):
+    provider = Provider("legacy")
+    runtime, _ = installed(provider)
+    capabilities = runtime.CapabilitySet("session")
+    try:
+        await capabilities.start(object())
+        assert capabilities.get("legacy") is provider.binding
+        assert capabilities.default_skills == frozenset()
+    finally:
+        await capabilities.aclose()
+    assert capabilities.default_skills == frozenset()
+
+
+async def test_default_skills_stay_empty_during_start_and_close(installed):
+    opening, finish_open = asyncio.Event(), asyncio.Event()
+    closing, finish_close = asyncio.Event(), asyncio.Event()
+
+    class SlowBinding(Binding):
+        async def aclose(self):
+            self.closes += 1
+            closing.set()
+            await finish_close.wait()
+
+    class Slow(Provider):
+        async def open(self, host):
+            opening.set()
+            await finish_open.wait()
+            return await super().open(host)
+
+    first, slow = Provider("a-first"), Slow("z-slow", SlowBinding())
+    first.default_skills = ("first-skill",)
+    slow.default_skills = ("slow-skill",)
+    runtime, _ = installed(first, slow)
+    capabilities = runtime.CapabilitySet("session")
+    start = asyncio.create_task(capabilities.start(object()))
+    close = None
+    try:
+        await asyncio.wait_for(opening.wait(), 2)
+        assert capabilities.get("a-first") is first.binding
+        assert capabilities.default_skills == frozenset()
+        finish_open.set()
+        await start
+        assert capabilities.default_skills == frozenset({"first-skill", "slow-skill"})
+        close = asyncio.create_task(capabilities.aclose())
+        await asyncio.wait_for(closing.wait(), 2)
+        assert capabilities.get("z-slow") is slow.binding
+        assert capabilities.default_skills == frozenset()
+        finish_close.set()
+        await close
+        assert capabilities.default_skills == frozenset()
+    finally:
+        finish_open.set()
+        finish_close.set()
+        await settle(*(task for task in (start, close) if task is not None))
+        await capabilities.aclose()
+
+
+@pytest.mark.parametrize("fail_inventory", [False, True])
+@pytest.mark.parametrize("fail_cleanup", [False, True])
+async def test_default_skills_do_not_leak_during_or_after_failed_start(installed, fail_inventory, fail_cleanup):
+    from xdog.agent.core import AgentTool
+
+    closing, release = asyncio.Event(), asyncio.Event()
+
+    class Cleanup(Binding):
+        async def aclose(self):
+            self.closes += 1
+            closing.set()
+            await release.wait()
+            if fail_cleanup:
+                raise ValueError("cleanup-failed")
+
+    class Broken(Provider):
+        async def open(self, host):
+            if not fail_inventory:
+                raise ValueError("open-failed")
+            return await super().open(host)
+
+    first = Provider("a-first", Cleanup(tools=(AgentTool(name="collision"),)))
+    broken = Broken("z-broken", Binding(tools=(AgentTool(name="collision"),)))
+    first.default_skills = ("first-skill",)
+    broken.default_skills = ("broken-skill",)
+    runtime, _ = installed(first, broken)
+    capabilities = runtime.CapabilitySet("session")
+    start = asyncio.create_task(capabilities.start(object()))
+    try:
+        await asyncio.wait_for(closing.wait(), 2)
+        assert capabilities.get("a-first") is first.binding
+        assert capabilities.default_skills == frozenset()
+        release.set()
+        with pytest.raises(BaseExceptionGroup if fail_cleanup else ValueError):
+            await start
+        assert capabilities.default_skills == frozenset()
+        assert capabilities.get("a-first") is None
+        assert first.binding.closes == 1
+    finally:
+        release.set()
+        await settle(start)
+        await capabilities.aclose()
+    assert capabilities.default_skills == frozenset()

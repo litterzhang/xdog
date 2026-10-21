@@ -1,4 +1,4 @@
-"""Two-phase live image return on the supervisor loop with explicit host or tool ownership.
+"""Two-phase live image return on the child runtime loop with explicit host or tool ownership.
 
 Preparation copies bytes without removing a queued input. Commitment requires the
 same owner/revision/token and the verified byte receipt, then atomically removes
@@ -14,9 +14,9 @@ from dataclasses import dataclass, replace
 from typing import Any, cast
 
 from xdog.agent.agent import Agent
+from xdog.agent.child_queue import snapshot
+from xdog.agent.child_transfer import prepare_recovery
 from xdog.agent.input_queue import QueuedInput
-from xdog.agent.supervision_queue import snapshot
-from xdog.agent.supervision_transfer import prepare_recovery
 from xdog.ai.types import ImageContent
 
 RETURN_TIMEOUT = 30.0

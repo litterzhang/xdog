@@ -94,7 +94,7 @@ class PermissionPanel(Component, Generic[Decision]):
             rows[0] = self._theme.bold(sanitize_terminal_text(title))
         if self._summary_rows:
             visible = [row.text for row in summary.rows[self._scroll:self._scroll + self._summary_rows]]
-            rows.extend(visible)
+            rows.extend(self._theme.dim(row) for row in visible)
         rows.extend(actions)
         rows = [truncate_to_width(row, max(0, inner_width), "") for row in rows]
         self._visible_choices = {

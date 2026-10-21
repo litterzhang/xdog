@@ -27,7 +27,7 @@ async def create(tmp_path, data=None):
 
 
 async def close(owner):
-    await owner.children.supervisor.aclose()
+    await owner.children.runtime.aclose()
     await owner.extensions.aclose()
     owner.dispose()
 

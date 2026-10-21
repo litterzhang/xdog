@@ -20,7 +20,31 @@ from dataclasses import dataclass, field, replace
 from typing import Any, TypeVar, cast
 
 from xdog.agent.agent import Agent
-from xdog.agent.core import AgentMessage, AgentTool
+from xdog.agent.child_compaction import ArchivedSummaryStream, preserve_model_metadata
+from xdog.agent.child_config import ChildConfig, ChildPresets
+from xdog.agent.child_images import (
+    check_collection,
+    check_retained,
+    image_parts,
+    images_from_dicts,
+    images_to_dicts,
+    input_receipt,
+    text_size,
+    validate_images,
+)
+from xdog.agent.child_queue import snapshot
+from xdog.agent.child_transfer import prepare_recovery
+from xdog.agent.children import (
+    MAX_TRANSCRIPT_BYTES,
+    RESERVED_TOOLS,
+    ChildCapture,
+    ChildSpec,
+    ChildToolProgress,
+    child_message_status,
+    child_prompt,
+    child_task,
+)
+from xdog.agent.core import AgentMessage, AgentTool, ModelStreamFn
 from xdog.agent.cross_loop import submit_remote
 from xdog.agent.events import (
     AgentEvent,
@@ -39,30 +63,7 @@ from xdog.agent.events import (
 from xdog.agent.history import history_points, validate_checkpoint
 from xdog.agent.input_queue import Delivery, QueuedInput
 from xdog.agent.messages import dicts_to_messages, messages_to_dicts
-from xdog.agent.supervision import (
-    MAX_TRANSCRIPT_BYTES,
-    RESERVED_TOOLS,
-    ChildCapture,
-    ChildSpec,
-    ChildToolProgress,
-    child_message_status,
-    child_prompt,
-    child_task,
-)
-from xdog.agent.supervision_compaction import ArchivedSummaryStream, preserve_model_metadata
-from xdog.agent.supervision_config import ChildConfig, ChildPresets
-from xdog.agent.supervision_images import (
-    check_collection,
-    check_retained,
-    image_parts,
-    images_from_dicts,
-    images_to_dicts,
-    input_receipt,
-    text_size,
-    validate_images,
-)
-from xdog.agent.supervision_queue import snapshot
-from xdog.agent.supervision_transfer import prepare_recovery
+from xdog.agent.snapshots import decode_snapshot_messages, decode_snapshot_parts, encode_snapshot_messages
 from xdog.ai.types import (
     AssistantMessage,
     Context,
@@ -261,6 +262,9 @@ class _Child:
     prompt_changed: bool = False
     message_ids: set[str] = field(default_factory=set)
     initial_message_observed: bool = False
+    session_state: dict[str, Any] | None = None
+    tool_schemas: dict[str, dict[str, Any]] = field(default_factory=dict)
+    continuation_note: str = ""
 
 
 class CodingChildRuntime:
@@ -276,7 +280,7 @@ class CodingChildRuntime:
         self,
         factory: Callable[[ChildSpec, Callable[[dict[str, Any]], None]], Agent | Awaitable[Agent]],
         persist: Callable[[dict[str, Any]], None] | None = None,
-        *, capture: Callable[[ChildSpec], None | Awaitable[None]] | None = None,
+        *, capture: Callable[[ChildSpec], ChildSpec | None | Awaitable[ChildSpec | None]] | None = None,
         begin: Callable[[ChildSpec], None] | None = None,
         persist_inputs: Callable[[str, tuple[QueuedInput, ...]], None] | None = None,
         persist_return: Callable[[str, QueuedInput], None] | None = None,
@@ -309,13 +313,16 @@ class CodingChildRuntime:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
+        self._retiring = False
+        self._bridges = 0
+        self._transient_loop = False
         self._closed = False
         self._close_future: concurrent.futures.Future[None] | None = None
         # Process-local main-Agent ownership, never an argument, result or durable record.
         # tools() is refreshed by hosts; the nonce must survive those refreshes.
         self._tool_return_owner = uuid.uuid4().hex
         self._admission_pauses = 0
-        from xdog.agent.supervision_queue import recovery_from_dicts
+        from xdog.agent.child_queue import recovery_from_dicts
         for record in records or ():
             config = ChildConfig.from_record(record.get("config", {}))
             spec = ChildSpec(id=record["id"], task=record["task"], access=record["access"],
@@ -324,11 +331,13 @@ class CodingChildRuntime:
                              thinking=config.thinking, preset=config.preset,
                              images=images_from_dicts(record.get('task_images', [])),
                              system_prompt=config.system_prompt, skills=config.skills,
-                             tool_actions=config.tool_actions)
+                             tool_actions=config.tool_actions, tool_scopes=copy.deepcopy(config.tool_scopes))
             self._children[spec.id] = _Child(
                 spec, status=record["status"], result=record.get("result", ""), error=record.get("error", ""),
                 calls=record.get("calls", 0), tokens=record.get("tokens", 0), updated=record.get("updated", 0),
-                transcript=tuple(dicts_to_messages(record.get("messages", []))), settling=False,
+                transcript=(decode_snapshot_messages(record.get("messages", []),
+                            interrupted=record["status"] != "completed") if "session_state" in record
+                            else tuple(dicts_to_messages(record.get("messages", [])))), settling=False,
                 effective=tuple(record.get("effective", {}).items()),
                 input_feedback=tuple(record.get("input_feedback", ())),
                 undelivered=recovery_from_dicts(record.get('undelivered_inputs', [])),
@@ -336,47 +345,107 @@ class CodingChildRuntime:
                 returned_backups=recovery_from_dicts(record.get('returned_backups', [])),
                 initial_state=record.get('initial_state', 'uncertain' if record.get('task_images')
                                         or not record.get('messages') else 'admitted'),
+                session_state=copy.deepcopy(record.get("session_state")),
+                tool_schemas=copy.deepcopy(record.get("tool_schemas", {})),
+                continuation_note=record.get("continuation_note", ""),
             )
 
     def _ensure_loop(self) -> asyncio.AbstractEventLoop:
+        while True:
+            with self._start_lock:
+                if self._closed:
+                    raise RuntimeError("Child runtime closed")
+                if self._thread is None or not self._thread.is_alive():
+                    self._loop = None
+                    self._ready = threading.Event()
+                    self._retiring = False
+                    def run() -> None:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        self._loop = loop
+                        self._ready.set()
+                        try:
+                            loop.run_forever()
+                        finally:
+                            tasks = asyncio.all_tasks(loop)
+                            for task in tasks:
+                                task.cancel()
+                            if tasks:
+                                loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
+                            loop.run_until_complete(loop.shutdown_asyncgens())
+                            loop.run_until_complete(loop.shutdown_default_executor())
+                            loop.close()
+                    self._thread = threading.Thread(target=run, daemon=True, name="xdog-coding-child-owner")
+                    self._thread.start()
+                thread = self._thread
+                if not self._retiring:
+                    if not self._ready.wait(3) or self._loop is None:
+                        raise RuntimeError("Child owner loop did not start")
+                    return self._loop
+            # A successor cannot borrow a retiring generation or run alongside its cleanup.
+            thread.join()
+
+    def _retire_idle(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Owner-loop callback: no timer, polling daemon or retained idle child thread."""
+        with self._lock:
+            if any(child.settling or child.queue_work or child.task is not None and not child.task.done()
+                   for child in self._children.values()):
+                return
         with self._start_lock:
-            if self._closed:
-                raise RuntimeError("Child supervisor closed")
-            if self._thread is None:
-                def run() -> None:
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    self._loop = loop
-                    self._ready.set()
-                    try:
-                        loop.run_forever()
-                    finally:
-                        tasks = asyncio.all_tasks(loop)
-                        for task in tasks:
-                            task.cancel()
-                        if tasks:
-                            loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
-                        loop.run_until_complete(loop.shutdown_asyncgens())
-                        loop.run_until_complete(loop.shutdown_default_executor())
-                        loop.close()
-                self._thread = threading.Thread(target=run, daemon=True, name="xdog-coding-child-owner")
-                self._thread.start()
-            if not self._ready.wait(3) or self._loop is None:
-                raise RuntimeError("Child owner loop did not start")
-            return self._loop
+            if (self._closed or self._retiring or not self._transient_loop or self._loop is not loop
+                    or self._bridges or asyncio.all_tasks(loop)):
+                return
+            self._retiring = True
+            loop.call_soon(loop.stop)
+
+    def _schedule_retirement(self, loop: asyncio.AbstractEventLoop) -> None:
+        try:
+            loop.call_soon_threadsafe(self._retire_idle, loop)
+        except RuntimeError:
+            if not loop.is_closed():
+                raise
+
+    def _watch_task(self, task: asyncio.Task[None]) -> None:
+        loop = task.get_loop()
+        task.add_done_callback(lambda _: self._retire_idle(loop))
 
     async def _bridge(self, coroutine: Coroutine[Any, Any, T]) -> T:
+        reserved = False
+        loop: asyncio.AbstractEventLoop | None = None
         try:
-            loop = await asyncio.to_thread(self._ensure_loop)
+            while True:
+                acquiring = asyncio.create_task(asyncio.to_thread(self._ensure_loop))
+                try:
+                    loop = await asyncio.shield(acquiring)
+                except BaseException:
+                    # Startup IO may outlive cancellation; it must not leave an idle owner behind.
+                    def release_late(done: asyncio.Task[asyncio.AbstractEventLoop]) -> None:
+                        if not done.cancelled() and done.exception() is None:
+                            owner = done.result()
+                            if not owner.is_closed():
+                                self._schedule_retirement(owner)
+                    acquiring.add_done_callback(release_late)
+                    raise
+                with self._start_lock:
+                    if self._closed:
+                        raise RuntimeError("Child runtime closed")
+                    if self._retiring or self._loop is not loop:
+                        continue
+                    self._bridges += 1
+                    reserved = True
+                    pending = submit_remote(loop, coroutine)
+                    break
+            return await pending
         except BaseException:
-            coroutine.close()
-            raise
-        with self._start_lock:
-            if self._closed:
+            if not reserved:
                 coroutine.close()
-                raise RuntimeError("Child supervisor closed")
-            pending = submit_remote(loop, coroutine)
-        return await pending
+            raise
+        finally:
+            if reserved:
+                with self._start_lock:
+                    self._bridges -= 1
+                if self._transient_loop and loop is not None and not loop.is_closed():
+                    self._schedule_retirement(loop)
 
     @contextmanager
     def idle_scope(self) -> Iterator[None]:
@@ -430,8 +499,13 @@ class CodingChildRuntime:
                           "thinking": child.spec.thinking, "preset": child.spec.preset}}
             if child.effective:
                 record["effective"] = dict(child.effective)
+            if child.continuation_note:
+                record["continuation_note"] = child.continuation_note
             if transcript:
                 record['initial_state'] = child.initial_state
+                if child.session_state is not None:
+                    record["session_state"] = copy.deepcopy(child.session_state)
+                    record["tool_schemas"] = copy.deepcopy(child.tool_schemas)
                 if child.queue_uncertain:
                     record['queue_uncertain'] = True
                 retained = set(image_parts(child.transcript))
@@ -440,14 +514,16 @@ class CodingChildRuntime:
                 if missing:
                     record['task_images'] = images_to_dicts(missing)
                 if child.undelivered:
-                    from xdog.agent.supervision_queue import recovery_to_dicts
+                    from xdog.agent.child_queue import recovery_to_dicts
                     record['undelivered_inputs'] = recovery_to_dicts(child.undelivered)
                 if child.returned_backups:
-                    from xdog.agent.supervision_queue import recovery_to_dicts
+                    from xdog.agent.child_queue import recovery_to_dicts
                     record['returned_backups'] = recovery_to_dicts(child.returned_backups)
                 if child.input_feedback:
                     record["input_feedback"] = list(child.input_feedback)
-                record["messages"] = messages_to_dicts(list(child.transcript))
+                record["messages"] = (encode_snapshot_messages(child.transcript,
+                    interrupted=child.status != "completed") if child.session_state is not None
+                    else messages_to_dicts(list(child.transcript)))
                 if child.progress_sources_limited:
                     record["live_tools_limited"] = True
                 if child.progress:
@@ -471,13 +547,14 @@ class CodingChildRuntime:
         base: dict[str, Any] = {"inherit_context": inherit_context}
         selected = self.presets.resolve({**base, **(config or {})})
         receipt = await asyncio.to_thread(input_receipt, task, images)
+        self._transient_loop = True
         return await self._bridge(self._start(task, access, selected, images, receipt))
 
     async def _start(self, task: str, access: str, config: ChildConfig, images: tuple[ImageContent, ...],
                      receipt: dict[str, Any]) -> str:
         def check_admission() -> None:
             if self._closed:
-                raise RuntimeError("Child supervisor closed")
+                raise RuntimeError("Child runtime closed")
             if self._admission_pauses:
                 raise RuntimeError("Session context/policy is changing; refresh before starting child work")
             if self.diagnostic:
@@ -487,16 +564,20 @@ class CodingChildRuntime:
             spec = ChildSpec(id=uuid.uuid4().hex[:12], task=task, access=access, inherit_context=False,
                              label=config.label, instructions=config.instructions, tools=config.tools,
                              model=config.model, thinking=config.thinking, preset=config.preset, images=images,
-                             system_prompt=config.system_prompt, skills=config.skills, tool_actions=config.tool_actions)
+                             system_prompt=config.system_prompt, skills=config.skills,
+                             tool_actions=config.tool_actions, tool_scopes=copy.deepcopy(config.tool_scopes))
         try:
             captured = self.capture(spec)
             if inspect.isawaitable(captured):
-                await captured  # No lock, child registry, Agent, persistence or execution task yet.
+                captured = await captured  # No lock, child registry, Agent, persistence or execution task yet.
+            if isinstance(captured, ChildSpec):
+                spec = captured
             with self._lock:
                 check_admission()  # Shutdown/context changes can win while bounded catalog IO runs.
                 child = _Child(spec, initial_receipt=receipt)
                 self._children[spec.id] = child
                 child.task = asyncio.create_task(self._run(child))
+                self._watch_task(child.task)
         except BaseException:
             if self.finalize is not None:
                 from xdog.agent.async_work import wait_owned
@@ -504,6 +585,12 @@ class CodingChildRuntime:
             raise
         self._notify(child)
         return spec.id
+
+    def delegation_schemas(self, identifier: str) -> dict[str, dict[str, Any]]:
+        """Data-only ceiling; the factory must still authorize actual current parent tools."""
+        with self._lock:
+            child = self._children.get(identifier)
+            return copy.deepcopy(child.tool_schemas) if child is not None else {}
 
     def admission_receipt(self, identifier: str) -> dict[str, Any]:
         with self._lock:
@@ -522,7 +609,7 @@ class CodingChildRuntime:
         key = object()
         with self._lock:
             if self._closed:
-                raise RuntimeError("Child supervisor closed")
+                raise RuntimeError("Child runtime closed")
             self._listeners[key] = listener
         def remove() -> None:
             with self._lock:
@@ -576,7 +663,7 @@ class CodingChildRuntime:
 
     @staticmethod
     def _updated_prompt(child: _Child, agent: Agent) -> SystemPrompt:
-        from xdog.agent.supervision_model import ChildModel
+        from xdog.agent.child_model import ChildModel
         model = ChildModel(id=agent.state.model, options=agent.options, context_window=agent.context_window,
                            max_prompt_tokens=agent.max_prompt_tokens, supports_tool_calls=agent.supports_tool_calls)
         return model.prompt(child_prompt("", child.spec))
@@ -658,7 +745,7 @@ class CodingChildRuntime:
                 child.progress[source_id] = row
                 child.revision += 1
 
-    async def _run(self, child: _Child) -> None:
+    async def _run(self, child: _Child, request: QueuedInput | None = None, *, scope_ready: bool = False) -> None:
         status, error = "failed", ""
         budget_error = ""
         compaction_source: tuple[AgentMessage, ...] | None = None
@@ -671,17 +758,24 @@ class CodingChildRuntime:
                 except Exception:
                     pass
         try:
-            beginning = asyncio.create_task(asyncio.to_thread(self.begin, child.spec))
-            try:
-                await asyncio.shield(beginning)
-            except asyncio.CancelledError:
-                while not beginning.done():
-                    try:
-                        await asyncio.shield(beginning)
-                    except asyncio.CancelledError:
-                        continue
-                beginning.result()
-                raise
+            if request is not None and not scope_ready:
+                captured = self.capture(child.spec)
+                if inspect.isawaitable(captured):
+                    captured = await captured
+                if isinstance(captured, ChildSpec):
+                    child.spec = captured
+            beginning = asyncio.create_task(asyncio.to_thread(self.begin, child.spec)) if request is None else None
+            if beginning is not None:
+                try:
+                    await asyncio.shield(beginning)
+                except asyncio.CancelledError:
+                    while not beginning.done():
+                        try:
+                            await asyncio.shield(beginning)
+                        except asyncio.CancelledError:
+                            continue
+                    beginning.result()
+                    raise
             built = self.factory(child.spec, publish)
             agent = await built if inspect.isawaitable(built) else built
             if agent.is_streaming:
@@ -694,6 +788,24 @@ class CodingChildRuntime:
             if agent.messages:
                 raise ValueError("Child factory must return an empty history; parent context is never inherited")
             child.agent = agent
+            if request is not None:
+                # Runtime clients, tools, authority and current model metadata are injected by the host.
+                if child.session_state is None:
+                    # Explicit bounded compatibility: no unknown skill/compaction state is invented.
+                    agent.replace_messages(list(child.transcript))
+                else:
+                    agent.restore_parts(child.session_state, child.transcript, allowed_models=(agent.state.model,))
+                agent.set_system_prompt(self._updated_prompt(child, agent))
+            else:
+                if isinstance(agent.stream_fn, ModelStreamFn):
+                    from xdog.agent.async_work import run_owned
+                    metadata = await run_owned(agent.stream_fn.resolve_model, agent.state.model)
+                    if metadata is not None:
+                        child.spec = replace(child.spec, model=agent.state.model,
+                                             thinking=agent.options.thinking or "off")
+                with self._lock:
+                    child.tool_schemas = {tool.name: copy.deepcopy(tool.parameters) for tool in agent.state.tools
+                                          if child.spec.tools is None or tool.name in child.spec.tools}
             if child.prompt_changed:
                 agent.set_system_prompt(self._updated_prompt(child, agent))
             if self.persist_admission is not None:
@@ -728,7 +840,8 @@ class CodingChildRuntime:
                         canonical = image_parts(history)
                         missing = tuple(part for part in child.spec.images if part not in set(canonical))
                         check_collection((*canonical, *missing))
-                        record['messages'] = messages_to_dicts(list(history))
+                        record['messages'] = (encode_snapshot_messages(history, interrupted=True)
+                            if child.session_state is not None else messages_to_dicts(list(history)))
                         points = history_points(history)
                         record['checkpoint'] = points[-1].index if points else -1
                         persist_admission = self.persist_admission
@@ -800,13 +913,20 @@ class CodingChildRuntime:
                             self._message_fact(child, event, message_id=event.input.id,
                                 direction="parent_to_child", message=message, source=event.input.delivery,
                                 status="admitted")
+                    if request is not None and (
+                            isinstance(event, MessageEndEvent) and isinstance(event.message, UserMessage)
+                            or isinstance(event, InputHandledEvent) and event.source == "prompt"):
+                        with self._lock:
+                            child.undelivered = tuple(row for row in child.undelivered if row.id != request.id)
                     if isinstance(event, (InputHandledEvent, InputRejectedEvent)) and event.source == 'prompt':
                         child.initial_message_observed = True
                     if isinstance(event, MessageEndEvent) and isinstance(event.message, UserMessage):
                         if not child.initial_message_observed:
                             child.initial_message_observed = True
-                            self._message_fact(child, event, message_id="initial-task:" + child.spec.id,
-                                direction="parent_to_child", message=event.message, source="prompt", status="admitted")
+                            self._message_fact(child, event,
+                                message_id="initial-task:" + child.spec.id if request is None else request.id,
+                                direction="parent_to_child", message=event.message,
+                                source="prompt" if request is None else request.delivery, status="admitted")
                     if isinstance(event, MessageEndEvent) and isinstance(event.message, AssistantMessage):
                         message = event.message
                         # An assistant tool-call-only message is not a textual reply.
@@ -860,6 +980,8 @@ class CodingChildRuntime:
                 except RuntimeError as exc:
                     budget_error = str(exc)
                     agent.abort()
+            if request is not None:
+                child.initial_message_observed = False
             unsubscribe = agent.subscribe(observe)
             original = child.agent.stream_fn
             def counted(model: str, context: Context, options: StreamOptions) -> EventStream[AssistantMessage]:
@@ -893,7 +1015,9 @@ class CodingChildRuntime:
             with self._lock:
                 child.status = "running"
             self._notify(child)
-            stream = await child.agent.prompt(child_task(child.spec), images=list(child.spec.images))
+            prompt = child_task(child.spec) if request is None else request.content
+            images = child.spec.images if request is None else request.images
+            stream = await child.agent.prompt(prompt, images=list(images))
             async for event in stream:
                 if self.on_event is not None:
                     await self.on_event(child.spec, event)
@@ -932,7 +1056,16 @@ class CodingChildRuntime:
         while child.queue_work:
             await asyncio.sleep(0.005)  # Admitted input journal writers settle before terminal publication.
         if child.agent is not None:
-            child.undelivered = tuple(replace(row, selected=False) for row in child.agent.drain_inputs())
+            retained = {row.id: row for row in child.undelivered}
+            retained.update((row.id, replace(row, selected=False)) for row in child.agent.drain_inputs())
+            child.undelivered = tuple(retained.values())
+            if status == "completed":
+                try:
+                    from xdog.agent.async_work import run_owned
+                    snapshot_data = await run_owned(child.agent.dump_metadata)
+                    child.session_state = snapshot_data
+                except Exception as exc:
+                    status, error = "failed", "Child continuation snapshot failed: " + type(exc).__name__
             try:
                 # aclose permanently fences even factory/inspection-retained Agent
                 # references. Its queue clearing must happen after recovery owns inputs.
@@ -976,6 +1109,7 @@ class CodingChildRuntime:
         if action == "set_system_prompt":
             ChildConfig.from_dict({"system_prompt": text})
         receipt = await asyncio.to_thread(input_receipt, text, images)
+        self._transient_loop = True
         return await self._bridge(self._control(action, identifier, text, images, receipt, return_owner, return_alive))
 
     async def _admit_identified_input(self, identifier: str, agent: Agent, input_id: str, text: str,
@@ -999,7 +1133,7 @@ class CodingChildRuntime:
         if not isinstance(input_id, str) or re.fullmatch(r'extq-[a-f0-9]{32}', input_id) is None:
             return False
         async def discard() -> bool:
-            from xdog.agent.supervision_queue import snapshot
+            from xdog.agent.child_queue import snapshot
             child = self._children.get(identifier)
             if child is None or child.agent is not agent or child.status != 'running':
                 return False
@@ -1067,7 +1201,7 @@ class CodingChildRuntime:
 
     @classmethod
     def _stopped_queue(cls, child: _Child) -> dict[str, Any]:
-        from xdog.agent.supervision_queue import snapshot
+        from xdog.agent.child_queue import snapshot
         return snapshot(None, child.spec.id, child.status, child.undelivered,
                         initial=cls._initial_input(child), initial_uncertain=child.initial_state == 'uncertain',
                         recovery_uncertain=child.queue_uncertain, returned=child.returned_backups)
@@ -1091,7 +1225,7 @@ class CodingChildRuntime:
                        return_alive: Callable[[], bool]) -> dict[str, Any]:
         child = self._children.get(identifier)
         if child is None:
-            raise ValueError("Child is unavailable or belongs to another supervisor")
+            raise ValueError("Child is unavailable or belongs to another child runtime")
         # Live cancellation/close must remain reachable: _settle awaits its writer.
         # A stopped recovery writer instead owns the durable record itself; close
         # must not archive/remove that record while its reviewed update commits.
@@ -1133,7 +1267,7 @@ class CodingChildRuntime:
             self._notify(child)
             return self._record(child, transcript=True)
         if action == "queue":
-            from xdog.agent.supervision_queue import change, recovery_to_dicts, request
+            from xdog.agent.child_queue import change, recovery_to_dicts, request
             try:
                 command = json.loads(text)
             except (ValueError, TypeError) as exc:
@@ -1153,7 +1287,7 @@ class CodingChildRuntime:
                     return result
                 if command['action'] == 'return_cancel':
                     child.live_returns.cancel(command, return_owner)
-                    from xdog.agent.supervision_queue import snapshot
+                    from xdog.agent.child_queue import snapshot
                     return {'queue': snapshot(child.agent, identifier, child.status, child.undelivered)}
                 agent = child.agent
                 rows = child.live_returns.planned_commit(agent, identifier, child.status, command, return_owner)
@@ -1163,7 +1297,7 @@ class CodingChildRuntime:
                         assert agent is not None
                         original = next(row for row in agent.pending_inputs() if row.id == command['id'])
                         backup = replace(original, id='returned:' + command['token'], selected=False)
-                        from xdog.agent.supervision_queue import recovery_from_dicts, recovery_to_dicts
+                        from xdog.agent.child_queue import recovery_from_dicts, recovery_to_dicts
                         existing = next((row for row in child.returned_backups if row.id == backup.id), None)
                         if existing is not None and existing != backup:
                             raise ValueError('Retained return backup identity changed; no replay')
@@ -1223,7 +1357,7 @@ class CodingChildRuntime:
                         raise ValueError('Initial task no longer available')
                     if command['action'] == 'recover_task':
                         if initial.images:
-                            from xdog.agent.supervision_transfer import prepare_recovery
+                            from xdog.agent.child_transfer import prepare_recovery
                             prepared = await prepare_recovery(initial)
                             if not self.recovery_current(identifier, command['revision']):
                                 raise ValueError('Initial task changed during preparation; no replay')
@@ -1256,7 +1390,7 @@ class CodingChildRuntime:
                 if command['action'] in {'recover_task', 'remove_task'}:
                     raise ValueError('Task recovery action needs the initial-task source row')
                 if command['action'] == 'recover_images':
-                    from xdog.agent.supervision_transfer import prepare_recovery
+                    from xdog.agent.child_transfer import prepare_recovery
                     row = next(row for row in (*child.undelivered, *child.returned_backups) if row.id == command['id'])
                     if not row.images:
                         raise ValueError('Use ordinary recovery for text-only child inputs')
@@ -1301,7 +1435,7 @@ class CodingChildRuntime:
                 if command['action'] in {'recover', 'recover_images', 'recover_task', 'remove_task'}:
                     raise ValueError('Running child inputs use reviewed return, not stopped-input recovery')
                 if self.persist_inputs is not None and command['action'] in {'edit', 'remove', 'move', 'return'}:
-                    from xdog.agent.supervision_queue import planned_change
+                    from xdog.agent.child_queue import planned_change
                     agent = child.agent
                     rows = planned_change(agent, identifier, child.status, command)
                     child.queue_work = True
@@ -1331,15 +1465,18 @@ class CodingChildRuntime:
             return self._record(child, transcript=True)
         if action in {"steer", "follow-up"}:
             if child.agent is None:
-                raise ValueError('Child is not running or its bounded input queue is full')
+                await self._continue(child, text, images, return_alive)
+                result = self._record(child, transcript=True)
+                result["accepted_input"] = receipt
+                return result
             await self._queue_admission(child, child.agent,
                 QueuedInput(uuid.uuid4().hex, text, 'steer' if action == 'steer' else 'follow_up', images=images),
                 lambda: True)
         elif action in {"cancel", "close"}:
+            with self._lock:
+                if child.settling and child.status in {"queued", "running"}:
+                    child.status = "canceling"  # Admission may own IO before an execution task exists.
             if child.settling and child.task is not None:
-                with self._lock:
-                    if child.status in {"queued", "running"}:
-                        child.status = "canceling"
                 if child.agent is not None:
                     child.agent.abort()
                 # A queued child must enter its try/finally before it can be canceled.
@@ -1378,6 +1515,161 @@ class CodingChildRuntime:
         return result
 
     @staticmethod
+    def _legacy_readonly(child: _Child) -> tuple[ChildSpec, dict[str, dict[str, Any]]]:
+        """Explicit legacy handoff: only proven completed history, with a narrowed read-only grant."""
+        from xdog.agent.compaction import SUMMARY_TEMPLATE
+        from xdog.ai.types import ToolResultMessage
+        if (child.spec.access != "read-only" or child.spec.inherit_context or child.spec.skills
+                or child.spec.skills is None or not child.transcript):
+            raise ValueError("Legacy child has unknown authority/skill state; explicit reconciliation required")
+        typed = decode_snapshot_messages(encode_snapshot_messages(child.transcript))
+        last = typed[-1]
+        if not isinstance(last, AssistantMessage) or last.stop_reason not in {"stop", "length"} or last.error_message:
+            raise ValueError("Legacy child has no confirmed completion boundary; no automatic replay")
+        prefix = SUMMARY_TEMPLATE.partition("{summary}")[0]
+        for message in typed:
+            if not isinstance(message, (UserMessage, AssistantMessage, ToolResultMessage)):
+                raise ValueError("Legacy child has unknown context state; explicit reconciliation required")
+            content = message.content
+            plain = content if isinstance(content, str) else "".join(
+                part.text for part in content if isinstance(part, TextContent))
+            if isinstance(message, UserMessage) and plain.startswith(prefix):
+                raise ValueError("Legacy compacted history lacks its summary metadata; "
+                                 "explicit reconciliation required")
+        effective = dict(child.effective)
+        model = effective.get("model") or child.spec.model
+        if not isinstance(model, str) or not model:
+            raise ValueError("Legacy child lacks a verified model binding; no fallback")
+        successful = {message.tool_call_id for message in typed
+                      if isinstance(message, ToolResultMessage) and not message.is_error}
+        ceilings: dict[str, dict[str, Any]] = {}
+        actions: dict[str, set[str]] = {}
+        original_actions = dict(child.spec.tool_actions)
+        for message in typed:
+            if not isinstance(message, AssistantMessage):
+                continue
+            for call in message.content:
+                if not isinstance(call, ToolCall) or call.id not in successful:
+                    continue
+                action = call.arguments.get("action")
+                if call.name == "filesystem":
+                    if (action not in {"read", "ls", "grep", "find"}
+                            or call.name in original_actions and action not in original_actions[call.name]):
+                        continue
+                    actions.setdefault(call.name, set()).add(action)
+                elif call.name != "current_time" or call.name in original_actions:
+                    continue
+                if child.spec.tools is not None and call.name not in child.spec.tools:
+                    continue
+                schema = ceilings.setdefault(call.name, {"type": "object", "enum": []})
+                if call.arguments not in schema["enum"]:
+                    schema["enum"].append(copy.deepcopy(call.arguments))
+        spec = replace(child.spec, tools=tuple(ceilings), skills=(), model=model,
+                       tool_scopes={name: scope for name, scope in child.spec.tool_scopes.items() if name in ceilings},
+                       thinking=effective.get("thinking", child.spec.thinking),
+                       tool_actions=tuple((name, tuple(sorted(values))) for name, values in actions.items()))
+        spec.config()  # All new settings still pass the SDK's normal data validation on capture.
+        return spec, ceilings
+
+    async def _continue(self, child: _Child, text: str, images: tuple[ImageContent, ...],
+                        alive: Callable[[], bool]) -> None:
+        from xdog.agent.async_work import run_owned
+        owner_alive = alive()
+        with self._lock:
+            if self._closed or self._admission_pauses or not owner_alive:
+                raise ValueError("Original child owner is closed/paused; continuation refused")
+            if child.settling or child.queue_work:
+                raise ValueError("Child is still settling; wait before sending a new message")
+            if child.status != "completed" or child.queue_uncertain:
+                raise ValueError("Child is not running or safely completed; "
+                                 "inspect/reconcile interrupted effects, no replay")
+            legacy = self._legacy_readonly(child) if child.session_state is None else None
+            if child.session_state is not None:
+                decode_snapshot_parts(child.session_state, child.transcript).require_resumable()
+            if (not isinstance(text, str) or not (text.strip() or images)
+                    or len(text.encode("utf-8")) > 16000):
+                raise ValueError("Invalid child continuation input; expected nonempty text/images within 16000 bytes")
+            request = QueuedInput(uuid.uuid4().hex, text, "follow_up", images=images)
+            canonical = image_parts(child.transcript)
+            check_collection((*canonical, *images))
+            check_retained((*canonical, *(part for row in child.undelivered for part in row.images),
+                            *(part for row in child.returned_backups for part in row.images), *images))
+            from xdog.agent.child_queue import recovery_from_dicts, recovery_to_dicts
+            pending = (*child.undelivered, request)
+            encoded = recovery_to_dicts(pending)
+            recovery_from_dicts(encoded)  # Validate the complete candidate before publishing flags or writing.
+            record = self._record(child, transcript=True)
+            record.update(status="interrupted", settling=False, queue_uncertain=True,
+                          undelivered_inputs=encoded,
+                          error="Continuation admission may be unconfirmed; inspect, never automatically replay.")
+            if legacy is not None:
+                spec, ceilings = legacy
+                note = ("Explicit legacy read-only continuation: retained paired history; tools restricted to "
+                        "previously successful read-only argument sets. "
+                        "Unknown skill/compaction state is not inferred.")
+                record.update(config=spec.config().to_dict(), tool_schemas=copy.deepcopy(ceilings),
+                              continuation_note=note)
+                child.spec, child.tool_schemas, child.continuation_note = spec, ceilings, note
+            original_pending = child.undelivered
+            child.undelivered = pending
+            child.settling, child.queue_work = True, True
+            child.status = "queued"
+        scope_ready = False
+        if child.spec.tool_scopes:
+            # Scoped continuation is a fresh capability admission. Reject stale
+            # scope/parent authority BEFORE committing even its input metadata.
+            # queue_work fences competing continuations while factory IO settles.
+            try:
+                captured = self.capture(child.spec)
+                if inspect.isawaitable(captured):
+                    captured = await captured
+                if isinstance(captured, ChildSpec):
+                    child.spec = captured
+                scope_ready = True
+                record["config"] = child.spec.config().to_dict()
+                with self._lock:
+                    if self._closed or self._admission_pauses or not alive() or child.status != "queued":
+                        raise ValueError("Original child owner changed during scope admission")
+            except BaseException:
+                try:
+                    if self.finalize is not None:
+                        from xdog.agent.async_work import wait_owned
+                        await wait_owned(asyncio.ensure_future(self.finalize(child.spec)))
+                finally:
+                    with self._lock:
+                        child.undelivered = original_pending
+                        child.settling = child.queue_work = False
+                        if child.status == "queued":
+                            child.status = "completed"
+                    self._notify(child)
+                raise
+        started = False
+        try:
+            await run_owned(self.persist, record)
+            owner_alive = alive()
+            with self._lock:
+                if self._closed or not owner_alive or child.status != "queued":
+                    raise ValueError("Original child owner retired/cancelled during continuation admission")
+                child.status, child.error = "queued", ""
+                child.task = asyncio.create_task(self._run(child, request, scope_ready=scope_ready))
+                self._watch_task(child.task)
+                started = True
+        finally:
+            try:
+                if scope_ready and not started and self.finalize is not None:
+                    from xdog.agent.async_work import wait_owned
+                    await wait_owned(asyncio.ensure_future(self.finalize(child.spec)))
+            finally:
+                with self._lock:
+                    child.queue_work = False
+                    if not started:
+                        child.status = "interrupted"
+                        child.error = "Continuation admission uncertain; inspect, no replay"
+                        child.queue_uncertain = True
+                        child.settling = False
+                self._notify(child)
+
+    @staticmethod
     async def _join(task: asyncio.Task[None]) -> None:
         while not task.done():
             try:
@@ -1391,6 +1683,8 @@ class CodingChildRuntime:
         await asyncio.sleep(0)
         children = tuple(self._children.values())
         for child in children:
+            if child.queue_work and child.status == "queued" and child.agent is None:
+                child.status = "canceling"  # Fence a continuation whose durable admission is still writing.
             if child.agent is not None:
                 child.agent.abort()
             if child.task is not None and not child.task.done() and not child.task.cancelling():
@@ -1423,17 +1717,20 @@ class CodingChildRuntime:
         await wait_owned(asyncio.create_task(settle()))
 
     def abort(self) -> None:
-        """Cancel current children without closing the session's reusable supervisor."""
+        """Cancel current children without closing the session's reusable child runtime."""
         with self._start_lock:
             if self._closed:
                 return
             self._tool_return_owner = uuid.uuid4().hex
-            if self._loop is None:
+            if self._loop is None or self._retiring or self._loop.is_closed():
                 return
             future = asyncio.run_coroutine_threadsafe(self._close_children(), self._loop)
         def consume(result: concurrent.futures.Future[None]) -> None:
             if not result.cancelled():
                 result.exception()
+            loop = self._loop
+            if loop is not None and not loop.is_closed():
+                self._schedule_retirement(loop)
         future.add_done_callback(consume)
 
     def close(self) -> None:
@@ -1444,7 +1741,7 @@ class CodingChildRuntime:
             self._closed = True
             self._tool_return_owner = uuid.uuid4().hex
             loop = self._loop
-            if loop is None:
+            if loop is None or self._retiring or loop.is_closed():
                 return
             self._close_future = asyncio.run_coroutine_threadsafe(self._close_children(), loop)
         def done(value: concurrent.futures.Future[None]) -> None:
@@ -1468,5 +1765,5 @@ class CodingChildRuntime:
         return self._closed
 
     def tools(self) -> tuple[AgentTool, ...]:
-        from xdog.agent.supervision import ChildClient
+        from xdog.agent.children import ChildClient
         return ChildClient(self).tools()

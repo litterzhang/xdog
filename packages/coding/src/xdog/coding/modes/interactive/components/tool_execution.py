@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import re
 import time
 from typing import Any
@@ -57,23 +56,22 @@ class ToolExecutionComponent(Container):
         self._command_details = command if tool_name == "bash" and "\n" in command else ""
 
         # Tool call header with state icon
+        self._header_mode = ToolMessageView.ascii_only()
         header_str = self._make_header()
-        self._header_text = Text(header_str, 0, 0)
+        self._header_text = Text(header_str, 1, 0)
         self.add_child(self._header_text)
 
-        # Show arguments if present
+        # Compact mode selects a summary; expansion retains all parameters.
         if arguments:
-            summary = _summarize_args(arguments, tool_name)
-            if summary:
-                self.add_child(Text(theme.dim(f"    {summary}"), 0, 0))
+            self.add_child(Text(theme.dim(f"    {self._transcript_args}"), 0, 0))
 
     def render(self, width: int) -> list[str]:
         """Two stable text rows in compact mode; rich output stays expandable."""
+        if self._header_mode != ToolMessageView.ascii_only():
+            self._update_header()
         if self._expanded:
             return [*super().render(width), ""]
-        header = self._make_header()
-        if self._argument_summary:
-            header += self._theme.dim(f" · {self._argument_summary}")
+        header = self._header_text.text if self._header_text is not None else ""
         self._view.update(
             header=header, summary=self._argument_summary, output=self._result,
             running=self._state == "running",
@@ -91,8 +89,9 @@ class ToolExecutionComponent(Container):
 
     @property
     def detail_title(self) -> str:
-        """Stable title used by bounded detail providers."""
-        return self._tool_name
+        """Retain lifecycle metadata in details, not the compact transcript."""
+        elapsed = f" · {self._elapsed}s" if self._elapsed is not None else ""
+        return f"{self._tool_name} · {self._state}{elapsed}"
 
     @property
     def detail_body(self) -> str:
@@ -102,34 +101,32 @@ class ToolExecutionComponent(Container):
         return self._result
 
     def _make_header(self) -> str:
-        """Build header string with state-appropriate icon and color."""
-        icons = {
-            "running": "⚡",
-            "success": "✓",
-            "error": "✗",
-            "canceled": "■",
-        }
-        if os.environ.get("XDOG_TUI_ASCII") == "1" or os.environ.get("TERM") == "dumb":
-            icons = {"running": "[run]", "success": "[ok]", "error": "[err]", "canceled": "[stop]"}
-        icon = icons.get(self._state, "[run]")
+        """Build the shared concise header with state-appropriate color."""
         color_fns = {
             "running": self._theme.tool,
             "success": self._theme.success,
             "error": self._theme.error,
             "canceled": self._theme.dim,
         }
-        color_fn = color_fns.get(self._state, self._theme.tool)
-        elapsed = f" · {self._elapsed}s" if self._elapsed is not None else ""
-        return color_fn(f"  {icon} {self._tool_name} · {self._state}{elapsed}")
+        header = ToolMessageView.make_header(self._tool_name, self._argument_summary, self._state)
+        return color_fns[self._state](header)
+
+    def invalidate(self) -> None:
+        self._view.invalidate()
+        self._update_header()
+        super().invalidate()
 
     def _update_header(self) -> None:
-        """Refresh the header text after a state change."""
+        """Refresh the header text after a state or presentation change."""
+        self._header_mode = ToolMessageView.ascii_only()
         if self._header_text is not None:
             self._header_text.set_text(self._make_header())
 
     def set_streaming(self, text: str) -> None:
         """Show live streaming output preview (e.g. bash stdout)."""
         # Retain full output; the transcript previews the newest complete cells.
+        if self._state != "running":
+            return
         safe_text = sanitize_terminal_text(text)
         self._result = safe_text
         display = streaming_preview(safe_text)
@@ -144,6 +141,8 @@ class ToolExecutionComponent(Container):
 
     def set_canceled(self) -> None:
         """Mark an active tool terminal without discarding its last preview."""
+        if self._state != "running":
+            return
         self._elapsed = max(0, int(time.monotonic() - self._started))
         self._state = "canceled"
         self._update_header()
@@ -166,6 +165,8 @@ class ToolExecutionComponent(Container):
 
     def set_result(self, result: str, *, is_error: bool = False) -> None:
         """Retain a complete tool result and render its selected detail level."""
+        if self._state == "canceled":
+            return
         self._elapsed = max(0, int(time.monotonic() - self._started))
         self._state = "error" if is_error else "success"
         self._result = sanitize_terminal_text(result)
@@ -268,29 +269,9 @@ def _summarize_args(args: dict[str, Any], tool_name: str = "") -> str:
     """Create a tool-aware compact summary of arguments.
 
     Uses specialized formatting for known tools (bash, filesystem, grep, find)
-    and falls back to generic key=value pairs for unknown tools.
+    and action/target selection for other tools; full arguments stay in details.
     """
-    if tool_name == "bash":
-        cmd = redact_sensitive_text(str(args.get("command", "")))
-        if "\n" in cmd:
-            first_line = cmd.splitlines()[0]
-            if re.search(r"(?:^|[ /])python(?:\d+(?:\.\d+)*)?(?:\s|$)", first_line):
-                return "Run Python script"
-            return "Run shell script"
-        return cmd if len(cmd) <= 80 else cmd[:77] + "..."
-    if tool_name == "filesystem":
-        action = sanitize_terminal_text(str(args.get("action", "")))
-        path = redact_sensitive_text(str(args.get("path", "")))
-        return f"{action} {path}"
-    if tool_name == "grep":
-        pattern = redact_sensitive_text(str(args.get("pattern", "")))
-        path = redact_sensitive_text(str(args.get("path", ".")))
-        return f"/{pattern}/ in {path}"
-    if tool_name == "find":
-        pattern = redact_sensitive_text(str(args.get("pattern", "")))
-        path = redact_sensitive_text(str(args.get("path", ".")))
-        return f"{pattern} in {path}"
-    return _generic_summarize_args(args)
+    return ToolMessageView.summarize_args(args, tool_name)
 
 
 def _generic_summarize_args(args: dict[str, Any]) -> str:

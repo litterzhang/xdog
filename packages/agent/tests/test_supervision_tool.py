@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from xdog.agent.supervision_config import ChildConfig
+from xdog.agent.child_config import ChildConfig
 
 RESERVED_NAMES = ("agent", "agent_spawn", "agent_control", "update_plan")
 

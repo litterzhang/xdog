@@ -41,6 +41,7 @@ BUILTIN_COMMANDS: dict[str, str] = {
     "extensions": "Trusted extensions: /extensions [list|reload NAME|unload NAME|auth list|auth menu]",
     "agents": "Child browser/controls; start supports --model/--thinking and reviewed specialization settings",
     "readonly": "Host read-only scope: /readonly on | off | status",
+    "permissions": "Current-session tool approvals: /permissions [status|ask|ask-all|allow-all|deny]",
     "tools": "Read-only configured/active tool/schema browser: /tools [QUERY]",
     "mcp": "Manage explicit MCP connections: /mcp [list|connect|disconnect|refresh] [server]",
     "skills": "List available skills: /skills",
@@ -124,6 +125,18 @@ async def execute_command(
                         and cmd in capabilities.declared_commands)
     worker_control = (isinstance(extensions, ExtensionRuntime)
                       and (public_extension or cmd.startswith('ext-') or cmd in {'extensions', 'login'}))
+    if cmd == "permissions":
+        # The session control preflights busy state before routing to its owner.
+        # Generic control queuing would silently defer an attempted grant until
+        # after the active turn/approval; status needs no owner reservation.
+        action = args.strip() or "status"
+        try:
+            mode = (session.permissions.mode if action == "status"
+                    else await run_owned(session.set_permission_mode, action))
+        except (ValueError, RuntimeError) as exc:
+            return CommandResult(output=f"Permissions unchanged: {exc}\n"
+                                 "Usage: /permissions [status|ask|ask-all|allow-all|deny]")
+        return CommandResult(output=f"Permissions: {mode} (current session only; configuration unchanged)")
     synchronous_controls = {"readonly", "model", "thinking", "clear", "name", "resume", "new",
                             "goto", "fork", "branch", "unload"}
     requires_owner = native_candidate or worker_control or cmd in synchronous_controls or (

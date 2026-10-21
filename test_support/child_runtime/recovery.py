@@ -268,7 +268,7 @@ class TestChildRecovery:
                 await queue(owner, child, action="recover", id="image-draft", revision=captured["revision"])
             loaded = store.load()[0]
             assert loaded["undelivered_inputs"][0]["images"] == [{"data": image.data, "mime_type": image.mime_type}]
-            from xdog.agent.supervision_queue import recovery_from_dicts
+            from xdog.agent.child_queue import recovery_from_dicts
 
             assert recovery_from_dicts(loaded["undelivered_inputs"])[0].images == (image,)
         finally:

@@ -172,3 +172,107 @@ def test_open_details_from_start_pins_top_until_explicit_end() -> None:
     assert "row-30" in details.render(80)
     details.show_latest(from_start=True)
     assert "row-0" in details.render(80)
+
+
+def test_status_activity_context_and_model_share_one_dim_style() -> None:
+    from xdog.tui.components.status_line import StatusLine
+    from xdog.tui.utils import strip_ansi
+
+    def gray(text: str) -> str:
+        return f"\x1b[90m{text}\x1b[39m"
+
+    status = StatusLine(gray)
+    status.set_fields(activity="ready", model="model-name", context="ctx:1k/32k", queued=2)
+    for width in (8, 32, 80):
+        row = status.render(width)[0]
+        assert row == gray(strip_ansi(row))
+        assert visible_width(row) <= width
+    assert "ready" in strip_ansi(status.render(80)[0])
+    assert "model-name" in strip_ansi(status.render(80)[0])
+    assert "ctx:1k/32k" in strip_ansi(status.render(80)[0])
+
+
+def test_compact_hint_style_applies_after_every_update_and_truncation() -> None:
+    from xdog.tui.components.inline_layout import CompactText
+    from xdog.tui.utils import strip_ansi
+
+    def gray(text: str) -> str:
+        return f"\x1b[90m{text}\x1b[39m"
+
+    hints = CompactText("", 0, 0, style=gray)
+    for text in ("Enter send · Ctrl+Enter newline", "Cancelling · draft preserved", ""):
+        hints.set_text(text)
+        assert hints.text == text
+        for width in (0, 8, 40):
+            rows = hints.render(width)
+            assert all(row == gray(strip_ansi(row)) for row in rows)
+            assert all(visible_width(row) <= width for row in rows)
+    plain = CompactText("plain", 0, 0, style=lambda text: text)
+    assert plain.render(20) == ["plain"]
+
+
+@pytest.mark.parametrize("last_role", ["user", "assistant", "tool"])
+def test_status_does_not_add_a_second_gap_after_message_padding(last_role: str) -> None:
+    from xdog.tui.components.markdown import DefaultTextStyle, MarkdownTheme
+    from xdog.tui.components.messages import NormalMessage, Transcript, UserMessage
+    from xdog.tui.components.tool_message import ToolMessage
+    from xdog.tui.utils import strip_ansi
+
+    transcript = Transcript()
+    if last_role == "user":
+        transcript.add_child(UserMessage("question", MarkdownTheme(), DefaultTextStyle(
+            bg_color=lambda text: f"\x1b[44m{text}\x1b[49m",
+        )))
+    elif last_role == "assistant":
+        transcript.add_child(NormalMessage("answer", MarkdownTheme()))
+    else:
+        tool = ToolMessage()
+        tool.update(header="• Ran pwd", summary="", output="/workspace", running=False,
+                    style=lambda text: text)
+        transcript.add_child(tool)
+    layout = InlineLayout(transcript, Text("ready", 0, 0), Text("editor", 0, 0), render_height=10)
+    rows = layout.render(40)
+    plain = [strip_ansi(row).rstrip() for row in rows]
+    status = plain.index("ready")
+    assert plain[status - 1] == ""
+    assert plain[status - 2] != ""
+    assert layout.transient_start == status  # no redundant transient separator
+    if last_role == "user":
+        assert "\x1b[44m" in rows[status - 1]  # preserve the user-owned background
+
+
+@pytest.mark.parametrize("auxiliary", [False, True])
+@pytest.mark.parametrize("trailing_blank", [False, True])
+def test_status_gap_uses_the_actual_preceding_work_or_queue_row(auxiliary: bool, trailing_blank: bool) -> None:
+    from xdog.tui.utils import strip_ansi
+
+    content = Text("summary\n " if trailing_blank else "summary", 0, 0)
+    layout = InlineLayout(Text("history", 0, 0), Text("ready", 0, 0), Text("editor", 0, 0),
+                          work=None if auxiliary else content, queue=content if auxiliary else None,
+                          render_height=12)
+    plain = [strip_ansi(row).rstrip() for row in layout.render(40)]
+    status = plain.index("ready")
+    assert plain[status - 2:status] == ["summary", ""]
+
+
+@pytest.mark.parametrize("width", [8, 24, 80])
+def test_status_and_shortcuts_align_with_editable_text_not_prompt_marker(width: int) -> None:
+    from xdog.tui.components.input_panel import InputPanel
+    from xdog.tui.components.panel import PanelTheme
+    from xdog.tui.components.status_line import StatusLine
+    from xdog.tui.utils import strip_ansi
+
+    editor = InputPanel(PanelTheme())
+    editor.set_text("INPUT")
+    status = StatusLine(lambda text: text)
+    status.set_fields(activity="ready", model="model")
+    hints = Text("Enter send", 0, 0)
+    layout = InlineLayout(Text("", 0, 0), status, editor, hints=hints, render_height=24)
+    rows = [strip_ansi(row) for row in layout.render(width)]
+    status_row = next(row for row in rows if "ready" in row)
+    input_row = next(row for row in rows if "INPUT" in row)
+    hint_row = next(row for row in rows if "Enter" in row)
+    assert status_row.index("ready") == input_row.index("INPUT") == hint_row.index("Enter") == 2
+    assert all(visible_width(row) <= width for row in rows)
+    if width >= 24:
+        assert status_row.endswith("model") and visible_width(status_row) == width

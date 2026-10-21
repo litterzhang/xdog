@@ -122,7 +122,7 @@ async def test_actual_tools_browser_full_schema_query_refresh_no_model_and_nativ
             assert session.permissions.mode == 'deny'
     finally:
         ui._request_exit()
-        await session.children.supervisor.aclose()
+        await session.children.runtime.aclose()
         await session.extensions.aclose()
         if kind == 'coding':
             session.dispose()
@@ -250,7 +250,7 @@ async def test_headless_tools_command_is_complete_read_only_and_query_filtered(t
         assert session.permissions.mode == 'deny' and not session.agent.state.messages
     finally:
         await session.extensions.aclose()
-        await session.children.supervisor.aclose()
+        await session.children.runtime.aclose()
         session.dispose()
 
 
@@ -327,7 +327,7 @@ async def test_inventory_empty_valid_snapshot_differs_from_failed_refresh_and_bl
     finally:
         ui._request_exit()
         await session.extensions.aclose()
-        await session.children.supervisor.aclose()
+        await session.children.runtime.aclose()
         session.dispose()
 
 

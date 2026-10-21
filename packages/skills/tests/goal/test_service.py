@@ -29,7 +29,7 @@ async def test_main_agent_plans_executes_and_completes_without_child_support(tmp
         assert status['tasks'][0]['status'] == 'completed' and task.version == 2
         assert '# Plan' in status['plan']
         completed = await service.change('complete', summary='Main Agent inspected result.txt')
-        assert completed.status == 'completed' and await service.current() is None
+        assert completed.status == 'completed' and await service.current() == completed
         assert await service.store.history(goal.id)
         new = await service.create('Next', 'New task', context=USER)
         assert new.id != goal.id and new.status == 'active'
@@ -81,9 +81,12 @@ async def test_only_task_wait_can_be_released_by_an_automatic_input(tmp_path):
             await service.change('wait', until=until, reason='Needs actual input')
             with pytest.raises(ValueError):
                 await service.change('resume')
-            await service.change('resume', context=USER)
-        await service.change('wait', until='tasks')
-        assert (await service.change('resume')).status == 'active'
+            waiting = await service.current()
+            await service.change('activate', waiting.id, version=waiting.version,
+                                 reason='Actual user input', context=USER)
+        waiting = await service.change('wait', until='tasks')
+        assert (await service.change('activate', waiting.id, version=waiting.version,
+                                     reason='Main verified the task result')).status == 'active'
     finally:
         await service.close()
 

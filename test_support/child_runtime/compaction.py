@@ -7,12 +7,13 @@ import threading
 
 import pytest
 from xdog.agent import Agent, AgentConfig, AgentTool, AgentToolResult, CompactionConfig
+from xdog.agent.child_config import ChildConfig
+from xdog.agent.child_model import resolve_child_model
 from xdog.agent.compaction import estimate_input_tokens, safe_cut_indices
 from xdog.agent.core import ModelStreamFn
 from xdog.agent.events import CompactionEndEvent, CompactionFailedEvent
 from xdog.agent.messages import dicts_to_messages, messages_to_dicts
-from xdog.agent.supervision_config import ChildConfig
-from xdog.agent.supervision_model import resolve_child_model
+from xdog.agent.snapshots import decode_snapshot_messages, encode_snapshot_messages
 from xdog.ai.types import AssistantMessage, DoneEvent, Model, StreamOptions, TextContent, ToolCall, Usage
 from xdog.ai.utils.event_stream import EventStream
 
@@ -150,8 +151,9 @@ class TestChildCompaction:
             assert len(archives) == len(adapter.summaries)
             assert len([event for event in events if isinstance(event, CompactionEndEvent)]) == len(archives)
             for archive, snapshot in zip(archives, adapter.snapshots, strict=True):
-                assert archive["messages"] == messages_to_dicts(list(snapshot))
-                safe_cut_indices(dicts_to_messages(archive["messages"]))
+                assert archive["messages"] == encode_snapshot_messages(snapshot)
+                assert decode_snapshot_messages(archive["messages"]) == snapshot
+                safe_cut_indices(decode_snapshot_messages(archive["messages"]))
             safe_cut_indices(dicts_to_messages(result["messages"]))
             assert store.load()[0]["messages"] == result["messages"]
             # At least one full raw tool result is no longer in the live context,
@@ -176,7 +178,8 @@ class TestChildCompaction:
             assert result["status"] == "failed" and "Compaction" in result["error"]
             source = messages_to_dicts(list(adapter.snapshots[0]))
             assert result["messages"][: len(source)] == source
-            assert store.compaction_archives(identifier)[0]["messages"] == source
+            assert store.compaction_archives(identifier)[0]["messages"] == encode_snapshot_messages(
+                adapter.snapshots[0])
             assert not any(isinstance(event, CompactionEndEvent) for event in events)
             assert any(isinstance(event, CompactionFailedEvent) for event in events)
         finally:
@@ -221,7 +224,8 @@ class TestChildCompaction:
             assert result["status"] == "canceled" and adapter.closed.is_set()
             source = messages_to_dicts(list(adapter.snapshots[0]))
             assert result["messages"][: len(source)] == source
-            assert store.compaction_archives(identifier)[0]["messages"] == source
+            assert store.compaction_archives(identifier)[0]["messages"] == encode_snapshot_messages(
+                adapter.snapshots[0])
             assert not owner.active
         finally:
             await owner.aclose()
@@ -259,7 +263,8 @@ class TestChildCompaction:
                 await operation
             result = await owner.control("wait", identifier)
             assert result["status"] == "canceled" and not adapter.summaries
-            assert store.compaction_archives(identifier)[0]["messages"] == result["messages"]
+            assert store.compaction_archives(identifier)[0]["messages"] == encode_snapshot_messages(
+                owner._children[identifier].transcript)
         finally:
             release.set()
             await owner.aclose()
@@ -307,6 +312,7 @@ class TestChildCompaction:
             assert not any(isinstance(event, CompactionEndEvent) for event in events)
             source = messages_to_dicts(list(adapter.snapshots[0]))
             assert result["messages"][: len(source)] == source
-            assert store.compaction_archives(identifier)[0]["messages"] == source
+            assert store.compaction_archives(identifier)[0]["messages"] == encode_snapshot_messages(
+                adapter.snapshots[0])
         finally:
             await owner.aclose()

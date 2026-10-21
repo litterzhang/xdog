@@ -487,7 +487,7 @@ def test_an_unresolvable_model_still_gets_its_tools_described(tmp_path: Path, ca
         prompt = build_system_prompt(_cfg(), _TOOLS, native_tool_calls=native)
         assert ('Read a file' in prompt) is (capability is not True)
     finally:
-        asyncio.run(session.children.supervisor.aclose())
+        asyncio.run(session.children.runtime.aclose())
         asyncio.run(session.extensions.aclose())
         session.dispose()
 

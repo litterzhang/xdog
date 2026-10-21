@@ -7,8 +7,8 @@ import shutil
 
 import pytest
 from xdog.agent import Agent, AgentConfig
+from xdog.agent.children import ChildSpec
 from xdog.agent.extensions.runtime import ExtensionRuntime
-from xdog.agent.supervision import ChildSpec
 
 from test_support.child_runtime.processes import AGENT_TEST_FIXTURES
 

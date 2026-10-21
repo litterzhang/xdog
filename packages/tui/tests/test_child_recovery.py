@@ -5,8 +5,8 @@ import base64
 import copy
 
 import pytest
+from xdog.agent.child_transfer import prepare_recovery, send_recovery
 from xdog.agent.input_queue import QueuedInput
-from xdog.agent.supervision_transfer import prepare_recovery, send_recovery
 from xdog.ai.types import ImageContent
 from xdog.tui.child_recovery import ChildRecoveryReceiver, decode_recovery
 

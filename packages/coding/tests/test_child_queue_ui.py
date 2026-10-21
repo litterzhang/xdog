@@ -61,11 +61,11 @@ async def test_actual_native_child_queue_is_list_only_and_keeps_parent_draft_and
         if kind == 'claw':
             await wait(lambda: ui._connection_ready)
             assert ui._child_queues_supported
-        child = await session.children.supervisor.start('hold')
+        child = await session.children.runtime.start('hold')
         assert await asyncio.to_thread(entered.wait, 3)
-        await session.children.supervisor.control('steer', child, 'QUEUED-DRAFT /quit literal')
+        await session.children.runtime.control('steer', child, 'QUEUED-DRAFT /quit literal')
         if action == 'recover':
-            await session.children.supervisor.control('cancel', child)
+            await session.children.runtime.control('cancel', child)
         ui._editor.set_text('PARENT-DRAFT-UNTOUCHED')
         ui._open_children()
         await wait(lambda: ui._child_panel._entries)
@@ -76,7 +76,7 @@ async def test_actual_native_child_queue_is_list_only_and_keeps_parent_draft_and
         queue = panel.queue
         assert queue._rows[0]['content'] == 'QUEUED-DRAFT /quit literal'
         queue.render(80)
-        before = await session.children.supervisor.control('queue', child, json.dumps({'action': 'list'}))
+        before = await session.children.runtime.control('queue', child, json.dumps({'action': 'list'}))
         for key in ('e', 'u', 'x', 'delete', 'enter', 'up', 'down'):
             panel.handle_input(KeyEvent(key))
         panel.handle_paste('UNTRUSTED QUEUE EDIT /quit')
@@ -86,7 +86,7 @@ async def test_actual_native_child_queue_is_list_only_and_keeps_parent_draft_and
             ui._child_send('queue', child, json.dumps({'action': retired}), 'read-only')
         await asyncio.sleep(0.04)
         ui._poll()
-        actual = await session.children.supervisor.control('queue', child, json.dumps({'action': 'list'}))
+        actual = await session.children.runtime.control('queue', child, json.dumps({'action': 'list'}))
         assert actual == before and panel.queue is queue
         assert actual['queue']['inputs'][0]['content'] == 'QUEUED-DRAFT /quit literal'
         assert actual['queue'].get('stopped', False) is (action == 'recover')
@@ -95,11 +95,11 @@ async def test_actual_native_child_queue_is_list_only_and_keeps_parent_draft_and
         assert panel.queue is None  # Return to inspection, not to a recovered/editable draft.
         assert ui._editor.get_text() == 'PARENT-DRAFT-UNTOUCHED'
         assert len(calls) == 1 and len(session.agent.messages) == 0
-        await session.children.supervisor.control('cancel', child)
+        await session.children.runtime.control('cancel', child)
     finally:
         ui._request_exit()
         if kind == 'coding':
-            await session.children.supervisor.aclose()
+            await session.children.runtime.aclose()
             await session.extensions.aclose()
             session.dispose()
         else:
@@ -115,7 +115,7 @@ async def test_direct_native_agents_queue_command_rejects_mutations_before_backe
 
     from xdog.coding.core.slash_commands import execute_command
     control = AsyncMock(return_value={'queue': {'inspection': 'native list'}})
-    with patch.object(coding_session.children.supervisor, 'control', control):
+    with patch.object(coding_session.children.runtime, 'control', control):
         for action in ('edit', 'remove', 'move', 'return', 'recover', 'recover_images', 'recover_task',
                        'remove_task', 'return_prepare', 'return_commit', 'return_cancel'):
             with pytest.raises(ValueError, match='read-only'):

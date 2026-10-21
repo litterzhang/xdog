@@ -50,7 +50,7 @@ async def test_multiple_compactions_retain_full_history_links_and_return_heads(t
         assert session.session_data.compaction['recovery_branch_id'] == second_id
         assert len(calls) == 2
     finally:
-        await session.children.supervisor.aclose()
+        await session.children.runtime.aclose()
         await session.extensions.aclose()
         session.dispose()
 
@@ -77,6 +77,6 @@ async def test_unsafe_recovery_tail_retained_but_not_automatically_resumed(tmp_p
             session.restore_branch(recovery)
         assert session.messages == before  # Use the tree's valid earlier checkpoints instead.
     finally:
-        await session.children.supervisor.aclose()
+        await session.children.runtime.aclose()
         await session.extensions.aclose()
         session.dispose()

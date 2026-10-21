@@ -242,8 +242,38 @@ def test_actual_coding_cli_permission_paste_resize_and_exit(terminal):
     terminal.resize(36, 6)
     terminal.wait("Allow once")
     terminal.keys("Escape")
-    terminal.wait("FIXTURE-ANSWER")
+    terminal.wait("ready")
+    terminal.wait_cursor(True)
+    # At six rows the editor/status tail can occupy the whole viewport. Restore
+    # transcript space before requiring the answer to be visibly painted.
     terminal.resize(80, 24)
+    terminal.wait("FIXTURE-ANSWER")
+    session_path, = (terminal.directory / "xdg_data_home/xdog/coding/sessions").glob("session_*.json")
+    history = json.loads(session_path.read_text())["messages"]
+    denied, = (message for message in history if message["role"] == "toolResult")
+    assert denied["tool_name"] == "bash" and denied["is_error"] is True
+    assert "User denied this tool call" in denied["content"][0]["text"]
+
+    # Exercise real visible confirmation as well as Escape denial. The second
+    # identical call must prompt again: denial did not grant session permission.
+    terminal.text("permission")
+    terminal.keys("Enter")
+    terminal.wait("Tool permission required")
+    terminal.wait("Allow once")
+    terminal.wait_cursor(False)
+    terminal.keys("Enter")
+    terminal.wait_hidden("Tool permission required")
+    terminal.wait("ready")
+    terminal.wait_cursor(True)
+    terminal.wait("FIXTURE-ANSWER")
+    history = json.loads(session_path.read_text())["messages"]
+    results = [message for message in history if message["role"] == "toolResult"]
+    assert len(results) == 2 and results[0] == denied
+    assert results[1]["tool_name"] == "bash" and results[1].get("is_error", False) is False
+    assert "fixture" in results[1]["content"][0]["text"]
+    assert sum(message["role"] == "assistant" and any(
+        part.get("text") == "FIXTURE-ANSWER" for part in message["content"]
+    ) for message in history) == 2
     terminal.call("set-buffer", "paste-one\npaste-two")
     terminal.call("paste-buffer", "-p", "-t", "test")
     terminal.wait("paste-two")

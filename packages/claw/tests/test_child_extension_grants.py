@@ -50,10 +50,10 @@ def setup(api):
                 session._runtime.extension_allow_tools = ()
             return AgentToolResult.from_text('FIRST EFFECT COMPLETED')
         first = AgentTool('revoke', parameters={'type': 'object'}, execute=first_effect)
-        session.agent.set_tools((first, *originals, *session.children.supervisor.tools()))
-        identifier = await session.children.supervisor.start('Use delegated tools', access='inherit',
+        session.agent.set_tools((first, *originals, *session.children.runtime.tools()))
+        identifier = await session.children.runtime.start('Use delegated tools', access='inherit',
             config={'tools': ['revoke', alias]})
-        record = await session.children.supervisor.control('wait', identifier)
+        record = await session.children.runtime.control('wait', identifier)
         results = [row for row in record['messages'] if row['role'] == 'toolResult']
         assert len(results) == 2, record
         assert 'FIRST EFFECT COMPLETED' in str(results[0])

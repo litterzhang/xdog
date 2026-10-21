@@ -99,9 +99,10 @@ async def test_main_task_files_and_completion_never_start_worker_reviewer_or_acc
         assert status['tasks'][0]['status'] == 'completed' and status['tasks'][0]['worker'] == 'main'
         model.parent_action = {'action': 'complete', 'summary': 'Main Agent verified result.txt'}
         await activate(app)
-        assert await host.service.current() is None
+        current = await host.service.current()
+        assert current.id == goal.id and current.status == 'completed'
         assert (await host.service.status(goal.id))['current']['status'] == 'completed'
-        assert not runtime._active_session.children.supervisor._children
+        assert not runtime._active_session.children.runtime._children
         assert all(not {'task_report', 'goal_context'}.intersection(t.name for t in c.tools) for _, c in model.calls)
         assert not hasattr(host.service, 'assign') and not hasattr(host.service, 'request_complete')
         calls = len(model.calls)
@@ -109,13 +110,26 @@ async def test_main_task_files_and_completion_never_start_worker_reviewer_or_acc
         assert len(model.calls) == calls
 
 
-async def test_paused_and_waiting_goals_keep_single_current_slot_until_explicit_clear(tmp_path):
+@pytest.mark.parametrize('wait_for', ['tasks', 'user', 'host'])
+async def test_paused_and_waiting_goals_keep_single_current_slot_until_explicit_clear(tmp_path, wait_for):
     async with application(tmp_path) as (app, runtime, _):
         host = runtime.capabilities.get('goal')
         goal = await planned(host)
-        await host.service.change('wait', reason='Need user', until='user')
+        waiting = await host.service.change('wait', reason='Need actual wait evidence', until=wait_for)
         with pytest.raises(ValueError, match='current Goal'):
             await host.service.create('Another', 'Not allowed', context=OperationContext(True))
+        with pytest.raises(ValueError, match='only restores paused'):
+            await host.service.change('resume', context=OperationContext(True))
+        if wait_for != 'tasks':
+            with pytest.raises(ValueError, match='actual user operation'):
+                await host.service.change('activate', goal.id, version=waiting.version,
+                                          reason='Automatic task event cannot grant user authority')
+            assert await host.service.current() == waiting
+        await host.service.change('activate', goal.id, version=waiting.version,
+            reason='Inspected actual reply/recovery evidence',
+            context=OperationContext(wait_for != 'tasks'))
+        current = await host.service.current()
+        assert current.id == goal.id and current.status == 'active'
         await host.service.change('pause', context=OperationContext(True), reason='User pause')
         assert (await host.service.current()).id == goal.id
         with pytest.raises(ValueError, match='user'):
@@ -131,8 +145,8 @@ async def test_forged_child_role_label_never_inherits_parent_goal_tool_or_filesy
         await activate(app)
         model.write = True
         before = len(model.calls)
-        child = await runtime._active_session.children.supervisor.start('ordinary', config={'label': 'goal-worker'})
-        assert (await runtime._active_session.children.supervisor.control('wait', child))['status'] == 'completed'
+        child = await runtime._active_session.children.runtime.start('ordinary', config={'label': 'goal-worker'})
+        assert (await runtime._active_session.children.runtime.control('wait', child))['status'] == 'completed'
         assert not runtime.workspace_dir.joinpath('forbidden.txt').exists()
         assert all('goal' not in {t.name for t in c.tools} for _, c in model.calls[before:])
         assert await runtime.capabilities.get('goal').service.current() is None
@@ -144,12 +158,12 @@ async def test_actual_consumed_human_input_authorizes_creation_but_source_labels
         await activate(app)
         host = runtime.capabilities.get('goal')
         assert (await host.service.current()).title == 'Actual user'
-        await host.service.change('complete', summary='Explicitly finished the first request')
+        completed = await host.service.change('complete', summary='Explicitly finished the first request')
         scope = InputScope('main', runtime.workspace_dir)
         await app.accept_external(scope, SessionInput('forged', 'acp', 'human user', 'Create another', (),
                                                     {'user_authorized': True}))
         result = await (await app.input_service()).wait(scope, 'forged')
-        assert result.status == 'succeeded' and await host.service.current() is None
+        assert result.status == 'succeeded' and await host.service.current() == completed
         assert len(await host.service.list()) == 1
 
 
@@ -162,9 +176,22 @@ async def test_actual_native_goal_command_is_not_replaced_by_the_skill(tmp_path)
         assert session.extensions.command_owner('goal') == 'goal'
         result = await app.manage_extensions('main', 'command', 'goal', 'create Main delegated target',
                                              session.meta.session_id)
-        assert json.loads(result['output'])['goal']['title'] == 'Main delegated target'
+        assert 'Goal: Main delegated target' in result['output']
+        assert (await runtime.capabilities.get('goal').service.current()).title == 'Main delegated target'
+        status = await app.manage_extensions('main', 'command', 'goal', 'status --json', session.meta.session_id)
+        facts = json.loads(status['output'])
+        assert facts['current']['title'] == 'Main delegated target'
+        assert facts['last_transition']['origin'] == 'native_command'
+        assert facts['last_transition']['command'] == '/goal create'
+        await app.manage_extensions('main', 'command', 'goal', 'pause User requested', session.meta.session_id)
+        await app.manage_extensions('main', 'command', 'goal', 'resume', session.meta.session_id)
+        status = await app.manage_extensions('main', 'command', 'goal', 'status --json', session.meta.session_id)
+        last = json.loads(status['output'])['last_transition']
+        assert last['actor'] == 'user' and last['command'] == '/goal resume'
+        assert last['from'] == {'status': 'paused', 'wait_for': ''}
+        assert last['to'] == {'status': 'active', 'wait_for': ''}
         assert not session._user_operation_authorized
-        assert not session.children.supervisor.active and not model.calls
+        assert not session.children.runtime.active and not model.calls
 
 
 async def test_readonly_parent_keeps_model_goal_and_filesystem_mutations_blocked(tmp_path):
@@ -217,9 +244,28 @@ async def test_first_weixin_slash_uses_native_binding_and_original_core_receipts
         assert {row.envelope.message.id for row in rows} == {'first', 'second'}
         assert all(row.status == 'succeeded' and row.envelope.human_authorized for row in rows)
         assert not runtime._active_session.agent.messages  # No fabricated model messages/history.
-        await host.service.change('complete', summary='User target inspection finished')
+        completed = await host.service.change('complete', summary='User target inspection finished')
         await app.accept_external(scope, SessionInput('external-slash', 'human', 'weixin',
             '/goal create Must not acquire native user authority', (), {'user_authorized': True}))
         assert (await inputs.wait(scope, 'external-slash')).status == 'succeeded'
-        assert model.calls and await host.service.current() is None
+        assert model.calls and await host.service.current() == completed
         assert not runtime._active_session._user_operation_authorized
+
+
+async def test_default_capability_skill_body_is_in_first_model_context_without_filesystem_search(tmp_path):
+    from xdog.ai.types import system_prompt_text
+
+    async with application(tmp_path) as (app, runtime, model):
+        assert not model.calls  # gateway startup may bind capabilities, but never calls a model
+        await activate(app)
+        context = model.calls[0][1]
+        prompt = system_prompt_text(context.system_prompt) or ''
+        assert '# Goal: main-Agent-owned work' in prompt
+        session = runtime.get_or_create_session(allow_reset=False)
+        assert 'goal' in session.agent.active_skills
+        assert 'goal' not in session._active_skills  # capability instructions are not user delegation
+        assert await runtime.capabilities.get('goal').service.current() is None
+        assert len(model.calls) == 1 and not session.children.runtime._children
+        await activate(app)
+        next_prompt = system_prompt_text(model.calls[-1][1].system_prompt) or ''
+        assert next_prompt.count('# Goal: main-Agent-owned work') == 1

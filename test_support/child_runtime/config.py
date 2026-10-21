@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 from xdog.agent import Agent, AgentConfig, AgentTool, AgentToolResult
-from xdog.agent.supervision import child_prompt
-from xdog.agent.supervision_config import ChildConfig, parse_child_start
+from xdog.agent.child_config import ChildConfig, parse_child_start
+from xdog.agent.children import child_prompt
 from xdog.ai.types import AssistantMessage, TextContent, ToolCall
 from xdog.ai.utils.event_stream import EventStream
 
@@ -120,7 +120,7 @@ class TestChildConfig:
     ):
         import inspect
 
-        from xdog.agent.supervision_config import ChildPresets
+        from xdog.agent.child_config import ChildPresets
 
         assert key not in ChildConfig().to_dict()
         assert key not in inspect.signature(runtime_type.start).parameters

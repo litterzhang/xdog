@@ -51,7 +51,7 @@ async def test_real_child_readonly_worker_keeps_live_pending_boolean_and_native_
         parent = server._orchestrator._runtimes['main'].get_or_create_session(allow_reset=False)
     try:
         await parent.initialize_extensions()
-        identifier = await parent.children.supervisor.start('NATIVE CHILD /quit')
+        identifier = await parent.children.runtime.start('NATIVE CHILD /quit')
         async with asyncio.timeout(5):
             while not calls:
                 await asyncio.sleep(.003)
@@ -62,14 +62,14 @@ async def test_real_child_readonly_worker_keeps_live_pending_boolean_and_native_
         first = await probe()
         assert first['pending'] is False and first['tools']['owner_id'] == identifier
         assert first['model']['session_id'] == parent.extensions.context()['session_id']
-        await parent.children.supervisor.control('follow-up', identifier, 'NATIVE RETAINED QUEUE')
+        await parent.children.runtime.control('follow-up', identifier, 'NATIVE RETAINED QUEUE')
         queued = await probe()
         assert queued['pending'] is True and queued['session'] is None
         assert queued['sessions'] is None and queued['tree'] is None
-        snapshot = (await parent.children.supervisor.control('queue', identifier, '{"action":"list"}'))['queue']
+        snapshot = (await parent.children.runtime.control('queue', identifier, '{"action":"list"}'))['queue']
         assert len(snapshot['inputs']) == 1 and snapshot['inputs'][0]['content'] == 'NATIVE RETAINED QUEUE'
         reader = runtime.pending_messages
-        await parent.children.supervisor.control('cancel', identifier)
+        await parent.children.runtime.control('cancel', identifier)
         assert runtime.pending_messages is None and await reader() is None
         assert not parent.children.extensions._pending_readers
         saved = parent.children.store.load()[0]
@@ -79,7 +79,7 @@ async def test_real_child_readonly_worker_keeps_live_pending_boolean_and_native_
         if server is not None:
             await server.stop()
         else:
-            await parent.children.supervisor.aclose()
+            await parent.children.runtime.aclose()
             await parent.extensions.aclose()
             parent.dispose()
 
@@ -128,7 +128,7 @@ async def test_historical_context_admission_survives_without_extension_continuat
         assert (await parent.context_messages.capture())[1] == ()
         assert parent.permissions.mode == 'deny'
     finally:
-        await parent.children.supervisor.aclose()
+        await parent.children.runtime.aclose()
         await parent.extensions.aclose()
         parent.dispose()
 
@@ -157,6 +157,6 @@ async def test_native_compact_still_runs_real_before_after_hooks_without_compact
         assert not calls and parent.permissions.mode == 'deny'
         assert all(not hasattr(parent.extensions, name) for name in HANDLERS)
     finally:
-        await parent.children.supervisor.aclose()
+        await parent.children.runtime.aclose()
         await parent.extensions.aclose()
         parent.dispose()

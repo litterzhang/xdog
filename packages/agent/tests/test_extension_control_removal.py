@@ -52,10 +52,11 @@ def test_unused_mutation_request_modules_are_absent(module):
     assert error.value.name == 'xdog.agent.extensions.' + module
 
 
-def test_unused_child_extension_queue_adapter_is_absent():
+@pytest.mark.parametrize('module', ['supervision_queued_input', 'child_queued_input'])
+def test_unused_child_extension_queue_adapter_is_absent(module):
     with pytest.raises(ModuleNotFoundError) as error:
-        importlib.import_module('xdog.agent.supervision_queued_input')
-    assert error.value.name == 'xdog.agent.supervision_queued_input'
+        importlib.import_module('xdog.agent.' + module)
+    assert error.value.name == 'xdog.agent.' + module
 
 
 @pytest.mark.parametrize('field', ['dialogs', 'pending_dialogs', 'pending', 'host_controls', 'editor'])

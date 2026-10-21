@@ -38,7 +38,7 @@ async def test_settlement_drains_inputs_before_permanent_agent_close_and_never_r
                 raise OSError('Injected owned Agent shutdown failure')
             agent._close_owned_runtime = fail_after_drain
         return agent
-    owner = session.children.supervisor
+    owner = session.children.runtime
     owner.factory = factory
     actual_finalize = owner.finalize
     async def finalize(spec):

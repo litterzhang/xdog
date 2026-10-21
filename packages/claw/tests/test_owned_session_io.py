@@ -318,7 +318,9 @@ async def test_unsorted_native_skill_selection_keeps_original_normalized_prompt_
         from xdog.ai.types import system_prompt_text
         prefix = system_prompt_text(calls[0][1].system_prompt)
         assert prefix.index("BODY a") < prefix.index("BODY z")
-        assert runtime._active_session.agent.active_skills == ("a", "z")
+        expected = tuple(sorted({'a', 'z'} | runtime.capabilities.default_skills))
+        assert runtime._active_session.agent.active_skills == expected
+        assert runtime._active_session._active_skills == frozenset({'a', 'z'})
         assert sidecar.read_bytes() == original, "Preparing native data must not migrate/rewrite saved ordering"
     finally:
         await app.stop()

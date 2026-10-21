@@ -17,7 +17,7 @@ from xdog.tui.utils import strip_ansi
 def app(working_dir: str = "/workspace") -> InteractiveMode:
     session = MagicMock()
     session.runtime = None
-    session.children.supervisor.aclose = AsyncMock()
+    session.children.runtime.aclose = AsyncMock()
     session.agent.subscribe.return_value = lambda: None
     session.agent.options.thinking = "medium"
     session.permissions.mode = "ask"

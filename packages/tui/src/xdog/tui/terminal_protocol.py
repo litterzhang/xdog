@@ -9,10 +9,11 @@ from collections.abc import Callable
 from xdog.tui.keys import set_kitty_protocol_active
 from xdog.tui.stdin_buffer import InputFrame, KeyBytes
 
+_MOUSE_REPORT = re.compile(rb"\x1b\[<\d+;\d+;\d+[Mm]")
 _KITTY_RESPONSE = re.compile(rb"\x1b\[\?(\d+)u")
 _DA_RESPONSE = re.compile(rb"\x1b\[\?[0-9;]*c")
 _CPR_RESPONSE = re.compile(rb"\x1b\[(\d+);(\d+)R")
-_RESPONSE_PREFIX = re.compile(rb"\x1b\[(?:\?[0-9;]*|[0-9;]*)$")
+_RESPONSE_PREFIX = re.compile(rb"\x1b\[(?:\?[0-9;]*|[0-9;]*|<[0-9;]*)$")
 
 
 class TerminalProtocol:
@@ -74,6 +75,13 @@ class TerminalProtocol:
             if candidate[index] != 0x1B:
                 output.append(candidate[index])
                 index += 1
+                continue
+
+            # Mouse reporting may remain enabled by an outer terminal/app. It is
+            # not editor text; consume it without affecting keyboard negotiation.
+            mouse = _MOUSE_REPORT.match(candidate, index)
+            if mouse is not None:
+                index = mouse.end()
                 continue
 
             response = self._match_response(candidate, index)
@@ -167,7 +175,7 @@ class TerminalProtocol:
         data = bytes(self._input)
         self._input.clear()
         self._input_started = None
-        return data
+        return b"" if data.startswith(b"\x1b[<") else data
 
     def pending_output(self) -> str:
         output = self._pending

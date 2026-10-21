@@ -91,7 +91,7 @@ async def owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         yield session, runtime, stream
     finally:
         await session.agent.aclose()
-        await session.children.supervisor.aclose()
+        await session.children.runtime.aclose()
         await session.extensions.aclose()
         session.dispose()
         runtime.mcp.close()

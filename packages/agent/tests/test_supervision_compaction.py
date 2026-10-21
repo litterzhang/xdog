@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from xdog.agent.supervision_config import ChildConfig
-from xdog.agent.supervision_model import resolve_child_model
+from xdog.agent.child_config import ChildConfig
+from xdog.agent.child_model import resolve_child_model
 from xdog.ai.types import AssistantMessage, StreamOptions
 from xdog.ai.utils.event_stream import EventStream
 

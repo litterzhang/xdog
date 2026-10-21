@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import math
 import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
@@ -39,6 +40,114 @@ def _matches(schema: dict[str, Any], args: Any) -> bool:
         return False
 
 
+def _schema_intersection(scoped: Any, parent: Any) -> Any:
+    """Keep scoped inventory narrow while intersecting common JSON-schema fields.
+
+    Unknown/conflicting constraints are retained with allOf, never discarded.
+    References/definitions need their original document roots and are refused
+    rather than accidentally resolving against a different delegation document.
+    """
+    if scoped == parent:
+        return copy.deepcopy(scoped)
+    if scoped is False or parent is False:
+        return False
+    if scoped is True:
+        return copy.deepcopy(parent)
+    if parent is True:
+        return copy.deepcopy(scoped)
+    if not isinstance(scoped, dict) or not isinstance(parent, dict):
+        raise ValueError("Invalid scoped tool schema")
+    if any(key in schema for schema in (scoped, parent) for key in ("$ref", "$defs", "definitions", "$id")):
+        raise ValueError("Scoped schema intersection requires independent inline schemas")
+    # Literal candidates are a complete finite set; filter instead of publishing
+    # the parent's broader enum (including non-delegated control actions).
+    candidates = scoped.get("enum", parent.get("enum"))
+    if isinstance(candidates, list):
+        result = copy.deepcopy(scoped)
+        result["enum"] = [copy.deepcopy(value) for value in candidates
+                          if _matches(scoped, value) and _matches(parent, value)]
+        if not result["enum"]:
+            raise ValueError("Scoped tool schema has an empty literal intersection")
+        return result
+    result = copy.deepcopy(scoped)
+    extra = []
+    for key, value in parent.items():
+        if key == "properties" and isinstance(value, dict):
+            properties = result.setdefault("properties", {})
+            if not isinstance(properties, dict):
+                raise ValueError("Invalid scoped tool schema properties")
+            for name, constraint in value.items():
+                if name in properties:
+                    properties[name] = _schema_intersection(properties[name], constraint)
+                elif scoped.get("additionalProperties") is not False:
+                    properties[name] = _schema_intersection(
+                        scoped.get("additionalProperties", True), constraint)
+        elif key == "required":
+            result[key] = sorted(set(result.get(key, ())) | set(value))
+        elif key in {"description", "title", "default", "examples"}:
+            continue  # Scoped metadata must not advertise the parent's controls.
+        elif key not in result:
+            result[key] = copy.deepcopy(value)
+        elif result[key] != value:
+            if key in {"items", "additionalProperties"}:
+                result[key] = _schema_intersection(result[key], value)
+            else:
+                extra.append({key: copy.deepcopy(value)})
+    # additionalProperties also constrains properties newly named by the other
+    # document, including schemas that originally declared no properties at all.
+    if isinstance(result.get("properties"), dict):
+        parent_properties = parent.get("properties", {})
+        additional = parent.get("additionalProperties", True)
+        for name in set(result["properties"]) - set(parent_properties):
+            if additional is False:
+                result["properties"].pop(name)
+            elif additional is not True:
+                result["properties"][name] = _schema_intersection(result["properties"][name], additional)
+    if extra:
+        # Do not overwrite an existing scoped allOf.
+        result.setdefault("allOf", []).extend(extra)
+    return result
+
+
+def _validate_action_selection(tool: AgentTool, selected: tuple[str, ...]) -> None:
+    """Reject unusable action profiles before a host creates/persists a child.
+
+    This checks the declared discriminator, not satisfiability of every possible
+    argument combination. The full captured AND live schemas still gate effects.
+    No shell parsing, wildcard expansion or implicit permission repair occurs.
+    """
+    schema = tool.parameters
+    properties = schema.get("properties", {})
+    action_schema = properties.get("action") if isinstance(properties, dict) else None
+    candidates = schema.get("enum")
+    legacy_actions = (tuple(row.get("action") for row in candidates if isinstance(row, dict))
+                      if isinstance(candidates, list) else None)
+    if action_schema is None and not any(isinstance(value, str) for value in legacy_actions or ()):
+        raise ValueError(
+            f"Child tool_actions[{tool.name!r}] requires a tool with a declared 'action' parameter; "
+            f"{tool.name} is not a multi-action tool. Omit its tool_actions entry (not the tools entry). "
+            'For bash use {"tools": ["bash"], "tool_actions": {}}; command names such as sleep '
+            "are command text, not actions. '*' is not a wildcard. "
+            "Omission does not grant tools or bypass parent permissions/read-only access.")
+    if len(selected) != len(set(selected)) or any(not isinstance(value, str) or not value for value in selected):
+        raise ValueError("Child tool_actions requires distinct nonempty literal action strings")
+    try:
+        validator = validator_for(schema)
+        validator.check_schema(schema)
+        root = validator(schema, registry=cast(Any, Registry)(retrieve=_deny_reference))
+        for action in selected:
+            # evolve retains the root resolver for local action-schema references.
+            if ((action_schema is not None and not root.evolve(schema=action_schema).is_valid(action))
+                    or (legacy_actions is not None and action not in legacy_actions)):
+                raise ValueError(f"Unsupported literal action {action!r}")
+    except Exception as exc:
+        raise ValueError(
+            f"Invalid child tool_actions[{tool.name!r}]: selected actions must match the parent tool's "
+            'declared action schema. Use literal actions (e.g. {"filesystem": ["read"]}); '
+            "'*' is not a wildcard. "
+            "Parent tool/approval/read-only restrictions still apply.") from exc
+
+
 def _native_catalog(manager: SkillManager) -> bool:
     # Custom/host-restricted catalogs remain authoritative, including an
     # instance-provided catalog callback. Only the exact built-in manager can
@@ -66,12 +175,83 @@ class ChildDelegation:
             raise ValueError('Child tool profile exceeds parent delegable active tools')
         if any(name not in chosen for name, _ in actions):
             raise ValueError('Child action restriction names a non-delegated tool')
+        if len({name for name, _ in actions}) != len(actions):
+            raise ValueError('Duplicate child tool action restriction')
         tools = tuple(tool for tool in original if tool.name in chosen)
+        by_name = {tool.name: tool for tool in tools}
+        for name, selected in actions:
+            _validate_action_selection(by_name[name], selected)
         return cls(tools, actions, tuple(copy.deepcopy(tool.parameters) for tool in tools))
 
     @property
     def names(self) -> tuple[str, ...]:
         return tuple(tool.name for tool in self.tools)
+
+    def provider_parameters(self, name: str) -> dict[str, Any]:
+        """Return detached provider advertisement, never a grant of authority.
+
+        Legacy scalar-valued object enums are advertised field by field, so the
+        provider may accept combinations or omissions outside the original grant.
+        The model is not a security boundary: hosts must still call ``check`` at
+        actual execution to enforce the unchanged authoritative ``schemas``.
+        Additional root keywords on legacy enums are refused rather than dropped.
+        """
+        source = next((tool for tool in self.tools if tool.name == name), None)
+        if source is None:
+            raise ValueError('Child tool is outside its delegation')
+        schema = copy.deepcopy(self.schemas[self.tools.index(source)] if self.schemas else source.parameters)
+        if schema.get('type') != 'object' or 'enum' not in schema:
+            return schema
+        if set(schema) != {'type', 'enum'}:
+            raise ValueError('Legacy object enum has unsupported root constraints')
+        candidates = schema['enum']
+        if not isinstance(candidates, list) or not candidates:
+            raise ValueError('Legacy object enum requires a nonempty list of objects')
+        properties: dict[str, Any] = {}
+        required: set[str] | None = None
+        for candidate in candidates:
+            if not isinstance(candidate, dict) or any(type(key) is not str for key in candidate):
+                raise ValueError('Legacy object enum candidates must be JSON objects with string keys')
+            required = set(candidate) if required is None else required.intersection(candidate)
+            for key, value in candidate.items():
+                value_type = {type(None): 'null', bool: 'boolean', int: 'integer',
+                              float: 'number', str: 'string'}.get(type(value))
+                if value_type is None or (type(value) is float and not math.isfinite(value)):
+                    raise ValueError('Legacy object enum fields must be finite JSON scalars')
+                prop = properties.setdefault(key, {'type': [], 'enum': []})
+                if value_type not in prop['type']:
+                    prop['type'].append(value_type)
+                # JSON booleans and numbers are distinct, despite True == 1 in
+                # Python. Integer/float representations of the same JSON number
+                # are equal and must not create duplicate enum entries.
+                if not any(value == old and (type(value) is bool) == (type(old) is bool)
+                           for old in prop['enum']):
+                    prop['enum'].append(value)
+        for prop in properties.values():
+            if len(prop['type']) == 1:
+                prop['type'] = prop['type'][0]
+        return {'type': 'object', 'properties': properties,
+                'required': sorted(required or ()), 'additionalProperties': False}
+
+    def scoped_parameters(self, name: str, parameters: dict[str, Any]) -> dict[str, Any]:
+        """Advertise scoped fields/literals, intersected with the frozen grant/actions."""
+        source = next((tool for tool in self.tools if tool.name == name), None)
+        if source is None:
+            raise ValueError("Scoped tool is outside its original delegation")
+        parent_schema = self.schemas[self.tools.index(source)] if self.schemas else source.parameters
+        # Ordinary provider normalization may lose legacy object-enum pairing.
+        # Never turn that deliberately tolerant advertisement into an authority
+        # snapshot for a newly scoped tool; unsupported legacy scopes fail closed.
+        if parent_schema.get("type") == "object" and "enum" in parent_schema:
+            raise ValueError("Scoped tools require inline property schemas, not legacy object enums")
+        schema = _schema_intersection(parameters, parent_schema)
+        selected = dict(self.actions).get(name)
+        if selected is not None:
+            schema = _schema_intersection(schema, {"type": "object", "properties": {
+                "action": {"enum": list(selected)}}})
+        if not isinstance(schema, dict):
+            raise ValueError("Scoped child tool schema must be an object")
+        return schema
 
     def check(self, ctx: BeforeToolCallContext, current: Sequence[AgentTool], *, live: bool,
               capability_bound: bool = False) -> None:

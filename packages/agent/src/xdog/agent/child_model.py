@@ -4,11 +4,11 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import cast
 
+from xdog.agent.child_compaction import preserve_model_metadata
+from xdog.agent.child_config import ChildConfig
 from xdog.agent.compaction import CompactionConfig, estimate_input_tokens, resolve_compaction_budget
 from xdog.agent.core import AgentMessage, ModelStreamFn, StreamFn
 from xdog.agent.image_context import validate_model_images
-from xdog.agent.supervision_compaction import preserve_model_metadata
-from xdog.agent.supervision_config import ChildConfig
 from xdog.ai.types import (
     AssistantMessage,
     Context,

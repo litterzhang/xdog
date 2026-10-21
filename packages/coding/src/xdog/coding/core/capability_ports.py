@@ -30,6 +30,7 @@ class SessionCapabilityHost:
     def __init__(self, session: AgentSession, inbox: InboxStore, namespace: str) -> None:
         self._session, self._inbox = session, inbox
         self._children = session.children
+        self._child_runtime = self._children.runtime
         self.identity = session.session_id
         self.branch = session.session_data.active_branch
         self.workspace = session.working_dir
@@ -40,6 +41,7 @@ class SessionCapabilityHost:
         self._generation = self._controller.generation if self._controller is not None else uuid.uuid4().hex
         self._listeners: list[Callable[[dict[str, Any]], None]] = []
         self._remove_events: Callable[[], None] | None = None
+        self._remove_children: Callable[[], None] | None = None
         self._retiring = False
 
     @classmethod
@@ -169,11 +171,42 @@ class SessionCapabilityHost:
             except Exception:
                 logger.warning('Capability execution listener failed', exc_info=True)
 
+    def _child_event(self, event: dict[str, Any]) -> None:
+        # This subscription belongs to the actual captured child runtime, not its
+        # replaceable UI publisher. Payload/status labels confer no authority.
+        if event.get('type') != 'child_status' or self._child_runtime.active:
+            return
+        if not self._loop.is_closed():
+            self._loop.call_soon_threadsafe(self._children_available)
+
+    def _children_available(self) -> None:
+        self._on_owner()
+        current = (self._session.runtime.controller if self._session.runtime is not None
+                   else self._session._sdk_controller)
+        if (not self._listeners or self._retiring or self._session._sdk_disposing or not self.valid()
+                or current is not self._controller or current is None or current._closing
+                or current.generation != self._generation or self._children.runtime is not self._child_runtime
+                or self._children.capabilities.runtime is not self._child_runtime or self._child_runtime.active):
+            return
+        # Merely prompt subscribers to re-read the original owner's current
+        # snapshot. A child completing is never a main execution settlement.
+        self._event({'type': 'owner.available', 'execution_id': '', 'status': '',
+                     'generation': self._generation})
+
     def subscribe_events(self, callback: Callable[[dict[str, Any]], None]) -> Callable[[], None]:
         self._on_owner()
         self._listeners.append(callback)
         if self._remove_events is None and self._controller is not None:
             self._remove_events = self._controller.subscribe_execution(self._event)
+        if self._remove_children is None and not self._retiring:
+            try:
+                self._remove_children = self._children.capabilities.subscribe(self._child_event)
+            except BaseException:
+                self._listeners.remove(callback)
+                if not self._listeners and self._remove_events is not None:
+                    self._remove_events()
+                    self._remove_events = None
+                raise
         self._event({'type': 'owner.retiring' if self._retiring else 'owner.available',
                      'execution_id': '', 'status': '', 'generation': self._generation})
         def cancel() -> None:
@@ -182,6 +215,9 @@ class SessionCapabilityHost:
             if not self._listeners and self._remove_events is not None:
                 self._remove_events()
                 self._remove_events = None
+            if not self._listeners and self._remove_children is not None:
+                self._remove_children()
+                self._remove_children = None
         return cancel
 
     def subscribe_completed(self, callback: Callable[[], None]) -> Callable[[], None]:
@@ -193,6 +229,9 @@ class SessionCapabilityHost:
         self._retiring = True
         def publish() -> None:
             self._event({'type': 'owner.retiring', 'execution_id': '', 'status': '', 'generation': self._generation})
+            if self._remove_children is not None:
+                self._remove_children()
+                self._remove_children = None
         if not self._loop.is_closed():
             self._loop.call_soon_threadsafe(publish)
 

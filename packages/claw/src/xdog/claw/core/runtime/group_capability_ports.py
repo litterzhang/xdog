@@ -34,6 +34,8 @@ class GroupCapabilityHost:
         self._loop = asyncio.get_running_loop()
         self._generation = str(inputs.execution_snapshot(self._scope)["generation"])
         self._retiring = False
+        self._children_binding: tuple[AgentSession, object, object, object] | None = None
+        self._children_unsubscribe: Callable[[], None] | None = None
 
     @classmethod
     async def open(cls, runtime: GroupRuntime, inputs: InputService) -> GroupCapabilityHost:
@@ -48,11 +50,48 @@ class GroupCapabilityHost:
 
     def parent(self, session: AgentSession) -> ParentPort:
         extensions = session.extensions
-        return ParentPort(session.agent, session.extensions, session.children.capabilities,
+        parent = ParentPort(session.agent, session.extensions, session.children.capabilities,
             valid=lambda: self.valid() and not self._retiring and not self._runtime._closing
                 and self._runtime._active_session is session
                 and session.extensions is extensions,
             user_authorized=lambda: session._user_operation_authorized)
+        self._watch_children(session, parent)
+        return parent
+
+    def _watch_children(self, session: AgentSession, parent: ParentPort) -> None:
+        """Wake generic consumers after actual child settlement, not UI publication."""
+        self._on_owner()
+        children = session.children.runtime
+        binding = (session, children, session.agent, session.extensions)
+        previous = self._children_binding
+        if (previous is not None and all(old is new for old, new in zip(previous, binding, strict=True))
+                and parent.valid() and not children.closed):
+            return  # Reattachment must not discard an already queued settlement hint.
+        if self._children_unsubscribe is not None:
+            self._children_unsubscribe()
+            self._children_unsubscribe = None
+        self._children_binding = binding
+        if not parent.valid() or children.closed:
+            return
+
+        def available() -> None:
+            self._on_owner()
+            if (self._children_binding is not binding or not parent.valid() or not self.accepting()
+                    or session.children.runtime is not children or session.agent is not parent.agent):
+                return
+            # Lifecycle payloads are hints only. Re-read original-owner facts
+            # after cleanup/persistence; a terminal label alone is not idle.
+            snapshot = self.execution_snapshot()
+            if snapshot['state'] == 'idle' and not snapshot['children_active']:
+                self._inputs.publish_available(self._scope)
+
+        def changed(_event: dict[str, Any]) -> None:
+            # Independent of children.publish (the replaceable UI sink). Always
+            # dispatch to the pinned loop and recheck retirement after dispatch.
+            if not self._loop.is_closed():
+                self._loop.call_soon_threadsafe(available)
+
+        self._children_unsubscribe = children.subscribe(changed)
 
     def owns_parent(self, parent: ParentPort) -> bool:
         session = self._runtime._active_session
@@ -139,9 +178,14 @@ class GroupCapabilityHost:
         return self._inputs.subscribe_events(self._scope, event)
 
     def retire(self) -> None:
+        self._on_owner()
         if self._retiring:
             return
         self._retiring = True
+        self._children_binding = None
+        if self._children_unsubscribe is not None:
+            self._children_unsubscribe()
+            self._children_unsubscribe = None
         self._inputs._execution_event(self._scope, 'owner.retiring')
 
     async def acp_target(self) -> dict[str, Any] | None:

@@ -6,7 +6,7 @@ from dataclasses import replace
 
 import pytest
 from xdog.agent import Agent, AgentConfig, AgentTool, AgentToolResult
-from xdog.agent.supervision import MAX_TRANSCRIPT_BYTES
+from xdog.agent.children import MAX_TRANSCRIPT_BYTES
 from xdog.ai.types import AssistantMessage, DoneEvent, TextContent, ToolCall, Usage
 from xdog.ai.utils.event_stream import EventStream
 
@@ -55,7 +55,7 @@ class TestChildLifecycle:
             assert events and all(event["child_id"] == identifier for event in events)
             await owner.control("close", identifier)
             assert owner.snapshot() == {"children": []}
-            with pytest.raises(ValueError, match="another supervisor"):
+            with pytest.raises(ValueError, match="another child runtime"):
                 await owner.control("inspect", identifier)
             assert len(saved) == 1
         finally:
@@ -359,7 +359,7 @@ class TestChildLifecycle:
             identifier = result.content[0].text
             await owner.control("wait", identifier)
             assert specs[0].access == "read-only" and not specs[0].inherit_context
-            with pytest.raises(ValueError, match="another supervisor"):
+            with pytest.raises(ValueError, match="another child runtime"):
                 await other.control("cancel", identifier)
             result = await tool.execute("list", {"action": "list"})
             assert identifier in result.content[0].text

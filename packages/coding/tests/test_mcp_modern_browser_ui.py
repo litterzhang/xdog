@@ -100,7 +100,7 @@ async def browser(tmp_path, host, transport):
             ui._request_exit()
         if session is not None:
             await session.mcp.aclose()
-            await session.children.supervisor.aclose()
+            await session.children.runtime.aclose()
             await session.extensions.aclose()
             session.dispose()
         if task is not None:

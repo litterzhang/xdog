@@ -114,13 +114,15 @@ class GoalService:
         require_user(context)
         async with self._lock:
             self._check()
-            if await self.current() is not None:
+            current = await self.current()
+            if current is not None and current.status != 'completed':
                 raise ValueError('This agent already has a current Goal; complete or clear it first')
             now = time.time()
             goal = Goal('goal-' + uuid.uuid4().hex, title, outcome, criteria, created_at=now, updated_at=now)
             await self._io(self.files(goal).initialize)
             self._check()
-            await self.store.put(goal, expected_version=0, check=self._captured_check())
+            await self.store.put(goal, expected_version=0, check=self._captured_check(),
+                                 action='create', context=context)
             self.on_change()
             return goal
 
@@ -128,14 +130,28 @@ class GoalService:
                      version: int | None = None, **values: Any) -> Goal:
         async with self._lock:
             goal = await self._selected(identifier)
+            if goal.status in {'completed', 'cleared'} and action != 'clear':
+                raise ValueError('Completed/historical Goal is read-only; create a new Goal')
+            if action == 'activate':
+                if type(version) is not int or version < 1:
+                    raise ValueError('Activate requires the observed Goal version')
+                if (set(values) != {'reason'} or not isinstance(values['reason'], str)
+                        or not values['reason'].strip()):
+                    raise ValueError('Activate requires the main Agent assessment of the satisfied wait')
+                if goal.status == 'active':
+                    return goal  # Idempotent, including ACK-loss retry: no revision or wake cause.
+                if goal.status != 'waiting':
+                    raise ValueError('Activate only releases waiting; a paused Goal requires actual user resume')
             if version is not None and (type(version) is not int or version != goal.version):
                 raise ValueError('Goal version changed; re-read before updating')
+            if action == 'resume':
+                if goal.status != 'paused':
+                    raise ValueError('Resume only restores paused Goals; use activate for a satisfied wait')
+                require_user(context)
             if (goal.status == 'waiting' and goal.wait_for in {'user', 'host'}
-                    and action in {'wait', 'resume', 'complete', 'pause'}):
+                    and action in {'wait', 'activate', 'complete', 'pause'}):
                 require_user(context)  # An intermediate wait(tasks) is not a new delegation.
             if action in {'clear', 'update'}:
-                require_user(context)
-            if action == 'resume' and not (goal.status == 'waiting' and goal.wait_for == 'tasks'):
                 require_user(context)
             if goal.status == 'paused' and action not in {'resume', 'clear', 'update'}:
                 require_user(context)  # An automatic reminder cannot turn a user pause into wait/complete.
@@ -144,8 +160,8 @@ class GoalService:
                 if not values or set(values) - {'title', 'outcome', 'criteria'}:
                     raise ValueError('Update only title/outcome/criteria')
                 changes.update(values)
-            elif action in {'pause', 'wait', 'resume', 'complete', 'clear'}:
-                status = {'pause': 'paused', 'wait': 'waiting', 'resume': 'active',
+            elif action in {'pause', 'wait', 'activate', 'resume', 'complete', 'clear'}:
+                status = {'pause': 'paused', 'wait': 'waiting', 'activate': 'active', 'resume': 'active',
                           'complete': 'completed', 'clear': 'cleared'}[action]
                 if set(values) - {'reason', 'summary', 'until'}:
                     raise ValueError('Invalid Goal lifecycle fields')
@@ -159,13 +175,16 @@ class GoalService:
             current = replace(goal, **changes)
             self._check()
             await self.store.put(current, expected_version=goal.version, wake=action == 'resume',
-                                 check=self._captured_check())
+                                 check=self._captured_check(),
+                                 action=action if action != 'update' else '', context=context)
             self.on_change()
             return current
 
     async def plan(self, content: str, identifier: str = '') -> Goal:
         async with self._lock:
             goal = await self._selected(identifier)
+            if goal.status in {'completed', 'cleared'}:
+                raise ValueError('Completed/historical Goal is read-only; create a new Goal')
             if goal.status == 'paused':
                 raise ValueError('Resume the user-paused Goal before planning')
             await self._io(self.files(goal).write_plan, content)
@@ -178,6 +197,8 @@ class GoalService:
     async def task(self, values: dict[str, Any], identifier: str = '') -> Task:
         async with self._lock:
             goal = await self._selected(identifier)
+            if goal.status in {'completed', 'cleared'}:
+                raise ValueError('Completed/historical Goal is read-only; create a new Goal')
             if goal.status == 'paused':
                 raise ValueError('Resume the user-paused Goal before editing tasks')
             fields = set(Task.__dataclass_fields__)
@@ -264,8 +285,10 @@ class GoalService:
         completion/progress from counters, idle execution or a watching observer.
         """
         action, source, reason, requires_user = 'main_agent_work', 'goal', 'Goal is active', False
-        if goal is None or goal.status in {'completed', 'cleared'}:
-            action, reason, requires_user = 'create', 'No current executable Goal', True
+        if goal is None:
+            action, reason, requires_user = 'create', 'No current Goal', True
+        elif goal.status in {'completed', 'cleared'}:
+            action, reason, requires_user = 'create', 'Goal is ' + goal.status + '; create a new Goal or clear it', True
         elif goal.status == 'paused':
             action, reason, requires_user = 'user_resume', goal.reason or 'Goal is paused', True
         elif goal.status == 'waiting' and goal.wait_for in {'user', 'host'}:
@@ -317,7 +340,8 @@ class GoalService:
             files = self.files(goal)
             value: dict[str, Any] = {'format': 'xdog.goal_status.v2', 'current': asdict(goal),
                                      'workspace': str(files.root), 'plan_path': str(files.root / 'plan.md'),
-                                     'task_dir': str(files.tasks_dir)}
+                                     'task_dir': str(files.tasks_dir),
+                                     'last_transition': await self.store.last_transition(goal)}
             if detail:
                 tasks = await self._io(files.list)
                 value.update(tasks=await self._io(lambda: [asdict(task) for task in tasks]),

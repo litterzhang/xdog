@@ -29,9 +29,9 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from xdog.agent.child_policy import ParentHandle
     from xdog.agent.skills.manager import SkillManager
     from xdog.agent.skills.types import Skill, SkillPlacement
-    from xdog.agent.supervision_policy import ParentHandle
 from dataclasses import replace
 from typing import Any, Callable, TypeVar
 
@@ -84,9 +84,11 @@ from xdog.agent.messages import default_convert_to_llm, dicts_to_messages
 from xdog.agent.snapshots import (
     CompactionSnapshot,
     InterruptedTool,
+    Snapshot,
     capture_skill_snapshots,
     decode_legacy_snapshot,
     decode_snapshot,
+    decode_snapshot_parts,
     encode_snapshot,
     validate_skill_bindings,
 )
@@ -913,13 +915,29 @@ class Agent:
         The host saves the returned data; there is no persistence event or ACK.
         Dump remains available after aclose(), which is not serialized.
         """
+        return self._dump_at_boundary(recovery=recovery, omit_messages=False)
+
+    def dump_metadata(self) -> dict[str, Any]:
+        """Export safe v1 metadata without messages or a lifetime history bound.
+
+        Save the paired typed history separately and use restore_parts to rebind
+        it. Every message/content part and all tool pairs are still validated.
+        Busy or unconfirmed work is rejected, just as for ordinary dump().
+        This does not export runtime tools, credentials or compaction policy.
+        """
+        return self._dump_at_boundary(recovery=False, omit_messages=True)
+
+    def _dump_at_boundary(self, *, recovery: bool, omit_messages: bool) -> dict[str, Any]:
         busy = not self._idle_event.is_set()
         pending = self._unfinished_tools()
         if not recovery and (busy or pending):
             raise RuntimeError("Session is not at a safe snapshot boundary; use dump(recovery=True) for diagnosis")
-        return self._snapshot_data(recovery=recovery, run_active=busy or self._restored_run_active)
+        return self._snapshot_data(recovery=recovery, run_active=busy or self._restored_run_active,
+                                   omit_messages=omit_messages)
 
-    def _snapshot_data(self, *, recovery: bool = False, run_active: bool = False) -> dict[str, Any]:
+    def _snapshot_data(
+        self, *, recovery: bool = False, run_active: bool = False, omit_messages: bool = False,
+    ) -> dict[str, Any]:
         pending = self._unfinished_tools()
         active = self._active_turn_slugs or tuple(skill.slug for skill in self._resume_turn_skills)
         turn_skills = self._turn_skills if run_active or not active else ()
@@ -935,6 +953,7 @@ class Agent:
             session_id=self._session_id, run_id=self._run_id or None, run_active=run_active,
             interrupted=recovery or bool(pending),
             interrupted_tools=tuple(InterruptedTool(call_id, name) for call_id, name in pending.items()),
+            omit_messages=omit_messages,
         )
 
     def restore(self, session: Mapping[str, Any], *, allowed_models: Sequence[str] | None = None) -> None:
@@ -974,6 +993,30 @@ class Agent:
             return
 
         candidate = decode_snapshot(raw)
+        self._restore_candidate(candidate, tuple(raw["options"]), allowed_models=allowed_models)
+
+    def restore_parts(
+        self, metadata: Mapping[str, Any], messages: Sequence[AgentMessage], *,
+        allowed_models: Sequence[str] | None = None,
+    ) -> None:
+        """Atomically restore v1 metadata and separately bounded typed messages.
+
+        No whole-history size limit is applied. Each message header/content part
+        remains bounded JSON, and full-history pairing, model, skill and summary
+        binding checks are identical to restore(). No model or tool is started;
+        current host runtime resources and authority are retained.
+        """
+        self._ensure_open()
+        if not self._idle_event.is_set():
+            raise RuntimeError("Cannot restore during an active run")
+        raw = dict(metadata)
+        candidate = decode_snapshot_parts(raw, messages)
+        self._restore_candidate(candidate, tuple(raw["options"]), allowed_models=allowed_models)
+
+    def _restore_candidate(
+        self, candidate: Snapshot, option_fields: Sequence[str], *, allowed_models: Sequence[str] | None,
+    ) -> None:
+        """Shared versioned validation and adoption; failures before adoption are inert."""
         candidate.require_resumable()
         if candidate.compaction.generation:
             expected = SUMMARY_TEMPLATE.format(summary=candidate.compaction.summary)
@@ -989,7 +1032,6 @@ class Agent:
         fixed = _skill_preamble([skill for skill in skills if not skill.expires_after_turn])
         # Keep runtime-only options (including host credentials/headers/cancel)
         # from the current host; restore only the decoder's explicit whitelist.
-        option_fields = raw["options"]
         options = replace(self._options, **{key: getattr(candidate.options, key) for key in option_fields})
         settings = candidate.settings
         self._base_system_prompt = candidate.base_system_prompt

@@ -832,7 +832,13 @@ async def _execute_prepared_tool_call(
             "interrupted": True,
         }
     except Exception as exc:
-        logger.exception("Tool %s execution failed", tool.name)
+        # This exception becomes a tool result and a tool_execution_end event.
+        # Terminal log capture can omit the duplicate; file logs keep the full
+        # traceback. Do not mark unrelated loop/hook failures as represented.
+        logger.exception(
+            "Tool %s execution failed", tool.name,
+            extra={"xdog_tool_error_represented": True, "tool_call_id": tc.id},
+        )
         return {
             "result": _create_error_tool_result(f"Tool error: {exc}"),
             "is_error": True,

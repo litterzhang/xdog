@@ -31,8 +31,8 @@ async def test_cleanup_error_cannot_release_writer_before_remaining_real_worker(
         runtime = None
     await asyncio.wrap_future(controller.control(session.initialize_extensions, name='initialize'))
     await asyncio.wrap_future(controller.control(lambda: session.manage_mcp('connect', 'fixture'), name='connect-mcp'))
-    extension, supervisor = session.extensions, session.children.supervisor
-    child_close = supervisor.aclose
+    extension, child_runtime = session.extensions, session.children.runtime
+    child_close = child_runtime.aclose
     extension_client = extension._manager._clients['contextual']
     mcp_client = session.mcp._clients['fixture']
     worker = extension._manager._thread if failure_point == 'children' else session.mcp._thread
@@ -59,7 +59,7 @@ async def test_cleanup_error_cannot_release_writer_before_remaining_real_worker(
         await actual_tail_close()
 
     if failure_point == 'children':
-        monkeypatch.setattr(supervisor, 'aclose', fail_after_child)
+        monkeypatch.setattr(child_runtime, 'aclose', fail_after_child)
     else:
         monkeypatch.setattr(extension_client, 'close', fail_after_extension)
     monkeypatch.setattr(target, 'close', delayed_tail_close)
@@ -156,7 +156,7 @@ async def test_public_close_before_any_owner_does_not_need_reopenable_input_hist
         assert session._sdk_controller is None and session.runtime is None
     finally:
         await session.extensions.aclose()
-        await session.children.supervisor.aclose()
+        await session.children.runtime.aclose()
         session.dispose()
 
 
@@ -230,7 +230,7 @@ def test_cli_awaits_session_cleanup_before_returning_or_exiting(tmp_path, monkey
         # Test utility cleanup also handles the intentionally broken RED path.
         async def cleanup(owner):
             await owner.agent.aclose()
-            await owner.children.supervisor.aclose()
+            await owner.children.runtime.aclose()
             await owner.extensions.aclose()
             if owner.mcp is not None:
                 await owner.mcp.aclose()

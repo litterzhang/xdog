@@ -158,3 +158,20 @@ def test_native_duplicate_stream_and_late_generation_do_not_repeat_tools_or_comp
     finally:
         ui._request_exit()
         ui._session_events.close()
+
+
+def test_coding_uses_shared_user_spacing_and_role_markers_for_live_and_replayed_messages():
+    log = ChatLog(create_default_theme())
+    log.add_user("user input")
+    assert [strip_ansi(row).rstrip() for row in log.render(40)] == ["", " › user input", ""]
+    log.start_assistant("", "run")
+    log.update_assistant("live reply", "run")
+    log.finalize_assistant("final reply", "run")
+    log.add_user("next input")
+    log.add_assistant("replayed reply")
+    assert [strip_ansi(row).rstrip() for row in log.render(40)] == [
+        "", " › user input", "", "", " • final reply", "", "", " › next input", "", "", " • replayed reply", "",
+    ]
+    assert [record.body for record in log.transcript_records()] == [
+        "user input", "final reply", "next input", "replayed reply",
+    ]

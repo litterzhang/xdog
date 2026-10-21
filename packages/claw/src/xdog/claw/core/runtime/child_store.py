@@ -13,13 +13,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from xdog.agent.core import AgentMessage
-from xdog.agent.extensions.state import validate_entries
-from xdog.agent.input_queue import QueuedInput
-from xdog.agent.messages import dicts_to_messages
-from xdog.agent.supervision import MAX_TRANSCRIPT_BYTES, ChildSpec
-from xdog.agent.supervision_config import ChildConfig
-from xdog.agent.supervision_images import (
+from xdog.agent.child_config import ChildConfig
+from xdog.agent.child_images import (
     MAX_CHILD_ENCODED_IMAGES,
     check_collection,
     check_retained,
@@ -28,6 +23,11 @@ from xdog.agent.supervision_images import (
     images_to_dicts,
     text_size,
 )
+from xdog.agent.children import MAX_TRANSCRIPT_BYTES, ChildSpec
+from xdog.agent.core import AgentMessage
+from xdog.agent.extensions.state import validate_entries
+from xdog.agent.input_queue import QueuedInput
+from xdog.agent.messages import dicts_to_messages
 
 MAX_RECORD_BYTES = 3 * MAX_CHILD_ENCODED_IMAGES + 1100 * 1024
 _TERMINAL = frozenset({"completed", "failed", "canceled", "timed-out", "interrupted"})
@@ -119,7 +119,7 @@ class ChildStore:
     def archive_compaction(self, spec: ChildSpec, generation: int, messages: tuple[AgentMessage, ...]) -> None:
         """Durable, immutable pre-compaction export; failed/cancelled attempts are retained too."""
         from xdog.agent.history import validate_checkpoint
-        from xdog.agent.messages import messages_to_dicts
+        from xdog.agent.snapshots import encode_snapshot_messages
         if type(generation) is not int or generation < 1:
             raise ValueError("Invalid child compaction generation")
         validate_checkpoint(messages, len(messages) - 1)
@@ -127,7 +127,7 @@ class ChildStore:
             raise ValueError("Invalid/oversized child archive message")
         check_collection(image_parts(messages))
         record = {"id": spec.id, "generation": generation, "source": "builtin-coding",
-                  "messages": messages_to_dicts(list(messages))}
+                  "messages": encode_snapshot_messages(messages)}
         with self._lock:
             path = self._path(spec.id, f".compaction-{generation}")
             if path.exists():
@@ -153,7 +153,8 @@ class ChildStore:
                         or record.get("source") != "builtin-coding" or not isinstance(record.get("messages"), list)):
                     raise ValueError("Invalid child compaction archive")
                 from xdog.agent.history import validate_checkpoint
-                messages = tuple(dicts_to_messages(record["messages"]))
+                from xdog.agent.snapshots import decode_snapshot_messages
+                messages = decode_snapshot_messages(record["messages"])
                 validate_checkpoint(messages, len(messages) - 1)
                 if any(text_size((message,)) > MAX_TRANSCRIPT_BYTES for message in messages):
                     raise ValueError("Invalid/oversized child archive message")
@@ -163,7 +164,7 @@ class ChildStore:
 
     def save_inputs(self, identifier: str, rows: tuple[QueuedInput, ...]) -> None:
         """Write-ahead snapshot before live acceptance; recovery is explicitly uncertain."""
-        from xdog.agent.supervision_queue import recovery_from_dicts, recovery_to_dicts
+        from xdog.agent.child_queue import recovery_from_dicts, recovery_to_dicts
         with self._lock:
             encoded = recovery_to_dicts(rows)
             recovery_from_dicts(encoded)  # Bound/validate before replacing the prior durable snapshot.
@@ -172,7 +173,7 @@ class ChildStore:
 
     def save_return(self, identifier: str, row: QueuedInput) -> None:
         """Keep an exact conservative backup before the live return can remove data."""
-        from xdog.agent.supervision_queue import recovery_from_dicts, recovery_to_dicts
+        from xdog.agent.child_queue import recovery_from_dicts, recovery_to_dicts
         with self._lock:
             path = self._path(identifier, '.returns')
             saved = self._read(path) if path.exists() else {'version': 1, 'child_id': identifier, 'inputs': []}
@@ -345,7 +346,7 @@ class ChildStore:
                         record = checkpoint
                 journal = self._path(path.stem, '.inputs')
                 if record.get('status') == 'interrupted' and journal.exists():
-                    from xdog.agent.supervision_queue import recovery_from_dicts
+                    from xdog.agent.child_queue import recovery_from_dicts
                     saved = self._read(journal)
                     if (set(saved) != {'version', 'child_id', 'inputs'} or type(saved['version']) is not int
                             or saved['version'] != 1 or saved['child_id'] != path.stem):
@@ -361,7 +362,7 @@ class ChildStore:
                     if (set(saved) != {'version', 'child_id', 'inputs'} or type(saved['version']) is not int
                             or saved['version'] != 1 or saved['child_id'] != path.stem):
                         raise ValueError('Invalid durable return backup snapshot')
-                    from xdog.agent.supervision_queue import recovery_from_dicts
+                    from xdog.agent.child_queue import recovery_from_dicts
                     recovery_from_dicts(saved['inputs'])
                     record['returned_backups'] = saved['inputs']
                 if 'queue_uncertain' in record and type(record['queue_uncertain']) is not bool:
@@ -414,10 +415,22 @@ class ChildStore:
                         or any(not isinstance(value, str) for value in feedback)
                         or sum(len(value.encode()) for value in feedback) > 65536):
                     raise ValueError("Invalid child input-handler feedback")
-                from xdog.agent.supervision_queue import recovery_from_dicts
+                from xdog.agent.child_queue import recovery_from_dicts
                 recovery = recovery_from_dicts(record.get('undelivered_inputs', []))
                 recovery_from_dicts(record.get('returned_backups', []))
-                typed = tuple(dicts_to_messages(messages))
+                from xdog.agent.snapshots import decode_snapshot_messages, decode_snapshot_parts
+                typed = (decode_snapshot_messages(messages, interrupted=record["status"] != "completed")
+                         if "session_state" in record else tuple(dicts_to_messages(messages)))
+                if "session_state" in record:
+                    metadata = record["session_state"]
+                    schemas = record.get("tool_schemas")
+                    if (not isinstance(metadata, dict) or "messages" in metadata
+                            or not isinstance(schemas, dict)
+                            or any(not isinstance(name, str) or not isinstance(schema, dict)
+                                   for name, schema in schemas.items())):
+                        raise ValueError("Invalid child continuation metadata/delegation")
+                    if record["status"] == "completed":
+                        decode_snapshot_parts(metadata, typed).require_resumable()
                 if any(text_size((message,)) > MAX_TRANSCRIPT_BYTES for message in typed):
                     raise ValueError("Invalid/oversized child text message")
                 initial = images_from_dicts(record.get('task_images', []))

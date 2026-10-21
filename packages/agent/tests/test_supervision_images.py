@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 
 import pytest
-from xdog.agent.supervision_images import validate_images
+from xdog.agent.child_images import validate_images
 from xdog.ai.types import ImageContent
 
 from test_support.child_runtime.images import picture

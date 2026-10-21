@@ -173,7 +173,7 @@ async def test_actual_app_recovery_rejects_old_context_and_reopens_only_current_
     finally:
         ui._request_exit()
         if session is not None:
-            await session.children.supervisor.aclose()
+            await session.children.runtime.aclose()
             await session.extensions.aclose()
             session.dispose()
 
@@ -207,12 +207,12 @@ async def test_initial_factory_failure_is_inspection_only_and_backend_backup_rem
         await wait(ui, lambda: ui._connection_ready and ui._child_queues_supported)
     def fail(spec, publish):
         raise ValueError('Owned failure before child agent initialization')
-    session.children.supervisor.factory = fail
+    session.children.runtime.factory = fail
     image = ImageContent(data=base64.b64encode(PNG).decode(), mime_type='image/png')
     ui._editor.set_text('PARENT-INITIAL-RECOVERY-DRAFT')
     try:
-        child = await session.children.supervisor.start('ORIGINAL INITIAL /quit', images=(image,) if with_image else ())
-        await session.children.supervisor.control('wait', child)
+        child = await session.children.runtime.start('ORIGINAL INITIAL /quit', images=(image,) if with_image else ())
+        await session.children.runtime.control('wait', child)
         saved = session.children.store.load()[0]
         ui._open_children()
         panel = ui._child_panel
@@ -228,7 +228,7 @@ async def test_initial_factory_failure_is_inspection_only_and_backend_backup_rem
         assert panel.queue is queue and panel._mode != 'form'
         assert not hasattr(queue, '_confirm') and (panel.composer is None or not panel.composer.items)
         # Explicit recovery remains an Agent/SDK operation, never a user UI callback.
-        recovered = await session.children.supervisor.control('queue', child, json.dumps({
+        recovered = await session.children.runtime.control('queue', child, json.dumps({
             'action': 'recover_task', 'id': row['id'], 'revision': queue._revision}))
         assert recovered['queue']['recovered']['content'] == 'ORIGINAL INITIAL /quit'
         assert ('image_recovery' in recovered) is with_image
@@ -246,6 +246,6 @@ async def test_initial_factory_failure_is_inspection_only_and_backend_backup_rem
         if server is not None:
             await server.stop()
         else:
-            await session.children.supervisor.aclose()
+            await session.children.runtime.aclose()
             await session.extensions.aclose()
             session.dispose()

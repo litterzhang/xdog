@@ -8,8 +8,8 @@ from dataclasses import replace
 from typing import Any, cast
 
 from xdog.agent.agent import Agent
+from xdog.agent.child_images import MAX_CHILD_ENCODED_IMAGES, check_collection
 from xdog.agent.input_queue import Delivery, QueuedInput
-from xdog.agent.supervision_images import MAX_CHILD_ENCODED_IMAGES, check_collection
 from xdog.ai.types import ImageContent
 
 

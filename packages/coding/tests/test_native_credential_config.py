@@ -40,7 +40,7 @@ async def test_global_native_selection_survives_project_override_and_real_sessio
         assert owner.mcp.credential_store.namespace == old_namespace
         assert not owner.mcp.credential_store.directory.exists()
     finally:
-        await owner.children.supervisor.aclose()
+        await owner.children.runtime.aclose()
         await owner.extensions.aclose()
         owner.dispose()
 

@@ -12,6 +12,43 @@ Nothing yet.
 
 ---
 
+## [2.4.5] — 2026-10-21
+
+### Added
+
+- Scoped child capability delegation: explicitly granted Goal task tools use the
+  original host permission and owner fences, without granting Goal-wide control
+  or requiring shell access for task updates.
+- Goal `activate` for an assessed, version-checked satisfied wait, distinct from
+  explicit user `resume` of a paused Goal; lifecycle provenance is saved atomically
+  with the actual state revision and exposed in status and native command output.
+- Current-session `/permissions` controls and workspace/outside/tool-data/external
+  effect classification; Esc can steer already queued native user messages into
+  the current turn at durable input checkpoints.
+
+### Fixed
+
+- Deferred Goal reminders are rechecked after child settlement, draft clearing and
+  host producer release; Goal revision/epoch races preserve durable wake causes
+  without replaying unknown effects or bypassing user waits and pauses.
+- Completed Goals remain visible until explicit clear or replacement by a new
+  user-created Goal; waiting/task notifications do not require rereading skill
+  source files or polling an idle Agent into a loop.
+- Child continuation recreates runtime resources only when needed, validates tool
+  schemas and original parent authority, and releases owned resources between rounds.
+- Shared terminal message markers, spacing, command alignment, dim approval/status
+  text, readable Chinese tool output, bounded external input previews and rendering
+  caches reduce input latency while preserving full details and transcripts.
+
+### Changed
+
+- Keep child orchestration in Coding/Claw; Agent supplies only reusable child
+  contracts and generic capability delegation, with no Goal business schema.
+- Align all workspace versions, internal dependency floors and runtime/protocol
+  identities to 2.4.5.
+
+---
+
 ## [2.4.4] — 2026-10-20
 
 ### Added

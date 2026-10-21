@@ -7,7 +7,7 @@ from dataclasses import replace
 import pytest
 from xdog.agent import AgentTool, AgentToolResult
 from xdog.agent.capabilities.children import ChildPort
-from xdog.agent.supervision import ChildCapture, ChildSpec
+from xdog.agent.children import ChildCapture, ChildSpec
 
 
 async def prepared_bridge(source, live):
@@ -24,7 +24,7 @@ async def prepared_bridge(source, live):
             assert identifier == self.state.id
             return self.state
     backend = Backend()
-    port.supervisor = backend
+    port.runtime = backend
     async def tools(spec):
         return (source,)
     await port.start('task', access='read-only', config={}, narrow=lambda selected: selected,

@@ -1,16 +1,57 @@
 """Validated per-child specialization controls; never a permission grant."""
 from __future__ import annotations
 
+import copy
 import io
 import json
+import math
 import re
 import shlex
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
+
+
+def child_tool_scopes(value: Any, tools: tuple[str, ...] | list[str] | None) -> dict[str, Any]:
+    """Detached finite JSON data only; names select tools, never import code or grant authority."""
+    remaining = 4096
+    def check(item: Any, depth: int = 0) -> None:
+        nonlocal remaining
+        remaining -= 1
+        if remaining < 0 or depth > 16:
+            raise ValueError("Child tool_scopes exceeds JSON structural bounds")
+        if type(item) is dict:
+            if any(type(key) is not str for key in item):
+                raise ValueError("Child tool_scopes requires JSON string keys")
+            for child in item.values():
+                check(child, depth + 1)
+        elif type(item) is list:
+            for child in item:
+                check(child, depth + 1)
+        elif type(item) not in (str, int, float, bool, type(None)) or (
+                type(item) is float and not math.isfinite(item)):
+            raise ValueError("Child tool_scopes must be finite JSON data")
+    if (type(value) is not dict or len(value) > 128
+            or any(type(scope) is not dict for scope in value.values())):
+        raise ValueError("Child tool_scopes must map selected tools to JSON objects")
+    check(value)
+    if value and (tools is None or not set(value) <= set(tools)):
+        raise ValueError("Child tool_scopes requires explicit tools containing every scoped tool")
+    if len(json.dumps(value, ensure_ascii=True, allow_nan=False).encode("utf-8")) > 65536:
+        raise ValueError("Child tool_scopes exceeds 64 KiB")
+    return copy.deepcopy(value)
 
 
 @dataclass(frozen=True, slots=True)
 class ChildConfig:
+    """Data-only selection; hosts validate actions against actual parent tool schemas.
+
+    tool_actions maps multi-action tools to literal action values, e.g.
+    {"filesystem": ["read"]}. It does not match shell commands or expand '*'.
+    Bash has command, not action: select it through tools, omit its tool_actions
+    entry. Neither omission nor access='inherit' grants additional authority.
+    Historical profiles remain readable; fresh admission must capture live tools.
+    """
+
     label: str = ""
     instructions: str = ""
     tools: tuple[str, ...] | None = None
@@ -22,6 +63,7 @@ class ChildConfig:
     # None delegates catalog selection to the host; () deliberately selects no knowledge.
     skills: tuple[str, ...] | None = ()
     tool_actions: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    tool_scopes: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {"label": self.label, "instructions": self.instructions,
@@ -30,7 +72,8 @@ class ChildConfig:
                 "model": self.model, "thinking": self.thinking, "preset": self.preset,
                 "system_prompt": self.system_prompt,
                 "skills": list(self.skills) if self.skills is not None else None,
-                "tool_actions": {name: list(actions) for name, actions in self.tool_actions}}
+                "tool_actions": {name: list(actions) for name, actions in self.tool_actions},
+                "tool_scopes": child_tool_scopes(self.tool_scopes, self.tools)}
 
     @classmethod
     def from_dict(cls, value: Any) -> ChildConfig:
@@ -84,7 +127,8 @@ class ChildConfig:
                    tools=tuple(tools) if tools is not None else None,
                    inherit_context=False, model=model, thinking=thinking, preset=preset,
                    system_prompt=merged["system_prompt"], skills=tuple(skills) if skills is not None else None,
-                   tool_actions=tuple((name, tuple(selected)) for name, selected in sorted(actions.items())))
+                   tool_actions=tuple((name, tuple(selected)) for name, selected in sorted(actions.items())),
+                   tool_scopes=child_tool_scopes(merged["tool_scopes"], tools))
 
     @classmethod
     def from_record(cls, value: Any) -> ChildConfig:

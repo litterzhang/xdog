@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 
 import pytest
-from xdog.agent.supervision import ChildSpec
+from xdog.agent.children import ChildSpec
 from xdog.ai.types import AssistantMessage, TextContent
 from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.config import ClawConfig
@@ -33,8 +33,8 @@ async def test_existing_child_catalog_restore_reads_off_loop_without_replay_or_r
         await previous.route_message(UserInput(group_id='main', content='Parent ready'))
         runtime = previous._runtimes['main']
         session = runtime._active_session
-        identifier = await session.children.supervisor.start('Actual ordinary child task')
-        await session.children.supervisor.control('wait', identifier)
+        identifier = await session.children.runtime.start('Actual ordinary child task')
+        await session.children.runtime.control('wait', identifier)
         records_root = session.children.store.root
         path = records_root / f'{identifier}.json'
         old_session = session.meta.session_id
@@ -60,11 +60,11 @@ async def test_existing_child_catalog_restore_reads_off_loop_without_replay_or_r
             parent = await recovered._runtimes['main'].prepare_session(allow_reset=False)
         assert parent.meta.session_id == old_session and not recovered_calls
         if corrupt:
-            assert 'unavailable' in parent.children.supervisor.diagnostic.lower()
+            assert 'unavailable' in parent.children.runtime.diagnostic.lower()
             with pytest.raises(ValueError, match="unavailable"):
-                await parent.children.supervisor.start('Cannot delegate over unknown catalog')
+                await parent.children.runtime.start('Cannot delegate over unknown catalog')
         else:
-            rows = parent.children.supervisor.snapshot()['children']
+            rows = parent.children.runtime.snapshot()['children']
             assert len(rows) == 1 and rows[0]['id'] == identifier and rows[0]['status'] == 'completed'
         assert path.read_bytes() == before
         assert opened and all(thread != owner for thread in opened), (
@@ -105,7 +105,7 @@ async def test_cancelled_child_metadata_preparation_keeps_original_group_owner(t
         with pytest.raises(asyncio.CancelledError):
             await work
         assert not app.is_group_running('main') and not calls
-        assert parent.children.supervisor.snapshot()['children'] == []
+        assert parent.children.runtime.snapshot()['children'] == []
     finally:
         release.set()
         await asyncio.gather(work, return_exceptions=True)

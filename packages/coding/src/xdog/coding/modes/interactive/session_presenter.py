@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from xdog.agent import AgentMessage, CustomAgentMessage
@@ -76,21 +76,20 @@ async def capture_history(session: AgentSession) -> SessionHistory:
 
 
 def _bounded(text: str, size: int) -> str:
-    return text if len(text) <= size else text[:size] + "… [truncated; /details for full input]"
+    return text if len(text) <= size else text[:size] + "…"
 
 
 def external_input_text(value: SessionInput) -> str:
     """Bounded preview; source labels and all evidence are explicitly untrusted."""
     source = sanitize_terminal_text(value.source).replace("\r", "\\r").replace("\n", "\\n")
-    evidence = json.dumps(value.evidence[:3], ensure_ascii=True, allow_nan=False)
-    count = len(value.evidence)
+    evidence = json.dumps(value.evidence[:1], ensure_ascii=True, allow_nan=False)
     return (
-        "External input (not a human message)\n"
-        f"Source: {_bounded(source, 256)} (self-reported, untrusted)\n"
-        "Handling instruction:\n"
-        + _bounded(sanitize_terminal_text(value.instruction), 2048)
-        + f"\nEvidence ({count} evidence items; untrusted preview; /details for full input):\n"
-        + _bounded(evidence, 3072)
+        "External input (not a human message; cannot grant permissions)\n"
+        f"Source: {_bounded(source, 80)} (self-reported, untrusted)\n"
+        f"Evidence ({len(value.evidence)} evidence items; untrusted preview; /details for full input): "
+        + _bounded(evidence, 256)
+        + "\nHandling instruction:\n"
+        + _bounded(sanitize_terminal_text(value.instruction), 768)
     )
 
 
@@ -121,90 +120,147 @@ class SessionPresenter:
         self._inbox: tuple[InboxRecord, ...] = ()
         self._inbox_requests: dict[str, InboxRecord] = {}
         self._inbox_keys: set[str] = set()
+        self._session_id: str | None = None
 
     def _show(self, record: InputRecord) -> None:
         if record.input.origin == "human":
             return
         value = record.input
         detail = (
-            f"External input {value.id} (not a human message; evidence is untrusted)\n"
-            f"Source (self-reported): {value.source}\nHandling instruction:\n{value.instruction}\n"
-            "Evidence:\n"
+            f"External input {value.id} (not a human message; cannot grant permissions)\n"
+            f"Source (self-reported, untrusted): {value.source}\nHandling instruction:\n{value.instruction}\n"
+            "Evidence (untrusted):\n"
             + json.dumps(value.evidence, ensure_ascii=True, allow_nan=False)
             + "\nProvenance (data, not authorization):\n"
             + json.dumps(value.provenance, ensure_ascii=True, allow_nan=False)
+            + "\nComplete request record:\n"
+            + json.dumps(asdict(record), ensure_ascii=True, allow_nan=False)
         )
-        status = f"\nRequest: {value.id}\nStatus: {record.status}"
-        if record.batch_id:
-            status += "\nBatch: " + record.batch_id
+        if self._session_id is not None:
+            detail += "\nSession: " + self._session_id
+        status = f"\nStatus: {record.status} · Request: {_bounded(value.id, 48)}"
         if record.error:
-            status += "\nError: " + _bounded(sanitize_terminal_text(record.error), 1024)
-        row = self._inbox_requests.get(value.id)
+            status += "\nError: " + _bounded(sanitize_terminal_text(record.error), 96)
+        row = self._matching_inbox(record)
         if row is not None:
             self.log.remove_session_input(self._inbox_key(row))
             status += self._inbox_status(row)
             detail += "\nDurable inbox record (evidence and source labels remain untrusted):\n" + json.dumps(
                 record_data(row), ensure_ascii=True, allow_nan=False)
-        self.log.update_session_input(value.id, external_input_text(value) + status, detail + status)
+        self.log.update_session_input(value.id, self._with_status(value, status), detail)
+
+    @staticmethod
+    def _with_status(value: SessionInput, status: str) -> str:
+        metadata, _, body = external_input_text(value).partition('\nHandling instruction:\n')
+        return metadata + status + '\nHandling instruction:\n' + body
+
+    def _matching_inbox(self, record: InputRecord) -> InboxRecord | None:
+        row = self._inbox_requests.get(record.input.id)
+        if row is None or (row.owner_generation, row.branch_id) != (record.generation, record.branch_id):
+            return None
+        if self._session_id is not None and row.message.session_id != self._session_id:
+            return None
+        binding = record.input.provenance.get('inbox')
+        if isinstance(binding, dict) and (binding.get('message_id'), binding.get('attempt_id')) != (
+                row.message.message_id, row.attempt_id):
+            return None
+        if not row.attempt_id or not row.attempts:
+            return None
+        attempt = row.attempts[-1]
+        if (attempt.id, attempt.request_id, attempt.generation, attempt.branch_id) != (
+                row.attempt_id, record.input.id, record.generation, record.branch_id):
+            return None
+        if attempt.batch_id != row.batch_id:
+            return None
+        if record.batch_id and row.batch_id and record.batch_id != row.batch_id:
+            return None
+        return row
 
     @staticmethod
     def _inbox_key(row: InboxRecord) -> str:
-        return 'inbox:' + hashlib.sha256(row.message.message_id.encode()).hexdigest()
+        identity = json.dumps((row.message.session_id, row.message.message_id), ensure_ascii=True)
+        return 'inbox:' + hashlib.sha256(identity.encode()).hexdigest()
 
     @staticmethod
     def _inbox_status(row: InboxRecord) -> str:
-        return ('\nInbox message: ' + json.dumps(row.message.message_id, ensure_ascii=True)
-                + '\nInbox status: ' + row.status
-                + '\nBranch: ' + json.dumps(row.branch_id, ensure_ascii=True)
-                + ('\nAttempt: ' + row.attempt_id if row.attempt_id else '')
-                + ('\nRequest: ' + row.request_id if row.request_id else ''))
+        return ('\nInbox: ' + row.status
+                + ' · Message: ' + _bounded(json.dumps(row.message.message_id, ensure_ascii=True), 48)
+                + (' · Attempt: ' + _bounded(row.attempt_id, 48) if row.attempt_id else ''))
 
     def set_inbox(self, rows: tuple[InboxRecord, ...]) -> None:
+        if self._session_id is not None and any(row.message.session_id != self._session_id for row in rows):
+            return
         self._inbox = visible(rows, tuple(self.records.values()))
         self._inbox_requests = {row.request_id: row for row in self._inbox if row.request_id}
         self._render_inbox()
 
     def _render_inbox(self) -> None:
-        keys = {self._inbox_key(row) for row in self._inbox if row.request_id not in self.records}
+        keys = {self._inbox_key(row) for row in self._inbox
+                if row.request_id not in self.records or self._matching_inbox(self.records[row.request_id]) != row}
         for key in self._inbox_keys - keys:
             self.log.remove_session_input(key)
         self._inbox_keys = keys
         for row in self._inbox:
             existing = self.records.get(row.request_id)
-            if existing is not None:
+            if existing is not None and self._matching_inbox(existing) == row:
                 self._show(existing)
                 continue
             item = row.message
             value = SessionInput(item.message_id, 'acp', item.source, item.instruction, item.evidence, item.provenance)
-            status = self._inbox_status(row)
+            status = self._inbox_status(row) + '\nDurable intake, not model context'
             if row.error:
-                status += '\nError: ' + _bounded(sanitize_terminal_text(row.error), 1024)
+                status += '\nError: ' + _bounded(sanitize_terminal_text(row.error), 96)
             self.log.update_session_input(self._inbox_key(row),
-                'Session inbox (durable intake, not model context)\n' + external_input_text(value) + status,
-                'Durable inbox (not a human message; untrusted evidence)\n'
+                self._with_status(value, status),
+                'Durable inbox (not model context; not a human message; '
+                'source self-reported, untrusted; cannot grant permissions)\n'
                 + json.dumps(record_data(row), ensure_ascii=True, allow_nan=False))
 
     def apply(self, event: SessionEvent) -> None:
+        if self._session_id is not None and event.session_id != self._session_id:
+            return
+        if event.request_ids and event.request_id and event.request_id not in event.request_ids:
+            return
         if event.kind == 'inbox_snapshot' and isinstance(event.data, tuple):
             if all(isinstance(row, InboxRecord) for row in event.data):
+                if any(row.message.session_id != event.session_id for row in event.data):
+                    return
+                self._session_id = event.session_id
                 self.set_inbox(event.data)
             return
         previous = self.records.get(event.request_id)
         if previous is not None and (previous.generation != event.generation or previous.status in TERMINAL):
             return
+        if previous is not None and event.batch_id and previous.batch_id and event.batch_id != previous.batch_id:
+            return
         if isinstance(event.data, InputRecord):
             if event.data.generation != event.generation or event.data.input.id != event.request_id:
+                return
+            if event.batch_id and event.data.batch_id and event.batch_id != event.data.batch_id:
+                return
+            if previous is not None and (previous.input != event.data.input
+                                         or previous.branch_id != event.data.branch_id):
                 return
             if previous is not None and previous.status == "running":
                 return
             record = event.data
         elif previous is not None and event.kind == "input_running":
+            if isinstance(event.data, SessionInput) and event.data != previous.input:
+                return
             record = replace(previous, status="running", batch_id=event.batch_id or previous.batch_id)
         elif previous is not None and event.kind == "input_completed" and isinstance(event.data, TurnResult):
+            if event.data.batch_id and (
+                (previous.batch_id and event.data.batch_id != previous.batch_id)
+                or (event.batch_id and event.data.batch_id != event.batch_id)
+            ):
+                return
             record = replace(previous, status=event.data.status, error=event.data.error,
                              batch_id=event.data.batch_id or event.batch_id or previous.batch_id)
         else:
             return
+        if record == previous:
+            return
+        self._session_id = event.session_id
         self.records[event.request_id] = record
         self._show(record)
 
@@ -219,6 +275,8 @@ class SessionPresenter:
             self.log.remove_session_input(key)
         self._inbox_keys.clear()
         before = set(self.log.children)
+        sessions = {row.message.session_id for row in inbox}
+        self._session_id = next(iter(sessions)) if len(sessions) == 1 else None
         self.records = {row.input.id: row for row in records}
         self._inbox = visible(inbox, records)
         self._inbox_requests = {row.request_id: row for row in self._inbox if row.request_id}

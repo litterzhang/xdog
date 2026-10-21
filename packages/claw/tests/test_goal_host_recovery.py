@@ -28,7 +28,7 @@ async def test_idle_rotation_preserves_same_group_goal_and_task_files_without_wo
         assert runtime._active_session is not old and runtime.capabilities.get('goal') is host and host.owner == owner
         assert (await host.service.current()).id == goal.id
         assert (await host.service.status())['tasks'][0]['worker'] == 'main'
-        assert not runtime._active_session.children.supervisor._children
+        assert not runtime._active_session.children.runtime._children
         assert all(not {'task_report', 'goal_context'}.intersection(t.name for t in c.tools) for _, c in model.calls)
 
 
@@ -38,20 +38,23 @@ async def test_native_goal_pause_status_clear_do_not_cancel_real_optional_child_
         host, session = runtime.capabilities.get('goal'), runtime._active_session
         await planned(host)
         model.gate = threading.Event()
-        child = await session.children.supervisor.start('ordinary child; no Goal role')
+        child = await session.children.runtime.start('ordinary child; no Goal role')
         try:
-            assert session.children.supervisor.active
+            assert session.children.runtime.active
             result = await app.manage_extensions('main', 'command', 'goal', 'pause User pause', session.meta.session_id)
-            assert json.loads(result['output'])['goal']['status'] == 'paused'
+            assert 'Status: paused' in result['output']
+            assert (await host.service.current()).status == 'paused'
             status = await app.manage_extensions('main', 'command', 'goal', 'status', session.meta.session_id)
-            assert json.loads(status['output'])['current']['status'] == 'paused'
+            assert 'Status: paused' in status['output']
+            raw = await app.manage_extensions('main', 'command', 'goal', 'status --json', session.meta.session_id)
+            assert json.loads(raw['output'])['current']['status'] == 'paused'
             await app.manage_extensions('main', 'command', 'goal', 'clear User archived', session.meta.session_id)
-            assert await host.service.current() is None and session.children.supervisor.active
+            assert await host.service.current() is None and session.children.runtime.active
             with pytest.raises(RuntimeError, match='Child work'):
                 runtime.reset_session()
         finally:
             model.gate.set()
-            await session.children.supervisor.control('wait', child)
+            await session.children.runtime.control('wait', child)
 
 
 async def test_another_group_never_reads_this_registry_or_binds_its_parent(tmp_path):

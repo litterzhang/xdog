@@ -16,14 +16,16 @@ from xdog.agent import Agent, AgentConfig, AgentMessage, BeforeToolCallContext, 
 from xdog.agent.access import AccessScope, read_only_call
 from xdog.agent.async_work import run_owned
 from xdog.agent.capabilities.children import ChildPort
+from xdog.agent.child_compaction import ArchivedSummaryStream, preserve_model_metadata
+from xdog.agent.child_config import ChildPresets
+from xdog.agent.child_model import resolve_child_model
+from xdog.agent.child_policy import ChildDelegation, ChildSkills, ParentHandle, _matches
+from xdog.agent.children import RESERVED_TOOLS, ChildSpec, child_prompt
 from xdog.agent.core import AgentTool, AgentToolResult, StreamFn, ToolExecutionMode
+from xdog.agent.cross_loop import settle_on
 from xdog.agent.skills.manager import SkillManager
 from xdog.agent.skills.tool import _Reader
-from xdog.agent.supervision import RESERVED_TOOLS, ChildSpec, child_prompt
-from xdog.agent.supervision_compaction import ArchivedSummaryStream, preserve_model_metadata
-from xdog.agent.supervision_config import ChildPresets
-from xdog.agent.supervision_model import resolve_child_model
-from xdog.agent.supervision_policy import ChildDelegation, ChildSkills, ParentHandle
+from xdog.agent.tool_effects import ToolEffect
 from xdog.agent.types import AfterToolCallContext, AfterToolCallResult, HandledInput
 from xdog.ai.types import AssistantMessage, Context, StreamOptions, ToolCall, UserMessage
 from xdog.ai.utils.event_stream import EventStream
@@ -86,6 +88,7 @@ class _EffectAdmission:
     tool_selection_revision: int
     access: AccessScope
     access_revision: int
+    effect: ToolEffect | None = None
     claim: object | None = None
     started: bool = False
 
@@ -96,13 +99,15 @@ class CodingChildren:
         self.token = uuid.uuid4().hex
         branch = session.session_data.active_branch or "head"
         self.store = ChildStore.scoped(session.session_manager._dir, session.session_id, branch)
-        self.capabilities = ChildPort(session.session_id, branch, lambda: session.capabilities.tools,
+        self.capabilities = ChildPort(session.session_id, branch,
+            lambda: (*session.capabilities.owned_tools, *session.capabilities.tools),
             parent_valid=lambda identifier: identifier in self.parents and self.parents[identifier].live)
         self._closed = False
         self.snapshots: dict[str, _ParentMetadata] = {}
         self.parents: dict[str, ParentHandle] = {}
         self.skill_limits: dict[str, ChildSkills] = {}
         self.delegations: dict[str, ChildDelegation] = {}
+        self.scoped_tools: dict[str, dict[str, AgentTool]] = {}
         self.tool_limits: dict[str, tuple[str, ...] | None] = {}
         self.extensions = ChildExtensions(session.extensions, self.store)
         self.permissions: dict[str, PermissionManager] = {}
@@ -120,13 +125,52 @@ class CodingChildren:
         except (ValueError, TypeError, OSError, UnicodeError) as exc:
             records = []
             diagnostic = "Child catalog unavailable; repair saved records before delegation: " + str(exc)[:500]
-        self.supervisor = CodingChildRuntime(self.create, self.store.save, capture=self.capture, begin=self.store.begin,
+        self.runtime = CodingChildRuntime(self.create, self.store.save, capture=self.capture, begin=self.store.begin,
             persist_inputs=self.store.save_inputs, persist_return=self.store.save_return,
             persist_admission=self.store.save_admission, archive_compaction=self.store.archive_compaction,
                                           forget=self.store.forget, finalize=self.finish,
             on_event=self.extensions.event, records=records, presets=presets)
-        self.capabilities.supervisor = self.supervisor
-        self.supervisor.diagnostic = diagnostic
+        self.capabilities.runtime = self.runtime
+        self.runtime.diagnostic = diagnostic
+        self.tools = self.runtime.tools()
+        self._control_execute = self.tools[0].execute
+        self._control_validate = self.tools[0].validate_arguments
+
+    def approval_free_control(self, ctx: BeforeToolCallContext) -> bool:
+        """Queries and messages to existing children need no default approval.
+
+        This is for the live host binding, never a tool-name or permission grant.
+        Child effects retain their own approval gates. Queue mutation/recovery
+        is not exempt. Extensions may rewrite arguments, so callers must classify
+        the final validated call rather than the original model input.
+        """
+        args, session = ctx.args, self.session
+        if type(args) is not dict or ctx.tool_call.name != "agent":
+            return False
+        action = args.get("action")
+        if not isinstance(action, str):
+            return False
+        if action in {"list", "presets"}:
+            valid = set(args) <= {"action", "text"} and isinstance(args.get("text", ""), str)
+        elif action in {"inspect", "wait"}:
+            valid = (not set(args) - {"action", "id", "text"}
+                     and isinstance(args.get("id"), str) and bool(args["id"])
+                     and isinstance(args.get("text", ""), str))
+        elif action in {"steer", "follow-up"}:
+            valid = (set(args) == {"action", "id", "text"}
+                     and isinstance(args["id"], str) and bool(args["id"])
+                     and isinstance(args["text"], str))
+        else:
+            return False
+        tool = self.tools[0]
+        active = [item for item in session.agent.active_tools if item.name == "agent"]
+        supplied = [item for item in ctx.context.tools or () if item.name == "agent"]
+        return (valid and not self._closed and not self.runtime.closed
+                and not session._sdk_disposing and session.children is self
+                and tool.name == "agent" and tool.execute is self._control_execute
+                and tool.validate_arguments is self._control_validate
+                and len(active) == len(supplied) == 1
+                and active[0] is tool and supplied[0] is tool)
 
     def delegable_skills(self) -> list[dict[str, str]]:
         """Read current parent catalog metadata on the caller's owned IO worker.
@@ -139,7 +183,7 @@ class CodingChildren:
         identifier, branch = session.session_id, session.session_data.active_branch or "head"
         manager = original._skills
         def live() -> bool:
-            return (not self._closed and not self.supervisor.closed and session.children is self
+            return (not self._closed and not self.runtime.closed and session.children is self
                     and session.agent is original and session.permissions is permission
                     and session.session_id == identifier
                     and (session.session_data.active_branch or "head") == branch
@@ -158,8 +202,9 @@ class CodingChildren:
             raise ValueError("Original Coding parent skill owner changed during catalog read")
         return rows
 
-    def capture(self, spec: ChildSpec) -> Awaitable[None]:
+    def capture(self, spec: ChildSpec) -> Awaitable[ChildSpec]:
         session = self.session
+        spec = replace(spec, tool_scopes=spec.config().to_dict()["tool_scopes"])
         if session._context_changes:
             raise RuntimeError("Session context/policy is changing; refresh before starting child work")
         original = session.agent
@@ -170,11 +215,13 @@ class CodingChildren:
             live_extensions = session.extensions.tools()
             return tuple(tool for tool in original.active_tools
                          if tool.name not in RESERVED_TOOLS and tool is not session._session_info_tool
-                         and self.capabilities.inherited(tool)
+                         and (self.capabilities.inherited(tool) or (spec.tools is not None
+                              and tool.name in spec.tool_scopes
+                              and session.capabilities.can_delegate_child_tool(tool)))
                          and (tool.name not in session.extensions.aliases
                               or any(tool is value for value in live_extensions)))
         parent = ParentHandle(
-            alive=lambda: (not self._closed and not self.supervisor.closed
+            alive=lambda: (not self._closed and not self.runtime.closed
                            and session.agent is original and session.children is self
                            and session.session_id == identifier
                            and (session.session_data.active_branch or "head") == branch
@@ -191,7 +238,7 @@ class CodingChildren:
             max_prompt_tokens=original.max_prompt_tokens, supports_tool_calls=original.supports_tool_calls,
             extension_owners=tuple((tool.name, session.extensions.tool_owner(tool.name)) for tool in grant.tools
                                    if tool.name in session.extensions.aliases))
-        async def admit() -> None:
+        async def admit() -> ChildSpec:
             skills = await run_owned(parent.capture_skills, spec.skills)
             current = parent.capture_tools(None).tools
             if any(not any(tool is value for value in current) for tool in grant.tools):
@@ -200,12 +247,33 @@ class CodingChildren:
                 raise RuntimeError("Session context/policy changed during child admission")
             allowed = self.capabilities.capture(spec, grant.tools, grant.names)
             selected = ChildDelegation.capture(grant.tools, allowed, spec.tool_actions)
+            ceilings = self.runtime.delegation_schemas(spec.id)
+            if ceilings:
+                if set(selected.names) != set(ceilings):
+                    raise ValueError("Saved child delegation is unavailable; no implicit grant on continuation")
+                selected = replace(selected, schemas=tuple(copy.deepcopy(ceilings[name]) for name in selected.names))
+            scoped = {}
+            for name, scope in spec.tool_scopes.items():
+                actual = next((tool for tool in selected.tools if tool.name == name), None)
+                if actual is None:
+                    raise ValueError("Scoped tool is outside the original child delegation")
+                scoped[name] = await session.capabilities.delegate_child_tool(actual, spec, scope)
+                selected.scoped_parameters(name, scoped[name].parameters)
+            selected = replace(selected, schemas=tuple(
+                selected.scoped_parameters(tool.name, scoped[tool.name].parameters)
+                if tool.name in scoped else selected.schemas[index]
+                for index, tool in enumerate(selected.tools)))
+            current = parent.capture_tools(None).tools
+            if any(not any(tool is value for value in current) for tool in selected.tools):
+                raise ValueError("Parent tool delegation changed during scope validation")
             self.parents[spec.id] = parent
             self.skill_limits[spec.id] = skills
+            self.scoped_tools[spec.id] = scoped
             self.delegations[spec.id] = selected
             self.tool_limits[spec.id] = selected.names  # Never None, even without a parent selection.
             self.snapshots[spec.id] = metadata
             self.extensions.reserve(spec.id)
+            return replace(spec, tools=selected.names, skills=skills.slugs)
         return admit()
 
     async def create(self, spec: ChildSpec, publish: Callable[[dict[str, Any]], None]) -> Agent:
@@ -215,6 +283,7 @@ class CodingChildren:
         if not parent.live:
             raise ValueError("Original parent owner retired before child construction")
         skills = self.skill_limits[spec.id]
+        scoped = self.scoped_tools[spec.id]
         await run_owned(parent.check_skills, skills)
         role_tools = await self.capabilities.tools(spec)
         allowed_tools = (*grant.names, *(tool.name for tool in role_tools))
@@ -239,6 +308,20 @@ class CodingChildren:
             bound = self.capabilities.permits(spec.id, ctx.tool_call.name, ctx.context.tools or ())
             parent.check_tool(grant, BeforeToolCallContext(ctx.assistant_message, ctx.tool_call, ctx.args, ctx.context),
                               capability_bound=bound)
+
+        def effect(name: str, params: dict[str, Any]) -> ToolEffect | None:
+            if name not in scoped:
+                return None
+            actual = next(tool for tool in grant.tools if tool.name == name)
+            if not session.capabilities.can_delegate_child_tool(actual):
+                raise ValueError("Original scoped capability tool is no longer delegable")
+            if not _matches(scoped[name].parameters, params):
+                return ToolEffect("execute", "unknown")
+            return session.capabilities.tool_effect(actual, params) or ToolEffect("execute", "unknown")
+
+        def safe_call(name: str, params: dict[str, Any]) -> bool:
+            classified = effect(name, params)
+            return classified.access == "read" if classified is not None else read_only_call(name, params)
 
         # Provider IDs are correlation labels, never permission identities. Keep
         # each exact proxy + prepared argument object alive through finalization.
@@ -289,7 +372,9 @@ class CodingChildren:
                 raise ValueError("Child tool permission admission is already consumed")
             check(replace(admission.context, args=params))
             check_epochs(admission)
-            safe = read_only_call(admission.tool_name, params)
+            safe = safe_call(admission.tool_name, params)
+            if effect(admission.tool_name, params) != admission.effect:
+                raise ValueError("Delegated capability effect changed after permission admission")
             if original_permissions.mode == "deny" and not safe:
                 raise ValueError("Parent permission policy denies child tool execution")
             if (spec.access == "read-only" or session.access.state.read_only) and not safe:
@@ -300,13 +385,16 @@ class CodingChildren:
             async def validate(params: dict[str, Any]) -> None:
                 # A fresh child worker's executor does not replace the original
                 # parent's registration fence. Validate both without executing either.
-                for candidate in (source, tool):
-                    if candidate is not None and candidate.validate_arguments is not None:
+                seen: set[int] = set()
+                for candidate in (None if tool.name in scoped else source, tool):
+                    if (candidate is not None and candidate.validate_arguments is not None
+                            and id(candidate.validate_arguments) not in seen):
+                        seen.add(id(candidate.validate_arguments))
                         checked = candidate.validate_arguments(params)
                         if inspect.isawaitable(checked):
                             await checked
-            async def execute(call_id: str, params: dict[str, Any], cancel: asyncio.Event | None = None,
-                              on_update: Any = None, *, ctx: dict[str, Any] | None = None) -> AgentToolResult:
+            async def invoke(call_id: str, params: dict[str, Any], cancel: asyncio.Event | None = None,
+                             on_update: Any = None, *, ctx: dict[str, Any] | None = None) -> AgentToolResult:
                 admission = check_effect(protected, call_id, params)
                 claim = object()
                 key = id(protected), id(params)
@@ -322,15 +410,32 @@ class CodingChildren:
                     raise ValueError("Delegated child tool has no executor")
                 admissions[key] = replace(admission, started=True)
                 return await tool.execute(call_id, params, cancel, on_update, ctx=ctx)
+            async def execute(call_id: str, params: dict[str, Any], cancel: asyncio.Event | None = None,
+                              on_update: Any = None, *, ctx: dict[str, Any] | None = None) -> AgentToolResult:
+                if tool.name in scoped:
+                    if cancel is not None and cancel.is_set():
+                        raise asyncio.CancelledError
+                    caller = asyncio.get_running_loop()
+                    async def update(result: AgentToolResult) -> None:
+                        if on_update is not None:
+                            async def deliver() -> None:
+                                await on_update(result)
+                            await settle_on(caller, deliver())
+                    return await settle_on(session.capabilities.owner_loop,
+                                           invoke(call_id, params, None, update, ctx=ctx))
+                return await invoke(call_id, params, cancel, on_update, ctx=ctx)
             protected = replace(tool, execute=execute, validate_arguments=validate)
             return protected
 
         # Proxies keep the schema fixed even if a parent's mutable parameter dict
         # changes. Admission still checks the original source's live identity/schema.
-        delegated_tools = tuple(replace(tool, parameters=copy.deepcopy(schema))
-                                for tool, schema in zip(grant.tools, grant.schemas, strict=True))
-        delegated_tools = tuple(protect(skills.tool(tool, lambda: parent.live) if tool.name == "skill" else tool)
-                                for tool in delegated_tools)
+        delegated_tools = tuple(replace(scoped.get(tool.name, tool), parameters=(
+                                    grant.scoped_parameters(tool.name, scoped[tool.name].parameters)
+                                    if tool.name in scoped else grant.provider_parameters(tool.name)))
+                                for tool in grant.tools)
+        delegated_tools = tuple(protect(skills.tool(tool, lambda: parent.live) if tool.name == "skill"
+                                        else tool, source)
+                                for tool, source in zip(delegated_tools, grant.tools, strict=True))
         extension_bindings: dict[str, tuple[AgentTool, AgentTool]] = {}
         extension_names = dict(state.extension_owners)
 
@@ -372,14 +477,14 @@ class CodingChildren:
                 def bound_call() -> bool:
                     return self.capabilities.permits(spec.id, ctx.tool_call.name, ctx.context.tools or ())
                 if (spec.access == "read-only" or session.access.state.read_only) and not (
-                        bound_call() or read_only_call(ctx.tool_call.name, ctx.args)):
+                        bound_call() or safe_call(ctx.tool_call.name, ctx.args)):
                     return BeforeToolCallResult(block=True, reason="Child/parent access is read-only")
                 blocked = await self.extensions.pre(extension, ctx)
                 if blocked is not None:
                     return blocked
                 check(ctx)  # Parent/child hooks may have rewritten action arguments.
                 if (spec.access == "read-only" or session.access.state.read_only) and not (
-                        bound_call() or read_only_call(ctx.tool_call.name, ctx.args)):
+                        bound_call() or safe_call(ctx.tool_call.name, ctx.args)):
                     return BeforeToolCallResult(block=True, reason="Child/parent access is read-only")
                 if bound_call():
                     return None  # Actual host-bound context/report capability, not a name exemption.
@@ -396,9 +501,10 @@ class CodingChildren:
                     params=ctx.args, original_args=ctx.tool_call.arguments, call_id=ctx.tool_call.id,
                     tool_name=ctx.tool_call.name, params_fingerprint=_argument_fingerprint(ctx.args),
                     original_fingerprint=_argument_fingerprint(ctx.tool_call.arguments), permission_revision=revision,
-                    tool_selection_revision=selection_revision, access=access, access_revision=access_revision)
+                    tool_selection_revision=selection_revision, access=access, access_revision=access_revision,
+                    effect=effect(ctx.tool_call.name, ctx.args))
                 check_epochs(admission)
-                result = await manager.before_tool_call(ctx, cancel)
+                result = await manager.before_tool_call(ctx, cancel, effect=admission.effect)
                 check(ctx)
                 await run_owned(parent.check_skills, skills)
                 if (session.permissions is not original_permissions
@@ -407,12 +513,12 @@ class CodingChildren:
                     return BeforeToolCallResult(block=True, reason="Parent permission policy changed during approval")
                 if (result is None and approval_alive is not None and not approval_alive()
                         and session.permissions.mode != "allow-all"
-                        and not read_only_call(ctx.tool_call.name, ctx.args)):
+                        and not safe_call(ctx.tool_call.name, ctx.args)):
                     manager.clear_session_rules()
                     return BeforeToolCallResult(block=True, reason="Child approval UI owner changed during review")
-                if session.permissions.mode == "deny" and not read_only_call(ctx.tool_call.name, ctx.args):
+                if session.permissions.mode == "deny" and not safe_call(ctx.tool_call.name, ctx.args):
                     return BeforeToolCallResult(block=True, reason="Parent permission policy changed to deny")
-                if session.access.state.read_only and not read_only_call(ctx.tool_call.name, ctx.args):
+                if session.access.state.read_only and not safe_call(ctx.tool_call.name, ctx.args):
                     return BeforeToolCallResult(block=True, reason="Parent entered read-only scope during approval")
                 if result is None:
                     check(ctx)
@@ -531,7 +637,7 @@ class CodingChildren:
                     and extension.tool_owner(tool.name) == extension_names[tool.name]):
                 index = grant.names.index(tool.name)
                 extension_bindings[tool.name] = tool, protect(replace(tool,
-                    parameters=copy.deepcopy(grant.schemas[index])), grant.tools[index])
+                    parameters=grant.provider_parameters(tool.name)), grant.tools[index])
         sync_tools()
         return agent
 
@@ -540,6 +646,7 @@ class CodingChildren:
         self.parents.pop(spec.id, None)
         self.skill_limits.pop(spec.id, None)
         self.delegations.pop(spec.id, None)
+        self.scoped_tools.pop(spec.id, None)
         self.tool_limits.pop(spec.id, None)
         manager = self.permissions.pop(spec.id, None)
         if manager is not None:
@@ -557,11 +664,11 @@ class CodingChildren:
     def abort(self) -> None:
         for manager in tuple(self.permissions.values()):
             manager.deny_all()
-        self.supervisor.abort()
+        self.runtime.abort()
 
     def close(self) -> None:
         self._closed = True
         self.session._retire_capabilities()
         for manager in tuple(self.permissions.values()):
             manager.close()
-        self.supervisor.close()
+        self.runtime.close()

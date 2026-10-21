@@ -6,9 +6,9 @@ import json
 
 import pytest
 from xdog.agent import BeforeToolCallResult
+from xdog.agent.child_images import input_receipt
+from xdog.agent.children import ChildSpec
 from xdog.agent.input_queue import QueuedInput
-from xdog.agent.supervision import ChildSpec
-from xdog.agent.supervision_images import input_receipt
 from xdog.ai.types import ImageContent
 
 from test_support.child_runtime.returns import PNG, main_tool_call, tool_metadata
@@ -98,7 +98,7 @@ class TestChildMainRecovery:
         try:
             snapshot = tool_metadata(await main_tool_call(owner, child, {"action": "list"}))["queue"]
             row = snapshot["inputs"][0]
-            monkeypatch.setattr("xdog.agent.supervision_transfer.prepare_recovery", forbidden)
+            monkeypatch.setattr("xdog.agent.child_transfer.prepare_recovery", forbidden)
             result = await main_tool_call(
                 owner, child, {"action": "recover_task", "id": row["id"], "revision": snapshot["revision"]}, hook=deny
             )

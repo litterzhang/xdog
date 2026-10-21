@@ -8,8 +8,8 @@ from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
 
 from xdog.agent.async_work import run_owned
+from xdog.agent.child_images import images_to_dicts, input_receipt, validate_images
 from xdog.agent.input_queue import QueuedInput
-from xdog.agent.supervision_images import images_to_dicts, input_receipt, validate_images
 from xdog.ai.utils.image_files import decode_image
 
 T = TypeVar('T')

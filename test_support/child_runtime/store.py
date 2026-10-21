@@ -6,7 +6,8 @@ import threading
 
 import pytest
 from xdog.agent import Agent, AgentConfig
-from xdog.agent.supervision import ChildSpec
+from xdog.agent.children import ChildSpec
+from xdog.agent.snapshots import decode_snapshot_messages, encode_snapshot_messages
 from xdog.ai.types import AssistantMessage
 from xdog.ai.utils.event_stream import EventStream
 
@@ -395,7 +396,7 @@ class TestChildStore:
             store.load()
 
     def test_single_message_capacity_remains_enforced_for_persisted_history(self, tmp_path, *, child_store_type):
-        from xdog.agent.supervision import MAX_TRANSCRIPT_BYTES
+        from xdog.agent.children import MAX_TRANSCRIPT_BYTES
 
         store = child_store_type(tmp_path)
         spec = ChildSpec("0123456789ab", "task")
@@ -413,10 +414,12 @@ class TestChildStore:
         history = tuple(dicts_to_messages(paired_history(1005, "x" * 1000)))
         store.archive_compaction(spec, 1, history)
         store.archive_compaction(spec, 1, history)  # ACK-loss retry is exact and idempotent, not model replay.
-        assert store.compaction_archives(spec.id)[0]["messages"] == paired_history(1005, "x" * 1000)
+        assert store.compaction_archives(spec.id)[0]["messages"] == encode_snapshot_messages(history)
+        assert decode_snapshot_messages(store.compaction_archives(spec.id)[0]["messages"]) == history
         with pytest.raises(ValueError, match="identity mismatch"):
             store.archive_compaction(spec, 1, tuple(dicts_to_messages(paired_history(1))))
-        assert store.compaction_archives(spec.id)[0]["messages"] == paired_history(1005, "x" * 1000)
+        assert store.compaction_archives(spec.id)[0]["messages"] == encode_snapshot_messages(history)
+        assert decode_snapshot_messages(store.compaction_archives(spec.id)[0]["messages"]) == history
 
     @pytest.mark.parametrize("damage", ["mixed", "count", "traversal", "identity"])
     def test_history_manifest_rejects_ambiguous_count_mismatched_and_escaping_references(
@@ -478,7 +481,8 @@ class TestChildStore:
         assert store.load() == [original]
         # Rename may have committed; retain that export conservatively, never
         # roll back its bytes or automatically rerun the child to recreate it.
-        assert store.compaction_archives(spec.id)[0]["messages"] == paired_history(2)
+        assert store.compaction_archives(spec.id)[0]["messages"] == encode_snapshot_messages(
+            tuple(dicts_to_messages(paired_history(2))))
 
     def test_exact_archive_retry_reestablishes_directory_durability_after_unknown_commit(
         self, tmp_path, monkeypatch, *, child_store_type
@@ -506,4 +510,5 @@ class TestChildStore:
         monkeypatch.setattr(store, "_sync_directory", acknowledged_sync)
         store.archive_compaction(spec, 1, messages)
         assert flushed == [store.root]
-        assert store.compaction_archives(spec.id)[0]["messages"] == paired_history(2)
+        assert store.compaction_archives(spec.id)[0]["messages"] == encode_snapshot_messages(
+            tuple(dicts_to_messages(paired_history(2))))

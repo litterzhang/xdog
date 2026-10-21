@@ -280,7 +280,9 @@ async def test_automatic_completion_cannot_release_protected_wait(tmp_path, unti
         with pytest.raises(ValueError, match='user operation'):
             await service.change('complete', summary='Automatic attempt to skip protected wait')
         assert (await service.current()).wait_for == until
-        await service.change('resume', context=USER)
+        waiting = await service.current()
+        await service.change('activate', waiting.id, version=waiting.version,
+                             reason='Actual user decision received', context=USER)
         assert (await service.change('complete', summary='Main Agent actually finished')).status == 'completed'
     finally:
         await service.close()

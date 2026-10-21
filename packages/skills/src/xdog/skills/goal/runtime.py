@@ -5,22 +5,28 @@ import asyncio
 import hashlib
 import logging
 import os
-from collections.abc import Callable, Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine
+from contextlib import asynccontextmanager
 from dataclasses import asdict, replace
 from typing import Any
 
+from jsonschema import Draft202012Validator
 from xdog.agent.async_work import run_owned, settle_cleanup, wait_owned
 from xdog.agent.capabilities.children import CapabilityHost
 from xdog.agent.capabilities.runtime import ParentPort
+from xdog.agent.children import ChildSpec
 from xdog.agent.core import AgentTool, AgentToolResult
 from xdog.agent.session_input import SessionInput, decode_input, input_data
+from xdog.agent.tool_effects import ToolEffect
 
 from .codec import json_text, read_json
+from .data_pages import Page
 from .host import OperationContext, OwnerRetired
 from .models import Goal, Owner
+from .presentation import format_change, format_history, format_status
 from .service import GoalService
 from .store import GoalStore, remindable
-from .tools import create_goal_tool
+from .tools import _ACTIONS, create_goal_tool
 from .ui_binding import GoalDisplay
 
 logger = logging.getLogger(__name__)
@@ -32,6 +38,7 @@ class GoalRuntime:
         self.service: GoalService
         self._parent: ParentPort | None = None
         self._tool: AgentTool | None = None
+        self._effect_validator: Draft202012Validator | None = None
         self._display: GoalDisplay | None = None
         self._remove_commands: Callable[[], None] = lambda: None
         self._unsubscribe: Callable[[], None] = lambda: None
@@ -90,6 +97,67 @@ class GoalRuntime:
     def tools(self) -> tuple[AgentTool, ...]:
         return (self._tool,) if self._tool is not None else ()
 
+    def tool_effect(self, actual_tool: AgentTool, args: dict[str, Any]) -> ToolEffect | None:
+        """Classify current Goal data only, without IO or granting user authority."""
+        parent = self._parent
+        if (parent is None or actual_tool is not self._tool or not self._current(parent)
+                or not isinstance(args, dict)):
+            return None
+        action = args.get('action')
+        if (not isinstance(action, str) or action not in _ACTIONS
+                or set(args) - {'action'} - _ACTIONS[action]):
+            return None
+        validator = self._effect_validator
+        if validator is None or not validator.is_valid(args):
+            return None
+        required = {'create': {'title'}, 'update': {'version'}, 'activate': {'goal_id', 'version', 'reason'},
+                    'report': {'report'}, 'task_update': {'task'}}
+        if not required.get(action, set()) <= args.keys():
+            return None
+        read = action in {'status', 'summary', 'tasks', 'history'} or action == 'plan' and 'content' not in args
+        if not read and set(args) & {'revision', 'offset', 'limit'}:
+            return None
+        try:
+            Page.read(args)
+        except ValueError:
+            return None
+        if read:
+            return ToolEffect('read', 'tool_data')
+        return ToolEffect('write', 'tool_data',
+                          requires_approval=action not in {'plan', 'report', 'task_update', 'activate'})
+
+    async def delegate_child_tool(self, actual_tool: AgentTool, spec: ChildSpec,
+                                  scope: dict[str, Any]) -> AgentTool:
+        """Narrow actual parent authority; the host still owns child admission and effects."""
+        parent = self._parent
+        if (asyncio.get_running_loop() is not self.loop or parent is None or actual_tool is not self._tool
+                or not self._current(parent)):
+            raise ValueError('Original Goal parent tool is unavailable for delegation')
+        if (not isinstance(scope, dict) or set(scope) != {'goal_id', 'task_ids'}
+                or not isinstance(scope.get('goal_id'), str) or not isinstance(scope.get('task_ids'), list)
+                or not 1 <= len(scope['task_ids']) <= 128 or spec.tools is None or 'goal' not in spec.tools
+                or spec.tool_scopes.get('goal') != scope):
+            raise ValueError('Goal child scope requires the exact goal_id and explicit task_ids')
+        from .child_tools import _task_io, create_child_goal_tool
+        from .models import identity
+        goal_id = identity(scope['goal_id'])
+        task_ids = tuple(identity(value) for value in scope['task_ids'])
+        if len(set(task_ids)) != len(task_ids):
+            raise ValueError('Goal child task IDs must be distinct')
+        def valid() -> bool:
+            return (self._current(parent) and self._tool is actual_tool
+                    and any(tool is actual_tool for tool in parent.agent.active_tools))
+        with self.service.invocation(valid):
+            async with self.service._lock:
+                goal = await self.service._selected(goal_id)
+                if goal.status not in {'active', 'waiting', 'paused'}:
+                    raise ValueError('Goal child scope cannot target a completed/historical Goal')
+                files = self.service.files(goal)
+                for task_id in task_ids:
+                    await self.service._io(_task_io, files, task_id, None, self.service._captured_check())
+                self.service._check()
+            return create_child_goal_tool(self.service, goal_id, task_ids, valid=valid)
+
     def attach(self, parent: ParentPort) -> None:
         if not self._valid() or not parent.valid() or not self.host.owns_parent(parent):
             raise ValueError('Goal parent owner is retired')
@@ -103,11 +171,12 @@ class GoalRuntime:
             display.retire()
             self._schedule(display.aclose)
         self._parent = parent
-        def context() -> OperationContext:
+        def context(origin: str = 'model_tool') -> OperationContext:
             if not self._current(parent):
                 raise ValueError('Goal tool owner is retired')
-            return OperationContext(parent.user_authorized())
+            return OperationContext(parent.user_authorized(), origin)
         original = create_goal_tool(self.service, context)
+        self._effect_validator = Draft202012Validator(original.parameters)
         async def execute(*args: Any, **kwargs: Any) -> AgentToolResult:
             if asyncio.get_running_loop() is not self.loop or not self._current(parent):
                 return AgentToolResult.from_text('Goal tool owner is retired or on another loop', is_error=True)
@@ -125,7 +194,7 @@ class GoalRuntime:
             self._controls += 1
             try:
                 with self.service.invocation(lambda: self._current(parent)):
-                    return await self._command(args, context())
+                    return await self._command(args, context('native_command'))
             finally:
                 self._controls -= 1
         self._remove_commands = parent.extensions.bind_native_commands('goal', {
@@ -189,14 +258,14 @@ class GoalRuntime:
             self._schedule(self._refresh)
             self._schedule(self._available)
 
-    async def _settled(self, identifier: str, status: str) -> None:
+    async def _settled(self, identifier: str, status: str, *, expected: Goal | None = None) -> None:
         if not self._valid():
             return
         if status in {'failed', 'interrupted', 'cancelled', 'canceled', 'preparation_failed'}:
-            await self._host_wait(status)
+            await self._host_wait(status, expected=expected)
         elif status == 'succeeded':
             goal = await self.service.current()
-            if goal is not None and goal.status == 'active':
+            if goal is not None and goal.status == 'active' and (expected is None or goal == expected):
                 await self._wake('execution:' + identifier)
 
     async def _available(self) -> None:
@@ -222,17 +291,30 @@ class GoalRuntime:
                 return
             wake = await self.service.store.wake_state(goal.id)
             if fact is not None and fact.get('settled_at', 0) >= wake['epoch_time']:
-                await self._settled(fact['execution_id'], fact['status'])
+                await self._settled(fact['execution_id'], fact['status'], expected=goal)
                 await self._wake(None)
                 return
         await self._wake(None)  # Original pending causes/outbox survive a new process.
 
-    async def _host_wait(self, reason: str) -> None:
+    async def _host_wait(self, reason: str, *, expected: Goal | None = None) -> None:
         if not self._valid():
             return
+        generation = self._change_generation
         goal = await self.service.current()
+        if expected is not None and goal != expected:
+            return  # The original fact cannot put a newer Goal/continuation into host wait.
         if goal is not None and remindable(goal):
-            await self.service.change('wait', goal.id, reason='Host execution ' + reason, until='host')
+            try:
+                # Fence both service-lock admission and the actual database commit.
+                # End the pin before refreshing our own newly committed wait.
+                with self.service.invocation(lambda: generation == self._change_generation):
+                    await self.service.change('wait', goal.id, version=goal.version,
+                                              reason='Host execution ' + reason, until='host',
+                                              context=OperationContext(origin='runtime'))
+            except OwnerRetired:
+                if not self._valid() or generation == self._change_generation:
+                    raise
+                return  # A concurrent lifecycle change revoked only this original fact.
         await self._refresh()
 
     async def _stop_observer(self) -> None:
@@ -347,8 +429,20 @@ class GoalRuntime:
                 return True
         return False
 
+    @asynccontextmanager
+    async def _recheck_changed_wake(self) -> AsyncIterator[None]:
+        generation = self._change_generation
+        try:
+            yield
+        finally:
+            if self._valid() and generation != self._change_generation:
+                # Revisit durable causes once after an in-flight wake was invalidated.
+                # Unlike waking on every _changed(), this does not create causes or
+                # spin on refresh/report callbacks. Receipt coalescing remains authoritative.
+                self._schedule(lambda: self._wake(None))
+
     async def _wake(self, trigger: str | None) -> None:
-        async with self._wake_lock:
+        async with self._wake_lock, self._recheck_changed_wake():
             if not self._valid():
                 return
             goal = await self.service.current()
@@ -396,10 +490,13 @@ class GoalRuntime:
                     [self.owner.key, goal.id, goal.version, wake['sequence']]).encode()).hexdigest()
                 files = self.service.files(goal)
                 message = SessionInput(identifier, 'automatic', 'goal',
-                    f'Goal reminder for {goal.id}. Read the goal skill and current Goal status first. '
+                    f'Goal reminder for {goal.id}. Follow the already-loaded Goal skill; '
+                    'read current Goal status first. '
                     f'Goal workspace: {files.root}. Continue only if this is still your current Goal and '
                     'is active (or waiting for tasks whose changes you must inspect before resuming). '
-                    'If paused or waiting for user/host, do not continue or release that state. '
+                    'If paused, completed, cleared or waiting for user/host, do not continue or release that state. '
+                    'For a tasks wait, inspect the changed tasks and use goal.activate with the exact goal_id, '
+                    'observed version and reason only when you judge the wait condition satisfied. '
                     'Before doing more work, compare actual results against the previous progress report, '
                     'then call goal(action="report") with progress, completed work, evidence, blockers and next steps. '
                     'The first report establishes a baseline. Repeated lack of progress without a viable new approach '
@@ -457,20 +554,29 @@ class GoalRuntime:
     async def _command(self, args: str, context: OperationContext) -> str:
         action, _, rest = args.strip().partition(' ')
         action = action or 'status'
-        if action == 'status':
-            if rest.strip():
-                raise ValueError('Usage: /goal status')
-            return json_text(await self.service.summary(), maximum=1024 * 1024)
+        if action in {'status', '--json'}:
+            if ((action == '--json' and rest.strip())
+                    or (action == 'status' and rest.strip() not in {'', '--json'})):
+                raise ValueError('Usage: /goal status [--json]')
+            facts = await self.service.summary()
+            if action == '--json' or rest.strip() == '--json':
+                return json_text(facts, maximum=1024 * 1024, ensure_ascii=False)
+            return format_status(facts)
         if action == 'history':
-            if rest.strip() and (not rest.strip().isdecimal() or len(rest.strip()) > 12):
-                raise ValueError('Usage: /goal history [OFFSET]')
-            offset = int(rest.strip() or '0')
+            parts = rest.split()
+            raw = '--json' in parts
+            if raw:
+                parts.remove('--json')
+            if len(parts) > 1 or parts and (not parts[0].isdecimal() or len(parts[0]) > 12):
+                raise ValueError('Usage: /goal history [OFFSET] [--json]')
+            offset = int(parts[0]) if parts else 0
             goals = await self.service.list()
-            return json_text({'goals': [{key: asdict(goal)[key] for key in ('id', 'title', 'status', 'version')}
-                                        for goal in goals[offset:offset + 16]],
-                              'total': len(goals), 'next_offset': offset + 16 if offset + 16 < len(goals) else None,
-                              'legacy_storage': list(self._legacy_paths),
-                              'legacy_note': 'Legacy stores retained unchanged; no old workers/reviewers are resumed'})
+            facts = {'goals': [{key: asdict(goal)[key] for key in ('id', 'title', 'status', 'version')}
+                               for goal in goals[offset:offset + 16]],
+                     'total': len(goals), 'next_offset': offset + 16 if offset + 16 < len(goals) else None,
+                     'legacy_storage': list(self._legacy_paths),
+                     'legacy_note': 'Legacy stores retained unchanged; no old workers/reviewers are resumed'}
+            return json_text(facts, ensure_ascii=False) if raw else format_history(facts)
         if action == 'create':
             if not rest.strip():
                 raise ValueError('Usage: /goal create <outcome>; the current main Agent plans it')
@@ -485,7 +591,8 @@ class GoalRuntime:
         await self._refresh()
         if action in {'create', 'resume'}:
             self._schedule(lambda: self._wake(None))
-        return json_text({'goal': asdict(goal), 'automation': self.automation,
+        return format_change(action, {'goal': asdict(goal), 'automation': self.automation,
+                          'last_transition': await self.service.store.last_transition(goal),
                           'notice': ('Automatic continuation and owned Eyes observation are stopped; accepted input, '
                                      'running tools and children are not cancelled' if action == 'pause' else
                                      'The main Agent must inspect current tasks and report progress before working'),
@@ -542,6 +649,7 @@ class GoalProvider:
     scopes = ('session', 'group')
     tool_names = ('goal',)
     command_names = ('goal',)
+    default_skills = ('goal',)
     requirements: tuple[str, ...] = ()
     optional_requirements = ('acp',)
 

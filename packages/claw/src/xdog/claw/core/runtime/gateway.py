@@ -24,9 +24,9 @@ from typing import TYPE_CHECKING, Any
 from xdog.agent import AgentConfig
 from xdog.agent.async_work import run_owned, settle_cleanup, wait_owned
 from xdog.agent.capabilities import CapabilitySet
+from xdog.agent.child_config import ChildConfig
 from xdog.agent.mcp.completion import McpCompletion
 from xdog.agent.mcp.context import McpDocument, McpEntry
-from xdog.agent.supervision_config import ChildConfig
 from xdog.ai.types import ImageContent, StreamOptions, ThinkingLevel
 from xdog.claw.channels.tui.channel import NativeNoticeChannel
 from xdog.claw.channels.tui.image_upload import ImageUploads
@@ -550,7 +550,7 @@ class GatewayServer:
             if (not separator or runtime is None or (runtime.get_new_session_id() or "") != session
                     or runtime._active_session is None or group in self._orchestrator._navigation_groups):
                 raise ValueError("Child source session changed")
-            captured = runtime._active_session.children.supervisor.capture_source(child)
+            captured = runtime._active_session.children.runtime.capture_source(child)
             return SourceCapture(scope, lambda: [captured.to_dict()], revision=runtime._source_revision)
         def child_current(group: str) -> tuple[str, int]:
             try:
@@ -1276,8 +1276,8 @@ class GatewayServer:
                                 # Canonical image-bearing records cannot fit a socket line. The
                                 # separately owned child-source reader provides complete DISPLAY
                                 # history; controls carry only their actual receipt/metadata.
+                                from xdog.agent.child_images import image_parts
                                 from xdog.agent.messages import dicts_to_messages
-                                from xdog.agent.supervision_images import image_parts
                                 has_images = (data.get('task_images')
                                               or any(row.get('images') for row in data.get('undelivered_inputs', []))
                                               or any(row.get('images') for row in data.get('returned_backups', []))
@@ -1408,7 +1408,7 @@ class GatewayServer:
                             active = runtime._active_session if runtime is not None else None
                             return ((own_event.is_set() or not self._orchestrator.is_group_running(gid))
                                     and (active is None or not active.agent.is_streaming
-                                         and not active.children.supervisor.active))
+                                         and not active.children.runtime.active))
                         try:
                             assert self._orchestrator is not None and runtime is not None
                             if op == "detach":

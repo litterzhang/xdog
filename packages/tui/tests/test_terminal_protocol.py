@@ -100,3 +100,23 @@ def test_every_reply_split_preserves_interleaved_typing(replies: bytes) -> None:
         assert protocol.filter_input(replies[:split]) + protocol.filter_input(replies[split:]) == b"abcd"
         assert protocol.cursor_position == (12, 4)
         protocol.cleanup()
+
+
+@pytest.mark.parametrize("report", [b"\x1b[<35;68;9M", b"\x1b[<0;1;2m", b"\x1b[<64;8;9M"])
+def test_mouse_reports_never_become_typing_at_any_split(report: bytes) -> None:
+    for split in range(len(report) + 1):
+        protocol = TerminalProtocol()
+        assert protocol.filter_input(b"before" + report[:split]) + protocol.filter_input(
+            report[split:] + b"after"
+        ) == b"beforeafter"
+        paste = Paste(report.decode())
+        assert protocol.filter_frame(paste) == [paste]
+
+
+def test_incomplete_mouse_report_expires_without_inserting_escape_tail() -> None:
+    clock = FakeClock()
+    protocol = TerminalProtocol(clock=clock)
+    assert protocol.filter_input(b"\x1b[<35;68;") == b""
+    clock.advance(0.11)
+    assert protocol.expire_input() == b""
+    assert protocol.filter_input(b"hello") == b"hello"

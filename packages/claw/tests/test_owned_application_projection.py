@@ -43,7 +43,7 @@ async def test_application_shutdown_reports_actual_settled_resource_error(tmp_pa
     await session.initialize_extensions()
     client = session.extensions._manager._clients['contextual']
     completed = []
-    resource = client if kind == 'extension' else session.children.supervisor
+    resource = client if kind == 'extension' else session.children.runtime
     method = 'close' if kind == 'extension' else 'aclose'
     if kind == 'inbox':
         resource, method = (await app.input_service()).store, 'close'
@@ -132,7 +132,7 @@ async def test_application_shutdown_retains_multiple_actual_cleanup_errors(tmp_p
     session = runtime.get_or_create_session(allow_reset=False)
     await session.initialize_extensions()
     client = session.extensions._manager._clients['contextual']
-    close_client, close_children = client.close, session.children.supervisor.aclose
+    close_client, close_children = client.close, session.children.runtime.aclose
     completed = []
 
     async def client_error():
@@ -147,7 +147,7 @@ async def test_application_shutdown_retains_multiple_actual_cleanup_errors(tmp_p
 
     with monkeypatch.context() as fault:
         fault.setattr(client, 'close', client_error)
-        fault.setattr(session.children.supervisor, 'aclose', children_error)
+        fault.setattr(session.children.runtime, 'aclose', children_error)
         for _ in range(2):
             with pytest.raises(BaseExceptionGroup) as caught:
                 await app.stop()

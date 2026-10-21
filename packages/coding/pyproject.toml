@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "xdog-coding"
-version = "2.4.4"
+version = "2.4.5"
 description = "Interactive coding agent CLI"
 requires-python = ">=3.12"
 classifiers = [
@@ -22,18 +22,18 @@ readme = "README.md"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE", "LICENSE-EXCEPTION.md"]
 dependencies = [
-    "xdog-ai[openai]>=2.4.4",
-    "xdog-agent>=2.4.4",
-    "xdog-skills>=2.4.4",
+    "xdog-ai[openai]>=2.4.5",
+    "xdog-agent>=2.4.5",
+    "xdog-skills>=2.4.5",
     "agent-client-protocol>=0.12.1,<0.13; python_version < '3.15'",
-    "xdog-tui>=2.4.4",
+    "xdog-tui>=2.4.5",
     "pyyaml>=6.0",
     "click>=8.1.0",
     "pydantic>=2.0",
 ]
 
 [project.optional-dependencies]
-skills = ["xdog-skills>=2.4.4"]
+skills = ["xdog-skills>=2.4.5"]
 
 [project.urls]
 Homepage = "https://xdog.942295.xyz"

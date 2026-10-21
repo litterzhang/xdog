@@ -1,7 +1,7 @@
 """Owner-fenced, event-only child correspondence in the main chat log.
 
 This is a live projection, not a persisted/replayed conversation or execution owner.
-Only the supervisor can attest admission/reception; roster polls carry no messages.
+Only the runtime can attest admission/reception; roster polls carry no messages.
 """
 from __future__ import annotations
 
@@ -16,13 +16,21 @@ from xdog.tui.utils import sanitize_terminal_text, truncate_to_width, wrap_text_
 class ChildMessage(ExtensionCommand):
     """Reuse the chat's existing full Details/Transcript artifact protocol."""
 
-    def __init__(self, event: dict[str, Any], owner: str) -> None:
+    def __init__(
+        self, event: dict[str, Any], owner: str, *, marker_style: Callable[[str], str] | None = None,
+        metadata_style: Callable[[str], str] | None = None,
+        direction_style: Callable[[str], str] | None = None,
+    ) -> None:
         super().__init__('child-message', {'content': []}, event['text'], owner=owner)
+        self._marker_style = marker_style or (lambda value: value)
+        self._metadata_style = metadata_style or (lambda value: value)
+        self._direction_style = direction_style or (lambda value: value)
         self.child_id = event['child_id']
         self.message_id = event['message_id']
         self.direction = event['direction']
         self.label = event.get('label', '')
         self.status = event['status']
+        self._rows_cache: tuple[tuple[object, ...], list[str]] | None = None
 
     @property
     def detail_title(self) -> str:
@@ -31,17 +39,44 @@ class ChildMessage(ExtensionCommand):
         return sanitize_terminal_text(f'{route} · {self.status} · message {self.message_id}')
 
     def render(self, width: int) -> list[str]:
-        width = max(1, width)
+        if width <= 0:
+            return []
+        key = (width, self._expanded, self.child_id, self.message_id, self.direction,
+               self.label, self.status, self._text)
+        if self._rows_cache is not None and self._rows_cache[0] == key:
+            return self._rows_cache[1]
+        # Match shared user/Agent/tool columns; tiny terminals keep the text instead.
+        gutter = 3 if width >= 4 else 0
+        content_width = width - gutter
         # Headers wrap too: narrow terminals must not silently lose identity/status.
-        header = wrap_text_with_ansi(self.detail_title, width)
-        body = wrap_text_with_ansi(self.detail_body, width)
+        title = self.detail_title
+        if gutter:
+            # Style trusted structural segments only, never parse labels/body as markup.
+            child = sanitize_terminal_text(self.child_id + (f' ({self.label})' if self.label else ''))
+            tail = sanitize_terminal_text(f' · {self.status} · message {self.message_id}')
+            title = (self._direction_style('Parent → child') + self._metadata_style(' ' + child)
+                     if self.direction == 'parent_to_child' else
+                     self._metadata_style('child ' + child) + self._direction_style(' → Parent'))
+            title += self._metadata_style(tail)
+        header = wrap_text_with_ansi(title, content_width)
+        # Correspondence is literal text, not Markdown (including its title/labels).
+        body = wrap_text_with_ansi(self.detail_body, content_width)
         preview = body if self._expanded else body[:4]
         rows = [*header, *preview]
         if len(preview) < len(body):
-            rows.extend(wrap_text_with_ansi(
+            rows.extend(self._marker_style(row) if gutter else row for row in wrap_text_with_ansi(
                 '[Preview only · Ctrl+O Details / transcript: full message · /agents inspect '
-                + self.child_id + ': actual child history]', width))
-        return [truncate_to_width(row, width, '') for row in rows]
+                + self.child_id + ': actual child history]', content_width))
+        rendered = [
+            (f' {self._marker_style("•")} ' if gutter and index == 0 else ' ' * gutter)
+            + truncate_to_width(row, content_width, '')
+            for index, row in enumerate(rows)
+        ]
+        self._rows_cache = (key, rendered)
+        return rendered
+
+    def invalidate(self) -> None:
+        self._rows_cache = None
 
 
 class ChildMessagePresenter:
@@ -52,7 +87,7 @@ class ChildMessagePresenter:
         self._unsubscribe: Callable[[], None] | None = None
         self._messages: dict[tuple[str, str, str], ChildMessage] = {}
 
-    def bind(self, supervisor: Any, owner: tuple[Any, ...]) -> None:
+    def bind(self, runtime: Any, owner: tuple[Any, ...]) -> None:
         if self._owner == owner:
             return
         self.close()
@@ -68,9 +103,9 @@ class ChildMessagePresenter:
             self.publish({'type': 'child_message_ui', 'lease': lease, 'message': data})
 
         try:
-            self._unsubscribe = supervisor.subscribe(receive)
+            self._unsubscribe = runtime.subscribe(receive)
         except RuntimeError:
-            self._owner = None  # A retired supervisor cannot acquire a display lease.
+            self._owner = None  # A retired runtime cannot acquire a display lease.
             self._lease = ''
 
     def display(self, event: dict[str, Any], owner: tuple[Any, ...]) -> bool:
@@ -90,7 +125,8 @@ class ChildMessagePresenter:
         key = data['child_id'], data['direction'], data['message_id']
         if key in self._messages:
             return False
-        component = ChildMessage(data, self._lease)
+        component = ChildMessage(data, self._lease, marker_style=self.chat._theme.dim,
+                                 metadata_style=self.chat._theme.dim, direction_style=self.chat._theme.accent)
         self._messages[key] = component
         self.chat.add_child(component)
         return True

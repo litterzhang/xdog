@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from xdog.agent.supervision_config import ChildConfig, parse_child_start
+from xdog.agent.child_config import ChildConfig, parse_child_start
 
 
 @pytest.mark.parametrize(
@@ -66,7 +66,7 @@ def test_invalid_flags_never_admit_child() -> None:
 
 
 def test_historical_preset_snapshot_budgets_are_inert_and_unknown_fields_still_rejected():
-    from xdog.agent.supervision_config import ChildPresets
+    from xdog.agent.child_config import ChildPresets
 
     snapshot = [
         {

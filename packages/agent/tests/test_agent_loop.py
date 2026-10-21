@@ -498,3 +498,85 @@ class TestAgentLoopContinueWithAgentMessage:
         message_end_events = [e for e in events if isinstance(e, MessageEndEvent)]
         assert len(message_end_events) == 1
         assert message_end_events[0].message.role == "assistant"
+
+
+@pytest.mark.parametrize("execution", ["sequential", "parallel"])
+async def test_tool_exception_logs_are_marked_and_have_matching_error_outcomes(caplog, execution) -> None:
+    import logging
+
+    from xdog.agent.agent_loop import run_agent_loop
+
+    async def execute(tool_call_id, params, cancel, on_update, **kwargs):
+        raise RuntimeError(f"follow-up failed: {tool_call_id}")
+
+    tool = AgentTool(name="agent", label="Agent", description="Follow up", parameters={}, execute=execute)
+    calls = tuple(ToolCall(id=f"call-{i}", name="agent", arguments={}) for i in range(2))
+    events: list[AgentEvent] = []
+
+    async def emit(event: AgentEvent) -> None:
+        events.append(event)
+
+    with caplog.at_level(logging.ERROR, logger="xdog.agent.agent_loop"):
+        messages = await run_agent_loop(
+            [create_user_message("follow up")], AgentContext(system_prompt="", messages=[], tools=[tool]),
+            AgentLoopConfig(tool_execution=execution), emit,
+            stream_fn=create_mock_stream_fn([
+                create_assistant_message(calls, "toolUse"),
+                create_assistant_message((TextContent(text="done"),)),
+            ]),
+            model="mock/test-model", options=StreamOptions(),
+        )
+    records = [record for record in caplog.records if record.name == "xdog.agent.agent_loop"]
+    assert len(records) == 2
+    ends = [event for event in events if isinstance(event, ToolExecutionEndEvent)]
+    results = [message for message in messages if isinstance(message, ToolResultMessage)]
+    assert [event.tool_call_id for event in ends] == [call.id for call in calls]
+    assert [result.tool_call_id for result in results] == [call.id for call in calls]
+    for record, end, result in zip(records, ends, results, strict=True):
+        assert record.levelno == logging.ERROR
+        assert record.xdog_tool_error_represented is True
+        assert record.tool_call_id == end.tool_call_id == result.tool_call_id
+        assert record.getMessage() == "Tool agent execution failed"
+        assert record.exc_info is not None
+        assert isinstance(record.exc_info[1], RuntimeError)
+        assert str(record.exc_info[1]) == f"follow-up failed: {end.tool_call_id}"
+        assert end.is_error and end.result.is_error and result.is_error
+        assert end.result.content == result.content == (
+            TextContent(text=f"Tool error: follow-up failed: {end.tool_call_id}"),
+        )
+
+
+@pytest.mark.parametrize("execution", ["sequential", "parallel"])
+async def test_unrepresented_finalizer_exception_log_is_not_marked(caplog, execution) -> None:
+    import logging
+
+    from xdog.agent.agent_loop import run_agent_loop
+
+    async def execute(tool_call_id, params, cancel, on_update, **kwargs):
+        raise RuntimeError("tool failed")
+
+    async def after_tool_call(context, cancel):
+        raise ValueError("finalization failed before tool outcome")
+
+    tool = AgentTool(name="agent", label="Agent", description="Follow up", parameters={}, execute=execute)
+    events: list[AgentEvent] = []
+
+    async def emit(event: AgentEvent) -> None:
+        events.append(event)
+
+    with caplog.at_level(logging.ERROR, logger="xdog.agent.agent_loop"):
+        with pytest.raises(ValueError, match="finalization failed before tool outcome"):
+            await run_agent_loop(
+                [create_user_message("follow up")], AgentContext(system_prompt="", messages=[], tools=[tool]),
+                AgentLoopConfig(tool_execution=execution, after_tool_call=after_tool_call), emit,
+                stream_fn=create_mock_stream_fn([
+                    create_assistant_message((ToolCall(id="call-1", name="agent", arguments={}),), "toolUse"),
+                ]),
+                model="mock/test-model", options=StreamOptions(),
+            )
+    loop_failure = [record for record in caplog.records if record.getMessage() == "Agent loop failed"]
+    assert len(loop_failure) == 1
+    assert not hasattr(loop_failure[0], "xdog_tool_error_represented")
+    assert loop_failure[0].exc_info is not None
+    assert isinstance(loop_failure[0].exc_info[1], ValueError)
+    assert not any(isinstance(event, ToolExecutionEndEvent) for event in events)

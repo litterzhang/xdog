@@ -8,9 +8,9 @@ from unittest.mock import patch
 import pytest
 from xdog.agent import AgentTool, AgentToolResult
 from xdog.agent.async_work import run_owned
+from xdog.agent.child_policy import ChildSkills
+from xdog.agent.children import ChildClient
 from xdog.agent.skills.tool import _Reader
-from xdog.agent.supervision import ChildClient
-from xdog.agent.supervision_policy import ChildSkills
 from xdog.ai.types import AssistantMessage, Model, StreamOptions, TextContent, ToolCall, UserMessage
 from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.config import ClawConfig
@@ -45,7 +45,7 @@ async def test_runtime_store_extension_ownership_and_sdk_parent_without_conversa
     app = application(tmp_path, stream)
     try:
         session = await prepared(app)
-        runtime = session.children.supervisor
+        runtime = session.children.runtime
         assert type(runtime) is ClawChildRuntime
         assert runtime.__class__.__module__.startswith('xdog.claw.')
         assert session.children.store.__class__.__module__.startswith('xdog.claw.')
@@ -89,9 +89,9 @@ async def test_legacy_instructions_are_first_user_material_and_not_system_author
     app = application(tmp_path, stream)
     try:
         session = await prepared(app)
-        identifier = await session.children.supervisor.start('TASK KNOWLEDGE', config={
+        identifier = await session.children.runtime.start('TASK KNOWLEDGE', config={
             'system_prompt': 'CHILD SYSTEM ROLE', 'instructions': 'LEGACY USER MATERIAL', 'tools': [], 'skills': []})
-        record = await session.children.supervisor.control('wait', identifier)
+        record = await session.children.runtime.control('wait', identifier)
         assert record['status'] == 'completed'
         assert 'CHILD SYSTEM ROLE' in str(calls[0].system_prompt)
         assert 'TASK KNOWLEDGE' not in str(calls[0].system_prompt)
@@ -113,8 +113,8 @@ async def test_tool_grants_cannot_exceed_actual_parent_or_delegate_supervision(t
     try:
         session = await prepared(app)
         with pytest.raises(ValueError):
-            await session.children.supervisor.start('must not run', config={'tools': selection})
-        assert not calls and not session.children.supervisor.active
+            await session.children.runtime.start('must not run', config={'tools': selection})
+        assert not calls and not session.children.runtime.active
     finally:
         await app.stop()
 
@@ -134,23 +134,23 @@ async def test_frozen_actions_and_current_parent_tool_identity_are_both_enforced
     app = application(tmp_path, stream, tools=())
     try:
         session = await prepared(app)
-        session.agent.set_tools((source, *session.children.supervisor.tools()))
-        identifier = await session.children.supervisor.start('work', access='inherit',
+        session.agent.set_tools((source, *session.children.runtime.tools()))
+        identifier = await session.children.runtime.start('work', access='inherit',
             config={'tools': ['operation'], 'tool_actions': {'operation': ['read']}})
-        record = await session.children.supervisor.control('wait', identifier)
+        record = await session.children.runtime.control('wait', identifier)
         assert record['status'] == 'completed' and not executed
         assert 'outside delegated permissions' in str(record['messages'])
         # Revocation after admission but before the actual provider call must not
         # consume a model request or use a later same-named tool as authority.
-        original = session.children.supervisor.factory
+        original = session.children.runtime.factory
         async def revoke(spec, publish):
             child = await original(spec, publish)
             session.agent.set_tools((AgentTool(name='operation', parameters=source.parameters, execute=execute),))
             return child
-        session.children.supervisor.factory = revoke
+        session.children.runtime.factory = revoke
         before = len(calls)
-        identifier = await session.children.supervisor.start('must not request', config={'tools': ['operation']})
-        record = await session.children.supervisor.control('wait', identifier)
+        identifier = await session.children.runtime.start('must not request', config={'tools': ['operation']})
+        record = await session.children.runtime.control('wait', identifier)
         assert record['status'] == 'failed' and len(calls) == before
         assert 'delegation changed' in record['error'] and not executed
     finally:
@@ -174,15 +174,15 @@ async def test_skills_are_selected_readonly_no_parent_manager_in_executor_contex
         def reading(reader, slug, stopped):
             threads.append(threading.get_ident())
             return original_load(reader, slug, stopped)
-        original = session.children.supervisor.factory
+        original = session.children.runtime.factory
         async def capture(spec, publish):
             child = await original(spec, publish)
             children.append(child)
             return child
-        session.children.supervisor.factory = capture
+        session.children.runtime.factory = capture
         with patch.object(_Reader, 'load', reading):
-            identifier = await session.children.supervisor.start('use chosen skill', config={'skills': ['selected']})
-            record = await session.children.supervisor.control('wait', identifier)
+            identifier = await session.children.runtime.start('use chosen skill', config={'skills': ['selected']})
+            record = await session.children.runtime.control('wait', identifier)
         assert record['status'] == 'completed' and calls
         child = children[0]
         delegated = child.tool_context['_skill_manager']
@@ -194,8 +194,8 @@ async def test_skills_are_selected_readonly_no_parent_manager_in_executor_contex
             delegated.save_skill('forbidden', 'cannot mutate parent')
         assert threads and all(thread != owner_thread for thread in threads)
         with pytest.raises(ValueError, match='exceed parent'):
-            await session.children.supervisor.start('missing skill', config={'skills': ['not-granted']})
-        assert len(calls) == 1 and len(session.children.supervisor.snapshot()['children']) == 1
+            await session.children.runtime.start('missing skill', config={'skills': ['not-granted']})
+        assert len(calls) == 1 and len(session.children.runtime.snapshot()['children']) == 1
         assert await run_owned(manager.load_skill, 'forbidden') is None
     finally:
         await app.stop()
@@ -211,15 +211,15 @@ async def test_skill_revocation_before_first_provider_request_is_not_silent_fall
         session = await prepared(app)
         manager = session._runtime.skill_manager
         await run_owned(lambda: manager.save_skill('selected', 'ORIGINAL', name='selected', description='Selected'))
-        original = session.children.supervisor.factory
+        original = session.children.runtime.factory
         async def revoke(spec, publish):
             child = await original(spec, publish)
             await run_owned(manager.remove_skill, 'selected')
             return child
-        session.children.supervisor.factory = revoke
-        identifier = await session.children.supervisor.start(
+        session.children.runtime.factory = revoke
+        identifier = await session.children.runtime.start(
             'no model after revocation', config={'skills': ['selected']})
-        record = await session.children.supervisor.control('wait', identifier)
+        record = await session.children.runtime.control('wait', identifier)
         assert record['status'] == 'failed' and not calls
         assert 'skill' in record['error'].lower() and any(
             word in record['error'].lower() for word in ('revoked', 'not available', 'changed'))
@@ -252,9 +252,9 @@ async def test_child_model_metadata_and_native_compaction_archive_remain_on_host
                     if len(requests) < 26 else (TextContent(text='finished'),))))
         session.agent.set_stream_fn(Adapter())
         session.agent.set_options(StreamOptions(max_tokens=128))
-        identifier = await session.children.supervisor.start('CURRENT GOAL', access='read-only',
+        identifier = await session.children.runtime.start('CURRENT GOAL', access='read-only',
             config={'model': 'test/child', 'thinking': 'low', 'tools': ['filesystem']})
-        record = await session.children.supervisor.control('wait', identifier)
+        record = await session.children.runtime.control('wait', identifier)
         assert record['status'] == 'completed', record['error']
         assert len(requests) == 26 and summaries
         archives = await run_owned(session.children.store.compaction_archives, identifier)
@@ -270,7 +270,7 @@ async def test_skills_are_rejected_before_id_registry_store_begin_or_factory(tmp
     app = application(tmp_path, lambda *args: calls.append(args))
     try:
         session = await prepared(app)
-        runtime = session.children.supervisor
+        runtime = session.children.runtime
         original = runtime.factory
         async def factory(spec, publish):
             factories.append(spec)
@@ -301,7 +301,7 @@ async def test_closing_during_owned_skill_admission_waits_for_io_without_registr
             entered.set()
             assert release.wait(5)
             return original_load(reader, slug, stopped)
-        runtime = session.children.supervisor
+        runtime = session.children.runtime
         before = set(session.children.store.root.glob('*'))
         with patch.object(_Reader, 'load', blocked):
             work = asyncio.create_task(runtime.start('no admitted worker', config={'skills': ['selected']}))
@@ -339,20 +339,20 @@ async def test_unpublished_or_replaced_parent_rejects_admission_and_context_is_e
         owner._active_session = None
         try:
             with pytest.raises(ValueError, match='parent owner retired'):
-                await session.children.supervisor.start('not published')
+                await session.children.runtime.start('not published')
         finally:
             owner._active_session = session
         secret = object()
         session.agent.set_tool_context({**session.agent.tool_context, '_future_session_private': secret,
                                        'future_business_reference': secret})
-        original = session.children.supervisor.factory
+        original = session.children.runtime.factory
         async def factory(spec, publish):
             child = await original(spec, publish)
             children.append(child)
             return child
-        session.children.supervisor.factory = factory
-        identifier = await session.children.supervisor.start('explicit context only', config={'tools': []})
-        assert (await session.children.supervisor.control('wait', identifier))['status'] == 'completed'
+        session.children.runtime.factory = factory
+        identifier = await session.children.runtime.start('explicit context only', config={'tools': []})
+        assert (await session.children.runtime.control('wait', identifier))['status'] == 'completed'
         context = children[0].tool_context
         assert set(context) == {'group_id', 'workspace_dir', 'fs_workspace', 'data_dir', '_skill_manager'}
         assert all(value is not secret for value in context.values())
@@ -386,20 +386,20 @@ async def test_explicit_model_capabilities_are_real_and_never_fall_back_or_chang
         session = await prepared(app)
         session.agent.set_options(StreamOptions(max_tokens=1024, thinking='high'))
         before_model, before_options = session.agent.state.model, session.agent.options
-        original = session.children.supervisor.factory
+        original = session.children.runtime.factory
         if scenario == 'withdrawn':
             async def withdraw(spec, publish):
                 child = await original(spec, publish)
                 adapter.metadata = None
                 return child
-            session.children.supervisor.factory = withdraw
+            session.children.runtime.factory = withdraw
         config = {'model': 'test/absent' if scenario == 'unknown' else 'test/child',
                   'thinking': 'high' if scenario == 'reasoning' else 'low', 'tools': ['filesystem']}
         images = ((ImageContent(data=('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lE'
                                     'QVR42mP8/x8AAwMCAO+j5ioAAAAASUVORK5CYII='), mime_type='image/png'),)
                   if scenario == 'image' else ())
-        identifier = await session.children.supervisor.start('Explicit child model', config=config, images=images)
-        record = await session.children.supervisor.control('wait', identifier)
+        identifier = await session.children.runtime.start('Explicit child model', config=config, images=images)
+        record = await session.children.runtime.control('wait', identifier)
         if scenario == 'no-tools':
             assert record['status'] == 'completed', record['error']
             assert len(calls) == 1 and record['effective']['supports_tool_calls'] is False
@@ -435,12 +435,12 @@ async def test_independent_child_keeps_own_reasoning_signatures_and_reports_tool
     app = application(tmp_path, Adapter(), tools=())
     try:
         session = await prepared(app)
-        session.agent.set_tools((source, *session.children.supervisor.tools()))
-        remove = session.children.supervisor.subscribe(facts.append)
+        session.agent.set_tools((source, *session.children.runtime.tools()))
+        remove = session.children.runtime.subscribe(facts.append)
         try:
-            identifier = await session.children.supervisor.start('use inspect', access='inherit',
+            identifier = await session.children.runtime.start('use inspect', access='inherit',
                 config={'model': 'test/child', 'thinking': 'low', 'tools': ['inspect']})
-            record = await session.children.supervisor.control('wait', identifier)
+            record = await session.children.runtime.control('wait', identifier)
         finally:
             remove()
         assert record['status'] == 'completed' and len(calls) == 2
@@ -472,7 +472,7 @@ async def test_parallel_prepared_calls_recheck_real_effect_policy_after_first_ex
     async def revoke(*args, **kwargs):
         assert session is not None
         if revocation == 'tools':
-            session.agent.set_tools((first, *session.children.supervisor.tools()))
+            session.agent.set_tools((first, *session.children.runtime.tools()))
         elif revocation == 'read-only':
             session.access.set_read_only(True)
         else:
@@ -492,12 +492,12 @@ async def test_parallel_prepared_calls_recheck_real_effect_policy_after_first_ex
     app = application(tmp_path, stream, tools=())
     try:
         session = await prepared(app)
-        session.agent.set_tools((first, second, *session.children.supervisor.tools()))
+        session.agent.set_tools((first, second, *session.children.runtime.tools()))
         with (patch.object(session._runtime.mcp, 'tools', lambda: (second,) if revocation == 'mcp' else ()),
               patch.object(session._runtime.mcp, 'allowed', lambda name: mcp_allowed[0])):
-            identifier = await session.children.supervisor.start('parallel work', access='inherit',
+            identifier = await session.children.runtime.start('parallel work', access='inherit',
                 config={'tools': ['revoke', 'mutation']})
-            record = await session.children.supervisor.control('wait', identifier)
+            record = await session.children.runtime.control('wait', identifier)
         assert not writes
         assert 'policy revoked before next executor' in str(record['messages'])
         assert any(word in str(record['messages']).lower()
@@ -524,17 +524,17 @@ async def test_delegated_schema_advertisement_and_execution_keep_original_snapsh
     app = application(tmp_path, stream, tools=())
     try:
         session = await prepared(app)
-        session.agent.set_tools((source, *session.children.supervisor.tools()))
-        original = session.children.supervisor.factory
+        session.agent.set_tools((source, *session.children.runtime.tools()))
+        original = session.children.runtime.factory
         async def mutate(spec, publish):
             child = await original(spec, publish)
             children.append(child)
             source.parameters['properties']['action']['enum'].append('write')
             return child
-        session.children.supervisor.factory = mutate
-        identifier = await session.children.supervisor.start('read only schema', access='inherit',
+        session.children.runtime.factory = mutate
+        identifier = await session.children.runtime.start('read only schema', access='inherit',
             config={'tools': ['restricted']})
-        record = await session.children.supervisor.control('wait', identifier)
+        record = await session.children.runtime.control('wait', identifier)
         assert record['status'] == 'completed' and not executed
         assert len(calls) == 2
         assert children[0].state.tools[0].parameters is not source.parameters

@@ -8,8 +8,8 @@ import threading
 
 import pytest
 from xdog.agent import Agent, AgentConfig, AgentContext, AgentTool, BeforeToolCallContext, ParentHandle
+from xdog.agent.children import ChildClient, ChildConfig
 from xdog.agent.skills import SkillManager
-from xdog.agent.supervision import ChildClient, ChildConfig
 from xdog.ai.types import AssistantMessage, ToolCall
 
 
@@ -134,7 +134,7 @@ async def test_sdk_uses_only_explicit_backend_and_starts_no_scheduler():
 
 
 def test_independent_model_preserves_own_signatures_and_refuses_withdrawn_catalog():
-    from xdog.agent.supervision_model import resolve_child_model
+    from xdog.agent.child_model import resolve_child_model
     from xdog.ai.types import Context, Model, StreamOptions, TextContent, ThinkingContent
     from xdog.ai.utils.event_stream import EventStream
     class Adapter:
@@ -176,9 +176,12 @@ class NoApplications(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, NoApplications())
 before = set(threading.enumerate())
 from xdog.agent import Agent, AgentConfig, ChildClient, ParentHandle
-import xdog.agent.supervision as sdk
+import xdog.agent.children as sdk
 assert not hasattr(sdk, 'ChildSupervisor')
-for old in ('supervision_store', 'supervision_extensions', 'supervision_return'):
+for old in ('supervision_store', 'supervision_extensions', 'supervision_return',
+            'child_store', 'child_extensions', 'child_return', 'child_runtime',
+            'supervision', 'supervision_compaction', 'supervision_config', 'supervision_images',
+            'supervision_model', 'supervision_policy', 'supervision_queue', 'supervision_transfer'):
     assert importlib.util.find_spec('xdog.agent.' + old) is None
 agent = Agent(lambda *args: (_ for _ in ()).throw(AssertionError('model')), config=AgentConfig(model='fake'))
 assert agent.parent is None

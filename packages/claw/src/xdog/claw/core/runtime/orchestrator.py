@@ -307,7 +307,7 @@ class Orchestrator:
             self._input_start_task.cancel()
         for runtime in self._runtimes.values():
             if runtime._active_session is not None:
-                runtime._active_session.children.supervisor.abort()
+                runtime._active_session.children.runtime.abort()
 
     @property
     def data_dir(self) -> Path:
@@ -741,7 +741,7 @@ class Orchestrator:
         state = ('closing' if self._inputs_stopping or runtime._closing else 'running'
                  if controller.busy or session is not None and not session.agent.is_idle else 'idle')
         return {'state': state, 'user_pending': controller.user_pending,
-                'children_active': bool(session is not None and session.children.supervisor.active),
+                'children_active': bool(session is not None and session.children.runtime.active),
                 'generation': controller.generation}
 
     def register_acp_endpoint(self, owner: object, endpoint: Path, *,
@@ -1093,7 +1093,7 @@ class Orchestrator:
         def alive() -> bool:
             return (host_alive() and runtime._active_session is session and session.agent is agent
                     and runtime.get_new_session_id() == sid and runtime._source_revision == revision
-                    and not agent.is_streaming and not session.children.supervisor.active and not session._compacting
+                    and not agent.is_streaming and not session.children.runtime.active and not session._compacting
                     and runtime.group.id not in self._navigation_groups)
         async def ask(extension: str, dialog: dict[str, Any]) -> Any:
             if not alive() or not (host.owns(dialog) or host.owns_menu(dialog)):
@@ -1310,7 +1310,7 @@ class Orchestrator:
             result = await runtime.mcp.manage_auth(server, action, receipt, lease=lease, alive=alive)
             if action == "forget" and runtime._active_session is not None:
                 runtime._active_session.agent.set_tools((*runtime.tools,
-                    *runtime._active_session.extensions.tools(), *runtime._active_session.children.supervisor.tools()))
+                    *runtime._active_session.extensions.tools(), *runtime._active_session.children.runtime.tools()))
                 await runtime._active_session._persist_tool_retirement()
             return result
 
@@ -1480,7 +1480,7 @@ class Orchestrator:
             if session.agent.state.is_streaming:
                 raise RuntimeError("Application capability publication requires an idle owner")
             session.agent.set_tools((*runtime.tools, *session.extensions.tools(),
-                                     *session.children.supervisor.tools()))
+                                     *session.children.runtime.tools()))
             await session._persist_tool_retirement()
         self.channels_ready()
 

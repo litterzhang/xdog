@@ -17,8 +17,8 @@ def _unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def json_text(value: object, *, maximum: int | None = 262144) -> str:
-    result = json.dumps(value, sort_keys=True, ensure_ascii=True, allow_nan=False)
+def json_text(value: object, *, maximum: int | None = 262144, ensure_ascii: bool = True) -> str:
+    result = json.dumps(value, sort_keys=True, ensure_ascii=ensure_ascii, allow_nan=False)
     if maximum is not None and len(result.encode()) > maximum:
         raise ValueError('Goal data exceeds response/file capacity; no data was dropped')
     return result

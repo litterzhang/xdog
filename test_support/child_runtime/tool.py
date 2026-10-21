@@ -15,7 +15,7 @@ from xdog.agent import (
     BeforeToolCallResult,
     ToolExecutionEndEvent,
 )
-from xdog.agent.supervision_config import ChildPresets
+from xdog.agent.child_config import ChildPresets
 from xdog.ai.types import AssistantMessage, DoneEvent, TextContent, ToolCall
 from xdog.ai.utils.event_stream import EventStream
 
@@ -121,11 +121,11 @@ async def parent_call(tool, arguments, before_hook):
 class TestChildTool:
     @pytest.fixture
     async def owner(self, *, runtime_factory):
-        supervisor = runtime_factory(lambda spec, publish: completed_agent())
+        child_runtime = runtime_factory(lambda spec, publish: completed_agent())
         try:
-            yield supervisor
+            yield child_runtime
         finally:
-            await supervisor.aclose()
+            await child_runtime.aclose()
 
     async def test_only_merged_agent_tool_is_exposed_with_all_actions(self, owner, *, runtime_factory):
         tool = merged_tool(owner)
@@ -232,7 +232,7 @@ class TestChildTool:
                     await tool.execute("invalid-call", arguments)
             assert created == [] and owner.snapshot() == {"children": []} and not owner.active
             # This private observation is intentional: rejecting input must not even
-            # lazily create the supervisor's worker thread.
+            # lazily create the child_runtime's worker thread.
             execution_owner.assert_unstarted(owner)
         finally:
             await owner.aclose()

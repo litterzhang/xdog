@@ -33,7 +33,7 @@ async def test_actual_coding_goal_owner_grants_headless_display_and_reading_neve
         assert "unavailable" not in str(result).lower()
         rendered = ExtensionView(lambda: session.extensions.snapshot()).render(80)
         assert rendered and any("Goals: 1" in line for line in rendered)
-        assert len(calls) == before and not session.children.supervisor.active
+        assert len(calls) == before and not session.children.runtime.active
         assert (await owned(controller, lambda: host.service.status(goal.id)))["current"]["id"] == goal.id
         await owned(controller, lambda: session.extensions.manage("unload", "goal_ui"))
         assert not session.extensions.snapshot()["ui"]
@@ -113,7 +113,7 @@ async def test_main_task_records_and_completion_survive_display_loss_without_chi
         await owned(controller, lambda: host.service.change("complete", summary="Main verified the task"))
         status = await owned(controller, lambda: host.service.status(goal.id))
         assert status["current"]["status"] == "completed" and status["tasks"][0]["status"] == "completed"
-        assert len(calls) == before and not session.children.supervisor._children
+        assert len(calls) == before and not session.children.runtime._children
         assert not session.extensions.snapshot()["ui"]
     finally:
         await dispose(session)

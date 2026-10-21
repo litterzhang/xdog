@@ -10,12 +10,37 @@ from typing import Any
 from xdog.agent.leased_sqlite import LeasedSqlite
 
 from .codec import decode_goal, encode_goal, json_text, read_json
+from .host import OperationContext
 from .models import Goal, Owner
+from .transitions import transition_data
 
 _FORMAT = 'xdog.goal.registry.v2'
 _SIGNAL_SCHEMA = '''CREATE TABLE IF NOT EXISTS wake_signals(
  sequence INTEGER PRIMARY KEY AUTOINCREMENT,goal_id TEXT NOT NULL REFERENCES goals(id),
  trigger TEXT NOT NULL,UNIQUE(goal_id,trigger));'''
+
+
+_TRANSITION_SCHEMA = '''CREATE TABLE IF NOT EXISTS transitions(
+ goal_id TEXT NOT NULL,version INTEGER NOT NULL,payload TEXT NOT NULL,digest TEXT NOT NULL,
+ PRIMARY KEY(goal_id,version),FOREIGN KEY(goal_id,version) REFERENCES revisions(goal_id,version));'''
+
+
+def _transition(db: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
+    data = read_json(row['payload'])
+    after_row = db.execute('SELECT payload FROM revisions WHERE goal_id=? AND version=?',
+                           (row['goal_id'], row['version'])).fetchone()
+    before_row = db.execute('SELECT payload FROM revisions WHERE goal_id=? AND version=?',
+                            (row['goal_id'], row['version'] - 1)).fetchone()
+    if after_row is None or _digest(row['payload']) != row['digest']:
+        raise ValueError('Corrupt Goal transition')
+    try:
+        expected = transition_data(data['action'], OperationContext(data['user_authorized'], data['origin']),
+                                   decode_goal(before_row[0]) if before_row else None, decode_goal(after_row[0]))
+    except (KeyError, TypeError) as exc:
+        raise ValueError('Corrupt Goal transition provenance') from exc
+    if json_text(data) != json_text(expected):
+        raise ValueError('Goal transition/revision provenance conflict')
+    return data
 
 
 def remindable(goal: Goal) -> bool:
@@ -50,6 +75,8 @@ def _validate(db: sqlite3.Connection, owner: Owner) -> None:
                'reminders': {'id', 'goal_id', 'payload', 'digest', 'status', 'error'}}
     if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='wake_signals'").fetchone():
         columns['wake_signals'] = {'sequence', 'goal_id', 'trigger'}
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='transitions'").fetchone():
+        columns['transitions'] = {'goal_id', 'version', 'payload', 'digest'}
     if any({row[1] for row in db.execute(f'PRAGMA table_info({table})')} != expected
            for table, expected in columns.items()):
         raise ValueError('Unsupported Goal registry schema')
@@ -74,8 +101,17 @@ def _validate(db: sqlite3.Connection, owner: Owner) -> None:
                 raise ValueError('Corrupt Goal history')
         if history[-1]['payload'] != row['payload']:
             raise ValueError('Goal history and current record disagree')
-    if active != ([] if current[0]['goal_id'] is None else [current[0]['goal_id']]):
-        raise ValueError('An owner may have only one current Goal, including paused/waiting')
+    bound = current[0]['goal_id']
+    if active:
+        valid_binding = active == [bound]
+    else:
+        row = db.execute('SELECT * FROM goals WHERE id=?', (bound,)).fetchone() if bound else None
+        valid_binding = bound is None or row is not None and _goal(row).status == 'completed'
+    if not valid_binding:
+        raise ValueError('An owner may have only one current Goal, including paused/waiting/completed')
+    if 'transitions' in columns:
+        for row in db.execute('SELECT * FROM transitions'):
+            _transition(db, row)
     for row in db.execute('SELECT * FROM reminders'):
         value = read_json(row['payload'])
         if (value.get('id') != row['id'] or _digest(row['payload']) != row['digest']
@@ -104,6 +140,7 @@ class GoalStore:
         try:
             def ensure(connection: sqlite3.Connection) -> None:
                 connection.execute(_SIGNAL_SCHEMA)
+                connection.execute(_TRANSITION_SCHEMA)
             await db.disk(ensure)
         except BaseException:
             await db.close()
@@ -133,7 +170,8 @@ class GoalStore:
             'SELECT payload FROM revisions WHERE goal_id=? ORDER BY version', (identifier,))))
 
     async def put(self, goal: Goal, *, expected_version: int, wake: bool = False,
-                  check: Callable[[], None] = lambda: None) -> Goal:
+                  check: Callable[[], None] = lambda: None, action: str = '',
+                  context: OperationContext = OperationContext()) -> Goal:
         if type(expected_version) is not int or expected_version < 0 or goal.version != expected_version + 1:
             raise ValueError('Goal version conflict')
         if type(wake) is not bool or wake and goal.status != 'active':
@@ -148,25 +186,59 @@ class GoalStore:
             bound = db.execute('SELECT goal_id FROM current').fetchone()[0]
             if previous is None:
                 if bound is not None:
-                    raise ValueError('This agent already has a current Goal; complete or clear it first')
+                    original = db.execute('SELECT * FROM goals WHERE id=?', (bound,)).fetchone()
+                    if original is None or _goal(original).status != 'completed':
+                        raise ValueError('This agent already has a current Goal; complete or clear it first')
                 if goal.status != 'active':
                     raise ValueError('A new Goal must start active')
             elif bound != goal.id:
                 raise ValueError('Historical Goal is read-only; create a new Goal instead')
+            elif _goal(previous).status == 'completed' and (goal.status != 'cleared' or action != 'clear'):
+                raise ValueError('Completed Goal is read-only; clear it or create a new Goal')
             db.execute('INSERT INTO goals VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET '
                        'version=excluded.version,payload=excluded.payload,digest=excluded.digest',
                        (goal.id, goal.version, payload, _digest(payload)))
             db.execute('INSERT INTO revisions VALUES(?,?,?,?)', (goal.id, goal.version, payload, _digest(payload)))
-            if goal.status == 'active' and (wake or previous is None or _goal(previous).status != 'active'):
+            if action:
+                provenance = transition_data(action, context, _goal(previous) if previous else None, goal)
+                encoded = json_text(provenance)
+                db.execute('INSERT INTO transitions VALUES(?,?,?,?)',
+                           (goal.id, goal.version, encoded, _digest(encoded)))
+            prior = _goal(previous) if previous is not None else None
+            # activate describes work already admitted to this main Agent; it is
+            # not a second wake request. Explicit user/host recovery still starts
+            # its authority epoch from the recorded waiting -> active revisions.
+            if goal.status == 'active' and action != 'activate' and (
+                    wake or prior is None or prior.status != 'active'):
                 db.execute('INSERT OR IGNORE INTO wake_signals(goal_id,trigger) VALUES(?,?)',
                            (goal.id, 'goal-state:' + str(goal.version)))
-            terminal = goal.status in {'completed', 'cleared'}
-            db.execute('UPDATE current SET goal_id=?', (None if terminal else goal.id,))
+            db.execute('UPDATE current SET goal_id=?', (None if goal.status == 'cleared' else goal.id,))
             if not remindable(goal):
                 db.execute("UPDATE reminders SET status='cancelled' WHERE goal_id=? "
                            "AND status IN ('pending','unavailable')", (goal.id,))
             return goal
         return await self.database.disk(write)
+
+    async def last_transition(self, goal: Goal) -> dict[str, Any]:
+        """Read provenance at this exact snapshot, never infer actors for old revisions."""
+        def read(db: sqlite3.Connection) -> dict[str, Any]:
+            row = db.execute('SELECT * FROM transitions WHERE goal_id=? AND version<=? '
+                             'ORDER BY version DESC LIMIT 1', (goal.id, goal.version)).fetchone()
+            unavailable = {'availability': 'unavailable', 'goal_id': goal.id, 'version': goal.version,
+                           'reason': 'Lifecycle change origin not recorded'}
+            if row is None:
+                return unavailable
+            data = _transition(db, row)
+            state = data['to']
+            # Content/report versions do not erase the last lifecycle operation.
+            # A later unrecorded lifecycle change, however, must not inherit its actor.
+            for newer in db.execute('SELECT payload FROM revisions WHERE goal_id=? AND version>? AND version<=? '
+                                    'ORDER BY version', (goal.id, row['version'], goal.version)):
+                saved = decode_goal(newer[0])
+                if {'status': saved.status, 'wait_for': saved.wait_for} != state:
+                    return unavailable
+            return {'availability': 'available', **data}
+        return await self.database.disk(read)
 
     async def reminder(self, goal: Goal, message: dict[str, Any]) -> dict[str, Any]:
         payload = json_text(message)

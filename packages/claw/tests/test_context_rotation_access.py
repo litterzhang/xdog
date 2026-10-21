@@ -206,7 +206,7 @@ async def test_group_new_reset_preserves_readonly_even_after_failure(tmp_path, m
         assert reopened.get_access(current.meta.session_id)['read_only'] is True
     finally:
         if runtime._active_session is not None:
-            await runtime._active_session.children.supervisor.aclose()
+            await runtime._active_session.children.runtime.aclose()
             await runtime._active_session.extensions.aclose()
             runtime._active_session.dispose()
         for extension in runtime._retired_extensions:

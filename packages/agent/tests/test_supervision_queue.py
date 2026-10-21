@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from xdog.agent.supervision_queue import request
+from xdog.agent.child_queue import request
 
 
 def test_malformed_child_queue_commands_fail_before_mutation() -> None:

@@ -26,6 +26,7 @@ _ACTIONS = {
     'task_update': {'goal_id', 'task'},
     'wait': {'goal_id', 'reason', 'until'},
     'pause': {'goal_id', 'reason'},
+    'activate': {'goal_id', 'version', 'reason'},
     'resume': {'goal_id'},
     'complete': {'goal_id', 'summary'},
     'clear': {'goal_id', 'reason'},
@@ -106,8 +107,10 @@ def create_goal_tool(service: GoalService, context: Callable[[], OperationContex
                 data = {key: item for key, item in params.items() if key not in {'action', 'goal_id'}}
                 if 'criteria' in data:
                     data['criteria'] = _strings(data['criteria'])
-                if action == 'update' and 'version' not in data:
-                    raise ValueError('Update requires the observed Goal version')
+                if action in {'update', 'activate'} and 'version' not in data:
+                    raise ValueError('Update/activate requires the observed Goal version')
+                if action == 'activate' and not identifier:
+                    raise ValueError('Activate requires the exact current goal_id')
                 value = asdict(await service.change(action, identifier, context=context(), **data))
             # Preserve all filters/detail in continuations. Hash the exact selected
             # file facts plus selection, so neither edits nor query switches mix pages.
@@ -123,7 +126,7 @@ def create_goal_tool(service: GoalService, context: Callable[[], OperationContex
             service._check()
             return AgentToolResult.from_text(rendered)
         except (ValueError, KeyError, TypeError) as exc:
-            return AgentToolResult.from_text(json_text({'error': str(exc)}), is_error=True)
+            return AgentToolResult.from_text(json_text({'error': str(exc)}, ensure_ascii=False), is_error=True)
         # Storage/host failures deliberately propagate to the runtime, not a fake success.
 
     return AgentTool('goal', 'Manage the current Goal and authoritative task files. The main Agent plans, '
@@ -132,6 +135,8 @@ def create_goal_tool(service: GoalService, context: Callable[[], OperationContex
         'tasks reads task_id or status/worker filters; use next_query unchanged for byte pages. '
         'plan reads when content is omitted, writes when supplied. report records the main Agent assessment '
         'with expected_version; no semantic verdict or wait release. '
-        'Read the goal skill. Explicit user authority is required to create/revise a target or release a user pause.',
+        'activate requires goal_id/version/reason and releases a satisfied wait; resume only restores a user pause. '
+        'Use the already-loaded goal skill. Explicit user authority is required to create/revise a target '
+        'or release a user pause.',
         {'type': 'object', 'required': ['action'], 'additionalProperties': False, 'properties': properties},
         execute=execute)

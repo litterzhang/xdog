@@ -59,8 +59,8 @@ async def test_generic_provider_gets_owner_ports_and_normal_children_do_not_inhe
         assert not binding.host.owns_parent(replace(parent, agent=object()))
         assert session.capabilities.tools == binding.tools
         assert binding.flushed == 1
-        child = await session.children.supervisor.start('ordinary', config={'label': 'arbitrary-worker'})
-        row = await session.children.supervisor.control('wait', child)
+        child = await session.children.runtime.start('ordinary', config={'label': 'arbitrary-worker'})
+        row = await session.children.runtime.control('wait', child)
         assert row['status'] == 'completed'
         assert contexts and all('private_port' not in {tool.name for tool in context.tools} for context in contexts)
         assert not session.children.capabilities.permits(child, 'private_port', binding.tools)

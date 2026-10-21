@@ -75,7 +75,7 @@ async def test_actual_name_commands_browser_search_restart_and_access_entry_pers
         assert not manager.load_session(session.session_id).name and session.session_data.summary == 'ORIGINAL-ANSWER'
     finally:
         ui._request_exit()
-        await session.children.supervisor.aclose()
+        await session.children.runtime.aclose()
         await session.extensions.aclose()
         session.dispose()
 
@@ -107,6 +107,6 @@ async def test_name_save_failure_invalid_input_and_busy_agent_preserve_bytes_and
     finally:
         ui._worker_active = False
         ui._request_exit()
-        await session.children.supervisor.aclose()
+        await session.children.runtime.aclose()
         await session.extensions.aclose()
         session.dispose()

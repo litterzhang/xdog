@@ -69,7 +69,7 @@ async def test_real_gateway_child_access_and_replayed_start_receipts(tmp_path, a
         assert result["success"]
         identifier = result["data"]["child_id"]
         replay = await send(request)
-        assert replay == result and len(session.children.supervisor.snapshot()["children"]) == 1
+        assert replay == result and len(session.children.runtime.snapshot()["children"]) == 1
         waited = await send({"type": "child_control", "request_id": "wait", "group_id": "main", "session_id": sid,
                              "action": "wait", "child_id": identifier})
         assert waited["data"]["status"] == "completed"
@@ -135,7 +135,7 @@ async def test_actual_claw_tui_sends_child_commands_and_preserves_draft(tmp_path
         ui._agents_command("start task")
         await wait(lambda: not ui._children_pending and ui._gateway_session_id)
         session = server._orchestrator._runtimes["main"]._active_session
-        identifier = session.children.supervisor.snapshot()["children"][0]["id"]
+        identifier = session.children.runtime.snapshot()["children"][0]["id"]
         ui._agents_command("wait " + identifier)
         await wait(lambda: not ui._children_pending)
         assert ui._editor.get_text() == "preserved draft" and len(contexts) == 1
@@ -174,8 +174,8 @@ async def test_claw_child_group_service_executes_and_settles_on_original_host_lo
         session.agent.set_tools((*[tool for tool in session.agent.state.tools if tool.name != "message"],
                                 create_message_tool()))
         session.agent.set_stream_fn(stream)
-        identifier = await session.children.supervisor.start("send", access="inherit")
-        result = await session.children.supervisor.control("wait", identifier)
+        identifier = await session.children.runtime.start("send", access="inherit")
+        result = await session.children.runtime.control("wait", identifier)
         assert result["status"] == "completed" and sent == [("main", "child message")]
         assert "Message sent." in str(result["messages"])
     finally:
@@ -231,9 +231,9 @@ async def test_message_uses_real_channel_route_without_expanding_child_permissio
         if limit == "parent":
             session.agent.set_active_tools(["current_time"],
                 expected_revision=session.agent.tool_selection_revision)
-        identifier = await session.children.supervisor.start("send", access=access,
+        identifier = await session.children.runtime.start("send", access=access,
             config={"tools": ["current_time"]} if limit == "child" else None)
-        result = await session.children.supervisor.control("wait", identifier)
+        result = await session.children.runtime.control("wait", identifier)
         assert result["status"] == "completed"
         assert contexts and all("group_message" not in {tool.name for tool in ctx.tools} for ctx in contexts)
         if limit is not None:
@@ -273,8 +273,8 @@ async def test_actual_claw_child_browser_chunked_source_search_and_context_fence
         ui._agents_command("start task")
         await wait(lambda: not ui._children_pending and ui._gateway_session_id)
         session = server._orchestrator._runtimes["main"]._active_session
-        child = session.children.supervisor.snapshot()["children"][0]["id"]
-        await session.children.supervisor.control("wait", child)
+        child = session.children.runtime.snapshot()["children"][0]["id"]
+        await session.children.runtime.control("wait", child)
         ui._editor.set_text("parent draft")
         ui._agents_command("inspect " + child)
         await wait(lambda: ui._child_panel is not None and ui._child_panel.preview is not None
@@ -334,15 +334,15 @@ async def test_claw_child_source_streams_running_progress_before_final_result(tm
         session.agent.set_tools((*session.agent.state.tools,
                                  AgentTool(name="run", parameters={"type": "object"}, execute=execute)))
         session.agent.set_stream_fn(stream)
-        child = await session.children.supervisor.start("work", access="inherit")
+        child = await session.children.runtime.start("work", access="inherit")
         async with asyncio.timeout(5):
             while not entered.is_set():
                 await asyncio.sleep(0.002)
         live = await source(session, child, "live")
         assert "CLAW-LIVE-PROGRESS" in live and "final result pending" in live
-        assert "CLAW-FINAL-RESULT" not in live and session.children.supervisor.active
+        assert "CLAW-FINAL-RESULT" not in live and session.children.runtime.active
         release.set()
-        await session.children.supervisor.control("wait", child)
+        await session.children.runtime.control("wait", child)
         final = await source(session, child, "final")
         assert "CLAW-FINAL-RESULT" in final and "CLAW-LIVE-PROGRESS" not in final
     finally:
@@ -378,7 +378,7 @@ async def test_claw_configured_child_gateway_and_cli_restrict_tools_and_preserve
         ui._gateway_session_id = session.meta.session_id
         ui._agents_command('start --label Reviewer --instructions "CLAW-SPECIALIST" --tools current_time '
                            '--fresh -- write')
-        await wait(lambda: len(contexts) == 2 and not session.children.supervisor.active and not ui._children_pending)
+        await wait(lambda: len(contexts) == 2 and not session.children.runtime.active and not ui._children_pending)
         assert "CLAW-SPECIALIST" not in str(contexts[0].system_prompt)
         assert "CLAW-SPECIALIST" in str(contexts[0].messages)
         assert "PARENT-HISTORY-MARKER" not in str(contexts[0].messages)
@@ -389,7 +389,7 @@ async def test_claw_configured_child_gateway_and_cli_restrict_tools_and_preserve
         assert session.agent.messages[0].content == "PARENT-HISTORY-MARKER"
         ui._open_children()
         ui._child_configured_start("plain", "read-only", {"label": "UI specialist", "tools": []})
-        await wait(lambda: len(contexts) == 3 and not session.children.supervisor.active and not ui._children_pending)
+        await wait(lambda: len(contexts) == 3 and not session.children.runtime.active and not ui._children_pending)
         assert not contexts[-1].tools
         assert any(record["config"]["label"] == "UI specialist" for record in session.children.store.load())
     finally:
@@ -459,7 +459,7 @@ async def test_actual_claw_gateway_child_model_reasoning_route_and_read_only_gat
         parent_options = session.agent.options
         ui._gateway_session_id = session.meta.session_id
         ui._agents_command("start --model second/review --thinking low --fresh write")
-        await wait(lambda: len(calls) == 2 and not session.children.supervisor.active and not ui._children_pending)
+        await wait(lambda: len(calls) == 2 and not session.children.runtime.active and not ui._children_pending)
         assert not (tmp_path / "workspace" / "target").exists()
         assert all(value[0] == "second/review" and value[2].thinking == "low" for value in calls)
         assert calls[0][2].max_tokens <= 1500
@@ -468,7 +468,7 @@ async def test_actual_claw_gateway_child_model_reasoning_route_and_read_only_gat
         assert saved["effective"]["model"] == "second/review" and saved["config"]["thinking"] == "low"
         ui._open_children()
         ui._child_configured_start("review", "read-only", {"model": "second/review", "thinking": "medium", "tools": []})
-        await wait(lambda: len(calls) == 3 and not session.children.supervisor.active and not ui._children_pending)
+        await wait(lambda: len(calls) == 3 and not session.children.runtime.active and not ui._children_pending)
         assert calls[-1][0] == "second/review" and calls[-1][2].thinking == "medium" and not calls[-1][1].tools
     finally:
         ui._request_exit()
@@ -534,7 +534,7 @@ async def test_claw_preset_catalog_cli_and_picker_apply_frozen_template_without_
         ui._agents_command("start --preset reviewer write")
         await wait(lambda: len(calls) == 2 and not ui._children_pending)
         session = server._orchestrator._runtimes["main"]._active_session
-        await wait(lambda: not session.children.supervisor.active)
+        await wait(lambda: not session.children.runtime.active)
         assert not (tmp_path / "workspace" / "target").exists()
         assert "CLAW-PRESET-INSTRUCTIONS" not in str(calls[0].system_prompt)
         assert "CLAW-PRESET-INSTRUCTIONS" in str(calls[0].messages)
@@ -544,7 +544,7 @@ async def test_claw_preset_catalog_cli_and_picker_apply_frozen_template_without_
         ui._agents_command("presets")
         await wait(lambda: ui._child_panel is not None and ui._child_panel._presets)
         ui._child_configured_start("plain", "read-only", chosen)
-        await wait(lambda: len(calls) == 3 and not ui._children_pending and not session.children.supervisor.active)
+        await wait(lambda: len(calls) == 3 and not ui._children_pending and not session.children.runtime.active)
         assert len(session.children.store.load()) == 2
     finally:
         ui._request_exit()
@@ -599,19 +599,19 @@ async def test_retired_socket_recovery_commands_refuse_before_backend_and_keep_q
     try:
         session = server._orchestrator._runtimes['main'].get_or_create_session(allow_reset=False)
         sid = session.meta.session_id
-        child = await session.children.supervisor.start('held text')
+        child = await session.children.runtime.start('held text')
         async with asyncio.timeout(5):
             while not contexts:
                 await asyncio.sleep(0.003)
         image = ImageContent(data=('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lE'
                                   'QVR42mP8/x8AAwMCAO+j5ioAAAAASUVORK5CYII='), mime_type='image/png')
-        await session.children.supervisor.control('steer', child, 'UNREMOVED RETURN', images=(image,))
+        await session.children.runtime.control('steer', child, 'UNREMOVED RETURN', images=(image,))
         caps = await send({'type': 'ping', 'group_id': 'main', 'child_image_return': 1, 'child_recovery': 1})
         assert caps['child_controls'] == caps['child_images'] == 1
         assert not any(name in caps for name in ('child_image_return', 'child_return_owner', 'child_recovery'))
-        before = (await session.children.supervisor.control('queue', child, '{"action":"list"}'))['queue']
+        before = (await session.children.runtime.control('queue', child, '{"action":"list"}'))['queue']
         snapshot = json.dumps(before, sort_keys=True).encode()
-        pending = session.children.supervisor._children[child].agent.pending_inputs()
+        pending = session.children.runtime._children[child].agent.pending_inputs()
         assert len(pending) == 1 and pending[0].images[0].data == image.data
         item = before['inputs'][0]
         packet = {'type': 'child_control', 'request_id': 'retired', 'group_id': 'main', 'session_id': sid,
@@ -624,15 +624,15 @@ async def test_retired_socket_recovery_commands_refuse_before_backend_and_keep_q
                 assert rejected['type'] == 'child_result' and not rejected['success']
                 assert rejected['request_id'] == 'retired' and 'read-only' in rejected['error']
             backend.assert_not_awaited()
-        after = (await session.children.supervisor.control('queue', child, '{"action":"list"}'))['queue']
+        after = (await session.children.runtime.control('queue', child, '{"action":"list"}'))['queue']
         assert json.dumps(after, sort_keys=True).encode() == snapshot
-        assert session.children.supervisor._children[child].agent.pending_inputs() == pending
+        assert session.children.runtime._children[child].agent.pending_inputs() == pending
         listed = await send({**packet, 'request_id': 'list', 'text': '{"action":"list"}'})
         assert listed['success'] and listed['data']['queue'] == before
         pong = await send({'type': 'ping', 'group_id': 'main'})
         assert pong['type'] == 'pong' and pong['child_controls'] == 1
         assert not session.agent.messages and len(contexts) == 1
-        await session.children.supervisor.control('cancel', child)
+        await session.children.runtime.control('cancel', child)
         assert session.children.store.load()[0]['undelivered_inputs'][0]['images'][0]['data'] == image.data
         assert len(contexts) == 1  # Neither denial nor cancellation replays queued content.
     finally:
@@ -657,7 +657,7 @@ async def test_malformed_child_queue_packets_refuse_without_dropping_owned_socke
         await writer.drain()
         pong = await receive(reader)
         assert pong['type'] == 'pong' and pong['child_controls'] == 1
-        assert not session.children.supervisor.snapshot()['children'] and not session.agent.messages
+        assert not session.children.runtime.snapshot()['children'] and not session.agent.messages
     finally:
         writer.close()
         await writer.wait_closed()

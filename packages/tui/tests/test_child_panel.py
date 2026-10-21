@@ -220,7 +220,7 @@ def test_configured_start_requires_every_settings_page_and_resize_invalidates_re
 
 
 def test_preset_picker_only_applies_draft_and_final_review_contains_full_expanded_settings():
-    from xdog.agent.supervision_config import ChildPresets
+    from xdog.agent.child_config import ChildPresets
     presets = ChildPresets({"reviewer": {"description": "Review safely", "config": {
         "instructions": "SPECIALIST-PRESET-TEXT", "tools": [], "label": "Reviewer"}}})
     panel, actions, *_ = make()
@@ -530,8 +530,8 @@ def test_same_session_cache_can_reopen_under_new_view_but_old_scope_and_copy_are
         new.close()
 
 
-@pytest.mark.parametrize('status', ['running', 'completed'])
-def test_existing_child_input_recovery_requires_original_child_still_running(status):
+@pytest.mark.parametrize('status', ['running', 'completed', 'failed', 'canceled', 'interrupted'])
+def test_existing_child_input_recovery_requires_original_child_running_or_safely_completed(status):
     from xdog.tui.child_drafts import ChildDraft
     panel, actions, *_ = make()
     identifier = '0123456789ab'
@@ -545,7 +545,7 @@ def test_existing_child_input_recovery_requires_original_child_still_running(sta
         panel.handle_input(KeyEvent('enter'))
         recover_review(panel)
         panel.handle_input(KeyEvent('enter'))
-        if status == 'running':
+        if status in {'running', 'completed'}:
             assert panel._mode == 'form' and panel._form_child == identifier
             assert panel._input.get_text() == original.text and panel._input._cursor == 5
         else:
@@ -693,7 +693,7 @@ def test_child_roster_and_full_paired_history_remain_viewable_beyond_removed_cou
 def test_config_json_uses_host_validation_and_removed_budget_fields_cannot_start_work(field, value):
     import json
 
-    from xdog.agent.supervision_config import ChildConfig
+    from xdog.agent.child_config import ChildConfig
     panel, actions, *_ = make()
     configured = []
     panel.configure = lambda config: ChildConfig.from_dict(config).to_dict()

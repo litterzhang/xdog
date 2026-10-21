@@ -21,7 +21,7 @@ class NativeProviderAuth:
             and self.command.name == 'extensions' and ui._session is session
             and session.extensions is self.host.runtime and not ui._exit_requested
             and self.context == ui._mcp_context_key() and not ui._worker_active
-            and not session.agent.is_streaming and not session.children.supervisor.active
+            and not session.agent.is_streaming and not session.children.runtime.active
             and not session._compacting and ui._permission_prompt is None and not ui._permission_waiters
             and not session.permissions.has_pending_requests and not ui._tui.has_overlay())
 

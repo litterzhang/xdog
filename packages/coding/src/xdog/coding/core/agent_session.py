@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from functools import wraps
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, cast
 
 from xdog.agent import (
     AfterToolCallContext,
@@ -25,16 +25,17 @@ from xdog.agent import (
     MessageEndEvent,
     ToolExecutionEndEvent,
 )
-from xdog.agent.access import AccessScope, AccessState, read_only_call
+from xdog.agent.access import AccessScope, AccessState
 from xdog.agent.agent import Agent
 from xdog.agent.capabilities.runtime import CapabilitySet
+from xdog.agent.child_config import parse_child_start
 from xdog.agent.extensions.command_result import ExtensionCommandResult
 from xdog.agent.extensions.dialogs import DialogBroker
 from xdog.agent.extensions.runtime import ExtensionRuntime
 from xdog.agent.extensions.state import ExtensionEntries, validate_entries
 from xdog.agent.history import history_points, validate_checkpoint
 from xdog.agent.mcp import McpManager
-from xdog.agent.supervision_config import parse_child_start
+from xdog.agent.tool_effects import ToolEffect
 from xdog.agent.types import HandledInput, InputTransformFn, TransformContextFn
 from xdog.ai.types import (
     AssistantMessage,
@@ -48,7 +49,7 @@ from xdog.coding.core.child_agents import CodingChildren
 from xdog.coding.core.defaults import COMPACTION_THRESHOLD_RATIO, MAX_CONTEXT_TOKENS
 from xdog.coding.core.event_bus import EventBus, get_event_bus
 from xdog.coding.core.messages import dicts_to_messages, messages_to_dicts
-from xdog.coding.core.permissions import PermissionManager
+from xdog.coding.core.permissions import PermissionManager, PermissionMode
 from xdog.coding.core.session_manager import SessionData, SessionManager
 from xdog.coding.core.settings_manager import SettingsManager
 from xdog.coding.core.system_prompt import build_system_prompt
@@ -113,7 +114,7 @@ def _idle_change(method: Callable[Concatenate["AgentSession", P], R]) -> Callabl
             raise RuntimeError("Compaction owns this session; cancel/wait before changing context")
         if self._auth_changing:
             raise RuntimeError("Authorization operation still owns session changes; wait/cancel before navigating")
-        with self.children.supervisor.idle_scope():
+        with self.children.runtime.idle_scope():
             if method.__name__ in {'switch_session', 'restore_branch', 'navigate_checkpoint'}:
                 self._navigation_cancel.clear()
             navigation = method.__name__ in {'new_session', 'switch_session', 'restore_branch', 'navigate_checkpoint'}
@@ -254,7 +255,7 @@ class AgentSession:
             self.settings.load_session_settings(self.session_data.settings)
         self.settings.set_session_max_messages_per_turn(self.settings.max_messages_per_turn)
 
-        from xdog.agent.supervision import RESERVED_TOOLS
+        from xdog.agent.children import RESERVED_TOOLS
         if any(tool.name in RESERVED_TOOLS for tool in self.agent.state.tools):
             raise ValueError("agent delegation tools are reserved for session-owned metadata")
         # Sessions constructed outside the SDK still receive enforcement.
@@ -384,11 +385,11 @@ class AgentSession:
         return capture(self.agent, self.session_id, self.session_id)
 
     def _load_children(self) -> None:
-        from xdog.agent.supervision import RESERVED_TOOLS
+        from xdog.agent.children import RESERVED_TOOLS
         self.children = CodingChildren(self)
         base = tuple(tool for tool in self.agent.state.tools if tool.name not in RESERVED_TOOLS
                      and not any(tool is value for value in self._retired_capability_tools))
-        self.agent.set_tools((*base, *self.children.supervisor.tools()))
+        self.agent.set_tools((*base, *self.children.tools))
         self._retired_capability_tools.clear()
 
     def _children_idle(self) -> None:
@@ -396,7 +397,7 @@ class AgentSession:
             raise RuntimeError("Tool retirement persistence owns this session")
         if self._compacting:
             raise RuntimeError("Compaction owns this session; cancel/wait before changing context")
-        if self.children.supervisor.active:
+        if self.children.runtime.active:
             raise RuntimeError("Child work is active; cancel/wait for children before changing session policy/context")
 
     async def agents_command(self, args: str, *, images: tuple[ImageContent, ...] = ()) -> str:
@@ -405,21 +406,21 @@ class AgentSession:
         if images and action not in {'start', 'steer', 'follow-up'}:
             raise ValueError('Child images belong only to start/steer/follow-up')
         if action in {"", "list"}:
-            return json.dumps(self.children.supervisor.snapshot(), indent=2)
+            return json.dumps(self.children.runtime.snapshot(), indent=2)
         if action == "presets":
-            return json.dumps({"presets": self.children.supervisor.presets.snapshot(),
+            return json.dumps({"presets": self.children.runtime.presets.snapshot(),
                                "error": self.children.preset_error}, indent=2)
         if action == "start":
-            task, access, config = parse_child_start(text, self.children.supervisor.presets)
+            task, access, config = parse_child_start(text, self.children.runtime.presets)
             await self.initialize_extensions()
             self._rebuild_system_prompt()
-            identifier = await self.children.supervisor.start(task, access=access,
+            identifier = await self.children.runtime.start(task, access=access,
                                                               config=config.to_dict(), images=images)
             return f"Child {identifier} started ({access}); /agents inspect {identifier}"
         identifier, _, message = text.partition(" ")
         if action == "queue" and json.loads(message) != {"action": "list"}:
             raise ValueError("Native child queue is read-only; only exact list is accepted")
-        result = await self.children.supervisor.control(action, identifier, message, images=images)
+        result = await self.children.runtime.control(action, identifier, message, images=images)
         return json.dumps(result, indent=2)
 
     async def _extension_context(self, messages: list[AgentMessage]) -> list[AgentMessage]:
@@ -657,6 +658,28 @@ class AgentSession:
         finally:
             await self._sync_extension_tools()
 
+    async def _tool_effect(self, ctx: BeforeToolCallContext) -> ToolEffect:
+        """Describe the actual live binding, never model-supplied permission labels."""
+        from xdog.agent.async_work import run_owned
+        from xdog.coding.core.permissions import classify_tool_call
+
+        if self.children.approval_free_control(ctx):
+            queries = {'list', 'presets', 'inspect', 'wait'}
+            return ToolEffect('read' if ctx.args.get('action') in queries else 'write', 'tool_data')
+        active = tuple(tool for tool in self.agent.active_tools if tool.name == ctx.tool_call.name)
+        supplied = tuple(tool for tool in ctx.context.tools or () if tool.name == ctx.tool_call.name)
+        if len(active) == len(supplied) == 1 and active[0] is supplied[0]:
+            effect = self.capabilities.tool_effect(active[0], dict(ctx.args))
+            if effect is not None:
+                return effect
+        args = dict(ctx.args)
+        path = args.get('path')
+        root = self.agent.tool_context.get('fs_workspace')
+        if (ctx.tool_call.name == 'filesystem' and isinstance(path, str) and root is not None
+                and not Path(path).is_absolute()):
+            args['path'] = str(Path(root) / path)
+        return await run_owned(classify_tool_call, ctx.tool_call.name, args, self.working_dir)
+
     async def _before_tool_call(self, ctx: BeforeToolCallContext,
                                 cancel: asyncio.Event | None = None) -> BeforeToolCallResult | None:
         from xdog.coding.core.session_info import TOOL_NAME
@@ -670,7 +693,7 @@ class AgentSession:
         try:
             if ctx.tool_call.name == TOOL_NAME and not session_query():
                 return BeforeToolCallResult(block=True, reason="Session inspection binding is unavailable")
-            if self.access.state.read_only and not (session_query() or read_only_call(ctx.tool_call.name, ctx.args)):
+            if self.access.state.read_only and not session_query() and (await self._tool_effect(ctx)).access != 'read':
                 return BeforeToolCallResult(block=True, reason="Host access scope is read-only")
             if self.extensions.enabled:
                 await self.extensions.event("tool_start", {"tool_name": ctx.tool_call.name})
@@ -693,10 +716,16 @@ class AgentSession:
             if ctx.tool_call.name == TOOL_NAME:
                 return None if session_query() else BeforeToolCallResult(
                     block=True, reason="Session inspection binding changed during validation")
-            if self.access.state.read_only and not read_only_call(ctx.tool_call.name, ctx.args):
+            effect = await self._tool_effect(ctx)
+            if self.access.state.read_only and effect.access != 'read':
                 return BeforeToolCallResult(block=True, reason="Host access scope is read-only")
-            result = await self.permissions.before_tool_call(ctx, cancel)
-            if self.access.state.read_only and not read_only_call(ctx.tool_call.name, ctx.args):
+            if self.permissions.mode in {"ask", "deny"} and self.children.approval_free_control(ctx):
+                return None
+            result = await self.permissions.before_tool_call(ctx, cancel, effect=effect)
+            current_effect = await self._tool_effect(ctx)
+            if current_effect != effect:
+                return BeforeToolCallResult(block=True, reason="Tool effect binding changed during approval")
+            if self.access.state.read_only and current_effect.access != 'read':
                 return BeforeToolCallResult(block=True, reason="Host access became read-only during approval")
             return result
         finally:
@@ -711,6 +740,33 @@ class AgentSession:
         result = self.access.set_read_only(read_only)
         self._rebuild_system_prompt()
         return result
+
+    def set_permission_mode(self, mode: str) -> PermissionMode:
+        """Native user control for this live session only, never an Agent tool.
+
+        Reject busy submissions before owner routing as well as at commit: an
+        attempted grant must not sit behind a model turn or an approval queue.
+        Configuration's fail-closed normalizer is deliberately not a command
+        parser; a typo must leave the current policy and approval epoch intact.
+        """
+        selected = "allow-all" if mode == "full-access" else mode
+        if selected not in {"ask", "ask-all", "allow-all", "deny"}:
+            raise ValueError(f"Unknown permission mode: {mode!r}; expected ask, ask-all, allow-all or deny")
+        self._children_idle()
+        if (not self.agent.is_idle or self.permissions.has_pending_requests
+                or self._context_changes or self._auth_changing):
+            raise RuntimeError("Permission changes require an idle session without pending approvals/context changes")
+        return self._set_permission_mode(cast(PermissionMode, selected))
+
+    @_idle_change
+    def _set_permission_mode(self, mode: PermissionMode) -> PermissionMode:
+        """Commit only under the existing owner/context and child-admission gate."""
+        self._children_idle()
+        if (not self.agent.is_idle or self.permissions.has_pending_requests
+                or self._context_changes != 1):
+            raise RuntimeError("Permission changes require an idle session without pending approvals/context changes")
+        self.permissions.set_mode(mode)
+        return self.permissions.mode
 
     # -- Properties --
 
@@ -769,7 +825,7 @@ class AgentSession:
     @property
     def active_skills(self) -> frozenset[str]:
         """Slugs whose instructions are currently in the system prompt."""
-        return self._active_skills
+        return self._active_skills | self.capabilities.default_skills
 
     @_idle_change
     def activate_skill(self, slug: str) -> None:
@@ -814,11 +870,11 @@ class AgentSession:
         async def close(resources: tuple[CodingChildren, ExtensionRuntime, McpManager | None]) -> None:
             children, extensions, mcp = resources
             try:
-                await settle_cleanup(children.supervisor.aclose, extensions.aclose,
+                await settle_cleanup(children.runtime.aclose, extensions.aclose,
                     *((mcp.aclose,) if mcp is not None else ()), message='Retired Coding worker cleanup failed')
             finally:
                 if not any(owner is not None and owner._thread is not None and owner._thread.is_alive()
-                           for owner in (children.supervisor, extensions._manager, mcp)):
+                           for owner in (children.runtime, extensions._manager, mcp)):
                     self._retired_resources.remove(resources)
         await settle_cleanup(*(partial(close, resources) for resources in tuple(self._retired_resources)),
                              message='Retired Coding context cleanup failed')
@@ -1677,7 +1733,7 @@ class AgentSession:
         *which*, which is the part a product legitimately differs on.
         """
         try:
-            self.agent.set_active_skills(sorted(self._active_skills))
+            self.agent.set_active_skills(sorted(self.active_skills))
         except Exception:
             logger.debug("could not push active skills to the agent", exc_info=True)
 
@@ -1708,7 +1764,7 @@ class AgentSession:
         from xdog.agent.async_work import run_owned
         from xdog.coding.core.session_preparation import PromptResources
         scope = (self.session_id, self.session_data.active_branch, self.working_dir)
-        active = tuple(sorted(self._active_skills))
+        active = tuple(sorted(self.active_skills))
         prepared = await run_owned(PromptResources.read, self.working_dir, self.agent._skills, active)
         if scope != (self.session_id, self.session_data.active_branch, self.working_dir) or self._sdk_disposing:
             raise RuntimeError('Prompt resource owner changed during preparation')
@@ -1743,7 +1799,8 @@ class AgentSession:
             file_entries=[{'type': 'file_content', 'path': item.relative_path, 'content': item.content}
                           for item in self._project_files if self._project_directory == self.working_dir],
             extra_context=_skills_context(frozenset(
-                slug for slug, skill in self.agent._resolved_skills.items() if not skill.expires_after_turn)),
+                slug for slug, skill in self.agent._resolved_skills.items()
+                if slug in self._active_skills and not skill.expires_after_turn)),
             native_tool_calls=self._native_tool_calls(),
             session_id=self.session_id,
         )
@@ -1824,7 +1881,7 @@ class AgentSession:
         if self._auth_changing or self.agent.is_streaming:
             raise RuntimeError("Authorization changes require an idle session")
         self._children_idle()
-        with self.children.supervisor.idle_scope():
+        with self.children.runtime.idle_scope():
             self._auth_changing = True
             try:
                 old = {tool.name for tool in self.mcp.tools()}
@@ -1850,7 +1907,7 @@ class AgentSession:
             raise RuntimeError("MCP connection/schema changes require an idle agent")
         if action not in {"connect", "disconnect", "refresh"} or not server:
             raise ValueError("Usage: /mcp [list|connect SERVER|disconnect SERVER|refresh SERVER]")
-        with self.children.supervisor.idle_scope():
+        with self.children.runtime.idle_scope():
             old = {tool.name for tool in self.mcp.tools()}
             base = tuple(tool for tool in self.agent.state.tools if tool.name not in old)
             if action == "connect":
@@ -1904,7 +1961,7 @@ class AgentSession:
                 raise RuntimeError('Retired callback cleanup is incomplete; original writer lease retained')
             if not self.agent.closed:
                 raise RuntimeError('Agent cleanup is incomplete; original writer lease retained')
-            owners = (self.children.supervisor, self.extensions._manager, self.mcp)
+            owners = (self.children.runtime, self.extensions._manager, self.mcp)
             if any(owner is not None and owner._thread is not None and owner._thread.is_alive() for owner in owners):
                 raise RuntimeError('Worker cleanup is incomplete; original writer lease retained')
             if self._lease is not None:

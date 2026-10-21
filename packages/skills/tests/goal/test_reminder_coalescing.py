@@ -189,8 +189,10 @@ async def test_explicit_resume_does_not_reapply_old_failed_execution_fact(tmp_pa
         host.latest_execution = AsyncMock(return_value={'execution_id': 'old-failure', 'status': 'failed',
                                                        'settled_at': settled_at, 'message_ids': ['old']})
         await runtime._available()
-        assert (await runtime.service.current()).wait_for == 'host'
-        await parent.extensions.command('goal', 'resume')
+        waiting = await runtime.service.current()
+        assert waiting.wait_for == 'host'
+        await runtime.service.change('activate', waiting.id, version=waiting.version,
+                                     reason='Actual user inspected the old failure', context=USER)
         await runtime.flush()
         await runtime._available()
         assert (await runtime.service.current()).status == 'active' and len(sent) == 1
@@ -246,17 +248,18 @@ async def test_waiting_tasks_requires_new_task_change_not_settlement_or_availabi
         await close(runtime, parent)
 
 
-async def test_explicit_resume_can_wake_an_already_active_idle_goal(tmp_path, monkeypatch):
+async def test_resume_cannot_manufacture_a_new_reminder_for_an_already_active_goal(tmp_path, monkeypatch):
     runtime, parent, host, state, sent, authorized, listeners = await setup(tmp_path, monkeypatch)
     await receipt_facts(monkeypatch)
     try:
         await runtime.service.create('One', 'Explicitly wake idle work', context=USER)
         await runtime._wake('execution:first')
         assert len(sent) == 1
-        await parent.extensions.command('goal', 'resume')
+        before = await runtime.service.current()
+        with pytest.raises(ValueError, match='Resume only'):
+            await parent.extensions.command('goal', 'resume')
         await runtime.flush()
-        assert len(sent) == 2 and sent[0].id != sent[1].id
-        assert 'goal-state:2' in sent[1].provenance['triggers']
-        assert (await runtime.service.current()).status == 'active'
+        assert len(sent) == 1
+        assert await runtime.service.current() == before
     finally:
         await close(runtime, parent)

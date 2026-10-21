@@ -149,7 +149,7 @@ async def test_actual_acp_reminder_waits_for_committed_parent_and_safe_capacity_
                 assert len(reminders) == 1 and reminders[0]['status'] == 'accepted'
                 assert reminders[0]['id'] == originals[0].envelope.message.id
                 assert (await host.service.status(goal.id))['current']['status'] == 'completed'
-                assert not session.children.supervisor._children
+                assert not session.children.runtime._children
             finally:
                 release.set()
                 await asyncio.gather(human, return_exceptions=True)

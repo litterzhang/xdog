@@ -151,7 +151,7 @@ async def test_repeated_close_reports_actual_cleanup_error_without_replaying_the
             await extension.aclose()
         except OSError:
             pass
-        await session.children.supervisor.aclose()
+        await session.children.runtime.aclose()
         session.dispose()
         await runtime.mcp.aclose()
         if runtime.memory is not None:

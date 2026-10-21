@@ -8,13 +8,13 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from xdog.agent.agent import Agent
+from xdog.agent.children import ChildSpec
 from xdog.agent.core import AgentMessage
 from xdog.agent.cross_loop import settle_on
 from xdog.agent.events import AgentEvent, MessageEndEvent, ToolExecutionEndEvent
 from xdog.agent.extensions.dialogs import DialogBroker, validate_answer
 from xdog.agent.extensions.runtime import ExtensionRuntime, silent_extension_ui
 from xdog.agent.extensions.state import ExtensionEntries
-from xdog.agent.supervision import ChildSpec
 from xdog.agent.types import AfterToolCallContext, AfterToolCallResult, BeforeToolCallContext, BeforeToolCallResult
 from xdog.ai.types import TextContent
 from xdog.ai.utils.validation import validate_tool_arguments

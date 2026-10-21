@@ -21,6 +21,18 @@ class _UILogHandler(logging.Handler):
         self._events = events
 
     def emit(self, record: logging.LogRecord) -> None:
+        # Only the agent loop's explicitly represented execution errors have a
+        # tool-result UI already. Keep other errors/warnings (even identical
+        # text) visible, and never filter the root logger or its file handlers.
+        tool_call_id = getattr(record, "tool_call_id", None)
+        if (
+            record.name == "xdog.agent.agent_loop"
+            and record.levelno == logging.ERROR
+            and getattr(record, "xdog_tool_error_represented", False) is True
+            and isinstance(tool_call_id, str)
+            and tool_call_id
+        ):
+            return
         try:
             message = record.getMessage()
         except Exception:

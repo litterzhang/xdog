@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import inspect
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib.metadata import entry_points
 from typing import TYPE_CHECKING, Any
 from weakref import WeakValueDictionary
@@ -12,9 +14,11 @@ from weakref import WeakValueDictionary
 from xdog.agent.agent import Agent
 from xdog.agent.async_work import settle_cleanup, wait_owned
 from xdog.agent.core import AgentTool, AgentToolResult
+from xdog.agent.tool_effects import ToolEffect
 
 if TYPE_CHECKING:
     from xdog.agent.capabilities.children import ChildPort
+    from xdog.agent.children import ChildSpec
     from xdog.agent.extensions.runtime import ExtensionRuntime
 
 _SCOPES = frozenset({"session", "group", "application"})
@@ -60,6 +64,7 @@ def discover(scope: str) -> tuple[Any, ...]:
         _names(provider.requirements)
         _names(getattr(provider, "command_names", ()))
         _names(getattr(provider, "optional_requirements", ()))
+        _names(getattr(provider, "default_skills", ()))
         if tools.intersection(selected):
             raise ValueError("Duplicate installed capability tool name")
         names.add(provider.name)
@@ -74,12 +79,13 @@ class CapabilitySet:
     def __init__(self, scope: str) -> None:
         self.providers = discover(scope)
         self._bindings: dict[str, Any] = {}
-        self._tools: dict[int, tuple[Any, AgentTool]] = {}
+        self._tools: dict[int, tuple[Any, AgentTool, Any]] = {}
         self._owned: WeakValueDictionary[int, AgentTool] = WeakValueDictionary()
         self._host: object | None = None
         self._start_task: asyncio.Task[None] | None = None
         self._close_task: asyncio.Task[None] | None = None
         self._closing = False
+        self._owner_loop: asyncio.AbstractEventLoop | None = None
 
     @property
     def declared_tools(self) -> frozenset[str]:
@@ -89,6 +95,15 @@ class CapabilitySet:
     def declared_commands(self) -> frozenset[str]:
         """Inert native command discovery; unrelated local controls need no owner startup."""
         return frozenset(name for provider in self.providers for name in getattr(provider, "command_names", ()))
+
+    @property
+    def default_skills(self) -> frozenset[str]:
+        """Inert skill defaults from live bindings after successful owner startup only."""
+        task = self._start_task
+        if self._closing or task is None or not task.done() or task.cancelled() or task.exception() is not None:
+            return frozenset()
+        return frozenset(name for provider in self.providers if provider.name in self._bindings
+                         for name in getattr(provider, "default_skills", ()))
 
     @property
     def requirements(self) -> frozenset[str]:
@@ -115,6 +130,7 @@ class CapabilitySet:
         await wait_owned(self._start_task)
 
     async def _open(self, host: object) -> None:
+        self._owner_loop = asyncio.get_running_loop()
         try:
             for provider in self.providers:
                 if self._closing:
@@ -157,13 +173,13 @@ class CapabilitySet:
                     key = id(definition)
                     active.add(key)
                     previous = self._tools.get(key)
-                    if previous is None:
+                    if previous is None or previous[2] is not binding:
                         async def execute(*args: Any, _definition: Any = definition, **kwargs: Any) -> AgentToolResult:
                             value = await _definition.execute(*args, **kwargs)
                             return value if isinstance(value, AgentToolResult) else AgentToolResult.from_text(value)
                         tool = AgentTool(name=definition.name, description=definition.description,
                                          parameters=definition.parameters, execute=execute)
-                        self._tools[key] = definition, tool
+                        self._tools[key] = definition, tool, binding
                     else:
                         tool = previous[1]
                 self._owned[id(tool)] = tool
@@ -178,6 +194,134 @@ class CapabilitySet:
 
     def owns_tool(self, tool: AgentTool) -> bool:
         return self._owned.get(id(tool)) is tool
+
+    def tool_effect(self, tool: AgentTool, args: dict[str, Any]) -> ToolEffect | None:
+        """Ask only a live original binding; discovery never starts an owner."""
+        task = self._start_task
+        if (self._closing or task is None or not task.done() or task.cancelled()
+                or task.exception() is not None or not isinstance(tool, AgentTool)):
+            return None
+        for binding in self._bindings.values():
+            for definition in binding.tools:
+                if isinstance(definition, AgentTool):
+                    matches = definition is tool
+                else:
+                    original = self._tools.get(id(definition))
+                    matches = (original is not None and original[0] is definition
+                               and original[1] is tool and original[2] is binding)
+                if not matches:
+                    continue
+                classify = getattr(binding, "tool_effect", None)
+                if classify is None:
+                    return None
+                effect = classify(definition, args)
+                if effect is not None and not isinstance(effect, ToolEffect):
+                    raise TypeError("Capability tool_effect must return ToolEffect or None")
+                return effect
+        return None
+
+    @property
+    def owner_loop(self) -> asyncio.AbstractEventLoop:
+        """Existing provider loop; querying this never creates a loop or owner."""
+        if self._owner_loop is None or self._owner_loop.is_closed() or self._closing:
+            raise ValueError("Capability owner loop is unavailable")
+        return self._owner_loop
+
+    def _child_binding(self, actual_tool: AgentTool) -> Any:
+        task = self._start_task
+        if (self._closing or task is None or not task.done() or task.cancelled()
+                or task.exception() is not None):
+            return None
+        # Re-read the live inventory. owned_tools also contains retired identities
+        # and is intentionally NOT sufficient evidence for delegation.
+        for binding in self._bindings.values():
+            for definition in binding.tools:
+                if isinstance(definition, AgentTool):
+                    matches = definition is actual_tool
+                else:
+                    cached = self._tools.get(id(definition))
+                    matches = (cached is not None and cached[0] is definition
+                               and cached[1] is actual_tool and cached[2] is binding)
+                if matches:
+                    return binding
+        return None
+
+    def can_delegate_child_tool(self, actual_tool: AgentTool) -> bool:
+        """Exact live identity query, never a tool-name or discovery-time grant."""
+        binding = self._child_binding(actual_tool)
+        return binding is not None and callable(getattr(binding, "delegate_child_tool", None))
+
+    async def delegate_child_tool(self, actual_tool: AgentTool, spec: ChildSpec,
+                                  scope: dict[str, Any]) -> AgentTool:
+        """Validate/build on the original provider loop; execute there as well.
+
+        The returned executor is NOT a role-bound tool and has no permission or
+        read-only exemption. Hosts must protect it against the original actual_tool.
+        """
+        from xdog.agent.child_config import child_tool_scopes
+        from xdog.agent.child_policy import _matches
+        from xdog.agent.cross_loop import settle_on
+
+        data = child_tool_scopes({actual_tool.name: scope}, spec.tools)[actual_tool.name]
+        binding = self._child_binding(actual_tool)
+        if binding is None or not callable(getattr(binding, "delegate_child_tool", None)):
+            raise ValueError("Original capability tool does not support child scope delegation")
+        factory = binding.delegate_child_tool
+        loop = self.owner_loop
+        schema = copy.deepcopy(actual_tool.parameters)
+        original_validator = actual_tool.validate_arguments
+        def check() -> None:
+            if (self._child_binding(actual_tool) is not binding
+                    or getattr(binding, "delegate_child_tool", None) != factory):
+                raise ValueError("Original capability tool owner/identity retired")
+        async def build() -> AgentTool:
+            check()
+            result = await factory(actual_tool, replace(spec, tool_scopes=copy.deepcopy(spec.tool_scopes)),
+                                   copy.deepcopy(data))
+            check()
+            if not isinstance(result, AgentTool) or result.name != actual_tool.name or result.execute is None:
+                raise ValueError("Capability child factory must return the same tool identity name with an executor")
+            return result
+        scoped = await settle_on(loop, build())
+        scoped_schema = copy.deepcopy(scoped.parameters)
+        async def validate_on_owner(params: dict[str, Any]) -> None:
+            check()
+            seen: set[int] = set()
+            for validator in (original_validator, actual_tool.validate_arguments, scoped.validate_arguments):
+                if validator is not None and id(validator) not in seen:
+                    seen.add(id(validator))
+                    value = validator(params)
+                    if inspect.isawaitable(value):
+                        await value
+                    check()
+            if not all(_matches(candidate, params) for candidate in
+                       (schema, actual_tool.parameters, scoped_schema, scoped.parameters)):
+                raise ValueError("Scoped child arguments exceed original/current capability schema")
+        async def validate(params: dict[str, Any]) -> None:
+            await settle_on(loop, validate_on_owner(params))
+        async def execute(call_id: str, params: dict[str, Any], cancel: asyncio.Event | None = None,
+                          on_update: Any = None, *, ctx: dict[str, Any] | None = None) -> AgentToolResult:
+            if cancel is not None and cancel.is_set():
+                raise asyncio.CancelledError
+            caller_loop = asyncio.get_running_loop()
+            async def update(result: AgentToolResult) -> None:
+                if on_update is not None:
+                    async def deliver() -> None:
+                        await on_update(result)
+                    await settle_on(caller_loop, deliver())
+            async def invoke() -> AgentToolResult:
+                check()
+                # Host protect runs validate_arguments and then rechecks permission
+                # on this same loop before entering execute. Do not repeat async
+                # validation here and carry that permission across another await.
+                if not all(_matches(candidate, params) for candidate in
+                           (schema, actual_tool.parameters, scoped_schema, scoped.parameters)):
+                    raise ValueError("Scoped child arguments exceed original/current capability schema")
+                assert scoped.execute is not None
+                # Cancellation/settlement uses the bridge, not a foreign-loop Event.
+                return await scoped.execute(call_id, params, None, update, ctx=ctx)
+            return await settle_on(loop, invoke())
+        return replace(scoped, parameters=copy.deepcopy(scoped_schema), execute=execute, validate_arguments=validate)
 
     async def flush(self) -> None:
         if self._closing:

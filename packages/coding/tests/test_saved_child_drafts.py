@@ -75,7 +75,7 @@ async def close(ui, session):
         await wait(ui, lambda: not ui._parent_drafts.busy)
         ui._request_exit()
     if session is not None:
-        await session.children.supervisor.aclose()
+        await session.children.runtime.aclose()
         await session.extensions.aclose()
         session.dispose()
 

@@ -67,6 +67,7 @@ class _NativeInput:
     echo: bool
     queue_id: str
     started: bool = False
+    delivery: str = "next_turn"
 
 
 class NativeSessionEvents:
@@ -145,11 +146,14 @@ class NativeSessionEvents:
             if data is None:
                 return
             event = replace(event, data=data)
-        if event.kind == 'input_running':
+        if event.kind in {'input_running', 'input_steering', 'input_steer_deferred'}:
             with self.lock:
                 item = self.local.get(event.request_id)
                 if item is not None:
-                    item.started = True
+                    if event.kind == 'input_running':
+                        item.started = True
+                    else:
+                        item.delivery = 'steer' if event.kind == 'input_steering' else 'next_turn'
         self.ui._event_queue.put({'type': 'session_event', 'event': event})
 
     def enqueue(self, text: str, images: tuple[Any, ...], origin: str, *, echo: bool = True) -> Submission:
@@ -190,6 +194,7 @@ class NativeSessionEvents:
             ui._pending_messages = deque((item.text, item.echo) for item in pending)
             ui._pending_ids.ids = deque(item.queue_id for item in pending)
             ui._local_images = {item.queue_id: item.images for item in pending}
+            ui._native_queue_deliveries = {item.queue_id: item.delivery for item in pending}
         ui._update_message_queue()
 
     def change(self, key: str, action: str, content: str, direction: int) -> bool:
@@ -211,13 +216,34 @@ class NativeSessionEvents:
         future.add_done_callback(changed)
         return True
 
+    def promote_pending(self) -> bool:
+        """Esc is a native human queue control, never an external input authority."""
+        if self.runtime is None:
+            return False
+        with self.lock:
+            identifiers = tuple(key for key, item in self.local.items()
+                                if not item.started and item.origin == 'user' and item.delivery == 'next_turn')
+        if not identifiers:
+            return False
+        future = self.runtime.controller.promote_pending(identifiers, peer_id='native')
+        def promoted(done: Any) -> None:
+            try:
+                count = done.result()
+                text = (f'{count} queued message(s) sent to the current turn at its next safe checkpoint'
+                        if count else 'No ready active checkpoint; messages remain queued for their next turn')
+            except BaseException as exc:
+                text = 'Queued steering not admitted; inspect /queue: ' + str(exc)
+            self.ui._event_queue.put({'type': 'native_steer_ack', 'text': text})
+        future.add_done_callback(promoted)
+        return True
+
     def cancel_local(self) -> None:
         if self.runtime is None:
             return
         with self.lock:
             identifiers = tuple(self.local)
             self.cancelled.update(identifiers)
-        # Escape owns the actual producer, including pre-turn preparation of a
+        # Explicit cancellation owns the actual producer, including preparation of a
         # shared native batch. Peer cancellation would only detach its waiters.
         self.runtime.controller.abort(pending_ids=identifiers, peer_id='native')
 
@@ -255,6 +281,9 @@ class NativeSessionEvents:
             return
         self.presenter.apply(event)
         item = self.local.get(event.request_id)
+        if event.kind in {'input_steering', 'input_steer_deferred'}:
+            self.refresh_queue()
+            return
         if event.kind == 'input_running':
             if self.display_batch != event.batch_id:
                 self.display_batch = event.batch_id
@@ -267,6 +296,7 @@ class NativeSessionEvents:
                 ui._dispatch_input_origin = origins.pop() if len(origins) == 1 else 'session_input'
                 ui._active_images = ui._dispatch_images
                 ui._active_input_origin = ui._dispatch_input_origin
+            self.display_members.add(event.request_id)
             ui._worker_active = True
             ui._cancel_requested = False
             if item:

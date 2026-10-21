@@ -141,10 +141,10 @@ async def test_child_does_not_inherit_the_parent_bound_inspection_tool(coding_se
         calls.append({item.name for item in child.state.tools})
         return child
 
-    session.children.supervisor.factory = capture
+    session.children.runtime.factory = capture
     try:
-        identifier = await session.children.supervisor.start('Inspect only')
-        await session.children.supervisor.control('wait', identifier)
+        identifier = await session.children.runtime.start('Inspect only')
+        await session.children.runtime.control('wait', identifier)
         assert calls and all(NAME not in names for names in calls)
     finally:
         await session.aclose()

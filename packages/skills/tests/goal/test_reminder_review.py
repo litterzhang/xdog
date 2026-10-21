@@ -179,7 +179,10 @@ async def test_unknown_reopen_requires_explicit_epoch_and_never_reuses_unknown_i
         for _ in range(3):
             await runtime._available()
         assert len(attempts) == 1
-        await parent.extensions.command('goal', 'resume')
+        waiting = await runtime.service.current()
+        await runtime.service.change('activate', waiting.id, version=waiting.version,
+                                     reason='User inspected original unknown outcome', context=USER)
+        await runtime._available()
         await asyncio.wait_for(runtime.flush(), 2)
         assert len(attempts) == 2 and attempts[1].id != original_id
         old = next(row for row in await runtime.service.store.reminders() if row['id'] == original_id)

@@ -8,9 +8,9 @@ import threading
 
 import pytest
 from xdog.agent import Agent, AgentConfig, AgentTool, AgentToolResult, HandledInput
+from xdog.agent.child_config import ChildPresets
+from xdog.agent.children import ChildSpec, child_prompt
 from xdog.agent.events import MessageEndEvent
-from xdog.agent.supervision import ChildSpec, child_prompt
-from xdog.agent.supervision_config import ChildPresets
 from xdog.ai.types import AssistantMessage, DoneEvent, TextContent, ToolCall
 from xdog.ai.utils.event_stream import EventStream
 

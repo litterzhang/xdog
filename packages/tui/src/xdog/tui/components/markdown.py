@@ -403,11 +403,9 @@ def _parse_list(
         full_content = "\n".join(item_content_lines)
         item_tokens = _tokenize_markdown(full_content)
 
-        # If the content is a single paragraph, use text tokens directly
-        if len(item_tokens) == 1 and item_tokens[0].type == "paragraph":
-            item_token = Token(type="list_item", tokens=item_tokens[0].tokens)
-        else:
-            item_token = Token(type="list_item", tokens=item_tokens)
+        # Keep block boundaries: inline tokens belong to one paragraph, not
+        # separate list-item rows (codespans/emphasis must flow with the text).
+        item_token = Token(type="list_item", tokens=item_tokens)
 
         items.append(item_token)
 
@@ -497,12 +495,14 @@ class Markdown(Component):
         padding_y: int = 1,
         theme: MarkdownTheme | None = None,
         default_text_style: DefaultTextStyle | None = None,
+        *, compact_paragraphs: bool = False,
     ) -> None:
         super().__init__()
         self._text = apply_markdown_transforms(text)
         self._padding_x = padding_x
         self._padding_y = padding_y
         self._theme = theme or _default_theme()
+        self._compact_paragraphs = compact_paragraphs
         self._default_text_style = default_text_style
         self._default_style_prefix: str | None = None
         # Cache
@@ -567,6 +567,21 @@ class Markdown(Component):
 
         # Tokenize and render
         tokens = _tokenize_markdown(normalized)
+        if self._compact_paragraphs:
+            # Compact prose only: keep code/list/table/quote boundaries intact.
+            compacted: list[Token] = []
+            pending_spaces: list[Token] = []
+            previous_block = ""
+            for token in tokens:
+                if token.type == "space":
+                    pending_spaces.append(token)
+                    continue
+                if previous_block != "paragraph" or token.type != "paragraph":
+                    compacted.extend(pending_spaces)
+                pending_spaces.clear()
+                compacted.append(token)
+                previous_block = token.type
+            tokens = [*compacted, *pending_spaces]
         rendered_lines: list[str] = []
 
         for idx, token in enumerate(tokens):
@@ -695,7 +710,8 @@ class Markdown(Component):
         elif token.type == "paragraph":
             para_text = self._render_inline_tokens(token.tokens, style_context)
             lines.append(para_text)
-            if next_token_type and next_token_type not in ("list", "space"):
+            if (next_token_type and next_token_type not in ("list", "space")
+                    and not (self._compact_paragraphs and next_token_type == "paragraph")):
                 lines.append("")
 
         elif token.type == "code":

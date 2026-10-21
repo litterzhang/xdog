@@ -61,6 +61,8 @@ class _Job:
     input_origin: str | None = None
     raw_text: str | None = None
     batch_id: str = ""
+    steering: bool = False
+    steering_started: bool = False
 
     @property
     def branch(self) -> str:
@@ -177,8 +179,11 @@ class SessionController:
 
     def release_producer(self, token: str) -> None:
         def release() -> None:
+            present = token in self._producers
             self._producers.discard(token)
             self._pump()
+            if present and not self._producers:
+                self._execution_event('owner.available')
         self._post(release)
 
     def reserve_producer(self, name: str, *, cancel: Callable[[], None] | None = None) -> Callable[[], None]:
@@ -195,10 +200,14 @@ class SessionController:
             if receipt.done():
                 return
             def settled() -> None:
+                if receipt.done():
+                    return
                 self._producers.discard(token)
                 self._producer_receipts.pop(token, None)
                 self._settle(receipt, None)
                 self._pump()
+                if not self._producers:
+                    self._execution_event('owner.available')
             self._post(settled)
         return release
 
@@ -297,7 +306,7 @@ class SessionController:
         pending = (*self._jobs.values(), *self._admitting_jobs.values())
         return {'state': state, 'user_pending': self._human_pending or any(
                     job.value.origin == 'human' and not job.finishing for job in pending),
-                'children_active': bool(self.session.children.supervisor.active), 'generation': self.generation}
+                'children_active': bool(self.session.children.runtime.active), 'generation': self.generation}
 
     def subscribe_execution(self, callback: Callable[[dict[str, Any]], None]) -> Callable[[], None]:
         # Separate from publish()/UI SessionEvent: display labels cannot forge settlement.
@@ -347,10 +356,102 @@ class SessionController:
             _OWNER.reset(observer_scope)
 
     async def _default_execute_batch(self, batch: TurnBatch) -> TurnResult:
+        from xdog.agent.events import InputHandledEvent, MessageEndEvent
         from xdog.coding.core.sessions.turns import run_batch
 
-        return await run_batch(self.session, batch, emit=lambda event: self._notify(SessionEvent(
-            batch.session_id, batch.generation, '', 'agent_event', event, batch.id, batch.request_ids)))
+        agent = self.session.agent
+        previous_checkpoint = agent._input_checkpoint
+
+        async def checkpoint(event: Any) -> None:
+            if previous_checkpoint is not None:
+                await previous_checkpoint(event)
+            identifier = (event.input_id if isinstance(event, InputHandledEvent) else
+                          agent._input_message_ids.get(id(event.message), "")
+                          if isinstance(event, MessageEndEvent) else "")
+            job = self._jobs.get(identifier)
+            if job is not None and job.steering and not job.steering_started:
+                if (self._closing or self._batch is None or self._batch.id != batch.id
+                        or job.generation != self.generation or self.session.agent is not agent):
+                    raise RuntimeError('Original queued steering owner retired before admission')
+                try:
+                    await job.owner.store.transition_batch((identifier,), 'running', batch_id=batch.id)
+                except BaseException as exc:
+                    self._broken = exc
+                    raise
+                job.steering_started = True
+                self._emit('input_running', job, job.value)
+
+        agent.set_input_checkpoint(checkpoint)
+        try:
+            return await run_batch(self.session, batch, emit=lambda event: self._notify(SessionEvent(
+                batch.session_id, batch.generation, '', 'agent_event', event, batch.id, batch.request_ids)))
+        finally:
+            agent.set_input_checkpoint(previous_checkpoint)
+
+    def promote_pending(self, request_ids: tuple[str, ...], *, peer_id: str) -> Future[int]:
+        """Move original unstarted native human inputs into this turn's safe steering queue.
+
+        No new submission, changed origin, copied effects or second producer. Their
+        original durable receipts start only at the awaited input checkpoint.
+        """
+        async def run() -> int:
+            if peer_id != 'native' or not request_ids or len(set(request_ids)) != len(request_ids):
+                return 0
+            for identifier in request_ids:
+                admitting = self._admitting_jobs.get(identifier)
+                if admitting is not None and admitting.peer == peer_id:
+                    await asyncio.wrap_future(admitting.ticket.accepted)
+            batch, agent = self._batch, self.session.agent
+            if (self._closing or batch is None or self._active is None or self._active.done()
+                    or not agent.is_streaming or agent.cancellation_requested or self._broken is not None):
+                return 0
+            selected = set(request_ids)
+            count = 0
+            for job in tuple(self._jobs.values()):
+                if (job.value.id not in selected or job.peer != peer_id or job.value.origin != 'human'
+                        or job.input_origin not in {None, 'user'} or self._in_active(job) or job.finishing
+                        or job.owner != self._batch_jobs[0].owner or job.cancelled):
+                    continue
+                text = job.raw_text if job.raw_text is not None else job.value.instruction
+                if len(text.encode('utf-8')) > 64 * 1024 or len(agent.pending_inputs()) >= 50:
+                    continue  # Original queued payload remains intact for the next ordinary turn.
+                if job.images:
+                    import base64
+                    self.session.validate_image_inputs(tuple(
+                        (image.mime_type, len(base64.b64decode(image.data, validate=True))) for image in job.images))
+                current = self._batch
+                if current is None or current.id != batch.id:
+                    break
+                agent.queue_input(job.value.id, text, 'steer', job.images)
+                # Preserve actual native human authority through the existing transform.
+                message = agent._identified_inputs[job.value.id][1]
+                self.session._user_prompt_messages[id(message)] = message
+                job.steering, job.batch_id = True, batch.id
+                self._batch_jobs = (*self._batch_jobs, job)
+                item = TurnInput(job.value, images=job.images, input_origin=job.input_origin, raw_text=job.raw_text)
+                self._batch = replace(current, items=(*current.items, item))
+                self._emit('input_steering', job, job.value)
+                count += 1
+            return count
+        return self._async(run)
+
+    def _return_unconsumed_steering(self, result: TurnResult) -> None:
+        """A turn can settle just before a queued interrupt reaches its checkpoint."""
+        if result.status != 'succeeded' or self._batch is None:
+            return  # Failure/cancellation never automatically replays an uncertain input.
+        deferred = tuple(job for job in self._batch_jobs if job.steering and not job.steering_started)
+        for job in deferred:
+            for message_id, identifier in tuple(self.session.agent._input_message_ids.items()):
+                if identifier == job.value.id:
+                    self.session._user_prompt_messages.pop(message_id, None)
+            self.session.agent.drain_inputs(job.value.id)
+            job.steering, job.batch_id = False, ''
+            self._emit('input_steer_deferred', job, job.value)
+        if deferred:
+            identifiers = {job.value.id for job in deferred}
+            self._batch_jobs = tuple(job for job in self._batch_jobs if job.value.id not in identifiers)
+            self._batch = replace(self._batch, items=tuple(item for item in self._batch.items
+                                                         if item.value.id not in identifiers))
 
     def _in_active(self, job: _Job) -> bool:
         return any(member is job for member in self._batch_jobs)
@@ -454,7 +555,7 @@ class SessionController:
         human = next((job for job in jobs if job.value.origin == "human"), None)
         if human is None and (self._human_pending or self._producers):
             return
-        resource_busy = (not self.session.agent.is_idle or self.session.children.supervisor.active
+        resource_busy = (not self.session.agent.is_idle or self.session.children.runtime.active
             or self.session.permissions.has_pending_requests or self.session._compacting
             or self.session._auth_changing or self.session._context_changes
             or self.session._tool_selection_retiring or self.session._tool_selection_restore_pending)
@@ -567,6 +668,7 @@ class SessionController:
         finally:
             try:
                 try:
+                    self._return_unconsumed_steering(outcome)
                     if prepared and self.after_batch is not None:
                         await self.after_batch(batch, outcome)
                 except asyncio.CancelledError:
@@ -581,7 +683,7 @@ class SessionController:
                         outcome = replace(outcome, status='cancelled', error='Batch settlement cancelled')
                 except Exception as exc:
                     outcome = TurnResult('failed', outcome.response, str(exc), exc, batch_id=batch.id)
-                await self._finish_jobs(jobs, outcome, batch)
+                await self._finish_jobs(self._batch_jobs, outcome, self._batch or batch)
             finally:
                 self._current = None
                 self._batch, self._batch_jobs = None, ()
@@ -677,8 +779,11 @@ class SessionController:
 
     def set_human_pending(self, pending: bool) -> None:
         def change() -> None:
+            previous = self._human_pending
             self._human_pending = pending
             self._pump()
+            if previous and not pending:
+                self._execution_event('owner.available')
 
         self._post(change)
 
