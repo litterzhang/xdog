@@ -329,3 +329,56 @@ async def test_endpoint_replacement_during_actual_bind_is_not_chmodded_or_publis
                 await server.close()
             await backend.close()
             await app.stop()
+
+
+async def test_managed_private_acp_recovers_stale_socket_and_keeps_explicit_policy(tmp_path):
+    app, backend, model = await make_backend(tmp_path)
+    server = None
+    with tempfile.TemporaryDirectory(prefix='acp-recover-') as directory:
+        endpoint = Path(directory) / 'peer.sock'
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as old:
+            old.bind(str(endpoint))
+        try:
+            server = await ClawAcpServer.start(app, endpoint, recover_stale=True)
+            assert stat.S_IMODE(endpoint.stat().st_mode) == 0o600
+            assert server._endpoint.socket.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN) == 1
+            assert not model.inputs
+            await server.close()
+            assert not endpoint.exists()
+            server = await ClawAcpServer.start(app, endpoint, recover_stale=True)
+        finally:
+            if server is not None:
+                await server.close()
+            await backend.close()
+            await app.stop()
+
+
+@pytest.mark.parametrize('kind', ['file', 'symlink', 'live-socket', 'bound-not-listening'])
+def test_managed_private_acp_never_replaces_unrelated_or_live_endpoint(kind):
+    from xdog.claw.core.runtime.unix_endpoint import bind_private, close
+
+    with tempfile.TemporaryDirectory(prefix='acp-fence-') as directory:
+        endpoint = Path(directory) / 'peer.sock'
+        owned = None
+        peer = None
+        try:
+            if kind == 'file':
+                endpoint.write_text('keep')
+            elif kind == 'symlink':
+                endpoint.symlink_to(Path(directory) / 'target')
+            elif kind == 'bound-not-listening':
+                owned = bind_private(endpoint, recover_stale=True)
+            else:
+                peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                peer.bind(str(endpoint))
+                peer.listen()
+            before = endpoint.lstat()
+            with pytest.raises((ValueError, RuntimeError)):
+                bind_private(endpoint, recover_stale=True)
+            after = endpoint.lstat()
+            assert (before.st_dev, before.st_ino) == (after.st_dev, after.st_ino)
+        finally:
+            if owned is not None:
+                close(owned)
+            if peer is not None:
+                peer.close()

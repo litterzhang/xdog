@@ -34,7 +34,7 @@ def test_claw_optional_eyes_and_eyes_owns_bounded_croniter():
     assert {"xdog-skills", "agent-client-protocol"} <= direct
     requirement = next(Requirement(value) for value in claw["optional-dependencies"]["eyes"]
                        if Requirement(value).name == "xdog-eyes")
-    assert str(requirement.specifier) == ">=2.4.5"
+    assert str(requirement.specifier) == ">=2.4.6"
     assert Version(eyes["version"]) in requirement.specifier
     assert requirement.marker is None and not requirement.extras
     all_requirements = requirements + [
@@ -106,13 +106,13 @@ def test_built_claw_metadata_optional_eyes_without_direct_croniter(artifacts, ki
     metadata = email.message_from_bytes(content)
     requirements = [Requirement(value) for value in metadata.get_all("Requires-Dist", [])]
     eyes = [value for value in requirements if value.name == "xdog-eyes"]
-    assert eyes and all(str(value.specifier) == ">=2.4.5" and value.marker is not None for value in eyes)
+    assert eyes and all(str(value.specifier) == ">=2.4.6" and value.marker is not None for value in eyes)
     for extra, expected in (("", False), ("search", False), ("eyes", True), ("all", True)):
         assert any(value.marker.evaluate({"extra": extra}) for value in eyes) is expected
     assert not any(value.name == "croniter" for value in requirements)
     assert set(metadata.get_all("Provides-Extra", [])) == {"search", "skills", "eyes", "acp", "all"}
     skills = [value for value in requirements if value.name == "xdog-skills"]
-    assert skills and all(str(value.specifier) == ">=2.4.5" for value in skills)
+    assert skills and all(str(value.specifier) == ">=2.4.6" for value in skills)
     assert any(value.marker is None for value in skills)  # Default capability, no extra required.
     for extra in ("", "search", "eyes", "skills", "all"):
         assert any(value.marker is None or value.marker.evaluate({"extra": extra}) for value in skills)

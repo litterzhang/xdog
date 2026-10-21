@@ -141,7 +141,7 @@ jobs:
           assert not any(n.startswith(("xdog/goal/", "xdog/eyes/", "xdog/flow/")) for n in names)
           metadata = Parser().parsestr(wheel.read(next(n for n in names if n.endswith("METADATA"))).decode())
           assert metadata["Name"] == "xdog-skills"
-          assert metadata.get_all("Requires-Dist") == ["xdog-agent>=2.4.4"]
+          assert metadata.get_all("Requires-Dist") == [f"xdog-agent>={metadata['Version']}"]
           PYCODE
 
       # A dependency named `ai` or `flow` on PyPI is somebody else's package.

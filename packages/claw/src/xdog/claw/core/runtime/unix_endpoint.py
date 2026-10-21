@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import fcntl
 import os
 import socket
 import stat
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import BinaryIO
 
 
 @dataclass(frozen=True)
@@ -17,19 +19,28 @@ class BoundEndpoint:
     socket: socket.socket
     path: Path
     identity: tuple[int, int]
+    lease: BinaryIO | None = None
 
 
 def close(endpoint: BoundEndpoint) -> None:
     endpoint.socket.close()
     try:
-        value = endpoint.path.lstat()
-    except FileNotFoundError:
-        return
-    if (stat.S_ISSOCK(value.st_mode) and (value.st_dev, value.st_ino) == endpoint.identity):
-        endpoint.path.unlink()
+        try:
+            value = endpoint.path.lstat()
+        except FileNotFoundError:
+            return
+        if (stat.S_ISSOCK(value.st_mode) and (value.st_dev, value.st_ino) == endpoint.identity):
+            endpoint.path.unlink()
+    finally:
+        if endpoint.lease is not None:
+            endpoint.lease.close()
 
 
 def bind(path: Path) -> BoundEndpoint:
+    return _bind_recoverable(path)
+
+
+def _bind_recoverable(path: Path) -> BoundEndpoint:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         value = path.lstat()
@@ -55,13 +66,30 @@ def bind(path: Path) -> BoundEndpoint:
     return _bind_new(path)
 
 
-def bind_private(path: Path) -> BoundEndpoint:
-    """Private ACP policy: refuse every existing endpoint, including stale sockets."""
+def bind_private(path: Path, *, recover_stale: bool = False) -> BoundEndpoint:
+    """Keep explicit endpoints strict; an owned managed endpoint may recover stale sockets."""
     path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     directory = path.parent.lstat()
     if (path.parent.resolve() != path.parent or not stat.S_ISDIR(directory.st_mode)
             or directory.st_uid != os.getuid() or stat.S_IMODE(directory.st_mode) != 0o700):
         raise ValueError("ACP endpoint directory must be owned and private (0700), without symlinks")
+    if recover_stale:
+        # Keep a lifetime lease: a competing gateway must not mistake the gap
+        # between bind() and listen() for a crashed endpoint. Never unlink the
+        # lease file; all starts must lock the same inode.
+        fd = os.open(path.with_name(path.name + ".lock"), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        try:
+            value = os.fstat(fd)
+            if not stat.S_ISREG(value.st_mode) or value.st_uid != os.getuid() or value.st_nlink != 1:
+                raise ValueError("Managed ACP lease must be an owned regular file")
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise RuntimeError("Managed ACP endpoint is already owned by another gateway") from None
+            return replace(_bind_recoverable(path), lease=os.fdopen(fd, "rb"))
+        except BaseException:
+            os.close(fd)
+            raise
     try:
         path.lstat()
     except FileNotFoundError:

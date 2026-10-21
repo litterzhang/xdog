@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "xdog-eyes"
-version = "2.4.5"
+version = "2.4.6"
 description = "Declarative local observation and source-neutral agent event delivery"
 classifiers = ["Operating System :: POSIX :: Linux"]
 requires-python = ">=3.12"

@@ -245,6 +245,7 @@ class GatewayServer:
                 self._acp_server = await ClawAcpServer.start(
                                              self._orchestrator,
                                              endpoint,
+                                             recover_stale=not bool(self._config.acp_socket_path),
                                          )
             if self._application_capabilities.providers:
                 from xdog.claw.core.runtime.application_ports import ApplicationPorts

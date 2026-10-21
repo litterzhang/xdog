@@ -12,6 +12,19 @@ Nothing yet.
 
 ---
 
+## [2.4.6] — 2026-10-21
+
+### Fixed
+
+- Gateway startup recovers confirmed stale sockets for its default managed ACP
+  endpoint, under a lifetime lease and the existing private-directory, owner,
+  live-peer and inode checks. Explicit ACP endpoints remain strict; live sockets,
+  symlinks and unrelated files are never removed.
+- CI checks the skills wheel's Agent dependency against its actual release
+  version instead of a stale hardcoded version.
+
+---
+
 ## [2.4.5] — 2026-10-21
 
 ### Added

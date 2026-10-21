@@ -28,11 +28,12 @@ class ClawAcpServer:
         self._release_endpoint: Callable[[], None] = lambda: None
 
     @classmethod
-    async def start(cls, orchestrator: Orchestrator, path: Path) -> ClawAcpServer:
+    async def start(cls, orchestrator: Orchestrator, path: Path, *, recover_stale: bool = False) -> ClawAcpServer:
         maximum = 107  # Current Linux Unix-domain path limit; no non-Linux transport adapter.
         if not path.is_absolute() or "\x00" in str(path) or len(str(path).encode()) > maximum:
             raise ValueError("ACP socket must have a bounded absolute Unix path")
-        acquiring = asyncio.create_task(asyncio.to_thread(bind_private, path))
+        acquiring = asyncio.create_task(asyncio.to_thread(bind_private, path, recover_stale=True)
+                                        if recover_stale else asyncio.to_thread(bind_private, path))
         try:
             endpoint = await wait_owned(acquiring)
         except BaseException:
