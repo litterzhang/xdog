@@ -56,7 +56,7 @@ def create(session: AgentSession) -> ContextMessages:
     async def validate(message: CustomAgentMessage) -> None:
         from xdog.agent.extensions.context_message import images
         if not session.agent.is_streaming:
-            from xdog.agent.supervision import settle_on
+            from xdog.agent.cross_loop import settle_on
             async def restore() -> None:
                 session._restore_messages()
             if session._host_loop is not None:

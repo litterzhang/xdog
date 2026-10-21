@@ -1,0 +1,269 @@
+{
+  "objective": "宿主拥有子Agent runtime；Agent提供SDK协议、真实父句柄与子集委派，独立上下文和双向消息可见性；保留子Agent独立model/thinking与真实能力验证",
+  "status": "complete",
+  "total": 10,
+  "remaining": 0,
+  "counts": {
+    "待实现": 0,
+    "待验证": 0,
+    "缺外部环境": 0,
+    "已完成": 10,
+    "延期": 0
+  },
+  "requirements": [
+    {
+      "id": "SA-01",
+      "title": "父子owner与委派上限",
+      "acceptance": "每child持有宿主注入的真实父句柄（非模型parent_id），创建和显式变更tools/skills时逐项校验父当前可委派集合与原授权上限；任何越界整体拒绝，不静默过滤；父失效/撤权后不借后继或兄弟授权，每次执行及异步审批后复查",
+      "status": "已完成",
+      "evidence": [
+        "docs/child-delegation-verification.md#5-需求验收定位",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/full-regression.log",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/verification-summary.json",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/final-review.md",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/product-cold-result.json",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/sdk-cold-result.json"
+      ]
+    },
+    {
+      "id": "SA-02",
+      "title": "权限子集与审批",
+      "acceptance": "两host按工具/动作收窄，Coding继承父模式但审批独立，ask bash需用户批准；无审批通道不放行",
+      "status": "已完成",
+      "evidence": [
+        "docs/child-delegation-verification.md#5-需求验收定位",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/full-regression.log",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/verification-summary.json",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/final-review.md",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/product-cold-result.json",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/sdk-cold-result.json"
+      ]
+    },
+    {
+      "id": "SA-03",
+      "title": "Skill子集",
+      "acceptance": "子catalog/注入/加载仅允许选择的父可用skills，不借用完整可写父skill管理器",
+      "status": "已完成",
+      "evidence": [
+        "docs/child-delegation-verification.md#5-需求验收定位",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/full-regression.log",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/verification-summary.json",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/final-review.md",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/product-cold-result.json",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/sdk-cold-result.json"
+      ]
+    },
+    {
+      "id": "SA-04",
+      "title": "无历史或system继承",
+      "acceptance": "子Agent不复制父history/system prompt，也不运行父对话输入/context变换器注入历史",
+      "status": "已完成",
+      "evidence": [
+        "docs/child-delegation-verification.md#5-需求验收定位",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/full-regression.log",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/verification-summary.json",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/final-review.md",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/product-cold-result.json",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/sdk-cold-result.json"
+      ]
+    },
+    {
+      "id": "SA-05",
+      "title": "独立system prompt",
+      "acceptance": "父可设置并安全修改child专用system prompt，修改不提升工具/权限，不重放模型",
+      "status": "已完成",
+      "evidence": [
+        "docs/child-delegation-verification.md#5-需求验收定位",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/full-regression.log",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/verification-summary.json",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/final-review.md",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/product-cold-result.json",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/sdk-cold-result.json"
+      ]
+    },
+    {
+      "id": "SA-06",
+      "title": "首轮交接",
+      "acceptance": "父任务/知识为实际首条user输入，后续steer/follow-up保留真实投递/接收状态",
+      "status": "已完成",
+      "evidence": [
+        "docs/child-delegation-verification.md#5-需求验收定位",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/full-regression.log",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/verification-summary.json",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/final-review.md",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/product-cold-result.json",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/sdk-cold-result.json"
+      ]
+    },
+    {
+      "id": "SA-07",
+      "title": "双向消息展示",
+      "acceptance": "Coding主界面显示父->子及子->父，带child关联/方向/稳定ID去重、明确preview完整内容可查",
+      "status": "已完成",
+      "evidence": [
+        "docs/child-delegation-verification.md#5-需求验收定位",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/full-regression.log",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/verification-summary.json",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/final-review.md",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/product-cold-result.json",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/sdk-cold-result.json"
+      ]
+    },
+    {
+      "id": "SA-08",
+      "title": "生命周期与验收",
+      "acceptance": "旧owner/审批/UI退订、并发撤权与持久恢复安全；不引入运行期限/轮数上限，Linux完整回归静态构建，保护dirty，不擅自发布重启",
+      "status": "已完成",
+      "evidence": [
+        "docs/child-delegation-verification.md#5-需求验收定位",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/full-regression.log",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/verification-summary.json",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/final-review.md",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/product-cold-result.json",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/sdk-cold-result.json"
+      ]
+    },
+    {
+      "id": "SA-09",
+      "title": "宿主拥有子Agent运行时",
+      "acceptance": "Coding/Claw进程拥有child执行、任务/loop归属、取消、等待、持久恢复和关闭清理；Agent仅提供SDK数据协议、受限父句柄及注入式操作接口，不自行启动子调度线程/loop、恢复或运行后台监督器；不复制通用Agent工具循环",
+      "status": "已完成",
+      "evidence": [
+        "docs/child-delegation-verification.md#5-需求验收定位",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/full-regression.log",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/verification-summary.json",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/final-review.md",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/product-cold-result.json",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/sdk-cold-result.json"
+      ]
+    },
+    {
+      "id": "SA-10",
+      "title": "子Agent独立模型与推理配置",
+      "acceptance": "父可指定child model/thinking而不改变父模型；未指定继承父模型配置，按实际模型metadata验证工具/图片/上下文及压缩；不可用模型明确拒绝不静默fallback，换模型不扩大tools/skills/权限",
+      "status": "已完成",
+      "evidence": [
+        "docs/child-delegation-verification.md#5-需求验收定位",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/full-regression.log",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/verification-summary.json",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/final-review.md",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/product-cold-result.json",
+        "/home/zhang/.cache/xdog-child-delegation-20261021/sdk-cold-result.json"
+      ]
+    }
+  ],
+  "evidence_root": "/home/zhang/.cache/xdog-child-delegation-20261021",
+  "design_document": "docs/child-delegation-design.md",
+  "audit": {
+    "date": "2026-10-21",
+    "baseline": "ff653e44abb8279a456fbc60389186cdad0597fa",
+    "scope": "HEAD与现有未提交中间实现分别审计；本轮只设计",
+    "test_command": "uv run pytest packages/coding/tests/test_child_agents.py packages/claw/tests/test_child_agents.py packages/coding/tests/test_child_active_tools.py -q",
+    "passed": 49,
+    "failed": 5,
+    "seconds": 7.97,
+    "qualification": "旧继承断言1项；未提交实现使旧instructions不再生效4项，需明确首轮交接兼容，不能静默丢弃"
+  },
+  "verification_document": "docs/child-delegation-verification.md",
+  "completion_conditions": [
+    "SA-01～SA-10逐项有可复核证据并完成",
+    "Linux九包完整回归通过，外部CLI opt-in skips不声称通过",
+    "Ruff/strict mypy/lock/examples/build/cold验证通过",
+    "无关dirty保持；不发布/重启用户服务"
+  ],
+  "verification": {
+    "linux_regression": {
+      "command": "XDOG_MCP_OFFICIAL_SDK_ROOT=/home/zhang/.cache/xdog-goal-optimization-20261021/mcp-sdk uv run python scripts/test.py --jobs 4",
+      "packages": {
+        "packages/skills/tests": {
+          "passed": 227,
+          "skipped": 0
+        },
+        "packages/flow/tests": {
+          "passed": 813,
+          "skipped": 0
+        },
+        "packages/eyes/tests": {
+          "passed": 326,
+          "skipped": 0
+        },
+        "packages/tui/tests": {
+          "passed": 712,
+          "skipped": 0
+        },
+        "packages/ai/tests": {
+          "passed": 738,
+          "skipped": 7
+        },
+        "packages/agent/tests": {
+          "passed": 1840,
+          "skipped": 0
+        },
+        "packages/site/tests": {
+          "passed": 42,
+          "skipped": 0
+        },
+        "packages/coding/tests": {
+          "passed": 1889,
+          "skipped": 0
+        },
+        "packages/claw/tests": {
+          "passed": 1848,
+          "skipped": 0
+        }
+      },
+      "passed": 8435,
+      "skipped": 7,
+      "seconds": 194.87,
+      "exit_code": 0
+    },
+    "mypy_sources": 619,
+    "flow_examples": 17,
+    "artifacts": 20,
+    "cold_sdk": true,
+    "cold_coding_claw": true,
+    "final_review": {
+      "status": "closed",
+      "findings": [
+        {
+          "id": "SA-01-R1",
+          "priority": "P1",
+          "scope": "duplicate tool-call ID overwrites authorization record",
+          "status": "已完成",
+          "evidence": "/home/zhang/.cache/xdog-child-delegation-20261021/final-review.md"
+        },
+        {
+          "id": "SA-08-R1",
+          "priority": "P1",
+          "scope": "Claw shutdown waits outer admission caller and can deadlock",
+          "status": "已完成",
+          "evidence": "/home/zhang/.cache/xdog-child-delegation-20261021/final-review.md"
+        },
+        {
+          "id": "SA-02-R1",
+          "priority": "P1",
+          "scope": "Claw actual executor must recheck original validators",
+          "status": "已完成",
+          "evidence": "/home/zhang/.cache/xdog-child-delegation-20261021/final-review.md"
+        },
+        {
+          "id": "SA-01-R2",
+          "priority": "P2",
+          "scope": "role bridge must check original parent/cancel at effect",
+          "status": "已完成",
+          "evidence": "/home/zhang/.cache/xdog-child-delegation-20261021/final-review.md"
+        },
+        {
+          "id": "SA-08-R2",
+          "priority": "P1",
+          "scope": "Finalized child Agent must be permanently closed after preserving pending inputs",
+          "status": "已完成",
+          "evidence": "/home/zhang/.cache/xdog-child-delegation-20261021/final-review.md"
+        }
+      ],
+      "qualification": "Findings are evidence under existing requirements, not additional requirements or double-counted tasks."
+    },
+    "sdk_bridge_duplicate_regressions": 14,
+    "protected_files_unchanged": 9
+  }
+}

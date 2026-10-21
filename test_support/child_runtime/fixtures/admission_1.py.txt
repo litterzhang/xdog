@@ -1,0 +1,62 @@
+import asyncio,json,sys,threading,os
+from pathlib import Path
+from xdog.agent import Agent,AgentConfig,HandledInput
+# HOST_RUNTIME_IMPORTS
+from xdog.ai.types import AssistantMessage,DoneEvent,TextContent,UserMessage,ImageContent
+from xdog.ai.utils.event_stream import EventStream
+PNG="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j5ioAAAAASUVORK5CYII="
+async def main():
+    store=ChildStore(Path(sys.argv[1])); boundary=sys.argv[2]; handled=sys.argv[3]=='True'
+    release=threading.Event(); calls=[]; child_id=[]; armed=[False]
+    def stop(name):
+        if name==boundary:
+            print(json.dumps({'id':child_id[0],'boundary':name}),flush=True)
+            threading.Event().wait(30)
+            raise RuntimeError('Owned test checkpoint was not killed')
+    replace=os.replace
+    def replace_checkpoint(source,destination):
+        target=armed[0] and str(destination).endswith('.admission.json')
+        if target: stop('before-replace')
+        replace(source,destination)
+        if target: stop('after-replace')
+    os.replace=replace_checkpoint
+    def admission(record):
+        target=('CHECKPOINT FEEDBACK' in record.get('input_feedback',[]) if handled else
+                any('TRANSFORMED TARGET' in json.dumps(row.get('content')) for row in record['messages']))
+        if target: stop('before-checkpoint')
+        armed[0]=target
+        store.save_admission(record)
+        armed[0]=False
+        if target: stop('after-checkpoint')
+    def inputs(identifier,rows):
+        if not rows:
+            stop('before-settle')
+        store.save_inputs(identifier,rows)
+        if not rows:
+            stop('after-settle')
+    def factory(spec,publish):
+        async def transform(message,source,cancel):
+            if source=='prompt': return message
+            return (HandledInput('CHECKPOINT FEEDBACK') if handled else
+                    UserMessage(content=(TextContent(text='TRANSFORMED TARGET'), *message.content[1:])))
+        def stream(*args):
+            calls.append(True)
+            async def events():
+                if len(calls)==1:
+                    while not release.is_set(): await asyncio.sleep(.003)
+                else:
+                    await asyncio.sleep(30)
+                yield DoneEvent(message=AssistantMessage(content=(TextContent(text='first'),)))
+            future=asyncio.get_running_loop().create_future()
+            future.set_result(AssistantMessage(content=(TextContent(text='first'),)))
+            return EventStream.from_async_generator(events(),result_future=future)
+        return Agent(stream,config=AgentConfig(model='offline/model'),input_transform=transform)
+    owner=ChildRuntime(factory,store.save,begin=store.begin,persist_inputs=inputs,
+                          persist_admission=admission)
+    child=await owner.start('INITIAL');child_id.append(child)
+    while not calls: await asyncio.sleep(.003)
+    await owner.control('follow-up',child,'ORIGINAL TARGET',
+                        images=(ImageContent(data=PNG,mime_type='image/png'),))
+    release.set()
+    await asyncio.sleep(30)
+asyncio.run(main())

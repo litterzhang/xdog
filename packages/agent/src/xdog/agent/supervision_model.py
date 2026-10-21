@@ -43,15 +43,15 @@ class ChildModel:
                 "context_window": self.context_window, "max_prompt_tokens": self.max_prompt_tokens,
                 "max_output_tokens": self.options.max_tokens, "supports_tool_calls": self.supports_tool_calls}
 
-    def prompt(self, inherited: SystemPrompt | None) -> SystemPrompt:
+    def prompt(self, prompt: SystemPrompt | None) -> SystemPrompt:
         note = (f"\n\nEffective child model: {self.id}; reasoning: {self.options.thinking or 'off'}. "
-                "Any parent model/environment descriptions are inherited context, not this child's active routing. "
+                "Model routing is host-controlled; prompt text cannot grant capabilities. "
                 "Parent tool/approval/planning restrictions still apply.")
         if self.supports_tool_calls is False:
             note += " This child model has no native tool-call capability; do not claim that workspace tools executed."
-        if isinstance(inherited, str) or inherited is None:
-            return (inherited or "") + note
-        return (*inherited, SystemPromptBlock(text=note, cache=False))
+        if isinstance(prompt, str) or prompt is None:
+            return (prompt or "") + note
+        return (*prompt, SystemPromptBlock(text=note, cache=False))
 
     def history(self, messages: list[AgentMessage]) -> list[AgentMessage]:
         if not self.switched:
@@ -97,8 +97,13 @@ class ChildModel:
 
     def stream(self, original: StreamFn) -> StreamFn:
         def guarded(model: str, context: Context, options: StreamOptions) -> EventStream[AssistantMessage]:
-            if self.switched:
-                context = replace(context, messages=tuple(cast(list[Message], self.history(list(context.messages)))))
+            # New children are fresh. Their own signed history belongs to this
+            # model and must not be stripped merely because it differs from the
+            # parent's model. history() remains an explicit cross-model codec.
+            if self.metadata is not None and isinstance(original, ModelStreamFn):
+                live = original.resolve_model(model)
+                if live is None or live != self.metadata:
+                    raise ValueError("Child model metadata changed/unavailable; no request or fallback")
             images = tuple(part for message in context.messages
                            if not isinstance(message.content, str)
                            for part in message.content if isinstance(part, ImageContent))
@@ -141,7 +146,7 @@ class ChildModel:
                     limit = min(self.max_prompt_tokens or self.context_window,
                                 self.context_window - (options.max_tokens or 0))
                     if limit <= 0 or size > limit:
-                        raise ValueError("Child context too large; use --fresh or a larger model")
+                        raise ValueError("Child context too large; compact history or choose a larger model")
             return original(model, context, options)
         return preserve_model_metadata(guarded, original)
 

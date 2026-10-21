@@ -149,6 +149,12 @@ class PermissionManager:
         return self._mode
 
     @property
+    def policy_revision(self) -> int:
+        """Live host policy epoch; child approvals cannot cross revoke/regrant cycles."""
+        with self._lock:
+            return self._policy_revision
+
+    @property
     def has_approver(self) -> bool:
         with self._lock:
             return self._handler is not None and not self._closed

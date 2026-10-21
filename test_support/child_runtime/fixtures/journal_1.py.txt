@@ -1,0 +1,42 @@
+import asyncio,json,sys
+from pathlib import Path
+from xdog.agent import Agent,AgentConfig
+# HOST_RUNTIME_IMPORTS
+from xdog.ai.types import AssistantMessage,ImageContent,StartEvent
+from xdog.ai.utils.event_stream import EventStream
+async def main():
+    store=ChildStore(Path(sys.argv[1]))
+    entered=asyncio.Event()
+    def factory(spec,publish):
+        def stream(*args):
+            async def events():
+                entered.set()
+                yield StartEvent(partial=AssistantMessage())
+                await asyncio.sleep(60)
+            return EventStream.from_async_generator(events())
+        return Agent(stream,config=AgentConfig(model='offline/model'))
+    owner=ChildRuntime(factory,store.save,begin=store.begin,persist_inputs=store.save_inputs,persist_return=store.save_return)
+    child=await owner.start('INITIAL TASK')
+    while not owner._children[child].agent or not owner._children[child].agent.is_streaming:
+        await asyncio.sleep(.003)
+    await owner.control('follow-up',child,'ACKNOWLEDGED IMAGE INPUT',
+        images=(ImageContent(data=sys.argv[2],mime_type='image/png'),))
+    if sys.argv[3]=='edited':
+        captured=(await owner.control('queue',child,'{"action":"list"}'))['queue']
+        await owner.control('queue',child,json.dumps({'action':'edit','id':captured['inputs'][0]['id'],
+            'revision':captured['revision'],'content':'ACKNOWLEDGED EDITED IMAGE'}))
+        await owner.control('follow-up',child,'EXPLICITLY REMOVED INPUT')
+        captured=(await owner.control('queue',child,'{"action":"list"}'))['queue']
+        await owner.control('queue',child,json.dumps({'action':'remove','id':captured['inputs'][1]['id'],
+            'revision':captured['revision']}))
+    if sys.argv[3]=='image-return':
+        captured=(await owner.control('queue',child,'{"action":"list"}'))['queue']
+        row=captured['inputs'][0]
+        prepared=await owner.control('queue',child,json.dumps({'action':'return_prepare','id':row['id'],
+            'revision':captured['revision']}),return_owner='owned-crash-test')
+        await owner.control('queue',child,json.dumps({'action':'return_commit','id':row['id'],
+            'revision':captured['revision'],'token':prepared['queue']['return_token'],
+            'receipt':prepared['queue']['image_receipt']}),return_owner='owned-crash-test')
+    print(json.dumps({'id':child,'ack':True}),flush=True)
+    await asyncio.sleep(60)
+asyncio.run(main())

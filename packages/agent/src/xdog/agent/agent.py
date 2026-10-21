@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from xdog.agent.skills.manager import SkillManager
     from xdog.agent.skills.types import Skill, SkillPlacement
+    from xdog.agent.supervision_policy import ParentHandle
 from dataclasses import replace
 from typing import Any, Callable, TypeVar
 
@@ -258,7 +259,9 @@ class Agent:
         after_tool_call: AfterToolCallFn | None = None,
         input_transform: InputTransformFn | None = None,
         input_settled: Callable[[tuple[QueuedInput, ...]], Awaitable[None]] | None = None,
+        parent: ParentHandle | None = None,
     ) -> None:
+        self._parent = parent  # Host-injected capability; never encoded/restored from a snapshot.
         cfg = config or AgentConfig()
         if type(cfg.event_buffer_size) is not int or cfg.event_buffer_size <= 0:
             raise ValueError("event_buffer_size must be a positive integer")
@@ -461,6 +464,11 @@ class Agent:
         self.clear_all_queues()
         self._listeners.clear()
         self._closed = True
+
+    @property
+    def parent(self) -> ParentHandle | None:
+        """Original restricted parent handle, or None for a root Agent."""
+        return self._parent
 
     @property
     def state(self) -> AgentState:

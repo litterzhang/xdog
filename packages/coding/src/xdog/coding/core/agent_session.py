@@ -495,7 +495,7 @@ class AgentSession:
         from functools import partial
 
         from xdog.agent.async_work import settle_cleanup
-        from xdog.agent.supervision import settle_on
+        from xdog.agent.cross_loop import settle_on
         async def close(item: tuple[asyncio.AbstractEventLoop, CapabilitySet]) -> None:
             loop, owner = item
             try:

@@ -379,7 +379,8 @@ async def test_claw_configured_child_gateway_and_cli_restrict_tools_and_preserve
         ui._agents_command('start --label Reviewer --instructions "CLAW-SPECIALIST" --tools current_time '
                            '--fresh -- write')
         await wait(lambda: len(contexts) == 2 and not session.children.supervisor.active and not ui._children_pending)
-        assert "CLAW-SPECIALIST" in str(contexts[0].system_prompt)
+        assert "CLAW-SPECIALIST" not in str(contexts[0].system_prompt)
+        assert "CLAW-SPECIALIST" in str(contexts[0].messages)
         assert "PARENT-HISTORY-MARKER" not in str(contexts[0].messages)
         assert [tool.name for tool in contexts[0].tools] == ["current_time"]
         assert not (tmp_path / "workspace" / "target").exists()
@@ -535,7 +536,8 @@ async def test_claw_preset_catalog_cli_and_picker_apply_frozen_template_without_
         session = server._orchestrator._runtimes["main"]._active_session
         await wait(lambda: not session.children.supervisor.active)
         assert not (tmp_path / "workspace" / "target").exists()
-        assert "CLAW-PRESET-INSTRUCTIONS" in str(calls[0].system_prompt)
+        assert "CLAW-PRESET-INSTRUCTIONS" not in str(calls[0].system_prompt)
+        assert "CLAW-PRESET-INSTRUCTIONS" in str(calls[0].messages)
         assert [tool.name for tool in calls[0].tools] == ["current_time"]
         saved = session.children.store.load()[0]
         assert "max_tokens" not in saved["config"] and saved["config"]["preset"] == "reviewer"

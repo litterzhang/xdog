@@ -55,6 +55,10 @@ class ChildPanel(ThemedPanel):
         self._presets: tuple[dict[str, Any], ...] = ()
         self._preset_selected = 0
         self._preset_error = ""
+        self._skills: tuple[dict[str, str], ...] = ()
+        self._skill_selected = 0
+        self._skill_ready = False
+        self._skill_draft: set[str] = set()
         self._config: dict[str, Any] = {}
         self._task_draft = ""
         self._review_scroll = 0
@@ -93,7 +97,7 @@ class ChildPanel(ThemedPanel):
     @focused.setter
     def focused(self, value: bool) -> None:
         self._focused = value
-        self._input.focused = value and self._mode in {"form", "config", "attach"}
+        self._input.focused = value and self._mode in {"form", "config", "attach", "system-prompt"}
         if self.preview is not None:
             self.preview.focused = value and self._mode == "preview"
         if self.queue is not None:
@@ -128,7 +132,8 @@ class ChildPanel(ThemedPanel):
     def publish(self, entries: tuple[ChildEntry, ...], error: str = "") -> None:
         self._entries = entries
         self._error = sanitize_terminal_text(error)
-        self._busy = False
+        if self._mode != "prompt-loading":
+            self._busy = False
         visible = self._rows()
         if self._selected_id not in {entry.id for entry in visible}:
             if self.preview is not None:
@@ -167,6 +172,39 @@ class ChildPanel(ThemedPanel):
                 except (ValueError, TypeError, KeyError) as exc:
                     self.queue.fail(str(exc))
             return
+        if action == 'skills':
+            if self._mode != 'skills':
+                return
+            self._busy = False
+            self._error = sanitize_terminal_text(error)
+            if not error:
+                if (not isinstance(data, list) or any(not isinstance(row, dict)
+                        or not isinstance(row.get('slug'), str) or not isinstance(row.get('description'), str)
+                        for row in data)):
+                    self._error = 'Skill catalogue unavailable; no empty-selection fallback'
+                else:
+                    self._skills = tuple(data)
+                    self._skill_ready = True
+            self._visible = False
+            return
+        if action == 'prompt':
+            if self._mode != 'prompt-loading':
+                return
+            self._busy = False
+            if error:
+                self._mode = 'list'
+                self.fail(error)
+                return
+            config = data.get('config', {}) if isinstance(data, dict) else {}
+            if not isinstance(config, dict) or not isinstance(config.get('system_prompt'), str):
+                self._mode = 'list'
+                self.fail('Current child system_prompt unavailable; no reconstructed prompt')
+                return
+            self._input.set_text(config['system_prompt'])
+            self._mode = 'form'
+            self._input.focused = self.focused
+            self._visible = False
+            return
         if action == "wait":
             self._waiting_id = ""
         self.fail(error)
@@ -183,6 +221,31 @@ class ChildPanel(ThemedPanel):
         self._preset_error = sanitize_terminal_text(error)
         self._preset_selected = min(self._preset_selected, max(0, len(rows) - 1))
         self._visible = False
+
+    @staticmethod
+    def _settings(value: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            raise ValueError('Child settings must be a JSON object')
+        return {key: item for key, item in value.items() if key != 'inherit_context'}
+
+    def open_skills(self) -> None:
+        self._task_draft = self._input.get_text()
+        self._skill_draft = set(self._config.get('skills') or ())
+        self._skill_selected = 0
+        self._skill_ready = False
+        self._mode = 'skills'
+        self._input.focused = False
+        self._visible = False
+        self.send('skills', '', '', 'read-only')  # Discovery only, no Agent startup.
+
+    def edit_system_prompt(self) -> None:
+        if not self._selected_id or self._busy:
+            return
+        self._form('set_system_prompt')
+        self._mode = 'prompt-loading'
+        self._busy = True
+        self._input.focused = False
+        self.send('prompt', self._form_child, '', 'read-only')
 
     def fail(self, error: str) -> None:
         if error and self._image_pending is not None:
@@ -340,7 +403,7 @@ class ChildPanel(ThemedPanel):
         self._close_draft_recovery()
         self._form(action, draft_slot=slot)
         self._input.set_text(entry.value.text)
-        self._config = json.loads(json.dumps(entry.value.config))
+        self._config = self._settings(json.loads(json.dumps(entry.value.config)))
         self._access = entry.value.access
         if entry.value.cursor is not None:
             self._input._cursor = min(max(0, entry.value.cursor), len(self._input.get_text()))
@@ -388,11 +451,14 @@ class ChildPanel(ThemedPanel):
         self._access = "read-only"
         self._config = {}
         draft = self._drafts.get((action, self._draft_slot), ChildDraft())
-        self._config, self._access = dict(draft.config), draft.access
+        self._config, self._access = self._settings(dict(draft.config)), draft.access
         if draft.uncertain:
             self._error = 'Previous child submission receipt uncertain; inspect roster before resubmitting'
         self._input.set_text(draft.text)
-        if self.image_send is not None:
+        if action == 'set_system_prompt' and self.composer is not None:
+            self.composer.close()
+            self.composer = None
+        if self.image_send is not None and action in {"start", "steer", "follow-up"}:
             if self.composer is not None:
                 self.composer.close()
             self._attachment_generation += 1
@@ -414,10 +480,14 @@ class ChildPanel(ThemedPanel):
             action, child, draft = self._image_pending
             self._drafts[action, self._draft_slot] = replace(draft, uncertain=True)
             return
-        if self._mode not in {'form', 'config', 'confirm', 'attach', 'images', 'image-preview'}:
+        if self._form_action not in {'start', 'steer', 'follow-up'}:
+            return
+        if self._mode not in {'form', 'config', 'confirm', 'attach', 'images', 'image-preview',
+                              'system-prompt', 'skills'}:
             return
         text = (self._confirm[2] if self._mode == 'confirm' and self._confirm is not None else
-                self._task_draft if self._mode in {'config', 'attach'} else self._input.get_text())
+                self._task_draft if self._mode in {'config', 'attach', 'system-prompt', 'skills'}
+                else self._input.get_text())
         self._drafts[self._form_action, self._draft_slot] = ChildDraft(
             text, self._access, dict(self._config), tuple(self.composer.items.values()) if self.composer else (),
             self._drafts.get((self._form_action, self._draft_slot), ChildDraft()).uncertain,
@@ -484,12 +554,25 @@ class ChildPanel(ThemedPanel):
             self._input.focused = self.focused
             self._visible = False
             return
+        if self._mode == 'system-prompt':
+            if self._visible:
+                try:
+                    value = {**self._config, 'system_prompt': text}
+                    value = self.configure(value) if self.configure else value
+                except (ValueError, TypeError) as exc:
+                    self._error = str(exc)
+                    return
+                self._config = self._settings(value)
+                self._mode = 'form'
+                self._input.set_text(self._task_draft)
+                self._visible = False
+            return
         if self._mode == "config":
             if not self._visible or self.configure is None:
                 return
             try:
                 value = json.loads(text)
-                self._config = self.configure(value)
+                self._config = self._settings(self.configure(self._settings(value)))
             except (ValueError, TypeError) as exc:
                 self._error = str(exc)
                 return
@@ -502,7 +585,8 @@ class ChildPanel(ThemedPanel):
         # not drop the task after InputPanel has consumed its submitted draft.
         # The final confirmation below still requires a settled owner request.
         images = tuple(self.composer.items.values()) if self.composer else ()
-        if not self._visible or not (text.strip() or images) or len(text.encode("utf-8")) > 16000:
+        if (not self._visible or not (text.strip() or images or self._form_action == "set_system_prompt")
+                or len(text.encode("utf-8")) > 16000):
             return
         if self.composer is not None and self.composer.reader.pending:
             self._input.set_text(text)
@@ -521,7 +605,7 @@ class ChildPanel(ThemedPanel):
             return self.draft_panel.handle_paste(text)
         if self._mode == 'queue' and self.queue is not None:
             return self.queue.handle_paste(text)
-        if self._mode in {"form", "config", "attach"}:
+        if self._mode in {"form", "config", "attach", "system-prompt"}:
             self._input.handle_paste(text)
         elif self._mode == "preview" and self.preview is not None:
             self.preview.handle_paste(text)
@@ -538,6 +622,11 @@ class ChildPanel(ThemedPanel):
         if self._mode == 'queue' and self.queue is not None:
             self.queue.enabled = self.queue_enabled
             return self.queue.handle_input(event)
+        if self._mode == 'prompt-loading':
+            if event.matches('escape') or event.matches('ctrl+c'):
+                self._busy = False
+                self.back()
+            return True
         if self._mode == 'pending':
             return True  # Receipt settlement owns this draft; no repeated submission.
         if self._mode == 'image-preview' and self._image_preview is not None:
@@ -569,7 +658,7 @@ class ChildPanel(ThemedPanel):
             if event.matches("escape") or event.matches("ctrl+c"):
                 draft = self._confirm[2] if self._confirm is not None else ""
                 self._mode = "form" if self._form_action and self._confirm and self._confirm[0] in {
-                    "start", "steer", "follow-up"} else "list"
+                    "start", "steer", "follow-up", "set_system_prompt"} else "list"
                 if self._mode == "form":
                     self._input.set_text(draft)
                 self._terminal_epoch += 1
@@ -598,6 +687,32 @@ class ChildPanel(ThemedPanel):
                 else:
                     self.send(action, child, text, access)
             return True
+        if self._mode == 'skills':
+            if event.matches('escape') or event.matches('ctrl+c'):
+                self._mode = 'form'
+                self._input.set_text(self._task_draft)
+                self._input.focused = self.focused
+                self._visible = False
+            elif event.key in {'up', 'down'}:
+                self._skill_selected = min(max(0, self._skill_selected + (-1 if event.key == 'up' else 1)),
+                                           max(0, len(self._skills) - 1))
+                self._visible = False
+            elif event.matches('space') and self._visible and self._skills:
+                slug = self._skills[self._skill_selected]['slug']
+                self._skill_draft.symmetric_difference_update({slug})
+                self._visible = False
+            elif event.matches('enter') and self._visible and self._skill_ready:
+                try:
+                    value = {**self._config, 'skills': sorted(self._skill_draft)}
+                    self._config = self._settings(self.configure(value)) if self.configure else value
+                except (ValueError, TypeError) as exc:
+                    self._error = str(exc)
+                    return True
+                self._mode = 'form'
+                self._input.set_text(self._task_draft)
+                self._input.focused = self.focused
+                self._visible = False
+            return True
         if self._mode == "presets":
             if event.matches("escape") or event.matches("ctrl+c"):
                 self._mode = "form"
@@ -608,7 +723,8 @@ class ChildPanel(ThemedPanel):
                 self._visible = False
             elif event.matches("enter") and self._visible and self._presets and self.configure is not None:
                 try:
-                    self._config = self.configure({"preset": self._presets[self._preset_selected]["name"]})
+                    name = self._presets[self._preset_selected]["name"]
+                    self._config = self._settings(self.configure({"preset": name}))
                 except (ValueError, TypeError) as exc:
                     self._preset_error = str(exc)
                     return True
@@ -616,8 +732,10 @@ class ChildPanel(ThemedPanel):
                 self._input.focused = self.focused
                 self._visible = False
             return True
-        if self._mode == "config":
-            if event.matches("escape") or event.matches("ctrl+c"):
+        if self._mode in {"config", "system-prompt"}:
+            if (self._mode == 'system-prompt' and event.matches('enter') and self._visible):
+                self._submit(self._input.get_text())
+            elif event.matches("escape") or event.matches("ctrl+c"):
                 self._mode = "form"
                 self._input.set_text(self._task_draft)
                 self._visible = False
@@ -625,7 +743,16 @@ class ChildPanel(ThemedPanel):
                 self._input.handle_input(event)
             return True
         if self._mode == "form":
-            if event.matches('ctrl+o') and self.composer is not None:
+            if event.matches('ctrl+y') and self._form_action == 'start':
+                self._task_draft = self._input.get_text()
+                self._mode = 'system-prompt'
+                self._input.set_text(self._config.get('system_prompt', ''))
+                self._visible = False
+            elif event.matches('ctrl+k') and self._form_action == 'start':
+                self.open_skills()
+            elif (self._form_action == 'set_system_prompt' and event.matches('enter') and self._visible):
+                self._submit(self._input.get_text())
+            elif event.matches('ctrl+o') and self.composer is not None:
                 self._task_draft = self._input.get_text()
                 self._mode = 'attach'
                 self._input.set_text('')
@@ -655,7 +782,9 @@ class ChildPanel(ThemedPanel):
                 self._input.handle_input(event)
             return True
         if self._mode == "preview" and self.preview is not None:
-            if event.matches("ctrl+s"):
+            if event.matches("ctrl+y"):
+                self.edit_system_prompt()
+            elif event.matches("ctrl+s"):
                 self._form("steer")
             elif event.matches("ctrl+t"):
                 self._form("follow-up")
@@ -691,6 +820,8 @@ class ChildPanel(ThemedPanel):
             self.open_drafts()
         elif event.matches('q'):
             self.open_queue()
+        elif event.matches("p"):
+            self.edit_system_prompt()
         elif event.matches("n"):
             self._form("start")
         elif event.key in {"s", "t"}:
@@ -739,7 +870,8 @@ class ChildPanel(ThemedPanel):
             return self._render_child(self.queue, width)
         if self._mode == "preview" and self.preview is not None:
             self.preview.set_render_budget(max(0, self._budget - 1))
-            rows = [f"Child {self.child_id} · {'LIVE' if self._live else 'snapshot'} · Ctrl+S steer · Ctrl+T follow-up",
+            rows = [f"Child {self.child_id} · {'LIVE' if self._live else 'snapshot'} · "
+                    "Ctrl+S steer · Ctrl+T follow-up · Ctrl+Y prompt",
                     *self._render_child(self.preview, width)]
         elif self._mode == "presets":
             rows = ["Child specialist presets · Enter applies draft only"]
@@ -753,25 +885,53 @@ class ChildPanel(ThemedPanel):
                 rows.append(self._preset_error or "No configured presets; use Ctrl+G custom settings")
             rows.append("↑/↓ choose · Enter loads settings · Esc task · start still requires full review")
             self._visible = bool(self._presets) and self._budget >= 3 and width >= 24
+        elif self._mode == 'prompt-loading':
+            rows = ['Reading current child system prompt · no work starts · Esc back']
+        elif self._mode == 'skills':
+            rows = ['Child skills · Space toggles · Enter applies draft only']
+            count = max(0, self._budget - 3)
+            start = max(0, min(self._skill_selected - count // 2, len(self._skills) - count))
+            for index in range(start, min(len(self._skills), start + count)):
+                item = self._skills[index]
+                rows.append(f'{"▶" if index == self._skill_selected else " "} '
+                            f'[{"x" if item["slug"] in self._skill_draft else " "}] '
+                            + item['slug'] + ' · ' + sanitize_terminal_text(item['description']))
+            if not self._skills and count:
+                rows.append('No available skills' if self._skill_ready else 'Reading skill catalogue…')
+            rows.append('Selected: ' + (', '.join(sorted(self._skill_draft)) or '(none; default)'))
+            rows.append(self._error or 'Esc discards selection · no parent skill changes')
+            self._visible = self._skill_ready and self._budget >= 4 and width >= 24
+        elif self._mode == 'system-prompt':
+            self._input.set_render_budget(max(1, min(4, self._budget - 3)), show_borders=False)
+            rows = ['Child system_prompt · independent of parent · task stays first USER message',
+                    *self._render_child(self._input, width),
+                    self._error or 'Enter applies draft only · Esc discards · Shift+Enter newline']
+            self._visible = self._budget >= 4 and width >= 24
         elif self._mode == "config":
             self._input.set_render_budget(max(1, min(4, self._budget - 3)), show_borders=False)
             rows = ["Child settings JSON · no work starts", *self._render_child(self._input, width)]
             if self._error:
                 rows.append(self.panel_theme.error(sanitize_terminal_text(self._error)))
-            rows.append("label/tools/context/budgets/model/thinking · Enter applies draft · Esc back")
+            rows.append("label/tools/tool_actions/system_prompt/skills/model/thinking · Enter applies draft · Esc back")
             self._visible = self._budget >= 4 and width >= 24
         elif self._mode == "form":
             title = f"Child {self._form_action} {self._form_child} · {self._access}"
             self._input.set_render_budget(max(1, min(3, self._budget - 3)), show_borders=False)
             rows = [f"Child {self._form_action} {self._form_child}", f"Access: {self._access}",
                     *self._render_child(self._input, width),
-                    ("Enter reviews · Tab access · Ctrl+G settings · Ctrl+P presets"
+                    ("Enter reviews · Tab access · Ctrl+Y prompt · Ctrl+K skills · Ctrl+G settings · Ctrl+P presets"
                      if self.composer is not None else
-                     "Enter reviews · Tab access · Ctrl+G settings · Ctrl+P presets · Esc back")]
+                     "Enter reviews · Tab access · Ctrl+Y prompt · Ctrl+K skills · "
+                     "Ctrl+G settings · Ctrl+P presets · Esc back")]
             if self.composer is not None:
                 rows.append('Ctrl+O attach · Ctrl+V clipboard · Ctrl+B images · Esc back')
             if self._error:
                 rows.insert(-1, self.panel_theme.error(sanitize_terminal_text(self._error)))
+            if self._form_action == 'set_system_prompt':
+                rows = [f'Child {self._form_child} · replace system_prompt',
+                        'Idle-only host control · busy changes rejected · no restart/replay',
+                        *self._render_child(self._input, width),
+                        self._error or 'Enter reviews full replacement · Esc back · empty clears prompt']
             self._visible = self._budget >= 4 and width >= 24
         elif self._mode == "confirm" and self._confirm is not None:
             action, child, text, access = self._confirm
@@ -780,8 +940,9 @@ class ChildPanel(ThemedPanel):
                                             or "Cancel settles; close archives."),
                     "Enter confirms this child/action · Esc back · NOT tool approval"]
             images = tuple(self.composer.items.values()) if self.composer else ()
-            if action == "start" and self._config or images:
-                disclosure = ('Task: ' + text + '\nConfiguration:\n' + json.dumps(self._config, indent=2)
+            if action == "start" and self._config or images or action == "set_system_prompt":
+                heading = 'System prompt replacement: ' if action == 'set_system_prompt' else 'Task: '
+                disclosure = (heading + text + '\nConfiguration:\n' + json.dumps(self._config, indent=2)
                               + '\nChild images (exact bytes; not a tool grant):\n' + '\n'.join(
                                   item.summary + '\nSHA256: ' + hashlib.sha256(item.data).hexdigest()
                                   for item in images))
@@ -824,6 +985,6 @@ class ChildPanel(ThemedPanel):
             if self._error:
                 rows.append(self.panel_theme.error("Child error: " + sanitize_terminal_text(self._error)))
             rows.append("Enter inspect · / filter · n new · s steer · t follow-up · q inspect inputs · "
-                        "d recover unsent · c cancel · x close · Esc back")
+                        "d recover unsent · p system prompt · c cancel · x close · Esc back")
             self._visible = self._budget >= 3 and width >= 24 and bool(entries)
         return self._styled_rows(rows[:self._budget], width)

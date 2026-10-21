@@ -616,7 +616,7 @@ class Orchestrator:
         loop, runtime, agent = asyncio.get_running_loop(), session._runtime, session.agent
         session_id = session.meta.session_id
         async def read() -> bool | None:
-            from xdog.agent.supervision import settle_on
+            from xdog.agent.cross_loop import settle_on
             async def inspect() -> bool | None:
                 if (runtime._active_session is not session or session.agent is not agent
                         or runtime.get_new_session_id() != session_id or session.extensions._closed):
@@ -1160,8 +1160,8 @@ class Orchestrator:
                 result = await run_owned(page, rows, request, owner_session)
                 return result if owned() else None
             async def host_dialog(extension: str, dialog: dict[str, Any]) -> Any:
+                from xdog.agent.cross_loop import settle_on
                 from xdog.agent.extensions.dialogs import validate_sdk_dialog
-                from xdog.agent.supervision import settle_on
                 validate_sdk_dialog(dialog)  # Retired writes cannot borrow this read-only bridge.
                 if not owned() or session.extensions.command_owner(name) != extension:
                     return None

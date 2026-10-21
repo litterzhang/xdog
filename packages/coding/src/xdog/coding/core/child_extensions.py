@@ -2,22 +2,22 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import threading
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from xdog.agent.agent import Agent
 from xdog.agent.core import AgentMessage
+from xdog.agent.cross_loop import settle_on
 from xdog.agent.events import AgentEvent, MessageEndEvent, ToolExecutionEndEvent
 from xdog.agent.extensions.dialogs import DialogBroker, validate_answer
 from xdog.agent.extensions.runtime import ExtensionRuntime, silent_extension_ui
 from xdog.agent.extensions.state import ExtensionEntries
-from xdog.agent.supervision import ChildSpec, settle_on
-from xdog.agent.supervision_store import ChildStore
+from xdog.agent.supervision import ChildSpec
 from xdog.agent.types import AfterToolCallContext, AfterToolCallResult, BeforeToolCallContext, BeforeToolCallResult
 from xdog.ai.types import TextContent
 from xdog.ai.utils.validation import validate_tool_arguments
+from xdog.coding.core.child_store import ChildStore
 
 
 class ChildExtensions:
@@ -121,7 +121,7 @@ class ChildExtensions:
         # include them for display, not as worker implementations to instantiate.
         names = tuple(row["name"] for row in self.parent.snapshot()["extensions"]
                       if row["state"] != "unloaded" and row["name"] in self.parent.enabled)
-        inherited = json.loads(json.dumps(self.parent.entries.snapshot())) if spec.inherit_context else {}
+        inherited: dict[str, Any] = {}  # Child entries never import parent knowledge/state.
         entries = ExtensionEntries(inherited, lambda value: self.store.save_entries(spec.id, value))
         runtime = ExtensionRuntime(names, self.parent.root, self.parent.cwd, settings=self.parent.settings,
             context=lambda: {**self.parent.context(), "child_id": spec.id, "child_access": spec.access,
@@ -162,8 +162,8 @@ class ChildExtensions:
 
     async def context(self, owner: ExtensionRuntime, messages: list[AgentMessage]) -> list[AgentMessage]:
         self.check_parent()
-        with silent_extension_ui():
-            messages = await self.parent.transform(messages)
+        # Context transforms belong to the child conversation. Parent pre-tool
+        # policy still applies, but cannot copy its private conversation here.
         return await owner.transform(messages)
 
     async def pre(self, owner: ExtensionRuntime, ctx: BeforeToolCallContext) -> BeforeToolCallResult | None:

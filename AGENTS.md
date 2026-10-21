@@ -289,6 +289,24 @@ actual operations and ACP/observation resources before releasing storage. See
 `docs/goal-simple-design.md` and its acceptance list. Earlier Goal kernel/adapter
 and shared-display records describe the retired protocol, not current acceptance.
 
+Sub-agent orchestration belongs to each application package, not Agent. Coding's
+`core/child_agents.py` owns `CodingChildRuntime`, its durable store, isolated
+extension workers and return leases; its host-local execution thread is closed
+with the original session. Claw's `core/runtime/child_agents.py` owns the matching
+Claw resources and borrows the gateway's original loop without stopping it.
+`xdog.agent.supervision` contains only inert SDK contracts, `ChildClient`/handles,
+shared schema and data operations; retired `ChildSupervisor` and child-owned
+store/extension/lease runtime modules no longer exist in Agent. `ParentHandle`
+is injected by the host, excluded from snapshots, and exposes no parent history,
+system prompt or writable manager. Actual tools/skills must be a frozen subset
+of the live original parent's authority. Validate at admission, after approvals
+and at actual executor entry; pending parallel calls cannot borrow a later grant.
+Child history/system/transforms/approval caches are independent; task knowledge
+is first-user material. Model/thinking may differ using actual adapter metadata,
+never fallback authentication or increased permissions. Coding renders actual
+bidirectional correspondence without making its UI an execution owner. See
+`docs/child-delegation-{design.md,requirements.json,verification.md}`.
+
 Child supervision has no fixed runtime deadline, model-call/token lifetime budget,
 concurrency count or retained-record count. The parent owns lifecycle. Protocol
 message/image/file bounds and tool permissions remain. Complete histories use

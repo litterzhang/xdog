@@ -121,6 +121,7 @@ from xdog.agent.types import (
 )
 
 __all__ = [
+    "ChildBackend", "ChildClient", "ChildConfig", "ChildHandle", "ChildSpec", "ParentHandle",
     "CompactionConfig",
     "CompactionError",
     "CompactionResult",
@@ -210,3 +211,8 @@ __all__ = [
     "get_registered_tools",
     "registered_tool_names",
 ]
+
+# -- Host-backed child SDK (no child execution owner) -------------------------
+from xdog.agent.supervision import ChildBackend, ChildClient, ChildHandle, ChildSpec
+from xdog.agent.supervision_config import ChildConfig
+from xdog.agent.supervision_policy import ParentHandle

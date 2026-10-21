@@ -490,7 +490,7 @@ async def _stream_assistant_response(
                     ))
 
             elif event_type in ("done", "error"):
-                final_message = await response.result()
+                final_message = _checked_tool_call_ids(await response.result())
                 if added_partial:
                     context.messages[-1] = final_message
                 else:
@@ -501,7 +501,7 @@ async def _stream_assistant_response(
                 return final_message
 
         # Fallback: stream ended without done/error event
-        final_message = await response.result()
+        final_message = _checked_tool_call_ids(await response.result())
         if added_partial:
             context.messages[-1] = final_message
         else:
@@ -539,6 +539,8 @@ async def _execute_tool_calls(
 ) -> list[ToolResultMessage]:
     """Execute tool calls from an assistant message."""
     tool_calls = _extract_tool_calls(assistant_message)
+    if len({call.id for call in tool_calls}) != len(tool_calls):
+        raise ValueError("Duplicate tool-call IDs; no tool preparation or execution allowed")
     if config.tool_execution == "sequential":
         return await _execute_tool_calls_sequential(
             current_context, assistant_message, tool_calls, config, cancel, emit, tool_ctx,
@@ -948,6 +950,21 @@ async def _convert_messages(
 def _default_convert(messages: list[AgentMessage]) -> list[Message]:
     """Compatibility entry point; standalone and stateful Agents share one policy."""
     return default_convert_to_llm(messages)
+
+
+def _checked_tool_call_ids(message: AssistantMessage) -> AssistantMessage:
+    """Reject ambiguous batches before hooks/effects and before committing history.
+
+    A provider protocol error is not a set of successful tool results. Keep a
+    truthful error response without dangling/duplicate calls so dump/restore
+    remains valid even when the provider streamed malformed partial content.
+    """
+    calls = [part for part in message.content if isinstance(part, ToolCall)]
+    if len({call.id for call in calls}) == len(calls):
+        return message
+    reason = "Provider returned duplicate tool-call IDs; no tools were executed"
+    return replace(message, content=(TextContent(text=reason),), response_id=None,
+                   stop_reason="error", error_message=reason)
 
 
 def _extract_tool_calls(message: AgentMessage) -> list[ToolCall]:

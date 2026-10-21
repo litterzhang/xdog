@@ -6,8 +6,8 @@ from collections.abc import Callable
 from typing import Any
 
 from xdog.agent.async_work import wait_owned
+from xdog.agent.cross_loop import settle_on
 from xdog.agent.extensions.views import ViewRegistry
-from xdog.agent.supervision import settle_on
 from xdog.skills.goal.service import GoalService
 from xdog.skills.goal.ui_views import GoalView
 

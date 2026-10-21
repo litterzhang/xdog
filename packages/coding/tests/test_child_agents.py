@@ -114,15 +114,19 @@ async def test_navigation_model_reload_and_access_transitions_wait_for_owned_chi
         session.dispose()
 
 
-async def test_inheritance_uses_admission_snapshot_and_only_complete_tool_batches(tmp_path):
+async def test_child_starts_independent_and_parent_incomplete_tool_batches_do_not_cross_boundary(tmp_path):
     session, contexts = create(tmp_path)
     session.agent.append_message(UserMessage(content="original"))
     session.agent.append_message(AssistantMessage(content=(ToolCall(id="pending", name="filesystem", arguments={}),)))
     try:
         identifier = await session.children.supervisor.start("task")
         result = await session.children.supervisor.control("wait", identifier)
-        assert "original" in str(result["messages"][0]["content"])
+        assert result["messages"][0]["content"][0]["text"] == "task"
+        assert len(contexts[0].messages) == 1
+        assert "original" not in str(contexts[0].messages)
         assert all("pending" not in str(message) for message in contexts[0].messages)
+        assert session.agent.messages[0].content == "original"
+        assert session.agent.messages[1].content[0].id == "pending"
         branch = session.create_branch(at_index=0)
         old_owner = session.children
         session.restore_branch(branch)
@@ -295,7 +299,8 @@ async def test_coding_specialist_cli_controls_fresh_context_tools_and_parent_per
         record = await session.children.supervisor.control("wait", child)
         assert not (tmp_path / "target").exists()
         assert [tool.name for tool in contexts[0].tools] == ["current_time"]
-        assert "SPECIALIST-INSTRUCTIONS" in str(contexts[0].system_prompt)
+        assert "SPECIALIST-INSTRUCTIONS" not in str(contexts[0].system_prompt)
+        assert "SPECIALIST-INSTRUCTIONS" in str(contexts[0].messages[0].content)
         assert "PARENT-HISTORY-MARKER" not in str(contexts[0].messages)
         assert record["config"]["label"] == "Reviewer"
         assert session.agent.messages[0].content == "PARENT-HISTORY-MARKER"
@@ -440,7 +445,8 @@ async def test_coding_global_presets_reused_by_cli_picker_and_ignore_project_act
         child = result.output.split()[1]
         record = await session.children.supervisor.control("wait", child)
         assert not (tmp_path / "target").exists()
-        assert "PRESET-INSTRUCTIONS" in str(contexts[0].system_prompt)
+        assert "PRESET-INSTRUCTIONS" not in str(contexts[0].system_prompt)
+        assert "PRESET-INSTRUCTIONS" in str(contexts[0].messages[0].content)
         assert [tool.name for tool in contexts[0].tools] == ["current_time"]
         assert record["config"]["preset"] == "reviewer" and record["config"]["label"] == "OVERRIDE"
         assert not record["config"]["inherit_context"]

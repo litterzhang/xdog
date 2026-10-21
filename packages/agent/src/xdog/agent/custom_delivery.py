@@ -7,8 +7,8 @@ from typing import Any
 from xdog.agent.agent import Agent
 from xdog.agent.context_messages import ContextMessages
 from xdog.agent.core import CustomAgentMessage
+from xdog.agent.cross_loop import settle_on
 from xdog.agent.extensions.context_message import TYPE, record
-from xdog.agent.supervision import settle_on
 
 
 def bind(store: ContextMessages, agent: Agent,

@@ -1,0 +1,244 @@
+"""Live correspondence is a UI projection, never another input/execution loop."""
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+from xdog.agent import Agent, AgentConfig
+from xdog.ai.types import AssistantMessage, TextContent, ThinkingContent
+from xdog.ai.utils.event_stream import EventStream
+from xdog.coding.core.agent_session import AgentSession
+from xdog.coding.core.permissions import PermissionRequest
+from xdog.coding.core.session_manager import SessionManager
+from xdog.coding.core.settings_manager import SettingsManager
+from xdog.coding.modes.interactive.child_messages import ChildMessage, ChildMessagePresenter
+from xdog.coding.modes.interactive.components.chat_log import ChatLog
+from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
+from xdog.coding.modes.interactive.theme import create_default_theme
+from xdog.tui.keys import KeyEvent
+
+
+class Supervisor:
+    def __init__(self):
+        self.listeners = []
+        self.removed = []
+
+    def subscribe(self, receive):
+        self.listeners.append(receive)
+        def remove():
+            self.removed.append(receive)
+            self.listeners.remove(receive)
+        return remove
+
+
+def fact(**changes):
+    return {'type': 'child_message', 'child_id': 'child-1', 'message_id': 'stable-id',
+            'direction': 'parent_to_child', 'text': 'Task knowledge', 'status': 'admitted', **changes}
+
+
+def presenter():
+    chat, queue, supervisor = ChatLog(create_default_theme()), [], Supervisor()
+    view = ChildMessagePresenter(chat, queue.append)
+    owner = ('session', 'branch', 'original-child-token')
+    view.bind(supervisor, owner)
+    return view, chat, queue, supervisor, owner
+
+
+def test_event_only_deduplication_and_complete_details_even_after_many_polls():
+    view, chat, queue, supervisor, owner = presenter()
+    for _ in range(10):
+        view.bind(supervisor, owner)
+        supervisor.listeners[0]({'type': 'child_status', 'snapshot': {'messages': ['NOT A REPLY']}})
+        supervisor.listeners[0](fact())
+    assert len(supervisor.listeners) == 1
+    assert sum(view.display(event, owner) for event in queue) == 1
+    message = chat.children[0]
+    assert isinstance(message, ChildMessage)
+    assert 'Parent → child child-1' in message.detail_title and 'admitted' in message.detail_title
+    assert chat.detail_records()[0].body == 'Task knowledge'
+    assert 'Task knowledge' in chat.transcript_records()[0].body
+    view.close()
+    assert not supervisor.listeners
+
+
+@pytest.mark.parametrize('status', ['received', 'completed', 'error', 'aborted'])
+def test_child_reply_preview_discloses_bound_and_keeps_tail_and_terminal_safety(status):
+    view, chat, queue, supervisor, owner = presenter()
+    body = 'First line\n' + 'findings\n' * 100 + 'FULL-TAIL\x1b]0;bad\x07'
+    supervisor.listeners[0](fact(direction='child_to_parent', status=status, text=body, label='Reviewer'))
+    assert view.display(queue.pop(), owner)
+    message = chat.children[0]
+    preview = '\n'.join(message.render(44))
+    assert 'Preview only' in preview and 'FULL-TAIL' not in preview
+    assert 'Reviewer' in message.detail_title and '→ Parent' in message.detail_title
+    assert 'FULL-TAIL' in chat.detail_records()[0].body
+    assert '\x1b' not in chat.detail_records()[0].body
+    assert 'FULL-TAIL' in chat.transcript_records()[0].body
+    message.set_expanded(True)
+    assert 'FULL-TAIL' in '\n'.join(message.render(44))
+    view.close()
+
+
+def test_original_owner_branch_and_subscription_lease_fence_late_events_without_cancellation():
+    view, chat, queue, supervisor, owner = presenter()
+    old_receive = supervisor.listeners[0]
+    old_receive(fact())
+    successor = (*owner[:1], 'new-branch', owner[2])
+    assert not view.display(queue[0], successor)
+    view.bind(supervisor, successor)
+    old_receive(fact(message_id='late'))
+    assert all(not view.display(event, successor) for event in queue)
+    assert not chat.children and len(supervisor.removed) == 1
+    supervisor.listeners[0](fact(message_id='new'))
+    assert view.display(queue[-1], successor)
+    view.close()
+    old_receive(fact(message_id='after-close'))
+    assert not view.display(queue[-1], successor)
+    assert len(chat.children) == 1 and not supervisor.listeners
+
+
+@pytest.mark.parametrize('change', [
+    {'status': 'queued'}, {'status': 'rejected'}, {'direction': 'toolResult'}, {'message_id': ''},
+    {'text': {'thinking': 'NO'}}, {'child_id': None}, {'direction': 'child_to_parent', 'status': 'streaming'},
+])
+def test_non_admitted_malformed_and_partial_messages_are_not_correspondence(change):
+    view, chat, queue, supervisor, owner = presenter()
+    supervisor.listeners[0](fact(**change))
+    assert not view.display(queue[0], owner)
+    assert not chat.children
+    view.close()
+
+
+def session_for(tmp_path, stream):
+    store = SessionManager(tmp_path / 'sessions')
+    return AgentSession(agent=Agent(stream, config=AgentConfig(model='offline/test')),
+        session_data=store.create_session(model='offline/test', working_dir=tmp_path), session_manager=store,
+        settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
+        tool_registry=None, bash=None)
+
+
+async def poll_until(ui, predicate):
+    async with asyncio.timeout(5):
+        while True:
+            ui._poll()
+            if predicate():
+                return
+            await asyncio.sleep(.003)
+
+
+def close_ui(ui):
+    ui._child_messages.close()
+    if ui._child_panel is not None:
+        ui._close_children()
+    ui._outputs.close()
+    ui._saved_worker.close()
+    ui._file_completions.close()
+    ui._composer.close()
+
+
+async def test_actual_three_children_log_each_direction_once_without_opening_agents_panel(tmp_path):
+    calls = []
+    def stream(model, context, options):
+        calls.append(context)
+        return EventStream.empty(AssistantMessage(content=(ThinkingContent(thinking='PRIVATE THOUGHT'),
+                                                           TextContent(text='Actual child reply'))))
+    session = session_for(tmp_path, stream)
+    ui = InteractiveMode(session)
+    try:
+        for index in range(3):
+            identifier = await session.children.supervisor.start(f'Task knowledge {index}',
+                config={'label': f'Reviewer {index}', 'system_prompt': 'CHILD-ONLY-PROMPT', 'skills': []})
+            await session.children.supervisor.control('wait', identifier)
+        ui._poll()
+        messages = [item for item in ui._chat_log.children if isinstance(item, ChildMessage)]
+        assert len(messages) == 6 and len(calls) == 3
+        assert len({(m.child_id, m.message_id) for m in messages}) == 6
+        assert all('Reviewer' in m.detail_title for m in messages)
+        assert not any('PRIVATE THOUGHT' in m.detail_body for m in messages)
+        assert ui._child_panel is None
+        for _ in range(5):
+            ui._poll()
+        assert len([m for m in ui._chat_log.children if isinstance(m, ChildMessage)]) == 6
+        before = len(calls)
+        ui._open_children(identifier)
+        await poll_until(ui, lambda: ui._child_panel.preview is not None and ui._child_panel.preview.settled)
+        assert 'Actual child reply' in str(ui._child_panel.preview.records)
+        ui._close_children()
+        assert len(calls) == before  # Neither message display nor transcript viewing starts a model.
+    finally:
+        close_ui(ui)
+        await session.children.supervisor.aclose()
+        session.dispose()
+
+
+async def test_real_configured_start_keeps_task_user_prompt_skills_and_action_subset_separate(tmp_path):
+    calls = []
+    def stream(model, context, options):
+        calls.append(context)
+        return EventStream.empty(AssistantMessage(content=(TextContent(text='done'),)))
+    session = session_for(tmp_path, stream)
+    session.agent.set_system_prompt('PARENT-SECRET-PROMPT')
+    ui = InteractiveMode(session)
+    try:
+        ui._open_children()
+        config = ui._child_resolve_config({'system_prompt': 'CHILD-CUSTOM-PROMPT', 'skills': [],
+                                           'tools': [], 'tool_actions': {}, 'label': 'Configured'})
+        ui._child_configured_start('Exact user task knowledge', 'inherit', config)
+        await poll_until(ui, lambda: bool(calls) and not ui._child_jobs and not session.children.supervisor.active)
+        assert 'CHILD-CUSTOM-PROMPT' in str(calls[0].system_prompt)
+        assert 'PARENT-SECRET-PROMPT' not in str(calls[0].system_prompt)
+        assert 'Exact user task knowledge' not in str(calls[0].system_prompt)
+        assert 'Exact user task knowledge' in str(calls[0].messages)
+        record = session.children.supervisor.snapshot()['children'][0]
+        assert record['access'] == 'inherit'
+        saved = session.children.store.load()[0]
+        assert saved['config']['skills'] == [] and saved['config']['tool_actions'] == {}
+        identifier = record['id']
+        ui._child_panel._selected_id = identifier
+        ui._child_panel.edit_system_prompt()
+        await poll_until(ui, lambda: ui._child_panel._mode == 'form')
+        assert ui._child_panel._input.get_text() == 'CHILD-CUSTOM-PROMPT'
+        panel = ui._child_panel
+        panel._input.set_text('REPLACEMENT-PROMPT')
+        panel.render(80)
+        panel.handle_input(KeyEvent('enter'))
+        for _ in range(40):
+            panel.render(80)
+            panel.handle_input(KeyEvent('pagedown'))
+        panel.render(80)
+        panel.handle_input(KeyEvent('enter'))
+        await poll_until(ui, lambda: not ui._child_jobs)
+        record = await session.children.supervisor.control('inspect', identifier)
+        assert record['config']['system_prompt'] == 'REPLACEMENT-PROMPT'
+        assert len(calls) == 1  # Idle-only config edit is not an execution/replay.
+    finally:
+        close_ui(ui)
+        await session.children.supervisor.aclose()
+        session.dispose()
+
+
+async def test_approval_alive_is_original_ui_lease_and_child_owner_not_successor(tmp_path):
+    session = session_for(tmp_path, lambda *args: EventStream.empty(AssistantMessage()))
+    ui = InteractiveMode(session)
+    try:
+        owner = session.children
+        alive = owner.approval_alive
+        assert alive is not None and alive()
+        ui._bind_child_approvals()
+        assert owner.approval_alive is alive  # Polling never replaces a pending review's lease.
+        request = PermissionRequest('original-request', 'filesystem', {}, 'summary')
+        original = owner.approver
+        assert original is not None
+        original('original-child', request)
+        # Invalidate/rebind the UI lease. The captured old handler must not publish.
+        ui._child_ui_lease = 'successor-ui-lease'
+        ui._bind_child_approvals()
+        assert not alive() and owner.approval_alive()
+        original('foreign-child', request)
+        assert ui._event_queue.drain(lambda event: None) == 1
+        ui._exit_requested = True
+        assert not owner.approval_alive()
+    finally:
+        close_ui(ui)
+        await session.children.supervisor.aclose()
+        session.dispose()

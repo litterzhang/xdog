@@ -81,7 +81,7 @@ async def test_cancelled_child_metadata_preparation_keeps_original_group_owner(t
     runtime = app._runtimes['main']
     parent = await runtime.prepare_session(allow_reset=False)
     spec = ChildSpec('a' * 12, 'No child model may start')
-    parent.children.capture(spec)
+    await parent.children.capture(spec)
     entered, release = threading.Event(), threading.Event()
     original = child_agents.resolve_child_model
 

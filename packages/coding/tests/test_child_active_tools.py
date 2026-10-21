@@ -1,6 +1,8 @@
 """Native host child factories retain parent explicit active subset through extension hooks."""
 from __future__ import annotations
 
+import inspect
+
 import pytest
 from xdog.agent.supervision import ChildSpec
 
@@ -49,8 +51,10 @@ async def test_child_capture_rejects_profile_outside_parent_selection_before_wor
     try:
         parent.agent.set_active_tools(['current_time'], expected_revision=parent.agent.tool_selection_revision)
         spec = ChildSpec(id='a' * 12, task='work', tools=('filesystem',))
-        with pytest.raises(ValueError, match='exceeds captured parent'):
-            parent.children.capture(spec)
+        with pytest.raises(ValueError, match=r'exceeds (captured )?parent'):
+            admission = parent.children.capture(spec)
+            if inspect.isawaitable(admission):
+                await admission
         assert not parent.children.snapshots and not parent.children.tool_limits
         assert not parent.children.extensions.owners
     finally:

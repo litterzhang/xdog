@@ -8,9 +8,9 @@ from typing import TYPE_CHECKING, Any
 from xdog.agent.async_work import run_owned
 from xdog.agent.capabilities.runtime import ParentPort
 from xdog.agent.session_input import SessionInput
-from xdog.agent.supervision_store import ChildStore
 from xdog.claw.core.inputs.consumer import InputService
 from xdog.claw.core.inputs.models import InputScope
+from xdog.claw.core.runtime.child_store import ChildStore
 from xdog.claw.core.runtime.input_adapter import freeze_input
 from xdog.claw.core.types import ExternalInput
 

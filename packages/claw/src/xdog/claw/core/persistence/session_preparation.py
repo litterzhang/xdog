@@ -11,10 +11,10 @@ from xdog.agent.access import AccessState
 from xdog.agent.extensions.compaction import saved_record
 from xdog.agent.extensions.location import ExtensionRoot
 from xdog.agent.skills.types import SkillPlacement
-from xdog.agent.supervision_store import ChildStore
 from xdog.ai.types import Model, SystemPromptBlock
 from xdog.claw.core.persistence.transcript_convert import transcript_to_messages
 from xdog.claw.core.persistence.transcript_store import TranscriptStore
+from xdog.claw.core.runtime.child_store import ChildStore
 from xdog.claw.core.types import SessionMeta
 
 if TYPE_CHECKING:

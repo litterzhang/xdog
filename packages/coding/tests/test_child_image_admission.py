@@ -38,7 +38,7 @@ async def test_actual_host_child_checkpoint_is_durable_before_provider_and_cance
     import asyncio
     import threading
 
-    from xdog.agent.supervision_store import ChildStore
+    from xdog.coding.core.child_store import ChildStore
     entered, release = threading.Event(), threading.Event()
     adapter = Adapter(True)
     server = None

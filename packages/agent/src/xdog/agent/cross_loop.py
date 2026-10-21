@@ -95,3 +95,13 @@ def submit_remote(loop: asyncio.AbstractEventLoop, coroutine: Coroutine[Any, Any
             raise
 
     return wait()
+
+
+async def settle_on(loop: asyncio.AbstractEventLoop, coroutine: Coroutine[Any, Any, T]) -> T:
+    """Use an existing host loop, retaining actual cancellation/cleanup ownership."""
+    if loop is asyncio.get_running_loop():
+        return await coroutine
+    if loop.is_closed():
+        coroutine.close()
+        raise RuntimeError("Host service loop closed")
+    return await submit_remote(loop, coroutine)

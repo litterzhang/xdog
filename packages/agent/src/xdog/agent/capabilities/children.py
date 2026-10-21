@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import inspect
 import threading
 from collections.abc import Awaitable, Callable, Sequence
 from contextvars import ContextVar
@@ -11,8 +13,10 @@ from typing import Any, Protocol
 
 from xdog.agent.capabilities.runtime import ParentPort
 from xdog.agent.core import AgentTool, AgentToolResult
+from xdog.agent.cross_loop import settle_on
 from xdog.agent.session_input import SessionInput
-from xdog.agent.supervision import ChildSpec, ChildSupervisor, settle_on
+from xdog.agent.supervision import ChildBackend, ChildSpec
+from xdog.agent.supervision_policy import _matches
 
 
 class CapabilityHost(Protocol):
@@ -62,11 +66,13 @@ _admission: ContextVar[_Admission | None] = ContextVar('capability_child_admissi
 
 
 class ChildPort:
-    """The existing supervisor only; a copied admission cannot start a second role."""
-    def __init__(self, session: str, branch: str, parent_tools: Callable[[], Sequence[AgentTool]]) -> None:
+    """The original host execution port; copied admission cannot start a second role."""
+    def __init__(self, session: str, branch: str, parent_tools: Callable[[], Sequence[AgentTool]],
+                 *, parent_valid: Callable[[str], bool]) -> None:
         self.session, self.branch = session, branch
         self.parent_tools = parent_tools
-        self.supervisor: ChildSupervisor
+        self._parent_valid = parent_valid
+        self.supervisor: ChildBackend
         self._lock = threading.Lock()
         self._roles: dict[str, _Admission] = {}
         self._bound: dict[str, tuple[AgentTool, ...]] = {}
@@ -119,13 +125,40 @@ class ChildPort:
             return await ticket.tools(spec)
         originals = await settle_on(loop, originals_on_owner())
         def bridge(tool: AgentTool) -> AgentTool:
+            schema = copy.deepcopy(tool.parameters)
+            original_validator = tool.validate_arguments
+            bound: AgentTool
+            def check(cancel: asyncio.Event | None) -> None:
+                if cancel is not None and cancel.is_set():
+                    raise asyncio.CancelledError
+                if self.closed or not self._parent_valid(spec.id):
+                    raise ValueError("Original child capability parent retired before execution")
+                state = self.supervisor.capture_source(spec.id)
+                if (not state.settling or state.status != 'running'
+                        or not self.permits(spec.id, tool.name, (bound,))):
+                    raise ValueError("Original child capability admission is no longer running")
             async def execute(call: str, params: dict[str, Any], cancel: asyncio.Event | None = None,
                               on_update: Any = None, ctx: Any = None) -> AgentToolResult:
+                check(cancel)
                 async def invoke() -> AgentToolResult:
+                    check(cancel)  # A remote-loop dispatch may have awaited its original owner.
+                    validators = (original_validator, tool.validate_arguments)
+                    seen: set[int] = set()
+                    for validate in validators:
+                        if validate is not None and id(validate) not in seen:
+                            seen.add(id(validate))
+                            value = validate(params)
+                            if inspect.isawaitable(value):
+                                await value
+                            check(cancel)  # Validator IO cannot carry authority across revocation.
+                    if not (_matches(schema, params) and _matches(tool.parameters, params)):
+                        raise ValueError("Child capability arguments exceed original/current schema")
+                    check(cancel)
                     assert tool.execute is not None
                     return await tool.execute(call, params, None, None, ctx)
                 return await settle_on(loop, invoke())
-            return replace(tool, execute=execute)
+            bound = replace(tool, parameters=copy.deepcopy(schema), execute=execute)
+            return bound
         result = tuple(bridge(tool) for tool in originals)
         with self._lock:
             self._bound[spec.id] = result
@@ -147,7 +180,7 @@ class ChildPort:
 
     @property
     def closed(self) -> bool:
-        return self.supervisor._closed
+        return self.supervisor.closed
 
     async def inspect(self, identifier: str) -> dict[str, Any]:
         return await self.supervisor.control('inspect', identifier)

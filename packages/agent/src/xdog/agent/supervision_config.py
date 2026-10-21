@@ -5,7 +5,7 @@ import io
 import json
 import re
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 
@@ -14,29 +14,36 @@ class ChildConfig:
     label: str = ""
     instructions: str = ""
     tools: tuple[str, ...] | None = None
-    inherit_context: bool = True
+    inherit_context: bool = False
     model: str | None = None
     thinking: str | None = None
     preset: str | None = None
+    system_prompt: str = ""
+    # None delegates catalog selection to the host; () deliberately selects no knowledge.
+    skills: tuple[str, ...] | None = ()
+    tool_actions: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {"label": self.label, "instructions": self.instructions,
                 "tools": list(self.tools) if self.tools is not None else None,
                 "inherit_context": self.inherit_context,
-                "model": self.model, "thinking": self.thinking, "preset": self.preset}
+                "model": self.model, "thinking": self.thinking, "preset": self.preset,
+                "system_prompt": self.system_prompt,
+                "skills": list(self.skills) if self.skills is not None else None,
+                "tool_actions": {name: list(actions) for name, actions in self.tool_actions}}
 
     @classmethod
     def from_dict(cls, value: Any) -> ChildConfig:
         if not isinstance(value, dict) or set(value) - set(cls().to_dict()):
             raise ValueError("Unknown/invalid child configuration fields")
         merged = {**cls().to_dict(), **value}
-        for name, limit in (("label", 120), ("instructions", 16000)):
+        for name, limit in (("label", 120), ("instructions", 16000), ("system_prompt", 16000)):
             text = merged[name]
             if (not isinstance(text, str) or len(text.encode("utf-8")) > limit
                     or name == "label" and any(ord(char) < 32 or ord(char) == 127 for char in text)):
                 raise ValueError(f"Invalid child {name}")
-        if type(merged["inherit_context"]) is not bool:
-            raise ValueError("Child inherit_context must be boolean")
+        if type(merged["inherit_context"]) is not bool or merged["inherit_context"]:
+            raise ValueError("Child inherit_context must be false; parent history is never inherited")
         model, thinking = merged["model"], merged["thinking"]
         if model is not None and (not isinstance(model, str) or not model or len(model.encode("utf-8")) > 256
                                   or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in model)):
@@ -55,16 +62,43 @@ class ChildConfig:
                            for tool in tools) or len(set(tools)) != len(tools)
                     or any(tool in {"agent", "agent_spawn", "agent_control", "update_plan"} for tool in tools)):
                 raise ValueError("Child tools must be distinct non-reserved tool names (at most 128)")
-        return cls(merged["label"], merged["instructions"], tuple(tools) if tools is not None else None,
-                   merged["inherit_context"], model, thinking, preset)
+        skills = merged["skills"]
+        if skills is not None and (not isinstance(skills, list) or len(skills) > 128
+                or any(not isinstance(slug, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", slug)
+                       for slug in skills) or len(set(skills)) != len(skills)):
+            raise ValueError("Child skills must be distinct skill slugs (at most 128), or null")
+        actions = merged["tool_actions"]
+        if not isinstance(actions, dict) or len(actions) > 128:
+            raise ValueError("Child tool_actions must be a tool-name to action-array object")
+        reserved = {"agent", "agent_spawn", "agent_control", "update_plan"}
+        for name, selected in actions.items():
+            if (not isinstance(name, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,127}", name)
+                    or name in reserved or not isinstance(selected, list) or len(selected) > 128
+                    or any(not isinstance(action, str) or not action or len(action.encode("utf-8")) > 128
+                           or any(ord(char) < 32 or ord(char) == 127 for char in action) for action in selected)
+                    or len(set(selected)) != len(selected)):
+                raise ValueError("Child tool_actions requires non-reserved tool names and distinct action strings")
+        if tools is not None and set(actions) - set(tools):
+            raise ValueError("Child tool_actions cannot name tools outside the selected tool subset")
+        return cls(label=merged["label"], instructions=merged["instructions"],
+                   tools=tuple(tools) if tools is not None else None,
+                   inherit_context=False, model=model, thinking=thinking, preset=preset,
+                   system_prompt=merged["system_prompt"], skills=tuple(skills) if skills is not None else None,
+                   tool_actions=tuple((name, tuple(selected)) for name, selected in sorted(actions.items())))
 
     @classmethod
     def from_record(cls, value: Any) -> ChildConfig:
-        """Read historical budgets as inert data, never as current controls."""
+        """Historical inheritance/budgets are inert, never admission controls."""
         if not isinstance(value, dict):
             raise ValueError("Invalid persisted child configuration")
-        return cls.from_dict({key: item for key, item in value.items()
-                              if key not in {"timeout", "max_model_calls", "max_tokens"}})
+        historical = value.get("inherit_context", False)
+        if type(historical) is not bool:
+            raise ValueError("Child inherit_context must be boolean")
+        config = cls.from_dict({**{key: item for key, item in value.items()
+                                  if key not in {"timeout", "max_model_calls", "max_tokens"}},
+                                "inherit_context": False})
+        return replace(config, inherit_context=historical)
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,7 +154,8 @@ class ChildPresets:
                     or not isinstance(row["name"], str) or row["name"] in values):
                 raise ValueError("Invalid/duplicate child preset identity")
             values[row["name"]] = {"description": row["description"],
-                                   "config": ChildConfig.from_record(row["config"]).to_dict()}
+                                   "config": {**ChildConfig.from_record(row["config"]).to_dict(),
+                                              "inherit_context": False}}
         return cls(values)
 
     def snapshot(self) -> tuple[dict[str, Any], ...]:
@@ -152,7 +187,8 @@ def parse_child_options(text: str) -> tuple[str, str, dict[str, Any]]:
     access = "read-only"
     seen: set[str] = set()
     flags = {"--label": "label", "--instructions": "instructions", "--tools": "tools",
-             "--model": "model", "--thinking": "thinking", "--preset": "preset"}
+             "--model": "model", "--thinking": "thinking", "--preset": "preset",
+             "--system-prompt": "system_prompt", "--skills": "skills"}
     while remaining.startswith("--"):
         # shlex lexer's stream position avoids rewriting the task suffix.
         source = io.StringIO(remaining)
@@ -177,8 +213,8 @@ def parse_child_options(text: str) -> tuple[str, str, dict[str, Any]]:
                 raise ValueError("Missing value for " + flag)
             key = flags[flag]
             try:
-                value[key] = ([] if key == "tools" and argument == "none" else argument.split(",")
-                              if key == "tools" else argument)
+                value[key] = ([] if key in {"tools", "skills"} and argument == "none" else argument.split(",")
+                              if key in {"tools", "skills"} else argument)
             except ValueError as exc:
                 raise ValueError("Invalid value for " + flag) from exc
         else:

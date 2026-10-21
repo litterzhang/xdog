@@ -47,7 +47,6 @@ from xdog.agent.extensions.command_result import ExtensionCommandResult
 from xdog.agent.extensions.runtime import validate_snapshot
 from xdog.agent.mcp.context import McpDocument, McpEntry
 from xdog.agent.mcp.oauth import normalize_auth_reply
-from xdog.agent.supervision_config import ChildConfig
 from xdog.ai.types import (
     AssistantMessage,
     ImageContent,
@@ -60,6 +59,7 @@ from xdog.coding.core.agent_session import AgentSession
 from xdog.coding.core.child_agents import CodingChildren
 from xdog.coding.core.permissions import PermissionDecision, PermissionRequest
 from xdog.coding.core.slash_commands import execute_command, parse_slash_command
+from xdog.coding.modes.interactive.child_messages import ChildMessagePresenter
 from xdog.coding.modes.interactive.components.chat_log import ChatLog
 from xdog.coding.modes.interactive.components.custom_editor import CustomEditorComponent
 from xdog.coding.modes.interactive.components.footer import FooterComponent
@@ -633,7 +633,7 @@ class InteractiveMode:
     def _bind_extension_dialogs(self) -> None:
         session = self._session
         async def pending_messages() -> bool | None:
-            from xdog.agent.supervision import settle_on
+            from xdog.agent.cross_loop import settle_on
             with self._queue_lock:
                 loop = self._worker_loop_ref if self._worker_active else self._command_loop_ref
             if loop is None:
@@ -1225,22 +1225,10 @@ class InteractiveMode:
         return self._session.children.supervisor.presets.resolve(value).to_dict()
 
     def _child_configured_start(self, task: str, access: str, config: dict[str, Any]) -> None:
-        import shlex
-        chosen = ChildConfig.from_dict(config)
-        options = ["--label", chosen.label, "--instructions", chosen.instructions]
-        if chosen.preset is not None:
-            options.extend(("--preset", chosen.preset))
-        if chosen.model is not None:
-            options.extend(("--model", chosen.model))
-        if chosen.thinking is not None:
-            options.extend(("--thinking", chosen.thinking))
-        if chosen.tools is not None:
-            options.extend(("--tools", ",".join(chosen.tools) if chosen.tools else "none"))
-        if not chosen.inherit_context:
-            options.append("--fresh")
-        if access == "inherit":
-            options.append("--inherit")
-        self._child_send("start", "", shlex.join(options) + " -- " + task, "read-only")
+        # Use the existing owned child admission path, including for text-only
+        # settings. Do not serialize configuration through CLI flags or put TASK
+        # into the system prompt; the first user message remains the exact task.
+        self._child_image_send('start', '', task, access, config, ())
 
     def _child_send(self, action: str, child: str, text: str, access: str) -> None:
         if action == 'queue':
@@ -1270,19 +1258,24 @@ class InteractiveMode:
         self._child_jobs.add(identifier)
         owner, context = self._session.children, self._child_context
         queue_panel = panel.queue
+        form_lease = panel.terminal_lease if action in {"prompt", "skills"} else ""
         release = self._session_events.reserve_producer('child-control')
         def work() -> None:
             error = ""
             data: Any = None
             try:
-                data = asyncio.run(owner.supervisor.control(action, child, text))
+                if action == 'skills':
+                    data = owner.delegable_skills()
+                else:
+                    operation = 'inspect' if action == 'prompt' else action
+                    data = asyncio.run(owner.supervisor.control(operation, child, text))
             except (Exception, asyncio.CancelledError) as exc:
                 error = str(exc) or "Child control canceled after settlement"
             finally:
                 release()
             self._event_queue.put({"type": "child_ui_result", "id": identifier, "action": action,
                                    "context": context, "error": error, "data": data,
-                                   'panel_owner': panel.owner_token,
+                                   'panel_owner': panel.owner_token, 'form_lease': form_lease,
                                    'queue_owner': queue_panel.owner_token if queue_panel is not None else ''})
         threading.Thread(target=work, daemon=True, name="xdog-child-control").start()
 
@@ -1754,6 +1747,8 @@ class InteractiveMode:
                     self._session.permissions.set_request_handler(None)
                     self._session.permissions.deny_all()
                 def unsubscribe() -> None:
+                    if hasattr(self, '_child_messages'):
+                        self._child_messages.close()
                     if self._unsubscribe is not None:
                         self._unsubscribe()
                         self._unsubscribe = None
@@ -2583,6 +2578,8 @@ class InteractiveMode:
             return
         self._draft_quit_failures = None
         self._exit_requested = True
+        if hasattr(self, '_child_messages'):
+            self._child_messages.close()
         self._close_parent_drafts()
         if hasattr(self, "_argument_feed"):
             self._argument_feed.close()
@@ -2798,18 +2795,44 @@ class InteractiveMode:
 
     # -- Polling / UI update --
 
+    def _child_message_owner(self) -> tuple[Any, ...]:
+        session = self._session
+        return (id(session), session.session_id, session.session_data.active_branch,
+                session.children.token, id(session.children.supervisor))
+
     def _bind_child_approvals(self) -> None:
         owner = self._session.children
-        owner.extensions.default_ui = (self._child_ui_lease, lambda event: self._event_queue.put(
-            {**event, "child_session_owner": owner.token}))
+        if not self._exit_requested:
+            if not hasattr(self, '_child_messages'):
+                self._child_messages = ChildMessagePresenter(self._chat_log, self._event_queue.put)
+            self._child_messages.bind(owner.supervisor, self._child_message_owner())
+        if self._exit_requested:
+            return
+        key = self._child_message_owner()
+        if getattr(self, '_child_approval_key', None) == (key, self._child_ui_lease):
+            return
+        self._child_approval_key = key, self._child_ui_lease
+        lease = self._child_ui_lease
+
+        def alive() -> bool:
+            return (not self._exit_requested and self._child_ui_lease == lease
+                    and owner.approval_alive is alive
+                    and self._session.children is owner and self._child_message_owner() == key)
+
+        owner.approval_alive = alive
+        owner.extensions.default_ui = (lease, lambda event: self._event_queue.put(
+            {**event, "child_session_owner": owner.token}) if alive() else None)
         owner.approver = lambda child, request: self._event_queue.put(
-            {"type": "child_permission", "owner_id": owner.token, "child_id": child, "request": request})
+            {"type": "child_permission", "owner_id": owner.token, "child_id": child,
+             "ui_lease": lease, "owner_key": key, "request": request}) if alive() else None
 
     def _poll_permissions(self) -> bool:
         changed = False
         if self._permission_child is not None and self._permission_prompt is not None:
             owner, child_id = self._permission_child
             if (owner is not self._session.children
+                    or owner.approval_alive is not None and not owner.approval_alive()
+                    or self._permission_alive is not None and not self._permission_alive()
                     or not owner.has_pending(child_id, self._permission_prompt.request.id)):
                 self._permission_prompt = None
                 self._permission_child = None
@@ -2828,7 +2851,8 @@ class InteractiveMode:
         while self._permission_prompt is None and self._permission_waiters:
             request, waiting_owner, child, alive = self._permission_waiters.popleft()
             if waiting_owner is not None:
-                if waiting_owner is not self._session.children or not waiting_owner.has_pending(child, request.id):
+                if (waiting_owner is not self._session.children or not alive()
+                        or not waiting_owner.has_pending(child, request.id)):
                     continue
             elif not alive():
                 self._session.permissions.resolve(request.id, "deny")
@@ -2924,7 +2948,8 @@ class InteractiveMode:
             if self._permission_prompt is not prompt:
                 return
             if owner is not None:
-                if owner is not self._session.children:
+                if (owner is not self._session.children or not alive()
+                        or not owner.has_pending(child_id, request.id)):
                     return
                 owner.resolve(child_id, request.id, decision)
             else:
@@ -3000,6 +3025,17 @@ class InteractiveMode:
             question = event.get('dialog')
             if not isinstance(question, dict) or not self._extension_stack.accepts(question, []):
                 return  # Removed extension controls cannot touch a successor owner or draft.
+        if event_type == 'child_message_ui':
+            if not self._exit_requested:
+                message = event.get('message')
+                if isinstance(message, dict) and not message.get('label'):
+                    roster = self._session.children.supervisor.snapshot()
+                    rows = roster.get('children', ())
+                    message['label'] = next((row.get('config', {}).get('label', '') for row in rows
+                                             if row.get('id') == message.get('child_id')), '')
+                self._child_messages.display(event, self._child_message_owner())
+                self._tui.request_render()
+            return
         if event_type == 'native_admission_failed':
             self._session_events.admission_failed(event['id'], event['error'])
             return
@@ -3060,6 +3096,7 @@ class InteractiveMode:
             if (self._child_panel is not None
                     and event.get("context") == self._child_context == self._child_context_key()
                     and event.get('panel_owner', self._child_panel.owner_token) == self._child_panel.owner_token
+                    and (not event.get('form_lease') or event['form_lease'] == self._child_panel.terminal_lease)
                     and ('queue_owner' not in event or event['queue_owner'] == (
                         self._child_panel.queue.owner_token if self._child_panel.queue is not None else ''))):
                 self._child_panel.complete(str(event.get("action", "")), str(event.get("error", "")),
@@ -3070,10 +3107,14 @@ class InteractiveMode:
         if event_type == "child_permission":
             owner = self._session.children
             child, request = event.get("child_id"), event.get("request")
-            if (event.get("owner_id") == owner.token and isinstance(child, str)
+            if (not self._exit_requested and event.get("owner_id") == owner.token
+                    and event.get('ui_lease') == self._child_ui_lease
+                    and tuple(event.get('owner_key', ())) == self._child_message_owner()
+                    and isinstance(child, str)
                     and isinstance(request, PermissionRequest)
                     and owner.has_pending(child, request.id)):
-                self._show_permission_request(request, owner=owner, child_id=child)
+                self._show_permission_request(request, owner=owner, child_id=child,
+                                              alive=owner.approval_alive)
             return
         if event_type in {'saved_source_ready', 'saved_source_failed'}:
             panel = self._transcript_panel

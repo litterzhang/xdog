@@ -1,0 +1,24 @@
+import asyncio,json,sys
+from pathlib import Path
+from xdog.agent import Agent,AgentConfig
+# HOST_RUNTIME_IMPORTS
+from xdog.ai.types import AssistantMessage,ImageContent,StartEvent
+from xdog.ai.utils.event_stream import EventStream
+async def main():
+    store=ChildStore(Path(sys.argv[1]))
+    def factory(spec,publish):
+        def stream(*args):
+            async def events():
+                yield StartEvent(partial=AssistantMessage())
+                await asyncio.sleep(60)
+            return EventStream.from_async_generator(events())
+        return Agent(stream,config=AgentConfig(model='offline/model'))
+    owner=ChildRuntime(factory,store.save,begin=store.begin,persist_inputs=store.save_inputs)
+    child=await owner.start('INITIAL')
+    while not owner._children[child].agent or not owner._children[child].agent.is_streaming:
+        await asyncio.sleep(.003)
+    await owner._admit_identified_input(child,owner._children[child].agent,'extq-'+'a'*32,
+        'IDENTIFIED IMAGE ACK','follow_up',(ImageContent(data=sys.argv[2],mime_type='image/png'),),lambda:True)
+    print(json.dumps({'id':child,'ack':True}),flush=True)
+    await asyncio.sleep(60)
+asyncio.run(main())

@@ -1,0 +1,36 @@
+import asyncio,json,sys,threading
+from pathlib import Path
+from xdog.agent import Agent,AgentConfig
+# HOST_RUNTIME_IMPORTS
+from xdog.ai.types import AssistantMessage,TextContent
+from xdog.ai.utils.event_stream import EventStream
+async def main():
+    store=ChildStore(Path(sys.argv[1]))
+    release=threading.Event()
+    calls=[]
+    def factory(spec,publish):
+        def stream(*args):
+            calls.append(True)
+            if len(calls)==1:
+                async def initial():
+                    while not release.is_set():
+                        await asyncio.sleep(.003)
+                    from xdog.ai.types import DoneEvent
+                    yield DoneEvent(message=AssistantMessage(content=(TextContent(text='first'),)))
+                future=asyncio.get_running_loop().create_future()
+                future.set_result(AssistantMessage(content=(TextContent(text='first'),)))
+                return EventStream.from_async_generator(initial(),result_future=future)
+            print(json.dumps({'id':spec.id,'consumed':True}),flush=True)
+            async def held():
+                await asyncio.sleep(60)
+                yield None
+            return EventStream.from_async_generator(held())
+        return Agent(stream,config=AgentConfig(model='offline/model'))
+    owner=ChildRuntime(factory,store.save,begin=store.begin,persist_inputs=store.save_inputs)
+    child=await owner.start('INITIAL')
+    while not calls:
+        await asyncio.sleep(.003)
+    await owner.control('follow-up',child,'CONSUMED BEFORE CRASH')
+    release.set()
+    await asyncio.sleep(60)
+asyncio.run(main())
