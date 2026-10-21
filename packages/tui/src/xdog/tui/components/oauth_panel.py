@@ -6,12 +6,12 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from xdog.tui.components.panel import ThemedPanel
 from xdog.tui.keys import KeyEvent, KeyEventType
-from xdog.tui.tui import Component
-from xdog.tui.utils import sanitize_terminal_text, truncate_to_width, wrap_text_with_ansi
+from xdog.tui.utils import sanitize_terminal_text, wrap_text_with_ansi
 
 
-class OAuthPanel(Component):
+class OAuthPanel(ThemedPanel):
     requires_visible_confirmation = True
 
     def __init__(self, review: dict[str, Any], action: Callable[[str, str], None], close: Callable[[], None],
@@ -214,6 +214,7 @@ class OAuthPanel(Component):
             hint = "r refresh review · s status · f forget review · Esc servers · NOT tool permission"
         if self._disabled:
             hint = 'Signing operations disabled · Esc closes · completed tokens not remotely revoked'
-        rows = [f"MCP OAuth · {self.phase}" + (" · waiting for owner" if self._busy else ""),
+        rows = ["MCP OAuth · " + self.panel_theme.status(self.phase, self.phase)
+                + (" · waiting for owner" if self._busy else ""),
                 f"Review {self._scroll + 1}-{end}/{len(body)}", *body[self._scroll:end], hint]
-        return [truncate_to_width(row, max(0, width), "") for row in rows[:self._budget]]
+        return self._styled_rows(rows[:self._budget], width)

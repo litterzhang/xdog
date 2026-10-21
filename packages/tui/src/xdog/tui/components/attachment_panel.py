@@ -4,12 +4,12 @@ from collections.abc import Callable
 
 from xdog.tui.attachments import Attachment
 from xdog.tui.components.image import Image, ImageOptions
+from xdog.tui.components.panel import ThemedPanel
 from xdog.tui.keys import KeyEvent
-from xdog.tui.tui import Component
 from xdog.tui.utils import sanitize_terminal_text, truncate_to_width
 
 
-class AttachmentPanel(Component):
+class AttachmentPanel(ThemedPanel):
     focused = False
 
     def __init__(self, item: Attachment, on_close: Callable[[], None]) -> None:
@@ -34,9 +34,11 @@ class AttachmentPanel(Component):
     def render(self, width: int) -> list[str]:
         if not self._budget:
             return []
-        rows = [truncate_to_width("Attachment · " + sanitize_terminal_text(self.item.summary), width)]
+        rows = [self.panel_theme.header(truncate_to_width(
+            "Attachment · " + sanitize_terminal_text(self.item.summary), width))]
         if self._budget >= 8:
             rows.extend(self._image.render(max(3, width)))
         else:
-            rows.append(truncate_to_width("Enlarge terminal for image preview · Esc close", width))
+            rows.append(self.panel_theme.dim(truncate_to_width(
+                "Enlarge terminal for image preview · Esc close", width)))
         return rows[:self._budget]

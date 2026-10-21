@@ -3,13 +3,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from xdog.tui.components.panel import ThemedPanel
 from xdog.tui.keys import KeyEvent, KeyEventType
 from xdog.tui.navigation import NavigationEntry, NavigationFeed
-from xdog.tui.tui import CURSOR_MARKER, Component
+from xdog.tui.tui import CURSOR_MARKER
 from xdog.tui.utils import sanitize_terminal_text, truncate_to_width
 
 
-class NavigationPanel(Component):
+class NavigationPanel(ThemedPanel):
     focused = False
 
     def __init__(self, provider: NavigationFeed, activate: Callable[[NavigationEntry], None],
@@ -131,10 +132,11 @@ class NavigationPanel(Component):
             + (" · v view (read-only)" if self.on_view is not None else ""), width,
         )]
         if self._filtering:
-            query = truncate_to_width("/ " + self._query, max(0, width - 1), "")
+            query = truncate_to_width("/ " + " ".join(self._query.split()), max(0, width - 1), "")
             rows.append(query + (CURSOR_MARKER if self.focused else ""))
         if self._view.error:
-            rows.append(truncate_to_width("Navigation error: " + sanitize_terminal_text(self._view.error), width))
+            rows.append(self.panel_theme.error(truncate_to_width("Navigation error: " + " ".join(
+                sanitize_terminal_text(self._view.error).split()), width)))
         elif not self._view.entries:
             rows.append(truncate_to_width("No matching sessions/checkpoints · r refresh · Esc close", width))
         else:
@@ -144,8 +146,14 @@ class NavigationPanel(Component):
                 entry = self._view.entries[index]
                 prefix = "→" if index == self._selected else " "
                 depth = "  " * min(entry.depth, 8)
-                current = " *" if entry.active else ""
-                rows.append(truncate_to_width(sanitize_terminal_text(
-                    f"{prefix} {depth}[{entry.kind}] {entry.title}{current} · {entry.detail}",
-                ), width))
-        return rows[:self._budget]
+                current = self.panel_theme.success(" *") if entry.active else ""
+                # Each logical renderer row must occupy exactly one physical row.
+                # Session summaries/errors may contain newlines or real tabs.
+                title = " ".join(sanitize_terminal_text(entry.title).split())
+                detail = " ".join(sanitize_terminal_text(entry.detail).split())
+                if detail:
+                    detail = self.panel_theme.dim(detail)
+                kind = " ".join(sanitize_terminal_text(entry.kind).split())
+                rows.append(truncate_to_width(
+                    f"{prefix} {depth}[{kind}] {title}{current} · {detail}", width))
+        return self._styled_rows(rows[:self._budget], width, footer=False)

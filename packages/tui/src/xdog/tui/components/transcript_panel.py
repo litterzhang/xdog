@@ -5,14 +5,15 @@ from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 
+from xdog.tui.components.panel import ThemedPanel
 from xdog.tui.editor_layout import grapheme_clusters
 from xdog.tui.keys import KeyEvent, KeyEventType
 from xdog.tui.transcript_browser import BrowserRequest, TranscriptBrowser, TranscriptRecord
-from xdog.tui.tui import CURSOR_MARKER, Component
-from xdog.tui.utils import sanitize_terminal_text, slice_by_column, string_width, truncate_to_width
+from xdog.tui.tui import CURSOR_MARKER
+from xdog.tui.utils import sanitize_terminal_text, slice_by_column, string_width
 
 
-class TranscriptPanel(Component):
+class TranscriptPanel(ThemedPanel):
     focused = False
     caption = "Transcript"
     content_label = "transcript"
@@ -212,14 +213,17 @@ class TranscriptPanel(Component):
         elif view.busy or view.version != self._serial or self.browser.snapshot().busy:
             body = [f"Loading {self.content_label}…"]
         elif view.error:
-            body = [f"{self.caption} error: {view.error}"]
+            body = [self.panel_theme.error(f"{self.caption} error: {view.error}")]
         else:
             body = []
             for row in view.rows:
                 prefix = "▶" if row.index == view.cursor else " "
                 prefix += "*" if row.matched else " "
                 text = f"{prefix} {row.text}"
-                body.append(f"\x1b[7m{text}\x1b[0m" if row.selected else text)
+                style = (lambda value: self.panel_theme.inverse(self.panel_theme.accent(value))) if row.selected else (
+                    self.panel_theme.accent if row.index == view.cursor else
+                    self.panel_theme.success if row.matched else self.panel_theme.fg)
+                body.append(style(text))
             if not body:
                 body = [f"No {self.content_label} available"]
         mode = "fullscreen" if self.fullscreen else "inline"
@@ -241,8 +245,8 @@ class TranscriptPanel(Component):
             footer = (f"Search /{self._request.query} · {match} matches · n/N · v mark · a entry · "
                       "y copy · e export · s share · f screen · r refresh · Esc close")
         if self._budget == 1:
-            return [truncate_to_width(footer if self._filtering else header, max(0, width), "")]
+            return self._styled_rows([footer if self._filtering else header], width)
         rows = [header, *body[:body_rows]]
         if self._budget > 2:
             rows.append(footer)
-        return [truncate_to_width(row, max(0, width), "") for row in rows[:self._budget]]
+        return self._styled_rows(rows[:self._budget], width)

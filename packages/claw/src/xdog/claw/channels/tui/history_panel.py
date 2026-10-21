@@ -17,7 +17,7 @@ class HistoryPanel(NavigationPanel):
         rows = super().render(width)
         if rows:
             phase = " · loading" if self._view.busy else ""
-            rows[0] = truncate_to_width(
+            rows[0] = self.panel_theme.header(truncate_to_width(
                 f"History · {self._view.total} entries{phase} · Enter/v view (read-only) · → inspect · / search", width,
-            )
+            ))
         return rows

@@ -377,6 +377,7 @@ class InteractiveMode:
             details=self._details_panel if self._details_open else None,
             queue=None,
             hints=self._hints,
+            panel_theme=self._theme.panel_theme(),
         )
         self._tui.add_child(self._layout)
         self._tui.set_focus(self._editor)

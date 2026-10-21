@@ -8,8 +8,8 @@ from dataclasses import dataclass, replace
 
 from xdog.tui.child_drafts import ChildDraft
 from xdog.tui.components.attachment_panel import AttachmentPanel
+from xdog.tui.components.panel import ThemedPanel
 from xdog.tui.keys import KeyEvent, KeyEventType
-from xdog.tui.tui import Component
 from xdog.tui.utils import sanitize_terminal_text, truncate_to_width, wrap_text_with_ansi
 
 
@@ -40,7 +40,7 @@ def draft_entries(caches: dict[str, dict[tuple[str, str], ChildDraft]], labels: 
 
 
 
-class ChildDraftPanel(Component):
+class ChildDraftPanel(ThemedPanel):
     requires_visible_confirmation = True
     requires_current_viewport_input = True
 
@@ -219,9 +219,9 @@ class ChildDraftPanel(Component):
                     self._review = None
                 else:
                     self._preview.set_render_budget(max(0, self._budget - 1))
-                    return [truncate_to_width(
+                    return [self.panel_theme.header(truncate_to_width(
                         f'Draft image {self._preview_index + 1}/{len(current.value.images)} · ←/→ choose · Esc review',
-                        max(0, width), ''), *self._preview.render(width)][:self._budget]
+                        max(0, width), '')), *self._render_child(self._preview, width)][:self._budget]
             if self._review is not None:
                 action, entry = self._review
                 count = max(0, self._budget - 3)
@@ -268,11 +268,11 @@ class ChildDraftPanel(Component):
                 if not entries and count:
                     rows.append('No unsent child input in this session')
                 if self._error:
-                    rows.append(self._error)
+                    rows.append(self.panel_theme.error(self._error))
                 rows.append('Enter review restore · p preview · Esc back' if self.parent else
                             'Enter reviews reopen · p preview · Esc back')
                 self._visible = bool(entries) and width >= 24 and self._budget >= 3
         except (ValueError, TypeError, RuntimeError) as exc:
             rows = ['Current-session child recovery unavailable', sanitize_terminal_text(str(exc)),
                     'Esc back · source kept']
-        return [truncate_to_width(row, max(0, width), '') for row in rows[:self._budget]]
+        return self._styled_rows(rows[:self._budget], width)

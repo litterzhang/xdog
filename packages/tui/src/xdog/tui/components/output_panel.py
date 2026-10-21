@@ -4,20 +4,16 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from xdog.tui.components.input_panel import InputPanel
+from xdog.tui.components.panel import ThemedPanel
 from xdog.tui.components.transcript_panel import TranscriptPanel
 from xdog.tui.editor_layout import layout_editor
 from xdog.tui.keys import KeyEvent, KeyEventType
 from xdog.tui.transcript_browser import TranscriptRecord
 from xdog.tui.transcript_transfer import PreparedTransfer
-from xdog.tui.tui import Component
-from xdog.tui.utils import sanitize_terminal_text, truncate_to_width
+from xdog.tui.utils import sanitize_terminal_text
 
 
-class _Theme:
-    accent = bold = dim = border = staticmethod(lambda text: text)
-
-
-class OutputPanel(Component):
+class OutputPanel(ThemedPanel):
     requires_visible_confirmation = True
 
     def __init__(self, prepared: PreparedTransfer, path: str, on_confirm: Callable[[str], None],
@@ -25,7 +21,7 @@ class OutputPanel(Component):
         self.prepared = prepared
         self._focused = False
         self.on_confirm, self.on_cancel = on_confirm, on_cancel
-        self._path = InputPanel(_Theme(), max_rows=1)
+        self._path = InputPanel(self.panel_theme, max_rows=1)
         self._path.set_text(path)
         self._path.on_submit = self._finish_path
         self._path.on_escape = on_cancel
@@ -151,16 +147,16 @@ class OutputPanel(Component):
             self._review_layout = layout
         if self._editing:
             self._path.set_render_budget(1, show_borders=False)
-            rows = metadata[:max(0, self._budget - 2)] + self._path.render(width)
+            rows = metadata[:max(0, self._budget - 2)] + self._render_child(self._path, width)
             rows.append("Enter reviews path (does not save) · Tab preview · Esc cancels")
         elif self._paged and self._previewing:
             self._preview.set_render_budget(max(0, self._budget - 2))
-            rows = [title + " · payload preview", *self._preview.render(width),
+            rows = [title + " · payload preview", *self._render_child(self._preview, width),
                     "v metadata/path · no save in preview · Esc cancels"]
         elif fits:
             room = self._budget - len(metadata) - len(target) - 1
             self._preview.set_render_budget(room)
-            rows = metadata + target + self._preview.render(width) + [action]
+            rows = metadata + target + self._render_child(self._preview, width) + [action]
             self._visible = bool(self._path.get_text().strip()) and self._preview.settled and self._focused
             if not self._visible:
                 rows[-1] = "Loading reviewed snapshot; confirmation disabled · Esc cancels"
@@ -173,10 +169,10 @@ class OutputPanel(Component):
             # Prepare the immutable preview worker; v exposes it separately when
             # small geometry cannot show both review fields and payload at once.
             self._preview.set_render_budget(2)
-            self._preview.render(width)
+            self._render_child(self._preview, width)
             self._visible = (len(self._seen) == len(body) and bool(self._path.get_text().strip())
                              and self._preview.settled and self._focused and width >= 24 and self._budget >= 4)
             rows = [f"Review output {self._scroll + 1}-{end}/{len(body)}", *body[self._scroll:end],
                     "PgUp/PgDn all fields · v payload · Tab path",
                     action if self._visible else "Review ALL metadata/path before saving · Esc cancels"]
-        return [truncate_to_width(row, max(0, width), "") for row in rows[:self._budget]]
+        return self._styled_rows(rows[:self._budget], width)

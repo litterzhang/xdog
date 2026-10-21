@@ -16,14 +16,11 @@ RUNTIME_SECTION = """\
 
 - Application: xdog-coding
 - Agent runtime: xdog.agent
-- Selected provider/model: {model}
-- Thinking level: {thinking_level}
-- Permission mode: {permission_mode}{session_line}
+{session_query}
 
-These values are host-reported configuration, not an independently verified
-underlying model identity. Report the selected provider/model when asked about
-what model you are using. Tool permissions are enforced by the host, not granted
-by this text.
+Session information is host-reported configuration, not an independently verified
+underlying model identity. Do not guess a model identity or capabilities. Tool
+permissions are enforced by the host, not granted by this text.
 """
 
 ENVIRONMENT_SECTION = """\

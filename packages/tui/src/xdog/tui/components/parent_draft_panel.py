@@ -84,27 +84,27 @@ class ParentDraftPanel(ChildDraftPanel):
             return []
         if self.mode == 'loading':
             self._visible = False
-            return [truncate_to_width(row, max(0, width), '') for row in [
+            return self._styled_rows([
                 'Reading primary snapshots · nothing restored', 'Esc cancels read adoption · disk work still settles',
-            ][:self._budget]]
+            ][:self._budget], width)
         if self._preview is not None or self._review is not None:
             rows = super().render(width)
             if rows:
                 if self._preview is not None:
-                    rows[0] = truncate_to_width(
-                        f'Primary image {self._preview_index + 1} · ←/→ choose · Esc review', max(0, width), '')
+                    rows[0] = self.panel_theme.header(truncate_to_width(
+                        f'Primary image {self._preview_index + 1} · ←/→ choose · Esc review', max(0, width), ''))
                 else:
-                    rows[0] = truncate_to_width(
-                        'Review primary draft ' + ('save' if self.mode == 'save' else 'restore'), max(0, width), '')
+                    rows[0] = self.panel_theme.header(truncate_to_width(
+                        'Review primary draft ' + ('save' if self.mode == 'save' else 'restore'), max(0, width), ''))
             return rows
         self._visible = False
         if not self._budget:
             return []
         if self.mode == 'save':
-            return [truncate_to_width(row, max(0, width), '') for row in [
+            return self._styled_rows([
                 'Primary save not admitted · composer kept', self._error,
                 'Esc closes · reopen /draft save to review current composer',
-            ][:self._budget]]
+            ][:self._budget], width)
         entries = self.source()
         if len(entries) > 32:
             raise ValueError('Primary snapshot selector exceeds capacity')
@@ -119,7 +119,7 @@ class ParentDraftPanel(ChildDraftPanel):
         if not entries and count:
             rows.append('No saved primary snapshots')
         if self._error:
-            rows.append(self._error)
+            rows.append(self.panel_theme.error(self._error))
         rows.append('Enter reviews restore · p image preview · Esc cancel')
         self._visible = self.focused and bool(entries) and width >= 24 and self._budget >= 3
-        return [truncate_to_width(row, max(0, width), '') for row in rows[:self._budget]]
+        return self._styled_rows(rows[:self._budget], width)

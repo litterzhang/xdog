@@ -1,4 +1,4 @@
-"""Runtime facts must reach the model, not just the native UI or saved settings."""
+"""Runtime facts are queried on demand, never baked into the instruction prefix."""
 from __future__ import annotations
 
 import asyncio
@@ -18,40 +18,40 @@ def config():
 
 
 @pytest.mark.parametrize('native_tool_calls', [False, True])
-def test_runtime_identity_is_present_with_either_tool_description_mode(native_tool_calls):
-    prompt = build_system_prompt(config(), [], native_tool_calls=native_tool_calls)
+def test_runtime_query_instructions_work_with_either_tool_description_mode(native_tool_calls):
+    prompt = build_system_prompt(config(), [{'name': 'ext_coding_session'}], native_tool_calls=native_tool_calls)
     assert '## Runtime' in prompt
     assert '- Application: xdog-coding' in prompt
     assert '- Agent runtime: xdog.agent' in prompt
-    assert '- Selected provider/model: copilot/configured-model' in prompt
-    assert '- Thinking level: medium' in prompt
-    assert '- Permission mode: ask' in prompt
+    assert 'copilot/configured-model' not in prompt
+    assert 'Thinking level:' not in prompt and 'Permission mode:' not in prompt
+    assert 'Call `ext_coding_session`' in prompt
     assert 'host-reported configuration' in prompt
     assert 'underlying model identity' in prompt
     assert 'Session ID:' not in prompt  # Standalone builders do not invent a session.
 
 
-def test_session_id_is_explicit_optional_host_metadata():
+def test_session_id_is_not_baked_into_the_instruction_prefix():
     prompt = build_system_prompt(config(), [], session_id='host-session')
-    assert '- Session ID: host-session' in prompt
+    assert 'host-session' not in prompt
     assert 'host-session' not in build_system_prompt(config(), [])
 
 
 @pytest.mark.parametrize('thinking', ['off', 'high'])
-def test_runtime_section_uses_current_config_without_fallback(thinking):
+def test_runtime_section_does_not_embed_mutable_config(thinking):
     prompt = build_system_prompt(replace(config(), model='opaque/model', thinking_level=thinking,
                                         permission_mode='deny'), [])
-    assert '- Selected provider/model: opaque/model' in prompt
-    assert f'- Thinking level: {thinking}' in prompt
-    assert '- Permission mode: deny' in prompt
+    assert 'opaque/model' not in prompt
+    assert 'Thinking level:' not in prompt and 'Permission mode:' not in prompt
     assert 'copilot/configured-model' not in prompt
 
 
-async def test_real_turn_context_reflects_model_thinking_permission_changes(coding_session):
+async def test_real_turn_queries_reflect_changes_without_embedding_them_in_instructions(coding_session):
     calls = []
 
     def capture(model, context, options):
-        calls.append((model, context.system_prompt, options.thinking))
+        assert any(tool.name == 'ext_coding_session' for tool in coding_session.agent.active_tools)
+        calls.append((model, context.system_prompt, options.thinking, coding_session.session_info()))
         return EventStream.empty(AssistantMessage(content=()))
 
     coding_session.agent.set_stream_fn(capture)
@@ -66,13 +66,15 @@ async def test_real_turn_context_reflects_model_thinking_permission_changes(codi
     await coding_session.send_message('After switching')
 
     assert len(calls) == 2
-    for index, (model, prompt, thinking) in enumerate(calls):
+    for index, (model, prompt, thinking, info) in enumerate(calls):
         expected = 'copilot/first-model' if index == 0 else 'copilot/second-model'
         assert model == expected
-        assert f'- Selected provider/model: {expected}' in prompt
-        assert f'- Thinking level: {thinking or "off"}' in prompt
-        assert f'- Permission mode: {"ask" if index == 0 else "deny"}' in prompt
-        assert f'- Session ID: {coding_session.session_id}' in prompt
+        assert expected not in prompt
+        assert 'Call `ext_coding_session`' in prompt
+        assert info['model']['id'] == expected
+        assert info['model']['thinking'] == (thinking or 'off')
+        assert info['permission_mode'] == ('ask' if index == 0 else 'deny')
+        assert info['session_id'] == coding_session.session_id
         assert '- Application: xdog-coding' in prompt
         assert '- Agent runtime: xdog.agent' in prompt
     assert 'copilot/first-model' not in calls[1][1]

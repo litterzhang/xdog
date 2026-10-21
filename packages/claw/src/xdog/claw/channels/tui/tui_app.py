@@ -31,6 +31,7 @@ import base64
 import hashlib
 import json
 import logging
+import os
 import queue
 import random
 import re
@@ -76,6 +77,7 @@ from xdog.tui.components.mcp_panel import McpPanel
 from xdog.tui.components.messages import AssistantMessages, ThinkingMessage, Transcript
 from xdog.tui.components.messages import UserMessage as SharedUserMessage
 from xdog.tui.components.output_panel import OutputPanel
+from xdog.tui.components.panel import PanelTheme
 from xdog.tui.components.parent_draft_panel import ParentDraftPanel
 from xdog.tui.components.spacer import Spacer
 from xdog.tui.components.status_line import StatusLine
@@ -231,6 +233,15 @@ theme_user_bg = _bg(PALETTE["userBg"])
 theme_user_text = _fg(PALETTE["userText"])
 theme_error = _fg(PALETTE["error"])
 theme_border = _fg(PALETTE["border"])
+
+def _panel_theme() -> PanelTheme:
+    if ('NO_COLOR' in os.environ or os.environ.get('TERM') == 'dumb'
+            or os.environ.get('XDOG_TUI_THEME', '').lower() == 'plain'):
+        return PanelTheme()
+    return PanelTheme(fg=theme_fg, header=theme_header, accent=theme_accent, dim=theme_dim,
+                      border=theme_border, error=theme_error, success=_fg(PALETTE['success']), bold=_bold,
+                      inverse=lambda text: f"\x1b[7m{text}\x1b[27m")
+
 
 # Markdown theme (matching OpenClaw's markdownTheme)
 MD_THEME = MarkdownTheme(
@@ -883,6 +894,7 @@ class ChatApp:
             details=None,
             queue=None,
             hints=self._hints,
+            panel_theme=_panel_theme(),
         )
 
         self._tui.add_child(self._layout)

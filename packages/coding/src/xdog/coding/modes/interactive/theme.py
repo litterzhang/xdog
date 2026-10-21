@@ -11,6 +11,7 @@ from dataclasses import dataclass, replace
 from typing import Callable
 
 from xdog.tui.components.markdown import DefaultTextStyle, MarkdownTheme
+from xdog.tui.components.panel import PanelTheme
 
 _RST = "\x1b[0m"
 
@@ -119,6 +120,11 @@ class Theme:
     inverse: Callable[[str], str]
     markdown: MarkdownTheme
     user_default_text: DefaultTextStyle
+
+    def panel_theme(self) -> PanelTheme:
+        return PanelTheme(fg=self.fg, header=self.header, accent=self.accent, dim=self.dim,
+                          border=self.border, error=self.error, success=self.success,
+                          bold=self.bold, inverse=self.inverse)
 
 
 def _palette_theme(palette: dict[str, str]) -> Theme:

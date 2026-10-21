@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from xdog.tui.components.panel import PanelTheme
 from xdog.tui.components.text import Text
 from xdog.tui.tui import Component
 from xdog.tui.utils import truncate_to_width
@@ -35,7 +36,9 @@ class InlineLayout(Component):
         queue: Component | None = None,
         render_height: int = 24,
         hints: Component | None = None,
+        panel_theme: PanelTheme | None = None,
     ) -> None:
+        self.panel_theme = panel_theme or PanelTheme()
         self.fullscreen_view: Component | None = None
         self.hints = hints
         self.transcript = transcript
@@ -71,6 +74,7 @@ class InlineLayout(Component):
     def render(self, width: int) -> list[str]:
         if self.fullscreen_view is not None:
             self.transient_start = 0
+            self._style_panel(self.fullscreen_view)
             self.fullscreen_view.set_height(self.render_height)
             return self.fullscreen_view.render(width)[:self.render_height]
         transcript_lines = self.transcript.render(width)
@@ -93,6 +97,7 @@ class InlineLayout(Component):
         set_auxiliary_budget = getattr(auxiliary, "set_render_budget", None)
         if callable(set_auxiliary_budget):
             set_auxiliary_budget(auxiliary_budget)
+        self._style_panel(auxiliary)
         raw_auxiliary = auxiliary.render(width) if auxiliary is not None else []
         auxiliary_lines = raw_auxiliary[-auxiliary_budget:] if auxiliary_budget else []
         editor_budget = max(
@@ -128,6 +133,11 @@ class InlineLayout(Component):
                 + editor_lines + auxiliary_lines + hint_lines
             )
         return transcript_lines + bounded_work + auxiliary_lines + status_gap + status_lines + editor_lines + hint_lines
+
+    def _style_panel(self, component: Component | None) -> None:
+        setter = getattr(component, 'set_panel_theme', None)
+        if callable(setter):
+            setter(self.panel_theme)
 
     def invalidate(self) -> None:
         for child in self.children:

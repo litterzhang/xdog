@@ -27,6 +27,15 @@ saved model, messages and usage are preserved.
 
 ## Interactive terminal
 
+Auxiliary browsers use the main UI's existing semantic colors: warm accent
+headings and current selection, muted metadata/hints, and green/red status cues.
+This covers session/history, transcript/tool inventory, details, child/draft,
+MCP/OAuth, export review and attachment chrome, including existing nested/fullscreen
+viewers. Coding's pre-start resume picker follows the same theme. Plain mode and
+`NO_COLOR` keep these panels unstyled. Colors do not change row budgets,
+keybindings, visible-confirmation requirements, original source or exported data.
+See [panel theming](../../docs/panel-theming.md).
+
 The interface uses native scrollback, one status row, and a shared multiline
 editor. Enter submits or queues; Ctrl+Enter inserts a newline. Ctrl+O opens
 recent tool/reasoning details: Left/Right chooses an entry and Page Up/Page Down
@@ -113,6 +122,7 @@ the timer. Worker locks and cancellation signals remain separate from UI state.
 
 Potentially mutating tool calls are gated immediately before execution. By
 default, read-only filesystem operations and `current_time` run automatically;
+the exact host-bound `ext_coding_session` inspection also needs no approval;
 `bash`, filesystem writes/edits/deletes, and unknown extension tools ask first.
 
 ```bash
@@ -432,6 +442,30 @@ fallback files persist until you delete them. Kernel-blocked filesystem operatio
 cannot be forcibly interrupted; helper success may transfer clipboard ownership
 to the platform's normal persistent clipboard process.
 
+### Read-only session inspection
+
+`/session` and the built-in host extension tool `ext_coding_session` share the
+same current-session query. The tool takes `{}` and returns structured JSON:
+current session/branch/name/workspace, selected model and known capabilities,
+thinking, effective permission/read-only state, and measured context usage.
+Unknown capabilities/usage remain explicitly unavailable; selected provider/model
+configuration is not proof of a server's underlying model identity. No credentials,
+conversation bodies, file reads or settings dump are included.
+
+The instruction prefix points to this query instead of embedding mutable model,
+thinking, permission or session-ID values. Explicit tool selection still applies:
+an empty/narrowed selection does not silently re-enable inspection, and prompts
+state when the tool is unavailable. This is a Coding-owned tool, not a new Python
+plugin worker or a generic slash-command execution bridge. Its actual bound tool
+may read without frontend approval even in ask-all/deny/read-only mode; arbitrary
+extension tools and same-name replacements gain no exemption. Existing extension
+validation/vetoes remain active. Navigation/close retire old handles, and children
+do not inherit their parent's inspection callback. Neither ACP nor a TUI is needed.
+
+Session navigation normalizes title/summary/detail/error whitespace for display
+only, so embedded newlines/tabs cannot desynchronize terminal row tracking. The
+stored original text is not modified.
+
 ### MCP stdio tools (first transport slice)
 
 Global `settings.json` and project `.coding/settings.json` accept `mcp_servers`;
@@ -563,10 +597,11 @@ Use the native host control separately:
 /readonly off
 ```
 
-With host read-only scope on, only local `filesystem` read/ls/grep/find and
-`current_time` tool calls are eligible; shell, workspace writes, MCP/extension
-tools and child-control tools are blocked. Normal permission policy still applies
-to eligible calls. Cached approvals, `allow-all`, skill text, model arguments and
+With host read-only scope on, only local `filesystem` read/ls/grep/find,
+`current_time` calls and the host-bound `ext_coding_session` query are eligible.
+Shell, workspace writes, arbitrary MCP/extension tools and child-control tools
+are blocked. Ordinary eligible calls retain their normal permission policy;
+the exact bound session query needs no approval. Cached approvals, `allow-all`, skill text, model arguments and
 delayed approvals cannot release or bypass this restriction. Keep planning notes
 in the conversation while read-only; writing a task document still needs the
 normal write permission outside that scope.
