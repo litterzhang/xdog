@@ -53,16 +53,15 @@ async def close_resources(session: AgentSession) -> None:
                     session.extension_dialogs.close()
                     session.permissions.deny_all()
                 async def capability_publication() -> None:
-                    if session._goal_start is not None:
-                        await wait_owned(session._goal_start)
-                async def goal() -> None:
-                    if session.children.goal_host is not None:
-                        await session.children.goal_host.aclose()
+                    if session._capability_start is not None:
+                        await wait_owned(session._capability_start)
+                async def capabilities() -> None:
+                    await session.capabilities.aclose()
                 async def mcp() -> None:
                     if session.mcp is not None:
                         await session.mcp.aclose()
                 await settle_cleanup(stop_dialogs, capability_publication, session.agent.aclose,
-                    session.children.supervisor.aclose, goal, session._settle_retired_goals,
+                    session.children.supervisor.aclose, capabilities, session._settle_retired_capabilities,
                     session._settle_retired_resources, session.extensions.aclose, mcp,
                     message='Coding session resource cleanup failed')
             task = asyncio.create_task(close(), name='coding-session-resources-close')

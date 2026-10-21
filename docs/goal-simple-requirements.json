@@ -1,0 +1,179 @@
+{
+  "objective": "Goal简化为主Agent拥有的目标记录、skill流程和ACP提醒",
+  "status": "complete",
+  "total": 12,
+  "remaining": 0,
+  "counts": {
+    "待实现": 0,
+    "待验证": 0,
+    "缺外部环境": 0,
+    "已完成": 12,
+    "延期": 0
+  },
+  "requirements": [
+    {
+      "id": "GR-01",
+      "title": "默认加载",
+      "acceptance": "Coding/Claw直接安装默认包含Goal/skill，无enable开关，未委派不创建Goal",
+      "status": "已完成",
+      "evidence": [
+        "packages/skills/tests/test_hub.py",
+        "/home/zhang/.cache/gs/p.NFKvUC/offline-verify_coding_goal_artifact.py.log",
+        "/home/zhang/.cache/gs/p.NFKvUC/offline-verify_claw_goal_artifact.py.log"
+      ]
+    },
+    {
+      "id": "GR-02",
+      "title": "单Goal归属与历史",
+      "acceptance": "稳定owner至多一个当前Goal，含pause/wait；terminal只读历史，clear归档不删除",
+      "status": "已完成",
+      "evidence": [
+        "packages/skills/tests/goal/test_service.py",
+        "packages/skills/tests/goal/test_store.py",
+        "packages/claw/tests/test_goal_host_recovery.py"
+      ]
+    },
+    {
+      "id": "GR-03",
+      "title": "Slash命令",
+      "acceptance": "native扩展提供/goal create/status/pause/resume/clear/history，真实用户权限与实际owner绑定",
+      "status": "已完成",
+      "evidence": [
+        "packages/coding/tests/test_goal_lifecycle.py",
+        "packages/claw/tests/test_capability_execution.py",
+        "/tmp/xdog-goal-simple/channel-native-final.log",
+        "packages/claw/tests/test_goal_host.py"
+      ]
+    },
+    {
+      "id": "GR-04",
+      "title": "模型工具",
+      "acceptance": "安装能力提供goal create/update/plan/task_update/status/wait/resume/complete，模型自行规划验收",
+      "status": "已完成",
+      "evidence": [
+        "packages/skills/tests/goal/test_tools.py",
+        "/home/zhang/.cache/gs/p.NFKvUC/e2e-claw-v2/result.json",
+        "/home/zhang/.cache/gs/p.NFKvUC/e2e-coding/result.json"
+      ]
+    },
+    {
+      "id": "GR-05",
+      "title": "Skill工作流程",
+      "acceptance": "当前主Agent规划、自己/已有子Agent执行、worker更新任务文件、主Agent判断完成",
+      "status": "已完成",
+      "evidence": [
+        "packages/skills/src/xdog/skills/skills/goal/SKILL.md",
+        "packages/skills/tests/test_hub.py",
+        "/home/zhang/.cache/gs/p.NFKvUC/installed-final/goal-only-consume.json"
+      ]
+    },
+    {
+      "id": "GR-06",
+      "title": "任务文件单一权威",
+      "acceptance": "任务状态仅tasks/*.json，版本校验/原子写/并发与无跟随边界，不与DB双写状态",
+      "status": "已完成",
+      "evidence": [
+        "packages/skills/tests/goal/test_files.py",
+        "packages/skills/tests/goal/test_service.py",
+        "/home/zhang/.cache/gs/p.NFKvUC/e2e-dual-ready/result.json"
+      ]
+    },
+    {
+      "id": "GR-07",
+      "title": "删除旧编排",
+      "acceptance": "删除Goal内部worker/reviewer调度和attempt/digest独立验收协议，保留宿主通用子Agent工具",
+      "status": "已完成",
+      "evidence": [
+        "packages/skills/tests/goal/test_tools.py",
+        "/home/zhang/.cache/gs/p.NFKvUC/integrity.json",
+        "packages/claw/tests/test_goal_host.py"
+      ]
+    },
+    {
+      "id": "GR-08",
+      "title": "通用宿主事件",
+      "acceptance": "真实执行结算后发布通用event，Coding精确branch/Claw稳定group，退订/关闭结算",
+      "status": "已完成",
+      "evidence": [
+        "/tmp/xdog-goal-simple/host-final-integration.log",
+        "/tmp/xdog-goal-simple/host-events-optional.log",
+        "/home/zhang/.cache/gs/p.NFKvUC/e2e-claw-v2/result.json"
+      ]
+    },
+    {
+      "id": "GR-09",
+      "title": "ACP提醒",
+      "acceptance": "只通过现有ACP enqueue入原队列，稳定ID/namespace/branch回执，不直接Agent.prompt或未知执行重放",
+      "status": "已完成",
+      "evidence": [
+        "packages/agent/tests/test_acp_enqueue_client.py",
+        "packages/skills/tests/goal/test_runtime.py",
+        "/home/zhang/.cache/gs/p.NFKvUC/e2e-coding/result.json",
+        "/home/zhang/.cache/gs/p.NFKvUC/e2e-claw-v2/result.json"
+      ]
+    },
+    {
+      "id": "GR-10",
+      "title": "Eyes任务观察",
+      "acceptance": "Goal runtime生成限定task_dir配置并用可选公开Eyes API自有观察，pause/clear/close不影响其它观察或acceptedwork",
+      "status": "已完成",
+      "evidence": [
+        "packages/skills/tests/goal/test_task_automation.py",
+        "/home/zhang/.cache/gs/p.NFKvUC/e2e-dual-ready/result.json"
+      ]
+    },
+    {
+      "id": "GR-11",
+      "title": "权限与生命周期",
+      "acceptance": "自动消息不能借用户权/解除userpause，旧parent failclosed；真正资源清理、错误明确和历史数据保留",
+      "status": "已完成",
+      "evidence": [
+        "packages/skills/tests/goal/test_review_regressions.py",
+        "/tmp/xdog-goal-simple/core-review.md",
+        "packages/coding/tests/test_goal_adapter.py",
+        "/home/zhang/.cache/gs/p.NFKvUC/e2e-dual-ready/result.json"
+      ]
+    },
+    {
+      "id": "GR-12",
+      "title": "验收与文档",
+      "acceptance": "Linux定向与九包回归/静态/示例/锁/产物独立安装，旧审计标历史，保护用户dirty，不发布重启",
+      "status": "已完成",
+      "evidence": [
+        "docs/goal-simple-verification.md",
+        "/tmp/xdog-goal-simple/regression-summary.json",
+        "/tmp/xdog-goal-simple/dirty-preservation.json",
+        "/home/zhang/.cache/gs/p.NFKvUC/integrity.json"
+      ]
+    }
+  ],
+  "evidence_root": "/tmp/xdog-goal-simple",
+  "out_of_scope": [
+    "发布/tag/服务重启",
+    "非Linux原生验证",
+    "真实付费provider/微信网络验收"
+  ],
+  "notes": [
+    "12项完成、剩余0，需求数独立于测试/回归轮次统计。",
+    "默认Coding/Claw可用，主Agent按skill规划执行验收，自动提醒不授予权限。",
+    "最终readiness版全九包通过；4冷安装脚本、双host真实ACP续跑、Goal-owned Eyes实际文件变化链路、最新源码/资源安装对照通过。",
+    "旧Role/reviewer合同用例退休，非Goal回归缺陷实际修复，未弱化原测试或增加超时换绿。",
+    "用户无关9文件hash不变，前序dirty保留；未提交推送、发布/tag、重启用户服务。"
+  ],
+  "verification_document": "docs/goal-simple-verification.md",
+  "final": {
+    "date": "2026-10-21",
+    "regression": {
+      "passed": 7605,
+      "skipped": 7,
+      "seconds": 339.64
+    },
+    "ruff": "passed",
+    "strict_mypy_source_files": 610,
+    "flow_examples": 17,
+    "lock_check": "passed",
+    "artifacts": 20,
+    "installed_environments": 8,
+    "artifact_root": "/home/zhang/.cache/gs/p.NFKvUC"
+  }
+}

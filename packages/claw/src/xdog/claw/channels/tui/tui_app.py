@@ -3353,7 +3353,8 @@ class ChatApp:
                 self._tui.request_render()
                 return
             if command == '/plan':
-                self._chat_log.add_system('Planning mode UI was removed; use /readonly on|off|status')
+                self._chat_log.add_system('Use /skills load plan for planning guidance; '
+                                          '/readonly on|off|status controls access')
                 return
             if command == '/readonly':
                 self._readonly_command(args)

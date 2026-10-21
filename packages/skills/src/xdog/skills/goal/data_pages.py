@@ -12,6 +12,11 @@ TOOL_BYTES = 256 * 1024
 PAGE_BYTES = 64 * 1024
 
 
+def snapshot_revision(value: object, selector: dict[str, object]) -> str:
+    """Pin both the selected content and its query, not a Goal record version."""
+    return hashlib.sha256(json_text({'selector': selector, 'value': value}, maximum=None).encode()).hexdigest()
+
+
 @dataclass(frozen=True)
 class Page:
     offset: int = 0
@@ -23,6 +28,12 @@ class Page:
         offset, limit = params.get('offset', 0), params.get('limit', PAGE_BYTES)
         if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= PAGE_BYTES:
             raise ValueError('Data page offset/limit require strict nonnegative/bounded integers')
+        revision = params.get('revision')
+        if 'revision' in params and (not isinstance(revision, str) or len(revision) != 64
+                                     or any(char not in '0123456789abcdef' for char in revision)):
+            raise ValueError('Data page revision must be a SHA-256 snapshot hash')
+        if offset and revision is None:
+            raise ValueError('Continuation offset requires revision; restart reading from offset 0')
         return cls(offset, limit, force or 'offset' in params or 'limit' in params)
 
 

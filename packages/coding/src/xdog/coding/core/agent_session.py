@@ -10,7 +10,6 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from functools import wraps
-from importlib.util import find_spec
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar
 
@@ -19,6 +18,7 @@ from xdog.agent import (
     AfterToolCallResult,
     AgentEvent,
     AgentMessage,
+    AgentTool,
     BeforeToolCallContext,
     BeforeToolCallResult,
     InputHandledEvent,
@@ -27,6 +27,7 @@ from xdog.agent import (
 )
 from xdog.agent.access import AccessScope, AccessState, read_only_call
 from xdog.agent.agent import Agent
+from xdog.agent.capabilities.runtime import CapabilitySet
 from xdog.agent.extensions.command_result import ExtensionCommandResult
 from xdog.agent.extensions.dialogs import DialogBroker
 from xdog.agent.extensions.runtime import ExtensionRuntime
@@ -55,7 +56,6 @@ from xdog.coding.core.system_prompt import build_system_prompt
 if TYPE_CHECKING:
     from concurrent.futures import Future
 
-    from xdog.coding.core.goal_adapter import CodingGoalHost
     from xdog.coding.core.session_staging import StagedExtensions
     from xdog.coding.core.sessions.batches import TurnInput
     from xdog.coding.core.sessions.controller import SessionController
@@ -152,7 +152,7 @@ def _idle_change(method: Callable[Concatenate["AgentSession", P], R]) -> Callabl
                         async def rebind_sdk() -> None:
                             from xdog.coding.core.sessions.store import InputStore
                             await asyncio.wrap_future(discarded)
-                            await self._settle_retired_goals()
+                            await self._settle_retired_capabilities()
                             await self._settle_retired_resources()
                             previous = controller.inbox
                             if previous is not None:
@@ -167,7 +167,7 @@ def _idle_change(method: Callable[Concatenate["AgentSession", P], R]) -> Callabl
                         from xdog.coding.core.session_staging import settle
                         async def retire_cold() -> None:
                             from xdog.agent.async_work import settle_cleanup
-                            await settle_cleanup(self._settle_retired_goals, self._settle_retired_resources)
+                            await settle_cleanup(self._settle_retired_capabilities, self._settle_retired_resources)
                         settle(retire_cold)
                         self._release_retired_leases()
     return wrapped
@@ -215,8 +215,14 @@ class AgentSession:
     _resource_closing: Future[None] | None = field(default=None, init=False, repr=False)
     _retired_resources: list[tuple[CodingChildren, ExtensionRuntime, McpManager | None]] = field(
         default_factory=list, init=False, repr=False)
-    _retired_goal_hosts: list[CodingGoalHost] = field(default_factory=list, init=False, repr=False)
-    _goal_start: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
+    capabilities: CapabilitySet = field(default_factory=lambda: CapabilitySet('session'), init=False, repr=False)
+    _retired_capability_tools: list[AgentTool] = field(default_factory=list, init=False, repr=False)
+    _capability_host: Any = field(default=None, init=False, repr=False)
+    _capability_loop: asyncio.AbstractEventLoop | None = field(default=None, init=False, repr=False)
+    _capabilities_started: bool = field(default=False, init=False, repr=False)
+    _retired_capabilities: list[tuple[asyncio.AbstractEventLoop, CapabilitySet]] = field(
+        default_factory=list, init=False, repr=False)
+    _capability_start: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
     _user_prompt_messages: dict[int, UserMessage] = field(default_factory=dict, init=False, repr=False)
     _authorized_messages: dict[int, UserMessage] = field(default_factory=dict, init=False, repr=False)
     _user_operation_authorized: bool = field(default=False, init=False, repr=False)
@@ -249,7 +255,7 @@ class AgentSession:
 
         from xdog.agent.supervision import RESERVED_TOOLS
         if any(tool.name in RESERVED_TOOLS for tool in self.agent.state.tools):
-            raise ValueError("agent_spawn/agent_control are reserved for session-owned metadata")
+            raise ValueError("agent delegation tools are reserved for session-owned metadata")
         # Sessions constructed outside the SDK still receive enforcement.
         self.agent.set_before_tool_call(self._before_tool_call)
         self._load_access()
@@ -362,10 +368,12 @@ class AgentSession:
         return capture(self.agent, self.session_id, self.session_id)
 
     def _load_children(self) -> None:
+        from xdog.agent.supervision import RESERVED_TOOLS
         self.children = CodingChildren(self)
-        base = tuple(tool for tool in self.agent.state.tools if tool.name not in {"agent_spawn", "agent_control"}
-                     and not any(tool is host.tool for host in self._retired_goal_hosts))
+        base = tuple(tool for tool in self.agent.state.tools if tool.name not in RESERVED_TOOLS
+                     and not any(tool is value for value in self._retired_capability_tools))
         self.agent.set_tools((*base, *self.children.supervisor.tools()))
+        self._retired_capability_tools.clear()
 
     def _children_idle(self) -> None:
         if self._tool_selection_retiring:
@@ -417,55 +425,77 @@ class AgentSession:
         finally:
             await self._sync_extension_tools()
 
-    async def initialize_goals(self) -> None:
-        """Attach an installed capability on the existing session execution owner."""
-        if find_spec("xdog.skills") is None:
-            return
-        await self._settle_retired_goals()
-        if self.children.goal_host is not None:
-            return
-        if self._goal_start is None:
+    async def initialize_capabilities(self) -> None:
+        """Open installed providers on this session's existing execution owner."""
+        await self._settle_retired_capabilities()
+        if self._capability_start is None:
             async def start() -> None:
-                from xdog.coding.core.goal_adapter import CodingGoalHost
-                from xdog.skills.goal.host import OperationContext
-                host = await CodingGoalHost.open(
-                    self, context=lambda: OperationContext(self._user_operation_authorized))
-                await host.flush()  # Durable obligations only; no model/Goal-state polling.
-            self._goal_start = asyncio.create_task(start())
+                from xdog.coding.core.capability_ports import SessionCapabilityHost
+                if self._capability_host is None:
+                    self._capability_host = await SessionCapabilityHost.open(self)
+                self._capability_loop = asyncio.get_running_loop()
+                await self.capabilities.start(self._capability_host)
+                self._capabilities_started = bool(self.capabilities.providers)
+                self.capabilities.tools  # Pin retiring definitions before provider attach.
+                self.capabilities.attach(self._capability_host.parent())
+                existing = tuple(tool for tool in self.agent.state.tools if not self.capabilities.owns_tool(tool))
+                additions = tuple(tool for tool in self.capabilities.tools
+                                  if not any(tool is value for value in existing))
+                if any(tool.name == value.name for tool in additions for value in existing):
+                    raise ValueError("Capability tool name already owned; refusing replacement")
+                replacement = (*existing, *additions)
+                original = self.agent.state.tools
+                if (len(original) != len(replacement)
+                        or {id(tool) for tool in original} != {id(tool) for tool in replacement}):
+                    self.agent.set_tools(replacement)
+                await self.capabilities.flush()
+            self._capability_start = asyncio.create_task(start())
         from xdog.agent.async_work import wait_owned
+        opening = self._capability_start
         try:
-            await wait_owned(self._goal_start)
+            await wait_owned(opening)
         finally:
-            if self._goal_start.done():
-                self._goal_start = None
+            if opening.done() and self._capability_start is opening:
+                self._capability_start = None
 
-    def _retire_goal_host(self, host: CodingGoalHost) -> None:
-        if host not in self._retired_goal_hosts:
-            self._retired_goal_hosts.append(host)
-        # The controller's existing settling/close path joins these exact hosts;
-        # scheduling is not permission to release their callback loop/lease.
-        if not host.loop.is_closed():
-            host.loop.call_soon_threadsafe(lambda: asyncio.create_task(host.aclose()))
+    def _retire_capabilities(self) -> None:
+        if self._capability_host is not None:
+            self._capability_host.retire()
+        owner = self.capabilities
+        self._retired_capability_tools.extend(owner.owned_tools)
+        self.agent.set_tools(tuple(tool for tool in self.agent.state.tools
+                                   if not owner.owns_tool(tool)))
+        loop = self._capability_loop
+        if loop is not None:
+            self._retired_capabilities.append((loop, owner))
+            if not loop.is_closed():
+                loop.call_soon_threadsafe(lambda: asyncio.create_task(owner.aclose()))
+        self.capabilities = CapabilitySet('session')
+        self._capability_host = None
+        self._capability_loop = None
+        self._capabilities_started = False
 
-    async def _settle_retired_goals(self) -> None:
+    async def _settle_retired_capabilities(self) -> None:
         from functools import partial
 
         from xdog.agent.async_work import settle_cleanup
         from xdog.agent.supervision import settle_on
-        async def close(host: CodingGoalHost) -> None:
+        async def close(item: tuple[asyncio.AbstractEventLoop, CapabilitySet]) -> None:
+            loop, owner = item
             try:
-                await settle_on(host.loop, host.aclose())
+                await settle_on(loop, owner.aclose())
             finally:
-                self._retired_goal_hosts.remove(host)
-        await settle_cleanup(*(partial(close, host) for host in tuple(self._retired_goal_hosts)),
+                self._retired_capabilities.remove(item)
+        await settle_cleanup(*(partial(close, item) for item in tuple(self._retired_capabilities)),
                              message='Retired Coding capabilities failed to close')
 
     async def initialize_extensions(self) -> None:
         try:
-            if self.extensions.enabled:
+            if self.extensions.enabled or self.extensions.commands():
                 from xdog.agent.async_work import run_owned
                 from xdog.coding.core.slash_commands import command_reservations
-                self.extensions.reserve_commands(await run_owned(command_reservations))
+                builtins, skills = await run_owned(command_reservations)
+                self.extensions.reserve_commands(builtins, skill_commands=skills)
                 await self.extensions.initialize()
             if self.agent.state.model.startswith("ext-") and not self.agent.state.is_streaming:
                 self.model_info = self.extensions.provider_model(self.agent.state.model)
@@ -544,12 +574,22 @@ class AgentSession:
         self.session_data.active_tools = selected
         self.session_data.updated_at = staged.updated_at
 
-    async def extension_command(self, action: str, args: str = "") -> str | ExtensionCommandResult:
+    async def extension_command(self, action: str, args: str = "", *,
+                                user_authorized: bool = False) -> str | ExtensionCommandResult:
         if action == 'login':
             from xdog.agent.extensions.provider_oauth_host import login_arguments
             action, args = 'extensions', 'auth ' + login_arguments(args)
+        previous_authority = self._user_operation_authorized
         try:
-            self._children_idle()
+            native = self.extensions.is_native_command(action)
+            if native:
+                controller = self.runtime.controller if self.runtime is not None else self._sdk_controller
+                if controller is None or not controller.owns_current_task:
+                    raise RuntimeError('Native commands require the original controller owner')
+                if self._tool_selection_retiring or self._compacting:
+                    raise RuntimeError('Session policy/context is changing')
+            else:
+                self._children_idle()
             if self.agent.state.is_streaming:
                 raise RuntimeError("Extension commands and reloads require an idle agent")
             await self.initialize_extensions()
@@ -570,10 +610,16 @@ class AgentSession:
                         parts[0] if parts else "list", parts[1] if len(parts) > 1 else "")
                 await self.initialize_extensions()
                 return json.dumps(result, indent=2)
-            output = await self.extensions.command(action, args)
+            if user_authorized:
+                self._user_operation_authorized = True
+            try:
+                output = await self.extensions.command(action, args)
+            finally:
+                self._user_operation_authorized = previous_authority
             await self.initialize_extensions()
             return output
         finally:
+            self._user_operation_authorized = previous_authority
             await self._sync_extension_tools()
 
     async def _after_tool_call(self, ctx: AfterToolCallContext, cancel: asyncio.Event | None = None
@@ -746,7 +792,7 @@ class AgentSession:
                              message='Retired Coding context cleanup failed')
 
     def _release_retired_leases(self) -> None:
-        if self._retired_resources or self._retired_goal_hosts:
+        if self._retired_resources or self._retired_capabilities:
             raise RuntimeError('Retired callback owners have not settled; writer leases retained')
         for lease in tuple(self._retiring_leases):
             lease.close()
@@ -755,7 +801,7 @@ class AgentSession:
     async def _close_sdk_owner(self, controller: SessionController) -> None:
         from xdog.coding.core.session_lifecycle import close_input_owner
         await close_input_owner(self, controller, resources=(self._sdk_disposing
-            or self.children.goal_host is not None or bool(self._retired_goal_hosts)))
+            or self._capabilities_started or bool(self._retired_capabilities)))
 
     async def _acquire_owner(self) -> tuple[SessionController, bool]:
         from xdog.coding.core.sessions.controller import SessionController
@@ -786,7 +832,7 @@ class AgentSession:
                         # Optional callback capabilities outlive an individual
                         # SDK await/asyncio.run; retain the one controller's own
                         # supported loop, never a second controller or daemon.
-                        controller.start(own_thread=find_spec("xdog.skills") is not None)
+                        controller.start(own_thread=bool(self.capabilities.providers))
                         self._sdk_controller = controller
                     self._sdk_users += 1
                     return self._sdk_controller, True
@@ -796,7 +842,7 @@ class AgentSession:
         with self._sdk_lock:
             self._sdk_users -= 1
             if (self._sdk_users == 0 and self._sdk_controller is controller
-                    and self.children.goal_host is None and not self._retired_goal_hosts):
+                    and not self._capabilities_started and not self._retired_capabilities):
                 self._sdk_controller = None
                 self._sdk_closing = controller.close()
                 return self._sdk_closing
@@ -888,7 +934,7 @@ class AgentSession:
         history_started = False
         try:
             self.handled_feedback = []
-            await self.initialize_goals()
+            await self.initialize_capabilities()
             if images:
                 from xdog.ai.utils.image_files import validate_references
                 await asyncio.to_thread(validate_references, images, self.model_info)
@@ -1822,7 +1868,7 @@ class AgentSession:
                 self._unsubscribe()
                 self._unsubscribe = None
         def release_writer() -> None:
-            if self._retired_resources or self._retired_goal_hosts:
+            if self._retired_resources or self._retired_capabilities:
                 raise RuntimeError('Retired callback cleanup is incomplete; original writer lease retained')
             if not self.agent.closed:
                 raise RuntimeError('Agent cleanup is incomplete; original writer lease retained')

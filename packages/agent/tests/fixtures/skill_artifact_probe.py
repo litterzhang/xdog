@@ -57,11 +57,11 @@ def main() -> None:
             import xdog.flow
             assert xdog.flow.__file__ and Path(xdog.flow.__file__).resolve().is_relative_to(target)
             assert Path(str(metadata.distribution("xdog-flow").locate_file(""))).resolve() == target
-            assert set(discovered) == {"flow-workflows"}, discovered
-            skill_dir = discovered["flow-workflows"]
+            assert set(discovered) == {"flow"}, discovered
+            skill_dir = discovered["flow"]
             assert skill_dir.resolve().is_relative_to(target)
             assert len(list((skill_dir / "examples").glob("*.json"))) == 12
-            result = asyncio.run(example["demonstrate"](SkillManager(root / "unused"), "flow-workflows"))
+            result = asyncio.run(example["demonstrate"](SkillManager(root / "unused"), "flow"))
             assert result["packaged"] is True
             assert not (root / "unused").exists()
         else:

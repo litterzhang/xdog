@@ -64,7 +64,7 @@ xdog-flow = "xdog.flow.cli:main"
 # Local harness state can contain nested repositories whose own ignore files
 # defeat default VCS selection. Never package it, even when building an sdist.
 [tool.hatch.build]
-exclude = ["**/.claude", "**/.claude/**", "**/__pycache__", "**/*.pyc"]
+exclude = ["**/.claude", "**/.claude/**", "**/.xdog", "**/.xdog/**", "**/__pycache__", "**/*.pyc"]
 
 [tool.hatch.build.targets.wheel]
 packages = [

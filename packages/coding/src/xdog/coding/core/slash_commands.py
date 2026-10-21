@@ -9,6 +9,7 @@ from functools import lru_cache
 from typing import cast
 
 from xdog.agent.async_work import run_owned
+from xdog.agent.capabilities.runtime import CapabilitySet
 from xdog.agent.extensions.command_result import ExtensionCommandResult
 from xdog.agent.skills import Skill, SkillManager
 from xdog.ai.types import ThinkingLevel
@@ -83,10 +84,10 @@ def available_skills() -> list[Skill]:
         return []
 
 
-def command_reservations() -> frozenset[str]:
+def command_reservations() -> tuple[frozenset[str], frozenset[str]]:
     """Caller runs filesystem skill discovery in owned IO, never in a worker RPC reader."""
     from xdog.coding.core.command_names import UI_COMMANDS
-    return frozenset({*list_commands(), *UI_COMMANDS, 'draft'})
+    return frozenset({*BUILTIN_COMMANDS, *UI_COMMANDS, 'draft'}), frozenset(s.slug for s in available_skills())
 
 
 def list_commands() -> dict[str, str]:
@@ -113,27 +114,49 @@ async def execute_command(
     extensions = getattr(session, 'extensions', None)
     public_extension = False
     if isinstance(extensions, ExtensionRuntime):
-        reservations = await run_owned(command_reservations)
-        extensions.reserve_commands(reservations)
+        builtins, skills = await run_owned(command_reservations)
+        extensions.reserve_commands(builtins, skill_commands=skills)
         if cmd in extensions.command_conflicts():
             raise ValueError(f'Extension command conflict: /{cmd}; resolve the conflict or unload the extension')
         public_extension = cmd in extensions.commands()
+    capabilities = getattr(session, 'capabilities', None)
+    native_candidate = (cmd not in BUILTIN_COMMANDS and isinstance(capabilities, CapabilitySet)
+                        and cmd in capabilities.declared_commands)
+    worker_control = (isinstance(extensions, ExtensionRuntime)
+                      and (public_extension or cmd.startswith('ext-') or cmd in {'extensions', 'login'}))
     synchronous_controls = {"readonly", "model", "thinking", "clear", "name", "resume", "new",
                             "goto", "fork", "branch", "unload"}
-    requires_owner = public_extension or cmd in synchronous_controls or (
+    requires_owner = native_candidate or worker_control or cmd in synchronous_controls or (
         cmd not in BUILTIN_COMMANDS and not cmd.startswith("ext-") and await run_owned(_load_skill, cmd) is not None)
     controller = (session.runtime.controller if session.runtime is not None else session._sdk_controller
                   ) if requires_owner else None
+    # Local controls/skill activation retain their original no-owner path.
+    # Only a declared capability command or real extension operation may open
+    # an SDK owner, and only the former starts installed capabilities.
+    if controller is None and (native_candidate or worker_control):
+        controller, _ = await session._acquire_owner()
+        try:
+            async def acquired() -> CommandResult:
+                return await execute_command(command, args, session)
+            return await asyncio.wrap_future(controller.control(acquired, name="slash-command"))
+        finally:
+            closing = session._release_sdk_owner(controller)
+            if closing is not None:
+                from xdog.agent.async_work import wait_owned
+                await wait_owned(asyncio.wrap_future(closing))
     if controller is not None and not controller.owns_current_task:
         async def owned() -> CommandResult:
             return await execute_command(command, args, session)
         return await asyncio.wrap_future(controller.control(owned, name="slash-command"))
+    if native_candidate:
+        await session.initialize_capabilities()
+        public_extension = cmd in session.extensions.commands()
     if cmd == 'login':
         from xdog.agent.extensions.provider_oauth_host import login_arguments
         cmd, args = 'extensions', 'auth ' + login_arguments(args)
 
     if cmd == "extensions" or cmd.startswith("ext-") or public_extension:
-        result = await session.extension_command(cmd, args)
+        result = await session.extension_command(cmd, args, user_authorized=True)
         return (CommandResult(output=result.summary, rich_output=result) if isinstance(result, ExtensionCommandResult)
                 else CommandResult(output=result))
     if cmd == "inbox":

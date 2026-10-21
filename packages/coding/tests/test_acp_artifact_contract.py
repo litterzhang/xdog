@@ -33,7 +33,7 @@ async def test_sdk_session_retains_writer_between_calls_and_releases_on_dispose(
         await coding_session.send_message('one actual turn')
         assert coding_session.runtime is None
         controller = coding_session._sdk_controller
-        assert controller is not None and coding_session.children.goal_host.loop is controller._loop
+        assert controller is not None and coding_session.capabilities.get("goal").loop is controller._loop
         assert coding_session._lease is not None and coding_session._lease._fd>=0
         with pytest.raises(RuntimeError,match='owned'):
             SessionLease.acquire(directory,coding_session.session_id)

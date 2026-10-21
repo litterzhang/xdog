@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from xdog.agent import Agent, AgentConfig, AgentMessage, BeforeToolCallContext, BeforeToolCallResult
 from xdog.agent.access import read_only_call
+from xdog.agent.capabilities.children import ChildPort
 from xdog.agent.core import AgentState
 from xdog.agent.history import history_points
 from xdog.agent.messages import dicts_to_messages, messages_to_dicts
@@ -24,17 +25,16 @@ from xdog.coding.core.permissions import PermissionDecision, PermissionManager, 
 
 if TYPE_CHECKING:
     from xdog.coding.core.agent_session import AgentSession
-    from xdog.coding.core.goal_adapter import CodingGoalHost
 
 
 
 class CodingChildren:
     def __init__(self, session: AgentSession) -> None:
         self.session = session
-        self.goal_host: CodingGoalHost | None = None
         self.token = uuid.uuid4().hex
         branch = session.session_data.active_branch or "head"
         self.store = ChildStore.scoped(session.session_manager._dir, session.session_id, branch)
+        self.capabilities = ChildPort(session.session_id, branch, lambda: session.capabilities.tools)
         self.snapshots: dict[str, AgentState] = {}
         self.tool_limits: dict[str, tuple[str, ...] | None] = {}
         self.extensions = ChildExtensions(session.extensions, self.store)
@@ -58,14 +58,13 @@ class CodingChildren:
             persist_admission=self.store.save_admission, archive_compaction=self.store.archive_compaction,
                                           forget=self.store.forget, finalize=self.finish,
             on_event=self.extensions.event, records=records, presets=presets)
+        self.capabilities.supervisor = self.supervisor
         self.supervisor.diagnostic = diagnostic
 
     def capture(self, spec: ChildSpec) -> None:
         if self.session._context_changes:
             raise RuntimeError("Session context/policy is changing; refresh before starting child work")
         agent = self.session.agent
-        if self.goal_host is not None:
-            self.goal_host.capture(spec)
         selection = agent.active_tool_selection
         allowed = spec.tools
         if selection is not None:
@@ -73,15 +72,7 @@ class CodingChildren:
             if allowed is not None and not set(allowed) <= set(ceiling):
                 raise ValueError('Child tool profile exceeds captured parent active-tool selection')
             allowed = ceiling if allowed is None else allowed
-        if self.goal_host is not None and self.goal_host.role(spec.id) is not None:
-            # Roles never inherit the parent Goal tool, arbitrary service tools or
-            # extension aliases. Keep the actual parent tool-selection ceiling.
-            from xdog.skills.goal.host import ReviewerSpec
-            reviewer = isinstance(self.goal_host.role(spec.id), ReviewerSpec)
-            allowed = tuple(tool.name for tool in agent.active_tools
-                            if tool.name not in RESERVED_TOOLS | {"goal", "eyes", "task_report", "goal_context"}
-                            and (not reviewer or tool.name in {"filesystem", "current_time"})
-                            and (allowed is None or tool.name in allowed))
+        allowed = self.capabilities.capture(spec, agent.active_tools, allowed)
         self.tool_limits[spec.id] = allowed
         self.snapshots[spec.id] = replace(agent.state, tools=agent.active_tools)
         self.extensions.reserve(spec.id)
@@ -90,7 +81,7 @@ class CodingChildren:
         session = self.session
         state = self.snapshots[spec.id]  # Snapshot taken at admission, before asynchronous startup/persistence.
         allowed_tools = self.tool_limits[spec.id]
-        role_tools = await self.goal_host.role_tools(spec) if self.goal_host is not None else ()
+        role_tools = await self.capabilities.tools(spec)
         if role_tools:
             allowed_tools = (*(allowed_tools or ()), *(tool.name for tool in role_tools))
         # Child extension context and every later registration sync keep this
@@ -115,15 +106,15 @@ class CodingChildren:
                 self.approver(spec.id, value)
         manager.set_request_handler(request)
         tools = tuple(tool for tool in state.tools
-                      if tool.name not in RESERVED_TOOLS | {"goal"} and tool.name not in session.extensions.aliases
+                      if tool.name not in RESERVED_TOOLS and self.capabilities.inherited(tool)
+                      and tool.name not in session.extensions.aliases
                       and tool.name not in {tool.name for tool in role_tools})
         tools = (*tools, *role_tools, *extension.tools())
         async def before(ctx: BeforeToolCallContext, cancel: asyncio.Event | None = None
                          ) -> BeforeToolCallResult | None:
             try:
                 def bound_call() -> bool:
-                    return self.goal_host is not None and self.goal_host.role_call(
-                        spec.id, ctx.tool_call.name, ctx.context.tools or ())
+                    return self.capabilities.permits(spec.id, ctx.tool_call.name, ctx.context.tools or ())
                 if (spec.access == "read-only" or session.access.state.read_only) and not (
                         bound_call() or read_only_call(ctx.tool_call.name, ctx.args)):
                     return BeforeToolCallResult(block=True, reason="Child/parent access is read-only")
@@ -244,8 +235,7 @@ class CodingChildren:
         self.supervisor.abort()
 
     def close(self) -> None:
-        if self.goal_host is not None:
-            self.session._retire_goal_host(self.goal_host)
+        self.session._retire_capabilities()
         for manager in tuple(self.permissions.values()):
             manager.close()
         self.supervisor.close()

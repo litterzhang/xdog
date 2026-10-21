@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from xdog.claw.core.inputs.models import InputScope
+from xdog.claw.core.outputs.targets import decode_reply
 
 from packages.claw.tests.eyes_helpers import managed as managed
 
@@ -9,7 +10,7 @@ from packages.claw.tests.eyes_helpers import managed as managed
 async def test_finished_source_may_release_cursor_while_original_report_stays_durably_pending(managed):
     created = await managed.create()
     reference = (await managed.record(created['id'])).reply
-    managed.orch.unregister_reply_channel(reference.binding)
+    managed.orch.unregister_reply_channel(decode_reply(reference).binding)
     managed.orch._channels.clear()
     managed.clock.advance(240)
     saved = await managed.completed(created['id'], pending_report=True)
@@ -26,13 +27,13 @@ async def test_finished_source_may_release_cursor_while_original_report_stays_du
 async def test_known_offline_report_does_not_publish_sending_during_reconciliation(managed):
     created = await managed.create()
     reference = (await managed.record(created['id'])).reply
-    managed.orch.unregister_reply_channel(reference.binding)
+    managed.orch.unregister_reply_channel(decode_reply(reference).binding)
     managed.orch._channels.clear()
     managed.clock.advance(240)
     saved = await managed.completed(created['id'], pending_report=True)
     message = saved['occurrences'][0]['message_id']
     scope = InputScope('g1', managed.orch.get_group_workspace('g1'))
-    receipt = await managed.manager.inputs.store.get(scope, message)
+    receipt = await managed.manager.host.input_get(scope.group_id, scope.workspace, message)
     outputs = await managed.orch.output_service()
     before = await outputs.store.records(scope)
     await managed.manager._report(receipt)

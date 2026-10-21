@@ -96,3 +96,22 @@ async def test_basic_child_dialogs_stay_scoped_cancelable_and_independent_of_pen
         await asyncio.gather(work, return_exceptions=True)
         await children.close(spec)
         await parent.aclose()
+
+
+async def test_native_parent_contributions_are_not_instantiated_as_child_workers(tmp_path):
+    parent = ExtensionRuntime((), tmp_path / 'extensions', tmp_path)
+    async def native(args):
+        return 'only the actual parent'
+    parent.bind_native_commands('native_owner', {'inspect-parent': ('Parent only', native)}, valid=lambda: True)
+    assert parent.snapshot()['extensions'] == [{'name': 'native_owner', 'state': 'active'}]
+    children = ChildExtensions(parent, ChildStore(tmp_path / 'records'))
+    spec = ChildSpec(id='c' * 12, task='Ordinary child must remain usable')
+    runtime = await children.create(spec, lambda event: None)
+    try:
+        assert runtime.enabled == () and not runtime.validation_failed
+        assert 'inspect-parent' not in runtime.commands()
+        assert not runtime._manager._clients
+        assert await parent.command('inspect-parent', '') == 'only the actual parent'
+    finally:
+        await children.close(spec)
+        await parent.aclose()

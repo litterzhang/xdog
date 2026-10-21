@@ -124,3 +124,14 @@ and [current verification](../../docs/unified-inbox-batch-verification.md) for
 release evidence. The older `eyes-verification.md` is a historical checkpoint.
 `uv build --package xdog-eyes` ships skill, example, py.typed and license. This
 feature does not push/publish or provision a PyPI publisher/system service.
+
+
+## Managed host capability
+
+`xdog.eyes.hosting.runtime:provider` supplies the optional application-scoped
+capability. Observer schema, cursor/outbox, recovery/cancellation and tool logic
+belong to Eyes. The feature receives only structural stdlib host ports, detached
+receipt snapshots, opaque reply strings and injected leased IO; it imports no
+other XDOG runtime package. The host retains execution, permission and actual
+channel output authority. Metadata discovery is inert and never creates an
+observer or starts a model. Existing standalone CLI behavior is unchanged.

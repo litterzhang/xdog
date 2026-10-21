@@ -4,7 +4,7 @@
 
 Claw's group-scoped `eyes` tool replaces the old `task` tool and TaskScheduler.
 Eyes owns scheduler source calculations and `croniter>=2.0,<7`; Claw depends on
-`xdog-eyes>=2.4.2` and owns policy, durable receipts and channel delivery, not
+optional `xdog-eyes>=2.4.2` and owns policy, durable receipts and channel delivery, not
 another timer engine or agent loop. Historical scheduler transcript labels remain
 readable; removed scheduler Python classes are not execution APIs. The goal
 runner remains separate and is not removed with the old task scheduler.
@@ -14,27 +14,27 @@ contract below supersedes the old CS-07 migration scope. Previous test/build
 results cover the earlier migration implementation, not acceptance of complete
 legacy removal; see `docs/claw-eyes-scheduler-{plan.md,requirements.json}`.
 
-Managed observers are opt-in. If disabled, report that the host is unavailable;
-use standalone Eyes only with an explicit trusted destination and approval.
-Loading a skill or merely registering a tool never starts observation.
+Installed `xdog-eyes` automatically provides managed capability, without an enable
+setting or automatic package installation. Without it, base chat continues and
+managed Eyes is unavailable. Capability availability creates no observers; new
+observers require an explicit user request. Use standalone Eyes only with an
+explicit trusted destination and approval. Loading a skill or merely registering
+a tool never starts observation; recovery of already accepted managed time
+observers remains part of gateway startup when the package is installed.
 
 ## Host configuration contract
 
-The new configuration switch is `eyes_enabled: bool = False`. Managed observation
-is opt-in; with the default `false`, the gateway must not automatically open ACP
-or start observers. To explicitly enable host management in `config.yaml`:
+Package presence replaces configuration gating: there is no `eyes_enabled`
+setting. Claw does not install `xdog-eyes` automatically. When it is installed,
+the gateway provides managed Eyes. It reuses `acp_socket_path` if configured;
+otherwise it owns a private Unix endpoint at `data_dir/acp/agent.sock`. There is no additional
+daemon. This does not remove explicit standalone ACP configuration, authorize new
+observers, or change existing tool permissions.
 
-```yaml
-eyes_enabled: true
-```
-
-When enabled, the gateway reuses `acp_socket_path` if configured, otherwise owns a
-private Unix endpoint at `data_dir/acp/agent.sock`. There is no additional daemon.
-This does not remove the existing explicit standalone ACP opt-in. The default
-registry registers `eyes`, but operations must fail explicitly when management is
-disabled or the host is unavailable; a registered tool name is not proof it is
-enabled. The trusted tool context supplies the host as `_eyes`; model arguments
-must not select a host. The gateway owns these resources and joins them before closing its inbox.
+The default registry registers `eyes`, but operations must fail explicitly if the
+package or live host is unavailable; a registered tool name is not proof of a live
+capability. The installed capability supplies a host-bound tool closure; model arguments must not select a host. The gateway owns these resources and joins them before
+closing its inbox. Without the package, base chat continues without managed Eyes.
 
 ## Host tool: eyes
 
@@ -87,8 +87,8 @@ persisted cross-restart clock.
 
 The latest decision removes the old TaskScheduler, `task` tool, scheduler-only
 models/injection/exports and **all migration compatibility**. There is no
-`tasks_file` configuration or old-path resolution. Gateway startup, whether
-`eyes_enabled` is true or false, must not inspect, read, back up or import
+`tasks_file` configuration or old-path resolution. Gateway startup, whether or not
+`xdog-eyes` is installed, must not inspect, read, back up or import
 `scheduled_tasks.json` (including previously configured custom paths). No legacy
 validation, conversion, migration marker or confirmation-state workflow remains.
 Old files must not affect gateway startup or create managed observers.

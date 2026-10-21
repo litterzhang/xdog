@@ -168,7 +168,7 @@ async def test_goal_display_cleanup_error_still_closes_actual_domain_store(tmp_p
     session, _ = create(tmp_path)
     await session.send_message('initialize installed capability')
     controller = session._sdk_controller
-    host = session.children.goal_host
+    host = session.capabilities.get("goal")
     assert host is not None
     # Bind the actual shared display to the host on its actual owner loop.
     from xdog.skills.goal.ui_binding import GoalDisplay
@@ -187,7 +187,7 @@ async def test_goal_display_cleanup_error_still_closes_actual_domain_store(tmp_p
         # This is actual lease reacquisition, not a fake store-close assertion.
         reopened = await GoalStore.open(host.service.store.path, host.service.store.owner)
         await reopened.close()
-        assert session._lease is None and session.children.goal_host is None
+        assert session._lease is None and session.capabilities.get("goal") is None
     finally:
         await host.service.close()
         await session.extensions.aclose()
@@ -256,13 +256,13 @@ async def test_navigation_joins_retired_extension_before_releasing_original_writ
         await actual_close()
     monkeypatch.setattr(client, 'close', gated)
     rebinding = threading.Event()
-    settle_goals = session._settle_retired_goals
+    settle_goals = session._settle_retired_capabilities
     async def observe_rebind():
         await settle_goals()
         rebinding.set()
     async def no_endpoint():
         pass
-    monkeypatch.setattr(session, '_settle_retired_goals', observe_rebind)
+    monkeypatch.setattr(session, '_settle_retired_capabilities', observe_rebind)
     monkeypatch.setattr(runtime, 'open_endpoint', no_endpoint)
     async def navigate():
         return await asyncio.to_thread(session.new_session)

@@ -59,7 +59,7 @@ async def test_model_can_create_task_via_real_tool_loop(managed):
     record = await managed.record(created['id'])
     assert record.definition['handlers'][0]['instruction'] == 'scheduled follow-up'
     session = managed.orch._runtimes['g1'].get_or_create_session()
-    assert session.agent.tool_context['_eyes'] is managed.manager
+    assert '_eyes' not in session.agent.tool_context
     assert session.agent.tool_context['_memory_search'] is not None or managed.orch._runtimes['g1'].memory is None
     managed.channel.send_message.assert_not_awaited()
     managed.clock.advance(240)
@@ -224,7 +224,7 @@ async def test_scheduled_memory_search_refreshes_and_reports(managed, monkeypatc
     created = await create(managed, instruction='memory report', source=scheduler(every_seconds=60))
     session = runtime.get_or_create_session()
     ctx = session.agent.tool_context
-    assert ctx['_memory_search'].__self__ is memory and ctx['_eyes'] is managed.manager
+    assert ctx['_memory_search'].__self__ is memory and '_eyes' not in ctx
     for count, revision in enumerate(('initialneedle', 'updatedneedle'), 1):
         text = f'陆知行 xdog-youju {revision}'
         (runtime.workspace_dir / 'MEMORY.md').write_text(text, encoding='utf-8')
@@ -236,7 +236,7 @@ async def test_scheduled_memory_search_refreshes_and_reports(managed, monkeypatc
         assert all(row['execution_status'] == 'succeeded' and row['delivery_status'] == 'delivered'
                    for row in saved['occurrences'])
         assert saved['enabled'] and runtime.get_or_create_session() is session
-        assert session.agent.tool_context['_eyes'] is managed.manager
+        assert '_eyes' not in session.agent.tool_context
         assert session.agent.tool_context['_memory_search'].__self__ is memory
     assert managed.channel.send_message.await_count == 2
     await managed.restart()

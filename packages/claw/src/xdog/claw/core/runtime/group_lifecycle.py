@@ -55,8 +55,7 @@ async def close(runtime: GroupRuntime) -> None:
             owners += (session.extensions,)
         if session is not None:
             await settle(session.agent.aclose(), session.children.supervisor.aclose())
-        if runtime.goal_host is not None:
-            await settle(runtime.goal_host.aclose())
+        await settle(runtime.capabilities.aclose())
         await settle(*(owner.aclose() for owner in owners))
         await settle(runtime.mcp.aclose())
         if runtime.memory is not None:

@@ -3,15 +3,17 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
+import math
 import os
 import sqlite3
 import stat
+import time
 import uuid
 from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeVar, cast
+from typing import Any, TypeVar, cast
 
 from xdog.agent.async_work import wait_owned
 from xdog.claw.core.inputs.models import InputEnvelope, InputScope, decode_envelope, encode_envelope
@@ -33,7 +35,8 @@ CREATE TABLE inputs (
 CREATE TABLE attempts (
     attempt_id TEXT PRIMARY KEY, sequence INTEGER NOT NULL REFERENCES inputs(sequence), status TEXT NOT NULL,
     response TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', session_id TEXT NOT NULL DEFAULT '',
-    started INTEGER NOT NULL DEFAULT 0 CHECK(started IN (0,1)));
+    started INTEGER NOT NULL DEFAULT 0 CHECK(started IN (0,1)),
+    started_at REAL, settled_at REAL);
 '''
 
 
@@ -55,6 +58,8 @@ class InputAttempt:
     error: str
     session_id: str
     started: bool = False
+    started_at: float | None = None
+    settled_at: float | None = None
 
 
 def _record(row: sqlite3.Row) -> InputRecord:
@@ -76,6 +81,21 @@ def _select(db: sqlite3.Connection, scope: InputScope, identifier: str) -> sqlit
 
 
 
+def _execution_times(row: sqlite3.Row) -> tuple[float | None, float | None]:
+    if 'started_at' not in row.keys() and 'settled_at' not in row.keys():
+        return None, None  # Existing v3 receipts have no reconstructible times.
+    if 'started_at' not in row.keys() or 'settled_at' not in row.keys():
+        raise ValueError('Incomplete input execution timestamp schema')
+    started, settled = row['started_at'], row['settled_at']
+    if (any(v is not None and (type(v) not in (int, float) or not math.isfinite(v) or v <= 0)
+            for v in (started, settled))
+            or started is not None and not row['started']
+            or settled is not None and (started is None or row['status'] not in {'succeeded', 'failed', 'interrupted'})
+            or started is not None and row['status'] != 'running' and settled is None):
+        raise ValueError('Invalid execution receipt timestamps')
+    return started, settled
+
+
 def _validate_receipts(db: sqlite3.Connection) -> None:
     """Read-only validation must precede every recovery write, not repair facts."""
     db.row_factory = sqlite3.Row
@@ -88,6 +108,8 @@ def _validate_receipts(db: sqlite3.Connection) -> None:
         record = _record(row)
         attempts = db.execute('SELECT * FROM attempts WHERE sequence=? ORDER BY rowid',
                               (row['sequence'],)).fetchall()
+        for attempt in attempts:
+            _execution_times(attempt)
         if any(attempt['status'] not in (_STATES - {'pending'}) | {'released'} for attempt in attempts):
             raise ValueError('Unknown execution attempt state')
         if any(attempt['status'] in {'claimed', 'released', 'cancelled'} and attempt['started']
@@ -230,6 +252,17 @@ class InputStore:
                 raise ValueError('Unsupported or corrupt input database; original data retained') from exc
 
         def recover(db: sqlite3.Connection) -> None:
+            columns = {row['name'] for row in db.execute('PRAGMA table_info(attempts)')}
+            missing = {'started_at', 'settled_at'} - columns
+            if missing == {'started_at', 'settled_at'}:
+                # One atomic nullable extension of the supported v3 schema only.
+                # Old rows remain NULL: there is no historical time backfill.
+                db.execute('ALTER TABLE attempts ADD COLUMN started_at REAL')
+                db.execute('ALTER TABLE attempts ADD COLUMN settled_at REAL')
+            elif missing:
+                raise ValueError('Incomplete input execution timestamp schema')
+            db.execute("UPDATE attempts SET settled_at=? WHERE status='running' AND started_at IS NOT NULL",
+                       (time.time(),))
             db.execute("UPDATE attempts SET status='released' WHERE status='claimed'")
             db.execute("UPDATE inputs SET status='pending',attempt_id='' WHERE status='claimed'")
             db.execute("UPDATE attempts SET status='interrupted',error=? WHERE status='running'", (_INTERRUPTED,))
@@ -302,6 +335,31 @@ class InputStore:
             return _record(_select(db, scope, identifier)), False
         return await self._disk(enqueue)
 
+    async def latest_execution(self, scope: InputScope, *, namespace: str) -> dict[str, Any] | None:
+        """Read original-scope started attempts in actual admission order."""
+        def read(db: sqlite3.Connection) -> dict[str, Any] | None:
+            binding = (scope.group_id, str(scope.workspace))
+            owner = db.execute('SELECT namespace FROM scopes WHERE group_id=? AND workspace=?', binding).fetchone()
+            if owner is None or owner['namespace'] != namespace:
+                raise ValueError('Capability input owner namespace changed')
+            row = db.execute(
+                'SELECT a.*,i.message_id FROM attempts a JOIN inputs i ON i.sequence=a.sequence '
+                'WHERE i.group_id=? AND i.workspace=? AND a.started=1 ORDER BY a.rowid DESC LIMIT 1',
+                binding).fetchone()
+            if row is None:
+                return None
+            if row['status'] not in {'running', 'succeeded', 'failed', 'interrupted'}:
+                raise ValueError('Invalid started execution receipt')
+            started, settled = _execution_times(row)
+            if started is None:
+                return {'availability': 'unavailable', 'reason': 'legacy_execution_metadata_missing'}
+            result: dict[str, Any] = {'execution_id': row['attempt_id'], 'status': row['status'],
+                'message_ids': [row['message_id']], 'started_at': started}
+            if settled is not None:
+                result['settled_at'] = settled
+            return result
+        return await self._disk(read)
+
     async def get(self, scope: InputScope, message_id: str) -> InputRecord | None:
         def get(db: sqlite3.Connection) -> InputRecord | None:
             row = db.execute('SELECT * FROM inputs WHERE group_id=? AND workspace=? AND message_id=?',
@@ -318,7 +376,8 @@ class InputStore:
         def read(db: sqlite3.Connection) -> tuple[InputAttempt, ...]:
             row = _select(db, scope, message_id)
             return tuple(InputAttempt(attempt['attempt_id'], attempt['status'], attempt['response'],
-                                      attempt['error'], attempt['session_id'], bool(attempt['started']))
+                                      attempt['error'], attempt['session_id'], bool(attempt['started']),
+                                      *_execution_times(attempt))
                          for attempt in db.execute(
                 'SELECT * FROM attempts WHERE sequence=? ORDER BY rowid', (row['sequence'],)))
         return await self._disk(read)
@@ -351,8 +410,8 @@ class InputStore:
             row = self._attempt(db, record, 'claimed')
             db.execute("UPDATE inputs SET status='running',session_id=? WHERE sequence=?",
                        (session_id, row['sequence']))
-            db.execute("UPDATE attempts SET status='running',started=1,session_id=? WHERE attempt_id=?",
-                       (session_id, record.attempt_id))
+            db.execute("UPDATE attempts SET status='running',started=1,session_id=?,started_at=? WHERE attempt_id=?",
+                       (session_id, time.time(), record.attempt_id))
             return _record(_select(db, record.envelope.scope, record.envelope.message.id))
         return await self._disk(start)
 
@@ -367,8 +426,8 @@ class InputStore:
             session = session_id or row['session_id']
             db.execute('UPDATE inputs SET status=?,response=?,error=?,session_id=? WHERE sequence=?',
                        (status, response, error, session, row['sequence']))
-            db.execute('UPDATE attempts SET status=?,response=?,error=?,session_id=? WHERE attempt_id=?',
-                       (status, response, error, session, record.attempt_id))
+            db.execute('UPDATE attempts SET status=?,response=?,error=?,session_id=?,settled_at=? WHERE attempt_id=?',
+                       (status, response, error, session, time.time(), record.attempt_id))
             return _record(_select(db, record.envelope.scope, record.envelope.message.id))
         return await self._disk(finish)
 

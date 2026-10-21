@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from xdog.agent.extensions.api import ExtensionAPI
 
-_STATES = {"active", "waiting", "paused", "blocked", "reviewing", "completed", "abandoned"}
+_STATES = {"active", "waiting", "paused", "completed", "cleared"}
 
 
 def _plain(value: str) -> str:
@@ -15,7 +15,7 @@ def _plain(value: str) -> str:
 
 
 def _display(value: dict[str, Any]) -> tuple[str, str]:
-    if (value.get("format") != "xdog.goal_view.v1" or type(value.get("items")) is not list
+    if (value.get("format") != "xdog.goal_view.v2" or type(value.get("items")) is not list
             or type(value.get("total")) is not int or value["total"] < len(value["items"])
             or not isinstance(value.get("revision"), str) or re.fullmatch("[a-f0-9]{64}", value["revision"]) is None):
         raise ValueError("Goal view schema unavailable")
@@ -30,11 +30,11 @@ def _display(value: dict[str, Any]) -> tuple[str, str]:
                 or not isinstance(row.get("tasks"), dict)):
             raise ValueError("Goal row unavailable")
         counts = row["tasks"]
-        if any(type(counts.get(key)) is not int or counts[key] < 0 for key in ("accepted", "total")):
+        if any(type(counts.get(key)) is not int or counts[key] < 0 for key in ("completed", "total")):
             raise ValueError("Goal task counts unavailable")
         marker = " [preview]" if row.get("preview_fields") else ""
         lines.append(f"{_plain(row['id'])} [{row['status']}] {_plain(row['title'])}{marker} "
-                     f"• accepted tasks {counts['accepted']}/{counts['total']}")
+                     f"• completed tasks {counts['completed']}/{counts['total']}")
     next_offset = value.get("next_offset")
     if next_offset is not None:
         if type(next_offset) is not int or next_offset < 0:

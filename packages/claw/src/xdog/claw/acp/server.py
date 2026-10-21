@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 from xdog.agent.acp.adapter import AcpAdapter
@@ -24,6 +25,7 @@ class ClawAcpServer:
         self._tasks: set[asyncio.Task[None]] = set()
         self._closing = False
         self._close_task: asyncio.Task[None] | None = None
+        self._release_endpoint: Callable[[], None] = lambda: None
 
     @classmethod
     async def start(cls, orchestrator: Orchestrator, path: Path) -> ClawAcpServer:
@@ -46,6 +48,8 @@ class ClawAcpServer:
         result._endpoint = endpoint
         try:
             result._server = await listen(result._accept, endpoint, limit=1024 * 1024)
+            result._release_endpoint = orchestrator.register_acp_endpoint(
+                result, path, valid=lambda: not result._closing)
             return result
         except BaseException:
             await result.close()
@@ -80,6 +84,12 @@ class ClawAcpServer:
         await wait_owned(self._close_task)
 
     async def _close(self) -> None:
+        from xdog.agent.async_work import settle_cleanup
+        async def retire() -> None:
+            self._release_endpoint()
+        await settle_cleanup(retire, self._close_transport, message='Private ACP retirement failed')
+
+    async def _close_transport(self) -> None:
         if self._server is not None:
             self._server.close()
         for writer in tuple(self._writers):

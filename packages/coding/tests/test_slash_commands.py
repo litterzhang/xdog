@@ -136,3 +136,22 @@ def agent_session_with_models(tmp_path):
         bash=None,
         working_dir=tmp_path,
     )
+
+
+@pytest.mark.parametrize('command,args', [
+    ('name', 'Local name'), ('model', 'offline/local'), ('thinking', 'off'),
+    ('unload', 'all'), ('unrelated-unknown-command', ''),
+])
+async def test_unrelated_local_commands_do_not_acquire_owner_or_initialize_capabilities(
+        agent_session, monkeypatch, command, args):
+    async def forbidden(*args, **kwargs):
+        raise AssertionError('Local commands must not create an execution owner or open capabilities')
+    monkeypatch.setattr(agent_session, '_acquire_owner', forbidden)
+    monkeypatch.setattr(agent_session, 'initialize_capabilities', forbidden)
+    original_state = agent_session.agent.state
+    result = await execute_command(command, args, agent_session)
+    assert result.output and agent_session._sdk_controller is None
+    assert agent_session.capabilities.get('goal') is None
+    if command == 'name':
+        assert agent_session.agent.state is original_state
+        assert agent_session.session_data.name == 'Local name'

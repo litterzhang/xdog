@@ -37,7 +37,7 @@ async def test_idle_automatic_context_rotation_uses_runtime_resources_not_goal_p
     monkeypatch.setattr(runtime.transcript_store, 'needs_idle_reset', lambda *args: idle)
     fresh = runtime.get_or_create_session()
     assert fresh is not session and fresh.meta.session_id != session.meta.session_id
-    assert runtime.goal_host is None
+    assert runtime.capabilities.get("goal") is None
 
 
 async def test_manual_new_retains_workspace_and_history_but_never_activates_old_route(owner):
@@ -104,7 +104,7 @@ def test_optional_capabilities_do_not_change_workspace_in_both_construction_path
     try:
         expected = Path(group.workspace) if group.workspace else tmp_path / 'data/groups/main/workspace'
         assert runtime.workspace_dir == expected
-        assert runtime.goal_host is None and not (tmp_path / 'data/groups/main/goals').exists()
+        assert runtime.capabilities.get("goal") is None and not (tmp_path / 'data/groups/main/goals').exists()
     finally:
         runtime.mcp.close()
 

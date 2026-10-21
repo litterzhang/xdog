@@ -64,15 +64,15 @@ async def test_model_loading_is_not_host_activation(tmp_path: Path, turn: bool) 
 async def test_real_packaged_flow_skill_activation_and_model_loading(tmp_path: Path) -> None:
     from xdog.agent.skills import packaged_skills
 
-    directory = packaged_skills().get("flow-workflows")
+    directory = packaged_skills().get("flow")
     if directory is None:
         pytest.skip("Optional xdog-flow package is not installed")
     # Select the exact packaged copy with no ambient local overrides.
-    manager = SkillManager(tmp_path / "unused", packaged={"flow-workflows": directory})
+    manager = SkillManager(tmp_path / "unused", packaged={"flow": directory})
     assert (directory / "SKILL.md").is_file()
     assert len(list((directory / "examples").glob("*.json"))) == 12
-    activated = await demonstrate(manager, "flow-workflows")
-    loaded = await demonstrate_loading(manager, "flow-workflows")
+    activated = await demonstrate(manager, "flow")
+    loaded = await demonstrate_loading(manager, "flow")
     assert activated["packaged"] and activated["loaded_at_model_entry"]
     assert loaded["packaged"] and loaded["loaded_at_model_entry"]
     assert loaded["active_skills"] == [] and not (tmp_path / "unused").exists()

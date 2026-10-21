@@ -16,7 +16,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
-from xdog.agent.async_work import run_owned
+from xdog.agent.async_work import run_owned, settle_cleanup, wait_owned
 from xdog.agent.core import AgentMessage, AgentTool, AgentToolResult
 from xdog.agent.cross_loop import submit_remote
 from xdog.agent.extensions.command_result import ExtensionCommandResult
@@ -28,6 +28,10 @@ from xdog.agent.extensions.hooks import FLAGS
 from xdog.agent.extensions.hooks import declaration as hook_declaration
 from xdog.agent.extensions.input import InputRejected, decision, input_text
 from xdog.agent.extensions.location import ExtensionRoot
+from xdog.agent.extensions.native_commands import Binding as NativeCommandBinding
+from xdog.agent.extensions.native_commands import Commands as NativeCommandDefinitions
+from xdog.agent.extensions.native_commands import NativeCommands
+from xdog.agent.extensions.native_commands import prepare as native_command_binding
 from xdog.agent.extensions.shortcuts import registrations, snapshot_rows
 from xdog.agent.extensions.state import ExtensionEntries
 from xdog.agent.extensions.tool_result import details_snapshot, host_result
@@ -497,6 +501,9 @@ class ExtensionRuntime:
         self._activation_lock = asyncio.Lock()
         self._infos: dict[str, dict[str, Any]] = {}
         self._reserved_commands: frozenset[str] = frozenset()
+        self._skill_commands: frozenset[str] = frozenset()
+        self._native_commands = NativeCommands()
+        self._close_task: asyncio.Task[None] | None = None
         self._input_required: set[str] = set()
         self._provider_lock = asyncio.Lock()
         self._failed: set[str] = set()
@@ -867,48 +874,109 @@ class ExtensionRuntime:
             raise ValueError("Extension is not active")
         return await client.request(method, params)
 
+    def bind_native_commands(self, extension_id: str, commands: NativeCommandDefinitions, *,
+                             valid: Callable[[], bool],
+                             shadow_skills: set[str] | frozenset[str] = frozenset()) -> Callable[[], None]:
+        """Bind trusted installed callbacks; no RPC/data can grant native authority.
+
+        Hosts declare builtin and skill reservations separately. Only explicitly
+        named skill entries may overlap; builtins/other extension owners never do.
+        The returned disposer retires only this exact binding, not its successor.
+        """
+        binding = native_command_binding(extension_id, commands, valid, shadow_skills)
+        if self._closed or binding.valid() is not True:
+            raise ValueError('Native command owner is closed or stale')
+        if any(name.lower() == extension_id.lower() for name in self.enabled):
+            raise ValueError('Native command identity conflicts with a selected extension worker')
+        active = self._native_commands.active()
+        if (any(value.extension.lower() == extension_id.lower() for value in active)
+                or len(self.enabled) + len(active) >= 16):
+            raise ValueError('Native command extension identity is already owned or capacity exceeded')
+        self._command_routes(native_candidate=binding)
+        self._native_commands.bind(binding)
+
+        def remove() -> None:
+            if self._native_commands.remove(binding) and not self._closed:
+                self.publish({'type': 'extension_ui', 'snapshot': self.snapshot()})
+
+        try:
+            self.publish({'type': 'extension_ui', 'snapshot': self.snapshot()})
+        except BaseException:
+            self._native_commands.remove(binding)
+            raise
+        return remove
+
     def snapshot(self) -> dict[str, Any]:
         return {"extensions": [{"name": name, "state": "unloaded" if name in self._unloaded else
                                  "failed" if name in self._failed else
                                  "active" if name in self._infos else "not loaded"}
-                                for name in self.enabled],
+                                for name in self.enabled] + [
+                                    {'name': binding.extension, 'state': 'active'}
+                                    for binding in self._native_commands.active()],
                 "commands": self.commands(), "command_completions": self.command_completions(),
                 **({'command_owners': self.command_owners()} if any('public_name' in row
                     for _, row in self._command_routes().values()) else {}),
                 "ui": dict(self._ui), "shortcuts": self.shortcuts()}
 
-    def _command_routes(self, candidate: tuple[str, list[dict[str, Any]]] | None = None
-                        ) -> dict[str, tuple[str, dict[str, Any]]]:
-        if self._closed:
-            return {}
+    def _command_declarations(self, candidate: tuple[str, list[dict[str, Any]]] | None = None,
+                              native_candidate: NativeCommandBinding | None = None
+                              ) -> dict[str, list[dict[str, Any]]]:
         declarations = {name: info['commands'] for name, info in tuple(self._infos.items())
                         if name not in self._failed | self._unloaded}
         if candidate is not None:
             declarations[candidate[0]] = candidate[1]
-        routes = {}
-        for name, rows in declarations.items():
+        for binding in (*self._native_commands.active(),
+                        *((native_candidate,) if native_candidate is not None else ())):
+            if binding.extension in declarations:
+                raise ValueError('Native command identity conflicts with an extension worker')
+            declarations[binding.extension] = binding.rows()
+        if sum(len(rows) for rows in declarations.values()) > 64:
+            raise ValueError('Extension command capacity exceeded')
+        return declarations
+
+    def _command_reserved(self, owner: str, command: str,
+                          native_candidate: NativeCommandBinding | None = None) -> bool:
+        if command in self._reserved_commands:
+            return True
+        if command not in self._skill_commands:
+            return False
+        binding = (native_candidate if native_candidate is not None and native_candidate.extension == owner else
+                   self._native_commands.resolve(owner, command))
+        return binding is None or command not in binding.shadow_skills
+
+    def _command_routes(self, candidate: tuple[str, list[dict[str, Any]]] | None = None, *,
+                        native_candidate: NativeCommandBinding | None = None
+                        ) -> dict[str, tuple[str, dict[str, Any]]]:
+        if self._closed:
+            return {}
+        routes: dict[str, tuple[str, dict[str, Any]]] = {}
+        claimed: set[str] = set()
+        for name, rows in self._command_declarations(candidate, native_candidate).items():
             for row in rows:
                 selected = external_name(name, row)
-                if selected in self._reserved_commands:
-                    if candidate is not None and name == candidate[0]:
-                        raise ValueError(f'Extension command name conflict: /{selected} is reserved')
-                    continue  # Quarantine a later host/skill conflict without poisoning the catalog.
-                if selected in routes:
+                if selected in claimed:
                     raise ValueError(f'Extension command name conflict: /{selected} is already registered')
+                claimed.add(selected)
+                if self._command_reserved(name, selected, native_candidate):
+                    if (candidate is not None and name == candidate[0]
+                            or native_candidate is not None and name == native_candidate.extension):
+                        raise ValueError(f'Extension command name conflict: /{selected} is reserved')
+                    continue
                 routes[selected] = (name, row)
         return routes
 
     def command_conflicts(self) -> dict[str, str]:
         if self._closed:
             return {}
-        return {external_name(name, row): name for name, info in tuple(self._infos.items())
-                if name not in self._failed | self._unloaded for row in info['commands']
-                if external_name(name, row) in self._reserved_commands}
+        return {external_name(name, row): name for name, rows in self._command_declarations().items()
+                for row in rows if self._command_reserved(name, external_name(name, row))}
 
-    def reserve_commands(self, names: set[str] | frozenset[str]) -> None:
-        """Quarantine later conflicts; keep help/status/unload available for recovery."""
+    def reserve_commands(self, names: set[str] | frozenset[str], *,
+                         skill_commands: set[str] | frozenset[str] = frozenset()) -> None:
+        """Reserve builtins fail-closed; explicit native overlap may shadow only skills."""
         previous = self.command_conflicts()
         self._reserved_commands = frozenset(name.removeprefix('/').lower() for name in names)
+        self._skill_commands = frozenset(name.removeprefix('/').lower() for name in skill_commands)
         for command, owner in self.command_conflicts().items():
             if previous.get(command) != owner:
                 self.publish({'type': 'extension_notice', 'extension': owner,
@@ -924,13 +992,20 @@ class ExtensionRuntime:
 
     def _command_route(self, command: str) -> tuple[str, dict[str, Any]] | None:
         for public, (owner, row) in self._command_routes().items():
-            if command.lower() in {public, f"ext-{owner}-{row['name']}".lower()}:
+            selected = command.lower()
+            if (selected in {public, f"ext-{owner}-{row['name']}".lower()}
+                    and not self._command_reserved(owner, selected)):
                 return owner, row
         return None
 
     def command_owner(self, command: str) -> str | None:
         route = self._command_route(command)
         return route[0] if route is not None else None
+
+    def is_native_command(self, command: str) -> bool:
+        """Actual bound native contribution, not a name/manifest authority claim."""
+        route = self._command_route(command)
+        return route is not None and self._native_commands.resolve(route[0], route[1]['name']) is not None
 
     def shortcuts(self) -> list[dict[str, str]]:
         routes = {(owner, row['name'].lower()): name for name, (owner, row) in self._command_routes().items()}
@@ -1358,7 +1433,25 @@ class ExtensionRuntime:
             raise ValueError('Invalid argument completion callback result')
         return {'status': 'ok', 'items': items(result['items'])}
 
+    async def _native_command(self, command: str, args: str, route: tuple[str, dict[str, Any]],
+                              binding: NativeCommandBinding) -> str:
+        def routed() -> bool:
+            return self._command_route(command) == route
+        return await self._native_commands.command(binding, route[1]['name'], args, routed)
+
     async def command(self, command: str, args: str) -> str | ExtensionCommandResult:
+        # Native dispatch stays on the real calling owner and never initializes
+        # configured workers, including display-only workers, as a side effect.
+        if command.lower() in self.command_conflicts():
+            raise ValueError(f'Extension command conflict: /{command}; resolve the conflict or unload the extension')
+        route = self._command_route(command)
+        if route is not None:
+            owner, row = route
+            binding = self._native_commands.resolve(owner, row['name'])
+            if binding is not None:
+                return await self._native_command(command, args, route, binding)
+        if route is None and self._native_commands.claims(command):
+            raise ValueError('Native command owner is stale or conflicted')
         await self.initialize()
         if command.lower() in self.command_conflicts():
             raise ValueError(f'Extension command conflict: /{command}; resolve the conflict or unload the extension')
@@ -1366,6 +1459,9 @@ class ExtensionRuntime:
         if route is None:
             raise ValueError('Unknown extension command')
         name, row = route
+        binding = self._native_commands.resolve(name, row['name'])
+        if binding is not None:
+            return await self._native_command(command, args, route, binding)
         result = await self._manager._bridge(self._rpc(name, "xdog/command", {"name": row["name"], "args": args}))
         if "xdog_command_result" in result:
             if type(result["xdog_command_result"]) is not int or result["xdog_command_result"] != 1:
@@ -1407,12 +1503,14 @@ class ExtensionRuntime:
         return self.snapshot()
 
     async def aclose(self) -> None:
-        self.views.close()
-        self._tool_wrappers.clear()
-        self._generation += 1
-        self.entries.close()
-        self._closed = True
-        await self._manager.aclose()
+        self.close()
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close(), name='extension-runtime-close')
+        await wait_owned(self._close_task)
+
+    async def _close(self) -> None:
+        await settle_cleanup(self._native_commands.aclose, self._manager.aclose,
+                             message='Extension runtime cleanup failed')
 
     def close(self) -> None:
         self.views.close()
@@ -1421,6 +1519,7 @@ class ExtensionRuntime:
             self._generation += 1
         self.entries.close()
         self._closed = True
+        self._native_commands.close()
         self._manager.close()
 
 

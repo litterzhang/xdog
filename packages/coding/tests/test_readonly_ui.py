@@ -42,10 +42,29 @@ async def test_coding_sync_access_controls_use_owned_worker_and_preserve_draft_p
         with pytest.raises(ModuleNotFoundError):
             importlib.import_module('xdog.tui.components.plan_panel')
         assert not any(name.startswith('_plan_') for name in vars(ui))
-        assert 'plan' not in {name.removeprefix('/') for name in ui._editor._command_provider()}
-        ui._handle_slash_command('plan', 'execute')
+        assert 'plan' in {name.removeprefix('/') for name in ui._editor._command_provider()}
+        ui._handle_slash_command('plan', '')
+        await wait(ui, lambda: ui._command is None)
+        assert 'plan' in session.active_skills
+        assert tuple(session.agent.messages) == before and session.permissions.mode == 'deny'
         ui._handle_slash_command('readonly', 'on extra')
         assert ui._command is None and not session.access.state.read_only
+    finally:
+        ui._request_exit()
+        session.dispose()
+
+
+async def test_plan_skill_activation_does_not_release_readonly_or_tool_permission(tmp_path):
+    ui, session, _manager = app(tmp_path)
+    try:
+        session.access_control(True)
+        before = tuple(session.agent.messages)
+        ui._handle_slash_command('plan', '')
+        await wait(ui, lambda: ui._command is None)
+        assert 'plan' in session.active_skills
+        assert session.access.state.read_only and session.permissions.mode == 'deny'
+        assert tuple(session.agent.messages) == before
+        assert not any(tool.name == 'update_plan' for tool in session.agent.state.tools)
     finally:
         ui._request_exit()
         session.dispose()

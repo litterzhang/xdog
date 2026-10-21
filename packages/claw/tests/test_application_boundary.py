@@ -165,10 +165,29 @@ def test_explicit_core_import_still_registers_domain_tools(tmp_path: Path) -> No
         from xdog.claw.core.tools.registry import create_tools, registered_names
 
         # Representative built-in and domain registrations; new tools may be added freely.
-        required = {'filesystem', 'group_message', 'eyes', 'memory', 'skill'}
+        required = {'filesystem', 'message', 'memory', 'skill'}
         assert required <= registered_names(), required - registered_names()
+        assert 'group_message' not in registered_names()
+        assert 'eyes' not in registered_names() and 'goal' not in registered_names()
+        assert 'xdog.eyes.hosting.manager' not in sys.modules
+        assert 'xdog.skills.goal' not in sys.modules
+        from xdog.agent.capabilities import CapabilitySet
+        application = CapabilitySet('application')
+        assert 'eyes' in application.declared_tools
+        assert application.tools == ()  # Discovery is not a live service binding.
+        try:
+            create_tools(enabled=('group_message',))
+        except ValueError as exc:
+            assert 'Unknown tools' in str(exc)
+        else:
+            raise AssertionError('Legacy tool name is still accepted')
         tools = create_tools(enabled=tuple(sorted(required)))
         assert {tool.name for tool in tools} == required
+        message = next(tool for tool in tools if tool.name == 'message')
+        assert message.parameters['properties']['action']['enum'] == ['send']
+        assert set(message.parameters['required']) == {'action', 'group_id', 'text'}
+        for name in ('group_id', 'text'):
+            assert message.parameters['properties'][name]['type'] == 'string'
     """)
 
 

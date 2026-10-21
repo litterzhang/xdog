@@ -136,7 +136,7 @@ async def test_catalog_exceeds_old_record_limit_and_close_remains_explicit():
         await owner.aclose()
 
 
-@pytest.mark.parametrize("name", ["agent_spawn", "agent_control", "update_plan"])
+@pytest.mark.parametrize("name", ["agent", "agent_spawn", "agent_control", "update_plan"])
 async def test_children_reject_recursive_or_parent_plan_tools(name):
     def unsafe(spec, publish):
         agent = factory(spec, publish)
@@ -316,14 +316,14 @@ async def test_tool_proxies_only_control_their_owner_and_validate_defaults():
     owner = ChildSupervisor(capturing)
     other = ChildSupervisor(factory)
     try:
-        spawn, control = owner.tools()
-        result = await spawn.execute("call", {"task": "task", "inherit_context": False})
+        (tool,) = owner.tools()
+        result = await tool.execute("call", {"action": "spawn", "task": "task", "inherit_context": False})
         identifier = result.content[0].text
         await owner.control("wait", identifier)
         assert specs[0].access == "read-only" and not specs[0].inherit_context
         with pytest.raises(ValueError, match="another supervisor"):
             await other.control("cancel", identifier)
-        result = await control.execute("list", {"action": "list"})
+        result = await tool.execute("list", {"action": "list"})
         assert identifier in result.content[0].text
     finally:
         await owner.aclose()

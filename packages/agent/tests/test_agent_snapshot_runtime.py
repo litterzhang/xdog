@@ -131,12 +131,12 @@ async def main():
     agent = Agent(stream, config=AgentConfig(model='offline/process', system_prompt='FLOW_HOST_BASE',
                   compaction=CompactionConfig(context_window=30000, output_reserve=256)),
                   tools=[AgentTool(name='record', parameters={'type':'object'}, execute=execute)],
-                  skills=manager, active_skills=['flow-workflows', 'once'] if phase == 'A' else [])
+                  skills=manager, active_skills=['flow', 'once'] if phase == 'A' else [])
     if phase != 'A':
         agent.restore(json.loads((root / 'snapshot.json').read_text()))
         assert not calls and not summaries
         assert 'once' not in agent.active_skills
-        assert agent.active_skills == ('flow-workflows',)
+        assert agent.active_skills == ('flow',)
     await (await agent.prompt({'A':'init task', 'B':'build task', 'C':'feedback and repair task'}[phase])).collect()
     if phase == 'A':
         assert 'ONCE_BODY' in str(calls[0].messages)

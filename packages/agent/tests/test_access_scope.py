@@ -66,12 +66,13 @@ def test_legacy_planning_read_only_and_explicit_new_release_wins():
     ('filesystem', {'action': 'grep'}, True), ('filesystem', {'action': 'find'}, True),
     ('filesystem', {'action': 'write'}, False), ('filesystem', {}, False), ('bash', {}, False),
     ('mcp_read', {}, False), ('extension_read', {}, False), ('agent_spawn', {}, False),
-    ('agent_control', {'action': 'queue'}, False), ('update_plan', {}, False)])
+    ('agent_control', {'action': 'queue'}, False), ('update_plan', {}, False),
+    ('agent', {'action': 'spawn'}, False), ('agent', {'action': 'queue'}, False)])
 def test_hard_allowlist_never_trusts_tool_names_or_skills(name, args, safe):
     assert read_only_call(name, args) is safe
 
 
 def test_packaged_planning_skill_not_a_second_tool_or_state_machine():
-    skill = load_packaged_skill('xdog-planning')
+    skill = load_packaged_skill('plan')
     assert skill is not None and 'read-only' in skill.content.lower()
     assert importlib.util.find_spec('xdog.agent.planning') is None

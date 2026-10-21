@@ -2,15 +2,17 @@
 from __future__ import annotations
 
 import pytest
-from xdog.agent.session_input import SessionInput
+from xdog.agent.session_input import SessionInput, input_data
 from xdog.claw.core.inputs.models import InputScope
 from xdog.claw.core.inputs.store import InputStore
-from xdog.claw.core.observers.journal import ObserverJournal
-from xdog.claw.core.observers.models import ObserverStopped
-from xdog.claw.core.outputs.targets import ReplyReference
+from xdog.claw.core.outputs.targets import ReplyReference, encode_reply
+from xdog.claw.core.runtime.application_ports import envelope_snapshot, input_snapshot
 from xdog.claw.core.types import UserInput
+from xdog.eyes.hosting.journal import ObserverJournal
+from xdog.eyes.hosting.models import ObserverStopped
 
 from packages.claw.tests.core_inputs import external_envelope
+from packages.claw.tests.eyes_helpers import receipt_host
 
 
 def message(identifier='occurrence', instruction='Report'):
@@ -21,7 +23,7 @@ def message(identifier='occurrence', instruction='Report'):
 async def store(tmp_path):
     core = await InputStore.open(tmp_path / 'core' / 'inputs.sqlite3')
     await core.bind_scope(InputScope('main', tmp_path))
-    journal = await ObserverJournal.open(tmp_path / 'observers' / 'state.sqlite3', core)
+    journal = await ObserverJournal.open(tmp_path / 'observers' / 'state.sqlite3', receipt_host(core))
     try:
         yield journal, tmp_path, core
     finally:
@@ -31,8 +33,8 @@ async def store(tmp_path):
 
 async def observer(store, **kwargs):
     journal, cwd, _ = store
-    kwargs.setdefault('reply', ReplyReference(InputScope('main', cwd), 'store-test-sink',
-                                               UserInput(group_id='main', sender='sink', channel='tui')))
+    kwargs.setdefault('reply', encode_reply(ReplyReference(InputScope('main', cwd), 'store-test-sink',
+                                               UserInput(group_id='main', sender='sink', channel='tui'))))
     return await journal.create('main', cwd, 'remind', {'version': 2}, **kwargs)
 
 
@@ -55,23 +57,23 @@ async def test_cursor_outbox_atomic_rollback_and_frozen_identity(store):
     await journal._disk(lambda db: db.execute("CREATE TRIGGER refuse_cursor BEFORE UPDATE ON observers "
         "BEGIN SELECT RAISE(ABORT,'disk gate'); END"))
     with pytest.raises(Exception, match='disk gate'):
-        await journal.save(original, {'cursor': 1}, (message(),))
+        await journal.save(original, {'cursor': 1}, (input_data(message()),))
     assert await journal.message(original, 'occurrence') is None
     assert (await journal.get('main', cwd, original.id)).state == {}
     await journal._disk(lambda db: db.execute('DROP TRIGGER refuse_cursor'))
-    await journal.save(original, {'cursor': 1}, (message(),))
-    await journal.save(original, {'cursor': 2}, (message(),))
+    await journal.save(original, {'cursor': 1}, (input_data(message()),))
+    await journal.save(original, {'cursor': 2}, (input_data(message()),))
     with pytest.raises(ValueError, match='identity/content'):
-        await journal.save(original, {'cursor': 3}, (message(instruction='different'),))
+        await journal.save(original, {'cursor': 3}, (input_data(message(instruction='different')),))
     assert (await journal.get('main', cwd, original.id)).state == {'cursor': 2}
     with pytest.raises(ValueError, match='overlapping'):
-        await journal.save(original, {}, (message('second'),))
+        await journal.save(original, {}, (input_data(message('second')),))
 
 
 async def test_cancel_before_enqueue_stops_source_not_arbitrary_external_intake(store):
     journal, cwd, core = store
     original = await observer(store)
-    await journal.save(original, {}, (message(),))
+    await journal.save(original, {}, (input_data(message()),))
     outcome = await journal.cancel('main', cwd, original.id)
     assert outcome['withdrawn_inputs'] == 0
     assert await core.get(InputScope('main', cwd), 'occurrence') is None
@@ -84,7 +86,7 @@ async def test_cancel_before_enqueue_stops_source_not_arbitrary_external_intake(
 async def test_cancel_after_claim_requires_separate_explicit_core_withdrawal(store):
     journal, cwd, core = store
     original = await observer(store)
-    await journal.save(original, {}, (message(),))
+    await journal.save(original, {}, (input_data(message()),))
     await core.enqueue(external_envelope('main', cwd, message()))
     claimed = await core.claim(InputScope('main', cwd))
     await journal.cancel('main', cwd, original.id)
@@ -97,7 +99,7 @@ async def test_cancel_after_claim_requires_separate_explicit_core_withdrawal(sto
 async def test_started_attempt_cannot_be_cancelled_or_admitted_twice(store):
     journal, cwd, core = store
     original = await observer(store)
-    await journal.save(original, {}, (message(),))
+    await journal.save(original, {}, (input_data(message()),))
     await core.enqueue(external_envelope('main', cwd, message()))
     claimed = await core.claim(InputScope('main', cwd))
     running = await core.start(claimed)
@@ -108,8 +110,8 @@ async def test_started_attempt_cannot_be_cancelled_or_admitted_twice(store):
         await core.cancel(InputScope('main', cwd), 'occurrence')
     finished = await core.finish(running, 'succeeded', response='Report')
     await journal.sync(original)
-    assert await journal.binding(finished.envelope) is not None
-    await journal.mirror_delivery(finished, status='delivered')
+    assert await journal.binding(envelope_snapshot(finished.envelope)) is not None
+    await journal.mirror_delivery(input_snapshot(finished), status='delivered')
     row, = await journal.history('main', cwd, original.id)
     assert row['execution_status'] == 'succeeded' and row['delivery_status'] == 'delivered'
 
@@ -118,7 +120,7 @@ async def test_started_attempt_cannot_be_cancelled_or_admitted_twice(store):
 async def test_restart_requeues_only_unstarted_managed_claim(store, started):
     journal, cwd, core = store
     original = await observer(store)
-    await journal.save(original, {'cursor': 1}, (message(),))
+    await journal.save(original, {'cursor': 1}, (input_data(message()),))
     await core.enqueue(external_envelope('main', cwd, message()))
     claimed = await core.claim(InputScope('main', cwd))
     if started:
@@ -126,7 +128,7 @@ async def test_restart_requeues_only_unstarted_managed_claim(store, started):
     await journal.close()
     await core.close()
     reopened = await InputStore.open(core.path)
-    restored = await ObserverJournal.open(journal.path, reopened)
+    restored = await ObserverJournal.open(journal.path, receipt_host(reopened))
     try:
         assert (await reopened.get(InputScope('main', cwd), 'occurrence')).status == (
             'interrupted' if started else 'pending')
@@ -141,14 +143,14 @@ async def test_restart_requeues_only_unstarted_managed_claim(store, started):
 async def test_observer_reopen_preserves_unknown_core_delivery_projection_without_recovery_replay(store):
     journal, cwd, core = store
     original = await observer(store)
-    await journal.save(original, {}, (message(),))
+    await journal.save(original, {}, (input_data(message()),))
     await core.enqueue(external_envelope('main', cwd, message()))
     running = await core.start(await core.claim(InputScope('main', cwd)))
     finished = await core.finish(running, 'succeeded', response='Report')
     await journal.sync(original)
-    await journal.mirror_delivery(finished, status='unknown', error='Core output send outcome unknown')
+    await journal.mirror_delivery(input_snapshot(finished), status='unknown', error='Core output send outcome unknown')
     await journal.close()
-    restored = await ObserverJournal.open(journal.path, core)
+    restored = await ObserverJournal.open(journal.path, receipt_host(core))
     try:
         row, = await restored.history('main', cwd, original.id)
         assert row['execution_status'] == 'succeeded' and row['delivery_status'] == 'unknown'
@@ -161,20 +163,20 @@ async def test_observer_reopen_preserves_unknown_core_delivery_projection_withou
 async def test_external_provenance_is_not_a_managed_delivery_grant(store):
     journal, cwd, core = store
     accepted, _ = await core.enqueue(external_envelope('main', cwd, message()))
-    assert await journal.occurrence(accepted) is None
-    assert await journal.binding(accepted.envelope) is None
+    assert await journal.occurrence(input_snapshot(accepted)) is None
+    assert await journal.binding(envelope_snapshot(accepted.envelope)) is None
     original = await observer(store)
-    await journal.save(original, {}, (message('real'),))
+    await journal.save(original, {}, (input_data(message('real')),))
     await core.enqueue(external_envelope('main', cwd, message('real', 'forged')))
     with pytest.raises(ValueError, match='identity'):
         await journal.sync(original)
-    assert await journal.message(original, 'real') == message('real')
+    assert await journal.message(original, 'real') == input_data(message('real'))
 
 
 async def test_namespace_replacement_halts_source_not_already_accepted_input(store):
     journal, cwd, core = store
     original = await observer(store)
-    await journal.save(original, {}, (message(),))
+    await journal.save(original, {}, (input_data(message()),))
     await core.enqueue(external_envelope('main', cwd, message()))
     await core._disk(lambda db: db.execute('UPDATE scopes SET namespace=?', ('f' * 32,)))
     await journal.sync(original)
@@ -185,11 +187,11 @@ async def test_namespace_replacement_halts_source_not_already_accepted_input(sto
 async def test_restart_with_replaced_namespace_never_cancels_core_by_observer_policy(store):
     journal, cwd, core = store
     original = await observer(store)
-    await journal.save(original, {}, (message(),))
+    await journal.save(original, {}, (input_data(message()),))
     await core.enqueue(external_envelope('main', cwd, message()))
     await core._disk(lambda db: db.execute('UPDATE scopes SET namespace=?', ('f' * 32,)))
     await journal.close()
-    restored = await ObserverJournal.open(journal.path, core)
+    restored = await ObserverJournal.open(journal.path, receipt_host(core))
     try:
         await restored.sync(original)
         assert (await core.get(InputScope('main', cwd), 'occurrence')).status == 'pending'

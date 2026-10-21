@@ -1,4 +1,4 @@
-"""External wheel consumer: actual Claw/Core Inbox/children; scripted model only."""
+"""Wheel-only default Claw Goal: actual main Agent tools, native commands and stable group."""
 from __future__ import annotations
 
 import asyncio
@@ -6,236 +6,205 @@ import hashlib
 import importlib.metadata as metadata
 import json
 import sys
-import threading
+import tempfile
 from pathlib import Path
 
-from xdog.ai.types import AssistantMessage, DoneEvent, TextContent, ToolCall
+from xdog.ai.types import AssistantMessage, TextContent, ToolCall
 from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.config import ClawConfig
-from xdog.claw.core.inputs.models import InputScope
 from xdog.claw.core.runtime import orchestrator as installed_claw
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.types import Group, UserInput
 
 
 class Model:
-    def __init__(self, *, ordinary=False):
+    def __init__(self):
         self.calls = []
-        self.ordinary = ordinary
-        self.worker_gate = None
-        self.worker_entered = threading.Event()
+        self.actions = ()
 
-    def __call__(self, model, context, options):
-        names = {tool.name for tool in context.tools}
-        role = "worker" if "task_report" in names else "reviewer" if "goal_context" in names else "parent"
-        self.calls.append(role)
-        start = max((i for i, message in enumerate(context.messages) if message.role == "user"), default=-1)
-        turn = sum(message.role == "assistant" for message in context.messages[start + 1:])
-        if role == "parent" and self.ordinary and turn == 0:
-            parts = (ToolCall(id="ordinary-write", name="filesystem", arguments={
-                "action": "write", "path": "ordinary.txt", "content": "ordinary tool result"}),)
-        elif role == "parent" and self.ordinary and turn == 1:
-            parts = (ToolCall(id="remember", name="memory", arguments={
-                "action": "write", "target": "memory", "text": "installed-memory-sentinel"}),)
-        elif role != "parent" and turn == 0:
-            parts = (ToolCall(id="context", name="goal_context", arguments={}),)
-        elif role != "parent" and turn == 1:
-            parts = (ToolCall(id="read", name="filesystem", arguments={"action": "read", "path": "result.txt"}),)
-        elif role == "worker" and turn == 2:
-            parts = (ToolCall(id="report", name="task_report", arguments={
-                "revision": 1, "state": "submitted", "summary": "Read installed output",
-                "evidence": ["result.txt"], "blockers": []}),)
-        elif role == "reviewer" and turn == 2:
-            parts = (ToolCall(id="forbidden", name="filesystem", arguments={
-                "action": "write", "path": "forbidden.txt", "content": "must not write"}),)
-        elif role == "reviewer":
-            parts = (TextContent(text=json.dumps({"verdict": "passed", "summary": "Independent real read",
-                "conditions": [{"condition": "Result exists", "status": "passed", "evidence": ["result.txt"],
-                                "reason": "Read the actual installed workspace"}]})),)
-        else:
-            parts = (TextContent(text="done"),)
-        message = AssistantMessage(content=parts, stop_reason="toolUse" if isinstance(parts[0], ToolCall) else "stop")
-
-        async def events():
-            if role == "worker" and self.worker_gate is not None:
-                self.worker_entered.set()
-                while not self.worker_gate.is_set():
-                    await asyncio.sleep(.001)
-            yield DoneEvent(message=message)
-
-        future = asyncio.get_running_loop().create_future()
-        future.set_result(message)
-        return EventStream.from_async_generator(events(), result_future=future)
+    def __call__(self, selected, context, options):
+        self.calls.append(context)
+        assert not {'task_report', 'goal_context'}.intersection(t.name for t in context.tools)
+        start = max((i for i, m in enumerate(context.messages) if m.role == 'user'), default=-1)
+        turn = sum(m.role == 'assistant' for m in context.messages[start + 1:])
+        parts = ((ToolCall(id='actual-' + str(turn), name=self.actions[turn][0], arguments=self.actions[turn][1]),)
+                 if turn < len(self.actions) else (TextContent(text='main Agent verified'),))
+        return EventStream.empty(AssistantMessage(content=parts,
+            stop_reason='toolUse' if isinstance(parts[0], ToolCall) else 'stop'))
 
 
 def application(root, model, *, display=False):
-    app = Orchestrator(ClawConfig(data_dir=str(root / "data"),
-        extensions=("goal_ui",) if display else (), extension_dir=str(root / "extensions")),
-                       stream_fn=model, data_dir=root / "data")
-    app.register_group(Group(id="main", workspace=str(root / "workspace")))
-    return app, app._runtimes["main"]
+    app = Orchestrator(ClawConfig(data_dir=str(root / 'data'), extensions=('goal_ui',) if display else (),
+        extension_dir=str(root / 'extensions')), stream_fn=model, data_dir=root / 'data')
+    app.register_group(Group(id='main', workspace=str(root / 'workspace')))
+    return app, app._runtimes['main']
 
 
 async def activate(app):
-    result = await app.route_message(UserInput(group_id="main", content="Inspect actual output", channel="tui"))
+    result = await app.route_message(UserInput(group_id='main', content='Inspect actual output', channel='tui'))
     assert result is not None and not result.error
 
 
-async def settled(app, runtime):
-    service = await app.input_service()
-    scope = InputScope("main", runtime.workspace_dir)
-    async with asyncio.timeout(8):
-        while True:
-            rows = await service.store.records(scope)
-            if all(row.status in {"succeeded", "failed", "cancelled", "interrupted"} for row in rows) and (
-                    runtime._active_session is None or runtime._active_session.agent.is_idle):
-                return rows
-            await asyncio.sleep(.005)
-
-
 async def base(root):
-    names = {dist.metadata["Name"].lower().replace("_", "-") for dist in metadata.distributions()}
-    assert not names.intersection({"xdog-skills", "xdog-eyes", "agent-client-protocol"}), names
-    model = Model(ordinary=True)
+    model = Model()
     app, runtime = application(root, model)
-    old = root / "data/groups/main/goals.json"
-    old.write_bytes(b"unsupported legacy bytes; never open or migrate\n")
+    old = root / 'data/groups/main/goals.json'
+    raw = b'old independently reviewed workers; never read, migrate or replay\n'
+    old.write_bytes(raw)
     try:
         await app.start()
+        host = runtime.capabilities.get('goal')
+        assert host is not None and await host.service.current() is None and not model.calls
+        assert runtime._active_session is None and old.read_bytes() == raw
+        await runtime.prepare_session(allow_reset=False)
+        session = runtime._active_session
+        result = await app.manage_extensions('main', 'command', 'goal', 'status', session.meta.session_id)
+        assert 'current' in result['output'] and not model.calls and session.extensions.is_native_command('goal')
+        model.actions = (('filesystem', {'action': 'write', 'path': 'ordinary.txt', 'content': 'ordinary tool result'}),
+            ('memory', {'action': 'write', 'target': 'memory', 'text': 'installed-memory-sentinel'}))
         await activate(app)
-        assert runtime.goal_host is None and not (old.parent / "goals").exists()
-        assert runtime.workspace_dir.joinpath("ordinary.txt").read_text() == "ordinary tool result"
-        assert "installed-memory-sentinel" in runtime.memory.long_term.read()
-        history = runtime.transcript_store.load_transcript(runtime.get_new_session_id())
-        assert any(row.get("role") == "assistant" for row in history)
-        assert old.read_bytes() == b"unsupported legacy bytes; never open or migrate\n"
-        assert not any(n.startswith(("xdog.skills.goal", "xdog.eyes", "acp", "xdog.claw.acp")) for n in sys.modules)
+        assert runtime.workspace_dir.joinpath('ordinary.txt').read_text() == 'ordinary tool result'
+        assert 'installed-memory-sentinel' in runtime.memory.long_term.read()
+        assert runtime.transcript_store.load_transcript(runtime.get_new_session_id())
+        assert await host.service.current() is None and old.read_bytes() == raw
     finally:
         await app.stop()
+    # Default optional ACP uses an actual owned private receiver when the SDK exists.
+    from xdog.claw.config import GroupDef
+    from xdog.claw.core.runtime import gateway as gateway_module
     from xdog.claw.core.runtime.gateway import GatewayServer
-    for feature in ("eyes", "acp"):
-        private = root / ("missing-" + feature)
-        config = ClawConfig(data_dir=str(private), model="test/installed", socket_path=str(private / "native.sock"), **(
-            {"eyes_enabled": True} if feature == "eyes" else {"acp_socket_path": str(private / "acp/socket")}))
-        gateway = GatewayServer(config)
-        try:
-            await gateway.start()
-        except RuntimeError as exc:
-            assert "xdog-claw[" + feature + "]" in str(exc), str(exc)
-        else:
-            raise AssertionError("Explicit optional feature without distribution was silently accepted")
-        assert not (private / "native.sock").exists()
-    print(json.dumps({"installed_claw_base": "actual chat/filesystem/memory/history without Goal/Eyes/ACP",
-                      "missing_features": "all explicitly rejected", "calls": model.calls}))
+    previous = gateway_module._build_model_and_options
+    gateway_module._build_model_and_options = lambda _: ('test/installed', model)
+    model.actions = ()
+    try:
+        with tempfile.TemporaryDirectory(prefix='default-acp-') as short:
+            private = Path(short)
+            gateway = GatewayServer(ClawConfig(data_dir=str(private / 'data'),
+                socket_path=str(private / 'native.sock'), pid_file=str(private / 'pid'),
+                groups=(GroupDef(id='main', workspace=str(root / 'gateway-workspace')),)))
+            try:
+                await gateway.start()
+                assert gateway._application_capabilities.tools == () and gateway._acp_server is not None
+                host = gateway._orchestrator._runtimes['main']._capability_host
+                target = await host.acp_target()
+                assert target['session_id'] == 'group:main' and target['endpoint'] == str(gateway._acp_server.path)
+            finally:
+                await gateway.stop()
+    finally:
+        gateway_module._build_model_and_options = previous
+    assert not any(n.startswith('xdog.eyes') for n in sys.modules)
+    print(json.dumps({'installed_claw_default': 'first native /goal status, no create; ordinary tools/memory/history',
+                      'eyes_absent': True, 'default_private_acp': True, 'legacy_bytes_unchanged': True}))
 
 
 async def lifecycle(root):
-    from xdog.skills.goal.host import OperationContext
-    from xdog.skills.goal.models import report_digest
-    from xdog.skills.goal.store import GoalStore
-
-    model = Model()
-    model.worker_gate = threading.Event()
-    app, runtime = application(root, model, display=True)
     from xdog.agent.extensions.discovery import extension_directory
-    resource = extension_directory("goal_ui", root / "extensions")
+    from xdog.skills.goal.store import GoalStore
+    from xdog.tui.components.extension_view import ExtensionView
+    model = Model()
+    app, runtime = application(root, model, display=True)
+    resource = extension_directory('goal_ui', root / 'extensions')
     assert resource is not None and resource.is_relative_to(Path(sys.prefix))
-    ui_hash = hashlib.sha256(resource.joinpath("extension.yaml").read_bytes() + b"\0"
-                             + resource.joinpath("main.py").read_bytes()).hexdigest()
-    runtime.workspace_dir.joinpath("result.txt").write_text("actual installed result")
+    ui_hash = hashlib.sha256(resource.joinpath('extension.yaml').read_bytes() + b'\0'
+                             + resource.joinpath('main.py').read_bytes()).hexdigest()
+    runtime.workspace_dir.joinpath('result.txt').write_text('actual installed result')
     try:
-        reference = runtime.skill_manager.load_skill("goal")
-        assert reference is not None and reference.packaged and reference.content
+        assert runtime.skill_manager.load_skill('goal').packaged
         await app.start()
-        await activate(app)
-        host = runtime.goal_host
-        owner = host.owner
-        goal = await host.service.create("Output", "Inspect installed result", ("Result exists",),
-                                         context=OperationContext(True))
-        goal = await host.service.add_task(goal.id, "Read output")
-        goal = await host.service.assign(goal.id, goal.tasks[0].id, "Read original output and report")
-        worker = goal.tasks[0].attempts[-1].worker
-        assert await asyncio.to_thread(model.worker_entered.wait, 5)
+        host = runtime.capabilities.get('goal')
+        assert runtime._active_session is None and not model.calls
+        await runtime.prepare_session(allow_reset=False)
         session = runtime._active_session
-        before = len(model.calls)
-        assert session.extensions.command_owner('goals') == 'goal_ui'
-        assert 'goals' in session.extensions.commands() and 'ext-goal_ui-goals' not in session.extensions.commands()
-        output = str(await session.extensions.command("goals", ""))
-        assert goal.id in output and "Output" in output and len(model.calls) == before
-        from xdog.tui.components.extension_view import ExtensionView
-        assert any("Goals: 1" in line for line in ExtensionView(lambda: session.extensions.snapshot()).render(80))
-        await session.extensions.manage("unload", "goal_ui")
-        assert session.children.supervisor.active and not session.extensions.snapshot()["ui"]
-        model.worker_gate.set()
-        await session.children.supervisor.control("wait", worker.id)
-        await host.flush()
-        await settled(app, runtime)
-        goal = await host.service.status(goal.id)
-        task = goal.tasks[0]
-        assert task.state == "submitted" and goal.status == "active"
-        old_session = runtime._active_session
-        runtime.reset_session()
+        result = await app.manage_extensions('main', 'command', 'goal', 'status', session.meta.session_id)
+        assert 'current' in result['output'] and not model.calls
+        model.actions = (('goal', {'action': 'create', 'title': 'Output', 'outcome': 'Inspect installed result'}),
+            ('goal', {'action': 'report', 'report': {'expected_version': 0, 'progress': 'baseline',
+                'summary': 'Initial verified state before working', 'completed': [], 'evidence': ['result.txt'],
+                'blockers': [], 'next_steps': ['Read actual result and update task']}}),
+            ('goal', {'action': 'plan', 'content': 'Read result.txt and record main Agent evidence'}),
+            ('filesystem', {'action': 'read', 'path': 'result.txt'}),
+            ('goal', {'action': 'task_update', 'task': {'id': 'inspect', 'title': 'Read result',
+                                                      'expected_version': 0}}))
         await activate(app)
-        assert runtime._active_session is not old_session and runtime.goal_host.owner == owner
-        assert (await host.child_status(worker)).state == "succeeded"
-        count = len(model.calls)
-        output = str(await runtime._active_session.extensions.command("goals", ""))
-        assert goal.id in output and len(model.calls) == count
-        # Goal status is active and task acceptance is still explicitly zero here.
-        assert "active" in output and "accepted tasks 0/1" in output
-        attempt = task.attempts[-1]
-        goal = await host.service.accept_task(goal.id, task.id, attempt.id, 1, report_digest(attempt.reports[-1]),
-                                              "Inspected actual settled report")
-        goal = await host.service.request_complete(goal.id, paths=("result.txt",))
-        reviewer = goal.review.worker
-        await runtime._active_session.children.supervisor.control("wait", reviewer.id)
-        goal = await host.service.reconcile(goal.id)
-        assert goal.status == "completed" and not runtime.workspace_dir.joinpath("forbidden.txt").exists()
-        await host.flush()
-        rows = await settled(app, runtime)
-        notices = [row for row in rows if row.envelope.message.source == "goal"]
-        assert len(notices) == 3 and all(row.status == "succeeded" for row in notices)
+        goal = await host.service.current()
+        assert goal is not None and goal.title == 'Output'
+        status = await host.service.status()
+        assert status['plan'].startswith('Read result.txt') and status['tasks'][0]['worker'] == 'main'
+        before = len(model.calls)
+        output = await session.extensions.command('goals', '')
+        assert goal.id in str(output) and len(model.calls) == before
+        assert any('Goals: 1' in line for line in ExtensionView(lambda: session.extensions.snapshot()).render(80))
+        await session.extensions.manage('unload', 'goal_ui')
+        assert not session.extensions.snapshot()['ui'] and not session.children.supervisor._children
+        old_tool, owner = host.tools[0], host.owner
+        runtime.reset_session()
+        model.actions = ()
+        await activate(app)
+        assert runtime._active_session is not session and runtime.capabilities.get('goal') is host
+        assert host.owner == owner and (await host.service.current()).id == goal.id
+        assert (await old_tool.execute('stale', {'action': 'status'})).is_error
+        assert await session.extensions.views.read('goal_ui', 'goals', {}) is None
+        # A second actual group cannot borrow the first group's records or tool binding.
+        app.register_group(Group(id='other', workspace=str(root / 'other')))
+        await app.route_message(UserInput(group_id='other', content='Read-only inspection', channel='tui'))
+        other = app._runtimes['other'].capabilities.get('goal')
+        assert other.owner != owner and await other.service.current() is None
+        try:
+            await other.service.status(goal.id)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('Cross-owner read was permitted')
+        model.actions = (('goal', {'action': 'report', 'report': {'expected_version': 1, 'progress': 'advanced',
+            'summary': 'Read actual output since the baseline', 'completed': ['Read result.txt'],
+            'evidence': ['result.txt'], 'blockers': [], 'next_steps': ['Commit task evidence and complete']}}),
+            ('goal', {'action': 'task_update', 'task': {'id': 'inspect', 'expected_version': 1,
+            'status': 'completed', 'summary': 'Read actual output', 'evidence': ['result.txt']}}),
+            ('goal', {'action': 'complete', 'summary': 'Main Agent verified result.txt'}))
+        await activate(app)
+        completed = await host.service.status(goal.id)
+        assert completed['current']['status'] == 'completed' and completed['tasks'][0]['status'] == 'completed'
+        summary = await host.service.summary(goal.id)
+        assert summary['latest_report']['version'] == 2 and summary['latest_report']['progress'] == 'advanced'
+        assert 'plan' not in summary and 'tasks' not in summary
+        assert Path(summary['report_path']).read_text().count('```json goal-report-v1') == 2
+        session = runtime._active_session
+        assert not session.children.supervisor._children and await host.service.current() is None
+        session.access.set_read_only(True)
+        model.actions = (('filesystem', {'action': 'write', 'path': 'forbidden.txt', 'content': 'not authorized'}),)
+        await activate(app)
+        assert not runtime.workspace_dir.joinpath('forbidden.txt').exists()
+        session.access.set_read_only(False)
+        output = await session.extensions.command('goals', '')
+        assert goal.id in str(output) and 'completed' in str(output)
         path = host.service.store.path
-        output = str(await runtime._active_session.extensions.command("goals", ""))
-        assert goal.id in output and "completed" in output
     finally:
-        model.worker_gate.set()
         await app.stop()
-    # Independently acquire the actual lease, then reopen the real application.
     store = await GoalStore.open(path, owner)
     await store.close()
-    calls = len(model.calls)
+    count = len(model.calls)
     app, runtime = application(root, model)
     try:
         await app.start()
-        host = runtime.goal_host
-        assert host.owner == owner and (await host.service.status(goal.id)).status == "completed"
-        assert (await host.child_status(worker)).state == "succeeded"
-        assert (await host.child_status(reviewer)).state == "succeeded"
-        assert runtime._active_session is None and len(model.calls) == calls
+        host = runtime.capabilities.get('goal')
+        assert host.owner == owner and (await host.service.status(goal.id))['current']['status'] == 'completed'
+        assert runtime._active_session is None and len(model.calls) == count
     finally:
         await app.stop()
-    # A fresh owner automatically gets the installed capability without delegation.
-    app, runtime = application(root / "fresh-with-package", model)
-    try:
-        await app.start()
-        assert runtime.skill_manager.load_skill("goal").packaged
-        assert runtime.goal_host is not None and await runtime.goal_host.service.list() == ()
-    finally:
-        await app.stop()
-    print(json.dumps({"shared_goal_ui_sha256": ui_hash,
-                      "actual_display_unloaded_during_worker": True,
-                      "ui_owner_rotation": "same original group goal in fresh parent",
-                      "installed_claw_goal": "real worker/report/rotation/accept/review/Inbox/reopen",
-                      "calls": model.calls, "notices": len(notices)}))
+    print(json.dumps({'shared_goal_ui_sha256': ui_hash,
+        'installed_claw_goal': 'main model create/plan/read/task_update/complete; actual rotation/reopen',
+        'goal_status': 'completed', 'children_started': 0, 'ui_loss_does_not_own_progress': True,
+        'ui_owner_rotation': 'same original group Goal in fresh parent; stale tool rejected',
+        'cross_owner_rejected': True, 'readonly_write_rejected': True, 'main_model_calls': len(model.calls)}))
 
 
 async def main():
     assert Path(installed_claw.__file__).is_relative_to(Path(sys.prefix))
-    names = {dist.metadata["Name"].lower().replace("_", "-") for dist in metadata.distributions()}
-    assert not names.intersection({"xdog-coding", "xdog-eyes", "xdog-flow", "xdog-site"})
-    await (base(Path.cwd()) if "--base-only" in sys.argv else lifecycle(Path.cwd()))
+    names = {dist.metadata['Name'].lower().replace('_', '-') for dist in metadata.distributions()}
+    assert 'xdog-skills' in names and 'agent-client-protocol' in names
+    assert not names.intersection({'xdog-coding', 'xdog-eyes', 'xdog-flow', 'xdog-site'})
+    await (base(Path.cwd()) if '--base-only' in sys.argv else lifecycle(Path.cwd()))
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     asyncio.run(main())

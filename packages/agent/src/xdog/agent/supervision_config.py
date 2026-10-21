@@ -53,7 +53,7 @@ class ChildConfig:
             if (not isinstance(tools, list) or len(tools) > 128
                     or any(not isinstance(tool, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,127}", tool)
                            for tool in tools) or len(set(tools)) != len(tools)
-                    or any(tool in {"agent_spawn", "agent_control", "update_plan"} for tool in tools)):
+                    or any(tool in {"agent", "agent_spawn", "agent_control", "update_plan"} for tool in tools)):
                 raise ValueError("Child tools must be distinct non-reserved tool names (at most 128)")
         return cls(merged["label"], merged["instructions"], tuple(tools) if tools is not None else None,
                    merged["inherit_context"], model, thinking, preset)

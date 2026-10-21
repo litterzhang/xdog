@@ -326,10 +326,10 @@ async def sdk_file_batch(tmp_path,observer_data,route_count):
             if route_count==2:
                 assert len({row.message.provenance['route_id'] for row in rows})==2
             assert session.runtime is None
-            # Installed Goal retains this sole controller for callbacks; it is
-            # not another session owner and creates no Goal for ordinary input.
+            # Installed session capabilities retain this sole callback owner;
+            # observer intake does not construct another session or execution loop.
             controller = session._sdk_controller
-            assert controller is not None and session.children.goal_host.loop is controller._loop
+            assert controller is not None and session._capability_loop is controller._loop
             assert not session.children.supervisor.active
             assert session.permissions.mode=='ask' and not session.permissions.has_pending_requests
         finally:

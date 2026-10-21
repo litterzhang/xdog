@@ -1,4 +1,4 @@
-"""Per-group runtime — workspace, transcript store, memory, tools, goals.
+"""Per-group runtime — workspace, transcript store, memory, tools, installed capabilities.
 
 ``GroupRuntime`` holds all mutable runtime resources for a group and
 owns the session lifecycle (caching, resets, steer/follow_up/abort).
@@ -12,12 +12,12 @@ import logging
 import threading
 import time
 from dataclasses import replace
-from importlib.util import find_spec
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from weakref import WeakSet
 
 from xdog.agent import AgentConfig, AgentTool, StreamFn
+from xdog.agent.capabilities.runtime import CapabilitySet
 from xdog.agent.history import history_points
 from xdog.agent.mcp import McpManager
 from xdog.agent.skills import SkillManager
@@ -38,8 +38,6 @@ from xdog.tui.transcript_browser import TranscriptRecord
 if TYPE_CHECKING:
     from xdog.agent.extensions.runtime import ExtensionRuntime
     from xdog.claw.core.inputs.consumer import InputService
-    from xdog.claw.core.observers.manager import ManagedObservers
-    from xdog.claw.core.runtime.goal_adapter import ClawGoalHost
     from xdog.claw.core.runtime.session import AgentSession
 
 logger = logging.getLogger(__name__)
@@ -84,7 +82,7 @@ def _get_model_limits(model_id: str) -> tuple[int, int]:
 class GroupRuntime:
     """Runtime state for a registered group.
 
-    Owns resources (workspace, transcript store, memory, goals, tools)
+    Owns resources (workspace, transcript store, memory, tools)
     and the session lifecycle (AgentSession caching, resets, steering).
 
     Use ``GroupRuntime.create()`` to build from a ``Group`` config.
@@ -108,7 +106,8 @@ class GroupRuntime:
         flush_runner: FlushRunner | None = None,
         summarizer: Summarizer | None = None,
         send_fn: Callable[..., Awaitable[None]] | None = None,
-        observers: ManagedObservers | None = None,
+        application_tools: Callable[[], tuple[AgentTool, ...]] | None = None,
+        application_tool_names: frozenset[str] = frozenset(),
         mcp_servers: dict[str, Any] | None = None,
         mcp_credential_backend: str = 'file',
         extensions: tuple[str, ...] = (), extension_dir: str = "",
@@ -131,9 +130,9 @@ class GroupRuntime:
             data_dir / "groups" / group.id / "sessions", owner_group=group.id,
         )
         self.memory = memory
-        self.goal_host: ClawGoalHost | None = None
-        self.capability_tools: tuple[AgentTool, ...] = ()
-        self._goal_start: asyncio.Task[None] | None = None
+        self.capabilities = CapabilitySet("group")
+        self._capability_host: Any = None
+        self._capability_start: asyncio.Task[None] | None = None
         self.skill_manager = skill_manager or SkillManager(
             shared_dir=data_dir / "skills",
             group_dir=(workspace_dir or data_dir / "groups" / group.id / "workspace") / "skills",
@@ -141,7 +140,8 @@ class GroupRuntime:
         self.flush_runner = flush_runner
         self.summarizer = summarizer
         self._send_fn = send_fn
-        self.observers = observers
+        self.application_tools = application_tools or (lambda: ())
+        self.application_tool_names = application_tool_names
         self._enabled_tools = group.enabled_tools
         self._tools: list[AgentTool] | None = None
         self.mcp = McpManager(mcp_servers or {}, self.workspace_dir,
@@ -177,7 +177,8 @@ class GroupRuntime:
         model: str = "",
         stream_fn: StreamFn | None = None,
         send_fn: Callable[..., Awaitable[None]] | None = None,
-        observers: ManagedObservers | None = None,
+        application_tools: Callable[[], tuple[AgentTool, ...]] | None = None,
+        application_tool_names: frozenset[str] = frozenset(),
         mcp_servers: dict[str, Any] | None = None,
         mcp_credential_backend: str = 'file',
         extensions: tuple[str, ...] = (), extension_dir: str = "",
@@ -233,7 +234,8 @@ class GroupRuntime:
             skill_manager=skill_manager,
             flush_runner=flush_runner,
             summarizer=summarizer,
-            send_fn=send_fn, observers=observers, mcp_servers=mcp_servers,
+            send_fn=send_fn, application_tools=application_tools, application_tool_names=application_tool_names,
+            mcp_servers=mcp_servers,
             mcp_credential_backend=mcp_credential_backend,
             extensions=extensions, extension_dir=extension_dir,
             extension_settings=extension_settings, extension_allow_tools=extension_allow_tools,
@@ -251,39 +253,56 @@ class GroupRuntime:
     def tools(self) -> list[AgentTool]:
         if self._tools is None:
             self._tools = self._builtin_tools()  # Explicit synchronous fixture/composition fallback.
-        return [*self._tools, *self.mcp.tools(), *self.capability_tools]
+        installed = (*self.capabilities.tools, *self.application_tools())
+        selected = self._enabled_tools
+        return [*self._tools, *self.mcp.tools(),
+                *(tool for tool in installed if selected is None or tool.name in selected)]
 
     def _builtin_tools(self) -> list[AgentTool]:
         enabled = self._enabled_tools
-        if self.goal_available and enabled is not None:
-            enabled = tuple(name for name in enabled if name != "goal")
+        if enabled is not None:
+            declared = (self.capabilities.declared_tools | self.application_tool_names
+                        | {tool.name for tool in self.application_tools()})
+            enabled = tuple(name for name in enabled if name not in declared)
         return create_tools(enabled=enabled, workspace_dir=self.workspace_dir, image_model=self.group.image_model)
 
-    @property
-    def goal_available(self) -> bool:
-        """Installed capability, not a configuration or task-delegation switch."""
-        return find_spec("xdog.skills") is not None
-
-    async def initialize_goals(self, inputs: InputService) -> None:
+    async def initialize_capabilities(self, inputs: InputService) -> None:
         self.require_open()
-        if not self.goal_available:
-            return
-        if self.goal_host is None:
-            if self._goal_start is None:
-                async def start() -> None:
-                    from xdog.claw.core.runtime.goal_adapter import ClawGoalHost
-                    self.goal_host = await ClawGoalHost.open(self, inputs)
-                self._goal_start = asyncio.create_task(start())
-            from xdog.agent.async_work import wait_owned
-            opening = self._goal_start
-            try:
-                await wait_owned(opening)
-            finally:
-                if opening.done() and self._goal_start is opening:
-                    self._goal_start = None
+        if self._capability_start is None:
+            async def start() -> None:
+                from xdog.claw.core.runtime.group_capability_ports import GroupCapabilityHost
+                if self._capability_host is None:
+                    self._capability_host = await GroupCapabilityHost.open(self, inputs)
+                await self.capabilities.start(self._capability_host)
+            self._capability_start = asyncio.create_task(start())
+        from xdog.agent.async_work import wait_owned
+        opening = self._capability_start
+        try:
+            await wait_owned(opening)
+        finally:
+            if opening.done() and self._capability_start is opening:
+                self._capability_start = None
         if self._active_session is not None:
-            assert self.goal_host is not None
-            self.goal_host.attach(self._active_session)
+            self._attach_capabilities(self._active_session)
+
+    def _attach_capabilities(self, session: AgentSession) -> None:
+        if self._capability_host is None:
+            return
+        # Record identities before attach can replace feature-owned definitions.
+        self.capabilities.tools
+        self.capabilities.attach(self._capability_host.parent(session))
+        existing = tuple(tool for tool in session.agent.state.tools if not self.capabilities.owns_tool(tool))
+        selected = self._enabled_tools
+        published = (*self.capabilities.tools, *self.application_tools())
+        additions = tuple(tool for tool in published
+                          if (selected is None or tool.name in selected)
+                          and not any(tool is value for value in existing))
+        if any(tool.name == value.name for tool in additions for value in existing):
+            raise ValueError("Capability tool name already owned; refusing replacement")
+        replacement = (*existing, *additions)
+        original = session.agent.state.tools
+        if len(original) != len(replacement) or {id(tool) for tool in original} != {id(tool) for tool in replacement}:
+            session.agent.set_tools(replacement)
 
     async def manage_mcp(self, action: str, server: str = "") -> tuple[dict[str, Any], ...]:
         if action in {"list", "status"}:
@@ -369,6 +388,7 @@ class GroupRuntime:
         self.context_window, self.max_prompt_tokens = self._configured_limits
         session = AgentSession(runtime=self, session_meta=meta)
         self._active_session = session
+        self._attach_capabilities(session)
         self._session_last_active = time.time()
         return session
 
@@ -415,6 +435,7 @@ class GroupRuntime:
             self.context_window, self.max_prompt_tokens = self._configured_limits
             session = AgentSession(runtime=self, session_meta=data.meta, prepared=data, prepared_stream=adapter)
             self._active_session = session
+            self._attach_capabilities(session)
             self._session_last_active = time.time()
             return session
 
@@ -520,8 +541,8 @@ class GroupRuntime:
     async def settle_capabilities(self) -> None:
         """Settle publication before the application closes the capability input port."""
         from xdog.agent.async_work import wait_owned
-        if self._goal_start is not None:
-            await wait_owned(self._goal_start)
+        if self._capability_start is not None:
+            await wait_owned(self._capability_start)
 
     async def aclose(self) -> None:
         """A single owned close survives detached/repeatedly canceled callers."""
@@ -529,6 +550,8 @@ class GroupRuntime:
         from xdog.claw.core.runtime.group_lifecycle import close
         if self._close_task is None:
             self._closing = True
+            if self._capability_host is not None:
+                self._capability_host.retire()
             self._close_task = asyncio.create_task(close(self), name=f'claw-group-close:{self.group.id}')
         await wait_owned(self._close_task)
 

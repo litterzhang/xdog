@@ -8,8 +8,10 @@ import pytest
 from xdog.ai.types import ImageContent
 from xdog.claw.core.inputs.models import InputScope
 from xdog.claw.core.inputs.store import InputStore
-from xdog.claw.core.observers.journal import ObserverJournal
 from xdog.claw.core.types import UserInput
+from xdog.eyes.hosting.journal import ObserverJournal
+
+from packages.claw.tests.eyes_helpers import receipt_host
 
 
 def user():
@@ -57,26 +59,27 @@ def test_codec_rejects_unregistered_fields_and_versions(tmp_path, field, value):
 
 
 async def test_observer_roundtrip_rejects_recipient_replacement_and_wrong_scope(tmp_path):
-    from xdog.claw.core.outputs.targets import ReplyReference
+    from xdog.claw.core.outputs.targets import ReplyReference, encode_reply
 
     core = await InputStore.open(tmp_path / "core" / "inputs.sqlite3")
-    journal = await ObserverJournal.open(tmp_path / "observer" / "journal.sqlite3", core)
+    journal = await ObserverJournal.open(tmp_path / "observer" / "journal.sqlite3", receipt_host(core))
     await core.bind_scope(InputScope("main", tmp_path))
     reference = ReplyReference(InputScope("main", tmp_path), "original-endpoint", user())
     try:
-        saved = await journal.create("main", tmp_path, "watch", {"version": 2}, reply=reference)
-        assert (await journal.get("main", tmp_path, saved.id)).reply == reference
-        assert (await journal.create("main", tmp_path, "watch", {"version": 2}, reply=reference)).id == saved.id
+        saved = await journal.create("main", tmp_path, "watch", {"version": 2}, reply=encode_reply(reference))
+        assert (await journal.get("main", tmp_path, saved.id)).reply == encode_reply(reference)
+        duplicate = await journal.create("main", tmp_path, "watch", {"version": 2}, reply=encode_reply(reference))
+        assert duplicate.id == saved.id
         other = ReplyReference(InputScope("main", tmp_path), "different-endpoint", user())
         with pytest.raises(ValueError, match="different content"):
-            await journal.create("main", tmp_path, "watch", {"version": 2}, reply=other)
+            await journal.create("main", tmp_path, "watch", {"version": 2}, reply=encode_reply(other))
         with pytest.raises(ValueError, match="scope"):
-            await journal.create("different", tmp_path, "unsafe", {"version": 2}, reply=reference)
+            await journal.create("different", tmp_path, "unsafe", {"version": 2}, reply=encode_reply(reference))
     finally:
         await journal.close()
-    journal = await ObserverJournal.open(journal.path, core)
+    journal = await ObserverJournal.open(journal.path, receipt_host(core))
     try:
-        assert (await journal.get("main", tmp_path, saved.id)).reply == reference
+        assert (await journal.get("main", tmp_path, saved.id)).reply == encode_reply(reference)
     finally:
         await journal.close()
         await core.close()
@@ -86,14 +89,14 @@ async def test_old_observer_format_is_rejected_without_touching_original_bytes(t
     import sqlite3
 
     core = await InputStore.open(tmp_path / "core" / "inputs.sqlite3")
-    journal = await ObserverJournal.open(tmp_path / "observer" / "journal.sqlite3", core)
+    journal = await ObserverJournal.open(tmp_path / "observer" / "journal.sqlite3", receipt_host(core))
     await journal.close()
     with sqlite3.connect(journal.path) as db:
         db.execute("UPDATE metadata SET format='xdog.claw.observers.v1'")
     before = journal.path.read_bytes()
     try:
         with pytest.raises(ValueError, match="Unsupported"):
-            await ObserverJournal.open(journal.path, core)
+            await ObserverJournal.open(journal.path, receipt_host(core))
         assert journal.path.read_bytes() == before
     finally:
         await core.close()

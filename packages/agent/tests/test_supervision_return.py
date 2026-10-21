@@ -306,7 +306,7 @@ async def main_tool_call(owner, child, command, *, hook=None, extras=None, paren
             return profile or Model(id='offline/main', input=('text', 'image'))
         def __call__(self, *args):
             self.calls += 1
-            content = ((ToolCall(id='control', name='agent_control', arguments={
+            content = ((ToolCall(id='control', name='agent', arguments={
                 'action': 'queue', 'id': child, 'text': json.dumps(command), **(extras or {})}),)
                 if self.calls == 1 else (TextContent(text='CONTROL SETTLED'),))
             return EventStream.empty(AssistantMessage(content=content))
@@ -356,13 +356,13 @@ async def test_main_agent_actual_tool_can_prepare_commit_without_serializing_own
         owner.tools()
         assert owner._tool_return_owner == nonce
         committed = await main_tool_call(owner, child, command, hook=policy)
-        assert not committed.is_error and seen == ['agent_control']
+        assert not committed.is_error and seen == ['agent']
         assert tool_metadata(committed)['queue']['returned'] == before['inputs'][0]
         assert not (await queue(owner, child))['queue']['inputs'] and len(calls) == 1
         # No automatic retry is performed. An explicit exact retry is a copied receipt only.
         retry = await main_tool_call(owner, child, command, hook=policy)
         assert tool_metadata(retry) == tool_metadata(committed)
-        assert len(calls) == 1 and seen == ['agent_control', 'agent_control']
+        assert len(calls) == 1 and seen == ['agent', 'agent']
     finally:
         await owner.aclose()
 

@@ -1,103 +1,95 @@
 # xdog-skills
 
-Common medium-level skills with their domain support and extension code. The hub
-currently contains **goal** (explicit outcomes, worker reports, evidence-backed
-review and a shared read-only display) and **xdog-planning** (ordinary task
-planning guidance, previously shipped in Agent). Other common skills can add
-independent modules/resources here without becoming another distribution.
+Common medium-level skills with isolated domain support and extension code. The
+hub ships **goal** and **plan**. Flow and Eyes keep their independent engines and
+packaged skills; they are not copied here.
 
-Flow and Eyes remain **independent engine packages**, not hub contents:
-`xdog-flow` ships `flow-workflows`; `xdog-eyes` ships `eyes`.
+Coding and Claw include `xdog-skills` by default. Their `skills` extra remains
+compatible. Other consumers can install the hub directly. Namespace discovery
+lists the skill metadata without copying files or starting a model, host, store
+or observer. Full skill bodies load on demand. There is no Goal enable switch;
+availability is not user delegation.
 
-## Layout and discovery
+## Goal: records and reminders, not an agent runner
+
+The current main Agent knows the conversation and owns planning, optional worker
+assignment using the host's existing tools, task reconciliation and completion.
+The [goal skill](src/xdog/skills/skills/goal/SKILL.md) explains that workflow. A host
+without subagents can do everything on its main Agent.
+
+The trusted installed native Goal extension provides:
 
 ```text
-xdog.skills/
-  goal/                 # Goal domain contracts/store/service/tools and role resources
-  skills/goal/SKILL.md   # Built-in goal skill, discovered by existing Agent SkillManager
-  skills/xdog-planning/  # Ordinary planning guidance, no separate tool/state machine
-  extensions/goal_ui/    # Explicitly configured shared read-only Python display
+/goal create <outcome>
+/goal status
+/goal pause [reason]
+/goal resume
+/goal clear [reason]
+/goal history
 ```
 
-Install `xdog-skills` directly, or use `xdog-coding[skills]` /
-`xdog-claw[skills]`. Python Goal APIs are under `xdog.skills.goal` (for example,
-`from xdog.skills.goal.service import GoalService`). There is no old
-`xdog.goal` import shim or `xdog-goal` dependency.
+The `goal` model tool provides create/status/summary/tasks/history/update/plan/report/task_update/wait/
+pause/resume/complete/clear. `plan` saves the main Agent's plan, not another model
+call. `complete` records its own evidence-based judgment, not a forced independent
+review. There are no Goal worker/reviewer runners, role tools or attempt/report
+acceptance protocol. Existing permissions and approvals still apply.
 
-Package presence makes **goal** available through normal packaged discovery,
-without copying into a user directory or setting an enable flag. Skill metadata
-is listed automatically; its full instructions are loaded on demand, including
-`/goal` in supporting clients. Import/discovery never starts a model, host, store,
-observer, receiver, worker or UI. Availability is not task delegation.
+Each stable main-Agent owner has at most **one current Goal**, including paused or
+waiting Goals. Completed/cleared Goals release the binding but keep history. Clear
+does not delete task files, cancel unrelated Eyes observers or undo accepted work.
 
-## Goal domain
+## Data and events
 
-The hub's only direct dependency is `xdog-agent`; it does not depend on either
-host, TUI, Flow or Eyes. Each domain owns its business code and data; this hub
-adds no common database, scheduler, execution loop or plugin registry.
-Claw/Coding reuse the Goal domain through their existing small host adapters.
+GoalStore owns a leased `xdog.goal.registry.v2` registry with owner binding, Goal
+revision history and immutable reminder outbox. Task state has ONE authority:
+`<workspace>/.xdog/goals/<goal-id>/tasks/<task-id>.json`. Workers update their assigned
+files; SDK mutations use expected versions and atomic no-follow writes. The local
+`python -m xdog.skills.goal.task_cli ... list|update` helper shares this CAS protocol
+under the caller's existing tool permissions. The plan is `plan.md`; errors are not empty results.
 
-GoalStore retains the same owner-bound private leased/versioned storage and
-`xdog.goal.journal.v1` / `xdog.goal.snapshot.v1` identities. Renaming Python modules
-or the skill does not rename stored business formats or existing journal paths.
-No legacy data is imported/upgraded. Wrong owner, corruption, unsupported format
-or concurrent writer fails closed.
+Before every continuation, the main Agent compares actual results with its previous
+report and calls `goal(action="report", report={...})` BEFORE doing more work.
+`progress.md` is the sole report authority, with human-readable and structured
+history in one atomic, version-checked Markdown file. Baseline/advanced/unchanged/
+regressed are Agent judgments, not script verdicts. With repeated no progress and
+no viable new approach, the Agent should report blockers and pause. No fixed round
+threshold or automatic progress judge exists.
 
-Parent acceptance and independent review remain explicit. A submitted report is
-not acceptance, and acceptance is not completion. Only `request_complete` starts
-a reviewer; status/idle/turn end do not. Host tool permissions and readonly
-boundaries are unchanged; skill instructions and source labels grant no authority.
+`/goal status` and the model status default to counts, bounded previews, latest
+report and distinct execution/observation/delivery facts. Use `tasks` for filtered
+or single-task reads, and `plan` without content for reading. Snapshot byte pages
+retain query and content hashes. SDK `status(detail=True)` keeps full history reads.
 
-## Packaged read-only display
+Generic host settled/available events trigger a check. When continuation is
+appropriate, the runtime sends a stable-ID automatic message through ACP enqueue
+to the same main Agent and original Inbox/controller. ACP delivers; the skill
+instructs; the main Agent decides. Both settled and task-file signals enter one
+durable coalescer. An accepted pending/running reminder prevents another send;
+new changes remain dirty until consumed. Recovery inspects original receipts, not
+idle time, and known-not-sent retries retain original ID/content. A user/host wait or user pause cannot be washed
+into an automatic task wait and resumed. Interrupted/unknown effects are not
+replayed. No fixed polling loop, hidden tool approval or second Agent is created.
 
-The wheel carries `extensions/goal_ui/extension.yaml` and `main.py`. When explicitly
-configured as a trusted extension, the existing Agent worker can load it directly
-from the package without copying it to a user directory. Installation or built-in
-skill discovery does not execute that display worker.
+The runtime generates `eyes.json` and optionally owns a public Eyes ObserverService
+registration observing only this Goal's task JSON directory. Configuration/state
+files are excluded. Pausing stops both proactive continuation and this owned
+registration; only explicit resume restores them and reconciles changed task
+files. Pause does not cancel accepted inputs, tools, children or other observers.
+Clear/close also stops only the owned registration. Missing Eyes or
+an unavailable actual owner endpoint is reported, never silently installed or
+retargeted. Goal depends directly only on Agent/stdlib; integrations import lazily.
 
-`GoalView(service).read(query)` provides a Goal-owned finite JSON projection:
-optional safe `goal_id`, nonnegative strict `offset`, strict `limit`1..32 (default16).
-It only reads owner-checked GoalService list/status; it never reconciles work,
-drains notices, accepts reports, generates artifacts or starts an Agent. Titles,
-outcomes and summaries have UTF-8-bounded, explicitly labelled previews. Revisions
-are deterministic and pagination preserves all records. Submitted and accepted
-counts remain distinct; no preview is completion/permission authority.
+Old `journal.sqlite3` and `goals.json` stay untouched, with their locations reported
+in status/history; no old worker/reviewer is restored. They are not silently
+converted into a new current Goal.
 
-The single Python extension reads a host-granted `goals` view and contributes
-ordinary bounded status/command text. Its query command is
-`/goals [GOAL_ID | page OFFSET]`; `/goal` loads the packaged skill.
-Missing/malformed views say unavailable, never zero Goals. It imports no host,
-store or TUI and exposes no mutation commands. The normal shared TUI ExtensionView
-renders its generic status output; the main application needs no Goal widget.
+The optional packaged `goal_ui` worker remains readonly and exposes `/goals` via
+explicit global extension selection. Default `/goal` commands/model tools use the
+native installed capability, not this display worker, so a failed UI cannot own
+the business lifetime. Native `/goal` explicitly overlaps only its skill command;
+the skill itself remains discoverable/loadable. Builtins and other extension
+owners cannot be shadowed.
 
-The actual Coding and Claw adapters now bind this same display implementation to
-their real owners. Coding follows exact session/branch scope; Claw follows stable
-group data across context rotation. Actual children do not inherit the parent's
-view grant. UI failure/unload never closes business storage, cancels work or stops
-notices. A restricted generic `display_only` manifest profile gives this worker
-no validation/tool/provider authority, so its failure cannot veto execution.
-Cold installed same-extension validation is exercised by both host consumers. See `docs/shared-goal-extension-verification.md` for source/runtime
-evidence and limits. Headless Goal tools and durable notices remain independent.
-
-## Cumulative state and bounded data reads
-
-Authoritative Goal revisions retain accumulated tasks, attempts and reports
-without an aggregate business byte/count quota. Individual field/report/evidence
-safety checks and the256KiB tool frame remain. Large responses use an explicit
-`xdog.goal_data_page.v1` envelope with a readable canonical JSON fragment `text`,
-selector, `sha256`, byte `offset`, `total_bytes`, `next_offset` and `next_query`.
-Each raw fragment is at most64KiB. Join exact bytes in offset order and verify
-the checksum/total before treating the data as complete.
-
-A mutation response marked `snapshot_committed` is successful: retrieve its
-remaining data rather than replay the action. `goal` action `read` takes an
-explicit Goal/version plus optional offset/limit; current later changes do not
-replace that historical snapshot. Lists use a revision-fenced continuation; a
-changed collection is an explicit error requiring a fresh listing, never a torn
-merged list. Small unpaged complete responses retain their existing JSON shape.
-
-Bound worker/reviewer `goal_context` accepts only section/offset/limit and always
-uses its original role contract/version. The same read-only host/extension/MCP
-gates still apply. This does not add a journal format upgrade, second store,
-business polling/model loop or automatic task delegation. SQLite/machine storage
-limits remain physical constraints, not a package-imposed cumulative quota.
+See `docs/goal-optimization-design.md`, `docs/goal-optimization-requirements.json`,
+`docs/goal-simple-design.md`, `docs/goal-simple-requirements.json` and the current
+verification record. Earlier Goal kernel/adapter/reviewer records are historical.

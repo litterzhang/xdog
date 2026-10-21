@@ -90,8 +90,9 @@ jobs:
           need = [
               "xdog/flow/examples/agent_calculator.json",
               "xdog/flow/examples/depins_enrich/cycle.py",
-              "xdog/flow/skills/flow-workflows/SKILL.md",
+              "xdog/flow/skills/flow/SKILL.md",
           ]
+          assert not any(n.startswith("xdog/flow/skills/flow-workflows/") for n in names)
           missing = [n for n in need if n not in names]
           if missing:
               sys.exit(f"wheel is missing packaged data: {missing}")
@@ -129,12 +130,14 @@ jobs:
           wheel = zipfile.ZipFile(glob.glob("/tmp/skills-wheelcheck/xdog_skills-*.whl")[0])
           names = set(wheel.namelist())
           need = {"xdog/skills/__init__.py", "xdog/skills/py.typed",
-                  "xdog/skills/goal/service.py", "xdog/skills/goal/roles/worker.md",
-                  "xdog/skills/goal/roles/reviewer.md", "xdog/skills/skills/goal/SKILL.md",
-                  "xdog/skills/skills/xdog-planning/SKILL.md",
+                  "xdog/skills/goal/service.py", "xdog/skills/goal/files.py",
+                  "xdog/skills/goal/automation.py", "xdog/skills/skills/goal/SKILL.md",
+                  "xdog/skills/skills/plan/SKILL.md",
                   "xdog/skills/extensions/goal_ui/extension.yaml",
                   "xdog/skills/extensions/goal_ui/main.py"}
           assert need <= names, need - names
+          assert not any(n.startswith("xdog/skills/goal/roles/") for n in names)
+          assert not any(n.startswith("xdog/skills/skills/xdog-planning/") for n in names)
           assert not any(n.startswith(("xdog/goal/", "xdog/eyes/", "xdog/flow/")) for n in names)
           metadata = Parser().parsestr(wheel.read(next(n for n in names if n.endswith("METADATA"))).decode())
           assert metadata["Name"] == "xdog-skills"

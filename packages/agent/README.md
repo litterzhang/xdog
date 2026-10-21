@@ -197,7 +197,7 @@ unchanged. Real third-party replay retention behavior remains unverified.
 
 ### Task planning skill and host access scope
 
-`xdog-planning`, supplied by optional `xdog-skills`, is discovered through the
+`plan`, supplied by optional `xdog-skills`, is discovered through the
 normal packaged-skill mechanism for objective/scope/dependency notes, acceptance
 criteria and evidence-backed progress. It grants no permissions,
 creates no parallel task database and starts no second Agent loop. The former
@@ -352,14 +352,23 @@ none of these interfaces grants tool permission or full Pi API compatibility.
 ### Child-supervision runtime
 
 `xdog.agent.supervision.ChildSupervisor` owns a separate asyncio loop and host-managed
-children, with start/inspect/steer/follow-up/wait/cancel/close operations and reserved
-`agent_spawn`/`agent_control` tool adapters. Each factory supplies a fresh `Agent`
+children, with start/inspect/steer/follow-up/wait/cancel/close operations and
+a reserved unified `agent` tool adapter. Each factory supplies a fresh `Agent`
 and MUST implement host permission/read-only policies and safe context inheritance.
 Coding/Claw now provide permission-aware factories and `/agents` commands on top.
 The module alone does not grant access or provide a UI. No generic access string
 is an approval or a sandbox.
 
-Main-Agent `agent_control(action="queue", id=..., text=JSON)` and SDK
+The one model-facing tool is `agent`: use `action="spawn"` with `task` and optional
+`access`/`inherit_context`/`config`; use `list`, `presets`, `inspect`, `steer`,
+`follow-up`, `cancel`, `wait`, `close` or `queue` with the applicable `id`/`text`.
+`list` and `presets` require no child ID. Spawn-only fields cannot be mixed into
+control actions, and caller-supplied ownership is rejected before permission hooks.
+The previous split tool names are not exposed; old transcript calls/results remain
+historical data and are never rewritten or replayed. An explicitly saved old tool
+selection is not automatically widened to the merged tool: reselect deliberately.
+
+Main-Agent `agent(action="queue", id=..., text=JSON)` and SDK
 `ChildSupervisor.control("queue", ...)` retain the owner-scoped queue/recovery API.
 Edit/remove/move/return, explicit `recover`/`recover_images`/`recover_task`, and
 separate durable discard remain guarded by revisions, selected-input/byte limits,
@@ -373,7 +382,7 @@ reported-token budget, fixed concurrent-child limit or retained-record count lim
 The main Agent/host owns lifecycle and resource management through cancel/wait/close;
 reported calls/tokens are usage counters, not stop thresholds. Actual model output
 and context ceilings still apply. Children cannot recursively delegate through
-`agent_spawn` or `agent_control`, or change the parent plan.
+the `agent` tool, or change the parent plan.
 
 Protocol capacities remain: 32 identified queued inputs, 16 KiB text per input,
 512 KiB single-message text capacity, image/retained-byte limits and per-file record
@@ -467,8 +476,8 @@ protocol capacities, settlement and default inherited behavior remain intact.
 
 `ChildPresets` is a frozen data-only catalog of bounded `ChildConfig` templates.
 `resolve()` expands sparse explicit overrides without changing access/host policy.
-The supervisor exposes the catalog through `agent_control` `presets` and applies the
-same expansion to `agent_spawn`/direct starts. Unknown/chained or privilege-bearing
+The supervisor exposes the catalog through `agent` `presets` and applies the
+same expansion to `agent(action="spawn")`/direct starts. Unknown/chained or privilege-bearing
 templates fail before admission. Persisted records contain expanded settings and
 provenance, not live template pointers or automatic replay instructions.
 
@@ -1936,3 +1945,13 @@ help, argument completion and shortcuts. Hosts reserve builtin/skill names;
 conflicting names are rejected rather than shadowed. This is a user command, not
 a model tool. See `docs/extension-public-commands.md` in the repository for the
 snapshot, ownership and stable-keybinding contract.
+
+
+### Installed host capabilities
+
+`xdog.agent.capabilities` composes trusted installed `xdog.capabilities` entry points
+on actual session/group/application owners. Discovery is inert; a snapshot cannot
+name code to import. `CapabilitySet` owns startup/flush/close, while pinned
+`ParentPort` and `ChildPort` handles retain actual tool identity and existing
+permission gates. This layer owns no Goal or observation schema and starts no
+second Agent loop. See `docs/capability-boundary-design.md` in the repository.

@@ -19,6 +19,9 @@ dependencies = [
 [project.scripts]
 xdog-eyes = "xdog.eyes.cli:main"
 
+[project.entry-points."xdog.capabilities"]
+eyes = "xdog.eyes.hosting.runtime:provider"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/xdog"]
 

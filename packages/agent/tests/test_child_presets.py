@@ -45,11 +45,11 @@ async def test_preset_tool_and_direct_start_use_same_expanded_snapshot_and_survi
     store = ChildStore(tmp_path)
     owner = ChildSupervisor(factory, store.save, begin=store.begin, presets=ChildPresets(PRESETS))
     try:
-        control = owner.tools()[1]
+        control = owner.tools()[0]
         listed = await control.execute("presets", {"action": "presets"})
         assert "REVIEW-INSTRUCTIONS" in listed.content[0].text and not seen
         spawn = owner.tools()[0]
-        result = await spawn.execute("spawn", {"task": "task", "config": {"preset": "reviewer"}})
+        result = await spawn.execute("spawn", {"action": "spawn", "task": "task", "config": {"preset": "reviewer"}})
         child = result.content[0].text
         record = await owner.control("wait", child)
         assert seen[0].preset == "reviewer" and not seen[0].inherit_context

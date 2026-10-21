@@ -152,12 +152,12 @@ async def test_actual_claw_tui_sends_child_commands_and_preserves_draft(tmp_path
 
 
 async def test_claw_child_group_service_executes_and_settles_on_original_host_loop(tmp_path):
-    from xdog.claw.core.tools.tool_group_message import create_group_message_tool
+    from xdog.claw.core.tools.tool_message import create_message_tool
     host = asyncio.get_running_loop()
     sent = []
     def stream(model, context, options):
         if context.messages[-1].role == "user":
-            message = AssistantMessage(content=(ToolCall(id="send", name="group_message", arguments={
+            message = AssistantMessage(content=(ToolCall(id="send", name="message", arguments={
                 "action": "send", "group_id": "main", "text": "child message"}),))
         else:
             message = AssistantMessage(content=(TextContent(text="done"),))
@@ -171,13 +171,84 @@ async def test_claw_child_group_service_executes_and_settles_on_original_host_lo
             await asyncio.sleep(0)
             sent.append((group, text))
         session.agent.set_tool_context({**session.agent.tool_context, "_send_fn": send})
-        session.agent.set_tools((*[tool for tool in session.agent.state.tools if tool.name != "group_message"],
-                                create_group_message_tool()))
+        session.agent.set_tools((*[tool for tool in session.agent.state.tools if tool.name != "message"],
+                                create_message_tool()))
         session.agent.set_stream_fn(stream)
         identifier = await session.children.supervisor.start("send", access="inherit")
         result = await session.children.supervisor.control("wait", identifier)
         assert result["status"] == "completed" and sent == [("main", "child message")]
         assert "Message sent." in str(result["messages"])
+    finally:
+        await server.stop()
+
+
+@pytest.mark.parametrize("access,restricted,limit,sends", [
+    ("inherit", False, None, True),
+    ("read-only", False, None, False),
+    ("inherit", True, None, False),
+    ("inherit", False, "child", False),
+    ("inherit", False, "parent", False),
+])
+async def test_message_uses_real_channel_route_without_expanding_child_permissions(
+    tmp_path, access, restricted, limit, sends,
+):
+    from unittest.mock import AsyncMock, Mock
+
+    from xdog.claw.channels.base import Channel
+
+    host = asyncio.get_running_loop()
+    contexts, sent = [], []
+    def stream(model, context, options):
+        contexts.append(context)
+        message = (AssistantMessage(content=(ToolCall(id="send", name="message", arguments={
+            "action": "send", "group_id": "destination", "text": "routed child message"}),))
+            if context.messages[-1].role == "user" else AssistantMessage(content=(TextContent(text="done"),)))
+        return EventStream.empty(message)
+
+    async def deliver(group_id, text):
+        assert asyncio.get_running_loop() is host
+        await asyncio.sleep(0)
+        sent.append((group_id, text))
+
+    server, _config = await setup(tmp_path, [])
+    target, other = Mock(spec=Channel), Mock(spec=Channel)
+    target.accepts_group.side_effect = lambda group_id: group_id == "destination"
+    other.accepts_group.side_effect = lambda group_id: group_id == "elsewhere"
+    target.send_message = AsyncMock(side_effect=deliver)
+    other.send_message = AsyncMock()
+    server._orchestrator.add_channel(target)
+    server._orchestrator.add_channel(other)
+    try:
+        runtime = server._orchestrator._runtimes["main"]
+        session = runtime.get_or_create_session(allow_reset=False)
+        assert "message" in {tool.name for tool in session.agent.state.tools}
+        assert "group_message" not in {tool.name for tool in session.agent.state.tools}
+        # Keep the actual session context -> runtime callback -> Orchestrator route.
+        assert session.agent.tool_context["_send_fn"] == server._orchestrator._send_to_channels
+        session.agent.set_stream_fn(stream)
+        if restricted:
+            session.access.set_read_only(True)
+        if limit == "parent":
+            session.agent.set_active_tools(["current_time"],
+                expected_revision=session.agent.tool_selection_revision)
+        identifier = await session.children.supervisor.start("send", access=access,
+            config={"tools": ["current_time"]} if limit == "child" else None)
+        result = await session.children.supervisor.control("wait", identifier)
+        assert result["status"] == "completed"
+        assert contexts and all("group_message" not in {tool.name for tool in ctx.tools} for ctx in contexts)
+        if limit is not None:
+            assert all({tool.name for tool in ctx.tools} == {"current_time"} for ctx in contexts)
+        if sends:
+            assert sent == [("destination", "routed child message")]
+            target.send_message.assert_awaited_once_with("destination", "routed child message")
+            assert "Message sent." in str(result["messages"])
+        else:
+            assert not sent
+            target.send_message.assert_not_awaited()
+            assert "Message sent." not in str(result["messages"])
+            if restricted or access == "read-only":
+                assert "read-only" in str(result["messages"])
+        other.send_message.assert_not_awaited()
     finally:
         await server.stop()
 

@@ -14,6 +14,7 @@ from xdog.ai.utils.event_stream import EventStream
     {"max_model_calls": True}, {"max_model_calls": 17}, {"max_tokens": 0}, {"max_tokens": 32001},
     {"inherit_context": 1}, {"timeout": float("nan")}, {"timeout": 601}, {"timeout": False},
     {"tools": "bash"}, {"tools": ["bash", "bash"]}, {"tools": ["../bash"]}, {"tools": ["agent_spawn"]},
+    {"tools": ["agent"]},
 ])
 def test_configuration_rejects_malformed_or_broader_authority(bad):
     with pytest.raises(ValueError):
@@ -47,6 +48,7 @@ def test_invalid_flags_never_admit_child() -> None:
         "--fresh --fresh task",
         "--tokens 0 task",
         "--tools agent_control task",
+        "--tools agent task",
     ]:
         _check_case(value)
 
@@ -116,7 +118,7 @@ async def test_nested_config_merges_explicit_context_controls():
         await owner.control("wait", child)
         assert not specs[0].inherit_context and specs[0].label == "Reviewer"
         spawn = owner.tools()[0]
-        result = await spawn.execute("call", {"task": "task", "config": {"tools": []}})
+        result = await spawn.execute("call", {"action": "spawn", "task": "task", "config": {"tools": []}})
         record = await owner.control("wait", result.content[0].text)
         assert record["config"]["tools"] == []
     finally:
@@ -144,7 +146,7 @@ async def test_removed_budget_controls_are_not_exposed_or_silently_accepted(key,
         properties = spawn.parameters["properties"]
         assert key not in properties and key not in properties["config"]["properties"]
         with pytest.raises(ValueError):
-            await spawn.execute("call", {"task": "task", key: value})
+            await spawn.execute("call", {"action": "spawn", "task": "task", key: value})
         with pytest.raises(ValueError):
             await owner.start("task", config={key: value})
         assert not owner.active and owner._thread is None

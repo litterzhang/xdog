@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import threading
 import uuid
@@ -101,6 +102,7 @@ class SessionController:
         self._admissions: set[asyncio.Task[None]] = set()
         self._admitting_jobs: dict[str, _Job] = {}
         self._listeners: list[Callable[[SessionEvent], None]] = []
+        self._execution_listeners: list[Callable[[dict[str, Any]], None]] = []
         self._active: asyncio.Task[None] | None = None
         self._current: _Job | None = None
         self._revoked: set[str] = set()
@@ -123,6 +125,8 @@ class SessionController:
         self._closed: Future[None] = Future()
         self._broken: BaseException | None = None
         self._readiness_timer: asyncio.TimerHandle | None = None
+        self._recovering = self.store.needs_recovery
+        self._recovery_future: Future[None] | None = None
 
     def start(self, *, own_thread: bool = False) -> None:
         with self._start_lock:
@@ -134,6 +138,7 @@ class SessionController:
                 if own_thread:
                     raise RuntimeError("Synchronous host owns a dedicated loop")
                 self._loop = asyncio.get_running_loop()
+                self._start_recovery()
                 self._ready.set()
             except RuntimeError:
                 self._thread = threading.Thread(target=self._thread_main, name="xdog-session-owner", daemon=True)
@@ -232,8 +237,29 @@ class SessionController:
     async def _serve(self) -> None:
         self._loop = asyncio.get_running_loop()
         self._stop = asyncio.Event()
+        self._start_recovery()
         self._ready.set()
         await self._stop.wait()
+
+    def _start_recovery(self) -> None:
+        if not self._recovering:
+            return
+        store, generation = self.store, self.generation
+        async def recover() -> None:
+            try:
+                await store.recover()
+            except BaseException as exc:
+                if self.store is store and self.generation == generation:
+                    self._broken = exc
+                raise
+            finally:
+                self._recovering = False
+        # Use the original serialized control route, including its lease-release
+        # and shutdown settlement. No second recovery/execution loop is created.
+        receipt: Future[None] = Future()
+        self._recovery_future = receipt
+        self._controls.appendleft((recover, 'input-recovery', receipt))
+        self._pump()
 
     def _post(self, callback: Callable[[], None]) -> None:
         self.start()
@@ -262,6 +288,43 @@ class SessionController:
                 self._listeners.remove(listener)
 
         return unsubscribe
+
+    def execution_snapshot(self) -> dict[str, Any]:
+        """Execution-owner facts only; callers run on this controller's loop."""
+        state = ('closing' if self._closing else 'unavailable' if self._broken is not None
+                 or self._rotating or self._recovering or not self._inputs_ready else 'running' if self.busy
+                 or not self.session.agent.is_idle else 'idle')
+        pending = (*self._jobs.values(), *self._admitting_jobs.values())
+        return {'state': state, 'user_pending': self._human_pending or any(
+                    job.value.origin == 'human' and not job.finishing for job in pending),
+                'children_active': bool(self.session.children.supervisor.active), 'generation': self.generation}
+
+    def subscribe_execution(self, callback: Callable[[dict[str, Any]], None]) -> Callable[[], None]:
+        # Separate from publish()/UI SessionEvent: display labels cannot forge settlement.
+        self._execution_listeners.append(callback)
+        def cancel() -> None:
+            if callback in self._execution_listeners:
+                self._execution_listeners.remove(callback)
+        return cancel
+
+    def _execution_event(self, kind: str, *, execution_id: str = '', status: str = '',
+                         automatic: bool | None = None, generation: str | None = None) -> None:
+        snapshot = self.execution_snapshot()
+        current = self.generation if generation is None else generation
+        snapshot['generation'] = current
+        event: dict[str, Any] = {'type': kind, 'execution_id': execution_id, 'status': status,
+                                 'generation': current, 'snapshot': snapshot}
+        if automatic is not None:
+            event['automatic'] = automatic
+        token = _OWNER.set(None)
+        try:
+            for callback in tuple(self._execution_listeners):
+                try:
+                    callback(copy.deepcopy(event))
+                except Exception:
+                    logger.exception('Execution-state subscriber failed')
+        finally:
+            _OWNER.reset(token)
 
     def _emit(self, kind: str, job: _Job, data: object) -> None:
         event = SessionEvent(job.owner.session_id, job.generation, job.value.id, kind, data, job.batch_id,
@@ -375,13 +438,17 @@ class SessionController:
         if (self._closing or self._active is not None or self._queue_changes
                 or self._producer_receipts or self._admissions):
             return
+        if self.store.needs_recovery and not self._recovering and self._broken is None:
+            self._recovering = True
+            self._start_recovery()
+            return
         while self._controls:
             operation, name, future = self._controls.popleft()
             if not future.cancelled():
                 self._control_future = future
                 self._active = asyncio.create_task(self._run_control(operation, future))
                 return
-        if not self._inputs_ready or self._rotating:
+        if not self._inputs_ready or self._rotating or self._recovering:
             return
         jobs = [job for job in self._jobs.values() if not job.finishing]
         human = next((job for job in jobs if job.value.origin == "human"), None)
@@ -470,6 +537,7 @@ class SessionController:
             _OWNER.reset(token)
             self._active = None
             self._pump()
+            self._execution_event('owner.available')
 
     async def _run_batch(self, batch: TurnBatch, jobs: tuple[_Job, ...]) -> None:
         self._owner_token = uuid.uuid4().hex
@@ -521,6 +589,7 @@ class SessionController:
                 _OWNER.reset(token)
                 self._active = None
                 self._pump()
+                self._execution_event('owner.available')
 
     async def _finish(self, job: _Job, result: TurnResult) -> None:
         await self._finish_jobs((job,), result)
@@ -531,6 +600,7 @@ class SessionController:
             return
         for job in finishing:
             job.finishing = True
+        committed = True
         try:
             owner = finishing[0].owner
             if any(job.owner != owner for job in finishing):
@@ -542,6 +612,7 @@ class SessionController:
         except BaseException as exc:
             if finishing[0].owner.store is self.store and finishing[0].generation == self.generation:
                 self._broken = exc
+            committed = False
             result = replace(result, status='failed', error='Inbox persistence failed: ' + str(exc), cause=exc)
         try:
             await finishing[0].owner.store.transition_batch(
@@ -550,11 +621,17 @@ class SessionController:
         except BaseException as exc:
             if finishing[0].owner.store is self.store and finishing[0].generation == self.generation:
                 self._broken = exc
+            committed = False
             result = replace(result, status='failed', error='Session persistence failed: ' + str(exc), cause=exc)
         # All durable receipts settle before any member observes a completed result.
         for job in finishing:
             self._jobs.pop(job.value.id, None)
             self._emit('input_completed', job, replace(result, cause=None))
+        if committed:
+            execution_id = batch.id if batch is not None else finishing[0].value.id
+            self._execution_event('execution.settled', execution_id=execution_id,
+                status=result.status, automatic=all(job.value.origin != 'human' for job in finishing),
+                generation=finishing[0].generation)
         for job in finishing:
             self._settle(job.ticket.result, result)
 
@@ -709,6 +786,8 @@ class SessionController:
     def rotate(self, branch_id: str) -> Future[None]:
         # Publish the fence before scheduling cleanup so a successor cannot start
         # on the already-mutated SessionData with the old generation.
+        previous_generation = self.generation
+        self._post(lambda: self._execution_event('owner.retiring', generation=previous_generation))
         self._rotating = True
         self.session_id = self.session.session_id
         self.branch, self.generation = branch_id, uuid.uuid4().hex
@@ -760,9 +839,13 @@ class SessionController:
         from functools import partial
 
         from xdog.agent.async_work import settle_cleanup
+        self._execution_event('owner.retiring')
         if self._readiness_timer is not None:
             self._readiness_timer.cancel()
             self._readiness_timer = None
+        async def recovery() -> None:
+            if self._recovery_future is not None:
+                await asyncio.wrap_future(self._recovery_future)
         async def admissions() -> None:
             if self._admissions:
                 await asyncio.gather(*tuple(self._admissions), return_exceptions=True)
@@ -795,7 +878,7 @@ class SessionController:
             if self._close_hook is not None:
                 await self._close_hook()
         try:
-            await settle_cleanup(admissions, active, queued, self._settle_operations, producers, resources,
+            await settle_cleanup(recovery, admissions, active, queued, self._settle_operations, producers, resources,
                                  message='Coding controller shutdown failed')
         except BaseException as exc:
             self._settle(self._closed, error=exc)

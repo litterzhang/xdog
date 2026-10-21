@@ -95,7 +95,7 @@ block seeds the output ports of a reserved source node `$in`.
 **Skills.** An agent node may name skills that ship inside installed packages:
 
 ```jsonc
-{"id": "author", "type": "agent", "skills": ["flow-workflows"], "prompt": "..."}
+{"id": "author", "type": "agent", "skills": ["flow"], "prompt": "..."}
 ```
 
 Their instructions are prepended to the node's system prompt. A skill resolves
@@ -120,7 +120,7 @@ read its own instructions reintroduces exactly the failure the field exists to
 prevent: a node gets one shot at producing a format, and one that skips the load
 produces something plausible and wrong.
 
-The cost is real — `flow-workflows` is ~2,500 tokens, resent on every API call
+The cost is real — `flow` is ~2,500 tokens, resent on every API call
 that node makes — so declare a skill on the node that produces the artifact, not
 on every node in the workflow. The saving is in not declaring it where it is not
 needed, which is exact, rather than in lazy loading, which is a guess.

@@ -127,11 +127,15 @@ def generate_image(
 
 def _configure_tools(models: list[Any], existing: ClawConfig) -> tuple[tuple[str, ...], str]:
     """Choose an explicit tool set and, if needed, a confirmed image model."""
+    from xdog.agent.capabilities import CapabilitySet
     from xdog.claw.core.tools import default_enabled_tools, registered_names
 
-    names = sorted(registered_names())
+    # Metadata discovery only: onboarding never opens a capability or its storage.
+    capability_names = CapabilitySet("group").declared_tools | CapabilitySet("application").declared_tools
+    names = sorted(registered_names() | capability_names)
     image_models = [model for model in models if model.supports_image_output is True]
-    selected = default_enabled_tools() if existing.enabled_tools is None else existing.enabled_tools
+    selected = (tuple(sorted(set(default_enabled_tools()) | capability_names))
+                if existing.enabled_tools is None else existing.enabled_tools)
     default = ",".join(str(i) for i, name in enumerate(names, 1) if name in selected) or "none"
     click.echo("  Available tools:")
     for i, name in enumerate(names, 1):

@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -38,7 +40,7 @@ async def test_gateway_restart_recovers_original_weixin_output_after_channel_rea
     config = ClawConfig(
         data_dir=str(tmp_path / "data"), socket_path=str(tmp_path / "gateway.sock"),
         pid_file=str(tmp_path / "gateway.pid"), weixin_enabled=True, weixin_token="fixture-only",
-        weixin_account_id="readiness-fixture", weixin_base_url="https://example.invalid", eyes_enabled=False,
+        weixin_account_id="readiness-fixture", weixin_base_url="https://example.invalid",
         groups=(GroupDef(id="main", workspace=str(tmp_path / "workspace"), is_main=True),),
     )
     model, first = ScriptedModel(), API(True)
@@ -86,69 +88,69 @@ async def test_gateway_restart_recovers_original_weixin_output_after_channel_rea
             await server.stop()
 
 
-@pytest.mark.parametrize("action", ["release", "cancel-notifications", "shutdown"])
-async def test_actual_child_notices_retry_when_parent_input_releases_capacity(tmp_path, action):
+@pytest.mark.parametrize("action", ["release", "pause", "shutdown"])
+async def test_actual_acp_reminder_waits_for_committed_parent_and_safe_capacity_release(tmp_path, action):
+    from xdog.claw.acp.server import ClawAcpServer
     async with application(tmp_path) as (app, runtime, model):
         await activate(app)
         runtime.group = replace(runtime.group, config=replace(runtime.group.config, max_queued_messages=1))
-        host, session = runtime.goal_host, runtime._active_session
-        goal = await host.service.create("Output", "Inspect actual output", ("Result exists",),
-                                         context=OperationContext(True))
-        goal = await host.service.add_task(goal.id, "Read result")
+        host, session = runtime.capabilities.get("goal"), runtime._active_session
+        inputs = await app.input_service()
+        scope = InputScope(runtime.group.id, runtime.workspace_dir)
         entered, release = asyncio.Event(), asyncio.Event()
-
         def stream(selected, context, options):
             original = model(selected, context, options)
-            role = model.calls[-1][0]
-
             async def events():
-                if role == "parent" and not entered.is_set():
+                if not entered.is_set():
                     entered.set()
                     await release.wait()
                 async for event in original:
                     yield event
-
             from xdog.ai.utils.event_stream import EventStream
             return EventStream.from_async_generator(events(), result_future=original._result_future)
-
-        # Keep the genuine parent turn/receipt occupying the sole Inbox slot.
-        # Child model streams still use the actual supervised goal_context/read/report path.
         session.agent.set_stream_fn(stream)
         human = asyncio.create_task(app.route_message(UserInput(group_id="main", content="HOLD", channel="tui")))
-        try:
-            await asyncio.wait_for(entered.wait(), 3)
-            goal = await host.service.assign(goal.id, goal.tasks[0].id, "Read and report")
-            await session.children.supervisor.control("wait", goal.tasks[0].attempts[-1].worker.id)
-            await host.flush()
-            assert (await host.service.status(goal.id)).tasks[0].state == "submitted"
-            notices = await host.service.store.notices()
-            assert notices and all(row.status == "unknown" for row in notices)
-            identifiers = {row.notice.id for row in notices}
-            assert all([await host.inputs.store.get(host.scope, identifier) is None for identifier in identifiers])
-            if action == "cancel-notifications":
-                await host.service.cancel_notifications(goal.id)
+        with tempfile.TemporaryDirectory(prefix='goal-capacity-') as short:
+            server = await ClawAcpServer.start(app, Path(short) / 'a.sock')
+            try:
+                await asyncio.wait_for(entered.wait(), 3)
+                goal = await host.service.create("Output", "Inspect actual output", ("Result exists",),
+                                                context=OperationContext(True))
+                await host.service.task({'id': 'work', 'title': 'Main work', 'expected_version': 0})
+                await host._wake('capacity-fixture')
                 await host.flush()
-            elif action == "shutdown":
-                app.request_stop()
-            release.set()
-            await asyncio.wait_for(human, 3)
-            if action != "release":
-                await asyncio.sleep(0.04)
-                assert all([await host.inputs.store.get(host.scope, identifier) is None for identifier in identifiers])
-                return
-
-            async def consumed():
-                rows = await host.inputs.store.records(host.scope)
-                return identifiers <= {row.envelope.message.id for row in rows if row.status == "succeeded"}
-
-            # No Goal mutation, manual drain/flush, new input or model polling after capacity release.
-            await until(consumed)
-            rows = await host.inputs.store.records(host.scope)
-            originals = [row for row in rows if row.envelope.message.id in identifiers]
-            assert len(originals) == len(identifiers)
-            assert all([len(await host.inputs.store.attempts(host.scope, row.envelope.message.id)) == 1
-                        for row in originals])
-            assert all(row.status == "accepted" for row in await host.service.store.notices())
-        finally:
-            release.set()
-            await asyncio.gather(human, return_exceptions=True)
+                assert host.host.execution_snapshot()['state'] == 'running'
+                assert not await host.service.store.reminders()
+                rows = await inputs.store.records(scope)
+                assert not [r for r in rows if r.envelope.message.source == 'goal']
+                if action == 'pause':
+                    await host.service.change('pause', context=OperationContext(True), reason='User pause')
+                elif action == 'shutdown':
+                    app.request_stop()
+                # The actual automatic turn completes the Goal. No worker/reviewer or polling runner.
+                model.parent_action = lambda ctx: ({'action': 'complete', 'summary': 'Main verified reminder'}
+                    if any(m.role == 'user' and 'Goal reminder for' in str(m.content) for m in ctx.messages) else None)
+                release.set()
+                await asyncio.wait_for(human, 3)
+                if action != 'release':
+                    await asyncio.sleep(.04)
+                    assert not [r for r in await inputs.store.records(scope) if r.envelope.message.source == 'goal']
+                    assert not await host.service.store.reminders()
+                    return
+                async def consumed():
+                    records = await inputs.store.records(scope)
+                    return any(r.envelope.message.source == 'goal' and r.status == 'succeeded' for r in records)
+                # No Goal mutation, manual drain, new input or model polling after the release.
+                await until(consumed)
+                originals = [r for r in await inputs.store.records(scope) if r.envelope.message.source == 'goal']
+                assert len(originals) == 1
+                assert len(await inputs.store.attempts(scope, originals[0].envelope.message.id)) == 1
+                reminders = await host.service.store.reminders()
+                assert len(reminders) == 1 and reminders[0]['status'] == 'accepted'
+                assert reminders[0]['id'] == originals[0].envelope.message.id
+                assert (await host.service.status(goal.id))['current']['status'] == 'completed'
+                assert not session.children.supervisor._children
+            finally:
+                release.set()
+                await asyncio.gather(human, return_exceptions=True)
+                await server.close()

@@ -8,7 +8,7 @@ From the workspace root (existing environment, no installation)::
     uv run --no-sync python packages/agent/examples/load_skills.py \
         --skills-dir ./my-skills --skill my-procedure --no-packaged
 
-Default skill: real packaged flow-workflows (requires xdog-flow already installed).
+Default skill: real packaged flow (requires xdog-flow already installed).
 No provider/auth/network. Activation grants no tools. Model loading explicitly
 registers only the bounded read-only skill tool, with an allowlist and host hook;
 it neither activates skills nor executes their commands or reads their references.
@@ -45,7 +45,7 @@ def require_skill(manager: SkillManager, slug: str) -> Skill:
     """Validate host-selected configuration; this is not a model-facing path API."""
     available = {item.slug for item in manager.list_skills()}
     if slug not in available:
-        raise ValueError(f"Skill {slug!r} is not available; installed flow uses 'flow-workflows', not 'xdog-flow'")
+        raise ValueError(f"Skill {slug!r} is not available; installed flow uses 'flow', not 'xdog-flow'")
     skill = manager.load_skill(slug)
     if skill is None:
         raise ValueError(f"Skill {slug!r} disappeared before it could be loaded")
@@ -181,7 +181,7 @@ async def demonstrate_loading(manager: SkillManager, slug: str) -> SkillToolDemo
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--skill", default="flow-workflows", help="Skill slug, not the distribution name")
+    parser.add_argument("--skill", default="flow", help="Skill slug, not the distribution name")
     parser.add_argument("--skills-dir", type=Path, help="Trusted directory containing <slug>/SKILL.md")
     parser.add_argument("--no-packaged", action="store_true", help="Use only the explicit local skills directory")
     parser.add_argument("--mode", choices=("activate", "model-load"), default="activate")

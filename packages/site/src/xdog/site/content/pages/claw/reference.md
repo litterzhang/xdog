@@ -25,8 +25,10 @@ Coding's SDK is separate and is not removed by this boundary.
   messages, status, reset and negotiated product controls. Capabilities, request/
   connection/group ownership and context revisions fence control requests. It is
   not a general public embedding API; unsupported controls must not be guessed.
-- **Optional Unix ACP ingress**: enable explicitly with `acp_socket_path` or
-  `gateway start --acp-socket PATH` (also host-owned when `eyes_enabled: true`).
+- **Optional Unix ACP ingress**: configure explicitly with `acp_socket_path` or
+  `gateway start --acp-socket PATH`. Installed `xdog-eyes` also supplies managed
+  capability automatically: the gateway reuses `acp_socket_path` or owns the private
+  `data_dir/acp/agent.sock` endpoint, without another daemon.
   ACP uses explicit `group:<id>` addresses and exact workspace validation. Prompt
   and negotiated durable enqueue enter the existing group inbox/queue and active
   Agent, not a second loop or a historical-session activation route.
@@ -36,6 +38,25 @@ Coding's SDK is separate and is not removed by this boundary.
 
 See the [ACP setup and recovery boundaries](https://github.com/litterzhang/xdog/blob/main/docs/claw-eyes-acp.md)
 for the private endpoint contract and receipt/cancellation limits.
+
+## Optional managed Eyes
+
+Installed `xdog-eyes` provides the gateway-managed, group-scoped `eyes` tool
+without an `eyes_enabled` setting. Claw never installs the package automatically;
+without it, base chat continues without managed Eyes. Package presence creates no
+observers: new observers require an explicit user request. The host binds the
+current group, exact workspace and private ACP destination; model arguments and
+source labels cannot override them or grant tool permissions. Standalone ACP
+configuration remains explicit and independent.
+
+With the package installed, startup retains recovery of already accepted managed
+**time** observers, including due/pending one-offs through downtime. Reconcile
+original input IDs and receipts; never automatically replay running, interrupted
+or outcome-unknown execution. Recurring recovery skips missed periods, and ordinary
+file observers do not automatically resume. Intake, execution and output delivery
+are separate facts; unknown sends are not automatically retried. Stopping a source
+does not withdraw accepted input or stop its reports; notification cancellation
+and actual Core input/execution cancellation remain separate and cannot undo effects.
 
 ## Workspace files
 

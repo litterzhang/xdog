@@ -51,7 +51,14 @@ async def test_public_extension_cannot_shadow_builtin_native_command_or_installe
         try:
             await session.initialize_extensions()
             assert 'publiccommands' in session.extensions._failed
-            assert name not in session.extensions.commands() and not calls
+            assert not calls
+            if name == 'goal':
+                result = await execute_command('goal', 'status', session)
+                assert session.extensions.is_native_command('goal')
+                assert session.extensions.command_owner('goal') == 'goal'
+                assert 'current' in result.output and not calls
+            else:
+                assert name not in session.extensions.commands()
         finally:
             await session.aclose()
 
@@ -76,7 +83,8 @@ async def test_new_conflicting_skill_keeps_help_snapshot_and_unload_recoverable(
         with pytest.raises(ValueError, match='conflict|Conflict'):
             await execute_command('goals', '', session)
         await execute_command('extensions', 'unload goal_ui', session)
-        assert session.extensions.snapshot()['extensions'][0]['state'] == 'unloaded'
+        assert next(row for row in session.extensions.snapshot()['extensions']
+                    if row['name'] == 'goal_ui')['state'] == 'unloaded'
         assert not session.extensions.command_conflicts() and len(calls) == before
     finally:
         await dispose(session)

@@ -15,19 +15,21 @@ import pytest
 import yaml
 from xdog.claw.config import ClawConfig, GroupDef, load_config, save_config
 from xdog.claw.core import planning, types
-from xdog.claw.core.observers.journal import ObserverJournal
-from xdog.claw.core.observers.manager import ManagedObservers
-from xdog.claw.core.observers.models import ObserverRecord
 from xdog.claw.core.runtime.gateway import GatewayServer
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.tools.registry import create_tools, registered_names
+from xdog.eyes.hosting.journal import ObserverJournal
+from xdog.eyes.hosting.manager import ManagedObservers
+from xdog.eyes.hosting.models import ObserverRecord
 
 
 def test_retired_modules_types_and_tool_are_absent():
     for module in (
         'xdog.claw.core.planning.task_scheduler',
         'xdog.claw.core.tools.tool_task',
-        'xdog.claw.core.observers.migration',
+        'xdog.claw.core.observers',
+        'xdog.claw.core.tools.tool_eyes',
+        'xdog.eyes.hosting.migration',
     ):
         assert importlib.util.find_spec(module) is None, module
     assert not hasattr(planning, 'TaskScheduler')
@@ -36,8 +38,9 @@ def test_retired_modules_types_and_tool_are_absent():
     assert 'task' not in registered_names()
     with pytest.raises(ValueError, match='Unknown tools'):
         create_tools(('task',))
-    assert 'eyes' in registered_names() and 'goal' not in registered_names()
-    assert {tool.name for tool in create_tools(('eyes',))} == {'eyes'}
+    assert 'eyes' not in registered_names() and 'goal' not in registered_names()
+    with pytest.raises(ValueError, match='Unknown tools'):
+        create_tools(('eyes',))
     with pytest.raises(ValueError, match='Unknown tools'):
         create_tools(('goal',))
 
@@ -55,19 +58,22 @@ def test_no_legacy_configuration_or_management_api(tmp_path):
     path = tmp_path / 'claw.yaml'
     path.write_text(yaml.safe_dump({'tasks_file': str(tmp_path / 'scheduled_tasks.json'), 'eyes_enabled': True}))
     config = load_config(path)
-    assert config.eyes_enabled and not hasattr(config, 'tasks_file')
+    assert not hasattr(config, 'eyes_enabled') and not hasattr(config, 'tasks_file')
     save_config(config, path)
     assert 'tasks_file' not in yaml.safe_load(path.read_text())
 
 
-@pytest.mark.parametrize('enabled', [False, True])
+@pytest.mark.parametrize('installed', [False, True])
 @pytest.mark.parametrize('contents', [
     b'{broken legacy file',
     b'{"tasks":[{"id":"retired","group_id":"main","prompt":"must not execute",'
     b'"schedule":{"run_at":1},"enabled":true,"status":"pending","next_run":1}]}',
 ])
-async def test_gateway_never_reads_imports_or_modifies_old_scheduled_tasks(tmp_path, monkeypatch, enabled, contents):
+async def test_gateway_never_reads_imports_or_modifies_old_scheduled_tasks(tmp_path, monkeypatch, installed, contents):
     calls = []
+    from xdog.agent.capabilities.runtime import discover
+    monkeypatch.setattr('xdog.agent.capabilities.runtime.discover',
+                        lambda scope: tuple(p for p in discover(scope) if installed or p.name != 'eyes'))
     monkeypatch.setattr('xdog.claw.core.runtime.gateway._build_model_and_options',
                         lambda _: ('test/no-call', lambda *args: calls.append(args)))
     data = tmp_path / 'data'
@@ -92,22 +98,25 @@ async def test_gateway_never_reads_imports_or_modifies_old_scheduled_tasks(tmp_p
         guarded.setattr(io, 'open', guard(io.open))
         guarded.setattr(os, 'open', guard(os.open))
         config = ClawConfig(data_dir=str(data), socket_path=str(Path(short) / 'gateway.sock'),
-                            pid_file=str(Path(short) / 'gateway.pid'), eyes_enabled=enabled,
-                            acp_socket_path=str(Path(short) / 'acp.sock') if enabled else '',
-                            enabled_tools=('eyes',), groups=(GroupDef(id='main', workspace=str(tmp_path)),))
+                            pid_file=str(Path(short) / 'gateway.pid'),
+                            acp_socket_path=str(Path(short) / 'acp.sock') if installed else '',
+                            enabled_tools=('eyes',) if installed else (),
+                            groups=(GroupDef(id='main', workspace=str(tmp_path)),))
         for _ in range(2):
             gateway = GatewayServer(config)
             try:
                 await gateway.start()
-                assert await gateway._orchestrator._runtimes['main'].goal_host.service.list() == ()
+                assert await gateway._orchestrator._runtimes['main'].capabilities.get('goal').service.list() == ()
                 assert not hasattr(gateway._orchestrator, 'scheduler')
-                if enabled:
-                    service = gateway._observers
+                if installed:
+                    service = gateway._application_capabilities.get('eyes')
                     assert service is not None
                     assert await service.list('main') == ()
                     assert not service._tasks and not service._handlers
                 else:
-                    assert gateway._observers is None and gateway._acp_server is None
+                    assert gateway._application_capabilities.get('eyes') is None
+                    # Default Goal requests the same generic private ACP, even without Eyes.
+                    assert gateway._acp_server is not None
                 await asyncio.sleep(0)
                 assert not calls
             finally:

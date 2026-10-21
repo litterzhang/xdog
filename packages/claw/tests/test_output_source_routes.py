@@ -184,7 +184,7 @@ async def test_external_ack_loss_duplicate_retains_accepted_reply_without_later_
     from xdog.claw.core.runtime.orchestrator import Orchestrator
     from xdog.claw.core.types import Group, UserInput
 
-    app = Orchestrator(ClawConfig(data_dir=str(tmp_path / "data"), eyes_enabled=True),
+    app = Orchestrator(ClawConfig(data_dir=str(tmp_path / "data")), defer_inputs=True,
                        stream_fn=lambda *a: pytest.fail("Paused intake must not construct a model turn"))
     app.register_group(Group(id="main", workspace=str(tmp_path / "work")))
     scope = InputScope("main", tmp_path / "work")
@@ -318,7 +318,7 @@ async def test_offline_routed_outputs_recover_original_recipient_without_model_r
     from packages.claw.tests.test_weixin_monitor import wait
 
     model = ScriptedModel()
-    app, channel, api = await application(tmp_path, model, eyes_enabled=True)
+    app, channel, api = await application(tmp_path, model, defer_inputs=True)
     scope = InputScope("main", tmp_path)
     reference = app.capture_reply(channel, UserInput(group_id="main", channel="weixin", sender="alice",
         metadata={"account_id": "account", "weixin_user_id": "alice", "context_token": "original-alice"}))
@@ -347,7 +347,7 @@ async def test_offline_routed_outputs_recover_original_recipient_without_model_r
     finally:
         await app.stop()
     fresh_model = ScriptedModel()
-    app, channel, api = await application(tmp_path, fresh_model, eyes_enabled=True)
+    app, channel, api = await application(tmp_path, fresh_model, defer_inputs=True)
     channel._user_id_map["main"] = "later-bob"
 
     async def never_resolve(envelope):
@@ -418,7 +418,7 @@ async def test_duplicate_without_original_output_route_cannot_acquire_a_later_de
     from xdog.claw.core.runtime.orchestrator import Orchestrator
     from xdog.claw.core.types import Group
 
-    app = Orchestrator(ClawConfig(data_dir=str(tmp_path / "data"), eyes_enabled=True))
+    app = Orchestrator(ClawConfig(data_dir=str(tmp_path / "data")), defer_inputs=True)
     app.register_group(Group(id="main", workspace=str(tmp_path / "work")))
     scope = InputScope("main", tmp_path / "work")
     message = external(scope).message
@@ -445,7 +445,7 @@ async def test_conflicting_trusted_reply_sources_are_refused_before_input_commit
     from xdog.claw.core.runtime.orchestrator import Orchestrator
     from xdog.claw.core.types import Group, UserInput
 
-    app = Orchestrator(ClawConfig(data_dir=str(tmp_path / "data"), eyes_enabled=True))
+    app = Orchestrator(ClawConfig(data_dir=str(tmp_path / "data")), defer_inputs=True)
     app.register_group(Group(id="main", workspace=str(tmp_path / "work")))
     scope = InputScope("main", tmp_path / "work")
     reference = ReplyReference(scope, "original", UserInput(group_id="main", channel="weixin", sender="alice"))
@@ -474,7 +474,7 @@ async def test_detached_source_during_reply_lookup_cannot_publish_a_stale_admiss
     from xdog.claw.core.runtime.orchestrator import Orchestrator
     from xdog.claw.core.types import Group, UserInput
 
-    app = Orchestrator(ClawConfig(data_dir=str(tmp_path / "data"), eyes_enabled=True))
+    app = Orchestrator(ClawConfig(data_dir=str(tmp_path / "data")), defer_inputs=True)
     app.register_group(Group(id="main", workspace=str(tmp_path / "work")))
     scope = InputScope("main", tmp_path / "work")
     entered, release = asyncio.Event(), asyncio.Event()

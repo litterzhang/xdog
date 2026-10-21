@@ -20,7 +20,7 @@ be declaring its own confinement, which is not confinement. Three concrete
 consequences:
 
 - **An AI writes these.** The [tasks service](./tasks-service.md) has an agent
-  authoring workflows, and the `flow-workflows` skill ships in the wheel so any
+  authoring workflows, and the `flow` skill ships in the wheel so any
   coding agent can. A generated workflow that can request `/` is a generated
   workflow that has `/`. The grant has to come from whoever decided to run it.
 - **A workflow is a shared artifact.** It goes in Git, it gets bundled, someone

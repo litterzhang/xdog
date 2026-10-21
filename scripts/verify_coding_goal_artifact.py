@@ -28,7 +28,7 @@ def main() -> None:
     target = root / "venv"
     subprocess.run([uv, "venv", str(target), "--python", sys.executable], cwd=root, env=environment, check=True)
     python = target / "bin" / "python"
-    wheels = [str(next(dist.glob("xdog_" + name + "-*.whl"))) for name in ("ai", "agent", "tui", "coding")]
+    wheels = [str(next(dist.glob("xdog_" + name + "-*.whl"))) for name in ("ai", "agent", "tui", "coding", "skills")]
     subprocess.run([uv, "pip", "install", "--python", str(python), *wheels], cwd=root, env=environment, check=True)
     work = root / "work"
     work.mkdir(mode=0o700)
@@ -41,12 +41,6 @@ def main() -> None:
     base_work.mkdir(mode=0o700)
     environment["CODING_DIR"] = str(base_work / "ambient-unused")
     subprocess.run([str(python), str(consumer), "--base-only"], cwd=base_work, env=environment, check=True, timeout=40)
-    subprocess.run(
-        [uv, "pip", "install", "--python", str(python), str(next(dist.glob("xdog_skills-*.whl")))],
-        cwd=root,
-        env=environment,
-        check=True,
-    )
     environment["CODING_DIR"] = str(work / "ambient-unused")
     subprocess.run([str(python), str(consumer)], cwd=work, env=environment, check=True, timeout=40)
     result = {"root": str(root), "distribution": str(dist), "environment": str(target), "real_host": "coding"}

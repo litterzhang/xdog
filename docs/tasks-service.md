@@ -62,7 +62,7 @@ Most of the substrate is built. Worth knowing before designing:
 |---|---|
 | Run a workflow on a schedule | `schedule` block + `xdog-flow scheduling install` (systemd timers / hooks) |
 | Survive a crash mid-task | Checkpointing — `run_id` + `JSONFileCheckpointStore`, resumes at the frontier batch |
-| Let an agent write a workflow | The `flow-workflows` skill, shipped in the `xdog-flow` wheel |
+| Let an agent write a workflow | The `flow` skill, shipped in the `xdog-flow` wheel |
 | Tell an agent *why* its workflow is wrong | `validate --json` — 18 stable error codes and repair hints, built for exactly this loop |
 | Long-running multi-agent process | `xdog-claw` — an orchestration runtime with groups, queues, memory |
 | Carry context between agent steps | `inherit` (1.1.0) |
@@ -237,7 +237,7 @@ WeChat ─┘         │               └── comment
                   │        feedback ───────┘
                   │           reopens, escalates, or aggregates
                   ├── route: which workflow?  ──> catalogue
-                  ├── author: none fits       ──> agent + flow-workflows skill
+                  ├── author: none fits       ──> agent + flow skill
                   │                                    │
                   │                             validate --json ──┐
                   │                                    ▲          │ errors

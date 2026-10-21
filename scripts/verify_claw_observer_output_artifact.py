@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
+from xdog.agent.capabilities import CapabilitySet
 from xdog.ai.types import AssistantMessage, DoneEvent, TextContent, ToolCall
 from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.acp.server import ClawAcpServer
@@ -20,11 +21,11 @@ from xdog.claw.channels.weixin.api import WeixinApiClient
 from xdog.claw.channels.weixin.channel import WeixinChannel, _TypingTicketCache
 from xdog.claw.channels.weixin.types import MessageItem, MessageItemType, MessageType, TextItem, WeixinMessage
 from xdog.claw.config import ClawConfig
-from xdog.claw.core.observers import manager as installed
-from xdog.claw.core.observers.manager import ManagedObservers
 from xdog.claw.core.outputs.delivery import DeliveryNotSent
+from xdog.claw.core.runtime.application_ports import ApplicationPorts
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.types import Group
+from xdog.eyes.hosting import manager as installed
 from xdog.eyes.managed_scheduler import SchedulerClocks
 
 assert Path(installed.__file__).is_relative_to(Path(sys.prefix))
@@ -112,8 +113,8 @@ def no_model(*args, **kwargs):
 @asynccontextmanager
 async def application(root, clock, stream, *, peer=None):
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    app = Orchestrator(ClawConfig(data_dir=str(root / "data"), eyes_enabled=True, enabled_tools=("eyes",)),
-                       model="test/dummy", stream_fn=stream)
+    app = Orchestrator(ClawConfig(data_dir=str(root / "data"), enabled_tools=("eyes",)),
+                       model="test/dummy", stream_fn=stream, defer_inputs=True)
     app.register_group(Group(id="main", workspace=str(root / "work"), enabled_tools=("eyes",)))
     channel = WeixinChannel(root / "channel", "account", "https://example.invalid", "")
     await channel._api_client.close()
@@ -124,13 +125,18 @@ async def application(root, clock, stream, *, peer=None):
         channel._user_id_map["main"] = peer
     app.add_channel(channel)
     server = await ClawAcpServer.start(app, root / "acp.sock")
-    manager = ManagedObservers(app, root / "acp.sock", clocks=clock.clocks())
-    app.set_observers(manager)
+    capabilities = CapabilitySet('application')
+    await capabilities.start(ApplicationPorts(app, root / "acp.sock"))
+    app.application_capabilities = capabilities
+    manager = capabilities.get('eyes')  # Acceptance diagnostics, never host execution policy.
+    assert manager is not None
+    manager.clocks = clock.clocks()
+    await app.refresh_application_capabilities()
+    (await app.input_service()).resume()
     try:
-        await manager.start()
         yield app, manager, channel, api
     finally:
-        await manager.close()
+        await capabilities.aclose()
         await server.close()
         await app.stop()
 

@@ -11,96 +11,86 @@ import tempfile
 from pathlib import Path
 
 PROBE = r"""
-import asyncio,importlib.metadata as md,json,sys
+import asyncio,importlib.metadata as md,json,subprocess,sys
 from pathlib import Path
-from xdog.skills.goal.models import Goal,Notice,Owner
+from types import SimpleNamespace
+from xdog.agent import Agent
+from xdog.agent.capabilities.runtime import ParentPort
+from xdog.agent.extensions.runtime import ExtensionRuntime
+from xdog.agent.skills import SkillManager,packaged_skills
+from xdog.skills.goal.host import OperationContext
+from xdog.skills.goal.models import Goal,Owner
 from xdog.skills.goal import store as installed
 from xdog.skills.goal.store import GoalStore
+from xdog.skills.goal.runtime import GoalRuntime
 assert Path(installed.__file__).is_relative_to(Path(sys.prefix))
 names={d.metadata['Name'].lower().replace('_','-') for d in md.distributions()}
 assert 'xdog-skills' in names and 'xdog-goal' not in names
-assert not names.intersection({'xdog-claw','xdog-coding','xdog-eyes','xdog-flow','xdog-tui','xdog-site'})
 blocked=('xdog.claw','xdog.coding','xdog.eyes','xdog.flow','xdog.tui','xdog.site')
-assert not any(n.startswith(blocked) for n in sys.modules)
+assert not names.intersection({'xdog-claw','xdog-coding','xdog-eyes','xdog-flow','xdog-tui','xdog-site'})
 async def main():
- from xdog.agent.skills import SkillManager,packaged_skills
- root=Path.cwd()
- manager=SkillManager(root/'not-created-shared-skills')
- discovered=packaged_skills()
- for slug in ('goal','xdog-planning'):
+ root=Path.cwd(); manager=SkillManager(root/'not-created-shared-skills')
+ for slug in ('goal','plan'):
   item=manager.load_skill(slug)
   assert item is not None and item.packaged and item.content
-  assert discovered[slug].is_relative_to(Path(sys.prefix)) and '/xdog/skills/skills/' in str(discovered[slug])
- assert not {'goals','eyes','eyes-observers','flow-workflows'}.intersection(discovered)
+  assert packaged_skills()[slug].is_relative_to(Path(sys.prefix))
  assert not (root/'not-created-shared-skills').exists()
- owner=Owner('goal-only-host-binding',root)
- s=await GoalStore.open(root/'private'/'goals.sqlite3',owner)
+ owner=Owner('goal-only-store',root)
+ s=await GoalStore.open(root/'private'/'registry.sqlite3',owner)
  goal=Goal('goal','Portable','Inspect real output',('Evidence is present',))
- await s.put(goal,expected_version=0,notices=(Notice('notice','goal','Inspect report'),),
-             artifacts=(('original-evidence',{'files':['result.txt']}),))
- attempt=await s.notice_started('notice')
+ await s.put(goal,expected_version=0)
+ await s.reminder(goal,{'id':'notice','instruction':'data only'})
+ assert await s.claim_reminder('notice',goal)
  await s.close()
  s=await GoalStore.open(s.path,owner)
  try:
-  assert (await s.get('goal')).status=='active'
-  assert (await s.notices())[0].status=='unknown'
-  assert await s.artifact('goal','original-evidence')=={'files':['result.txt']}
+  assert (await s.current()).id=='goal'
+  assert (await s.reminders())[0]['status']=='unknown'
   assert len(await s.history('goal'))==1
- finally:await s.close()
- print(json.dumps({'goal_only':'wheel-owned storage/history/notice recovery, no installed/imported hosts',
-                   'model_calls':0,'path':str(root)}))
-async def lifecycle():
- from agent_host import AgentHost
- from xdog.skills.goal.host import OperationContext
- from xdog.skills.goal.models import report_digest
- from xdog.skills.goal.service import GoalService
- from xdog.agent.skills.manager import SkillManager
- from xdog.skills.goal.resources import skill_directory,role_instructions
- root=Path.cwd();root.joinpath('result.txt').write_text('actual installed result')
- owner=Owner('goal-only-lifecycle',root);host=AgentHost(owner)
- service=GoalService(await GoalStore.open(root/'lifecycle-private'/'goal.sqlite3',owner),host)
- host.service=service
+ finally: await s.close()
+ async def no_endpoint(): return None
+ host=SimpleNamespace(scope='group',owner_prefix='sdk',namespace='original',identity='main',branch='',
+  workspace=root,storage_root=root/'host',valid=lambda:True,accepting=lambda:True,
+  subscribe_events=lambda cb:lambda:None,acp_target=no_endpoint,
+  execution_snapshot=lambda:{'state':'idle','user_pending':False,'children_active':False,'generation':'one'})
+ runtime=await GoalRuntime.open(host)
+ def forbidden_model(*args): raise AssertionError('Commands must not call another model')
+ agent=Agent(forbidden_model); extensions=ExtensionRuntime((),root/'extensions',root)
+ extensions.reserve_commands({'help'},skill_commands={'goal'})
+ parent=ParentPort(agent,extensions,SimpleNamespace(),lambda:True,lambda:True)
+ host.owns_parent=lambda selected:selected is parent
+ runtime.attach(parent)
  try:
-  goal=await service.create('Portable','Inspect actual result',('Actual result is present',),
-                            context=OperationContext(True))
-  goal=await service.add_task(goal.id,'Read actual result')
-  goal=await service.assign(goal.id,goal.tasks[0].id,'Inspect and report actual file')
-  await host.wait(goal.tasks[0].attempts[-1].worker)
-  goal=await service.status(goal.id);task=goal.tasks[0];attempt=task.attempts[-1]
-  assert task.state=='submitted' and goal.status!='completed'
-  goal=await service.accept_task(goal.id,task.id,attempt.id,1,report_digest(attempt.reports[-1]),'Inspected')
-  goal=await service.request_complete(goal.id,paths=('result.txt',))
-  await host.wait(goal.review.worker)
-  goal=await service.reconcile(goal.id)
-  assert goal.status=='completed' and len(set(host.agent_ids))==2
-  await service.drain_notifications()
-  assert host.accepted and all(n.status=='accepted' for n in await service.store.notices())
-  view=await service.export_views(goal.id)
-  assert view.joinpath('status.json').is_file()
-  skill=SkillManager(root/'not-created',packaged={'goal':skill_directory()}).load_skill('goal')
-  assert skill is not None and skill.scope=='session' and not (root/'not-created').exists()
-  assert await role_instructions('worker') and await role_instructions('reviewer')
-  assert len(host.model_calls)==5
-  from xdog.agent.extensions.runtime import ExtensionRuntime
-  from xdog.skills.goal.ui_binding import GoalDisplay
-  runtime=ExtensionRuntime(('goal_ui',),root/'not-copied-ui',root,
-                           context=lambda:{'session_id':'goal-only-owner'})
-  display=GoalDisplay(service,runtime.views,valid=lambda:True,notify=runtime.notify_view_changed)
-  try:
-   output=str(await runtime.command('ext-goal_ui-goals',''))
-   assert goal.id in output and 'completed' in output
-   assert len(host.model_calls)==5 and not (root/'not-copied-ui').exists()
-   excluded=('xdog.claw','xdog.coding','xdog.tui','xdog.eyes','xdog.flow','xdog.site')
-   assert not any(n.startswith(excluded) for n in sys.modules)
-  finally:
-   await display.aclose();await runtime.aclose()
-  print(json.dumps({'goal_only_display':'actual packaged worker without installed/imported TUI or harnesses'}))
-  print(json.dumps({'goal_only_lifecycle':'real Agent/Supervisor/tool IO, explicit acceptance/independent review',
-                    'scripted_model_calls':len(host.model_calls),'distinct_agents':len(set(host.agent_ids))}))
+  assert extensions.command_owner('goal')=='goal'
+  await extensions.command('goal','create Goal-only main Agent work')
+  await runtime.flush()
+  service=runtime.service; current=await service.current()
+  report={'expected_version':0,'progress':'baseline','summary':'Installed initial assessment',
+   'completed':[],'evidence':[],'blockers':[],'next_steps':['Inspect actual result']}
+  result=await runtime.tools[0].execute('report',{'action':'report','report':report})
+  assert not result.is_error
+  summary=await service.summary()
+  assert summary['latest_report']['version']==1 and 'plan' not in summary and 'tasks' not in summary
+  child="from pathlib import Path; import sys; from xdog.skills.goal.files import TaskFiles; "
+  child+="r=TaskFiles(Path(sys.argv[1]),sys.argv[2]).latest_report(); assert r['version']==1; "
+  child+="assert r['progress']=='baseline'"
+  subprocess.run([sys.executable,'-c',child,str(root),current.id],check=True)
+  await service.plan('I will perform this task myself')
+  await service.task({'id':'one','title':'Inspect actual output','expected_version':0})
+  task_path=service.files(current).tasks_dir/'one.json'
+  raw=json.loads(task_path.read_text()); raw.update(status='completed',summary='Main inspected',version=2)
+  task_path.write_text(json.dumps(raw))
+  assert (await service.status())['tasks'][0]['status']=='completed'
+  await service.change('complete',summary='Main checked evidence; no reviewer')
+  assert await service.current() is None
+  assert (await service.list())[0].status=='completed'
+  assert extensions.enabled==() and not agent.messages
+  assert not any(n.startswith(blocked) for n in sys.modules)
  finally:
-  await host.close();await service.close()
+  await runtime.aclose();await extensions.aclose();await agent.aclose()
+ print(json.dumps({'goal_only':'default native extension commands, skill, authoritative task files/history',
+  'recovery':'unknown send retained, no model/worker replay','model_calls':0,'child_support_required':False}))
 asyncio.run(main())
-asyncio.run(lifecycle())
 """
 
 
@@ -125,9 +115,6 @@ def main() -> None:
     subprocess.run([uv, "pip", "install", "--python", str(python), *wheels], cwd=root, env=environment, check=True)
     work = root / "work"
     work.mkdir(mode=0o700)
-    # This copies the external consuming host, never Goal runtime source.
-    consumer_host = Path(__file__).parents[1] / "packages/skills/tests/goal/agent_host.py"
-    (work / "agent_host.py").write_text(consumer_host.read_text())
     probe = work / "consumer.py"
     probe.write_text(PROBE)
     subprocess.run(
@@ -136,7 +123,7 @@ def main() -> None:
         cwd=work, env=environment, check=True, timeout=10,
     )
     subprocess.run([str(python), str(probe)], cwd=work, env=environment, check=True, timeout=30)
-    result = {"root": str(root), "distribution": str(dist), "environment": str(target), "kernel_only": False}
+    result = {"root": str(root), "distribution": str(dist), "environment": str(target), "kernel_only": True}
     (root / "verification.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result, indent=2))
 

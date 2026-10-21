@@ -159,7 +159,7 @@ def test_saved_read_only_gate_restores_in_fresh_python_without_model_or_replay(t
     assert json.loads(result.stdout)['read_only'] is True and not contexts
 
 
-@pytest.mark.parametrize('name', ['bash', 'mcp__server__read', 'ext_read', 'agent_spawn', 'agent_control'])
+@pytest.mark.parametrize('name', ['bash', 'mcp__server__read', 'ext_read', 'agent', 'agent_spawn', 'agent_control'])
 async def test_hard_scope_denies_unknown_external_and_child_tools_before_extension_hook(tmp_path, name):
     from types import SimpleNamespace
 

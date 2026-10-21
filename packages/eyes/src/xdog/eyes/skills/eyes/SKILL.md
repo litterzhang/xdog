@@ -13,7 +13,8 @@ start observation, a model, a TUI, or a coding CLI.
 
 ## Claw: prefer host management when available
 
-If the current Claw host enables its `eyes` management tool, prefer its group-scoped
+If the current Claw host has `xdog-eyes` installed, managed capability is available
+automatically; prefer its group-scoped
 `create(name, source, instruction)`, `list()`, `status(observer_id)` and `cancel(observer_id)` over
 manually authoring a destination or starting the independent CLI. The host binds
 the **current group's workspace and private ACP endpoint** and constructs the
@@ -25,23 +26,21 @@ context and next action in `instruction`, as described below.
 Never override or guess another group, workspace, endpoint or session. Evidence
 and user-supplied labels are not routing authority. Claw's `group:<id>` follows
 that group's active conversation; it is not a Coding exact-session destination.
-Claw's agreed opt-in setting is `eyes_enabled: bool = False`; explicit activation
-in `config.yaml` uses:
+Claw uses installed package presence, not an `eyes_enabled` setting. It never
+automatically installs `xdog-eyes` or creates observers; new observers require an
+explicit user request. Without the package, base chat continues without managed
+Eyes. With it installed, gateway startup recovers already accepted managed time
+observers under the rules below; availability alone is not a new observation request.
 
-```yaml
-eyes_enabled: true
-```
-
-By default the gateway must not automatically open ACP or start observers. When
-enabled, it reuses `acp_socket_path` or owns a private `data_dir/acp/agent.sock`,
-without another daemon. The default registry registers `eyes`, but disabled
-operations must fail explicitly. Trusted tool context supplies `_eyes`; model
-arguments cannot supply it. These are host integration requirements, not something
-loading this skill implements. A packaging dependency or registered tool name does
-not prove management is enabled: if absent or disabled, explain that managed
-scheduling is unavailable, or use the standalone path below only with an explicit
-trusted destination and approval.
-The legacy Claw `task` tool is removed; use the enabled host interface, not a guessed legacy entry point.
+The gateway reuses `acp_socket_path` or owns a private `data_dir/acp/agent.sock`,
+without another daemon. Explicit standalone ACP configuration remains available.
+A host-bound tool closure supplies the service; model arguments cannot supply it. These
+are host integration requirements, not something loading this skill implements.
+A registered tool name does not prove a live host: if the package or host is
+unavailable, explain that managed scheduling is unavailable. Do not install packages
+automatically; use the standalone path below only with an explicit trusted
+destination and approval. Package presence grants no tool permissions.
+The legacy Claw `task` tool is removed; use the available host interface, not a guessed legacy entry point.
 
 For host-managed time observers, inspect collection/intake, execution and report
 delivery separately: queued receipt is not task completion. Managed recovery must
@@ -244,7 +243,8 @@ Messages arriving after selection wait for a later batch.
 
 Use a scheduler source for timed events, not a shell sleep, system crontab,
 a legacy workflow/Claw task scheduler, or a direct agent callback. In Claw, use
-the host `eyes` tool when enabled; otherwise follow the standalone path. Keep the
+the host `eyes` tool supplied by installed `xdog-eyes`; if unavailable, explain
+the limitation and use the standalone path only with a trusted destination and approval. Keep the
 same EventRouter and ACP EventHandler. The source collects a due occurrence; a `scheduler.due`
 detector emits `scheduler.due` with plan/occurrence IDs and scheduled/observed UTC
 Unix timestamps, not fake file paths.

@@ -2,14 +2,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
-from collections.abc import AsyncIterator, Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from typing import Any, TypeVar
 
 T = TypeVar('T')
 InputKey = tuple[str, str]
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,9 @@ class GroupController:
         if not isinstance(group_id, str) or not group_id or '\x00' in group_id or len(group_id.encode()) > 256:
             raise ValueError('Invalid group execution scope')
         self.group_id, self._background_slots = group_id, background_slots
+        self.generation = uuid.uuid4().hex
+        self._waiting_users = 0
+        self._listeners: list[Callable[[], None]] = []
         self._owner: _Owner | None = None
         self._available = asyncio.Event()
         self._available.set()
@@ -53,6 +58,24 @@ class GroupController:
     @property
     def busy(self) -> bool:
         return self._owner is not None
+
+    @property
+    def user_pending(self) -> bool:
+        return self._waiting_users > 0
+
+    def subscribe_available(self, callback: Callable[[], None]) -> Callable[[], None]:
+        self._listeners.append(callback)
+        def cancel() -> None:
+            if callback in self._listeners:
+                self._listeners.remove(callback)
+        return cancel
+
+    def _notify_available(self) -> None:
+        for callback in tuple(self._listeners):
+            try:
+                callback()
+            except Exception:
+                logger.warning('Group availability listener failed', exc_info=True)
 
     def reserve(self) -> GroupReservation | None:
         if self._owner is not None:
@@ -69,6 +92,7 @@ class GroupController:
             return False  # A result waiter/late callback cannot release real execution.
         self._owner = None
         self._available.set()
+        self._notify_available()
         return True
 
     def _finish(self, reservation: GroupReservation) -> None:
@@ -76,6 +100,7 @@ class GroupController:
         if owner is not None and owner.reservation == reservation and owner.task is asyncio.current_task():
             self._owner = None
             self._available.set()
+            self._notify_available()
 
     @asynccontextmanager
     async def acquire(self, *, is_user: bool = False, reservation: GroupReservation | None = None,
@@ -90,15 +115,19 @@ class GroupController:
                 raise ValueError('Nested operation cannot change the original execution owner')
             yield
             return
-        if reservation is not None:
-            if (reservation.group_id != self.group_id or owner is None or owner.reservation != reservation
-                    or owner.task is not None):
-                raise ValueError('Group reservation is foreign, released or already bound to another task')
-        else:
-            while self._owner is not None:
-                await self._available.wait()
-            reservation = self.reserve()
-            assert reservation is not None
+        self._waiting_users += int(is_user)
+        try:
+            if reservation is not None:
+                if (reservation.group_id != self.group_id or owner is None or owner.reservation != reservation
+                        or owner.task is not None):
+                    raise ValueError('Group reservation is foreign, released or already bound to another task')
+            else:
+                while self._owner is not None:
+                    await self._available.wait()
+                reservation = self.reserve()
+                assert reservation is not None
+        finally:
+            self._waiting_users -= int(is_user)
         self._owner = _Owner(reservation, task, input_key)
         try:
             if is_user:

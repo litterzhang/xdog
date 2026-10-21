@@ -69,7 +69,7 @@ async def app(root, stream, reject):
     config = ClawConfig(
         data_dir=str(root / "data"), socket_path=str(root / "gateway.sock"), pid_file=str(root / "gateway.pid"),
         weixin_enabled=True, weixin_account_id="account", weixin_token="fixture-only",
-        weixin_base_url="https://example.invalid", eyes_enabled=False,
+        weixin_base_url="https://example.invalid",
         groups=(GroupDef(id="main", workspace=str(root), is_main=True),),
     )
     server, api = GatewayServer(config), API(reject)
@@ -123,7 +123,7 @@ async def main():
             json.dumps(
                 {
                     "installed_output": (
-                        "real Gateway startup, Eyes disabled, same output ID, original peer/context, "
+                        "real Gateway startup, Eyes absent, same output ID, original peer/context, "
                         "no manual resume/model replay"
                     ),
                     "model_calls": len(calls),

@@ -289,6 +289,10 @@ def _convert_tools(tools: tuple[Tool, ...]) -> list[dict[str, Any]]:
             "type": "function",
             "name": tool.name,
             "description": tool.description or "",
+            # Responses otherwise normalizes eligible schemas into strict mode,
+            # making optional action fields mandatory. Preserve the host schema;
+            # argument and authority checks remain owned by the actual tool.
+            "strict": False,
             "parameters": tool.parameters if tool.parameters else {"type": "object", "properties": {}},
         }
         for tool in tools

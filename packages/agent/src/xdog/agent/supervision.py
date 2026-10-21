@@ -64,7 +64,8 @@ from xdog.ai.types import (
 from xdog.ai.utils.event_stream import EventStream
 
 T = TypeVar("T")
-RESERVED_TOOLS = frozenset({"agent_spawn", "agent_control", "update_plan"})
+# Retired names stay reserved: historical configuration must not grant delegation.
+RESERVED_TOOLS = frozenset({"agent", "agent_spawn", "agent_control", "update_plan"})
 MAX_TRANSCRIPT_BYTES = 512 * 1024
 
 
@@ -1259,35 +1260,49 @@ class ChildSupervisor:
         self._close_future.add_done_callback(done)
 
     def tools(self) -> tuple[AgentTool, ...]:
-        async def spawn(call_id: str, args: dict[str, Any], *extra: Any, **kwargs: Any) -> AgentToolResult:
-            if set(args) - {"task", "access", "inherit_context", "config"}:
-                raise ValueError("Unknown child spawn arguments")
-            identifier = await self.start(args["task"], access=args.get("access", "read-only"),
-                                          inherit_context=args.get("inherit_context", True),
-                                          config=args.get("config"))
-            return AgentToolResult(content=(TextContent(text=identifier),))
-        def validate_control(args: dict[str, Any]) -> None:
-            # The generic lightweight schema checker tolerates extra keys. Enforce
-            # this authority-sensitive tool's exact shape before the host hook too.
-            if (set(args) - {"action", "id", "text"} or not isinstance(args.get("action"), str)
-                    or args["action"] not in {"list", "presets", "inspect", "steer", "follow-up",
-                                              "cancel", "wait", "close", "queue"}
+        control_actions = {"list", "presets", "inspect", "steer", "follow-up", "cancel", "wait", "close", "queue"}
+
+        def validate(args: dict[str, Any]) -> None:
+            # Schema validation is intentionally supplemented here: branch-specific
+            # fields must be fenced before host hooks, even on direct tool calls.
+            if not isinstance(args, dict) or not isinstance(args.get("action"), str):
+                raise ValueError("Invalid child agent tool action")
+            operation = args["action"]
+            if operation == "spawn":
+                if (set(args) - {"action", "task", "access", "inherit_context", "config"}
+                        or not isinstance(args.get("task"), str) or not args["task"].strip()
+                        or len(args["task"].encode("utf-8")) > 16000
+                        or not isinstance(args.get("access", "read-only"), str)
+                        or args.get("access", "read-only") not in {"read-only", "inherit"}
+                        or type(args.get("inherit_context", True)) is not bool):
+                    raise ValueError("Invalid child spawn arguments; no caller-supplied owner")
+                if args.get("config") is not None:
+                    ChildConfig.from_dict(args["config"])
+            elif (operation not in control_actions or set(args) - {"action", "id", "text"}
                     or "text" in args and not isinstance(args["text"], str)
                     or "id" in args and (not isinstance(args["id"], str) or not args["id"])
-                    or args["action"] not in {"list", "presets"} and (
+                    or operation not in {"list", "presets"} and (
                         not isinstance(args.get("id"), str) or not args["id"])):
                 raise ValueError("Invalid child control tool arguments; no caller-supplied owner")
-        async def action(call_id: str, args: dict[str, Any], cancel: asyncio.Event | None = None,
-                         *extra: Any, **kwargs: Any) -> AgentToolResult:
-            validate_control(args)
+
+        async def execute(call_id: str, args: dict[str, Any], cancel: asyncio.Event | None = None,
+                          *extra: Any, **kwargs: Any) -> AgentToolResult:
+            validate(args)
             with self._start_lock:
                 owner = self._tool_return_owner
+
             def alive() -> bool:
                 with self._start_lock:
                     return (not self._closed and self._tool_return_owner == owner
                             and (cancel is None or not cancel.is_set()))
+
             if not alive():
                 raise ValueError("Main-Agent child control owner canceled/closed")
+            if args["action"] == "spawn":
+                identifier = await self.start(args["task"], access=args.get("access", "read-only"),
+                                              inherit_context=args.get("inherit_context", True),
+                                              config=args.get("config"))
+                return AgentToolResult(content=(TextContent(text=identifier),))
             if args["action"] == "list":
                 result = self.snapshot()
             elif args["action"] == "presets":
@@ -1295,8 +1310,7 @@ class ChildSupervisor:
             else:
                 result = await self.control(args["action"], args["id"], args.get("text", ""),
                                             return_owner=owner, return_alive=alive)
-            # Prepared bytes already passed settled validation on the supervisor loop.
-            # Keep binary content typed, not base64 disguised as model-visible prose.
+            # Keep image recovery typed and tied to the original return owner.
             images: tuple[ImageContent, ...] = ()
             if isinstance(result, dict) and "image_recovery" in result:
                 payload = result["image_recovery"]
@@ -1304,37 +1318,33 @@ class ChildSupervisor:
                                for row in payload["images"])
                 result = {**result, "image_recovery": {"receipt": payload["receipt"], "image_count": len(images)}}
             return AgentToolResult(content=(TextContent(text=json.dumps(result)), *images))
-        return (
-            AgentTool(name="agent_spawn", description="Start a session-owned child; default read-only.",
-                      parameters={"type": "object", "required": ["task"], "additionalProperties": False,
-                                  "properties": {"task": {"type": "string"},
-                                                 "access": {"enum": ["read-only", "inherit"]},
-                                                 "inherit_context": {"type": "boolean"},
-                                                 "config": {"type": "object", "additionalProperties": False,
-                                                     "properties": {
-                                                         "preset": {"type": ["string", "null"], "maxLength": 64},
-                                                         "model": {"type": ["string", "null"], "maxLength": 256},
-                                                         "thinking": {"enum": [None, "off", "minimal", "low", "medium",
-                                                                                "high", "xhigh"]},
-                                                         "label": {"type": "string", "maxLength": 120},
-                                                         "instructions": {"type": "string", "maxLength": 16000},
-                                                         "tools": {"type": ["array", "null"], "maxItems": 128,
-                                                                   "items": {"type": "string"}, "uniqueItems": True},
-                                                         "inherit_context": {"type": "boolean"}}}}},
-                      execute=spawn),
-            AgentTool(name="agent_control", description=(
-                                   "List/inspect/steer/cancel/wait/close or control this session's child queues. "
-                                   "Queue controls use text JSON: list, edit/remove/move/return, stopped recovery, "
-                                   "or return_prepare/return_commit/return_cancel for live queued images. "
-                                   "Prepare requires id/revision and returns typed images plus return_token and "
-                                   "image_receipt; commit requires that exact id/revision/token/receipt. "
-                                   "Prepare does not remove input; cancellation, changed selection/owner or expiry "
-                                   "refuses commit. Never automatically replay an uncertain mutation. "
-                                   "Ownership is supplied by the supervisor, never by tool arguments."),
-                      parameters={"type": "object", "required": ["action"], "additionalProperties": False,
-                                  "properties": {
-                                      "action": {"enum": ["list", "presets", "inspect", "steer", "follow-up",
-                                                          "cancel", "wait", "close", "queue"]},
-                                      "id": {"type": "string"}, "text": {"type": "string"}}},
-                      validate_arguments=validate_control, execute=action),
-        )
+
+        return (AgentTool(
+            name="agent",
+            description=(
+                "Manage this session's child Agents. action=spawn requires task, defaults to read-only, "
+                "and optionally accepts access/inherit_context/config. Other actions use id/text: "
+                "list/presets/inspect/steer/follow-up/cancel/wait/close/queue. "
+                "Queue controls use text JSON: list, edit/remove/move/return, stopped recovery, "
+                "or return_prepare/return_commit/return_cancel for live queued images. "
+                "Prepare requires id/revision and returns typed images plus return_token and image_receipt; "
+                "commit requires that exact id/revision/token/receipt. Prepare does not remove input. "
+                "Cancellation, changed selection/owner or expiry refuses commit. Never automatically "
+                "replay an uncertain mutation. Ownership is host-bound, never supplied in tool arguments."),
+            parameters={"type": "object", "required": ["action"], "additionalProperties": False,
+                        "properties": {
+                            "action": {"enum": ["spawn", "list", "presets", "inspect", "steer", "follow-up",
+                                                "cancel", "wait", "close", "queue"]},
+                            "task": {"type": "string"}, "access": {"enum": ["read-only", "inherit"]},
+                            "inherit_context": {"type": "boolean"},
+                            "config": {"type": "object", "additionalProperties": False, "properties": {
+                                "preset": {"type": ["string", "null"], "maxLength": 64},
+                                "model": {"type": ["string", "null"], "maxLength": 256},
+                                "thinking": {"enum": [None, "off", "minimal", "low", "medium", "high", "xhigh"]},
+                                "label": {"type": "string", "maxLength": 120},
+                                "instructions": {"type": "string", "maxLength": 16000},
+                                "tools": {"type": ["array", "null"], "maxItems": 128,
+                                          "items": {"type": "string"}, "uniqueItems": True},
+                                "inherit_context": {"type": "boolean"}}},
+                            "id": {"type": "string"}, "text": {"type": "string"}}},
+            validate_arguments=validate, execute=execute),)

@@ -22,7 +22,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from xdog.agent import AgentConfig
-from xdog.agent.async_work import run_owned, wait_owned
+from xdog.agent.async_work import run_owned, settle_cleanup, wait_owned
+from xdog.agent.capabilities import CapabilitySet
 from xdog.agent.mcp.completion import McpCompletion
 from xdog.agent.mcp.context import McpDocument, McpEntry
 from xdog.agent.supervision_config import ChildConfig
@@ -44,7 +45,6 @@ if TYPE_CHECKING:
     from xdog.claw.acp.server import ClawAcpServer
     from xdog.claw.channels.base import Channel
     from xdog.claw.core.inputs.store import InputRecord
-    from xdog.claw.core.observers.manager import ManagedObservers
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +158,7 @@ class GatewayServer:
         self._native_inputs: NativeInputReceipts | None = None
         self._input_unsubscribe: Callable[[], None] | None = None
         self._input_notices: set[asyncio.Task[None]] = set()
-        self._observers: ManagedObservers | None = None
+        self._application_capabilities: CapabilitySet | None = None
         self._client_tasks: set[asyncio.Task[Any]] = set()
         self._client_counter = 0
         self._shutdown_event = asyncio.Event()
@@ -166,12 +166,18 @@ class GatewayServer:
 
     async def start(self) -> None:
         """Start the gateway: orchestrator + socket server."""
-        # Diagnose explicitly requested optional features before opening services.
-        if self._config.eyes_enabled and find_spec("xdog.eyes") is None:
-            raise RuntimeError("Eyes requires the optional package: install xdog-claw[eyes]")
-        if (self._config.acp_socket_path or self._config.eyes_enabled) and find_spec("acp") is None:
-            feature = "eyes" if self._config.eyes_enabled else "acp"
-            raise RuntimeError(f"ACP transport requires the optional SDK: install xdog-claw[{feature}]")
+        # Installed providers declare generic host requirements before services open.
+        capabilities = CapabilitySet("application")
+        group_capabilities = CapabilitySet("group")
+        requirements = capabilities.requirements | group_capabilities.requirements
+        optional = capabilities.optional_requirements | group_capabilities.optional_requirements
+        unsupported = requirements - {"acp"}
+        if unsupported:
+            raise RuntimeError("Unsupported installed capability requirements: " + ", ".join(sorted(unsupported)))
+        acp_required = bool(self._config.acp_socket_path or "acp" in requirements)
+        acp_available = find_spec("acp") is not None if acp_required or "acp" in optional else False
+        if acp_required and not acp_available:
+            raise RuntimeError("ACP transport requires the optional SDK: install xdog-claw[acp]")
         logger.info("Starting claw gateway...")
         if self._stop_task is not None:
             if not self._stop_task.done():
@@ -192,6 +198,7 @@ class GatewayServer:
                 await wait_owned(asyncio.create_task(orphan.stop()))
             raise
         self._orchestrator = built.application
+        self._application_capabilities = self._orchestrator.application_capabilities
         if built.error is not None:
             await wait_owned(asyncio.create_task(self._orchestrator.stop()))
             raise built.error
@@ -231,7 +238,7 @@ class GatewayServer:
                         await channel.disconnect()
                         self._orchestrator._channels.remove(channel)
                     logger.exception("Failed to connect WeChat channel — gateway continues without it")
-            if self._config.acp_socket_path or self._config.eyes_enabled:
+            if acp_required or ("acp" in optional and acp_available):
                 from xdog.claw.acp.server import ClawAcpServer
                 endpoint = (Path(self._config.acp_socket_path) if self._config.acp_socket_path else
                             data_dir / 'acp' / 'agent.sock')
@@ -239,20 +246,18 @@ class GatewayServer:
                                              self._orchestrator,
                                              endpoint,
                                          )
-            if self._config.eyes_enabled:
-                from xdog.claw.core.observers.manager import ManagedObservers
-                assert self._acp_server is not None
-                self._observers = ManagedObservers(self._orchestrator, self._acp_server.path)
-                self._orchestrator.set_observers(self._observers)
-                await self._observers.start()
-        except BaseException:
-            if self._observers is not None:
-                await self._observers.close()
-                self._observers = None
-            if self._acp_server is not None:
-                await self._acp_server.close()
-                self._acp_server = None
-            await self._orchestrator.stop()
+            if self._application_capabilities.providers:
+                from xdog.claw.core.runtime.application_ports import ApplicationPorts
+                service_endpoint = self._acp_server.path if self._acp_server is not None else None
+                await self._application_capabilities.start(ApplicationPorts(self._orchestrator, service_endpoint))
+                await self._orchestrator.refresh_application_capabilities()
+            # Bootstrap holds accepted inputs until optional source policies are ready.
+            inputs.resume()
+        except BaseException as error:
+            try:
+                await self.stop()
+            except BaseException as cleanup:
+                raise BaseExceptionGroup("Gateway startup and cleanup failed", [error, cleanup]) from None
             raise
 
         try:
@@ -2455,47 +2460,46 @@ class GatewayServer:
             notice.cancel()
         await asyncio.gather(*tuple(self._input_notices), return_exceptions=True)
         logger.info("Shutting down gateway...")
-
-        # Stop producers before their shared ACP inbox/consumer resources.
-        if self._observers is not None:
-            await self._observers.close()
-            self._observers = None
-        # Stop accepting first, but do not await server closure before retiring
-        # peers: server.wait_closed() can wait for their live transports too.
         server = self._server
         if server is not None:
             server.close()
 
-        # Stop ACP intake and settle its sole group workers before closing runtimes.
-        if self._acp_server is not None:
-            await self._acp_server.close()
-            self._acp_server = None
+        async def capabilities() -> None:
+            if self._application_capabilities is not None:
+                await self._application_capabilities.aclose()
 
-        # Cancel handlers while their cleanup still owns and can close writers.
-        # Late accept callbacks see _shutdown_event and close without spawning work.
-        while self._client_tasks:
-            clients = tuple(self._client_tasks)
-            for task in clients:
-                task.cancel()
-            await asyncio.gather(*clients, return_exceptions=True)
-            self._client_tasks.difference_update(clients)
-        if server is not None:
-            await server.wait_closed()
+        async def ingress() -> None:
+            if self._acp_server is not None:
+                await self._acp_server.close()
+                self._acp_server = None
 
-        if self._orchestrator:
-            await self._orchestrator.stop()
-            # Tool-context mutation is safe only after real execution settled.
-            self._orchestrator.set_observers(None)
+        async def clients() -> None:
+            # Retire peers before server.wait_closed, which can await transports.
+            while self._client_tasks:
+                pending = tuple(self._client_tasks)
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                self._client_tasks.difference_update(pending)
+            if server is not None:
+                await server.wait_closed()
 
-        # Only the inode acquired by this startup may be removed. A rejected
-        # pre-existing user file or a replacement endpoint is never ours.
-        if self._bound_endpoint is not None:
-            from xdog.claw.core.runtime.unix_endpoint import close
-            endpoint, self._bound_endpoint = self._bound_endpoint, None
-            await run_owned(close, endpoint)
+        async def application() -> None:
+            if self._orchestrator is not None:
+                await self._orchestrator.stop()
 
-        await run_owned(self._remove_pid)
+        async def endpoint() -> None:
+            # Remove only the inode acquired by this startup, never a replacement.
+            if self._bound_endpoint is not None:
+                from xdog.claw.core.runtime.unix_endpoint import close
+                owned, self._bound_endpoint = self._bound_endpoint, None
+                await run_owned(close, owned)
 
+        async def pid() -> None:
+            await run_owned(self._remove_pid)
+
+        await settle_cleanup(capabilities, ingress, clients, application, endpoint, pid,
+                             message="Gateway resource cleanup failed")
         logger.info("Gateway stopped.")
 
     async def run_forever(self) -> None:

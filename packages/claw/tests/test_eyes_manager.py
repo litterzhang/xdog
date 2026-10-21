@@ -13,12 +13,14 @@ from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.acp.server import ClawAcpServer
 from xdog.claw.config import ClawConfig
 from xdog.claw.core.inputs.models import InputScope
-from xdog.claw.core.observers.manager import ManagedObservers
+from xdog.claw.core.outputs.targets import encode_reply
+from xdog.claw.core.runtime.application_ports import ApplicationPorts
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.types import Group, GroupConfig
+from xdog.eyes.hosting.manager import ManagedObservers
 from xdog.eyes.managed_scheduler import SchedulerClocks
 
-from packages.claw.tests.eyes_helpers import ReportSink, report_reference
+from packages.claw.tests.eyes_helpers import ReportSink, bind_application, report_reference, resume_application
 
 
 async def eventually(check):
@@ -29,8 +31,9 @@ async def eventually(check):
 
 async def create(service, group, *args, **kwargs):
     if 'reply' not in kwargs:
-        channel = service.orchestrator._channels[0]
-        kwargs['reply'] = report_reference(service.orchestrator, channel, group)
+        channel = service.host._application._channels[0]
+        kwargs['reply'] = report_reference(service.host._application, channel, group)
+    kwargs['reply'] = encode_reply(kwargs['reply'])
     return await service.create(group, *args, **kwargs)
 
 
@@ -55,8 +58,8 @@ async def managed(tmp_path):
     async def sleep(seconds):
         await asyncio.sleep(.005)
 
-    config = ClawConfig(data_dir=str(tmp_path / 'data'), enabled_tools=('eyes',), eyes_enabled=True)
-    orch = Orchestrator(config, model='test/managed', stream_fn=model)
+    config = ClawConfig(data_dir=str(tmp_path / 'data'), enabled_tools=('eyes',))
+    orch = Orchestrator(config, model='test/managed', stream_fn=model, defer_inputs=True)
     for group in ('main', 'other'):
         orch.register_group(Group(id=group, workspace=str(tmp_path), enabled_tools=('eyes',),
                                   config=GroupConfig()))
@@ -68,10 +71,11 @@ async def managed(tmp_path):
                            orch,
                            Path(short) / 'acp.sock',
                        )
-        service = ManagedObservers(orch, server.path,
+        service = ManagedObservers(ApplicationPorts(orch, server.path),
             clocks=SchedulerClocks(lambda: clock[0], lambda: clock[0], sleep))
-        orch.set_observers(service)
+        bind_application(orch, service)
         await service.start()
+        await resume_application(orch)
         try:
             yield service, orch, server, clock, calls, channel, gate, entered
         finally:

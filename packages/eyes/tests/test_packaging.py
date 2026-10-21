@@ -17,7 +17,7 @@ def test_eyes_and_flow_use_default_builtin_discovery_without_copying_or_starting
     shared, project = tmp_path / 'user-skills', tmp_path / 'project-skills'
     manager = SkillManager(shared, project)
     listed = {skill.slug: skill for skill in manager.list_skills()}
-    for slug in ('eyes', 'flow-workflows'):
+    for slug in ('eyes', 'flow'):
         assert listed[slug].packaged and not listed[slug].content  # Progressive disclosure, not eager activation.
         loaded = manager.load_skill(slug)
         assert loaded is not None and loaded.packaged and loaded.content

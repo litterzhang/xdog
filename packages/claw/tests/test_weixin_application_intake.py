@@ -47,9 +47,10 @@ def text(index, sender, body, *, client_id=""):
     )
 
 
-async def application(tmp_path, model, *, eyes_enabled=False, enabled_tools=()):
+async def application(tmp_path, model, *, defer_inputs=False, enabled_tools=()):
     orch = Orchestrator(
-        ClawConfig(data_dir=str(tmp_path / "data"), eyes_enabled=eyes_enabled), model="test/dummy", stream_fn=model
+        ClawConfig(data_dir=str(tmp_path / "data")), model="test/dummy", stream_fn=model,
+        defer_inputs=defer_inputs,
     )
     orch.register_group(Group(id="main", workspace=str(tmp_path), enabled_tools=enabled_tools))
     channel = WeixinChannel(tmp_path / "channel", "account", "https://example.invalid", "")
@@ -105,10 +106,10 @@ async def test_poll_accepts_while_agent_is_busy_and_replies_use_original_peer(tm
 
 
 async def test_accepted_messages_survive_receiver_disappearance_and_application_restart(tmp_path):
-    # Eyes readiness pauses execution, not acceptance. It is an existing real
+    # Host readiness pauses execution, not acceptance. It is an existing real
     # application startup barrier; no second test-only consumer is installed.
     model = ScriptedModel()
-    orch, channel, api = await application(tmp_path, model, eyes_enabled=True)
+    orch, channel, api = await application(tmp_path, model, defer_inputs=True)
     api.updates.put_nowait(GetUpdatesResp(msgs=(text(7, "original", "recover"),), get_updates_buf="accepted"))
     await channel.connect()
     try:
@@ -139,7 +140,7 @@ async def test_unsafe_intake_cannot_advance_upstream_cursor(tmp_path, monkeypatc
 
     monkeypatch.setattr(monitor, "RETRY_DELAY_S", 0.001)
     model = ScriptedModel()
-    orch, channel, api = await application(tmp_path, model, eyes_enabled=True)
+    orch, channel, api = await application(tmp_path, model, defer_inputs=True)
     original = text(10, "alice", "original")
     if change == "missing_identity":
         offered = replace(original, message_id=0)
@@ -168,7 +169,7 @@ async def test_unsafe_intake_cannot_advance_upstream_cursor(tmp_path, monkeypatc
 
 async def test_client_identity_is_stable_and_namespaced_by_sender_and_account(tmp_path):
     model = ScriptedModel()
-    orch, channel, api = await application(tmp_path, model, eyes_enabled=True)
+    orch, channel, api = await application(tmp_path, model, defer_inputs=True)
     try:
         first = text(0, "alice", "first", client_id="upstream-client")
         await channel._accept_inbound(first)
@@ -222,7 +223,7 @@ async def test_full_core_capacity_blocks_cursor_without_losing_first_message(tmp
 
     monkeypatch.setattr(monitor, "RETRY_DELAY_S", 0.001)
     model = ScriptedModel()
-    orch, channel, api = await application(tmp_path, model, eyes_enabled=True)
+    orch, channel, api = await application(tmp_path, model, defer_inputs=True)
     runtime = orch._runtimes["main"]
     runtime.group = replace(runtime.group, config=GroupConfig(max_queued_messages=1))
     await channel._accept_inbound(text(1, "alice", "accepted"))

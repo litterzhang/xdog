@@ -126,7 +126,10 @@ def test_onboard_default_tool_selection_does_not_enable_images(runtime, tmp_path
     result = CliRunner().invoke(cli, ["onboard"], input="n\n1\n\nClaw\n")
     assert result.exit_code == 0, result.output
     config = load_config(tmp_path / "config.yaml")
-    assert config.enabled_tools == default_enabled_tools()
+    from xdog.agent.capabilities import CapabilitySet
+
+    capabilities = CapabilitySet("group").declared_tools | CapabilitySet("application").declared_tools
+    assert config.enabled_tools == tuple(sorted(set(default_enabled_tools()) | capabilities))
     assert "generate_image" not in config.enabled_tools
     assert config.image_model == ""
 
@@ -147,8 +150,11 @@ def test_onboard_all_tools_and_numeric_selection(runtime, tmp_path):
     runtime.sync_models.return_value = (_model("chat"), replace(_model("image"), output=("image",)))
     result = CliRunner().invoke(cli, ["onboard"], input="n\n1\nall\n1\nClaw\n")
     assert result.exit_code == 0, result.output
-    assert set(load_config(tmp_path / "config.yaml").enabled_tools) == registered_names()
-    names = sorted(registered_names())
+    from xdog.agent.capabilities import CapabilitySet
+
+    capabilities = CapabilitySet("group").declared_tools | CapabilitySet("application").declared_tools
+    names = sorted(registered_names() | capabilities)
+    assert set(load_config(tmp_path / "config.yaml").enabled_tools) == set(names)
     selected = names.index("filesystem") + 1
     result = CliRunner().invoke(cli, ["onboard"], input=f"n\n1\n{selected}\nClaw\n")
     assert result.exit_code == 0, result.output
@@ -185,3 +191,44 @@ def test_onboard_abort_before_image_choice_does_not_write_config(runtime, tmp_pa
     result = CliRunner().invoke(cli, ["onboard"], input="n\n1\ngenerate_image\n")
     assert result.exit_code != 0
     assert not (tmp_path / "config.yaml").exists()
+
+
+@pytest.mark.parametrize("selection", ["", "custom_watch,custom_work", "all"])
+def test_onboard_installed_capability_catalog_is_inert(runtime, tmp_path, monkeypatch, selection):
+    from types import SimpleNamespace
+
+    from xdog.agent.capabilities import runtime as capabilities
+
+    opened = AsyncMock(side_effect=AssertionError("onboarding must not open capabilities"))
+    monkeypatch.setattr(
+        capabilities, "discover",
+        lambda scope: (SimpleNamespace(
+            tool_names=("custom_watch" if scope == "application" else "custom_work",),
+            open=opened,
+        ),),
+    )
+    runtime.sync_models.return_value = (_model("chat"), replace(_model("image"), output=("image",)))
+    image_selection = "1\n" if selection == "all" else ""
+    result = CliRunner().invoke(cli, ["onboard"], input=f"n\n1\n{selection}\n{image_selection}Claw\n")
+    assert result.exit_code == 0, result.output
+    config = load_config(tmp_path / "config.yaml")
+    assert {"custom_watch", "custom_work"} <= set(config.enabled_tools)
+    assert "custom_watch" in result.output and "custom_work" in result.output
+    opened.assert_not_called()
+    assert not (tmp_path / "observers").exists()
+    assert not list(tmp_path.rglob("*.sqlite3"))
+
+
+def test_onboard_installed_capabilities_preserve_explicit_allowlist(runtime, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from xdog.agent.capabilities import runtime as capabilities
+
+    monkeypatch.setattr(capabilities, "discover", lambda scope: (SimpleNamespace(tool_names=("custom_watch",)),))
+    runtime.sync_models.return_value = (_model("chat"),)
+    path = tmp_path / "config.yaml"
+    save_config(ClawConfig(model="copilot/chat", enabled_tools=("filesystem",)), path)
+    result = CliRunner().invoke(cli, ["onboard"], input="n\n\n\nClaw\n")
+    assert result.exit_code == 0, result.output
+    assert load_config(path).enabled_tools == ("filesystem",)
+    assert "[ ] custom_watch" in result.output

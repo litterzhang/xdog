@@ -1,264 +1,162 @@
-"""Group lifetime and original actual execution survive conversation rotation."""
-
+"""Stable group records, original-parent fences and actual shutdown; no old role replay."""
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import threading
+from pathlib import Path
 
 import pytest
-from xdog.claw.core.inputs.models import InputScope
+from xdog.claw.config import ClawConfig
+from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.types import Group
 from xdog.skills.goal.host import OperationContext
-from xdog.skills.goal.models import report_digest
+from xdog.skills.goal.store import GoalStore
 
-from packages.claw.tests.test_goal_host import activate, application, submitted
+from packages.claw.tests.test_goal_host import Model, activate, application, planned
 
 
-async def test_idle_rotation_preserves_group_goal_and_original_terminal_child_without_replay(tmp_path):
+async def test_idle_rotation_preserves_same_group_goal_and_task_files_without_work_replay(tmp_path):
     async with application(tmp_path) as (app, runtime, model):
         await activate(app)
-        host = runtime.goal_host
-        original_owner = host.owner
-        old_session = runtime._active_session
-        goal = await submitted(host, old_session)
-        task = goal.tasks[0]
-        attempt = task.attempts[-1]
-        count = len([role for role, _ in model.calls if role != "parent"])
+        host = runtime.capabilities.get('goal')
+        goal = await planned(host)
+        old, owner = runtime._active_session, host.owner
         runtime.reset_session()
         await activate(app)
-        assert runtime._active_session is not old_session
-        assert runtime.goal_host is host and host.owner == original_owner
-        assert (await host.child_status(attempt.worker)).state == "succeeded"
-        goal = await host.service.accept_task(
-            goal.id, task.id, attempt.id, 1, report_digest(attempt.reports[-1]), "Read saved report"
-        )
-        assert goal.tasks[0].state == "accepted"
-        assert len([role for role, _ in model.calls if role != "parent"]) == count
+        assert runtime._active_session is not old and runtime.capabilities.get('goal') is host and host.owner == owner
+        assert (await host.service.current()).id == goal.id
+        assert (await host.service.status())['tasks'][0]['worker'] == 'main'
+        assert not runtime._active_session.children.supervisor._children
+        assert all(not {'task_report', 'goal_context'}.intersection(t.name for t in c.tools) for _, c in model.calls)
 
 
-async def test_real_running_child_blocks_rotation_without_unfinished_goal_policy(tmp_path):
+async def test_native_goal_pause_status_clear_do_not_cancel_real_optional_child_or_allow_rotation(tmp_path):
     async with application(tmp_path) as (app, runtime, model):
         await activate(app)
-        host = runtime.goal_host
-        model.worker_gate = threading.Event()
-        goal = await host.service.create("Running", "Inspect", ("Result exists",), context=OperationContext(True))
-        goal = await host.service.add_task(goal.id, "Wait")
-        goal = await host.service.assign(goal.id, goal.tasks[0].id, "Wait")
-        with pytest.raises(RuntimeError, match="Child work"):
-            runtime.reset_session()
-        model.worker_gate.set()
-        await runtime._active_session.children.supervisor.control("wait", goal.tasks[0].attempts[-1].worker.id)
+        host, session = runtime.capabilities.get('goal'), runtime._active_session
+        await planned(host)
+        model.gate = threading.Event()
+        child = await session.children.supervisor.start('ordinary child; no Goal role')
+        try:
+            assert session.children.supervisor.active
+            result = await app.manage_extensions('main', 'command', 'goal', 'pause User pause', session.meta.session_id)
+            assert json.loads(result['output'])['goal']['status'] == 'paused'
+            status = await app.manage_extensions('main', 'command', 'goal', 'status', session.meta.session_id)
+            assert json.loads(status['output'])['current']['status'] == 'paused'
+            await app.manage_extensions('main', 'command', 'goal', 'clear User archived', session.meta.session_id)
+            assert await host.service.current() is None and session.children.supervisor.active
+            with pytest.raises(RuntimeError, match='Child work'):
+                runtime.reset_session()
+        finally:
+            model.gate.set()
+            await session.children.supervisor.control('wait', child)
 
 
-async def test_another_group_never_reads_or_accepts_this_group_goal(tmp_path):
+async def test_another_group_never_reads_this_registry_or_binds_its_parent(tmp_path):
     async with application(tmp_path) as (app, runtime, _):
-        app.register_group(Group(id="other", workspace=str(tmp_path / "other")))
+        goal = await planned(runtime.capabilities.get('goal'))
+        app.register_group(Group(id='other', workspace=str(tmp_path / 'other')))
         await activate(app)
-        host = runtime.goal_host
-        goal = await host.service.create("Private", "Only original group", ("test",), context=OperationContext(True))
-        await activate(app, "other")
-        other = app._runtimes["other"].goal_host
-        assert other.owner != host.owner and await other.service.list() == ()
-        with pytest.raises(ValueError, match="Unknown Goal"):
+        await activate(app, 'other')
+        host, other = runtime.capabilities.get('goal'), app._runtimes['other'].capabilities.get('goal')
+        assert host.owner != other.owner and await other.service.current() is None
+        with pytest.raises(ValueError, match='Unknown Goal'):
             await other.service.status(goal.id)
+        with pytest.raises(ValueError, match='owner'):
+            host.attach(await app._runtimes['other']._capability_host.prepare_parent())
 
 
-async def test_legacy_goal_truth_is_refused_byte_preserving_without_empty_replacement(tmp_path):
-    from xdog.claw.config import ClawConfig
-    from xdog.claw.core.runtime.orchestrator import Orchestrator
-
-    from packages.claw.tests.test_goal_host import Model
-
+async def test_legacy_stores_are_never_migrated_or_executed_and_new_registry_is_explicit(tmp_path):
     model = Model()
-    app = Orchestrator(
-        ClawConfig(data_dir=str(tmp_path / "data")), stream_fn=model, data_dir=tmp_path / "data"
-    )
-    app.register_group(Group(id="main", workspace=str(tmp_path / "workspace")))
-    legacy = tmp_path / "data/groups/main/goals.json"
-    original = b'{"legacy":"do not upgrade"}\n'
-    legacy.write_bytes(original)
+    app = Orchestrator(ClawConfig(data_dir=str(tmp_path / 'data')), stream_fn=model, data_dir=tmp_path / 'data')
+    app.register_group(Group(id='main', workspace=str(tmp_path / 'workspace')))
+    runtime = app._runtimes['main']
+    group_dir = runtime.data_dir / 'groups/main'
+    old_json, old_db = group_dir / 'goals.json', group_dir / 'goals/journal.sqlite3'
+    old_db.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    original = b'old independently reviewed workers; do not read or upgrade\n'
+    old_json.write_bytes(original)
+    old_db.write_bytes(original)
     try:
-        with pytest.raises(ValueError, match="Legacy|unsupported"):
-            await app.start()
-        assert legacy.read_bytes() == original and not (tmp_path / "data/groups/main/goals").exists()
-        assert not model.calls
+        await app.start()
+        host = runtime.capabilities.get('goal')
+        assert await host.service.current() is None and not model.calls
+        assert old_json.read_bytes() == old_db.read_bytes() == original
+        assert {str(old_json), str(old_db)} <= set(host._legacy_paths)
+        assert host.service.store.path.name == 'registry.sqlite3'
     finally:
         await app.stop()
 
 
-async def test_process_lifetime_reopen_restores_original_terminal_reference_without_worker_replay(tmp_path):
+async def test_process_reopen_restores_main_tasks_without_inventing_an_agent_or_completion(tmp_path):
     async with application(tmp_path) as (app, runtime, _):
-        await activate(app)
-        original_owner = runtime.goal_host.owner
-        goal = await submitted(runtime.goal_host, runtime._active_session)
-        task = goal.tasks[0]
-        attempt = task.attempts[-1]
-        reference = attempt.worker
+        host = runtime.capabilities.get('goal')
+        goal = await planned(host)
+        owner, path = host.owner, host.service.store.path
+    store = await GoalStore.open(path, owner)
+    await store.close()
     async with application(tmp_path) as (app, runtime, model):
-        await activate(app)
-        host = runtime.goal_host
-        assert host.owner == original_owner
-        assert (await host.child_status(reference)).state == "succeeded"
-        goal = await host.service.accept_task(
-            goal.id, task.id, attempt.id, 1, report_digest(attempt.reports[-1]), "Inspect original report"
-        )
-        assert goal.tasks[0].state == "accepted"
-        assert goal.tasks[0].attempts[-1].worker == reference
-        assert not runtime._active_session.children.supervisor.active
-        assert all(role == "parent" for role, _ in model.calls)
+        host = runtime.capabilities.get('goal')
+        assert host.owner == owner and (await host.service.current()).id == goal.id
+        saved = await host.service.status()
+        assert saved['tasks'][0]['status'] == 'pending' and saved['tasks'][0]['worker'] == 'main'
+        assert runtime._active_session is None and not model.calls
 
 
-@pytest.mark.parametrize("daily,idle", [(True, False), (False, True)])
-async def test_unfinished_goal_never_vetoes_idle_automatic_context_rotation(tmp_path, monkeypatch, daily, idle):
+@pytest.mark.parametrize('daily,idle', [(True, False), (False, True), (True, True)])
+async def test_unfinished_goal_never_vetoes_idle_context_rotation(tmp_path, monkeypatch, daily, idle):
     async with application(tmp_path) as (app, runtime, _):
         await activate(app)
-        host = runtime.goal_host
-        goal = await host.service.create("Unfinished", "Wait", ("test",), context=OperationContext(True))
+        host = runtime.capabilities.get('goal')
+        goal = await planned(host)
         old = runtime._active_session
-        monkeypatch.setattr(runtime.transcript_store, "needs_daily_reset", lambda *args: daily)
-        monkeypatch.setattr(runtime.transcript_store, "needs_idle_reset", lambda *args: idle)
-        fresh = runtime.get_or_create_session()
-        assert fresh is not old
-        assert (await host.service.status(goal.id)).status == "active"
-        assert runtime.goal_host is host
-
-
-async def test_goal_state_notification_and_observer_controls_are_independent(tmp_path):
-    import tempfile
-    from pathlib import Path
-
-    from xdog.claw.acp.server import ClawAcpServer
-    from xdog.claw.core.observers.manager import ManagedObservers
-
-    from packages.claw.tests.eyes_helpers import ManualClock, scheduler
-
-    async with application(tmp_path) as (app, runtime, _):
+        monkeypatch.setattr(runtime.transcript_store, 'needs_daily_reset', lambda *args: daily)
+        monkeypatch.setattr(runtime.transcript_store, 'needs_idle_reset', lambda *args: idle)
         await activate(app)
-        host = runtime.goal_host
-        clock = ManualClock()
-        with tempfile.TemporaryDirectory(prefix="goal-eyes-") as directory:
-            server = await ClawAcpServer.start(app, Path(directory) / "acp.sock")
-            observers = ManagedObservers(app, server.path, clocks=clock.clocks())
-            try:
-                await observers.start()
-                source = await observers.create("main", "independent-source", scheduler(every_seconds=60), "Notify me")
-                goal = await host.service.create(
-                    "Independent", "Do not cancel source", ("test",), context=OperationContext(True)
-                )
-                await host.service.cancel_notifications(goal.id)
-                await host.service.abandon(goal.id, "Stop this Goal only")
-                assert (await observers.status("main", source["id"]))["enabled"]
-                other = await host.service.create("Other", "Still active", ("test",), context=OperationContext(True))
-                await observers.cancel("main", source["id"])
-                assert (await host.service.status(other.id)).status == "active"
-                assert (await host.service.status(other.id)).notifications_enabled
-                assert (await host.service.status(goal.id)).status == "abandoned"
-            finally:
-                await observers.close()
-                await server.close()
+        assert runtime._active_session is not old and runtime.capabilities.get('goal') is host
+        assert (await host.service.current()).id == goal.id
 
 
-async def test_relative_configured_workspace_binds_canonical_group_goal_owner(tmp_path):
-    import os
-    from pathlib import Path
-
-    from xdog.claw.config import ClawConfig
-    from xdog.claw.core.runtime.orchestrator import Orchestrator
-
-    from packages.claw.tests.test_goal_host import Model
-
-    workspace = tmp_path / "relative-workspace"
-    config = ClawConfig(data_dir=str(tmp_path / "data"))
-    app = Orchestrator(config, stream_fn=Model(), data_dir=tmp_path / "data")
-    app.register_group(Group(id="main", workspace=os.path.relpath(workspace, Path.cwd())))
+async def test_relative_workspace_binds_canonical_goal_owner_and_filesystem(tmp_path):
+    workspace = tmp_path / 'relative-workspace'
+    app = Orchestrator(ClawConfig(data_dir=str(tmp_path / 'data')), stream_fn=Model(), data_dir=tmp_path / 'data')
+    app.register_group(Group(id='main', workspace=os.path.relpath(workspace, Path.cwd())))
     try:
         await app.start()
         await activate(app)
-        runtime = app._runtimes["main"]
-        assert runtime.goal_host.owner.workspace == workspace
-        assert runtime.workspace_dir == workspace
-        assert runtime._active_session.agent.tool_context["fs_workspace"] == str(workspace)
+        runtime = app._runtimes['main']
+        assert runtime.capabilities.get('goal').owner.workspace == workspace
+        assert runtime._active_session.agent.tool_context['fs_workspace'] == str(workspace)
     finally:
         await app.stop()
 
 
-async def test_installed_application_owner_opens_capability_without_constructing_or_polling_agent(tmp_path):
-    async with application(tmp_path) as (app, runtime, model):
-        assert runtime.goal_host is not None
-        assert runtime._active_session is None and not model.calls
-        goal = await runtime.goal_host.service.create(
-            "Active only", "No wake-up obligation", ("test",), context=OperationContext(True)
-        )
-        assert goal.status == "active"
-        await runtime.goal_host.flush()
-        assert runtime._active_session is None and not model.calls
-
-
-async def test_restart_drains_persisted_notice_without_waiting_for_tui_or_another_human_input(tmp_path):
-    async with application(tmp_path) as (app, runtime, _):
-        await activate(app)
-        host = runtime.goal_host
-        original = host.inputs.submit
-
-        async def offline(envelope, **kwargs):
-            if envelope.message.source == "goal":
-                raise ConnectionError("Original port unavailable before intake")
-            return await original(envelope, **kwargs)
-
-        host.inputs.submit = offline
-        goal = await submitted(host, runtime._active_session)
-        assert goal.tasks[0].state == "submitted"
-        assert any(notice.status in {"pending", "unknown"} for notice in await host.service.store.notices())
-        # Keep the port offline until actual host shutdown has settled jobs.
-    async with application(tmp_path) as (app, runtime, model):
-        host = runtime.goal_host
-        assert host is not None
-        scope = InputScope("main", runtime.workspace_dir)
-        async with asyncio.timeout(5):
-            while True:
-                notices = [
-                    row for row in await host.inputs.store.records(scope) if row.envelope.message.source == "goal"
-                ]
-                if notices and all(row.status == "succeeded" for row in notices):
-                    break
-                await asyncio.sleep(0.005)
-        assert model.calls and all(role == "parent" for role, _ in model.calls)
-        assert not runtime._active_session.children.supervisor.active
-
-
-@pytest.mark.parametrize("group_ids", [("main",), ("main", "later")])
-async def test_shutdown_joins_admitted_capability_open_before_releasing_goal_lease(tmp_path, monkeypatch, group_ids):
-    from xdog.claw.config import ClawConfig
-    from xdog.claw.core.runtime.orchestrator import Orchestrator
-    from xdog.skills.goal.store import GoalStore
-
-    from packages.claw.tests.test_goal_host import Model
-
+@pytest.mark.parametrize('group_ids', [('main',), ('main', 'later')])
+async def test_shutdown_joins_admitted_capability_open_before_releasing_registry_lease(
+        tmp_path, monkeypatch, group_ids):
     original = GoalStore.open
     entered, release = asyncio.Event(), asyncio.Event()
     opened = []
-
     async def delayed(path, owner):
         store = await original(path, owner)
         opened.append(store)
         entered.set()
         await release.wait()
         return store
-
-    monkeypatch.setattr(GoalStore, "open", delayed)
+    monkeypatch.setattr(GoalStore, 'open', delayed)
     model = Model()
-    app = Orchestrator(
-        ClawConfig(data_dir=str(tmp_path / "data")), stream_fn=model, data_dir=tmp_path / "data"
-    )
-    for group_id in group_ids:
-        app.register_group(Group(id=group_id, workspace=str(tmp_path / group_id)))
+    app = Orchestrator(ClawConfig(data_dir=str(tmp_path / 'data')), stream_fn=model, data_dir=tmp_path / 'data')
+    for group in group_ids:
+        app.register_group(Group(id=group, workspace=str(tmp_path / group)))
     opening = asyncio.create_task(app.start())
     closing = None
     try:
         await asyncio.wait_for(entered.wait(), 3)
         closing = asyncio.create_task(app.stop())
-        with pytest.raises(TimeoutError):
-            await asyncio.wait_for(asyncio.shield(closing), 0.1)
+        await asyncio.sleep(.01)
+        assert not closing.done()
     finally:
         release.set()
         await asyncio.gather(opening, return_exceptions=True)
@@ -266,9 +164,39 @@ async def test_shutdown_joins_admitted_capability_open_before_releasing_goal_lea
             await closing
         else:
             await app.stop()
-    assert len(opened) == 1  # Shutdown fences later group capability admissions.
-    assert not (tmp_path / "data" / "groups" / "later" / "goals").exists()
-    # Inspect the real independently leased store, not a mocked close callback.
+    assert len(opened) == 1 and not model.calls
+    assert not (tmp_path / 'data/groups/later/goals').exists()
     reopened = await original(opened[0].path, opened[0].owner)
     await reopened.close()
-    assert not model.calls
+
+
+async def test_retired_parent_tool_cannot_borrow_new_real_user_authority_even_for_reads(tmp_path):
+    async with application(tmp_path) as (app, runtime, model):
+        await activate(app)
+        binding = runtime.capabilities.get('goal')
+        existing = await binding.service.create('Original', 'Original record', context=OperationContext(True))
+        await binding.service.change('complete', summary='Main finished original request')
+        old_tool = next(t for t in runtime._active_session.agent.state.tools if t.name == 'goal')
+        runtime.reset_session()
+        fresh = await runtime.prepare_session(allow_reset=False)
+        new_tool = next(t for t in fresh.agent.state.tools if t.name == 'goal')
+        assert new_tool is not old_tool and all(t is not old_tool for t in fresh.agent.state.tools)
+        results = []
+        model.parent_action = {'action': 'create', 'title': 'New authorized context',
+                               'outcome': 'Actual human delegation'}
+        def stream(selected, context, options):
+            source = model(selected, context, options)
+            async def events():
+                if context.messages[-1].role == 'user':
+                    assert fresh._user_operation_authorized
+                    results.append(await old_tool.execute('read', {'action': 'status', 'goal_id': existing.id}))
+                    results.append(await old_tool.execute('write', {'action': 'create', 'title': 'Borrowed authority'}))
+                async for event in source:
+                    yield event
+            from xdog.ai.utils.event_stream import EventStream
+            return EventStream.from_async_generator(events(), result_future=source._result_future)
+        fresh.agent.set_stream_fn(stream)
+        await activate(app)
+        assert results and all(r.is_error for r in results)
+        assert {g.title for g in await binding.service.list()} == {'Original', 'New authorized context'}
+        assert next(t for t in fresh.agent.state.tools if t.name == 'goal') is new_tool

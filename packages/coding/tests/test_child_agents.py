@@ -64,7 +64,8 @@ async def test_child_access_is_enforced_in_actual_coding_session_and_persisted(t
         result = await session.children.supervisor.control("wait", identifier)
         assert result["status"] == "completed" and (tmp_path / "target").exists() == write
         assert len(contexts) == 2 and not session.messages
-        assert not any(tool.name in {"agent_spawn", "agent_control", "update_plan"} for tool in contexts[0].tools)
+        assert not any(tool.name in {"agent", "agent_spawn", "agent_control", "update_plan"}
+                       for tool in contexts[0].tools)
         loaded = session.children.store.load()
         assert loaded[0]["id"] == identifier and loaded[0]["messages"]
         await session.children.supervisor.control("close", identifier)

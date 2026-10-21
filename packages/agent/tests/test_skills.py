@@ -138,8 +138,8 @@ def _flow_skill_dir() -> Path:
     """
     from importlib.resources import files
 
-    packaged = Path(str(files("xdog.flow"))) / "skills" / "flow-workflows"
-    source = Path(__file__).resolve().parents[2] / "flow" / "skills" / "flow-workflows"
+    packaged = Path(str(files("xdog.flow"))) / "skills" / "flow"
+    source = Path(__file__).resolve().parents[2] / "flow" / "skills" / "flow"
     found = packaged if (packaged / "SKILL.md").exists() else source
     assert (found / "SKILL.md").exists(), f"no SKILL.md at {packaged} or {source}"
     return found

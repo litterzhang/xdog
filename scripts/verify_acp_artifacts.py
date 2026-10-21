@@ -199,11 +199,18 @@ async def main():
   history=InputStore(session).records()
   assert len(history)==6 and {row.status for row in history}=={'succeeded'}
   assert len({row.batch_id for row in history})==1
-  assert session.runtime is None and session._sdk_controller is None
+  assert session.runtime is None
+  controller=session._sdk_controller
+  assert controller is not None and controller._loop.is_running()
+  capability=session.capabilities.get('goal')
+  assert capability is not None and capability.loop is controller._loop
+  async def empty_goal():return await capability.service.current()
+  assert await asyncio.wrap_future(controller.control(empty_goal,name='verify-default-goal')) is None
   assert session.permissions.mode=='ask' and not session.permissions.has_pending_requests
  finally:
   await session.aclose()
  assert session._lease is None
+ assert controller._thread is not None and not controller._thread.is_alive()
  replacement=SessionLease.acquire(lease_directory(manager._dir),data.session_id)
  replacement.close()
  boundary=await maximum_input(manager,root)
@@ -225,7 +232,8 @@ from xdog.claw.config import ClawConfig
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.types import Group,GroupConfig
 from xdog.claw.core.inputs.models import InputScope
-from xdog.claw.core.observers.journal import ObserverJournal
+from xdog.eyes.hosting.journal import ObserverJournal
+from xdog.claw.core.runtime.application_ports import ApplicationPorts
 from xdog.claw.acp.server import ClawAcpServer
 from xdog.eyes.acp_client import AcpClient
 from xdog.eyes.connections import UnixConnection
@@ -271,7 +279,7 @@ async def main():
    result=await asyncio.wait_for(inputs.wait(scope,'wheel-event'),5)
    assert result.status=='succeeded' and result.response=='wheel Claw reply'
    assert (await client.enqueue(params))['status']=='duplicate' and len(calls)==1
-   journal=await ObserverJournal.open(root/'observer'/'state.sqlite3',inputs.store)
+   journal=await ObserverJournal.open(root/'app'/'observer'/'state.sqlite3',ApplicationPorts(app,endpoint))
    try:
     saved=await journal.create('main',root,'storage-only',{'version':2})
     assert saved.inbox_id==namespace
@@ -309,6 +317,8 @@ def main() -> None:
         work.mkdir(mode=0o700)
         subprocess.run([uv, 'venv', str(env), '--python', sys.executable], env=environment, cwd=root, check=True)
         python = env / 'bin' / 'python'
+        if {'coding', 'claw'}.intersection(packages):
+            packages = (*packages, 'skills')
         wheels = [str(next(dist.glob('xdog_' + package + '-*.whl'))) for package in packages]
         subprocess.run([uv, 'pip', 'install', '--python', str(python), 'agent-client-protocol==0.12.1', *wheels],
                        env=environment, cwd=root, check=True)

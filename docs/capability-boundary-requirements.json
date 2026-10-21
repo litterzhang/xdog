@@ -1,0 +1,172 @@
+{
+  "objective": "Goal及Eyes业务归属能力包，Coding/Claw仅保留通用宿主边界",
+  "status": "complete",
+  "total": 12,
+  "remaining": 0,
+  "counts": {
+    "待实现": 0,
+    "待验证": 0,
+    "缺外部环境": 0,
+    "已完成": 12,
+    "延期": 0
+  },
+  "requirements": [
+    {
+      "id": "CB-01",
+      "title": "通用能力装配",
+      "acceptance": "通过可信已安装入口点发现；发现/import不启动模型、存储、观察者；宿主不按Goal/Eyes名称分支。",
+      "status": "已完成",
+      "evidence": [
+        "packages/agent/tests/test_capability_runtime.py",
+        "packages/claw/tests/test_cli_onboard.py",
+        "/tmp/xdog-capability-boundary/f.sxrRt8/verification.json"
+      ]
+    },
+    {
+      "id": "CB-02",
+      "title": "Goal完整归属",
+      "acceptance": "Goal绑定、角色策略、工具/验收/通知/UI均在xdog.skills.goal；宿主无Goal专用adapter和业务条件；Goal无Coding/Claw导入或私有对象访问。",
+      "status": "已完成",
+      "evidence": [
+        "packages/skills/tests/test_host_boundary.py",
+        "/tmp/xdog-capability-boundary/f.sxrRt8/logs/verify-coding-goal-final.log",
+        "/tmp/xdog-capability-boundary/f.sxrRt8/logs/verify-claw-goal-final.log"
+      ]
+    },
+    {
+      "id": "CB-03",
+      "title": "Eyes完整归属",
+      "acceptance": "托管观察者模型/定义/调度/游标outbox/恢复取消和工具在Eyes；宿主无Eyes业务实现；Eyes仍独立不依赖其它XDOG运行包。",
+      "status": "已完成",
+      "evidence": [
+        "packages/eyes/tests/test_host_boundary.py",
+        "/tmp/xdog-capability-boundary/f.sxrRt8/logs/eyes-inert-final.log",
+        "/tmp/xdog-capability-boundary/schema-preservation.json"
+      ]
+    },
+    {
+      "id": "CB-04",
+      "title": "通用宿主端口",
+      "acceptance": "仅暴露真实owner、限定scope、运行/输入输出/IO等通用能力；不传原始应用/会话私有对象，不由消息标签授予权限。",
+      "status": "已完成",
+      "evidence": [
+        "packages/claw/tests/test_application_ports.py",
+        "packages/coding/tests/test_capability_ports.py",
+        "packages/skills/tests/test_host_boundary.py"
+      ]
+    },
+    {
+      "id": "CB-05",
+      "title": "子Agent安全",
+      "acceptance": "复用原Supervisor；capture原子绑定实际child；报告/context工具按真实对象匹配，readonly/allowlist/审批和禁止递归不放宽。",
+      "status": "已完成",
+      "evidence": [
+        "packages/claw/tests/test_child_agents.py",
+        "packages/coding/tests/test_child_agents.py",
+        "/tmp/xdog-capability-boundary/f.sxrRt8/logs/claw-combined-final.log"
+      ]
+    },
+    {
+      "id": "CB-06",
+      "title": "输入可靠性",
+      "acceptance": "复用原队列/控制器，保留原ID与不可变内容、namespace/owner fencing、ACK丢失幂等和已开始工作不自动重放。",
+      "status": "已完成",
+      "evidence": [
+        "/tmp/xdog-capability-boundary/f.sxrRt8/logs/verify-acp-artifacts-final.log",
+        "packages/claw/tests/test_eyes_process_recovery.py"
+      ]
+    },
+    {
+      "id": "CB-07",
+      "title": "输出与取消",
+      "acceptance": "保留原始recipient/context/output ID；观察停止、通知取消、执行取消独立；不群广播，不重发未知结果。",
+      "status": "已完成",
+      "evidence": [
+        "packages/claw/tests/test_hosting_scope_recovery.py",
+        "/tmp/xdog-capability-boundary/f.sxrRt8/logs/observer-output-combined-final.log",
+        "/tmp/xdog-capability-boundary/final-review-eyes.md"
+      ]
+    },
+    {
+      "id": "CB-08",
+      "title": "生命周期",
+      "acceptance": "原owner启动并等实际callback/children/commit结算；导航、上下文轮换、取消/关闭释放确切资源，不保留新隐藏执行器。",
+      "status": "已完成",
+      "evidence": [
+        "packages/eyes/tests/test_hosting_lifecycle.py",
+        "packages/skills/tests/test_host_boundary.py",
+        "packages/agent/tests/test_capability_runtime.py",
+        "/tmp/xdog-capability-boundary/f.sxrRt8/verification.json"
+      ]
+    },
+    {
+      "id": "CB-09",
+      "title": "可选安装",
+      "acceptance": "基础无Goal/Eyes/ACP可用；安装包按宿主scope提供能力，不新增全局enable开关；无模型/observer自动创建。",
+      "status": "已完成",
+      "evidence": [
+        "/tmp/xdog-capability-boundary/f.sxrRt8/verification.json",
+        "/tmp/xdog-capability-boundary/f.sxrRt8/artifact-integrity-final.json"
+      ]
+    },
+    {
+      "id": "CB-10",
+      "title": "持久化兼容安全",
+      "acceptance": "保留当前已支持journal格式/路径和未知格式字节不变拒绝；cursor+outbox先提交、receipt事实不复制成执行权威。",
+      "status": "已完成",
+      "evidence": [
+        "packages/claw/tests/test_hosting_scope_recovery.py",
+        "/tmp/xdog-capability-boundary/schema-preservation.json",
+        "/tmp/xdog-capability-boundary/f.sxrRt8/logs/verify-acp-artifacts-final.log"
+      ]
+    },
+    {
+      "id": "CB-11",
+      "title": "Linux完整验收",
+      "acceptance": "定向及九包完整回归、Ruff、strict mypy、Flow示例、锁检查、构建与隔离安装验证；不声称非Linux/真实付费模型通过。",
+      "status": "已完成",
+      "evidence": [
+        "/tmp/xdog-capability-boundary/final-regression-serial.log",
+        "/tmp/xdog-capability-boundary/final-mypy.log",
+        "/tmp/xdog-capability-boundary/final-ruff.log",
+        "/tmp/xdog-capability-boundary/final-flow.log",
+        "/tmp/xdog-capability-boundary/final-lock.log",
+        "/tmp/xdog-capability-boundary/f.sxrRt8/verification.json"
+      ]
+    },
+    {
+      "id": "CB-12",
+      "title": "交付与范围保护",
+      "acceptance": "更新架构/操作文档和去重可计数清单；前序未提交功能与用户dirty不丢；不扩展新Goal续跑/发布/重启服务。",
+      "status": "已完成",
+      "evidence": [
+        "docs/capability-boundary-design.md",
+        "docs/capability-boundary-verification.md",
+        "/tmp/xdog-capability-boundary/unrelated-preservation.json"
+      ]
+    }
+  ],
+  "evidence_root": "/tmp/xdog-capability-boundary",
+  "not_in_scope": [
+    "新增Goal自动续跑",
+    "发布/打tag",
+    "重启用户服务",
+    "非Linux原生验证"
+  ],
+  "progress_notes": [
+    "最终源码当前Linux九包完整回归7587 passed / 7已有opt-in外部CLI测试skipped，339.71秒；未修改测试超时或筛选测试。",
+    "Ruff、strict mypy613源码、Flow示例17、离线锁检查均通过；10projects20产物、Twine、8非editable环境及全部cold生命周期/ACP/组合输出验收通过。",
+    "独立review的EYES-R1/R2已修复并针对性及完整验收；原v3并行资源竞争失败日志保留，最终原runner --jobs 1全通过，未为此改运行源码。",
+    "725个packaging/source/script文件保持最终冻结哈希；用户无关9个文件hash不变；前序未提交改动保留。",
+    "全部12项完成，剩余0；非Linux、真实付费provider/微信网络不在本轮范围且不声称通过；未提交推送、未发布/tag、未重启用户服务。"
+  ],
+  "verification_document": "docs/capability-boundary-verification.md",
+  "final_verification": {
+    "summary": "/tmp/xdog-capability-boundary/final-regression-summary.json",
+    "artifacts": "/tmp/xdog-capability-boundary/f.sxrRt8/verification.json",
+    "passed": 7587,
+    "skipped": 7,
+    "elapsed_seconds": 339.71,
+    "source_aggregate_sha256": "8bfa988f6b5ae2ecc074f7dd02eeb9422bdd63235756bd94b4950dd7d3dee049"
+  }
+}

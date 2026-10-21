@@ -852,21 +852,21 @@ def test_a_node_can_name_a_skill_and_both_engines_render_it(monkeypatch: Any, tm
     from xdog.flow.codegen import generate
     from xdog.flow.loader import parse_workflow
 
-    assert "flow-workflows" in packaged_skills(), "the skill must resolve from the package"
+    assert "flow" in packaged_skills(), "the skill must resolve from the package"
 
     wf = parse_workflow({
         "name": "s", "provider": "p", "defaults": {"model": "m"}, "entry": "a",
         "nodes": [{"id": "a", "type": "agent", "prompt": "go",
-                   "skills": ["flow-workflows"], "outputs": ["o"]}],
+                   "skills": ["flow"], "outputs": ["o"]}],
         "edges": [{"from": "a", "to": "$output", "map": {"o": "r"}}],
     })
-    assert wf.nodes[0].skills == ("flow-workflows",)
+    assert wf.nodes[0].skills == ("flow",)
 
     source = generate(wf)
     assert "skills=_skill_manager()" in source and "active_skills=skills" in source, (
         "the compiled engine hands a manager and slugs to the Agent, and places nothing"
     )
-    assert "skills=('flow-workflows',)" in source, "with this node's skills"
+    assert "skills=('flow',)" in source, "with this node's skills"
 
 
 def test_a_generated_module_does_not_import_flow_for_skills() -> None:
@@ -878,7 +878,7 @@ def test_a_generated_module_does_not_import_flow_for_skills() -> None:
     wf = parse_workflow({
         "name": "s", "provider": "p", "defaults": {"model": "m"}, "entry": "a",
         "nodes": [{"id": "a", "type": "agent", "prompt": "go",
-                   "skills": ["flow-workflows"], "outputs": ["o"]}],
+                   "skills": ["flow"], "outputs": ["o"]}],
         "edges": [{"from": "a", "to": "$output", "map": {"o": "r"}}],
     })
     imports = [ln for ln in generate(wf).splitlines() if ln.startswith(("import ", "from "))]
@@ -912,12 +912,12 @@ def test_skills_survive_a_round_trip() -> None:
     raw = {
         "name": "s", "provider": "p", "defaults": {"model": "m"}, "entry": "a",
         "nodes": [{"id": "a", "type": "agent", "prompt": "go",
-                   "skills": ["flow-workflows"], "outputs": ["o"]}],
+                   "skills": ["flow"], "outputs": ["o"]}],
         "edges": [{"from": "a", "to": "$output", "map": {"o": "r"}}],
     }
     again = parse_workflow(workflow_to_dict(parse_workflow(raw)))
 
-    assert again.nodes[0].skills == ("flow-workflows",)
+    assert again.nodes[0].skills == ("flow",)
 
 
 def test_a_skill_beside_the_workflow_resolves_and_travels(tmp_path: Path) -> None:

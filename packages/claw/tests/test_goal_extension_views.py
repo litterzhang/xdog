@@ -28,7 +28,7 @@ async def test_actual_group_goal_grants_headless_display_and_never_starts_work_f
     try:
         await app.start()
         await activate(app)
-        host, session = runtime.goal_host, runtime._active_session
+        host, session = runtime.capabilities.get("goal"), runtime._active_session
         goal = await host.service.create("Claw private goal", "Actual group state", ("Check",),
                                          context=OperationContext(True))
         before = len(model.calls)
@@ -40,7 +40,7 @@ async def test_actual_group_goal_grants_headless_display_and_never_starts_work_f
         assert len(model.calls) == before and not session.children.supervisor.active
         await session.extensions.manage("unload", "goal_ui")
         assert not session.extensions.snapshot()["ui"]
-        assert (await host.service.status(goal.id)).status == "active"
+        assert (await host.service.status(goal.id))["current"]["status"] == "active"
     finally:
         await app.stop()
 
@@ -50,7 +50,7 @@ async def test_claw_display_rebinds_current_context_without_moving_the_group_goa
     try:
         await app.start()
         await activate(app)
-        host, old_session = runtime.goal_host, runtime._active_session
+        host, old_session = runtime.capabilities.get("goal"), runtime._active_session
         goal = await host.service.create("Stable group goal", "Across chat rotation", ("Check",),
                                          context=OperationContext(True))
         await old_session.extensions.command("goals", "")
@@ -59,35 +59,24 @@ async def test_claw_display_rebinds_current_context_without_moving_the_group_goa
         fresh = runtime._active_session
         assert fresh is not old_session and old_session.extensions._closed
         assert await old_session.extensions.views.read("goal_ui", "goals", {}) is None
-        assert runtime.goal_host is host
+        assert runtime.capabilities.get("goal") is host
         result = await fresh.extensions.command("goals", "")
         assert goal.id in str(result) and "Stable group goal" in str(result)
-        assert (await host.service.status(goal.id)).status == "active"
+        assert (await host.service.status(goal.id))["current"]["status"] == "active"
     finally:
         await app.stop()
 
 
 @pytest.mark.parametrize("action", ["unload", "crash"])
-async def test_display_loss_never_cancels_or_blocks_real_group_worker_reports_and_notices(tmp_path, action):
+async def test_display_loss_never_owns_main_task_progress_or_goal_completion(tmp_path, action):
     app, runtime, model = application_with_display(tmp_path)
     try:
         await app.start()
         await activate(app)
-        host, session = runtime.goal_host, runtime._active_session
-        runtime.workspace_dir.joinpath("result.txt").write_text("actual worker output")
-        model.worker_gate = threading.Event()
-        goal = await host.service.create("Background output", "Read actual result", ("Result exists",),
+        host, session = runtime.capabilities.get("goal"), runtime._active_session
+        goal = await host.service.create("Main output", "Read actual result", ("Result exists",),
                                          context=OperationContext(True))
-        goal = await host.service.add_task(goal.id, "Read and report")
-        goal = await host.service.assign(goal.id, goal.tasks[0].id, "Read result.txt and submit evidence")
-        reference = goal.tasks[0].attempts[-1].worker
-        async with asyncio.timeout(5):
-            while not any(role == "worker" for role, _ in model.calls):
-                await asyncio.sleep(.005)
-        child_extensions = session.children.extensions.owners[reference.id]
-        assert await child_extensions.views.read("goal_ui", "goals", {}) is None
-        child_output = await child_extensions.command("goals", "")
-        assert "unavailable" in str(child_output).lower() and goal.id not in str(child_output)
+        await host.service.task({"id": "work", "title": "Main work", "expected_version": 0})
         if action == "unload":
             await session.extensions.manage("unload", "goal_ui")
         else:
@@ -99,24 +88,15 @@ async def test_display_loss_never_cancels_or_blocks_real_group_worker_reports_an
             await session.extensions._manager._bridge(crash())
             with pytest.raises((ValueError, McpError)):
                 await session.extensions.command("goals", "")
-        assert session.children.supervisor.active
-        model.worker_gate.set()
-        await session.children.supervisor.control("wait", reference.id)
-        await host.flush()
-        actual = await host.service.status(goal.id)
-        assert actual.tasks[0].state == "submitted" and actual.status == "active"
-        from xdog.claw.core.inputs.models import InputScope
-        scope = InputScope("main", runtime.workspace_dir)
-        async with asyncio.timeout(5):
-            while True:
-                rows = [row for row in await host.inputs.store.records(scope) if row.envelope.message.source == "goal"]
-                if rows and all(row.status == "succeeded" for row in rows):
-                    break
-                await asyncio.sleep(.005)
+        before = len(model.calls)
+        await host.service.task({"id": "work", "expected_version": 1,
+                                 "status": "completed", "summary": "Main verified"})
+        await host.service.change("complete", summary="Main verified actual output")
+        status = await host.service.status(goal.id)
+        assert status["current"]["status"] == "completed" and status["tasks"][0]["status"] == "completed"
+        assert len(model.calls) == before and not session.children.supervisor._children
         assert not session.extensions.snapshot()["ui"]
     finally:
-        if model.worker_gate is not None:
-            model.worker_gate.set()
         await app.stop()
 
 
@@ -129,12 +109,12 @@ async def test_claw_shutdown_keeps_goal_lease_until_actual_display_disk_read_set
     try:
         await app.start()
         await activate(app)
-        host, session = runtime.goal_host, runtime._active_session
+        host, session = runtime.capabilities.get("goal"), runtime._active_session
         await host.flush()
         async with asyncio.timeout(5):
             while session.extensions._view_jobs or host._display._reads:
                 await asyncio.sleep(.005)
-        database = host.service.store._database
+        database = host.service.store.database
         original = database.transaction
 
         def delayed(operation):
@@ -174,7 +154,7 @@ async def test_rotation_settles_and_releases_retired_display_bindings(tmp_path):
     try:
         await app.start()
         await activate(app)
-        host = runtime.goal_host
+        host = runtime.capabilities.get("goal")
         original = weakref.ref(host._display)
         previous_extensions = runtime._active_session.extensions
         runtime.reset_session()

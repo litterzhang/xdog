@@ -84,12 +84,22 @@ class SessionRuntime:
         if not acp_available():
             return
         async with self._endpoint_lock:
+            if self.disposing or self._closed is not None or self.controller._closing:
+                return
             if self.server is None:
                 try:
                     from xdog.coding.acp.server import serve_local
                 except ImportError:
                     return  # Ordinary session ownership/inbox works without optional ACP.
-                self.server = await serve_local(self)
+                from xdog.agent.async_work import wait_owned
+                await wait_owned(asyncio.create_task(serve_local(self)))
+
+    async def close_endpoint(self) -> None:
+        # Join admitted socket publication before endpoint/lease retirement.
+        async with self._endpoint_lock:
+            if self.server is not None:
+                await self.server.close()
+                self.server = None
 
     def context_changed(self) -> None:
         old = self.record
@@ -98,11 +108,9 @@ class SessionRuntime:
         async def rebind() -> None:
             try:
                 await asyncio.wrap_future(discarded)
-                await self.session._settle_retired_goals()
+                await self.session._settle_retired_capabilities()
                 await self.session._settle_retired_resources()
-                if self.server is not None:
-                    await self.server.close()
-                    self.server = None
+                await self.close_endpoint()
                 await previous_inbox.retire()
                 self.router.retire(old.session_id, old.generation)
                 self.registry.remove(old)
@@ -153,11 +161,7 @@ class SessionRuntime:
 
         async def stop_endpoint() -> None:
             from xdog.agent.async_work import settle_cleanup
-            async def server() -> None:
-                if self.server is not None:
-                    await self.server.close()
-                    self.server = None
-            await settle_cleanup(self._stop_inbox_watch, server, message='Coding ingress close failed')
+            await settle_cleanup(self._stop_inbox_watch, self.close_endpoint, message='Coding ingress close failed')
 
         def stopped(completed: Future[None]) -> None:
             try:

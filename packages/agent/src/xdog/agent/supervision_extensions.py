@@ -117,7 +117,10 @@ class ChildExtensions:
     async def create(self, spec: ChildSpec, publish: Callable[[dict[str, Any]], None],
                      *, model: str = "", thinking: str = "off", initialize: bool = True) -> ExtensionRuntime:
         self.check_parent()
-        names = tuple(row["name"] for row in self.parent.snapshot()["extensions"] if row["state"] != "unloaded")
+        # Native capabilities belong to their actual parent owner. Snapshot rows
+        # include them for display, not as worker implementations to instantiate.
+        names = tuple(row["name"] for row in self.parent.snapshot()["extensions"]
+                      if row["state"] != "unloaded" and row["name"] in self.parent.enabled)
         inherited = json.loads(json.dumps(self.parent.entries.snapshot())) if spec.inherit_context else {}
         entries = ExtensionEntries(inherited, lambda value: self.store.save_entries(spec.id, value))
         runtime = ExtensionRuntime(names, self.parent.root, self.parent.cwd, settings=self.parent.settings,

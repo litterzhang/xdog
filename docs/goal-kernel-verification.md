@@ -1,3 +1,7 @@
+> **历史快照（2026-10-20）**：本文记录此前冻结实现，涉及 Goal worker/reviewer/attempt
+> 的流程已由主 Agent + task files + ACP 提醒设计替代。不要据此推断当前功能或验收状态；
+> 当前入口见 `goal-simple-design.md` 与 `goal-simple-requirements.json`。原始证据保留不改写。
+
 # Portable Goal kernel — explicit review and role verification
 
 Date: 2026-10-19. This is a kernel milestone, not completion of the assistant-core refactor.

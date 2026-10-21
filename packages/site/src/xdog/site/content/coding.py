@@ -58,7 +58,7 @@ _ROADMAP = (
     ), done=True),
     Phase("Shipped", "Skills", (
         "The open Agent Skills SKILL.md format, read and written",
-        "Discovered from installed packages — pip install xdog-flow provides /flow-workflows",
+        "Discovered from installed packages — pip install xdog-flow provides /flow",
         "Activated into the system prompt, so /unload actually removes them",
         "Author-declared lifetime; only the user ends a skill early",
     ), done=True),

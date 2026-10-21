@@ -166,7 +166,7 @@ class AgentSession:
                                   session_meta.session_id, state.to_dict()))
         from xdog.agent.supervision import RESERVED_TOOLS
         if any(tool.name in RESERVED_TOOLS for tool in runtime.tools):
-            raise ValueError("agent_spawn/agent_control are reserved for session-owned metadata")
+            raise ValueError("agent delegation tools are reserved for session-owned metadata")
         self._load_extensions()
         # Create the long-lived Agent
         if data.model.model_id != runtime.model:
@@ -225,7 +225,6 @@ class AgentSession:
                 "_memory_search": runtime.memory.search if runtime.memory else None,
                 "_memory_manager": runtime.memory,
                 "_skill_manager": runtime.skill_manager,
-                "_eyes": runtime.observers,
             },
             transform_context=self._extension_context,
             before_tool_call=self._before_tool_call,
@@ -462,11 +461,11 @@ class AgentSession:
 
     async def initialize_extensions(self, *, require_model: bool = False) -> None:
         try:
-            if self.extensions.enabled:
+            if self.extensions.enabled or self.extensions.commands():
                 from xdog.claw.core.command_names import SLASH_COMMANDS
                 skill_names = await run_owned(
                     lambda: {skill.slug for skill in self._runtime.skill_manager.list_skills()})
-                self.extensions.reserve_commands(frozenset({*SLASH_COMMANDS, *skill_names}))
+                self.extensions.reserve_commands(frozenset(SLASH_COMMANDS), skill_commands=frozenset(skill_names))
                 await self.extensions.initialize()
             if self._agent.state.model.startswith("ext-"):
                 model = self.extensions.provider_model(self._agent.state.model)

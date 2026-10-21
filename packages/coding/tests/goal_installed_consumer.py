@@ -1,5 +1,4 @@
-"""External wheel consumer: real Coding SDK/children/Inbox; scripted provider only."""
-
+"""Wheel-only default Coding Goal: actual native commands, model tools and owner fences."""
 from __future__ import annotations
 
 import asyncio
@@ -7,231 +6,149 @@ import hashlib
 import importlib.metadata as metadata
 import json
 import sys
-import threading
 from pathlib import Path
 
 from xdog.agent import Agent, AgentConfig
 from xdog.agent.skills import SkillManager
-from xdog.ai.types import AssistantMessage, DoneEvent, TextContent, ToolCall
+from xdog.ai.types import AssistantMessage, TextContent, ToolCall
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core import agent_session as installed_coding
 from xdog.coding.core.agent_session import AgentSession
 from xdog.coding.core.permissions import PermissionManager
 from xdog.coding.core.session_manager import SessionManager
 from xdog.coding.core.settings_manager import SettingsManager
+from xdog.coding.core.slash_commands import execute_command
 from xdog.coding.core.tools import get_default_tools
 
 
-def model(calls, gate=None, entered=None):
-    def stream(selected, context, options):
-        names = {tool.name for tool in context.tools}
-        role = "worker" if "task_report" in names else "reviewer" if "goal_context" in names else "parent"
-        calls.append(role)
-        start = max((i for i, message in enumerate(context.messages) if message.role == "user"), default=-1)
-        turn = sum(message.role == "assistant" for message in context.messages[start + 1 :])
-        if role != "parent" and turn == 0:
-            parts = (ToolCall(id="context", name="goal_context", arguments={}),)
-        elif role != "parent" and turn == 1:
-            parts = (ToolCall(id="read", name="filesystem", arguments={"action": "read", "path": "result.txt"}),)
-        elif role == "worker" and turn == 2:
-            parts = (
-                ToolCall(
-                    id="report",
-                    name="task_report",
-                    arguments={
-                        "revision": 1,
-                        "state": "submitted",
-                        "summary": "Read installed workspace",
-                        "evidence": ["result.txt"],
-                        "blockers": [],
-                    },
-                ),
-            )
-        elif role == "reviewer" and turn == 2:
-            parts = (
-                ToolCall(
-                    id="forbidden",
-                    name="filesystem",
-                    arguments={"action": "write", "path": "forbidden.txt", "content": "must not write"},
-                ),
-            )
-        elif role == "reviewer":
-            parts = (
-                TextContent(
-                    text=json.dumps(
-                        {
-                            "verdict": "passed",
-                            "summary": "Independent inspection",
-                            "conditions": [
-                                {
-                                    "condition": "Result exists",
-                                    "status": "passed",
-                                    "evidence": ["result.txt"],
-                                    "reason": "Read actual installed workspace",
-                                }
-                            ],
-                        }
-                    )
-                ),
-            )
-        else:
-            parts = (TextContent(text="done"),)
-        message = AssistantMessage(content=parts, stop_reason="toolUse" if isinstance(parts[0], ToolCall) else "stop")
+class Model:
+    def __init__(self):
+        self.calls = []
+        self.actions = ()
 
-        async def events():
-            if role == "worker" and gate is not None:
-                entered.set()
-                while not gate.is_set():
-                    await asyncio.sleep(.001)
-            yield DoneEvent(message=message)
+    def __call__(self, selected, context, options):
+        self.calls.append(context)
+        assert not {'task_report', 'goal_context'}.intersection(t.name for t in context.tools)
+        start = max((i for i, m in enumerate(context.messages) if m.role == 'user'), default=-1)
+        turn = sum(m.role == 'assistant' for m in context.messages[start + 1:])
+        parts = ((ToolCall(id='actual-' + str(turn), name=self.actions[turn][0], arguments=self.actions[turn][1]),)
+                 if turn < len(self.actions) else (TextContent(text='main Agent verified'),))
+        return EventStream.empty(AssistantMessage(content=parts,
+            stop_reason='toolUse' if isinstance(parts[0], ToolCall) else 'stop'))
 
-        future = asyncio.get_running_loop().create_future()
-        future.set_result(message)
-        return EventStream.from_async_generator(events(), result_future=future)
 
-    return stream
+async def owned(session, operation):
+    return await asyncio.wrap_future(session._sdk_controller.control(operation, name='wheel-owner'))
 
 
 async def main():
     assert Path(installed_coding.__file__).is_relative_to(Path(sys.prefix))
-    names = {dist.metadata["Name"].lower().replace("_", "-") for dist in metadata.distributions()}
-    assert not names.intersection({"xdog-claw", "xdog-eyes", "xdog-flow", "xdog-site"})
-    root = Path.cwd()
-    base_only = "--base-only" in sys.argv
-    root.joinpath("result.txt").write_text("real installed result")
-    store = SessionManager(root / "sessions")
-    skills = SkillManager(root / "not-created-skills")
+    names = {dist.metadata['Name'].lower().replace('_', '-') for dist in metadata.distributions()}
+    assert 'xdog-skills' in names
+    assert not names.intersection({'xdog-claw', 'xdog-eyes', 'xdog-flow', 'xdog-site'})
+    root, base_only = Path.cwd(), '--base-only' in sys.argv
+    root.joinpath('result.txt').write_text('real installed result')
+    skills = SkillManager(root / 'not-created-skills')
+    assert skills.load_skill('goal').scope == 'session'
     if not base_only:
-        assert skills.load_skill("goal").scope == "session"
-    calls = []
-    gate, entered = threading.Event(), threading.Event()
-    if not base_only:
-        root.joinpath("settings.json").write_text(json.dumps({
-            "extensions": ["goal_ui"], "extension_dir": str(root / "extensions")}))
-        from xdog.agent.extensions.discovery import extension_directory
-        resource = extension_directory("goal_ui", root / "extensions")
-        assert resource is not None and resource.is_relative_to(Path(sys.prefix))
-        ui_hash = hashlib.sha256(resource.joinpath("extension.yaml").read_bytes() + b"\0"
-                             + resource.joinpath("main.py").read_bytes()).hexdigest()
-    session = AgentSession(
-        agent=Agent(
-            model(calls, gate, entered),
-            config=AgentConfig(model="test/installed"),
-            tools=get_default_tools(root),
-            tool_ctx={"fs_workspace": str(root)},
-            skills=skills,
-            active_skills=() if base_only else ("goals",),
-        ),
-        session_data=store.create_session(model="test/installed", working_dir=root),
-        session_manager=store,
-        settings=SettingsManager(global_path=root / "settings.json"),
-        tool_registry=None,
-        bash=None,
-        working_dir=root,
-        permissions=PermissionManager("ask"),
-    )
-    controller = None
+        root.joinpath('settings.json').write_text(json.dumps({
+            'extensions': ['goal_ui'], 'extension_dir': str(root / 'extensions')}))
+    manager, model = SessionManager(root / 'sessions'), Model()
+    session = AgentSession(agent=Agent(model, config=AgentConfig(model='test/installed'),
+        tools=get_default_tools(root), tool_ctx={'fs_workspace': str(root)}, skills=skills),
+        session_data=manager.create_session(model='test/installed', working_dir=root), session_manager=manager,
+        settings=SettingsManager(global_path=root / 'settings.json'), tool_registry=None, bash=None,
+        working_dir=root, permissions=PermissionManager('allow-all'))
     try:
-        assert session.children.goal_host is None and not (root / "goals").exists()
-        await session.send_message("Inspect actual result")
-        host = session.children.goal_host
-        controller = session._sdk_controller
+        assert session.capabilities.get('goal') is None
+        # The very first operation is a real slash route, not a model warm-up.
+        result = await execute_command('goal', 'status', session)
+        host = session.capabilities.get('goal')
+        assert 'current' in result.output and host is not None and not model.calls
+        assert session.extensions.is_native_command('goal') and session.extensions.command_owner('goal') == 'goal'
+        assert not session._user_operation_authorized
+        assert await owned(session, host.service.current) is None
+        assert await owned(session, host.host.acp_target) is None  # Bare SDK never constructs a receiver.
         if base_only:
-            assert host is None and "xdog-skills" not in names and not (root / "goals").exists()
-            assert not any(name == "xdog.skills.goal" or name.startswith("xdog.skills.goal.") for name in sys.modules)
-            print(
-                json.dumps({"installed_coding_base_only": "actual ordinary SDK turn without Goal installed/imported"})
-            )
+            await session.send_message('Ordinary default chat')
+            assert len(model.calls) == 1 and not session.children.supervisor._children
+            print(json.dumps({'installed_coding_default': 'first native /goal status; ordinary chat; no Goal created',
+                              'no_eyes': True, 'implicit_receiver': False}))
             return
-        from xdog.skills.goal.host import OperationContext
-        from xdog.skills.goal.models import report_digest
-
-        assert host is not None and controller is not None and host.loop is controller._loop
-
-        async def lifecycle():
-            s = host.service
-            goal = await s.create("Output", "Inspect result", ("Result exists",), context=OperationContext(True))
-            goal = await s.add_task(goal.id, "Read output")
-            goal = await s.assign(goal.id, goal.tasks[0].id, "Read and report")
-            worker = goal.tasks[0].attempts[-1].worker
-            assert await asyncio.to_thread(entered.wait, 5)
-            from xdog.tui.components.extension_view import ExtensionView
-            count = len(calls)
-            assert session.extensions.command_owner('goals') == 'goal_ui'
-            assert 'goals' in session.extensions.commands() and 'ext-goal_ui-goals' not in session.extensions.commands()
-            display = str(await session.extensions.command("goals", ""))
-            assert goal.id in display and "Output" in display and len(calls) == count
-            assert any("Goals: 1" in line for line in ExtensionView(lambda: session.extensions.snapshot()).render(80))
-            await session.extensions.manage("unload", "goal_ui")
-            assert session.children.supervisor.active and not session.extensions.snapshot()["ui"]
-            gate.set()
-            await session.children.supervisor.control("wait", worker.id)
-            goal = await s.status(goal.id)
-            task = goal.tasks[0]
-            attempt = task.attempts[-1]
-            assert task.state == "submitted" and goal.status != "completed"
-            goal = await s.accept_task(goal.id, task.id, attempt.id, 1, report_digest(attempt.reports[-1]), "Read")
-            goal = await s.request_complete(goal.id, paths=("result.txt",))
-            assert goal.review.worker != worker
-            await session.children.supervisor.control("wait", goal.review.worker.id)
-            goal = await s.reconcile(goal.id)
-            await host.flush()
-            return goal
-
-        goal = await asyncio.wrap_future(controller.control(lifecycle, name="consumer-delegation"))
-        assert goal.status == "completed" and not (root / "forbidden.txt").exists()
-        async with asyncio.timeout(8):
-            while True:
-                rows = await asyncio.to_thread(host.inbox.records, session.session_id, root)
-                if rows and all(row.status == "succeeded" for row in rows):
-                    break
-                await asyncio.sleep(0.01)
-        assert calls.count("worker") == 4 and calls.count("reviewer") == 4
-        assert not root.joinpath("not-created-skills").exists()
-        assert not any(name.startswith(("xdog.claw", "xdog.eyes", "xdog.flow", "xdog.site")) for name in sys.modules)
-        async def query_completed():
-            await session.extensions.manage("reload", "goal_ui")
-            assert session.extensions.command_owner('goals') == 'goal_ui'
-            assert 'goals' in session.extensions.commands() and 'ext-goal_ui-goals' not in session.extensions.commands()
-            output = str(await session.extensions.command("goals", ""))
-            assert goal.id in output and "completed" in output
-        count = len(calls)
-        await asyncio.wrap_future(controller.control(query_completed, name="consumer-read-display"))
-        assert len(calls) == count
+        from xdog.agent.extensions.discovery import extension_directory
+        from xdog.tui.components.extension_view import ExtensionView
+        resource = extension_directory('goal_ui', root / 'extensions')
+        assert resource is not None and resource.is_relative_to(Path(sys.prefix))
+        ui_hash = hashlib.sha256(resource.joinpath('extension.yaml').read_bytes() + b'\0'
+                                 + resource.joinpath('main.py').read_bytes()).hexdigest()
+        model.actions = (('goal', {'action': 'create', 'title': 'Output', 'outcome': 'Inspect actual result'}),
+            ('goal', {'action': 'report', 'report': {'expected_version': 0, 'progress': 'baseline',
+                'summary': 'Initial verified state before working', 'completed': [], 'evidence': ['result.txt'],
+                'blockers': [], 'next_steps': ['Read actual result and update task']}}),
+            ('goal', {'action': 'plan', 'content': 'Read result.txt; record main Agent evidence'}),
+            ('filesystem', {'action': 'read', 'path': 'result.txt'}),
+            ('goal', {'action': 'task_update', 'task': {'id': 'inspect', 'title': 'Read result',
+                                                      'expected_version': 0}}))
+        await session.send_message('Create this Goal and record the main plan')
+        goal = await owned(session, host.service.current)
+        assert goal is not None and goal.title == 'Output'
+        status = await owned(session, host.service.status)
+        assert status['tasks'][0]['worker'] == 'main' and status['plan'].startswith('Read result.txt')
+        old_tool = host.tools[0]
+        assert any(old_tool is value for value in session.agent.state.tools)
+        before = len(model.calls)
+        output = await owned(session, lambda: session.extensions.command('goals', ''))
+        assert goal.id in str(output) and 'Output' in str(output) and len(model.calls) == before
+        assert any('Goals: 1' in line for line in ExtensionView(lambda: session.extensions.snapshot()).render(80))
+        await owned(session, lambda: session.extensions.manage('unload', 'goal_ui'))
+        assert not session.extensions.snapshot()['ui'] and not session.children.supervisor._children
+        model.actions = (('goal', {'action': 'report', 'report': {'expected_version': 1, 'progress': 'advanced',
+            'summary': 'Read actual output since the baseline', 'completed': ['Read result.txt'],
+            'evidence': ['result.txt'], 'blockers': [], 'next_steps': ['Commit task evidence and complete']}}),
+            ('goal', {'action': 'task_update', 'task': {'id': 'inspect', 'expected_version': 1,
+            'status': 'completed', 'summary': 'Read actual result', 'evidence': ['result.txt']}}),
+            ('goal', {'action': 'complete', 'summary': 'Main Agent verified result.txt'}))
+        await session.send_message('Finish the verified main task')
+        completed = await owned(session, lambda: host.service.status(goal.id))
+        assert completed['current']['status'] == 'completed' and completed['tasks'][0]['status'] == 'completed'
+        summary = await owned(session, lambda: host.service.summary(goal.id))
+        assert summary['latest_report']['version'] == 2 and summary['latest_report']['progress'] == 'advanced'
+        assert 'plan' not in summary and 'tasks' not in summary
+        assert Path(summary['report_path']).read_text().count('```json goal-report-v1') == 2
+        assert await owned(session, host.service.current) is None and not session.children.supervisor._children
+        # Both ask and read-only keep original pre-tool permission hooks.
+        model.actions = (('filesystem', {'action': 'write', 'path': 'forbidden.txt', 'content': 'not authorized'}),)
+        session.permissions = PermissionManager('ask')
+        await session.send_message('Read-only inspection, no arbitrary write approval')
+        assert not root.joinpath('forbidden.txt').exists()
+        session.permissions = PermissionManager('allow-all')
+        await asyncio.to_thread(session.access.set_read_only, True)
+        await session.send_message('Inspect without mutation')
+        assert not root.joinpath('forbidden.txt').exists()
+        await asyncio.to_thread(session.access.set_read_only, False)
+        model.actions = ()
+        await owned(session, lambda: session.extensions.manage('reload', 'goal_ui'))
+        output = await owned(session, lambda: session.extensions.command('goals', ''))
+        assert goal.id in str(output) and 'completed' in str(output)
         previous = session.extensions
         await asyncio.to_thread(session.new_session)
-        assert previous._closed and "Output" not in str(session.extensions.snapshot())
-        await session.send_message("New exact owner")
-        controller = session._sdk_controller
-        async def query_new():
-            assert await session.children.goal_host.service.list() == ()
-            output = str(await session.extensions.command("goals", ""))
-            assert "no goals" in output.lower() and goal.id not in output
-        await asyncio.wrap_future(controller.control(query_new, name="consumer-new-view"))
-        print(
-            json.dumps(
-                {
-                    "shared_goal_ui_sha256": ui_hash,
-                    "actual_display_unloaded_during_worker": True,
-                    "ui_owner_rotation": "old exact owner unavailable; new owner genuinely empty",
-                    "installed_coding_lifecycle": "explicit worker/acceptance/independent review/inbox consumption",
-                    "goal_status": goal.status,
-                    "worker_model_calls": 4,
-                    "reviewer_model_calls": 4,
-                    "parent_model_calls": calls.count("parent"),
-                    "permission_mode": "ask",
-                    "forbidden_write": False,
-                    "durable_notices_consumed": len(rows),
-                    "no_tui_receiver_or_provider_started": True,
-                }
-            )
-        )
+        assert previous._closed and 'Output' not in str(session.extensions.snapshot())
+        assert (await old_tool.execute('stale', {'action': 'status'})).is_error
+        await execute_command('goal', 'status', session)
+        fresh = session.capabilities.get('goal')
+        assert fresh.owner != host.owner and await owned(session, fresh.service.current) is None
+        assert await previous.views.read('goal_ui', 'goals', {}) is None
+        assert not root.joinpath('not-created-skills').exists()
+        assert not any(n.startswith(('xdog.claw', 'xdog.eyes', 'xdog.flow', 'xdog.site')) for n in sys.modules)
+        print(json.dumps({'shared_goal_ui_sha256': ui_hash,
+            'installed_coding_lifecycle': 'main model create/plan/read/task_update/complete through actual AgentTool',
+            'goal_status': 'completed', 'children_started': 0, 'ui_loss_does_not_own_progress': True,
+            'permission_modes': ['ask', 'readonly'], 'forbidden_write': False,
+            'ui_owner_rotation': 'old exact owner unavailable; new owner genuinely empty',
+            'main_model_calls': len(model.calls), 'implicit_receiver': False}))
     finally:
-        gate.set()
-        session.dispose()
-        if controller is not None:
-            await asyncio.wrap_future(controller.close())
+        await session.aclose()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     asyncio.run(main())

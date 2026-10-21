@@ -29,7 +29,9 @@ def test_claw_optional_eyes_and_eyes_owns_bounded_croniter():
     claw = _toml("packages/claw/pyproject.toml")["project"]
     eyes = _toml("packages/eyes/pyproject.toml")["project"]
     requirements = [Requirement(value) for value in claw["dependencies"]]
-    assert not {"xdog-eyes", "xdog-skills", "agent-client-protocol"} & {r.name for r in requirements}
+    direct = {r.name for r in requirements}
+    assert "xdog-eyes" not in direct
+    assert {"xdog-skills", "agent-client-protocol"} <= direct
     requirement = next(Requirement(value) for value in claw["optional-dependencies"]["eyes"]
                        if Requirement(value).name == "xdog-eyes")
     assert str(requirement.specifier) == ">=2.4.4"
@@ -110,9 +112,12 @@ def test_built_claw_metadata_optional_eyes_without_direct_croniter(artifacts, ki
     assert not any(value.name == "croniter" for value in requirements)
     assert set(metadata.get_all("Provides-Extra", [])) == {"search", "skills", "eyes", "acp", "all"}
     skills = [value for value in requirements if value.name == "xdog-skills"]
-    assert skills and all(str(value.specifier) == ">=2.4.4" and value.marker is not None for value in skills)
-    for extra, expected in (("", False), ("search", False), ("eyes", False), ("skills", True), ("all", True)):
-        assert any(value.marker.evaluate({"extra": extra}) for value in skills) is expected
+    assert skills and all(str(value.specifier) == ">=2.4.4" for value in skills)
+    assert any(value.marker is None for value in skills)  # Default capability, no extra required.
+    for extra in ("", "search", "eyes", "skills", "all"):
+        assert any(value.marker is None or value.marker.evaluate({"extra": extra}) for value in skills)
+    acp = [value for value in requirements if value.name == "agent-client-protocol"]
+    assert any(value.marker is not None and 'extra' not in str(value.marker) for value in acp)
     assert "group-scoped `eyes` tool" in metadata.get_payload()
 
 
@@ -172,13 +177,14 @@ def test_docs_distinguish_host_contract_from_standalone_and_runtime_completion(p
     assert "file observ" in text and "gateway restart" in text
     assert "standalone" in text.lower() and "Coding" in text
     assert "unadmitted" in text and "unknown execution" in text
-    assert "eyes_enabled: bool = False" in text
-    assert "acp_socket_path" in text and "data_dir/acp/agent.sock" in text and "`_eyes`" in text
+    assert "xdog-eyes" in text and "installed" in text
+    assert "eyes_enabled: bool" not in text
+    assert "acp_socket_path" in text and "data_dir/acp/agent.sock" in text
     assert "tasks_file" in text and "scheduled_tasks.json" in text
     assert "2026-10-18" in text and "untouched" in text
     assert "needs_confirmation" not in text
     configurations = re.findall(r"```yaml\n(.*?)\n```", (REPO / path).read_text(), re.DOTALL)
-    assert {"eyes_enabled": True} in [yaml.safe_load(value) for value in configurations]
+    assert all("eyes_enabled" not in (yaml.safe_load(value) or {}) for value in configurations)
     assert "requirements" in text and "receipt" in text and "delivery" in text and "replay" in text
 
 

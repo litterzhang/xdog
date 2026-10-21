@@ -17,11 +17,13 @@ from xdog.claw.acp.backend import ClawBackend
 from xdog.claw.acp.server import ClawAcpServer
 from xdog.claw.channels.tui.channel import TuiChannel
 from xdog.claw.config import ClawConfig
-from xdog.claw.core.observers.manager import ManagedObservers
+from xdog.eyes.hosting.manager import ManagedObservers
+from xdog.claw.core.runtime.application_ports import ApplicationPorts
+from xdog.agent.capabilities import CapabilitySet
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.types import Group,GroupConfig,UserInput
 from xdog.claw.core.inputs.models import InputScope
-from xdog.claw.core.outputs.targets import ReplyReference
+from xdog.claw.core.outputs.targets import ReplyReference,encode_reply
 from xdog.eyes.loader import definition_data
 from xdog.eyes.managed_scheduler import SchedulerClocks,initial_managed_state
 root,endpoint,phase=Path(sys.argv[1]),Path(sys.argv[2]),sys.argv[3]
@@ -35,13 +37,13 @@ def model(*args):
  with (root/'calls').open('a') as f:f.write('model\n')
  return EventStream.empty(AssistantMessage(content=(TextContent(text='cross-process report'),)))
 async def main():
- config=ClawConfig(data_dir=str(root/'data'),eyes_enabled=True,enabled_tools=('eyes',))
- orch=Orchestrator(config,model='test/process',stream_fn=model)
+ config=ClawConfig(data_dir=str(root/'data'),enabled_tools=('eyes',))
+ orch=Orchestrator(config,model='test/process',stream_fn=model,defer_inputs=True)
  orch.register_group(Group(id='main',workspace=str(root),enabled_tools=('eyes',),config=GroupConfig()))
  clocks=SchedulerClocks(lambda:clock,lambda:clock)
  path=root/'private'/'inbox.sqlite3'
  if phase=='create':
-  service=ManagedObservers(orch,endpoint,clocks=clocks)
+  service=ManagedObservers(ApplicationPorts(orch,endpoint),clocks=clocks)
   await service._ensure_store()
   definition=service.definition('main','persisted',{'type':'scheduler','schedule':{
    'at':datetime.fromtimestamp(clock+10,UTC).isoformat()}},'Report after restart')
@@ -49,7 +51,7 @@ async def main():
   target=ReplyReference(InputScope('main',root),'old-process-binding',UserInput(group_id='main',
    sender='test-sink',channel='tui',metadata={'account_id':'process-test-sink'}))
   await service.store.create('main',root,'persisted',definition_data(definition),identifier='eyes-process',state=state,
-   reply=target)
+   reply=encode_reply(target))
   await service.close()
  else:
   channel=ProcessSink()
@@ -59,10 +61,14 @@ async def main():
   channel.send_message=send
   orch.add_channel(channel)
   server=await ClawAcpServer.start(orch,endpoint)
-  service=ManagedObservers(orch,endpoint,clocks=clocks)
-  orch.set_observers(service)
+  service=ManagedObservers(ApplicationPorts(orch,endpoint),clocks=clocks)
+  capabilities=CapabilitySet('application')
+  capabilities._bindings['eyes']=service
+  orch.application_capabilities = capabilities
   try:
    await service.start()
+   await orch.refresh_application_capabilities()
+   (await orch.input_service()).resume()
    async with asyncio.timeout(8):
     while (await service.status('main','eyes-process'))['state']!='completed':await asyncio.sleep(.01)
    assert len(count)==(1 if phase=='execute' else 0)

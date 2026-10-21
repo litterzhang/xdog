@@ -1,7 +1,6 @@
 """A source firing, a model receipt, and a delivered report are not one status."""
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -9,6 +8,8 @@ from xdog.agent.session_input import SessionInput
 from xdog.ai.types import AssistantMessage
 from xdog.claw.channels.tui.channel import TuiChannel
 from xdog.claw.core.inputs.models import InputScope
+from xdog.claw.core.outputs.targets import decode_reply
+from xdog.claw.core.runtime.application_ports import input_snapshot
 from xdog.claw.core.types import ExternalInput
 
 from packages.claw.tests.eyes_helpers import at, scheduler
@@ -24,7 +25,7 @@ async def test_failures_never_mark_success(managed, failure, monkeypatch):
         managed.channel.send_message.side_effect = RuntimeError('delivery failed')
     elif failure == 'no-channel':
         reference = (await managed.record(created['id'])).reply
-        managed.orch.unregister_reply_channel(reference.binding)
+        managed.orch.unregister_reply_channel(decode_reply(reference).binding)
         managed.orch._channels.clear()
     elif failure == 'unknown-group':
         execute = managed.orch._execute_owned_input
@@ -109,7 +110,7 @@ async def test_untrusted_external_provenance_cannot_opt_into_managed_reporting(m
         return record if record is not None and record.status == 'succeeded' else None
     record = await managed.until(done)
     assert record.response == 'Scheduled report' and managed.model.calls == ['forged request']
-    assert await managed.manager.store.occurrence(record) is None
+    assert await managed.manager.store.occurrence(input_snapshot(record)) is None
     managed.channel.send_message.assert_not_awaited()
     assert not (await managed.manager.status('g1', created['id']))['occurrences']
 
@@ -123,23 +124,19 @@ async def test_unknown_group_is_rejected_without_fallback_or_model_start(managed
 
 
 async def test_top_level_group_spoof_cannot_redirect_current_group_tool(managed):
-    # group_id/endpoint are absent from the Eyes API. Even the generic dispatcher
-    # ignoring extra caller keys cannot grant a route outside trusted ctx.
-    text = await managed.tool('create', name='owner-only', source=at(), instruction='report',
-                              group_id='g2', endpoint='/tmp/attacker.sock')
-    assert not text.startswith('Error:'), text
-    created = json.loads(text)
-    record = await managed.record(created['id'])
-    assert record.group_id == 'g1' and record.cwd == managed.orch.get_group_workspace('g1')
-    handler = record.definition['handlers'][0]
-    assert handler['session'] == 'group:g1' and handler['connection']['path'] == str(managed.endpoint)
-    assert await managed.manager.list('g2') == () and not managed.model.calls
+    # Extra routing fields are rejected, including direct descriptor callers that
+    # bypass Agent's JSON-schema validation. Nothing is created in either group.
+    with pytest.raises(ValueError, match='exact required parameters'):
+        await managed.tool('create', name='owner-only', source=at(), instruction='report',
+                           group_id='g2', endpoint='/tmp/attacker.sock')
+    assert await managed.manager.list('g1') == () and await managed.manager.list('g2') == ()
+    assert not managed.manager._tasks and not managed.manager._handlers
 
 
 async def test_restart_after_execution_commit_before_transport_recovers_core_outputs_without_model_replay(managed):
     created = await managed.create()
     reference = (await managed.record(created['id'])).reply
-    managed.orch.unregister_reply_channel(reference.binding)
+    managed.orch.unregister_reply_channel(decode_reply(reference).binding)
     managed.orch._channels.clear()
     managed.clock.advance(240)
     saved = await managed.completed(created['id'], pending_report=True)

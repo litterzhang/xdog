@@ -90,7 +90,7 @@ def test_old_generation_cannot_complete_a_new_request_with_same_display_key():
     assert "Status: queued" in text(log) and "Status: succeeded" not in text(log)
 
 
-def test_native_duplicate_stream_and_late_generation_do_not_repeat_tools_or_completion(coding_session):
+def test_native_duplicate_stream_and_late_generation_do_not_repeat_tools_or_completion(coding_session, monkeypatch):
     from xdog.agent import AgentToolResult, ToolExecutionEndEvent, ToolExecutionStartEvent
     from xdog.ai.types import TextContent
     from xdog.coding.modes.interactive.components.tool_execution import ToolExecutionComponent
@@ -101,6 +101,21 @@ def test_native_duplicate_stream_and_late_generation_do_not_repeat_tools_or_comp
     controller = coding_session.runtime.controller
     observed = []
     controller.subscribe(observed.append)
+    # Frames intentionally yield after a bounded batch (including an 8ms time
+    # budget). Force one event per frame to cover that contract deterministically
+    # instead of assuming the host always renders a whole turn in one _poll().
+    drain = ui._event_queue.drain
+    monkeypatch.setattr(ui._event_queue, "drain", lambda handler: drain(handler, max_events=1))
+
+    def poll_published():
+        # The submitted result fences publication of its stream and completion.
+        # Every frame must consume at least one snapshot; no sleeps, larger
+        # timeouts, dropped assertions or production budget changes are needed.
+        for _ in range(ui._event_queue.qsize() + 1):
+            ui._poll()
+            if ui._event_queue.empty():
+                return
+        raise AssertionError("Published UI events did not drain across bounded frames")
 
     async def execute(item):
         job = controller._jobs[item.id]
@@ -124,7 +139,7 @@ def test_native_duplicate_stream_and_late_generation_do_not_repeat_tools_or_comp
     try:
         controller.human_input()
         controller.submit(value(), peer_id="acp").result.result(timeout=3)
-        ui._poll()
+        poll_published()
         tools = [child for child in ui._chat_log.children if isinstance(child, ToolExecutionComponent)]
         assert len(tools) == 1
         assert tools[0]._state == "success"
@@ -137,7 +152,7 @@ def test_native_duplicate_stream_and_late_generation_do_not_repeat_tools_or_comp
             generation="old",
         )
         ui._session_events.receive(stale)
-        ui._poll()
+        poll_published()
         assert len(ui._chat_log.children) == size
         assert "stale source" not in text(ui._chat_log)
     finally:

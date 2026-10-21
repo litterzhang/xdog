@@ -1,0 +1,138 @@
+{
+  "objective": "Goal可靠提醒、恢复、可用性和主Agent续跑前进展报告",
+  "status": "complete",
+  "total": 9,
+  "remaining": 0,
+  "counts": {
+    "待实现": 0,
+    "待验证": 0,
+    "缺外部环境": 0,
+    "已完成": 9,
+    "延期": 0
+  },
+  "requirements": [
+    {
+      "id": "GO-01",
+      "title": "统一提醒与背压",
+      "acceptance": "execution和Eyes共用Goal提醒状态，一Goal至多一条未消费提醒；忙时累积变化，去重不丢后续变化",
+      "status": "已完成",
+      "evidence": [
+        "packages/skills/tests/goal/test_reminder_coalescing.py",
+        "packages/skills/tests/goal/test_reminder_review.py",
+        "/home/zhang/.cache/xdog-goal-optimization-20261021/run-eyes-pause-live.log"
+      ]
+    },
+    {
+      "id": "GO-02",
+      "title": "启动重连核对",
+      "acceptance": "持久信号与原始权威回执恢复；accepted不重复，unknown/中断不重放，旧owner拒绝",
+      "status": "已完成",
+      "evidence": [
+        "packages/coding/tests/test_capability_execution_recovery.py",
+        "packages/claw/tests/test_capability_execution_recovery.py",
+        "packages/skills/tests/goal/test_store.py"
+      ]
+    },
+    {
+      "id": "GO-03",
+      "title": "事实状态展示",
+      "acceptance": "目标/执行/等待/观察/提醒/下一步分开，active不冒充running",
+      "status": "已完成",
+      "evidence": [
+        "packages/skills/tests/goal/test_status_reads.py",
+        "/home/zhang/.cache/xdog-goal-optimization-20261021/run-coding-lifecycle.log",
+        "/home/zhang/.cache/xdog-goal-optimization-20261021/run-claw-lifecycle.log"
+      ]
+    },
+    {
+      "id": "GO-04",
+      "title": "任务原子更新入口",
+      "acceptance": "worker可复用expected_version更新helper，冲突明确、原子写、no-follow、文件唯一权威",
+      "status": "已完成",
+      "evidence": [
+        "packages/skills/tests/goal/test_task_cli.py",
+        "packages/skills/tests/goal/test_files.py"
+      ]
+    },
+    {
+      "id": "GO-05",
+      "title": "按需读取",
+      "acceptance": "默认摘要不读整个计划，任务分页/过滤/单项读取，变化检测防混页",
+      "status": "已完成",
+      "evidence": [
+        "packages/skills/tests/goal/test_status_reads.py"
+      ]
+    },
+    {
+      "id": "GO-06",
+      "title": "暂停语义",
+      "acceptance": "paused后Goal runtime不主动续跑并停止自有Eyes监控；显式resume才恢复，不取消已接收输入/工具/子Agent，安全点说明明确",
+      "status": "已完成",
+      "evidence": [
+        "packages/skills/tests/goal/test_reminder_review.py",
+        "/home/zhang/.cache/xdog-goal-optimization-20261021/run-eyes-pause-live.log"
+      ]
+    },
+    {
+      "id": "GO-07",
+      "title": "续跑进展报告",
+      "acceptance": "goal report支持主Agent对比上一轮并原子更新Goal Markdown，首轮baseline，完成内容/证据/阻塞/下一步可读可恢复",
+      "status": "已完成",
+      "evidence": [
+        "packages/skills/tests/goal/test_progress_reports.py",
+        "packages/coding/tests/test_goal_progress.py",
+        "packages/claw/tests/test_goal_progress.py",
+        "/home/zhang/.cache/xdog-goal-optimization-20261021/run-goal-only.log"
+      ]
+    },
+    {
+      "id": "GO-08",
+      "title": "无进展退出",
+      "acceptance": "skill要求多次无进展且无可行策略时主Agent主动pause并说明恢复条件，无脚本判定或固定轮数",
+      "status": "已完成",
+      "evidence": [
+        "packages/skills/src/xdog/skills/skills/goal/SKILL.md",
+        "packages/coding/tests/test_goal_progress.py",
+        "packages/claw/tests/test_goal_progress.py"
+      ]
+    },
+    {
+      "id": "GO-09",
+      "title": "边界与完整验收",
+      "acceptance": "业务仅Goal、通用host事实不赋权；Linux定向/完整九包/静态/适用构建冷安装，保护dirty不发布重启",
+      "status": "已完成",
+      "evidence": [
+        "/home/zhang/.cache/xdog-goal-optimization-20261021/final-regression.log",
+        "/home/zhang/.cache/xdog-goal-optimization-20261021/installed-environments.json",
+        "/home/zhang/.cache/xdog-goal-optimization-20261021/runs.json",
+        "/home/zhang/.cache/xdog-goal-optimization-20261021/dirty-preservation.json",
+        "docs/goal-optimization-verification.md"
+      ]
+    }
+  ],
+  "evidence_root": "/home/zhang/.cache/xdog-goal-optimization-20261021",
+  "out_of_scope": [
+    "发布/tag/服务重启",
+    "非Linux原生验证",
+    "真实付费provider/微信网络"
+  ],
+  "notes": [
+    "原 /tmp 验收目录随宿主重启丢失；本次从实际工作区与持久安装环境重建最终验收证据。",
+    "需求数为9，不以测试数或回归轮数代替。"
+  ],
+  "verification_document": "docs/goal-optimization-verification.md",
+  "final": {
+    "date": "2026-10-21",
+    "regression": {
+      "passed": 7770,
+      "skipped": 7,
+      "seconds": 172.88
+    },
+    "strict_mypy_source_files": 611,
+    "flow_examples": 17,
+    "projects": 10,
+    "artifacts": 20,
+    "installed_environments": 9,
+    "installed_scenarios": 8
+  }
+}

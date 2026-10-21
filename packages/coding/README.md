@@ -548,12 +548,12 @@ continuation silently reconnects, replays POSTs or expands configured disclosure
 
 ### Task planning and host read-only scope
 
-The builtin **`xdog-planning`** skill, supplied by `xdog-skills` (install the
+The builtin **`plan`** skill, supplied by `xdog-skills` (install the
 `skills` extra), uses ordinary conversation or task documents
 for objectives, dependencies, acceptance criteria and evidence-backed progress.
 It does not create a separate plan database, inspector, execution mode or model
 loop. The former `/plan`, `PlanPanel` and `update_plan` UI/tool APIs are removed.
-List it with `/skills` and activate it with `/xdog-planning [request]`.
+List it with `/skills` and activate it with `/plan [request]`.
 
 Use the native host control separately:
 
@@ -750,7 +750,7 @@ none of these interfaces grants tool permission or full Pi API compatibility.
 TASK` inherits the current host policy; it does not copy approval grants or bypass
 read-only. Inspect with `/agents list` or `/agents inspect ID`; use `steer ID TEXT`,
 `follow-up ID TEXT`, `cancel ID`, `wait ID` and `close ID` under `/agents`.
-Parents also receive reserved `agent_spawn`/`agent_control` tools; children cannot
+Parents also receive the reserved unified `agent` tool; children cannot
 recursively delegate through their parent's supervision tools.
 
 Children share the workspace, so coordinate conflicting writes. Context is copied
@@ -2048,7 +2048,7 @@ count and `initial-task`/`crash-snapshot`/`durable-return` uncertainty are visib
 This native view has no editor, reorder/remove/return control, recovery-copy button
 or permission-confirmation action. Paste cannot submit or adopt a draft.
 
-The ordinary main-Agent `agent_control` tool retains `action="queue"` with a typed
+The ordinary main-Agent `agent` tool retains `action="queue"` with a typed
 JSON `text` request. SDK `ChildSupervisor.control("queue", ...)` also remains.
 Their edit/remove/move/text-return and explicit stopped recovery operations use the
 real owner loop and existing identity, revision, selected-input, image-byte and
@@ -2166,7 +2166,7 @@ existing limitations.
 `recover_images` remains an explicit SDK/main-Agent queue operation with exact
 input `id` and queue `revision`. `ChildSupervisor.control` returns the verified
 non-destructive `image_recovery` payload and `queue.image_receipt`; the ordinary
-`agent_control` wrapper returns typed images plus receipt/count metadata. The
+`agent` wrapper returns typed images plus receipt/count metadata. The
 text-only `recover` action refuses image-bearing inputs rather than dropping bytes.
 Running children use the separate owned live-return protocol, not stopped recovery.
 
@@ -2240,7 +2240,7 @@ SDK journaling and same-session transient editor recovery are not removed.
 The native user interface offers neither manual live queue edit/reorder/remove/
 return nor stopped task/input copy controls. Those queue operations remain in the
 permissioned main-Agent/SDK backend; native queue inspection is read-only.
-The main Agent can use its ordinary permissioned `agent_control` tool with
+The main Agent can use its ordinary permissioned `agent` tool with
 `action="queue"` and a JSON `text` request containing `return_prepare`,
 `return_commit` or `return_cancel` plus the required input/revision/receipt fields.
 Preparation returns typed image content and bounded token/receipt metadata; it
@@ -2683,8 +2683,31 @@ exactly-once execution or an OS security sandbox. No existing user data is migra
 or discarded automatically.
 
 Enabled extensions may declare a public slash name. The packaged `goal_ui`
-display exposes `/goals [GOAL_ID | page OFFSET]`; `/goal` remains the skill name.
+display exposes `/goals [GOAL_ID | page OFFSET]`; default native `/goal` manages the current Goal.
 This is generic extension routing, not a Coding-specific Goal command. Public
-names appear in help/completion and cannot shadow builtin or skill commands;
+names appear in help/completion and cannot shadow builtins or other owners; native installed capabilities
+may explicitly overlap only their own skill command entry, without preventing skill loading;
 model tool names and permissions do not change. See
 `docs/extension-public-commands.md` for the shared Coding/Claw contract.
+
+
+### Installed capability code boundaries
+
+Trusted installed native capabilities use generic owner, lifecycle event, ACP
+routing and receipt ports. Coding/Claw default dependencies include xdog-skills:
+`/goal` commands and the model tool are available without a display-worker setting
+or Goal enable flag. The packaged skill remains discoverable/loadable. No Goal is
+created merely by installation or ordinary chat.
+
+Goal owns one current binding/history, task files and ACP reminders. The current
+main Agent plans, executes itself or uses existing child tools, updates tasks and
+judges completion according to the skill. No Goal-owned worker/reviewer scheduler
+or independent acceptance protocol remains. Tasks/*.json are authoritative, not
+projections of duplicate database task state. Pauses and user/host waits cannot be
+released by an automatic message. Existing readonly/permissions/approval checks
+remain in force. Eyes watches only the generated task directory configuration;
+stopping Goal automation does not cancel unrelated observers or accepted work.
+
+See `docs/goal-simple-design.md` and its requirement/verification record. Earlier
+capability-boundary and Goal reviewer lifecycle evidence describes its old frozen
+implementation, not the current Goal contract.

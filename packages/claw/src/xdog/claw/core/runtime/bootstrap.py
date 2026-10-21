@@ -17,7 +17,8 @@ class BuiltApplication:
 def build(config: ClawConfig) -> BuiltApplication:
     from xdog.claw.core.runtime.gateway import _build_model_and_options, _groups_from_config
     model, stream = _build_model_and_options(config)
-    app = Orchestrator(config, model=model, stream_fn=stream, data_dir=Path(config.data_dir))
+    app = Orchestrator(config, model=model, stream_fn=stream, data_dir=Path(config.data_dir),
+                       defer_inputs=True)
     try:
         for group in _groups_from_config(config):
             app.register_group(group)

@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
+import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from xdog.agent.async_work import wait_owned
 from xdog.claw.core.inputs.models import InputEnvelope, InputScope
@@ -39,10 +41,21 @@ class InputService:
     def __init__(self, store: InputStore, execute: Execute, *,
                  on_settled: Callable[[InputScope], None] | None = None, paused: bool = False,
                  execution_scope: Callable[[InputRecord], AbstractAsyncContextManager[None]] | None = None,
-                 on_admitted: Callable[[InputRecord, str], None] | None = None) -> None:
+                 on_admitted: Callable[[InputRecord, str], None] | None = None,
+                 snapshot: Callable[[InputScope], dict[str, Any]] | None = None,
+                 acp_target: Callable[[InputScope], Awaitable[dict[str, Any] | None]] | None = None) -> None:
         self.store, self.execute = store, execute
+        try:
+            self._loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            self._loop = None
         self.on_settled = on_settled
         self.execution_scope, self.on_admitted = execution_scope, on_admitted
+        self._owner_snapshot, self._acp_target = snapshot, acp_target
+        self._generation = uuid.uuid4().hex
+        self._execution_listeners: dict[InputScope, list[Callable[[dict[str, Any]], None]]] = {}
+        self._human_pending: set[tuple[InputScope, str]] = set()
+        self._settled_events: set[tuple[InputScope, str, str, str]] = set()
         self._paused = paused
         self._signals: dict[InputScope, asyncio.Event] = {}
         self._tasks: dict[InputScope, asyncio.Task[None]] = {}
@@ -62,6 +75,63 @@ class InputService:
     def subscribe_completed(self, callback: Callable[[InputRecord], None]) -> Callable[[], None]:
         self._completed.add(callback)
         return lambda: self._completed.discard(callback)
+
+    def execution_snapshot(self, scope: InputScope) -> dict[str, Any]:
+        snapshot = (dict(self._owner_snapshot(scope)) if self._owner_snapshot is not None else
+                    {'state': 'idle' if scope in self._signals else 'unavailable',
+                     'user_pending': False, 'children_active': False, 'generation': self._generation})
+        if self._closing:
+            snapshot['state'] = 'closing'
+        elif scope in self._faults:
+            snapshot['state'] = 'unavailable'
+        elif scope in self._active and snapshot['state'] != 'unavailable':
+            snapshot['state'] = 'running'
+        snapshot['user_pending'] = snapshot['user_pending'] or any(owner == scope for owner, _ in self._human_pending)
+        return snapshot
+
+    def subscribe_events(self, scope: InputScope, callback: Callable[[dict[str, Any]], None]) -> Callable[[], None]:
+        callbacks = self._execution_listeners.setdefault(scope, [])
+        callbacks.append(callback)
+        self.publish_available(scope)
+        def cancel() -> None:
+            if callback in callbacks:
+                callbacks.remove(callback)
+            if not callbacks:
+                self._execution_listeners.pop(scope, None)
+        return cancel
+
+    def _execution_event(self, scope: InputScope, kind: str, *, execution_id: str = '', status: str = '',
+                         automatic: bool | None = None) -> None:
+        try:
+            same_loop = asyncio.get_running_loop() is self._loop
+        except RuntimeError:
+            same_loop = False
+        if self._loop is None:
+            self._loop = asyncio.get_running_loop()
+            same_loop = True
+        if not same_loop:
+            if not self._loop.is_closed():
+                self._loop.call_soon_threadsafe(lambda: self._execution_event(scope, kind,
+                    execution_id=execution_id, status=status, automatic=automatic))
+            return
+        snapshot = self.execution_snapshot(scope)
+        value: dict[str, Any] = {'type': kind, 'execution_id': execution_id, 'status': status,
+                                 'generation': snapshot['generation'], 'snapshot': snapshot}
+        if automatic is not None:
+            value['automatic'] = automatic
+        for callback in tuple(self._execution_listeners.get(scope, ())):
+            try:
+                callback(copy.deepcopy(value))
+            except Exception:
+                logger.warning('Committed execution listener failed', exc_info=True)
+
+    def publish_available(self, scope: InputScope) -> None:
+        self._execution_event(scope, 'owner.retiring' if self._closing else 'owner.available')
+
+    async def acp_target(self, scope: InputScope) -> dict[str, Any] | None:
+        if self._closing or self._acp_target is None:
+            return None
+        return await self._acp_target(scope)
 
     def wake(self, scope: InputScope) -> None:
         if self._closing or scope in self._faults:
@@ -103,6 +173,8 @@ class InputService:
         for record in await self.store.records(scope):
             if record.status not in _TERMINAL:
                 self._pending.add((scope, record.envelope.message.id))
+                if record.envelope.human_authorized:
+                    self._human_pending.add((scope, record.envelope.message.id))
         if wake:
             self.wake(scope)
 
@@ -116,6 +188,8 @@ class InputService:
             result = await self.store.enqueue(envelope, max_pending=max_pending)
             if result[0].status not in _TERMINAL:
                 self._pending.add((envelope.scope, envelope.message.id))
+                if result[0].envelope.human_authorized:
+                    self._human_pending.add((envelope.scope, envelope.message.id))
             return result
         finally:
             # An ACK can be lost after a real commit; the application, not the
@@ -165,6 +239,13 @@ class InputService:
     def _publish_terminal(self, record: InputRecord) -> None:
         if record.status not in _TERMINAL:
             return
+        scope, identifier = record.envelope.scope, record.envelope.message.id
+        self._human_pending.discard((scope, identifier))
+        key = scope, identifier, record.attempt_id, record.status
+        if key not in self._settled_events:
+            self._settled_events.add(key)
+            self._execution_event(scope, 'execution.settled', execution_id=record.attempt_id or identifier,
+                                  status=record.status, automatic=not record.envelope.human_authorized)
         if self.on_settled is not None:
             try:
                 self.on_settled(record.envelope.scope)
@@ -285,6 +366,7 @@ class InputService:
                     self._active.discard(scope)
                     self._notify(scope, record.envelope.message.id)
                     self._publish_terminal(completed)
+                    self.publish_available(scope)
                     record, claim = None, None
                 if self._closing:
                     break
@@ -298,10 +380,13 @@ class InputService:
         finally:
             self._active.discard(scope)
             self._notify(scope)
+            self.publish_available(scope)
 
     def request_stop(self) -> None:
         """Stop admission/signal real execution now; close joins before releasing IO."""
         self._closing = True
+        for scope in tuple(self._execution_listeners):
+            self.publish_available(scope)
         for task in tuple(self._tasks.values()):
             if not task.done() and not task.cancelling():
                 task.cancel()

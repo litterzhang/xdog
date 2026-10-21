@@ -329,8 +329,7 @@ class InteractiveMode:
         self._keymap = PromptKeymap.load(get_config_dir() / "keybindings.json")
         self._editor = CustomEditorComponent(self._theme)
         original_commands = self._editor._command_provider
-        self._editor._command_provider = lambda: {**{name: text for name, text in original_commands().items()
-                                                                   if name.removeprefix("/") != "plan"},
+        self._editor._command_provider = lambda: {**original_commands(),
             "readonly": "Host access scope: /readonly on|off|status (not tool approval)",
             'draft': 'Parent draft autosave [on|off] and reviewed saved recovery',
             **self._session.extensions.commands()}
@@ -2220,10 +2219,6 @@ class InteractiveMode:
 
     def _handle_slash_command(self, cmd: str, args: str) -> None:
         if self._exit_requested:
-            return
-        if cmd == 'plan':
-            self._chat_log.add_system('Planning mode UI was removed; use /readonly on|off|status')
-            self._tui.request_render()
             return
         if cmd == 'readonly':
             if args.strip() not in {'', 'status', 'on', 'off'}:

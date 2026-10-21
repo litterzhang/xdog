@@ -85,8 +85,8 @@ async def test_tool_immediate_visibility_scope_and_cancel(managed):
     assert not managed.model.calls and await managed.manager.list('g2') == ()
     assert created['id'] not in await managed.tool('list', group='g2')
     for action in ('status', 'cancel'):
-        text = await managed.tool(action, group='g2', observer_id=created['id'])
-        assert text.startswith('Error:')
+        with pytest.raises(ValueError, match='Unknown observer'):
+            await managed.tool(action, group='g2', observer_id=created['id'])
     assert (await managed.manager.status('g1', created['id']))['enabled']
     text = await managed.tool('cancel', observer_id=created['id'])
     assert 'cancel' in text.lower()
@@ -106,19 +106,18 @@ async def test_tool_immediate_visibility_scope_and_cancel(managed):
     {'source': scheduler(at='2026-10-12T09:24:00+08:00', cron='* * * * *', timezone='UTC')},
 ])
 async def test_tool_errors_are_explicit(managed, args):
-    text = await managed.tool('create', **{'name': 'invalid', 'instruction': 'report', **args})
-    assert text.startswith('Error:')
+    with pytest.raises(ValueError):
+        await managed.tool('create', **{'name': 'invalid', 'instruction': 'report', **args})
     assert await managed.manager.list('g1') == ()
 
 
-async def test_tool_requires_live_service_and_owner():
-    from xdog.claw.core.tools.tool_eyes import create_eyes_tool
-    tool = create_eyes_tool()
-    for ctx in ({}, {'group_id': 'g1', 'data_dir': '/must/not/write'}):
-        result = await tool.execute('x', {'action': 'create', 'name': 'check',
-                                         'instruction': 'check', 'source': scheduler(every_seconds=60)}, ctx=ctx)
-        assert result.content[0].text.startswith('Error:')
-        assert 'running' in result.content[0].text.lower() or 'live' in result.content[0].text.lower()
+async def test_tool_requires_live_service_and_owner(managed):
+    tool = managed.manager.tools[0]
+    for ctx in ({}, {'group_id': 'unknown', 'data_dir': '/must/not/write'}):
+        with pytest.raises(ValueError, match='owner'):
+            await tool.execute('x', {'action': 'create', 'name': 'check',
+                                     'instruction': 'check', 'source': scheduler(every_seconds=60)}, ctx=ctx)
+        assert await managed.manager.list('g1') == ()
 
 
 async def test_failed_save_does_not_publish_task(managed):
@@ -156,3 +155,50 @@ async def test_late_recurring_tick_coalesces_occurrences(managed):
     assert not poll(timer, managed).occurrences
     managed.clock.advance(1)
     assert len(poll(timer, managed).occurrences) == 1
+
+
+async def test_actual_agent_loop_marks_descriptor_errors_and_rejects_host_override_arguments(managed, monkeypatch):
+    from unittest.mock import Mock
+
+    from xdog.ai.types import AssistantMessage, ToolCall, ToolResultMessage
+    from xdog.claw.core.types import UserInput
+
+    host = managed.manager.host
+    scope = Mock(wraps=host.tool_scope)
+    reply = Mock(wraps=host.capture_reply)
+    monkeypatch.setattr(host, 'tool_scope', scope)
+    monkeypatch.setattr(host, 'capture_reply', reply)
+    cases = [
+        {'owner': 'g2'}, {'group_id': 'g2'}, {'reply': None}, {'reply_reference': None},
+        {'notify_only': None}, {'service': None}, {'_eyes': None},
+    ]
+    for index, extra in enumerate(cases):
+        params = {'action': 'create', 'name': 'must-not-exist', 'source': at(), 'instruction': 'report', **extra}
+        # Also cover descriptor callers that do not run Agent's schema validator.
+        with pytest.raises(ValueError, match='exact required parameters'):
+            await managed.manager.tools[0].execute('direct', params, ctx={'group_id': 'g1'})
+        prompt = f'forged host binding {index}'
+        managed.model.replies[prompt] = AssistantMessage(content=(ToolCall(
+            id=f'forged-{index}', name='eyes', arguments=params),), stop_reason='toolUse')
+        await managed.orch.route_message(UserInput(group_id='g1', content=prompt),
+                                         reply_reference=managed.reference('g1'))
+        messages = managed.orch._runtimes['g1'].get_or_create_session().agent.state.messages
+        result = next(item for item in messages if isinstance(item, ToolResultMessage)
+                      and item.tool_call_id == f'forged-{index}')
+        assert result.is_error is True
+    scope.assert_not_called()
+    reply.assert_not_called()
+
+    # Valid outer schema reaches the real descriptor and raises in source validation.
+    # It must still produce a standard error ToolResultMessage, not successful text.
+    managed.model.replies['invalid source'] = AssistantMessage(content=(ToolCall(
+        id='invalid-source', name='eyes', arguments={'action': 'create', 'name': 'invalid-source',
+        'source': scheduler(every_seconds=0), 'instruction': 'report'}),), stop_reason='toolUse')
+    await managed.orch.route_message(UserInput(group_id='g1', content='invalid source'),
+                                     reply_reference=managed.reference('g1'))
+    messages = managed.orch._runtimes['g1'].get_or_create_session().agent.state.messages
+    result = next(item for item in messages if isinstance(item, ToolResultMessage)
+                  and item.tool_call_id == 'invalid-source')
+    assert result.is_error is True and scope.called and reply.called
+    assert await managed.manager.list('g1') == () and await managed.manager.list('g2') == ()
+    assert not managed.manager._tasks and not managed.manager._files

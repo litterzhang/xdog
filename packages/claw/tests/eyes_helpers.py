@@ -14,11 +14,35 @@ from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.acp.server import ClawAcpServer
 from xdog.claw.channels.tui.channel import TuiChannel
 from xdog.claw.config import ClawConfig
-from xdog.claw.core.observers.manager import ManagedObservers
+from xdog.claw.core.outputs.targets import encode_reply
+from xdog.claw.core.runtime.application_ports import ApplicationPorts
 from xdog.claw.core.runtime.group import GroupRuntime
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.types import Group, GroupConfig, UserInput
+from xdog.eyes.hosting.manager import ManagedObservers
 from xdog.eyes.managed_scheduler import SchedulerClocks
+
+
+def bind_application(application, manager):
+    application.application_capabilities._bindings['eyes'] = manager
+    return application.application_capabilities
+
+
+async def resume_application(application):
+    await application.refresh_application_capabilities()
+    await (await application.output_service()).resume()
+    (await application.input_service()).resume()
+
+
+def receipt_host(core):
+    """Actual generic bridge, with only the real Core store needed by journal tests."""
+    from types import SimpleNamespace
+    root = core.path.parent.parent
+    application = SimpleNamespace(data_dir=root,
+        get_group_workspace=lambda owner: root if owner == 'main' else None,
+        input_service=AsyncMock(return_value=SimpleNamespace(store=core)))
+    return ApplicationPorts(application, core.path.parent / 'unused.sock')
+
 
 NOW = datetime.fromisoformat('2026-10-12T09:20:00+08:00').timestamp()
 
@@ -41,7 +65,8 @@ class ReportSink(TuiChannel):
 
 
 def report_reference(application, channel, group):
-    return application.capture_reply(channel, UserInput(group_id=group, sender='fixture-peer', channel=channel.name))
+    return application.capture_reply(
+        channel, UserInput(group_id=group, sender='fixture-peer', channel=channel.name))
 
 
 class ManualClock:
@@ -154,15 +179,13 @@ class Harness:
     async def create(self, instruction='report', group='g1', source=None, name=None):
         self.serial += 1
         return await self.manager.create(group, name or f'observer-{self.serial}', source or at(), instruction,
-                                         reply=self.reference(group))
+                                         reply=encode_reply(self.reference(group)))
 
     async def tool(self, action, group='g1', **arguments):
-        from xdog.claw.core.tools.tool_eyes import create_eyes_tool
         ctx = self.orch._runtimes[group].get_or_create_session().agent.tool_context
-        assert ctx['_eyes'] is self.manager
+        assert '_eyes' not in ctx
         ctx = {**ctx, '_reply_reference': self.reference(group)}
-        result = await create_eyes_tool().execute('test-call', {'action': action, **arguments}, ctx=ctx)
-        return result.content[0].text
+        return await self.manager.tools[0].execute('test-call', {'action': action, **arguments}, ctx=ctx)
 
     async def record(self, identifier, group='g1'):
         return await self.manager.store.get(group, self.orch.get_group_workspace(group), identifier)
@@ -189,11 +212,11 @@ class Harness:
         return await self.until(check)
 
     def attach(self):
-        self.orch.set_observers(self.manager)
+        bind_application(self.orch, self.manager)
 
     async def replace_manager(self):
         await self.manager.close()
-        self.manager = ManagedObservers(self.orch, self.endpoint, clocks=self.clock.clocks())
+        self.manager = ManagedObservers(ApplicationPorts(self.orch, self.endpoint), clocks=self.clock.clocks())
         self.attach()
         return self.manager
 
@@ -204,7 +227,8 @@ class Harness:
             previous = self.orch
             groups = [runtime.group for runtime in previous._runtimes.values()]
             await previous.stop()
-            self.orch = Orchestrator(previous._config, stream_fn=self.model, data_dir=previous._data_dir)
+            self.orch = Orchestrator(previous._config, stream_fn=self.model, data_dir=previous._data_dir,
+                                     defer_inputs=True)
             for group in groups:
                 self.orch.register_group(group)
             self.orch.add_channel(self.channel)
@@ -212,9 +236,10 @@ class Harness:
                                 self.orch,
                                 self.endpoint,
                             )
-        self.manager = ManagedObservers(self.orch, self.endpoint, clocks=self.clock.clocks())
+        self.manager = ManagedObservers(ApplicationPorts(self.orch, self.endpoint), clocks=self.clock.clocks())
         self.attach()
         await self.manager.start()
+        await resume_application(self.orch)
 
     async def close(self):
         for _, release in self.model.gates.values():
@@ -233,12 +258,12 @@ async def managed(tmp_path, monkeypatch):
 
     def create(group, data_dir, **kwargs):
         return GroupRuntime(group=group, data_dir=data_dir, model='test/dummy', stream_fn=model,
-                            observers=kwargs['observers'], send_fn=kwargs['send_fn'])
+                            application_tools=kwargs['application_tools'], send_fn=kwargs['send_fn'])
 
     monkeypatch.setattr(GroupRuntime, 'create', create)
-    config = ClawConfig(data_dir=str(tmp_path / 'data'), eyes_enabled=True,
+    config = ClawConfig(data_dir=str(tmp_path / 'data'),
                         enabled_tools=('eyes',), max_concurrent_agents=2)
-    orch = Orchestrator(config, stream_fn=model)
+    orch = Orchestrator(config, stream_fn=model, defer_inputs=True)
     for gid in ('g1', 'g2', 'g3'):
         orch.register_group(Group(id=gid, workspace=str(tmp_path / gid),
                                   config=GroupConfig()))
@@ -253,11 +278,12 @@ async def managed(tmp_path, monkeypatch):
                            orch,
                            endpoint,
                        )
-        manager = ManagedObservers(orch, endpoint, clocks=clock.clocks())
+        manager = ManagedObservers(ApplicationPorts(orch, endpoint), clocks=clock.clocks())
         harness = Harness(orch, clock, model, channel, server, manager, endpoint, inbox)
         harness.attach()
         try:
             await manager.start()
+            await resume_application(orch)
             yield harness
         finally:
             async with asyncio.timeout(5):

@@ -9,9 +9,10 @@ from collections.abc import Awaitable, Callable, Coroutine
 from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import Any, TypeVar, cast
 
 from xdog.agent.async_work import run_owned, wait_owned
+from xdog.agent.capabilities import CapabilitySet
 from xdog.agent.core import CatalogStreamFn, ModelStreamFn
 from xdog.agent.extensions.command_result import ExtensionCommandResult
 from xdog.agent.mcp.completion import McpCompletion, request_arguments
@@ -49,9 +50,6 @@ from xdog.claw.core.types import (
     UserInput,
 )
 
-if TYPE_CHECKING:
-    from xdog.claw.core.observers.manager import ManagedObservers
-
 logger = logging.getLogger(__name__)
 
 
@@ -82,8 +80,11 @@ class Orchestrator:
         model: str | Model | None = None,
         stream_fn: Any = None,
         data_dir: Path | None = None,
+        defer_inputs: bool = False,
     ) -> None:
         self._config = config
+        # Application startup barrier, independent of installed capabilities.
+        self._defer_inputs = defer_inputs
         # Application bootstrap/tests may supply metadata; sessions and alias routing
         # use model IDs exclusively, including when a group has no override.
         self._model = model.id if isinstance(model, Model) else model or ""
@@ -101,7 +102,8 @@ class Orchestrator:
         self._navigation_groups: set[str] = set()
         self._background_slots = asyncio.Semaphore(config.max_concurrent_agents)
         self._controllers: dict[str, GroupController] = {}
-        self._observers: ManagedObservers | None = None
+        self._acp_endpoints: dict[object, tuple[Path, Callable[[], bool]]] = {}
+        self.application_capabilities = CapabilitySet("application")
         self._chunker = BlockChunker()
         self._inputs: InputService | None = None
         self._input_lock = asyncio.Lock()
@@ -125,7 +127,8 @@ class Orchestrator:
             self._data_dir,
             model=self._model,
             stream_fn=self._stream_fn,
-            send_fn=self._send_to_channels, observers=self._observers, mcp_servers=self._config.mcp_servers,
+            send_fn=self._send_to_channels, application_tools=lambda: self.application_capabilities.tools,
+            application_tool_names=self.application_capabilities.declared_tools, mcp_servers=self._config.mcp_servers,
             mcp_credential_backend=self._config.mcp_credential_backend,
             extensions=self._config.extensions, extension_dir=self._config.extension_dir,
             extension_settings=self._config.extension_settings,
@@ -151,7 +154,7 @@ class Orchestrator:
                     return
                 runtime = await run_owned(self._build_group, Group(id=group_id, name=group_id))
                 if self._inputs_stopping or cancelled.is_set():
-                    # Resource factory has no Session/Agent/Goal owner yet.
+                    # Resource factory has no active session execution owner yet.
                     closures = [runtime.mcp.aclose()]
                     if runtime.memory is not None:
                         closures.append(runtime.memory.close())
@@ -226,8 +229,9 @@ class Orchestrator:
     async def _initialize_inputs(self) -> InputService:
         store = await InputStore.open(self._data_dir / 'inputs' / 'inbox.sqlite3')
         service = InputService(store, self._execute_input, on_settled=self._input_settled,
-                               paused=self._config.eyes_enabled, execution_scope=self._input_execution_scope,
-                               on_admitted=self._input_admitted)
+                               paused=self._defer_inputs, execution_scope=self._input_execution_scope,
+                               on_admitted=self._input_admitted, snapshot=self._execution_snapshot,
+                               acp_target=self._capability_acp_target)
         service.subscribe_completed(self._retire_withdrawn_call)
         outputs: OutputDelivery | None = None
         try:
@@ -546,16 +550,37 @@ class Orchestrator:
             session.require_history_ready()
             if admit is not None and not await admit(session.meta.session_id):
                 return None
-            if runtime.goal_available:
-                await runtime.initialize_goals(await self.input_service())
-            session.agent.set_tool_context({**session.agent.tool_context, '_eyes': runtime.observers,
-                                            '_reply_reference': reply_reference})
+            await runtime.initialize_capabilities(await self.input_service())
+            session.agent.set_tool_context({**session.agent.tool_context, '_reply_reference': reply_reference})
             previous_menu = session.extensions.command_menu_handler
             menu_handler = self._command_menu_handler(session, command_menu) if command_menu is not None else None
             previous_pending = session.extensions.pending_messages
             session.extensions.command_menu_handler = menu_handler
             session.extensions.pending_messages = self._pending_messages_reader(session)
             try:
+                # Channel commands use the same admitted Core input owner and
+                # durable output path, never re-enter the group controller.
+                human_command = (isinstance(message, UserInput) and not isinstance(message, ExternalInput)
+                    and message.metadata.get('input_origin', 'user') == 'user' and not message.images
+                    and message.content.startswith('/'))
+                if human_command:
+                    await session.initialize_extensions()
+                    parts = message.content[1:].split(maxsplit=1)
+                    if parts and session.extensions.is_native_command(parts[0]):
+                        if (session.agent.is_streaming or session._compacting
+                                or session._tool_selection_changing or session._tool_selection_retiring):
+                            raise RuntimeError('Native command requires an idle parent and settled context')
+                        previous_authority = session._user_operation_authorized
+                        session._user_operation_authorized = True
+                        try:
+                            output = await session.extensions.command(parts[0], parts[1] if len(parts) > 1 else '')
+                        finally:
+                            session._user_operation_authorized = previous_authority
+                            await session._sync_extension_tools()
+                        text = output.summary if isinstance(output, ExtensionCommandResult) else str(output)
+                        if on_assistant_message is not None:
+                            await on_assistant_message(text)
+                        return TurnResult(response_text=text, input_handled=True, session_id=session.meta.session_id)
                 result: TurnResult | None = await session.run_turn(
                     message,
                     on_display_event=on_display_event,
@@ -696,8 +721,60 @@ class Orchestrator:
         if group_id not in self._runtimes:
             raise ValueError('Unknown execution group')
         if group_id not in self._controllers:
-            self._controllers[group_id] = GroupController(group_id, self._background_slots)
+            controller = GroupController(group_id, self._background_slots)
+            self._controllers[group_id] = controller
+            def available() -> None:
+                workspace = self.get_group_workspace(group_id)
+                if self._inputs is not None and workspace is not None:
+                    self._inputs.publish_available(InputScope(group_id, workspace))
+            controller.subscribe_available(available)
         return self._controllers[group_id]
+
+    def _execution_snapshot(self, scope: InputScope) -> dict[str, Any]:
+        runtime = self._runtimes.get(scope.group_id)
+        controller = self._controllers.get(scope.group_id)
+        if runtime is None or runtime.workspace_dir != scope.workspace:
+            return {'state': 'unavailable', 'user_pending': False, 'children_active': False,
+                    'generation': controller.generation if controller is not None else ''}
+        controller = self.group_controller(scope.group_id)
+        session = runtime._active_session
+        state = ('closing' if self._inputs_stopping or runtime._closing else 'running'
+                 if controller.busy or session is not None and not session.agent.is_idle else 'idle')
+        return {'state': state, 'user_pending': controller.user_pending,
+                'children_active': bool(session is not None and session.children.supervisor.active),
+                'generation': controller.generation}
+
+    def register_acp_endpoint(self, owner: object, endpoint: Path, *,
+                              valid: Callable[[], bool] = lambda: True) -> Callable[[], None]:
+        """Actual private server publication, never an endpoint named by feature data."""
+        binding = endpoint, valid
+        self._acp_endpoints[owner] = binding
+        def changed() -> None:
+            if self._inputs is not None:
+                for runtime in tuple(self._runtimes.values()):
+                    self._inputs.publish_available(InputScope(runtime.group.id, runtime.workspace_dir))
+        changed()
+        def cancel() -> None:
+            if self._acp_endpoints.get(owner) is binding:
+                self._acp_endpoints.pop(owner)
+                changed()
+        return cancel
+
+    async def _capability_acp_target(self, scope: InputScope) -> dict[str, Any] | None:
+        if (self._inputs_stopping or self.get_group_workspace(scope.group_id) != scope.workspace
+                or len(self._acp_endpoints) != 1):
+            return None
+        owner, binding = next(iter(self._acp_endpoints.items()))
+        endpoint, valid = binding
+        if not valid():
+            return None
+        inputs = await self.input_service()
+        namespace = await inputs.store.namespace(scope)
+        if (self._inputs_stopping or self.get_group_workspace(scope.group_id) != scope.workspace
+                or len(self._acp_endpoints) != 1 or self._acp_endpoints.get(owner) is not binding or not valid()):
+            return None
+        return {'endpoint': str(endpoint), 'session_id': 'group:' + scope.group_id, 'cwd': str(scope.workspace),
+                'inbox_id': namespace, 'branch_id': ''}
 
     def _input_execution_scope(self, record: InputRecord) -> AbstractAsyncContextManager[None]:
         return self.group_controller(record.envelope.scope.group_id).acquire(
@@ -1051,7 +1128,12 @@ class Orchestrator:
             raise ValueError("Extension session/group changed; refresh before retrying")
         async with self.group_controller(group_id).acquire(is_user=True):
             session = await runtime.prepare_session(allow_reset=False)
-            session._children_idle()
+            if action == 'command' and session.extensions.is_native_command(name):
+                if (session.agent.is_streaming or session._compacting
+                        or session._tool_selection_changing or session._tool_selection_retiring):
+                    raise RuntimeError('Native command requires an idle parent and settled context')
+            else:
+                session._children_idle()
             await session.initialize_extensions()
             if action == "auth":
                 return await self._manage_provider_auth(session, args, on_dialog, provider_auth_alive)
@@ -1104,10 +1186,16 @@ class Orchestrator:
             session.extensions.catalog_handler = catalog if action == "command" and on_dialog is not None else None
             session.extensions.command_menu_handler = menu_handler
             session.extensions.pending_messages = self._pending_messages_reader(session)
+            previous_authority = session._user_operation_authorized
             try:
+                await runtime.initialize_capabilities(await self.input_service())
                 await session.initialize_extensions()
                 if action == "command":
-                    output = await session.extensions.command(name, args)
+                    session._user_operation_authorized = True
+                    try:
+                        output = await session.extensions.command(name, args)
+                    finally:
+                        session._user_operation_authorized = previous_authority
                 else:
                     await session.extensions.manage(action, name)
                     output = ""
@@ -1123,6 +1211,7 @@ class Orchestrator:
                     payload["command_content"] = output.to_dict()
                 return payload
             finally:
+                session._user_operation_authorized = previous_authority
                 session.extensions.pending_messages = previous_pending
                 if session.extensions.command_menu_handler is menu_handler:
                     session.extensions.command_menu_handler = previous_menu
@@ -1382,15 +1471,18 @@ class Orchestrator:
             return None
         return runtime.get_new_session_id()
 
-    def set_observers(self, observers: ManagedObservers | None) -> None:
-        """Publish only the gateway-owned service, never create a second owner."""
-        self._observers = observers
+    async def refresh_application_capabilities(self) -> None:
+        """Publish installed service tools only while actual execution is quiescent."""
         for runtime in self._runtimes.values():
-            runtime.observers = observers
-            if runtime._active_session is not None:
-                agent = runtime._active_session.agent
-                if not agent.state.is_streaming:
-                    agent.set_tool_context({**agent.tool_context, '_eyes': observers})
+            session = runtime._active_session
+            if session is None:
+                continue
+            if session.agent.state.is_streaming:
+                raise RuntimeError("Application capability publication requires an idle owner")
+            session.agent.set_tools((*runtime.tools, *session.extensions.tools(),
+                                     *session.children.supervisor.tools()))
+            await session._persist_tool_retirement()
+        self.channels_ready()
 
     # -- Lifecycle -------------------------------------------------------------
 
@@ -1399,12 +1491,10 @@ class Orchestrator:
         for runtime in tuple(self._runtimes.values()):
             if self._inputs_stopping:
                 return
-            if runtime.goal_available:
-                await runtime.initialize_goals(inputs)
-                if self._inputs_stopping:
-                    return
-                assert runtime.goal_host is not None
-                await runtime.goal_host.flush()  # Recover facts/outbox only; no active-Goal model polling.
+            await runtime.initialize_capabilities(inputs)
+            if self._inputs_stopping:
+                return
+            await runtime.capabilities.flush()
         for channel in self._channels:
             if self._inputs_stopping:
                 return
@@ -1430,6 +1520,7 @@ class Orchestrator:
         disconnected = await asyncio.gather(
             *(channel.disconnect() for channel in self._channels), return_exceptions=True,
         )
+        application_closed = await asyncio.gather(self.application_capabilities.aclose(), return_exceptions=True)
         input_closed = await asyncio.gather(self._inputs.close(), return_exceptions=True) if self._inputs else []
         output_closed = await asyncio.gather(self._outputs.close(), return_exceptions=True) if self._outputs else []
         if self._output_resume is not None:
@@ -1437,7 +1528,7 @@ class Orchestrator:
         runtime_closed = await asyncio.gather(
             *(runtime.aclose() for runtime in self._runtimes.values()), return_exceptions=True)
         errors = [result for result in (*group_closed, *capability_started, *disconnected,
-            *input_closed, *output_closed, *runtime_closed) if isinstance(result, BaseException)]
+            *application_closed, *input_closed, *output_closed, *runtime_closed) if isinstance(result, BaseException)]
         if len(errors) == 1:
             raise errors[0]
         if errors:

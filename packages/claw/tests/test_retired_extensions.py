@@ -17,7 +17,7 @@ async def test_context_rotation_releases_settled_extension_owner_before_applicat
     tmp_path, monkeypatch, installed,
 ):
     if not installed:
-        monkeypatch.setattr("xdog.claw.core.runtime.group.find_spec", lambda _name: None)
+        monkeypatch.setattr("xdog.agent.capabilities.runtime.discover", lambda _scope: ())
     calls = []
 
     def model(*args):

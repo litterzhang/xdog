@@ -7,15 +7,15 @@
 
 A local-first gateway with one logical main Agent per group, optional durable Goals,
 supervised task Agents, long-term memory, and JSON/JSONL conversation persistence.
-Eyes provides opt-in observations and scheduling through the existing private group
-ACP inbox; SQLite is used for durable intake/output, optional Goal journals and
+Installed Eyes provides explicitly requested observations and scheduling through
+the existing private group ACP inbox; SQLite is used for durable intake/output, optional Goal journals and
 optional memory-search indexes.
 
 ## Application and SDK boundaries
 
 Claw is an application, not a separately supported public Python SDK for embedding
 its gateway or group/session runtime. Use `xdog-claw` CLI/configuration, the terminal
-and messaging channels, and the explicitly enabled private ACP ingress below.
+and messaging channels, and the private ACP ingress described below.
 The `xdog.claw` root package does not re-export runtime classes. Classes such as
 `Orchestrator`, `GroupRuntime` and `AgentSession` in internal modules are application
 wiring, not a stable embedding contract.
@@ -29,7 +29,7 @@ layer. SDK/embedding examples below refer to those shared interfaces or explicit
 to Coding's SDK, not to a public Claw SDK.
 Claw retains its product controls for MCP, trusted extensions, children, Goals,
 memory and history; its internal adapters apply group ownership and tool policy.
-The native gateway socket and opt-in ACP endpoint are private local communication
+The native gateway socket and optional ACP endpoint are private local communication
 surfaces, not a hosted API or permission bypass. Native clients must negotiate
 capabilities and preserve ownership, cancellation and no-blind-replay fences.
 
@@ -69,7 +69,8 @@ extension-worker protocol, MCP JSON-RPC or Coding's separate ACP session ingress
 
 ## Eyes and ACP callbacks
 
-Opt in to a private Unix ACP endpoint on the existing gateway:
+For standalone ACP access, explicitly configure a private Unix endpoint on the
+existing gateway (managed Eyes owns one automatically when `xdog-eyes` is installed):
 
 ```bash
 xdog-claw gateway start --foreground \
@@ -85,39 +86,39 @@ TUI connection is needed. Standard ACP prompt is also supported and waits for
 its actual result. Interrupted execution is not automatically replayed.
 
 See [Claw/Eyes ACP design and setup](../../docs/claw-eyes-acp.md) for definition
-examples, scope/receipt/cancel semantics, recovery and limits. ACP is disabled by
-default; stopping Eyes does not stop Claw or retract accepted messages.
+examples, scope/receipt/cancel semantics, recovery and limits. Without installed
+`xdog-eyes`, ACP requires explicit configuration; stopping Eyes does not stop Claw
+or retract accepted messages.
 
 ## Scheduling: gateway-managed Eyes
 
-Install managed observation with `pip install 'xdog-claw[eyes,acp]'`. Eyes is
-an optional dependency; croniter is owned by Eyes (`croniter>=2.0,<7`), not a
+To install managed observation explicitly, use `pip install 'xdog-claw[eyes,acp]'`.
+Installed `xdog-eyes` automatically supplies the managed capability; Claw never
+installs it automatically. Without the package, base chat continues without managed
+Eyes. Eyes is an optional dependency; croniter is owned by Eyes (`croniter>=2.0,<7`), not a
 direct Claw dependency. The scheduler source is in Eyes; Claw owns its
 group-scoped observation intent and Core input/output receipts.
 
 The group-scoped `eyes` tool exposes `create(name, source, instruction)`,
 `list()`, `status(observer_id)`, `cancel(observer_id)` and `cancel_notifications(observer_id)`. `source` is an original Eyes source object.
 The host binds the current group's workspace/private ACP endpoint and destination;
-callers cannot redirect observers into other groups. When that tool is enabled,
-prefer it over manually wiring a standalone CLI registration. The old `task` tool
-and old timer engine are removed. A registered `eyes` tool alone does not mean
-management is enabled; disabled operations return a clear configuration error.
+callers cannot redirect observers into other groups. When the installed capability
+is available, prefer it over manually wiring a standalone CLI registration. The old
+`task` tool and old timer engine are removed. A registered tool name alone is not
+proof of a live host; unavailable management must return an explicit error.
 Standalone Eyes CLI/ACP setup above remains available and unchanged; Coding keeps
 its exact session/project/branch semantics, unlike Claw's active group conversation.
 
-The agreed host configuration is opt-in (`eyes_enabled: bool = False`):
+Package presence is the capability contract; there is no `eyes_enabled` setting.
+Availability does not create an observer: new observers require an explicit user
+request. With `xdog-eyes` installed, gateway startup recovers already accepted
+managed time observers under the recovery rules below. Loading a skill or merely
+registering a tool does not start observation.
 
-```yaml
-eyes_enabled: true
-```
-
-With the default `false`, no ACP endpoint or observer is automatically started.
-When enabled, the gateway reuses configured `acp_socket_path` or owns the private
-`data_dir/acp/agent.sock` endpoint, with no extra daemon. The default tool registry
-registers `eyes`; disabled operations must report an explicit error. Trusted tool
-context binds `_eyes` to the host, never to a model-selected host. These settings
-are managed by this gateway and joined during shutdown. Explicit standalone ACP
-opt-in is unchanged.
+The gateway reuses configured `acp_socket_path` or owns the private
+`data_dir/acp/agent.sock` endpoint, with no extra daemon. The installed capability binds the tool to public host ports, never to a model-selected host. The gateway owns these resources
+and joins them during shutdown. Explicit standalone ACP configuration is unchanged;
+package presence and callback instructions do not grant tool permissions.
 
 Managed time recovery must retain an unadmitted `at` through downtime without
 silently losing it, while interrupted or unknown execution must **not** be
@@ -139,7 +140,7 @@ source-runtime evidence and remaining cold-artifact gate.
 Eyes intervals have a monotonic **fixed phase**, not a delay after completion.
 The **2026-10-18 decision** removes the legacy task scheduler and all migration
 compatibility: no `tasks_file` configuration and no reading or importing
-`scheduled_tasks.json`, whether Eyes is enabled or disabled. Old user data stays
+`scheduled_tasks.json`, whether or not `xdog-eyes` is installed. Old user data stays
 untouched: do not delete, rewrite, back up for migration, or convert it into Eyes
 records or confirmation states. Users may explicitly request new Eyes observers;
 never automatically translate old schedules or replay missed periods.
@@ -153,62 +154,27 @@ regression evidence applies to the superseded migration implementation, not fina
 acceptance of this decision. Current status is tracked in
 [`claw-eyes-scheduler-requirements.json`](../../docs/claw-eyes-scheduler-requirements.json).
 
-## Optional group-owned Goals
+## Default group-owned Goal support
 
-Claw is a long-term personal assistant; task autonomy is optional. Install the
-optional distribution with `pip install 'xdog-claw[skills]'`. Package presence
-provides the Goal capability automatically; there is **no Goal enable setting**.
-The built-in `goal` skill is discovered just like Flow/Eyes, without copying or
-registration, and its full body loads through the existing skill mechanism.
-Without the package, ordinary chat/memory/tools/history open no Goal storage.
+Claw includes xdog-skills by default: `/goal create/status/pause/resume/clear/history`,
+the `goal` model tool and the packaged skill are available without extra settings.
+Only an explicitly delegated outcome creates a Goal. One logical main Agent per
+group owns its current Goal, even after context rotation; there is at most one,
+including paused/waiting state. Clear archives and releases it, not deletion.
 
-Availability is not delegation: ordinary conversation, loading a skill, opening
-a TUI or receiving a callback does not create a Goal or worker. An explicit user
-outcome is still required before the Agent creates a contract.
+The main Agent plans using its real conversation, works itself or delegates using
+existing host tools, and decides completion. The skill tells workers how to update
+their assigned task JSON file. Goal contains no worker/reviewer scheduling or
+mandatory independent review. It owns groups/<id>/goals/registry.sqlite3 and the
+workspace/.xdog/goals/<goal-id>/ plan/tasks; task files are the sole task truth.
 
-The same independent GoalService is used by Coding and Claw. Goal owns its private
-leased journal at `<data_dir>/groups/<id>/goals/journal.sqlite3`; Claw owns ordinary
-input, execution receipts and conversation history, not Goal tables. The packaged
-[goal skill](../skills/src/xdog/skills/skills/goal/SKILL.md) and its
-[worker](../skills/src/xdog/skills/goal/roles/worker.md)/[reviewer](../skills/src/xdog/skills/goal/roles/reviewer.md)
-roles describe explicit planning, assignment, reporting, acceptance and review.
-Derived workspace files are projections, not execution authority.
-
-For the shared Python display, include `goal_ui` in the existing trusted global
-`extensions` list. It loads directly from the Goal package; no copy or separate
-Goal enable flag. `/goals [GOAL_ID | page OFFSET]` queries the actual
-group-owned read-only view, while `/goal` remains skill loading. The generic
-shared TUI ExtensionView renders its status text; the main TUI knows no Goal
-schema or lifecycle. Context rotation rebinds the fresh parent to the same group
-service. Actual child runtimes do not inherit its grant, and unloading/crashing
-the display does not cancel work, notifications or observations. See the source
-and installed runtime evidence in `docs/shared-goal-extension-verification.md`
-and `docs/observer-message-output-verification.md`; final whole-objective audit
-and whole-branch review remain in progress.
-
-A submitted worker report is not an accepted task; an accepted task is not a
-completed Goal. **Only `request_complete` starts independent review.** Ordinary
-turn end, idle and active Goal state never start a reviewer or a new model loop.
-The reviewer has actual readonly tools and must cover original conditions and
-fresh evidence. Criteria changes and user-pause release require actual consumed
-human input; event provenance and anonymous steering cannot grant that authority.
-
-Notices use stable original IDs and the existing durable group Inbox without
-message approval. Tool execution keeps the existing readonly/MCP/extension policy.
-Group ownership survives context rotation; original terminal child execution can
-be inspected/accepted without constructing an offline Agent or replaying work.
-Unfinished stored Goals do not suppress idle resets; actual running children still
-require cancel/wait through the generic execution owner.
-
-Goal state, worker cancellation, observation cancellation and notification
-cancellation are separate explicit operations. No adapter restores/cancels Eyes
-because a Goal changes status. Old Goal JSON is refused byte-preserving when the
-installed capability is attached; ordinary chat without the package does not read
-it. No migration or compatibility backend is provided. Goal UI uses the same
-Python extension through generic shared TUI views, not a native Goal widget. The broader refactor's
-[design](../../docs/superpowers/specs/2026-10-19-claw-assistant-core-design.md) and
-[acceptance checklist](../../docs/claw-assistant-core-requirements.json) track the
-remaining cleanup, current-artifact audit and whole-branch verification gates.
+Generic host events drive ACP reminders into the original group input queue.
+Existing permissions apply; automatic reminders cannot release user pauses or
+user/host waits. Optional Eyes task observation uses a generated bounded file
+configuration, not a new daemon. Context rotation and /new do not move the Goal.
+The optional goal_ui display remains read-only and independent from default
+commands/tools. Legacy journal.sqlite3/goals.json are reported and preserved, not
+silently rewritten or resumed. See docs/goal-simple-design.md for the full contract.
 
 ## Durable intake and explicit input control
 
@@ -758,12 +724,12 @@ continuation silently reconnects, replays POSTs or expands configured disclosure
 
 ### Task planning and host read-only scope
 
-The builtin **`xdog-planning`** skill, supplied by `xdog-skills` (install the
+The builtin **`plan`** skill, supplied by `xdog-skills` (install the
 `skills` extra), uses ordinary conversation or task documents
 for objectives, dependencies, acceptance criteria and evidence-backed progress.
 It does not create a separate plan database, inspector, execution mode or model
 loop. The former `/plan`, `PlanPanel` and `update_plan` UI/tool APIs are removed.
-List it with `/skills`; load it explicitly with `/skills load xdog-planning`.
+List it with `/skills`; load it explicitly with `/skills load plan`.
 
 Use the native host control separately:
 
@@ -965,8 +931,8 @@ none of these interfaces grants tool permission or full Pi API compatibility.
 
 The TUI supports `/agents start TASK` (read-only), `/agents start --inherit TASK`,
 `/agents list` and `inspect/steer/follow-up/cancel/wait/close ID` controls (steer and
-follow-up take trailing text). Parents expose `agent_spawn`/`agent_control` tools;
-children cannot recursively delegate through `agent_spawn` or `agent_control`.
+follow-up take trailing text). Parents expose the unified `agent` tool;
+children cannot recursively delegate through the `agent` tool.
 
 Children share their group's workspace, model/options and selected tools. Inherited
 access cannot exceed current parent read-only restrictions or configured MCP/extension
@@ -2343,7 +2309,7 @@ count and `initial-task`/`crash-snapshot`/`durable-return` uncertainty are visib
 This native view has no editor, reorder/remove/return control, recovery-copy button
 or permission-confirmation action. Paste cannot submit or adopt a draft.
 
-The ordinary main-Agent `agent_control` tool retains `action="queue"` with a typed
+The ordinary main-Agent `agent` tool retains `action="queue"` with a typed
 JSON `text` request. The `xdog.agent` SDK
 `ChildSupervisor.control("queue", ...)` also remains.
 Their edit/remove/move/text-return and explicit stopped recovery operations use the
@@ -2470,7 +2436,7 @@ existing limitations.
 `recover_images` remains an explicit SDK/main-Agent queue operation with exact
 input `id` and queue `revision`. `ChildSupervisor.control` returns the verified
 non-destructive `image_recovery` payload and `queue.image_receipt`; the ordinary
-`agent_control` wrapper returns typed images plus receipt/count metadata. The
+`agent` wrapper returns typed images plus receipt/count metadata. The
 text-only `recover` action refuses image-bearing inputs rather than dropping bytes.
 Running children use the separate owned live-return protocol, not stopped recovery.
 
@@ -2544,7 +2510,7 @@ SDK journaling and same-session transient editor recovery are not removed.
 The native user interface offers neither manual live queue edit/reorder/remove/
 return nor stopped task/input copy controls. Those queue operations remain in the
 permissioned main-Agent/SDK backend; native queue inspection is read-only.
-The main Agent can use its ordinary permissioned `agent_control` tool with
+The main Agent can use its ordinary permissioned `agent` tool with
 `action="queue"` and a JSON `text` request containing `return_prepare`,
 `return_commit` or `return_cancel` plus the required input/revision/receipt fields.
 Preparation returns typed image content and bounded token/receipt metadata; it
@@ -2878,3 +2844,25 @@ there is no old-format migration. The wider optional Goal/shared UI refactor is
 tracked in `docs/claw-assistant-core-requirements.json`, not claimed complete here.
 
 None of these controls may abort unrelated active chat or undo started effects.
+
+
+### Installed capability code boundaries
+
+Trusted installed native capabilities use generic owner, lifecycle event, ACP
+routing and receipt ports. Coding/Claw default dependencies include xdog-skills:
+`/goal` commands and the model tool are available without a display-worker setting
+or Goal enable flag. The packaged skill remains discoverable/loadable. No Goal is
+created merely by installation or ordinary chat.
+
+Goal owns one current binding/history, task files and ACP reminders. The current
+main Agent plans, executes itself or uses existing child tools, updates tasks and
+judges completion according to the skill. No Goal-owned worker/reviewer scheduler
+or independent acceptance protocol remains. Tasks/*.json are authoritative, not
+projections of duplicate database task state. Pauses and user/host waits cannot be
+released by an automatic message. Existing readonly/permissions/approval checks
+remain in force. Eyes watches only the generated task directory configuration;
+stopping Goal automation does not cancel unrelated observers or accepted work.
+
+See `docs/goal-simple-design.md` and its requirement/verification record. Earlier
+capability-boundary and Goal reviewer lifecycle evidence describes its old frozen
+implementation, not the current Goal contract.

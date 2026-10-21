@@ -273,8 +273,8 @@ installation step:
 pip install xdog-coding xdog-flow
 xdog-coding
 > /skills                  # what's available · 有哪些
-> /flow-workflows          # activate it · 激活
-> /unload flow-workflows   # and take it back out · 撤下
+> /flow          # activate it · 激活
+> /unload flow   # and take it back out · 撤下
 ```
 
 The command appears because the package is installed and disappears when it is

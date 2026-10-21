@@ -12,12 +12,14 @@ from xdog.claw.acp.server import ClawAcpServer
 from xdog.claw.channels.weixin.channel import WeixinChannel, _TypingTicketCache
 from xdog.claw.channels.weixin.context_tokens import set_context_token
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.observers.manager import ManagedObservers
+from xdog.claw.core.outputs.targets import decode_reply
+from xdog.claw.core.runtime.application_ports import ApplicationPorts
 from xdog.claw.core.runtime.gateway import GatewayServer
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.types import Group
+from xdog.eyes.hosting.manager import ManagedObservers
 
-from packages.claw.tests.eyes_helpers import ManualClock, ScriptedModel, at
+from packages.claw.tests.eyes_helpers import ManualClock, ScriptedModel, at, bind_application, resume_application
 from packages.claw.tests.test_gateway_inputs import receive, send
 from packages.claw.tests.test_weixin_application_intake import ChannelApi, sent_parts, text
 
@@ -48,9 +50,10 @@ def instruct(model, source, name="watch"):
 async def weixin(tmp_path):
     clock, model = ManualClock(), ScriptedModel()
     app = Orchestrator(
-        ClawConfig(data_dir=str(tmp_path / "data"), eyes_enabled=True, enabled_tools=("eyes",)),
+        ClawConfig(data_dir=str(tmp_path / "data"), enabled_tools=("eyes",)),
         model="test/dummy",
         stream_fn=model,
+        defer_inputs=True,
     )
     app.register_group(Group(id="main", workspace=str(tmp_path / "work"), enabled_tools=("eyes",)))
     channel = WeixinChannel(tmp_path / "channel", "account", "https://example.invalid", "")
@@ -61,9 +64,10 @@ async def weixin(tmp_path):
     app.add_channel(channel)
     endpoint = tmp_path / "acp.sock"
     server = await ClawAcpServer.start(app, endpoint)
-    manager = ManagedObservers(app, endpoint, clocks=clock.clocks())
-    app.set_observers(manager)
+    manager = ManagedObservers(ApplicationPorts(app, endpoint), clocks=clock.clocks())
+    bind_application(app, manager)
     await manager.start()
+    await resume_application(app)
     try:
         yield app, manager, channel, api, clock, model, server
     finally:
@@ -93,8 +97,8 @@ async def test_real_tool_captures_alice_before_bob_and_delivers_to_original_cont
         await speak(channel, 1, "alice", "WATCH")
         (created,) = await manager.list("main")
         record = await manager.store.get("main", root, created["id"])
-        assert record.reply.original.sender == "alice"
-        assert record.reply.original.metadata["context_token"] == "ctx:alice"
+        assert decode_reply(record.reply).original.sender == "alice"
+        assert decode_reply(record.reply).original.metadata["context_token"] == "ctx:alice"
         # The original input's private capability must not remain on an idle Agent.
         assert app._runtimes["main"]._active_session.agent.tool_context.get("_reply_reference") is None
         await speak(channel, 2, "bob", "BOB")
@@ -141,7 +145,6 @@ async def test_native_notice_uses_only_creator_binding_never_a_new_peer(tmp_path
     config = ClawConfig(
         model="test/dummy",
         data_dir=str(tmp_path / "data"),
-        eyes_enabled=True,
         enabled_tools=("eyes",),
         socket_path=str(tmp_path / "native.sock"),
         pid_file=str(tmp_path / "native.pid"),
@@ -151,7 +154,7 @@ async def test_native_notice_uses_only_creator_binding_never_a_new_peer(tmp_path
     server = GatewayServer(config)
     with patch("xdog.claw.core.runtime.gateway._build_model_and_options", return_value=("test/dummy", model)):
         await server.start()
-    manager = server._observers
+    manager = server._application_capabilities.get("eyes")
     manager.clocks = clock.clocks()
     instruct(model, at())
     original_reader, original_writer = await asyncio.open_unix_connection(config.socket_path)
@@ -230,10 +233,10 @@ async def test_saved_weixin_report_recovers_original_target_after_application_re
         assert model.calls.count("CALLBACK") == 1 and api.sent.empty()
         await manager.close()
         await server.close()
-        await manager.orchestrator.stop()
+        await app.stop()
         # A new app/transport, same explicit account and private source endpoint.
         groups = [runtime.group for runtime in app._runtimes.values()]
-        recovered = Orchestrator(app._config, model="test/dummy", stream_fn=model)
+        recovered = Orchestrator(app._config, model="test/dummy", stream_fn=model, defer_inputs=True)
         for group in groups:
             recovered.register_group(group)
         ch = WeixinChannel(tmp_path / "channel", "account", "https://example.invalid", "")
@@ -244,10 +247,11 @@ async def test_saved_weixin_report_recovers_original_target_after_application_re
         ch._user_id_map["main"] = "different-peer"
         recovered.add_channel(ch)
         new_server = await ClawAcpServer.start(recovered, manager.endpoint)
-        restored = ManagedObservers(recovered, manager.endpoint, clocks=clock.clocks())
-        recovered.set_observers(restored)
+        restored = ManagedObservers(ApplicationPorts(recovered, manager.endpoint), clocks=clock.clocks())
+        bind_application(recovered, restored)
         try:
             await restored.start()
+            await resume_application(recovered)
             sent = await asyncio.wait_for(new_api.sent.get(), 5)
             assert sent_parts(sent) == ("alice", "ctx:alice", "Scheduled report")
             assert model.calls.count("CALLBACK") == 1
@@ -258,7 +262,6 @@ async def test_saved_weixin_report_recovers_original_target_after_application_re
 
 
 async def test_a_later_creator_or_forged_reply_argument_cannot_retarget_an_existing_observer(tmp_path):
-    from xdog.claw.core.tools.tool_eyes import create_eyes_tool
 
     async with weixin(tmp_path) as (app, manager, channel, api, clock, model, server):
         instruct(model, at())
@@ -267,25 +270,20 @@ async def test_a_later_creator_or_forged_reply_argument_cannot_retarget_an_exist
         original = await manager.store.get("main", manager._cwd("main"), created["id"])
         await speak(channel, 2, "bob", "WATCH")  # Same name/definition, different frozen creator.
         assert (await manager.store.get("main", manager._cwd("main"), created["id"])).reply == original.reply
-        ctx = {**app._runtimes["main"]._active_session.agent.tool_context, "_reply_reference": original.reply}
-        result = await create_eyes_tool().execute(
-            "spoof",
-            {
-                "action": "create",
-                "name": "extra-fields",
-                "source": at(),
-                "instruction": "CALLBACK",
-                "reply": {"recipient": "bob"},
-                "reply_reference": {"recipient": "bob"},
-                "group_id": "other",
-            },
-            ctx=ctx,
-        )
-        assert not result.is_error
-        saved = next(
-            item for item in await manager.store.list("main", manager._cwd("main")) if item.name == "extra-fields"
-        )
-        assert saved.reply == original.reply
+        ctx = {**app._runtimes["main"]._active_session.agent.tool_context,
+               "_reply_reference": decode_reply(original.reply)}
+        with pytest.raises(ValueError, match='exact required parameters'):
+            await manager.tools[0].execute(
+                "spoof",
+                {
+                    "action": "create", "name": "extra-fields", "source": at(), "instruction": "CALLBACK",
+                    "reply": {"recipient": "bob"}, "reply_reference": {"recipient": "bob"}, "group_id": "other",
+                },
+                ctx=ctx,
+            )
+        saved, = await manager.store.list("main", manager._cwd("main"))
+        assert saved.reply == original.reply and saved.id == original.id
+
 
 
 async def test_partial_target_send_is_unknown_and_never_replays_accepted_chunks_or_model(tmp_path):
@@ -323,10 +321,11 @@ async def test_partial_target_send_is_unknown_and_never_replays_accepted_chunks_
         assert all(item.to_user_id == "alice" and item.context_token == "ctx:alice" for item in sends)
         assert len({item.client_id for item in sends}) == 2
         await manager.close()
-        fresh = ManagedObservers(app, manager.endpoint, clocks=clock.clocks())
-        app.set_observers(fresh)
+        fresh = ManagedObservers(ApplicationPorts(app, manager.endpoint), clocks=clock.clocks())
+        bind_application(app, fresh)
         try:
             await fresh.start()
+            await resume_application(app)
             await fresh.store.pending_reports()  # Owned disk round trip after startup reconciliation.
             assert len(sends) == 2 and model.calls.count("CALLBACK") == 1
         finally:

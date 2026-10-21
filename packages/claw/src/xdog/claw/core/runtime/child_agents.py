@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from xdog.agent import Agent, AgentConfig, AgentMessage, BeforeToolCallContext, BeforeToolCallResult
 from xdog.agent.access import read_only_call
 from xdog.agent.async_work import run_owned
+from xdog.agent.capabilities.children import ChildPort
 from xdog.agent.core import AgentState, AgentTool, AgentToolResult
 from xdog.agent.history import history_points
 from xdog.agent.messages import dicts_to_messages, messages_to_dicts
@@ -22,7 +23,6 @@ from xdog.ai.types import UserMessage
 
 if TYPE_CHECKING:
     from xdog.claw.core.persistence.session_preparation import PreparedChildren
-    from xdog.claw.core.runtime.goal_adapter import ClawGoalHost
     from xdog.claw.core.runtime.session import AgentSession
 
 
@@ -30,11 +30,12 @@ class ClawChildren:
     supervisor: ChildSupervisor
     def __init__(self, session: AgentSession, prepared: PreparedChildren) -> None:
         self.session = session
-        self.goal_host: ClawGoalHost | None = None
         branch = session._store.active_branch(session.meta.session_id) or "head"
         if branch != prepared.branch:
             raise ValueError("Prepared child catalog belongs to another context branch")
         self.store = ChildStore.scoped(session._store._sessions_dir, session.meta.session_id, branch)
+        self.capabilities = ChildPort(session.meta.session_id, branch,
+            lambda: (*session._runtime.capabilities.tools, *session._runtime.application_tools()))
         self.snapshots: dict[str, AgentState] = {}
         self.tool_limits: dict[str, tuple[str, ...] | None] = {}
         self.extensions = ChildExtensions(session.extensions, self.store)
@@ -44,12 +45,9 @@ class ClawChildren:
             persist_admission=self.store.save_admission, archive_compaction=self.store.archive_compaction,
             forget=self.store.forget, finalize=self.finish,
             on_event=self.extensions.event, records=records, presets=session._runtime.child_presets)
+        self.capabilities.supervisor = self.supervisor
         self.supervisor.diagnostic = prepared.diagnostic
     def capture(self, spec: ChildSpec) -> None:
-        role = None
-        if self.goal_host is not None:
-            self.goal_host.capture(self, spec)
-            role = self.goal_host.role(self, spec.id)
         agent = self.session.agent
         selection = agent.active_tool_selection
         allowed = spec.tools
@@ -58,13 +56,7 @@ class ClawChildren:
             if allowed is not None and not set(allowed) <= set(ceiling):
                 raise ValueError('Child tool profile exceeds captured parent active-tool selection')
             allowed = ceiling if allowed is None else allowed
-        if role is not None:
-            from xdog.skills.goal.host import ReviewerSpec
-            reviewer = isinstance(role, ReviewerSpec)
-            allowed = tuple(tool.name for tool in agent.active_tools
-                if tool.name not in RESERVED_TOOLS | {'goal', 'eyes', 'task_report', 'goal_context'}
-                and (not reviewer or tool.name in {'filesystem', 'current_time'})
-                and (allowed is None or tool.name in allowed))
+        allowed = self.capabilities.capture(spec, agent.active_tools, allowed)
         self.tool_limits[spec.id] = allowed
         self.snapshots[spec.id] = replace(agent.state, tools=agent.active_tools)
         self.extensions.reserve(spec.id)
@@ -73,7 +65,7 @@ class ClawChildren:
         session, runtime = self.session, self.session._runtime
         state = self.snapshots[spec.id]
         allowed_tools = self.tool_limits[spec.id]
-        role_tools = await self.goal_host.role_tools(self, spec) if self.goal_host is not None else ()
+        role_tools = await self.capabilities.tools(spec)
         if role_tools:
             allowed_tools = (*(allowed_tools or ()), *(tool.name for tool in role_tools))
         # Child extension context and every later registration sync keep this
@@ -90,7 +82,7 @@ class ClawChildren:
         extension = await self.extensions.create(extension_spec, publish, model=selected.id,
                                                  thinking=selected.options.thinking or "off", initialize=False)
         tools = tuple(tool for tool in state.tools
-                      if tool.name not in RESERVED_TOOLS | {'goal', 'eyes'}
+                      if tool.name not in RESERVED_TOOLS and self.capabilities.inherited(tool)
                       and tool.name not in session.extensions.aliases
                       and tool.name not in {bound.name for bound in role_tools})
         def host_owned(original: AgentTool) -> AgentTool:
@@ -115,15 +107,14 @@ class ClawChildren:
         # These tools own group/channel/memory/skill services rather than
         # independent subprocess/file operations. Execute on the original host
         # loop while preserving child-loop update and cancellation ownership.
-        services = {"group_message", "memory", "skill"}
+        services = {"message", "memory", "skill"}
         tools = tuple(host_owned(tool) if tool.name in services else tool for tool in tools)
         tools = (*tools, *role_tools)
         async def before(ctx: BeforeToolCallContext, cancel: asyncio.Event | None = None
                          ) -> BeforeToolCallResult | None:
             try:
                 def bound_call() -> bool:
-                    return self.goal_host is not None and self.goal_host.role_call(
-                        self, spec.id, ctx.tool_call.name, ctx.context.tools or ())
+                    return self.capabilities.permits(spec.id, ctx.tool_call.name, ctx.context.tools or ())
                 if (session.access.state.read_only or spec.access == "read-only") and not (
                         bound_call() or read_only_call(ctx.tool_call.name, ctx.args)):
                     return BeforeToolCallResult(block=True, reason="Child/parent access is read-only")

@@ -314,9 +314,12 @@ def test_the_skill_is_discoverable_from_a_checkout() -> None:
     """
     from xdog.agent.skills import load_packaged_skill, packaged_skills
 
-    assert "flow-workflows" in packaged_skills()
-    skill = load_packaged_skill("flow-workflows")
+    assert "flow" in packaged_skills()
+    skill = load_packaged_skill("flow")
     assert skill is not None and skill.content.strip()
+    assert skill.name == "flow"
+    assert "flow-workflows" not in packaged_skills()
+    assert load_packaged_skill("flow-workflows") is None
 
 
 def test_every_third_party_import_of_the_vendored_packages_is_declared() -> None:
