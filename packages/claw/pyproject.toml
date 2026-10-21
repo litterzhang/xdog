@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "xdog-claw"
-version = "2.4.6"
+version = "2.4.7"
 description = "Persistent multi-channel assistant application with long-term memory"
 requires-python = ">=3.12"
 classifiers = [
@@ -22,11 +22,11 @@ readme = "README.md"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE", "LICENSE-EXCEPTION.md"]
 dependencies = [
-    "xdog-ai[openai]>=2.4.6",
-    "xdog-agent>=2.4.6",
-    "xdog-skills>=2.4.6",
+    "xdog-ai[openai]>=2.4.7",
+    "xdog-agent>=2.4.7",
+    "xdog-skills>=2.4.7",
     "agent-client-protocol>=0.12.1,<0.13; python_version < '3.15'",
-    "xdog-tui>=2.4.6",
+    "xdog-tui>=2.4.7",
     "click>=8.1.0",
     "pyyaml>=6.0",
     "aiosqlite>=0.20.0",
@@ -35,13 +35,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-skills = ["xdog-skills>=2.4.6"]
-eyes = ["xdog-eyes>=2.4.6"]
+skills = ["xdog-skills>=2.4.7"]
+eyes = ["xdog-eyes>=2.4.7"]
 acp = ["agent-client-protocol>=0.12.1,<0.13; python_version < '3.15'"]
 search = ["sentence-transformers>=3.0.0", "sqlite-vec>=0.1.1", "rank-bm25>=0.2.2"]
 all = [
     "sentence-transformers>=3.0.0", "sqlite-vec>=0.1.1", "rank-bm25>=0.2.2",
-    "xdog-skills>=2.4.6", "xdog-eyes>=2.4.6",
+    "xdog-skills>=2.4.7", "xdog-eyes>=2.4.7",
     "agent-client-protocol>=0.12.1,<0.13; python_version < '3.15'",
 ]
 

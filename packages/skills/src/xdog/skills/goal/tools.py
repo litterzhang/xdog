@@ -85,9 +85,9 @@ def create_goal_tool(service: GoalService, context: Callable[[], OperationContex
                 value: Any = asdict(await service.create(params['title'], params.get('outcome', params['title']),
                     _strings(params.get('criteria', [])), context=context()))
             elif action == 'status':
-                value = await service.status(identifier, detail=params.get('detail', False))
+                value = await service.status(identifier, detail=params.get('detail', False), for_agent=True)
             elif action == 'summary':
-                value = await service.summary(identifier)
+                value = await service.summary(identifier, for_agent=True)
             elif action == 'tasks':
                 value = await service.tasks(identifier, task_id=params.get('task_id', ''),
                                             status=params.get('status', ''), worker=params.get('worker', ''))

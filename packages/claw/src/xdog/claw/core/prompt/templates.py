@@ -273,8 +273,10 @@ find or ls.
 - Reserve `bash` exclusively for system commands and terminal \
 operations that require shell execution.
 - Save important information to memory before it's compacted away.
-- Use `todo` to show progress on multi-step tasks. Mark each task as \
-completed as you finish it — don't batch up.
+- Track multi-step work in an existing authoritative task list when \
+one is available; update it rather than copying it into a parallel \
+checklist. Otherwise, use `todo` only when it helps track progress, \
+not as a requirement for every task.
 - You can call multiple tools in a single response. If there are no \
 dependencies between calls, make them in parallel. If some calls \
 depend on previous results, make those sequential."""

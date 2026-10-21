@@ -171,3 +171,38 @@ async def test_unknown_acp_outcome_stops_automatic_reminders_until_user_inspecti
         assert unknown.await_count == 1
     finally:
         await close(runtime, parent)
+
+
+@pytest.mark.parametrize('until', ['user', 'host'])
+async def test_wait_before_idle_does_not_advertise_or_send_a_deferred_reminder(tmp_path, monkeypatch, until):
+    import json
+
+    runtime, parent, host, state, sent, authorized, listeners = await setup(tmp_path, monkeypatch)
+    try:
+        state['state'] = 'running'
+        goal = await runtime.service.create('One', 'Keep the real wait visible', context=OperationContext(True))
+        await runtime._wake('execution:busy')
+        await runtime.flush()
+        assert runtime.delivery['status'] == 'deferred'
+        assert not sent and not await runtime.service.store.reminders()
+        await runtime.service.change('wait', until=until, reason='Actual blocking condition',
+                                     context=OperationContext(True))
+        await runtime.flush()
+        state['state'] = 'idle'
+        listeners[0]({'type': 'owner.available'})
+        await runtime.flush()
+        facts = await runtime.service.summary()
+        assert facts['current']['status'] == 'waiting' and facts['current']['wait_for'] == until
+        assert facts['delivery']['status'] == 'idle'
+        assert facts['last_delivery']['status'] == 'deferred'
+        assert facts['next']['action'] == ('user_input' if until == 'user' else 'host_recovery')
+        text = await parent.extensions.command('goal', 'status')
+        assert 'Delivery: idle' in text and 'Delivery: deferred' not in text
+        result = await runtime.tools[0].execute('read', {'action': 'status'})
+        assert not result.is_error and json.loads(result.content[0].text)['delivery']['status'] == 'idle'
+        assert not sent and not await runtime.service.store.reminders()
+        # Signal/outbox state and raw history remain intact; a view is not a transport control.
+        wake = await runtime.service.store.wake_state(goal.id)
+        assert wake['sequence'] > 0 and runtime.delivery['status'] == 'deferred'
+    finally:
+        await close(runtime, parent)

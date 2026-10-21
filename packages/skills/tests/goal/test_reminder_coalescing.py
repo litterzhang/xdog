@@ -42,6 +42,9 @@ async def test_busy_execution_and_many_eyes_changes_merge_into_one_reminder(tmp_
         assert 'execution:done' in sent[0].provenance['triggers']
         assert 'goal(action="report")' in sent[0].instruction
         assert 'not a blind loop' in sent[0].instruction
+        assert 'Tool permissions are managed by the host, not Goal' in sent[0].instruction
+        assert 'Do not request a separate Goal approval' in sent[0].instruction
+        assert 'If waiting for approval, record goal.wait' not in sent[0].instruction
     finally:
         await close(runtime, parent)
 

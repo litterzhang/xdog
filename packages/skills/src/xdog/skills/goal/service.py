@@ -18,7 +18,7 @@ from .codec import decode_task, json_text
 from .files import TaskFiles, _read, directory
 from .host import OperationContext, OwnerRetired, require_user
 from .models import TASK_STATES, Goal, Task, identity, text
-from .store import GoalStore
+from .store import GoalStore, remindable
 
 P = ParamSpec("P")
 T = TypeVar("T")
@@ -277,8 +277,19 @@ class GoalService:
         return {'task_count': len(tasks), 'task_counts': counts, 'tasks_revision': digest.hexdigest(),
                 'tasks_preview': preview, 'tasks_preview_only': len(tasks) > len(preview)}
 
+    def _status_info(self, goal: Goal | None) -> dict[str, Any]:
+        """Project current eligibility without rewriting transport history or receipts."""
+        info = dict(self.info())
+        delivery = info.get('delivery', {})
+        if delivery.get('status') == 'deferred' and (goal is None or not remindable(goal)):
+            reason = ('No current Goal' if goal is None else f'Goal waits for {goal.wait_for}'
+                      if goal.status == 'waiting' else f'Goal is {goal.status}')
+            info['last_delivery'] = dict(delivery)
+            info['delivery'] = {'status': 'idle', 'reason': reason + '; automatic reminders disabled'}
+        return info
+
     @staticmethod
-    def _next_fact(goal: Goal | None, info: dict[str, Any]) -> dict[str, Any]:
+    def _next_fact(goal: Goal | None, info: dict[str, Any], *, for_agent: bool = False) -> dict[str, Any]:
         """Display guidance derived only from recorded state; never execution authority.
 
         Observer health is not reminder delivery or Agent execution. Do not infer
@@ -302,6 +313,15 @@ class GoalService:
             elif execution.get('state') in {'unavailable', 'closing'}:
                 action, source, reason = (
                     'await_owner_available', 'execution', 'Execution owner is unavailable or closing')
+            elif for_agent:
+                # The bound model tool is already executing on the main Agent.
+                # Transport backpressure/other work is not an instruction to
+                # await itself. Recorded lifecycle and uncertainty still win.
+                if goal.status == 'waiting':
+                    action, source, reason = 'inspect_tasks', 'goal', goal.reason or 'Inspect actual task evidence'
+                else:
+                    action, source, reason = ('main_agent_work', 'goal',
+                        'Continue useful work in this turn under existing host permissions')
             elif execution.get('state') not in {None, 'idle'}:
                 action, source, reason = 'await_execution', 'execution', 'Host execution is not idle'
             elif execution.get('user_pending') is True:
@@ -317,26 +337,27 @@ class GoalService:
                 action, reason = 'inspect_tasks', goal.reason or 'Goal waits for task facts'
         return {'action': action, 'source': source, 'reason': reason, 'requires_user': requires_user}
 
-    async def summary(self, identifier: str = '') -> dict[str, Any]:
+    async def summary(self, identifier: str = '', *, for_agent: bool = False) -> dict[str, Any]:
         """Native /goal status and model default: facts, counts, bounded previews.
 
         No plan body, full task bodies or report history. This is also exposed by
         status(detail=False); status() keeps the original detailed contract.
         latest_report is the Agent's recorded assessment, not a service verdict.
-        Host info (automation/delivery/execution/legacy_storage) is preserved;
-        next is display guidance only and grants no authority or scheduling.
+        Host execution/receipt facts stay independent of Goal eligibility. A stale
+        deferred check is exposed as last_delivery when reminders are disabled.
+        next is audience-aware display guidance, never authority or scheduling.
         """
-        return await self.status(identifier, detail=False)
+        return await self.status(identifier, detail=False, for_agent=for_agent)
 
-    async def status(self, identifier: str = '', *, detail: bool = True) -> dict[str, Any]:
-        if type(detail) is not bool:
-            raise ValueError('Goal status detail must be a boolean')
+    async def status(self, identifier: str = '', *, detail: bool = True, for_agent: bool = False) -> dict[str, Any]:
+        if type(detail) is not bool or type(for_agent) is not bool:
+            raise ValueError('Goal status detail and for_agent must be booleans')
         async with self._lock:
             goal = await self._read_goal(identifier)
             if goal is None:
-                info = self.info()
+                info = self._status_info(goal)
                 return {'format': 'xdog.goal_status.v2', 'current': None, **info,
-                        **({'next': self._next_fact(None, info)} if not detail else {})}
+                        **({'next': self._next_fact(None, info, for_agent=for_agent)} if not detail else {})}
             files = self.files(goal)
             value: dict[str, Any] = {'format': 'xdog.goal_status.v2', 'current': asdict(goal),
                                      'workspace': str(files.root), 'plan_path': str(files.root / 'plan.md'),
@@ -350,9 +371,9 @@ class GoalService:
                 value.update(await self._io(self._task_facts, files))
                 value.update(report_path=str(files.progress_path),
                              latest_report=await self._io(files.latest_report))
-            info = self.info()  # Local host snapshots only; no endpoint/network probing.
+            info = self._status_info(goal)  # Local host snapshots only; no endpoint/network probing.
             if not detail:
-                value['next'] = self._next_fact(goal, info)
+                value['next'] = self._next_fact(goal, info, for_agent=for_agent)
             return {**value, **info}
 
     async def read_plan(self, identifier: str = '') -> dict[str, Any]:

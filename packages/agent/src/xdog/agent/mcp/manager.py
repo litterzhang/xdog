@@ -122,6 +122,10 @@ class McpManager:
                         if tasks:
                             loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
                         loop.run_until_complete(loop.shutdown_asyncgens())
+                        # Cancelling an asyncio.to_thread task does not stop its
+                        # actual IO. Keep this owner alive until those workers
+                        # settle, even if close waiters have been cancelled.
+                        loop.run_until_complete(loop.shutdown_default_executor())
                         loop.close()
                 self._thread = threading.Thread(target=own, daemon=True, name="xdog-mcp-owner")
                 self._thread.start()

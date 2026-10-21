@@ -157,7 +157,7 @@ class HttpClient:
                 response = await self.request("initialize", {
                     "protocolVersion": LEGACY_VERSIONS[0],
                     "capabilities": self.root_capability.advertised(),
-                    "clientInfo": {"name": "xdog", "version": "2.4.6"},
+                    "clientInfo": {"name": "xdog", "version": "2.4.7"},
                 })
                 version = response.get("protocolVersion")
                 if version not in LEGACY_VERSIONS:
@@ -189,7 +189,7 @@ class HttpClient:
         if selected:
             headers["MCP-Protocol-Version"] = selected
         if modern:
-            headers.update({"Mcp-Method": header_value(method), "Mcp-Client-Info": "xdog/2.4.6"})
+            headers.update({"Mcp-Method": header_value(method), "Mcp-Client-Info": "xdog/2.4.7"})
             headers.update(mirrors or {})
         elif self._session:
             headers["Mcp-Session-Id"] = self._session
@@ -220,7 +220,7 @@ class HttpClient:
         if self.modern or version:
             payload["_meta"] = {**payload.get("_meta", {}),
                                 "io.modelcontextprotocol/protocolVersion": version or self.version,
-                                "io.modelcontextprotocol/clientInfo": {"name": "xdog", "version": "2.4.6"},
+                                "io.modelcontextprotocol/clientInfo": {"name": "xdog", "version": "2.4.7"},
                                 "io.modelcontextprotocol/clientCapabilities": self.inputs.advertised()}
         message = {"jsonrpc": "2.0", "id": identifier, "method": method, "params": payload}
         task = asyncio.current_task()

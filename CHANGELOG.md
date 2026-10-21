@@ -12,6 +12,31 @@ Nothing yet.
 
 ---
 
+## [2.4.7] — 2026-10-21
+
+### Fixed
+
+- Extension/MCP owner shutdown now joins its default executor before closing
+  the loop, so cancelled persistence callbacks cannot outlive the owned runtime.
+- Goal status no longer advertises an old deferred reminder after entering a
+  user/host wait, pause or terminal state. The previous check remains available
+  as `last_delivery`; accepted, uncertain and other actual transport outcomes
+  remain unchanged.
+- Goal's bound model tool advises the executing main Agent to continue useful
+  work or inspect task evidence, rather than wait for itself. Native status and
+  readonly views still report host execution/backpressure independently.
+- Claw's generic prompt no longer requires a duplicate todo checklist when an
+  authoritative task list already exists.
+
+### Changed
+
+- The Goal skill prioritizes independent permitted work and minimal user
+  intervention. Task-level blockers do not automatically block the whole Goal;
+  genuine business questions are consolidated. Tool approvals stay with the
+  existing host permission system, never an additional Goal approval request.
+
+---
+
 ## [2.4.6] — 2026-10-21
 
 ### Fixed

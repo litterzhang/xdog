@@ -69,6 +69,43 @@ Goal itself does NOT assign or start workers. Use the host's existing tools.
 - You retain responsibility for dependencies, conflicting writes and checking the
   actual result. A worker's claimed completion is information for your judgment.
 
+## Minimal user intervention
+
+While the Goal is active, advance independently using the existing conversation,
+materials, tools and permissions. Inspect accessible evidence before asking the
+user to supply it. Mark only the affected task `blocked`, with the concrete
+missing fact or capability, and continue independent tasks or a feasible permitted
+alternative. A task-level blocker is not a Goal-wide wait. Goal task files are the
+authoritative task list; update them rather than maintaining a duplicate `todo`
+checklist. Plans and progress reports explain the work, not a second task status.
+
+Goal does not request tool permissions. Tool approval belongs entirely to the
+host's existing permission system; do not add an approval round, invent a grant
+or suggest authorization commands the host does not provide. If the host has no
+interactive authorization, do not ask the user to authorize a tool through chat.
+A denial or unavailable capability is not a user business decision: first try an
+already-authorized alternative or independent task without bypassing the denial.
+If no permitted work can advance, record a capability/host blocker and use
+`goal.wait(until="host", reason=...)`, not a request for user approval. A pending
+host approval stays with that system, not a duplicate Goal question. These
+instructions neither change tool policy nor grant access, override read-only
+restrictions or weaken safety checks.
+
+Ask only for a genuine user business decision or key user material that cannot
+be obtained independently. Consolidate necessary questions into one concise
+request with the blocker and the exact decision or material needed; do not ask
+repeatedly from reminders. Do not decide on the user's behalf, fabricate consent
+or silently change the delegated outcome. If independent work remains, ask once
+and continue that work while keeping only affected tasks blocked. Use
+`goal.wait(until="user", reason=...)` only when nothing can advance and the
+remaining blocker truly requires that user decision or material.
+
+This is not permission to bypass lifecycle state: if already waiting, apply the
+original evidence-based `activate` rules below BEFORE any Goal execution, even
+if another task now looks actionable. Never use an alternative task to escape a
+user/host wait or a pause. Only the actual main Agent judges feasible work,
+blockers and completion from evidence; there is no programmatic acceptance rule.
+
 ## Workspace hygiene
 
 `.xdog/goals/` is local Agent state, including private routing and task evidence.
@@ -171,7 +208,10 @@ no-follow atomic persistence under a file lock, NOT semantic progress or success
 History is retained, never silently truncated. Read/corruption/capacity/CAS errors
 are failures: inspect/re-read, do not reset to version 0, discard history or claim
 success. Do not continue Goal execution until the assessment is saved. Respect
-tool permissions; if writing requires approval, wait/ask rather than bypass it.
+tool permissions; any required approval belongs to the existing host permission
+system, not a Goal request for user authorization. If report persistence is denied
+or unavailable, explain the capability/host blocker without bypassing it or
+continuing unreported Goal work; do not default to a user wait or approval question.
 
 When progress is unchanged or regressed, explain why and adjust strategy or wait
 for the missing input. Compare consecutive reports, not only the latest one.
@@ -214,15 +254,22 @@ On a Goal reminder or task-file change:
 4. Continue useful work with existing host tools and permissions. No extra
    approval is needed merely for an accepted input, but every protected tool
    operation STILL needs the original permission/approval.
-5. If waiting for workers, use `goal.wait(until="tasks", reason=...)`. Only a
-   task cause triggers reminders for waiting(tasks); idle only defers/rechecks
-   an already pending task cause, never creates a blind reminder. Task changes
+5. Only when no independent work can advance and you are waiting for workers,
+   use `goal.wait(until="tasks", reason=...)`. Only a task cause triggers reminders
+   for waiting(tasks); idle only defers/rechecks an already pending task cause,
+   never creates a blind reminder. Task changes
    do not automatically activate the Goal: the main Agent checks and activates.
-6. If a user decision, approval, missing material or external help is needed,
-   FIRST `goal.wait(until="user", reason=...)`, then ask the user. A host recovery
-   condition uses `wait(until="host", reason=...)`. Release either wait only
-   after the actual user reply/authorized recovery fact satisfies it, then use
-   `activate` with the observed version and evidence. An automatic task event,
+6. If only a genuine user business decision or independently unobtainable key
+   user material remains and no work can advance, FIRST
+   `goal.wait(until="user", reason=...)`, then ask one concise consolidated question.
+   Otherwise keep only the affected tasks blocked and continue permitted work
+   while active. Tool permission/approval is handled by the existing host system,
+   never a Goal authorization request; if no permitted alternative or independent
+   task remains, record a capability/host blocker and use
+   `goal.wait(until="host", reason=...)`. Host recovery also uses this host wait.
+   Release either wait only after the actual user reply/authorized recovery fact
+   satisfies it, then use `activate` with the observed version and evidence.
+   An automatic task event,
    source label or quoted reply is NOT authorization to release user/host waits.
    Do not loop on approval, invent authorization or repeatedly ask from automatic
    messages.

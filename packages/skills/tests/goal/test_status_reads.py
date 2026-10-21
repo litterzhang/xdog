@@ -452,3 +452,96 @@ async def test_next_task_wait_and_empty_goal_are_only_display_guidance(service):
     assert summary['next'] == {'action': 'inspect_tasks', 'source': 'goal',
                                'reason': 'Inspect actual task evidence', 'requires_user': False}
     assert await service.current() == waiting  # Reading status must not resume or enqueue anything.
+
+
+@pytest.mark.parametrize('action,until', [('wait', 'user'), ('wait', 'host'), ('pause', ''), ('complete', '')])
+async def test_disabled_reminders_show_idle_not_stale_deferred_and_retain_last_check(service, action, until):
+    from copy import deepcopy
+
+    goal = await create(service)
+    delivery = {'status': 'deferred', 'message_id': 'original-not-sent', 'reason': 'Owner busy'}
+    info = {'delivery': delivery, 'execution': {'state': 'idle'}, 'automation': {'status': 'idle'}}
+    before_info = deepcopy(info)
+    service.info = lambda: info
+    fields = {'until': until} if until else {'summary': 'Verified completion'} if action == 'complete' else {}
+    await service.change(action, context=USER, **fields)
+    before = await service.current()
+    summary = await service.summary()
+    assert summary['delivery']['status'] == 'idle'
+    assert 'automatic reminders disabled' in summary['delivery']['reason']
+    assert summary['last_delivery'] == delivery
+    assert info == before_info  # A status read never mutates the runtime's diagnostic or outbox.
+    assert await service.current() == before
+    view = (await GoalView(service).read({'goal_id': goal.id}))['items'][0]
+    assert view['delivery_status'] == 'idle'
+    assert (await service.status())['last_delivery'] == delivery
+
+
+@pytest.mark.parametrize('action', [None, 'clear'])
+async def test_no_current_goal_cannot_advertise_a_deferred_reminder(service, action):
+    if action:
+        await create(service)
+        await service.change(action, context=USER)
+    service.info = lambda: {'delivery': {'status': 'deferred', 'reason': 'Old check'}}
+    result = await service.summary()
+    assert result['current'] is None
+    assert result['delivery'] == {'status': 'idle',
+        'reason': 'No current Goal; automatic reminders disabled'}
+    assert result['last_delivery']['status'] == 'deferred'
+
+
+@pytest.mark.parametrize('status', ['accepted', 'pending', 'running', 'succeeded', 'unknown', 'unavailable'])
+async def test_waiting_state_does_not_hide_original_transport_outcomes(service, status):
+    await create(service)
+    await service.change('wait', until='user', reason='Actual business decision', context=USER)
+    delivery = {'status': status, 'message_id': 'original', 'error': 'Keep exact receipt diagnostics'}
+    service.info = lambda: {'delivery': delivery}
+    result = await service.summary()
+    assert result['delivery'] == delivery and 'last_delivery' not in result
+    assert result['next']['action'] == 'user_input'
+
+
+@pytest.mark.parametrize('action', ['status', 'summary'])
+@pytest.mark.parametrize('until', ['', 'tasks'])
+async def test_model_status_does_not_tell_the_executing_main_agent_to_wait_for_itself(service, action, until):
+    await create(service)
+    if until:
+        await service.change('wait', until=until, reason='Inspect returned evidence')
+    info = {'execution': {'state': 'running', 'user_pending': True, 'children_active': True},
+            'delivery': {'status': 'deferred', 'reason': 'Owner busy'}}
+    service.info = lambda: info
+    before = await service.current()
+    observer = await service.summary()
+    assert observer['next']['action'] == 'await_execution'
+    tool = create_goal_tool(service, lambda: USER)
+    result = unpack(await tool.execute('current-main', {'action': action}))
+    assert result['execution'] == observer['execution']
+    assert result['delivery'] == observer['delivery']
+    assert result['next']['action'] == ('inspect_tasks' if until else 'main_agent_work')
+    assert not result['next']['requires_user']
+    assert await service.current() == before  # No activation, permission grant or new execution.
+
+
+@pytest.mark.parametrize('action,until,expected', [
+    ('pause', '', 'user_resume'), ('wait', 'user', 'user_input'), ('wait', 'host', 'host_recovery'),
+    ('complete', '', 'create'),
+])
+async def test_model_audience_cannot_release_lifecycle_protection(service, action, until, expected):
+    await create(service)
+    fields = {'until': until} if until else {'summary': 'Verified completion'} if action == 'complete' else {}
+    await service.change(action, context=USER, **fields)
+    service.info = lambda: {'execution': {'state': 'running'}, 'delivery': {'status': 'deferred'}}
+    before = await service.current()
+    tool = create_goal_tool(service, lambda: OperationContext(False))
+    result = unpack(await tool.execute('automatic', {'action': 'status'}))
+    assert result['next']['action'] == expected and result['next']['requires_user']
+    assert await service.current() == before
+
+
+async def test_running_model_must_still_inspect_an_unknown_original_delivery(service):
+    await create(service)
+    service.info = lambda: {'execution': {'state': 'running'},
+                           'delivery': {'status': 'unknown', 'message_id': 'original'}}
+    result = unpack(await create_goal_tool(service, lambda: USER).execute('read', {'action': 'status'}))
+    assert result['next']['action'] == 'inspect_delivery'
+    assert result['delivery']['message_id'] == 'original'

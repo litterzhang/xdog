@@ -502,7 +502,9 @@ class GoalRuntime:
                     'The first report establishes a baseline. Repeated lack of progress without a viable new approach '
                     'should lead you to goal.pause with the blocker and resume conditions, not a blind loop. '
                     'You choose the plan, tasks, tools and evidence-based completion. No user permissions are granted. '
-                    'If waiting for approval, record goal.wait(until="user") and ask; do not retry approvals.', (),
+                    'Tool permissions are managed by the host, not Goal. Do not request a separate Goal approval. '
+                    'If a protected call cannot run, do not retry or bypass it; continue other authorized work if '
+                    'possible, otherwise record the host capability blocker.', (),
                     {'goal_id': goal.id, 'goal_version': goal.version, 'wake_through': wake['sequence'],
                      'triggers': wake['causes']})
                 receipt = await self.service.store.reminder(goal, input_data(message))
