@@ -14,4 +14,3 @@ def setup(api):
         return 'COMPACTION-TOOL-' + str(await api.request_compaction('No borrowed command owner'))
 
     api.command('request', 'Request reviewed host compaction after callback success', command)
-    api.tool('illegal', 'Tool callbacks cannot borrow parent command compaction', {'type': 'object'}, illegal)

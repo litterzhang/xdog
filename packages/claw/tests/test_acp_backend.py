@@ -115,7 +115,10 @@ async def test_prompt_waits_behind_busy_group_and_keeps_its_own_result(tmp_path)
         await human
         result = await asyncio.wait_for(prompt, 5)
         assert result.stop_reason == "end_turn"
-        assert [update.content.text for update in updates] == ["answer 2"]
+        assert updates == []
+        identifier = result.field_meta["xdog"]["message_id"]
+        record = await backend.inputs.store.get(InputScope("main", tmp_path), identifier)
+        assert record.response == "answer 2" and record.envelope.reply is None
         assert len(model.inputs) == 2
     finally:
         model.release.set()
@@ -199,7 +202,7 @@ async def test_real_unix_acp_supports_explicit_group_prompt_and_durable_enqueue(
             await conn.load_session(session_id="group:main", cwd=str(tmp_path), mcp_servers=[])
             result = await conn.prompt(session_id="group:main", prompt=[TextContentBlock(type="text", text="review")])
             assert result.stop_reason == "end_turn"
-            assert [(sid, update.content.text) for sid, update in client.updates] == [("group:main", "answer 1")]
+            assert client.updates == []
             receipt = await conn.ext_method("xdog/enqueue", enqueue_params(tmp_path))
             assert receipt["message_id"] == "event-1" and receipt["status"] == "queued"
 
@@ -210,7 +213,7 @@ async def test_real_unix_acp_supports_explicit_group_prompt_and_durable_enqueue(
             await eventually(finished)
             assert len(model.inputs) == 2
             # A second unrelated ACP request does not broadcast into this peer's prompt stream.
-            assert len(client.updates) == 1
+            assert client.updates == []
         finally:
             if writer is not None:
                 writer.close()
@@ -471,7 +474,7 @@ async def test_external_evidence_cannot_enable_disabled_tools(tmp_path):
         await orch.stop()
 
 
-async def test_large_prompt_reply_is_sent_as_bounded_acp_chunks(tmp_path):
+async def test_large_prompt_result_is_saved_without_acp_chat_chunks(tmp_path):
     from xdog.claw.acp.server import ClawAcpServer
 
     answer = '"' * 600_000
@@ -492,8 +495,10 @@ async def test_large_prompt_reply_is_sent_as_bounded_acp_chunks(tmp_path):
             result = await asyncio.wait_for(conn.prompt(session_id="group:main", prompt=[
                 TextContentBlock(type="text", text="large answer")]), 5)
             assert result.stop_reason == "end_turn"
-            assert "".join(update.content.text for _, update in client.updates) == answer
-            assert all(len(update.model_dump_json().encode()) < 256 * 1024 for _, update in client.updates)
+            assert client.updates == []
+            identifier = result.field_meta["xdog"]["message_id"]
+            record = await server.backend.inputs.store.get(InputScope("main", tmp_path), identifier)
+            assert record.response == answer and record.envelope.reply is None
         finally:
             writer.close()
             await writer.wait_closed()
@@ -603,5 +608,44 @@ async def test_closing_acp_endpoint_detaches_legacy_waiter_not_application_execu
         assert result.status == 'succeeded' and len(model.inputs) == 1
     finally:
         model.release.set()
+        await backend.close()
+        await orch.stop()
+
+
+async def test_cwdless_enqueue_resolves_existing_group_not_process_workspace(tmp_path, monkeypatch):
+    orch, backend, model = await make_backend(tmp_path)
+    peer = Peer('cwdless', None)
+    elsewhere = tmp_path / 'caller'
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    try:
+        status = await backend.extension(peer, 'xdog/inbox_status', {'session_id': 'group:main'})
+        assert status['cwd'] == str(tmp_path)
+        request = enqueue_params(tmp_path)
+        request.pop('cwd')
+        receipt = await backend.extension(peer, 'xdog/enqueue', request)
+        assert receipt['status'] == 'queued'
+        duplicate = await backend.extension(peer, 'xdog/enqueue', {**request, 'cwd': str(tmp_path)})
+        assert duplicate['status'] == 'duplicate'
+        again = await backend.extension(peer, 'xdog/inbox_status', {'session_id': 'group:main'})
+        assert again['inbox_id'] == status['inbox_id']
+        assert again['messages'][0]['message_id'] == request['message_id']
+    finally:
+        await backend.close()
+        await orch.stop()
+
+
+@pytest.mark.parametrize('cwd', [None, '', '.', '/wrong'])
+async def test_enqueue_optional_workspace_rejects_invalid_explicit_cwd(tmp_path, cwd):
+    orch, backend, model = await make_backend(tmp_path)
+    try:
+        for method, request in (
+            ('xdog/enqueue', {**enqueue_params(tmp_path), 'cwd': cwd}),
+            ('xdog/inbox_status', {'session_id': 'group:main', 'cwd': cwd}),
+        ):
+            with pytest.raises(RequestError):
+                await backend.extension(Peer('invalid', None), method, request)
+        assert not model.inputs
+    finally:
         await backend.close()
         await orch.stop()

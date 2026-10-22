@@ -299,6 +299,19 @@ class WeixinChannel(Channel):
     def accepts_group(self, group_id: str) -> bool:
         return group_id in self._user_id_map
 
+    def bound_reply(self, group_id: str) -> UserInput | None:
+        """Snapshot this account's actual bound conversation, never an arbitrary peer."""
+        if group_id != self._group_id or self._cancel_event.is_set():
+            return None
+        user_id = self._user_id_map.get(group_id)
+        if not user_id:
+            return None
+        return UserInput(
+            group_id=group_id, sender=user_id, channel=self.name,
+            metadata={"account_id": self._account_id, "weixin_user_id": user_id,
+                      "context_token": get_context_token(self._account_id, user_id) or ""},
+        )
+
     async def send_message(self, group_id: str, text: str) -> None:
         """Send a text message to the WeChat user identified by group_id."""
         if not text:

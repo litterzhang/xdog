@@ -1,5 +1,12 @@
 # Common medium-level Skills hub — current verification
 
+> **Historical / superseded:** this record predates the current capability SDK.
+> Old skill slugs, hosting APIs and activation examples below are not current
+> integration instructions. Use `sdk-capability-assembly.md`, package READMEs and
+> `eyes-thin-tool-design.md` for the supported contracts; canonical slugs are
+> `flow`, `eyes`, `goal` and `plan`.
+
+
 2026-10-20. This is the package/resource/exclusion follow-up after the earlier
 assistant-core verification; earlier artifacts/paths/slugs are historical snapshots.
 Current runtime/resource commit: `92a6a76`. Exact hashes and isolated environments:

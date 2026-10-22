@@ -9,6 +9,8 @@ from xdog.agent.extensions.runtime import ExtensionRuntime
 from xdog.skills.goal.host import OperationContext
 from xdog.skills.goal.runtime import GoalRuntime
 
+from packages.skills.tests.goal.legacy import wait_goal
+
 
 class Observer:
     def __init__(self):
@@ -17,8 +19,9 @@ class Observer:
     async def start(self, *args):
         return {'status': 'watching'}
 
-    async def aclose(self):
+    async def aclose(self, *, suspend=True):
         self.closed = True
+        self.suspended = suspend
 
 
 async def setup(tmp_path, monkeypatch):
@@ -143,7 +146,8 @@ async def test_execution_failure_waits_for_user_instead_of_replaying(tmp_path, m
         listeners[0]({'type': 'execution.settled', 'execution_id': 'failure', 'status': status})
         await runtime.flush()
         goal = await runtime.service.current()
-        assert goal.status == 'waiting' and goal.wait_for == 'host' and not sent
+        assert goal.status == 'active' and not goal.wait_for and not sent
+        assert (await runtime.service.summary())['runtime_faults'][-1]['status'] == status
         listeners[0]({'type': 'owner.available'})
         await runtime.flush()
         assert not sent
@@ -161,9 +165,9 @@ async def test_unknown_acp_outcome_stops_automatic_reminders_until_user_inspecti
         listeners[0]({'type': 'execution.settled', 'execution_id': 'first', 'status': 'succeeded'})
         await runtime.flush()
         goal = await runtime.service.current()
-        assert goal.status == 'waiting' and goal.wait_for == 'host'
+        assert goal.status == 'active' and not goal.wait_for
         assert runtime.delivery['status'] == 'unknown'
-        assert runtime.automation['status'] == 'idle'  # Transport facts are not observer health.
+        assert runtime.automation['status'] == 'watching'  # Transport facts are not observer health.
         assert (await runtime.service.store.reminders())[0]['status'] == 'unknown'
         listeners[0]({'type': 'owner.available'})
         listeners[0]({'type': 'execution.settled', 'execution_id': 'second', 'status': 'succeeded'})
@@ -185,8 +189,10 @@ async def test_wait_before_idle_does_not_advertise_or_send_a_deferred_reminder(t
         await runtime.flush()
         assert runtime.delivery['status'] == 'deferred'
         assert not sent and not await runtime.service.store.reminders()
-        await runtime.service.change('wait', until=until, reason='Actual blocking condition',
-                                     context=OperationContext(True))
+        await wait_goal(runtime.service, until=until, reason='Actual blocking condition',
+                                     context=OperationContext(True),
+            **({'question': 'Which delivery target?', 'impact': 'Final target unknown',
+                'resume_when': 'User selects target'} if until == 'user' else {}))
         await runtime.flush()
         state['state'] = 'idle'
         listeners[0]({'type': 'owner.available'})

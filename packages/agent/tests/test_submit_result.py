@@ -1,8 +1,7 @@
 """Tests for the submit_result built-in tool (schema validation + ctx handoff)."""
 
 import pytest
-from xdog.agent.tools import create_submit_result_tool
-from xdog.agent.tools.registry import registered_tool_names
+from xdog.agent.tools import ToolRegistry, create_submit_result_tool
 from xdog.ai.types import TextContent
 
 
@@ -87,7 +86,7 @@ async def test_none_ctx_does_not_crash():
 
 
 def test_submit_result_is_registered():
-    assert "submit_result" in registered_tool_names()
+    assert "submit_result" in ToolRegistry().registered_names()
 
 
 def test_tool_schema_leaves_result_untyped():

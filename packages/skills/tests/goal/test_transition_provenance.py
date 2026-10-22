@@ -18,7 +18,9 @@ async def test_actual_native_resume_remains_visible_after_plan_and_model_report(
     state['state'] = 'running'
     try:
         await parent.extensions.command('goal', 'create 明确用户目标')
-        await runtime.service.change('wait', until='user', reason='需要决定')
+        await runtime.service.change('wait', until='user', reason='需要决定',
+            question='Which delivery target should be used?', impact='The final target cannot be selected',
+            resume_when='User selects the delivery target')
         authorized[0] = False
         assert (await runtime.tools[0].execute('denied', {'action': 'resume'})).is_error
         authorized[0] = True
@@ -67,11 +69,14 @@ async def test_model_and_runtime_origins_cannot_be_confused_with_user_slash_comm
         assert (await runtime.service.current()).status == 'paused'
         authorized[0] = True
         await parent.extensions.command('goal', 'resume')
-        await runtime._host_wait('failed')
+        before = await runtime.service.current()
+        await runtime._settled('original-failure', 'failed')
+        assert await runtime.service.current() == before
         last = (await runtime.service.summary())['last_transition']
-        assert last['origin'] == 'runtime' and last['actor'] == 'host'
-        assert last['action'] == 'wait' and last['to'] == {'status': 'waiting', 'wait_for': 'host'}
-        assert not last['user_authorized'] and last['command'] == ''
+        assert last['origin'] == 'native_command' and last['actor'] == 'user'
+        assert last['action'] == 'resume' and last['to'] == {'status': 'active', 'wait_for': ''}
+        assert last['user_authorized'] and last['command'] == '/goal resume'
+        assert (await runtime.service.summary())['runtime_faults'][-1]['status'] == 'failed'
     finally:
         await close(runtime, parent)
 

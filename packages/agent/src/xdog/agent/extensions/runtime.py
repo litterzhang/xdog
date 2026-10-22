@@ -6,6 +6,7 @@ import base64
 import contextvars
 import inspect
 import json
+import os
 import re
 import sys
 import uuid
@@ -17,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from xdog.agent.async_work import run_owned, settle_cleanup, wait_owned
-from xdog.agent.core import AgentMessage, AgentTool, AgentToolResult
+from xdog.agent.core import AgentMessage
 from xdog.agent.cross_loop import submit_remote
 from xdog.agent.extensions.command_result import ExtensionCommandResult
 from xdog.agent.extensions.commands import declaration as command_declaration
@@ -34,15 +35,12 @@ from xdog.agent.extensions.native_commands import NativeCommands
 from xdog.agent.extensions.native_commands import prepare as native_command_binding
 from xdog.agent.extensions.shortcuts import registrations, snapshot_rows
 from xdog.agent.extensions.state import ExtensionEntries
-from xdog.agent.extensions.tool_result import details_snapshot, host_result
-from xdog.agent.extensions.tools import declaration as tool_declaration
 from xdog.agent.extensions.transfer import BLOCK, ContextTransfer, owned_spool
 from xdog.agent.extensions.views import ViewRegistry
 from xdog.agent.extensions.worker import manifest
-from xdog.agent.mcp import McpManager
+from xdog.agent.mcp import McpRegistry
 from xdog.agent.mcp.config import McpServerConfig
-from xdog.agent.mcp.manager import McpTool
-from xdog.agent.mcp.stdio import MAX_FRAME, McpError, StdioClient
+from xdog.agent.mcp.stdio import CURRENT_VERSION, MAX_FRAME, McpError, StdioClient
 from xdog.agent.messages import messages_to_dicts
 from xdog.agent.types import HandledInput
 from xdog.ai.types import ImageContent, Model, TextContent, UserMessage
@@ -51,7 +49,6 @@ if TYPE_CHECKING:
     from xdog.agent.extensions.compaction import CompactionDecision
 
 T = TypeVar("T")
-_tool_registration: contextvars.ContextVar[str] = contextvars.ContextVar("extension_tool_registration", default="")
 _dialogs_allowed: contextvars.ContextVar[bool] = contextvars.ContextVar("extension_host_dialogs", default=True)
 
 
@@ -80,13 +77,39 @@ class _Client(StdioClient):
         self._provider_snapshot: tuple[int, list[dict[str, Any]]] | None = None
         self._hook_snapshot: dict[str, Any] | None = None
         self._command_snapshot: dict[str, Any] | None = None
-        self._tool_snapshot: dict[str, Any] | None = None
-        self._discovering_tools = False
         self._bootstrap_ui: list[dict[str, Any]] = []
         self._ui_admitted = False
         self._inventory_cache_supported = False
         self._inventories: dict[str, None] = {}
 
+
+    async def connect(self) -> None:
+        """Use shared bounded transport, not MCP's tool-server admission/discovery.
+
+        Extensions have only XDOG callbacks. No synthetic MCP capability, input
+        negotiation or legacy tool-server fallback is needed to admit a worker.
+        """
+        from xdog.agent.mcp.protocol import modern_discovery
+        if self.process is not None:
+            raise McpError("Extension already owns a process; disconnect before reconnecting")
+        self.state = "connecting"
+        try:
+            self.process = await asyncio.create_subprocess_exec(
+                *self.config.command, cwd=self.cwd, env={**os.environ, **dict(self.config.env)},
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                limit=MAX_FRAME, start_new_session=True,
+            )
+            self._reader = asyncio.create_task(self._read())
+            self._stderr = asyncio.create_task(self._drain_stderr())
+            response = await self.request("server/discover", {}, version=CURRENT_VERSION)
+            self.version, self.capabilities, self.server_info = modern_discovery(response)
+            if self.capabilities:
+                raise McpError("Extensions cannot advertise MCP server capabilities")
+            self.modern = True
+            self.state = "connected"
+        except BaseException:
+            await self.close()
+            raise
 
     def _accept_ui(self, rows: Any) -> None:
         current = self.owner._manager._clients.get(self.config.name)
@@ -103,6 +126,14 @@ class _Client(StdioClient):
             pending, self._bootstrap_ui = self._bootstrap_ui, []
             self.owner.accept_ui(self.config.name, pending, client=self)
         self.owner.accept_ui(self.config.name, rows, client=self)
+
+    async def _worker_request(self, method: str, params: dict[str, Any], *, version: str = "") -> dict[str, Any]:
+        # Reuse framing/reader/timeout ownership without MCP input negotiation:
+        # XDOG questions already use the callback-owned xdog_pending protocol.
+        result = await super()._request_once(method, params, version=version)
+        if result.get('resultType', 'complete') != 'complete':
+            raise McpError('Unexpected extension result type')
+        return result
 
     async def request(self, method: str, params: dict[str, Any], *, version: str = "") -> dict[str, Any]:
         from xdog.agent.extensions.invocation import InvocationLease, _current
@@ -216,8 +247,6 @@ class _Client(StdioClient):
                         payload['context']['host_tool_inventory_ref'] = inventory_key
                         inventory = None
                 payload['context']['host_tool_inventory'] = inventory  # Never trust caller/worker supplied metadata.
-            if method == "tools/call":
-                payload["_xdog_tool_registration"] = _tool_registration.get()
             if method == "server/discover":
                 payload["extension_settings"] = self.owner.settings.get(self.config.name, {})
             if (payload.get('context', {}).get('host_tool_inventory') is not None
@@ -232,7 +261,7 @@ class _Client(StdioClient):
             if (payload.get('context', {}).get('host_session_name') is not None
                     and len(json.dumps(payload, ensure_ascii=True).encode()) > MAX_FRAME - 4096):
                 payload['context']['host_session_name'] = None  # Optional metadata must not reject valid callbacks.
-            result = await super().request(method, payload, version=version)
+            result = await self._worker_request(method, payload, version=version)
             if 'xdog_tool_inventory_miss' in result:
                 missed = result.pop('xdog_tool_inventory_miss')
                 if (not isinstance(missed, str) or not inventory_key or missed != inventory_key
@@ -245,8 +274,6 @@ class _Client(StdioClient):
                     self._inventories.pop(next(iter(self._inventories)))
                 self._inventories[inventory_key] = None  # Only after this worker acknowledged the invocation.
             while "xdog_pending" in result or "xdog_auth_pending" in result:
-                if "xdog_tool_snapshot" in result:
-                    await self.owner.accept_tool_registration(self.config.name, self, result.pop("xdog_tool_snapshot"))
                 if "xdog_command_snapshot" in result:
                     self.owner.accept_command_registration(self.config.name, self, result.pop("xdog_command_snapshot"))
                 if "xdog_hook_snapshot" in result:
@@ -259,7 +286,7 @@ class _Client(StdioClient):
                     if (method != 'xdog/provider_auth' or provider_auth_review is None
                             or not isinstance(call_id, str) or re.fullmatch('[a-f0-9]{32}', call_id) is None):
                         raise ValueError('Invalid pending provider authentication owner')
-                    result = await super().request('xdog/provider_auth_poll', {'call_id': call_id})
+                    result = await self._worker_request('xdog/provider_auth_poll', {'call_id': call_id})
                     continue
                 call_id = result.get("xdog_pending")
                 if not isinstance(call_id, str) or not 0 < len(call_id) <= 128:
@@ -342,7 +369,7 @@ class _Client(StdioClient):
                 else:
                     value = await handler(self.config.name, prompt) if handler is not None else None
                 value = validate_answer(prompt, value)
-                result = await super().request("xdog/ui_reply", {
+                result = await self._worker_request("xdog/ui_reply", {
                     "call_id": call_id, "dialog_id": prompt["id"], "value": value})
             if (self.config.name in self.owner._display_only and method == "xdog/command"
                     and "xdog_command_result" in result):
@@ -352,8 +379,6 @@ class _Client(StdioClient):
                 # binding changes later in the same awaited callback.
                 return {"_xdog_view_invalidated": True, **(
                     {"output": "View unavailable: original owner changed"} if method == "xdog/command" else {})}
-            if "xdog_tool_snapshot" in result:
-                await self.owner.accept_tool_registration(self.config.name, self, result.pop("xdog_tool_snapshot"))
             if "xdog_command_snapshot" in result:
                 self.owner.accept_command_registration(self.config.name, self, result.pop("xdog_command_snapshot"))
             if "xdog_hook_snapshot" in result:
@@ -367,8 +392,6 @@ class _Client(StdioClient):
             auth_ui = result.pop("xdog_ui", [])
             if method != 'xdog/provider_auth':
                 self._accept_ui(auth_ui)
-            if method == "tools/call":
-                result = host_result(result)
             return result
         except BaseException:
             self.owner.fail(self.config.name)
@@ -384,7 +407,7 @@ class _Client(StdioClient):
             await super().close()
 
 
-class _Manager(McpManager):
+class _Manager(McpRegistry):
     def __init__(self, owner: ExtensionRuntime, configs: dict[str, Any]) -> None:
         super().__init__(configs, owner.cwd)
         self.owner = owner
@@ -412,51 +435,10 @@ class _Manager(McpManager):
             self._clients[name] = client
         try:
             await client.connect()
-            await self._discover(name)
-            if self._rejected.get(name):
-                raise ValueError("Extension tool registration rejected")
+            # Extension admission ends at its handshake; never run MCP tool discovery.
         except BaseException:
             await self._disconnect(name)
             raise
-
-    async def _discover(self, name: str) -> None:
-        client = self._clients.get(name)
-        if not isinstance(client, _Client):
-            raise ValueError("Extension tool owner unavailable")
-        client._discovering_tools = True
-        try:
-            await super()._discover(name)
-            if self._rejected.get(name):
-                raise ValueError("Extension tool registration rejected")
-            identities = {row["name"]: row["registration_id"] for row in (
-                client._tool_snapshot["tools"] if client._tool_snapshot is not None else [])}
-            with self._lock:
-                self._tools = tuple(replace(tool, registration_id=identities.get(tool.remote_name, ""))
-                                    if tool.server == name else tool for tool in self._tools)
-            if client._tool_snapshot is not None and {tool.remote_name for tool in self._tools
-                                                      if tool.server == name} != set(identities):
-                raise ValueError("Extension tool catalog/identity mismatch")
-        finally:
-            client._discovering_tools = False
-
-    async def _call(self, tool: McpTool, arguments: dict[str, Any]) -> AgentToolResult:
-        client = self._clients.get(tool.server)
-        if (not isinstance(client, _Client) or client._tool_snapshot is None
-                or not any(row["name"] == tool.remote_name and row["registration_id"] == tool.registration_id
-                           for row in client._tool_snapshot["tools"])):
-            raise ValueError("Extension tool registration changed; old approval/executor not adopted")
-        token = _tool_registration.set(tool.registration_id)
-        try:
-            return await super()._call(tool, arguments)
-        finally:
-            _tool_registration.reset(token)
-
-    def _result_details(self, tool: McpTool, result: dict[str, Any]) -> dict[str, Any]:
-        metadata = super()._result_details(tool, result)
-        metadata.update(extension=tool.server, extension_details_present="xdog_result_details" in result)
-        if "xdog_result_details" in result:
-            metadata["extension_details"] = details_snapshot(result["xdog_result_details"])
-        return metadata
 
     async def _close_clients(self) -> None:
         await self.owner._cancel_view_jobs()
@@ -509,8 +491,6 @@ class ExtensionRuntime:
         self._failed: set[str] = set()
         self._display_only: set[str] = set()
         self._unloaded: set[str] = set()
-        self._aliases: set[str] = set()
-        self._tool_wrappers: dict[str, tuple[McpTool, Any, AgentTool]] = {}
         self._ui: dict[str, dict[str, Any]] = {}
         self._diagnostics: list[str] = []
         configs = {name: {"command": sys.executable, "args": ["-P", str(Path(__file__).with_name("worker.py")),
@@ -790,9 +770,8 @@ class ExtensionRuntime:
         await self._manager._connect(name)
         info = await self._rpc(name, "xdog/info", {})
         self._display_hooks(name, info)
-        if name in self._display_only and (info.get("providers") or any(
-                tool.server == name for tool in self._manager._tools)):
-            raise ValueError("Display-only extensions cannot register tools/providers")
+        if name in self._display_only and info.get("providers"):
+            raise ValueError("Display-only extensions cannot register providers")
         if (not isinstance(info.get("commands"), list) or len(info["commands"]) > 32
                 or not isinstance(info.get("events"), list) or type(info.get("pre")) is not bool
                 or type(info.get("post")) is not bool):
@@ -1050,23 +1029,6 @@ class ExtensionRuntime:
             # Model catalogs are read from this cache by their owned controls.
             # Provider-only changes do not enqueue unchanged terminal/UI snapshots.
 
-    async def accept_tool_registration(self, name: str, client: _Client, value: Any) -> None:
-        if self._closed or self._manager._clients.get(name) is not client or client.state == "disconnected":
-            return
-        current = tool_declaration(value)
-        if name in self._display_only and current['tools']:
-            raise ValueError("Display-only extensions cannot register tools")
-        previous = client._tool_snapshot
-        if previous is not None and current["revision"] <= previous["revision"]:
-            if current["revision"] == previous["revision"] and current != previous:
-                raise ValueError("Conflicting live extension tool revision")
-            return
-        client._tool_snapshot = current
-        if client.state == "connected" and not client._discovering_tools:
-            await self._manager._discover(name)
-        # Session initialization projects the fresh catalog into the same actual
-        # agent. No automatic turn or permission-policy modification is performed.
-
     def accept_command_registration(self, name: str, client: _Client, value: Any) -> None:
         if self._closed or self._manager._clients.get(name) is not client or client.state == "disconnected":
             return
@@ -1198,63 +1160,6 @@ class ExtensionRuntime:
                         async def unlock() -> None:
                             self._provider_lock.release()
                         await self._manager._bridge(unlock())
-
-    @property
-    def aliases(self) -> set[str]:
-        return set(self._aliases)
-
-    def tools(self) -> tuple[AgentTool, ...]:
-        result = []
-        specs = {tool.alias: tool for tool in self._manager._tools}
-        for tool in self._manager.tools():
-            spec = specs.get(tool.name)
-            if spec is None:
-                continue
-            client = self._manager._clients.get(spec.server)
-            def current(spec: McpTool = cast(McpTool, spec), client: Any = client) -> bool:
-                return (not self._closed and spec.server not in self._failed | self._unloaded
-                        and self._manager._clients.get(spec.server) is client and isinstance(client, _Client)
-                        and client.state == "connected" and client._tool_snapshot is not None
-                        and any(row["name"] == spec.remote_name and row["registration_id"] == spec.registration_id
-                                for row in client._tool_snapshot["tools"]))
-            async def validate(params: dict[str, Any], original: AgentTool = tool,
-                               alive: Callable[[], bool] = current) -> None:
-                if not alive():
-                    raise ValueError("Extension tool registration changed before argument/approval admission")
-                if original.validate_arguments is not None:
-                    checked = original.validate_arguments(params)
-                    if inspect.isawaitable(checked):
-                        await checked
-                if not alive():
-                    raise ValueError("Extension tool registration changed during argument validation")
-            if not current():
-                continue  # Retain historical aliases/guards, but do not advertise retired registrations.
-            name = tool.name.replace("mcp_", "ext_", 1)
-            if len(self._aliases) >= 2048 and name not in self._aliases:
-                raise ValueError("Extension historical tool alias capacity reached; start a fresh session")
-            self._aliases.add(name)
-            cached = self._tool_wrappers.get(name)
-            if cached is not None and cached[0] is spec and cached[1] is client:
-                result.append(cached[2])
-            else:
-                wrapped = replace(tool, name=name, label=tool.label.replace("MCP ", "Extension ", 1),
-                                  validate_arguments=validate)
-                self._tool_wrappers[name] = spec, client, wrapped
-                result.append(wrapped)
-        live = {tool.name for tool in result}
-        self._tool_wrappers = {name: row for name, row in self._tool_wrappers.items() if name in live}
-        return tuple(result)
-
-    def sync_tools(self, agent: Any, *, allowed: tuple[str, ...] | None = None) -> None:
-        """Project on the caller's owning agent loop, never from the worker reader thread."""
-        current = self.tools()
-        base = tuple(tool for tool in agent.state.tools if tool.name not in self._aliases)
-        selected = (*base, *current)
-        agent.set_tools(tuple(tool for tool in selected if allowed is None or tool.name in allowed))
-
-    def tool_owner(self, alias: str) -> str:
-        original = alias.replace("ext_", "mcp_", 1)
-        return next((tool.server for tool in self._manager._tools if tool.alias == original), "")
 
     async def event(self, event: str, extra: dict[str, Any] | None = None) -> None:
         await self.initialize()
@@ -1514,7 +1419,6 @@ class ExtensionRuntime:
 
     def close(self) -> None:
         self.views.close()
-        self._tool_wrappers.clear()
         if not self._closed:
             self._generation += 1
         self.entries.close()

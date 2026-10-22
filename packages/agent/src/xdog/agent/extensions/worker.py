@@ -18,10 +18,9 @@ import yaml
 from jsonschema import Draft202012Validator
 from xdog.agent.extensions.api import ExtensionAPI, identifier, invoke
 from xdog.agent.extensions.input import decision, input_text
-from xdog.agent.extensions.tool_result import worker_result
 from xdog.agent.extensions.transfer import ContextTransfer
 from xdog.agent.extensions.types import ExtensionHook, PostToolUseHook, PreToolUseHook, StopHook
-from xdog.agent.mcp.manager import _schema
+from xdog.agent.mcp.registry import _schema
 from xdog.agent.mcp.stdio import CURRENT_VERSION, MAX_FRAME
 
 
@@ -118,10 +117,7 @@ async def load(path: Path, settings: dict[str, Any]) -> tuple[ExtensionAPI, dict
 async def dispatch(api: ExtensionAPI, method: str, params: dict[str, Any]) -> dict[str, Any]:
     context = params.get("context", {})
     if method == "server/discover":
-        return {"supportedVersions": [CURRENT_VERSION], "capabilities": {"tools": {}}}
-    if method == "tools/list":
-        return {"tools": [{"name": name, "description": value[0], "inputSchema": value[1]}
-                          for name, value in api.tools.items()]}
+        return {"supportedVersions": [CURRENT_VERSION], "capabilities": {}}
     if method == "xdog/info":
         return {"commands": api.command_snapshot()["commands"],
                 "events": api.hook_snapshot()["events"], "pre": bool(api.pre), "post": bool(api.post),
@@ -129,19 +125,8 @@ async def dispatch(api: ExtensionAPI, method: str, params: dict[str, Any]) -> di
                 "shortcuts": api.shortcuts,
                 "providers": [info for info, _callback in api.providers.values()],
                 "provider_revision": api._provider_revision, "hook_revision": api._hook_revision,
-                "command_revision": api._command_revision, "tool_revision": api._tool_revision,
+                "command_revision": api._command_revision,
                 "tool_inventory_cache": 1, "compaction_hooks": 1}
-    if method == "tools/call":
-        name = identifier(params["name"])
-        if params.get("_xdog_tool_registration") != api._tool_ids.get(name):
-            return {"isError": True, "content": [{"type": "text",
-                "text": ("Extension tool registration changed before worker admission; "
-                         "callback not invoked, no replay")}]}
-        _description, schema, callback = api.tools[name]
-        arguments = params.get("arguments", {})
-        Draft202012Validator(schema).validate(arguments)
-        result = await invoke(callback, arguments, context)
-        return worker_result(result)
     if method == 'xdog/command_complete':
         from xdog.agent.extensions.argument_completion import argument_context, completion_id, items, plain
         name = identifier(params.get('name'))
@@ -245,7 +230,6 @@ async def main() -> None:
     sent_provider_revision = -1
     sent_hook_revision = -1
     sent_command_revision = -1
-    sent_tool_revision = -1
     pending: dict[str, asyncio.Task[dict[str, Any]]] = {}
     context_calls: dict[str, str] = {}
     provider_auth_calls: set[str] = set()
@@ -418,9 +402,6 @@ async def main() -> None:
             if api._command_revision != sent_command_revision:
                 result["xdog_command_snapshot"] = api.command_snapshot()
                 sent_command_revision = api._command_revision
-            if api._tool_revision != sent_tool_revision:
-                result["xdog_tool_snapshot"] = api.tool_snapshot()
-                sent_tool_revision = api._tool_revision
             response = {"jsonrpc": "2.0", "id": request["id"], "result": result}
         except BaseException:
             transfer.close()

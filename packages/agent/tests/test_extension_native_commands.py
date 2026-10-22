@@ -45,7 +45,7 @@ async def test_native_query_dispatch_snapshot_help_and_dispose_never_start_worke
         assert snapshot['extensions'][-1] == {'name': 'records', 'state': 'active'}
         help_page = page(runtime.commands(), {}, session_id='session', owner='host')
         assert help_page['commands'] == [{'name': '/inspect-state', 'description': 'Inspect pinned state'}]
-        assert not runtime.tools() and not runtime._manager._clients and runtime._manager._thread is None
+        assert not hasattr(runtime, "tools") and not runtime._manager._clients and runtime._manager._thread is None
         dispose()
         dispose()
         assert not runtime.commands() and runtime.command_owner('inspect-state') is None
@@ -279,7 +279,7 @@ async def test_selected_worker_identity_including_display_profile_cannot_be_elev
         for extension in ('display', 'Display'):
             with pytest.raises(ValueError, match='identity.*worker'):
                 runtime.bind_native_commands(extension, {'inspect': ('Inspect', callback)}, valid=lambda: True)
-        assert not runtime.commands() and not runtime.tools()
+        assert not runtime.commands() and not hasattr(runtime, "tools")
         assert not runtime._manager._clients and runtime._manager._thread is None
     finally:
         await runtime.aclose()
@@ -360,7 +360,7 @@ async def test_declared_native_overlap_keeps_actual_same_name_skill_loading_inde
                                      valid=lambda: True, shadow_skills={'records'})
         assert await runtime.command('records', '') == 'native command'
         assert skills.load_skill('records').content == 'Actual skill body.'
-        assert not runtime.tools() and runtime._manager._thread is None
+        assert not hasattr(runtime, "tools") and runtime._manager._thread is None
     finally:
         await runtime.aclose()
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "xdog-eyes"
-version = "2.4.7"
+version = "2.4.8"
 description = "Declarative local observation and source-neutral agent event delivery"
 classifiers = ["Operating System :: POSIX :: Linux"]
 requires-python = ">=3.12"
@@ -20,7 +20,7 @@ dependencies = [
 xdog-eyes = "xdog.eyes.cli:main"
 
 [project.entry-points."xdog.capabilities"]
-eyes = "xdog.eyes.hosting.runtime:provider"
+eyes = "xdog.eyes.capability:provider"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/xdog"]

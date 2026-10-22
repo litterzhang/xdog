@@ -8,6 +8,7 @@ import sys
 import threading
 
 import pytest
+from xdog.agent.skills import SkillManager
 from xdog.coding.core.slash_commands import execute_command
 from xdog.skills.goal.host import OperationContext
 
@@ -71,7 +72,12 @@ async def test_idle_navigation_retires_original_capability_without_transferring_
                                                                  context=OperationContext(True)))
         tool = old.tools[0]
         await asyncio.to_thread(session.new_session)
-        assert session.capabilities.get('goal') is None
+        # Owner activation now eagerly restores installed capabilities. It must
+        # create a fresh empty binding, never transfer the previous Goal.
+        restored = session.capabilities.get('goal')
+        if restored is not None:
+            assert restored.owner != old.owner
+            assert await owned(session._sdk_controller, restored.service.current) is None
         await session.send_message('New owner')
         current = session.capabilities.get('goal')
         assert current.owner != old.service.store.owner
@@ -139,7 +145,9 @@ async def test_shutdown_releases_registry_and_reopen_retains_main_tasks_without_
         await dispose(session)
         assert host.loop.is_closed() and session._lease is None
         manager, calls = SessionManager(tmp_path / 'sessions'), []
-        successor = AgentSession(agent=Agent(scripted(calls), config=AgentConfig(model='test/model'),
+        successor = AgentSession(agent=Agent(scripted(calls),
+                                             skills=SkillManager(tmp_path / "skills"),
+                                             config=AgentConfig(model='test/model'),
             tools=get_default_tools(tmp_path), tool_ctx={'fs_workspace': str(tmp_path)}),
             session_data=manager.load_session(identifier), session_manager=manager,
             settings=SettingsManager(global_path=tmp_path / 'settings.json'), tool_registry=None, bash=None,
@@ -196,27 +204,31 @@ async def test_native_goal_status_pause_clear_with_real_child_preserves_worker_e
         await dispose(session)
 
 
-async def test_default_capability_skill_body_is_in_first_model_context_without_filesystem_search(tmp_path):
-    from xdog.agent.skills import SkillManager
+async def test_goal_tool_and_commands_are_available_without_default_skill_activation(tmp_path):
     from xdog.ai.types import system_prompt_text
 
     session, contexts = enabled(tmp_path)
-    # The SDK supplies this installed catalog; direct AgentSession fixtures otherwise have no manager.
-    session.agent._skills = SkillManager(shared_dir=tmp_path / 'skills')
+    # Discovery and tool registration must not implicitly activate skill bodies.
+    assert isinstance(session.agent._skills, SkillManager)
+    skill = session.agent._skills.load_skill('goal')
+    assert skill is not None and skill.content.strip()
     try:
         assert not session.capabilities.default_skills
         await session.send_message('Can you create a goal and test its full loop?')
         assert contexts
         prompt = system_prompt_text(contexts[0].system_prompt) or ''
-        assert '# Goal: main-Agent-owned work' in prompt
-        assert 'Before each continuation' in prompt or 'goal.report' in prompt or 'goal(action="report")' in prompt
-        assert 'goal' in session.agent.active_skills and 'goal' in session.active_skills
+        assert '# Goal: main-Agent-owned work' not in prompt
+        assert 'goal' not in session.agent.active_skills and 'goal' not in session.active_skills
+        assert not session.capabilities.default_skills
+        assert 'goal' in session.capabilities.declared_skills
+        assert any(tool.name == 'goal' for tool in session.agent.active_tools)
         assert 'goal' not in session._active_skills  # never pretend this was user activation/authority
         assert 'The user activated these' not in prompt
         assert not session.children.runtime._children
         binding = session.capabilities.get('goal')
         assert await owned(session._sdk_controller, binding.service.current) is None
         assert len(contexts) == 1  # loading instructions does not create a Goal or start another Agent
+        await asyncio.to_thread(session.activate_skill, 'goal')
         await session.send_message('Continue ordinary chat')
         next_prompt = system_prompt_text(contexts[-1].system_prompt) or ''
         assert next_prompt.count('# Goal: main-Agent-owned work') == 1

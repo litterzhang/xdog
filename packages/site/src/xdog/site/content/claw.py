@@ -14,7 +14,7 @@ from xdog.site.content.docs import Feature, PackageDocs, Phase
 
 _FEATURES = (
     Feature("Gateway daemon", "Unix-socket JSON-line server with streaming, PID/signal handling, and "
-            "optional managed Eyes observation.", "Runtime"),
+            "default private ACP and optional CLI-backed capabilities.", "Runtime"),
     Feature("Groups", "Isolated per-group runtimes with their own workspace, memory, goals, and "
             "tools.", "Runtime"),
     Feature("Per-group config", "model_id, thinking_level, temperature, max_tokens per group.",
@@ -30,9 +30,9 @@ _FEATURES = (
             "search extra is absent.", "Memory & prompt"),
     Feature("Prompt caching", "Static base cached; dynamic workspace overrides applied per turn.",
             "Memory & prompt"),
-    Feature("Optional Goals", "Shared Goal package: explicit worker assignment, report acceptance and "
-            "independent completion review.", "Autonomy"),
-    Feature("Scheduling", "Opt-in Eyes sources: cron, interval and one-off events; separate notification cancellation.",
+    Feature("Optional Goals", "Shared Goal package: main-Agent planning, optional delegation and "
+            "evidence-based completion.", "Autonomy"),
+    Feature("Scheduling", "Independent Eyes daemon: JSON-defined cron, interval, file and one-off events.",
             "Autonomy"),
     Feature("Scoped tools", "Messaging, memory, todo and skills; optional Goals bind to their original group.",
             "Autonomy"),
@@ -54,7 +54,7 @@ _ROADMAP = (
     Phase("Shipped", "Memory, prompt & channels", (
         "Workspace-file system prompt (IDENTITY / AGENTS / SOUL / USER)",
         "Long-term memory with optional vector+BM25 hybrid search",
-        "Optional reusable Goals: explicit workers, acceptance and independent review",
+        "Optional reusable Goals: main-Agent planning, task files and progress reports",
         "Channels: local tui and weixin (WeChat) bot",
     ), done=True),
     Phase("2026", "More reach", (

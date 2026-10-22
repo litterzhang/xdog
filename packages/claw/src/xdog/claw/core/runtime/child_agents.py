@@ -13,13 +13,16 @@ from xdog.agent import Agent, AgentConfig, AgentMessage, BeforeToolCallContext, 
 from xdog.agent.access import read_only_call
 from xdog.agent.async_work import run_owned
 from xdog.agent.capabilities.children import ChildPort
+from xdog.agent.capabilities.runtime import CapabilitySet
 from xdog.agent.child_compaction import ArchivedSummaryStream, preserve_model_metadata
 from xdog.agent.child_model import resolve_child_model
 from xdog.agent.child_policy import ChildDelegation, ChildSkills, ParentHandle, _matches
 from xdog.agent.children import RESERVED_TOOLS, ChildSpec, child_prompt
 from xdog.agent.core import AgentTool, AgentToolResult, StreamFn, ToolExecutionMode
 from xdog.agent.cross_loop import settle_on
+from xdog.agent.mcp import McpRegistry
 from xdog.agent.tool_effects import ToolEffect
+from xdog.agent.tools import ToolRegistry
 from xdog.agent.types import AfterToolCallContext, AfterToolCallResult, HandledInput
 from xdog.ai.types import AssistantMessage, Context, StreamOptions, ToolCall, UserMessage
 from xdog.ai.utils.event_stream import EventStream
@@ -44,8 +47,8 @@ class _ParentSnapshot:
     context_window: int
     max_prompt_tokens: int
     supports_tool_calls: bool | None
-    extension_owners: tuple[tuple[str, str], ...]
-    mcp_tools: tuple[str, ...]
+    mcp_registry: McpRegistry
+    mcp_tools: tuple[AgentTool, ...]
 
 
 @dataclass(frozen=True)
@@ -72,11 +75,14 @@ class ClawChildren:
         self.store = ChildStore.scoped(session._store._sessions_dir, session.meta.session_id, branch)
         self.capabilities = ChildPort(session.meta.session_id, branch,
             lambda: (*session._runtime.capabilities.owned_tools, *session._runtime.capabilities.tools,
-                     *session._runtime.application_tools()),
+                     *(() if session._runtime.application_capabilities is None
+                       else session._runtime.application_capabilities.owned_tools),
+                     *session._runtime.capability_assembly.tools),
             parent_valid=lambda identifier: identifier in self.grants and self.parent.live)
         self.snapshots: dict[str, _ParentSnapshot] = {}
         self.grants: dict[str, ChildDelegation] = {}
         self.scoped_tools: dict[str, dict[str, AgentTool]] = {}
+        self.scope_owners: dict[str, CapabilitySet] = {}
         self.skill_grants: dict[str, ChildSkills] = {}
         parent_agent = session.agent
         self.parent = ParentHandle(
@@ -85,7 +91,6 @@ class ClawChildren:
                            and session._runtime._active_session is session),
             tools=lambda: parent_agent.active_tools,
             skills=lambda: parent_agent._skills)
-        self.tool_limits: dict[str, tuple[str, ...] | None] = {}
         self.extensions = ChildExtensions(session.extensions, self.store)
         records = json.loads(prepared.records_json)
         self.runtime = ClawChildRuntime(self.create, self.store.save, capture=self.capture, begin=self.store.begin,
@@ -115,15 +120,16 @@ class ClawChildren:
         source = agent.tool_context
         context = {key: source[key] for key in ('group_id', 'workspace_dir', 'fs_workspace', 'data_dir')
                    if key in source}
-        for tool, keys in (('message', ('_send_fn',)), ('memory', ('_memory_search', '_memory_manager'))):
+        for tool, keys in (('message', ('_message_port',)), ('memory', ('_memory_search', '_memory_manager'))):
             if tool in names:
                 context.update({key: source[key] for key in keys if key in source})
+        if context.get('_message_port') is not None:
+            context['_message_port'] = context['_message_port'].for_child(spec.id)
         state = _ParentSnapshot(agent.state.model, agent.stream_fn, agent.options, original.tools,
             context, agent.tool_execution, agent.context_window, agent.max_prompt_tokens, agent.supports_tool_calls,
-            tuple((tool.name, self.session.extensions.tool_owner(tool.name)) for tool in original.tools
-                  if tool.name in self.session.extensions.aliases),
-            tuple(tool.name for tool in original.tools
-                  if any(current.name == tool.name for current in self.session._runtime.mcp.tools())))
+            self.session._runtime.mcp,
+            tuple(tool for tool in original.tools
+                  if self.session._runtime.mcp.owns_tool(tool)))
         skills = await run_owned(self.parent.capture_skills, spec.skills)
         # The owner may have closed, narrowed tools or replaced its skill source
         # while owned filesystem validation was settling. Never publish that work.
@@ -151,13 +157,15 @@ class ClawChildren:
         current = self.parent.capture_tools(grant.names, grant.actions)
         if any(a is not b for a, b in zip(grant.tools, current.tools, strict=True)):
             raise ValueError("Parent tool delegation changed during scope validation")
+        if scoped and self.session._runtime.capabilities is not owner:
+            raise ValueError("Original scoped capability owner retired during delegation")
         self.scoped_tools[spec.id] = scoped
+        self.scope_owners[spec.id] = owner
         self.grants[spec.id] = grant
         self.skill_grants[spec.id] = skills
-        self.tool_limits[spec.id] = grant.names
         context = dict(state.context)
         if 'message' not in grant.names:
-            context.pop('_send_fn', None)
+            context.pop('_message_port', None)
         if 'memory' not in grant.names:
             context.pop('_memory_search', None)
             context.pop('_memory_manager', None)
@@ -168,15 +176,15 @@ class ClawChildren:
     async def create(self, spec: ChildSpec, publish: Callable[[dict[str, Any]], None]) -> Agent:
         session, runtime = self.session, self.session._runtime
         state = self.snapshots[spec.id]
-        allowed_tools = self.tool_limits[spec.id]
+        allowed_tools = self.grants[spec.id].names
         role_tools = await self.capabilities.tools(spec)
         if role_tools:
             allowed_tools = (*(allowed_tools or ()), *(tool.name for tool in role_tools))
-        # Child extension context and every later registration sync keep this
-        # admission-time ceiling, not a later parent selection or worker tool list.
+        # Child hooks see the admission-time ceiling, never a later parent grant.
         extension_spec = replace(spec, tools=allowed_tools)
         grant = self.grants[spec.id]
         scoped = self.scoped_tools[spec.id]
+        scope_owner = self.scope_owners[spec.id]
         skills = self.skill_grants[spec.id]
         await run_owned(self.parent.check_skills, skills)
         current = self.parent.capture_tools(grant.names, grant.actions)
@@ -187,14 +195,12 @@ class ClawChildren:
             parent_max_prompt_tokens=state.max_prompt_tokens)
         extension = await self.extensions.create(extension_spec, publish, model=selected.id,
                                                  thinking=selected.options.thinking or "off", initialize=False)
-        extension_names = dict(state.extension_owners)
         # Original schema is an immutable admission snapshot; a later mutation
         # of the parent's nested parameters cannot broaden child advertisement.
         proxies = tuple(replace(scoped.get(tool.name, tool), parameters=(
                                     grant.scoped_parameters(tool.name, scoped[tool.name].parameters)
                                     if tool.name in scoped else grant.provider_parameters(tool.name)))
                         for tool in grant.tools)
-        extension_bindings: dict[str, tuple[AgentTool, AgentTool]] = {}
         admissions: dict[str, _ToolAdmission] = {}
         executing: set[object] = set()
         parent_agent = session.agent
@@ -207,11 +213,11 @@ class ClawChildren:
             if ctx.tool_call.name not in scoped:
                 return read_only_call(ctx.tool_call.name, ctx.args)
             actual = next(tool for tool in grant.tools if tool.name == ctx.tool_call.name)
-            if not runtime.capabilities.can_delegate_child_tool(actual):
+            if runtime.capabilities is not scope_owner or not scope_owner.can_delegate_child_tool(actual):
                 raise ValueError("Original scoped capability tool is no longer delegable")
             if not _matches(scoped[ctx.tool_call.name].parameters, ctx.args):
                 return False
-            effect = runtime.capabilities.tool_effect(actual, ctx.args) or ToolEffect("execute", "unknown")
+            effect = runtime.capability_assembly.tool_effect(actual, ctx.args) or ToolEffect("execute", "unknown")
             return effect.access == "read"
 
         def check_policy(ctx: BeforeToolCallContext) -> None:
@@ -219,21 +225,23 @@ class ClawChildren:
             self.extensions.check_parent()
             if (session.access is not parent_access or session.agent is not parent_agent):
                 raise ValueError('Original child parent policy owner changed')
+            # Scoped binding validity is required even for a writable child.
+            # Replacing a scope is retirement, not permission to finish using
+            # the still-live former provider after an awaited validator.
+            if ctx.tool_call.name in scoped:
+                actual = next(tool for tool in grant.tools if tool.name == ctx.tool_call.name)
+                if runtime.capabilities is not scope_owner or not scope_owner.can_delegate_child_tool(actual):
+                    raise ValueError("Original scoped capability owner/identity retired")
             if (session.access.state.read_only or spec.access == 'read-only') and not (
                     bound_call(ctx) or safe_call(ctx)):
                 raise ValueError('Child/parent access is read-only')
             name = ctx.tool_call.name
-            if name in extension_names:
-                expected = extension_names[name]
-                binding = extension_bindings.get(name)
-                if (expected not in runtime.extension_allow_tools
-                        or session.extensions.tool_owner(name) != expected
-                        or extension.tool_owner(name) != expected or binding is None
-                        or not any(tool is binding[0] for tool in extension.tools())):
-                    raise ValueError('Child extension tool use disabled or original registration changed')
-            if name in state.mcp_tools and (not runtime.mcp.allowed(name)
-                    or not any(tool.name == name for tool in runtime.mcp.tools())):
-                raise ValueError('Child MCP tool use disabled by parent policy')
+            original_mcp = next((tool for tool in state.mcp_tools if tool.name == name), None)
+            if original_mcp is not None and (runtime.mcp is not state.mcp_registry
+                    or parent_agent.mcp_registry is not state.mcp_registry
+                    or not state.mcp_registry.allowed(name)
+                    or not state.mcp_registry.is_current_tool(original_mcp)):
+                raise ValueError('Child MCP tool use disabled or original registration changed')
 
         def encoded_arguments(params: dict[str, Any]) -> str:
             return json.dumps(params, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(',', ':'))
@@ -252,18 +260,16 @@ class ClawChildren:
                     or parent_access.state.revision != admitted.access_revision):
                 raise ValueError('Parent policy changed between child tool admission and actual execution')
 
-        def protect(tool: AgentTool, source: AgentTool, *, registration: AgentTool | None = None) -> AgentTool:
-            # Preserve both the original parent's permission validator and the
-            # independent child's registration validator. Later narrowing must
-            # also apply, but cannot replace the captured validator with a grant.
+        def protect(tool: AgentTool, source: AgentTool) -> AgentTool:
+            # Preserve original permission validators across child delegation.
+            # Later narrowing cannot replace a captured validator with a grant.
             captured_validators = (None if tool.name in scoped else source.validate_arguments,
                                    tool.validate_arguments)
             proxy: AgentTool
             def validators() -> tuple[Callable[[dict[str, Any]], Any], ...]:
                 selected: list[Callable[[dict[str, Any]], Any]] = []
                 for validate in (*captured_validators,
-                                 None if tool.name in scoped else source.validate_arguments,
-                                 registration.validate_arguments if registration is not None else None):
+                                 None if tool.name in scoped else source.validate_arguments):
                     if validate is not None and not any(validate is previous for previous in selected):
                         selected.append(validate)
                 return tuple(selected)
@@ -320,7 +326,7 @@ class ClawChildren:
                             async def deliver() -> None:
                                 await on_update(result)
                             await settle_on(caller, deliver())
-                    return await settle_on(runtime.capabilities.owner_loop,
+                    return await settle_on(scope_owner.owner_loop,
                                            invoke(call_id, params, None, update, ctx=ctx))
                 return await invoke(call_id, params, cancel, on_update, ctx=ctx)
             proxy = replace(tool, execute=execute,
@@ -353,26 +359,26 @@ class ClawChildren:
         delegated = tuple(protect(skills.tool(tool, lambda: self.parent.live) if tool.name == 'skill' else
                                   host_owned(tool) if tool.name in services else tool, source)
                           for tool, source in zip(proxies, grant.tools, strict=True))
-        tools = tuple(tool for tool in delegated if tool.name not in extension_names) + role_tools
+        delegated_mcp = tuple(proxy for source, proxy in zip(grant.tools, delegated, strict=True)
+                              if any(source is original for original in state.mcp_tools))
+        def is_mcp_proxy(tool: AgentTool) -> bool:
+            return any(tool is proxy for proxy in delegated_mcp)
+        tools = tuple(tool for tool in delegated if not is_mcp_proxy(tool)) + role_tools
+        mcp = McpRegistry.from_tools(delegated_mcp)
+        registry = ToolRegistry()
 
-        def sync_tools() -> None:
+        def refresh_delegated_tools() -> None:
             current = self.parent.capture_tools(None).tools if self.parent.live else ()
-            current_extensions = extension.tools()
-            selected_tools: list[AgentTool] = []
-            for source, proxy in zip(grant.tools, delegated, strict=True):
-                if not any(source is item for item in current):
-                    continue
-                if source.name in extension_names:
-                    binding = extension_bindings.get(source.name)
-                    if binding is not None and any(binding[0] is item for item in current_extensions):
-                        selected_tools.append(binding[1])
-                else:
-                    selected_tools.append(proxy)
-            # Keep exact original role capability identities/bridges; a label or
-            # a same-named replacement is never sufficient to regain authority.
+            selected_tools = [proxy for source, proxy in zip(grant.tools, delegated, strict=True)
+                              if any(source is item for item in current)]
+            # Keep exact original capability identities; a same-named replacement
+            # never regains authority. Hooks/providers/UI do not supply tools.
             selected_tools.extend(tool for tool in role_tools if self.parent.live
                                   and self.capabilities.permits(spec.id, tool.name, (tool,)))
-            agent.set_tools(tuple(selected_tools))
+            mcp.replace_delegated_tools(tool for tool in selected_tools if is_mcp_proxy(tool))
+            agent.sync_mcp_tools()
+            registry.replace_source("delegated", (tool for tool in selected_tools if not is_mcp_proxy(tool)))
+            registry.publish(agent)
         async def before(ctx: BeforeToolCallContext, cancel: asyncio.Event | None = None
                          ) -> BeforeToolCallResult | None:
             try:
@@ -402,13 +408,13 @@ class ClawChildren:
             except (ValueError, PermissionError) as exc:
                 return BeforeToolCallResult(block=True, reason=str(exc))
             finally:
-                sync_tools()
+                refresh_delegated_tools()
 
         async def after(ctx: AfterToolCallContext, cancel: asyncio.Event | None = None) -> AfterToolCallResult | None:
             try:
                 return await self.extensions.post(extension, ctx)
             finally:
-                sync_tools()
+                refresh_delegated_tools()
 
         agent: Agent
         async def context(messages: list[AgentMessage]) -> list[AgentMessage]:
@@ -416,7 +422,7 @@ class ClawChildren:
                 result = await self.extensions.context(extension, messages)
                 return result
             finally:
-                sync_tools()
+                refresh_delegated_tools()
 
         async def input_transform(message: UserMessage, source: str,
                                   cancel: asyncio.Event | None = None) -> UserMessage | HandledInput:
@@ -424,7 +430,7 @@ class ClawChildren:
                 self.extensions.check_parent()
                 return await extension.input(message, source, channel="child")
             finally:
-                sync_tools()
+                refresh_delegated_tools()
 
         from xdog.agent.extensions.providers import ExtensionProviderStream
         base_stream = state.stream
@@ -438,6 +444,10 @@ class ClawChildren:
             current = self.parent.capture_tools(grant.names, grant.actions)
             if any(source is not actual for source, actual in zip(grant.tools, current.tools, strict=True)):
                 raise ValueError('Original parent tool delegation changed; no child model request')
+            if any(any(source is tool for tool in grant.tools) and (runtime.mcp is not state.mcp_registry
+                    or parent_agent.mcp_registry is not state.mcp_registry
+                    or not state.mcp_registry.is_current_tool(source)) for source in state.mcp_tools):
+                raise ValueError('Original parent MCP delegation changed; no child model request')
         def guarded(model: str, context: Context, options: StreamOptions) -> EventStream[AssistantMessage]:
             return ArchivedSummaryStream(lambda: routed_stream(model, context, options), check_request)
         child_stream = preserve_model_metadata(guarded, routed_stream)
@@ -448,13 +458,10 @@ class ClawChildren:
             context_window=selected.context_window, max_prompt_tokens=selected.max_prompt_tokens,
             supports_tool_calls=selected.supports_tool_calls, options=selected.options,
             compaction=selected.compaction(child_stream)),
-            tools=tools, parent=self.parent,
+            tools=tools, mcp_registry=mcp, parent=self.parent,
             skills=skills, active_skills=skills.slugs,
             tool_ctx={**state.context, '_skill_manager': skills},
             transform_context=context, before_tool_call=before, after_tool_call=after, input_transform=input_transform)
-        if allowed_tools is not None:
-            allowed = set(allowed_tools)
-            agent.set_tools(tuple(tool for tool in agent.state.tools if tool.name in allowed))
         from xdog.agent.extensions.inspection import capture
         inspection_session = str(extension.context().get("session_id", ""))
         def inspection() -> dict[str, Any] | None:
@@ -475,18 +482,13 @@ class ClawChildren:
 
         self.extensions.bind_pending_messages(spec.id, agent)
         await self.extensions.start(extension_spec, extension)
-        for tool in extension.tools():
-            if tool.name in extension_names and extension.tool_owner(tool.name) == extension_names[tool.name]:
-                index = grant.names.index(tool.name)
-                extension_bindings[tool.name] = tool, protect(replace(tool,
-                    parameters=grant.provider_parameters(tool.name)), grant.tools[index], registration=tool)
-        sync_tools()
+        refresh_delegated_tools()
         return agent
 
     async def finish(self, spec: ChildSpec) -> None:
         self.snapshots.pop(spec.id, None)
-        self.tool_limits.pop(spec.id, None)
         self.grants.pop(spec.id, None)
         self.scoped_tools.pop(spec.id, None)
+        self.scope_owners.pop(spec.id, None)
         self.skill_grants.pop(spec.id, None)
         await self.extensions.close(spec)

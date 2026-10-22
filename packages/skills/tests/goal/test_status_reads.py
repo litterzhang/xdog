@@ -16,6 +16,8 @@ from xdog.skills.goal.store import GoalStore
 from xdog.skills.goal.tools import create_goal_tool
 from xdog.skills.goal.ui_views import GoalView
 
+from packages.skills.tests.goal.legacy import wait_goal
+
 USER = OperationContext(True)
 
 
@@ -275,7 +277,9 @@ async def test_report_validation_prevents_mutation(service, monkeypatch, fields)
 @pytest.mark.parametrize('until', ['user', 'host', 'tasks'])
 async def test_reporting_a_wait_does_not_release_or_rewrite_it(service, until):
     await create(service)
-    await service.change('wait', until=until, reason='Original wait')
+    await wait_goal(service, until=until, reason='Original wait',
+            **({'question': 'Which delivery target?', 'impact': 'Final target unknown',
+                'resume_when': 'User selects target'} if until == 'user' else {}))
     before = await service.current()
     result = await service.report(report_data())
     assert result['version'] == 1 and await service.current() == before
@@ -330,7 +334,7 @@ async def test_retired_report_invocation_is_fenced_before_owned_worker_write(ser
 async def test_main_agent_can_self_pause_but_never_automatically_resume(service, wait):
     await create(service)
     if wait:
-        await service.change('wait', until=wait)
+        await wait_goal(service, until=wait)
     paused = await service.change('pause', reason='Main Agent reports no progress')
     assert paused.status == 'paused' and paused.reason == 'Main Agent reports no progress'
     for action, fields in [('resume', {}), ('pause', {'reason': 'Overwrite'}),
@@ -344,11 +348,13 @@ async def test_main_agent_can_self_pause_but_never_automatically_resume(service,
 @pytest.mark.parametrize('until', ['user', 'host'])
 async def test_self_pause_cannot_overwrite_protected_wait(service, until):
     await create(service)
-    waiting = await service.change('wait', until=until, reason='Explicit original hold')
+    waiting = await wait_goal(service, until=until, reason='Explicit original hold',
+            **({'question': 'Which delivery target?', 'impact': 'Final target unknown',
+                'resume_when': 'User selects target'} if until == 'user' else {}))
     with pytest.raises(ValueError, match='user operation'):
         await service.change('pause', reason='Automatic override')
     with pytest.raises(ValueError, match='user operation'):
-        await service.change('wait', until='tasks')
+        await wait_goal(service, until='tasks')
     assert await service.current() == waiting
 
 
@@ -356,7 +362,7 @@ async def test_view_prepares_wait_counts_and_recorded_report_facts_without_plan(
     await create(service)
     await task(service, status='blocked')
     await service.report(report_data(summary='Summary ' * 40, blockers=['Needs actual input']))
-    await service.change('wait', until='tasks', reason='Wait ' * 50)
+    await wait_goal(service, until='tasks', reason='Wait ' * 50)
     monkeypatch.setattr(TaskFiles, 'plan', fail)
     row = (await GoalView(service).read({}))['items'][0]
     assert row['status'] == 'waiting' and row['wait_for'] == 'tasks'
@@ -436,20 +442,23 @@ async def test_summary_preserves_independent_local_host_facts_and_next_display(
 ])
 async def test_protected_state_next_facts_take_precedence_over_busy_or_delivery(service, state, until, action):
     await create(service)
-    await service.change(state, context=USER, reason='Explicit protected state', **({'until': until} if until else {}))
+    operation = wait_goal if state == 'wait' else lambda svc, **kw: svc.change(state, **kw)
+    await operation(service, context=USER, reason='Explicit protected state',
+        **({'until': until, **({'question': 'Choose target?', 'impact': 'Target unknown',
+             'resume_when': 'User selects target'} if until == 'user' else {})} if until else {}))
     service.info = lambda: {'execution': {'state': 'running'}, 'delivery': {'status': 'unknown'}}
     summary = await service.summary()
-    assert summary['next'] == {'action': action, 'source': 'goal',
+    assert summary['next'] == {'action': action, 'owner': 'host' if until == 'host' else 'user', 'source': 'goal',
                                'reason': 'Explicit protected state', 'requires_user': True}
 
 
 async def test_next_task_wait_and_empty_goal_are_only_display_guidance(service):
     assert (await service.summary())['next']['action'] == 'create'
     await create(service)
-    await service.change('wait', until='tasks', reason='Inspect actual task evidence')
+    await wait_goal(service, until='tasks', reason='Inspect actual task evidence')
     waiting = await service.current()
     summary = await service.summary()
-    assert summary['next'] == {'action': 'inspect_tasks', 'source': 'goal',
+    assert summary['next'] == {'action': 'inspect_tasks', 'owner': 'task_workers', 'source': 'goal',
                                'reason': 'Inspect actual task evidence', 'requires_user': False}
     assert await service.current() == waiting  # Reading status must not resume or enqueue anything.
 
@@ -463,8 +472,13 @@ async def test_disabled_reminders_show_idle_not_stale_deferred_and_retain_last_c
     info = {'delivery': delivery, 'execution': {'state': 'idle'}, 'automation': {'status': 'idle'}}
     before_info = deepcopy(info)
     service.info = lambda: info
-    fields = {'until': until} if until else {'summary': 'Verified completion'} if action == 'complete' else {}
-    await service.change(action, context=USER, **fields)
+    fields = ({'until': until, **({'question': 'Choose target?', 'impact': 'Target unknown',
+                                  'resume_when': 'User selects target'} if until == 'user' else {})} if until
+              else {'summary': 'Verified completion'} if action == 'complete' else {})
+    if action == 'wait':
+        await wait_goal(service, context=USER, **fields)
+    else:
+        await service.change(action, context=USER, **fields)
     before = await service.current()
     summary = await service.summary()
     assert summary['delivery']['status'] == 'idle'
@@ -493,7 +507,9 @@ async def test_no_current_goal_cannot_advertise_a_deferred_reminder(service, act
 @pytest.mark.parametrize('status', ['accepted', 'pending', 'running', 'succeeded', 'unknown', 'unavailable'])
 async def test_waiting_state_does_not_hide_original_transport_outcomes(service, status):
     await create(service)
-    await service.change('wait', until='user', reason='Actual business decision', context=USER)
+    await wait_goal(service, until='user', reason='Actual business decision', context=USER,
+            question='Which delivery target should be used?', impact='The final target cannot be selected',
+            resume_when='User selects the delivery target')
     delivery = {'status': status, 'message_id': 'original', 'error': 'Keep exact receipt diagnostics'}
     service.info = lambda: {'delivery': delivery}
     result = await service.summary()
@@ -506,7 +522,9 @@ async def test_waiting_state_does_not_hide_original_transport_outcomes(service, 
 async def test_model_status_does_not_tell_the_executing_main_agent_to_wait_for_itself(service, action, until):
     await create(service)
     if until:
-        await service.change('wait', until=until, reason='Inspect returned evidence')
+        await wait_goal(service, until=until, reason='Inspect returned evidence',
+            **({'question': 'Which delivery target?', 'impact': 'Final target unknown',
+                'resume_when': 'User selects target'} if until == 'user' else {}))
     info = {'execution': {'state': 'running', 'user_pending': True, 'children_active': True},
             'delivery': {'status': 'deferred', 'reason': 'Owner busy'}}
     service.info = lambda: info
@@ -528,8 +546,13 @@ async def test_model_status_does_not_tell_the_executing_main_agent_to_wait_for_i
 ])
 async def test_model_audience_cannot_release_lifecycle_protection(service, action, until, expected):
     await create(service)
-    fields = {'until': until} if until else {'summary': 'Verified completion'} if action == 'complete' else {}
-    await service.change(action, context=USER, **fields)
+    fields = ({'until': until, **({'question': 'Choose target?', 'impact': 'Target unknown',
+                                  'resume_when': 'User selects target'} if until == 'user' else {})} if until
+              else {'summary': 'Verified completion'} if action == 'complete' else {})
+    if action == 'wait':
+        await wait_goal(service, context=USER, **fields)
+    else:
+        await service.change(action, context=USER, **fields)
     service.info = lambda: {'execution': {'state': 'running'}, 'delivery': {'status': 'deferred'}}
     before = await service.current()
     tool = create_goal_tool(service, lambda: OperationContext(False))

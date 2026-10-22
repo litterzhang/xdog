@@ -46,6 +46,80 @@ distributed workflow service.
 
 ---
 
+## Installation and agent tool
+
+Requires Python 3.12+. Install into the **same Python environment as the host**:
+
+```bash
+python -m pip install xdog-flow
+```
+
+Installing `xdog-flow` registers its provider through `xdog.capabilities` with
+**application** scope. Coding and Claw discover
+it through the generic installed-capability mechanism, without a Flow-specific
+adapter. The package declares `skill_names=("flow",)` and supplies the packaged skill
+and a single `flow` tool. A skill declaration advertises availability, not activation.
+The packaged skill is discoverable through SkillManager; its full body is loaded
+only when explicitly activated, not by capability registration. Registration,
+discovery and skill loading do not start processes or execute workflows. Flow has **no daemon**.
+
+### `flow` tool contract
+
+Prefer the `flow` tool for agent-driven CLI operations. Its parameters are:
+
+| Parameter | Meaning |
+|-----------|---------|
+| `arguments: list[str]` | `xdog-flow` command and argument tokens, **excluding** the executable name; not a shell command string. |
+| `cwd` (optional) | Absolute **process working directory**; distinct from the workflow's `--workspace`. |
+
+Example tool parameters:
+
+```json
+{"arguments": ["validate", "workflow.json", "--json"], "cwd": "/absolute/project"}
+```
+
+An authorized run uses the same tool:
+
+```json
+{"arguments": ["run", "workflow.json", "--input", "topic=typed workflows"], "cwd": "/absolute/project"}
+```
+
+Each invocation starts an independent CLI process with the host's same-environment
+Python interpreter and the fixed module invocation `-m xdog.flow`. It does not
+use a shell or allow selection of another executable/module. Shell expansion,
+pipes and redirection are not interpreted.
+
+The result is JSON `{exit_code, stdout, stderr}`: an integer exit code and two
+string streams. A CLI's `--json` output remains a string inside `stdout`, not a
+replacement for this envelope. Nonzero CLI exits are returned with their actual
+code and diagnostics, not presented as success. Output is bounded; exceeding the
+limit terminates the invocation and explicitly reports the overflow. The tool
+does **not automatically retry**. Before any authorized new invocation, inspect
+the result and possible effects already performed.
+
+Cancellation or capability shutdown terminates and reaps each invocation's owned
+process group, rather than leaving CLI children running. This is process cleanup,
+not rollback of effects or removal of an explicitly installed schedule. Scheduling
+uses an external scheduler such as systemd; it does not introduce a Flow daemon.
+
+Supported tool commands are non-interactive `validate`, `run`, `generate`,
+`graph`, `test`, `scheduling` and `--help`. **`build` is an interactive TUI for
+manual user CLI use only**, not a tool operation. The CLI examples below retain
+shell notation for manual use; agents translate them to `arguments` tokens and
+consume generated output from `stdout` rather than passing shell redirection.
+Direct CLI execution is a fallback only when the tool is unavailable and that
+execution is permitted, not a way around a denial or failed tool call.
+
+**Permissions and trust.** Normal host tool permissions and approvals still
+apply; installing the capability or loading the skill grants no execution
+permission. Workflows can execute scripts, call models and import custom code.
+Even `validate` may import referenced modules, whose import-time code can have
+side effects; it is neither guaranteed side-effect-free nor automatically
+allowed. Review the actual operation and workflow trust, including scheduling
+changes. The tool and workflow confinement guards are not an OS sandbox.
+
+---
+
 ## JSON Schema
 
 Data flows between nodes through **named ports** wired by **explicit edge
@@ -120,7 +194,7 @@ read its own instructions reintroduces exactly the failure the field exists to
 prevent: a node gets one shot at producing a format, and one that skips the load
 produces something plausible and wrong.
 
-The cost is real — `flow` is ~2,500 tokens, resent on every API call
+The cost is real — the `flow` skill body is resent on every API call
 that node makes — so declare a skill on the node that produces the artifact, not
 on every node in the workflow. The saving is in not declaring it where it is not
 needed, which is exact, rather than in lazy loading, which is a guess.
@@ -183,7 +257,10 @@ On an edge, `{{key}}` in a condition reads the **source node's output port** `ke
 
 ### validate
 
-Check a workflow definition for errors without executing it.
+Check a workflow definition for errors without running its node execution graph.
+Loading and validation may still import referenced custom modules and execute
+their import-time code; this is not a side-effect-free or automatically allowed
+operation.
 
 ```bash
 xdog-flow validate examples/refine_loop.json
@@ -284,8 +361,10 @@ xdog-flow test examples/                      # every *.test.json under a direct
 
 Stubs are injected at the provider call, so prompts are still interpolated for real
 and a stubbed value is validated by the node's own output contract — the same code
-that validates a live model response. No provider is ever constructed, so a suite
-cannot reach the network by accident. See `docs/testing.md`.
+that validates a live model response. No provider is constructed for agent stubs,
+but real script nodes and imported custom code may still have side effects,
+including network access. Tests require the same trust and permission review as
+other workflow operations. See `docs/testing.md`.
 
 ### generate
 
@@ -348,6 +427,8 @@ so it stays re-openable in `xdog-flow build` (see below).
 ### build
 
 Open an interactive terminal builder to create or edit a workflow visually.
+This is for the user to launch manually from the CLI; the `flow` tool does not
+support `build`.
 
 ```bash
 xdog-flow build my_workflow.json      # opens the TUI (creates the file if missing)

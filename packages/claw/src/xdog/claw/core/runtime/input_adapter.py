@@ -27,7 +27,9 @@ def freeze_input(value: GroupInput, workspace: Path, *, message_id: str,
                                'empty_text': not bool(value.content)}
     if isinstance(value, UserInput):
         context.update(sender=value.sender, channel=value.channel, timestamp=value.timestamp)
-        if reply is None and value.channel and value.sender:
+        # External origin/channel labels never select a chat destination. Only
+        # an explicit host reply binding may route an automatic input result.
+        if reply is None and not isinstance(value, ExternalInput) and value.channel and value.sender:
             reply = ReplyTarget(value.channel, value.sender)
     else:
         context['system_kind'] = value.kind.value

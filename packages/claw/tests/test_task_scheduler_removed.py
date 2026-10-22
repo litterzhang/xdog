@@ -4,8 +4,8 @@ from __future__ import annotations
 import asyncio
 import builtins
 import importlib.util
-import inspect
 import io
+import json
 import os
 import tempfile
 from dataclasses import fields
@@ -17,10 +17,7 @@ from xdog.claw.config import ClawConfig, GroupDef, load_config, save_config
 from xdog.claw.core import planning, types
 from xdog.claw.core.runtime.gateway import GatewayServer
 from xdog.claw.core.runtime.orchestrator import Orchestrator
-from xdog.claw.core.tools.registry import create_tools, registered_names
-from xdog.eyes.hosting.journal import ObserverJournal
-from xdog.eyes.hosting.manager import ManagedObservers
-from xdog.eyes.hosting.models import ObserverRecord
+from xdog.claw.core.tools import new_tool_registry
 
 
 def test_retired_modules_types_and_tool_are_absent():
@@ -29,20 +26,19 @@ def test_retired_modules_types_and_tool_are_absent():
         'xdog.claw.core.tools.tool_task',
         'xdog.claw.core.observers',
         'xdog.claw.core.tools.tool_eyes',
-        'xdog.eyes.hosting.migration',
     ):
         assert importlib.util.find_spec(module) is None, module
     assert not hasattr(planning, 'TaskScheduler')
     for name in ('TaskSchedule', 'ScheduledTask'):
         assert not hasattr(types, name), name
-    assert 'task' not in registered_names()
+    assert 'task' not in new_tool_registry().registered_names()
     with pytest.raises(ValueError, match='Unknown tools'):
-        create_tools(('task',))
-    assert 'eyes' not in registered_names() and 'goal' not in registered_names()
+        new_tool_registry().create_tools(('task',))
+    assert 'eyes' not in new_tool_registry().registered_names() and 'goal' not in new_tool_registry().registered_names()
     with pytest.raises(ValueError, match='Unknown tools'):
-        create_tools(('eyes',))
+        new_tool_registry().create_tools(('eyes',))
     with pytest.raises(ValueError, match='Unknown tools'):
-        create_tools(('goal',))
+        new_tool_registry().create_tools(('goal',))
 
 
 def test_no_legacy_configuration_or_management_api(tmp_path):
@@ -50,11 +46,6 @@ def test_no_legacy_configuration_or_management_api(tmp_path):
     with pytest.raises(TypeError, match='tasks_file'):
         ClawConfig(tasks_file=str(tmp_path / 'scheduled_tasks.json'))
     assert not hasattr(Orchestrator, 'legacy_tasks_file')
-    assert tuple(inspect.signature(ManagedObservers.start).parameters) == ('self',)
-    assert 'legacy' not in {field.name for field in fields(ObserverRecord)}
-    assert 'legacy' not in inspect.signature(ObserverJournal.create).parameters
-    assert not hasattr(ObserverJournal, 'migration_marker')
-    assert not hasattr(ObserverJournal, 'import_records')
     path = tmp_path / 'claw.yaml'
     path.write_text(yaml.safe_dump({'tasks_file': str(tmp_path / 'scheduled_tasks.json'), 'eyes_enabled': True}))
     config = load_config(path)
@@ -91,7 +82,7 @@ async def test_gateway_never_reads_imports_or_modifies_old_scheduled_tasks(tmp_p
             return original(path, *args, **kwargs)
         return open_file
 
-    # Exercise actual gateway startup/restart, not only ManagedObservers.start().
+    # Exercise actual gateway startup/restart, not only tool registration.
     # Guard all standard Python file-open entry points, including descriptor I/O.
     with tempfile.TemporaryDirectory(prefix='eyes-retired-') as short, monkeypatch.context() as guarded:
         guarded.setattr(builtins, 'open', guard(builtins.open))
@@ -111,8 +102,13 @@ async def test_gateway_never_reads_imports_or_modifies_old_scheduled_tasks(tmp_p
                 if installed:
                     service = gateway._application_capabilities.get('eyes')
                     assert service is not None
-                    assert await service.list('main') == ()
-                    assert not service._tasks and not service._handlers
+                    tool = next(tool for tool in gateway._application_capabilities.tools if tool.name == 'eyes')
+                    result = await tool.execute('list-empty', {'action': 'list', 'owner': 'gateway-empty'})
+                    assert not result.is_error
+                    envelope = json.loads(''.join(part.text for part in result.content))
+                    assert envelope['exit_code'] == 0, envelope
+                    assert json.loads(envelope['stdout'])['registrations'] == []
+                    assert not hasattr(service, "_tasks") and not hasattr(service, "_handlers")
                 else:
                     assert gateway._application_capabilities.get('eyes') is None
                     # Default Goal requests the same generic private ACP, even without Eyes.

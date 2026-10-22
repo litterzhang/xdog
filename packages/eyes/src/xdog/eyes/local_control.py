@@ -1,4 +1,4 @@
-"""UID-private Eyes lifecycle control; never an agent/event delivery protocol."""
+"""UID-private finite JSON control and event reads; never an Agent execution endpoint."""
 
 from __future__ import annotations
 
@@ -65,8 +65,18 @@ def runtime_location(cwd: Path | None = None) -> RuntimeLocation:
     return RuntimeLocation(directory, directory / 'eyes.sock', '', project)
 
 
+def daemon_location(directory: Path | None = None) -> RuntimeLocation:
+    """One explicitly opened daemon per UID, or an explicit private isolation root."""
+    if directory is None and os.environ.get('XDOG_EYES_RUNTIME_DIR'):
+        directory = Path(os.environ['XDOG_EYES_RUNTIME_DIR'])
+    data = Path(os.environ.get('XDG_DATA_HOME', str(Path.home() / '.local' / 'share')))
+    root = private_directory(directory if directory is not None else data / 'xdog' / 'eyes')
+    return RuntimeLocation(root, root / 'eyes.sock', '', root)
+
+
 def validate_location(location: RuntimeLocation) -> None:
-    expected = runtime_location(location.cwd)
+    expected = (daemon_location(location.directory) if location.cwd == location.directory
+                else runtime_location(location.cwd))
     if location.directory != expected.directory or location.socket != expected.socket:
         raise ControlError('Eyes control address must match its project directory')
     if location.generation and not re.fullmatch('[0-9a-f]{32}', location.generation):

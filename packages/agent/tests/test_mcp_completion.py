@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
-from xdog.agent.mcp import McpError, McpManager
+from xdog.agent.mcp import McpError, McpRegistry
 from xdog.agent.mcp.completion import decode_payload, request_arguments, template_arguments, values
 
 FIXTURE = Path(__file__).parent / "fixtures/mcp_completion_peer.py"
@@ -17,7 +17,7 @@ TEMPLATE = "fixture://document/{name}{?format}"
 
 
 def stdio(tmp_path, mode="modern"):
-    return McpManager(
+    return McpRegistry(
         {"peer": {"command": sys.executable, "args": [str(FIXTURE), mode, str(tmp_path / "log")]}}, tmp_path
     )
 

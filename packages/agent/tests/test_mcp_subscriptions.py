@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from xdog.agent.mcp import McpError, McpManager
+from xdog.agent.mcp import McpError, McpRegistry
 from xdog.agent.mcp.resource_metadata import ResourceMetadataError, resource_uri
 
 PEER = Path(__file__).parent / 'fixtures/mcp_subscription_peer.py'
@@ -24,7 +24,7 @@ def frames(log):
 @pytest.mark.parametrize('mode', ['modern', 'legacy'])
 async def test_watch_api_registry_and_streams_absent_while_ordinary_operations_remain(tmp_path, mode):
     log = tmp_path / 'frames'
-    manager = McpManager({'peer': {'command': sys.executable, 'args': [str(PEER), mode, str(log)]}}, tmp_path)
+    manager = McpRegistry({'peer': {'command': sys.executable, 'args': [str(PEER), mode, str(log)]}}, tmp_path)
     try:
         assert importlib.util.find_spec('xdog.agent.mcp.subscriptions') is None
         for name in ('watch_resource', 'watch_catalog', 'watch_notifications', 'unwatch_resource', 'unwatch_catalog',
@@ -49,7 +49,7 @@ async def test_watch_api_registry_and_streams_absent_while_ordinary_operations_r
 @pytest.mark.parametrize('method', METHODS)
 async def test_removed_raw_watch_protocol_rejected_before_wire_or_sequence_mutation(tmp_path, mode, method):
     log = tmp_path / 'frames'
-    manager = McpManager({'peer': {'command': sys.executable, 'args': [str(PEER), mode, str(log)]}}, tmp_path)
+    manager = McpRegistry({'peer': {'command': sys.executable, 'args': [str(PEER), mode, str(log)]}}, tmp_path)
     try:
         await manager.connect('peer')
         client = manager._clients['peer']
@@ -81,7 +81,7 @@ async def test_retained_legacy_cursor_get_only_recovers_original_result_without_
     tmp_path, initialize_resume, value,
 ):
     with ResumePeer(initialize_resume=initialize_resume) as peer:
-        manager = McpManager({'http': {'transport': 'http', 'url': peer.url, 'timeout': 2}}, tmp_path)
+        manager = McpRegistry({'http': {'transport': 'http', 'url': peer.url, 'timeout': 2}}, tmp_path)
         try:
             await manager.connect('http')
             client = manager._clients['http']
@@ -103,7 +103,7 @@ async def test_retained_legacy_cursor_get_only_recovers_original_result_without_
                                  'unavailable', 'exhaust', 'reset', 'mismatch'])
 async def test_retained_response_recovery_refuses_unsafe_or_uncertain_results_without_post_replay(tmp_path, value):
     with ResumePeer() as peer:
-        manager = McpManager({'http': {'transport': 'http', 'url': peer.url, 'timeout': 2}}, tmp_path)
+        manager = McpRegistry({'http': {'transport': 'http', 'url': peer.url, 'timeout': 2}}, tmp_path)
         try:
             await manager.connect('http')
             assert peer.gets == []
@@ -120,7 +120,7 @@ async def test_retained_response_recovery_refuses_unsafe_or_uncertain_results_wi
 @pytest.mark.parametrize('end', ['cancel', 'timeout', 'close'])
 async def test_retained_response_get_cancellation_cleanup_never_replays_call(tmp_path, end):
     with ResumePeer() as peer:
-        manager = McpManager({'http': {'transport': 'http', 'url': peer.url,
+        manager = McpRegistry({'http': {'transport': 'http', 'url': peer.url,
                                       'timeout': .4 if end == 'timeout' else 2}}, tmp_path)
         task = None
         try:

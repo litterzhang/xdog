@@ -11,8 +11,8 @@ units, not separate main-Agent identities. New/reset can rotate idle context wit
 changing the group's Goal owner; saved history is read-only, not a route to resume.
 
 Claw is an application, not an independent public Python embedding SDK. Operate
-it through `xdog-claw`, configuration and its channels; explicitly enabled ACP is
-a private local ingress to the same group route. Reusable Agent/MCP SDK interfaces
+it through `xdog-claw`, configuration and its channels; its default private ACP endpoint is
+a local ingress to the same group route. Reusable Agent/MCP SDK interfaces
 belong to `xdog.agent`; Claw's group/session adapters are internal application code.
 
 ## Highlights
@@ -21,36 +21,32 @@ belong to `xdog.agent`; Claw's group/session adapters are internal application c
   created automatically. When explicitly delegated,
   the group main Agent plans, assigns, waits for and accepts task work itself;
   there is no mandatory automatic planner or second main-Agent loop.
-- Dedicated task workers write host-bound attempt reports. `submitted` is not task
-  acceptance or Goal completion.
-- An independent reviewer Agent checks actual evidence against every original
-  condition; the host fences completion to the Goal revision and evidence snapshot.
-  Scripts/tests collect evidence, not automatic completion verdicts.
+- Goal planning, optional delegation, progress reports and completion are owned
+  by the current main Agent. No required reviewer or hidden Goal execution loop.
 - Child Agents have no fixed execution-time, model-call, cumulative-token,
   concurrency or retained-record quota. Permissions, actual model capacity,
   protocol/resource protections, user cancellation and shutdown still apply.
-- Opt-in Eyes file/time observers use the existing private `group:<gid>` ACP/inbox
-  and group execution path. Source stop and notification stop are independent
-  explicit operations; source labels do not choose reply recipients.
+- Eyes JSON definitions can deliver file/time events to an explicitly configured
+  ACP destination. Incoming messages use the existing group execution path. Eyes
+  does not track downstream Agent execution or chat output.
 - Memory and Goal state survive context rotation; history remains searchable and
   exportable without activating an old conversation. Interrupted effects are not
   automatically replayed.
 
 ## Goal workflow and boundaries
 
-The same independent `xdog-skills` package supplies Claw/Coding tools, storage,
-worker reporting and explicit independent review. The shared `goals` skill describes
-its workflow. Installing/loading it is not autonomy delegation. Goal truth belongs
-to its leased journal; workspace files are derived views. Only actual consumed
-human input grants criteria/user-pause controls; untrusted events are data.
+The independent `xdog-skills` package supplies Goal tools and the `goal` skill.
+The current group main Agent plans from its actual conversation, optionally
+assigns tasks through existing authorized child tools, records progress and
+judges completion against evidence. Task files are authoritative and remain in
+the Goal workspace. A group has at most one current Goal; completion remains
+visible until an explicit clear/archive operation. Pauses and user waits are not
+released by timers or untrusted external input.
 
-Claw's group owner survives context rotation. Existing supervised children and the
-Core Inbox execute work and queued notices with no second main-Agent loop or
-message approval. Submitted reports need explicit acceptance, and only an explicit
-request_complete starts a reviewer. Goal state never implicitly cancels observers,
-notifications or workers. Old Goal formats are refused, not migrated. See Design
-and Reference plus the repository's assistant-core47-item checklist for remaining
-shared extension UI, packaging and final acceptance gates.
+Goal reminders enter the same Core Inbox through ACP. The Goal runtime manages
+its own records/signals and optional Eyes CLI registration; it is not a worker
+scheduler or another model loop. Context rotation does not change Goal ownership.
+Old incompatible state is left untouched, not used to replay interrupted effects.
 
 ## Try it
 
@@ -63,13 +59,17 @@ uv run xdog-claw tui --group main
 Configure an actual model/provider before starting the gateway. Linux is the
 supported platform; permissions are application policy, not an OS sandbox.
 
-## Observation replies
+## Observation and user notifications
 
-Managed Eyes events enter the same durable Inbox through ACP. Their original
-creator's reply destination is bound before intake acknowledgment; source labels
-and evidence grant neither routing rights nor user authority. Each assistant
-message uses Core output receipts as soon as it is produced, without a duplicate
-aggregate report at turn end. Stopping observation does not retract accepted
-work or its replies. Explicit notification cancellation stops only unsent replies;
-entered sends retain their actual delivered/unknown facts. An unavailable original
-recipient remains pending rather than borrowing another connection.
+Eyes runs in its independent user-local daemon. Application capability discovery
+exposes its CLI-backed tool and discovers its packaged skill; the full skill body
+is activated only when needed. Saved JSON selects destinations with an explicit
+owner namespace; the current Claw group is not an Eyes routing restriction.
+Flow uses the same installed capability mechanism but has no daemon.
+
+Eyes delivery ends at the selected handler's protocol boundary. Ordinary ACP
+input has no implicit chat reply recipient. When the user's task requires a
+notification, the main Agent uses Claw's normal message tool for an actual
+currently bound channel. No extra observer reply route or notification-cancel
+protocol is created. Source stop does not retract accepted input or undo effects;
+Core output receipts independently record delivered/pending/unknown outcomes.

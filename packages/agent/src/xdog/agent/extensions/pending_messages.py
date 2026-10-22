@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-METHODS = frozenset({'xdog/command', 'tools/call', 'xdog/event', 'xdog/pre', 'xdog/post',
+METHODS = frozenset({'xdog/command', 'xdog/event', 'xdog/pre', 'xdog/post',
                      'xdog/input', 'xdog/context', 'xdog/context_finish'})
 _FIELDS = {'id', 'kind', 'operation', 'title', 'message', 'timeout', 'extension', 'parent_id'}
 

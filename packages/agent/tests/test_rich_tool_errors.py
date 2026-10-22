@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 from xdog.agent import Agent, AgentConfig, AgentTool, AgentToolResult, ToolExecutionEndEvent
-from xdog.agent.extensions.tool_result import host_result, normalize_result, worker_result
+from xdog.agent.extensions.tool_result import normalize_result
 from xdog.ai.types import AssistantMessage, ImageContent, TextContent, ToolCall
 from xdog.ai.utils.event_stream import EventStream
 
@@ -40,11 +40,11 @@ def test_extension_error_wire_requires_explicit_boolean_not_coercion(flag):
         normalize_result({'content': [{'type': 'text', 'text': 'private'}], 'isError': flag})
 
 
-def test_typed_error_and_false_error_wire_survive_both_extension_boundaries():
+def test_typed_error_codec_retains_command_validation_without_tool_transport():
     result = AgentToolResult(content=(TextContent(text='failed'),), details={'recovery': False}, is_error=True)
     assert normalize_result(result)['isError'] is True
-    host = host_result(worker_result(result))
-    assert host['isError'] is True and host['xdog_result_details'] == {'recovery': False}
+    from xdog.agent.extensions import tool_result
+    assert not hasattr(tool_result, 'host_result') and not hasattr(tool_result, 'worker_result')
     assert normalize_result({'content': [{'type': 'text', 'text': 'successful'}], 'isError': False})['isError'] is False
 
 

@@ -19,4 +19,3 @@ def setup(api):
         return 'MESSAGE-TOOL-' + str(await api.request_message('No borrowed command owner'))
 
     api.command('request', 'Request reviewed host message after callback success', command)
-    api.tool('illegal', 'Tool callbacks cannot borrow parent command messaging', {'type': 'object'}, illegal)

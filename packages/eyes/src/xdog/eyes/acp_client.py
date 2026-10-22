@@ -22,10 +22,12 @@ except ImportError as exc:
 
 class AcpClient:
     def __init__(
-        self, connection: ConnectionDef, session_id: str, cwd: Path, *,
+        self, connection: ConnectionDef, session_id: str, cwd: Path | None = None, *,
         delivery: Literal["prompt", "enqueue"] = "prompt",
     ) -> None:
-        self.connection, self.session_id, self.cwd = connection, session_id, cwd.resolve()
+        self.connection, self.session_id, self.cwd = connection, session_id, cwd.resolve() if cwd is not None else None
+        if delivery == 'prompt' and self.cwd is None:
+            raise ValueError('ACP prompt requires an explicit target cwd for load_session')
         self.delivery = delivery
         self.conn: ClientSideConnection | None = None
         self.process: asyncio.subprocess.Process | None = None
@@ -70,7 +72,7 @@ class AcpClient:
                     self.conn, self.process = await self._stack.enter_async_context(
                         spawn_agent_process(
                             cast(Client, self), self.connection.command[0], *self.connection.command[1:],
-                            cwd=self.cwd, env=dict(os.environ),
+                            env=dict(os.environ),
                             transport_kwargs={"stderr": asyncio.subprocess.DEVNULL, "limit": 1024 * 1024},
                         )
                     )
@@ -79,7 +81,7 @@ class AcpClient:
                     raise ValueError("Unsupported ACP connection")
                 assert self.conn is not None
                 response = await self.conn.initialize(
-                    protocol_version=PROTOCOL_VERSION, client_info=Implementation(name="xdog-eyes", version="2.4.7")
+                    protocol_version=PROTOCOL_VERSION, client_info=Implementation(name="xdog-eyes", version="2.4.8")
                 )
                 if response.protocol_version != PROTOCOL_VERSION:
                     raise ValueError("Unsupported ACP protocol version")
@@ -97,6 +99,7 @@ class AcpClient:
                         raise ValueError('ACP target must advertise durable enqueue/inbox_status v1')
                     scope = await self.inbox_status()
                     self.inbox_id, self.branch_id = scope['inbox_id'], scope['branch_id']
+                    self.cwd = Path(scope['cwd']).resolve()
                 else:
                     if response.agent_capabilities is None or response.agent_capabilities.load_session is not True:
                         raise ValueError("ACP agent must support explicit session load")
@@ -128,13 +131,17 @@ class AcpClient:
     async def inbox_status(self, message_id: str | None = None) -> dict[str, Any]:
         if self.conn is None or 'inbox_status' not in self.extensions:
             raise RuntimeError('Durable inbox status is not negotiated')
-        params = {'session_id': self.session_id, 'cwd': str(self.cwd)}
+        params = {'session_id': self.session_id}
+        if self.cwd is not None:
+            params['cwd'] = str(self.cwd)
         if message_id is not None:
             params['message_id'] = message_id
         result = await self.conn.ext_method('xdog/inbox_status', params)
         branch, namespace, cwd = result.get('branch_id'), result.get('inbox_id'), result.get('cwd')
         if (result.get('session_id') != self.session_id or not isinstance(cwd, str)
-                or not Path(cwd).is_absolute() or Path(cwd).resolve() != self.cwd
+                or not cwd.strip() or '\x00' in cwd or len(cwd.encode()) > 4096
+                or not Path(cwd).is_absolute()
+                or self.cwd is not None and Path(cwd).resolve() != self.cwd
                 or not isinstance(branch, str) or '\x00' in branch or len(branch.encode()) > 256
                 or not isinstance(namespace, str) or not namespace.strip() or '\x00' in namespace
                 or len(namespace.encode()) > 256 or not isinstance(result.get('messages'), list)):

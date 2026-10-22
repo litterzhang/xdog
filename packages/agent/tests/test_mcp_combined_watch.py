@@ -7,7 +7,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from xdog.agent.mcp import McpError, McpManager
+from xdog.agent.mcp import McpError, McpRegistry
 from xdog.agent.mcp.config import McpServerConfig
 from xdog.agent.mcp.http import HttpClient
 
@@ -17,7 +17,7 @@ PEER = Path(__file__).parent / 'fixtures/mcp_subscription_peer.py'
 @pytest.mark.parametrize('mode', ['modern', 'legacy'])
 async def test_old_negative_receipt_identity_cannot_settle_or_poison_an_ordinary_successor(tmp_path, mode):
     log = tmp_path / 'frames'
-    manager = McpManager({'peer': {'command': sys.executable, 'args': [str(PEER), mode, str(log)]}}, tmp_path)
+    manager = McpRegistry({'peer': {'command': sys.executable, 'args': [str(PEER), mode, str(log)]}}, tmp_path)
     try:
         await manager.connect('peer')
         client = manager._clients['peer']

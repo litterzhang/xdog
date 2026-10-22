@@ -62,8 +62,10 @@ from xdog.agent.events import (
 )
 from xdog.agent.history import history_points, validate_checkpoint
 from xdog.agent.input_queue import Delivery, QueuedInput
+from xdog.agent.mcp import McpRegistry
 from xdog.agent.messages import dicts_to_messages, messages_to_dicts
 from xdog.agent.snapshots import decode_snapshot_messages, decode_snapshot_parts, encode_snapshot_messages
+from xdog.agent.tools import ToolRegistry
 from xdog.ai.types import (
     AssistantMessage,
     Context,
@@ -308,6 +310,9 @@ class CodingChildRuntime:
         self.publish: Callable[[dict[str, Any]], None] = lambda event: None
         self._listeners: dict[object, Callable[[dict[str, Any]], None]] = {}
         self._children: dict[str, _Child] = {}
+        self.tool_registries: dict[str, ToolRegistry] = {}
+        self.mcp_registries: dict[str, McpRegistry] = {}
+        self.tool_selections: dict[str, frozenset[str]] = {}
         self._lock = threading.RLock()
         self._start_lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -780,6 +785,12 @@ class CodingChildRuntime:
             agent = await built if inspect.isawaitable(built) else built
             if agent.is_streaming:
                 raise ValueError("Child factory must return a fresh idle Agent")
+            mcp = agent.mcp_registry
+            recorded_mcp = self.mcp_registries.get(child.spec.id)
+            if recorded_mcp is not None and recorded_mcp is not mcp:
+                raise ValueError("Child factory changed its original MCP registry binding")
+            if mcp is not None:
+                self.mcp_registries[child.spec.id] = mcp
             # Never allow a factory to smuggle parent history into a new child.
             # Validate first so malformed historical tool pairs retain precise errors.
             validate_checkpoint(agent.messages, len(agent.messages) - 1)
@@ -887,7 +898,19 @@ class CodingChildRuntime:
                 available = {tool.name for tool in agent.state.tools}
                 if allowed - available:
                     raise ValueError("Child tool selection is unavailable: " + ", ".join(sorted(allowed - available)))
-                agent.set_tools(tuple(tool for tool in agent.state.tools if tool.name in allowed))
+                registry = self.tool_registries.get(child.spec.id)
+                if registry is None:
+                    registry = ToolRegistry(builtins=False)
+                    self.tool_registries[child.spec.id] = registry
+                registry.replace_source("inventory", tuple(tool for tool in agent.local_tools if tool.name in allowed))
+                mcp = self.mcp_registries.get(child.spec.id)
+                if mcp is not None:
+                    mcp.replace_delegated_tools(tuple(tool for tool in mcp.tools() if tool.name in allowed))
+                registry.publish(agent)
+                agent.sync_mcp_tools()
+                # The factory's later hooks/provider preparation must retain this
+                # runtime ceiling; replacing inventory cannot implicitly widen it.
+                self.tool_selections[child.spec.id] = frozenset(allowed)
             validate_checkpoint(agent.messages, len(agent.messages) - 1)
             if any(tool.name in RESERVED_TOOLS for tool in child.agent.state.tools):
                 raise ValueError("Child tools cannot supervise children or mutate a parent plan")
@@ -1077,6 +1100,9 @@ class CodingChildRuntime:
                 await self.finalize(child.spec)
             except Exception as exc:
                 status, error = "failed", "Child resource cleanup failed: " + type(exc).__name__
+        self.tool_registries.pop(child.spec.id, None)
+        self.mcp_registries.pop(child.spec.id, None)
+        self.tool_selections.pop(child.spec.id, None)
         with self._lock:
             child.status, child.error = status, error
             child.partial = None

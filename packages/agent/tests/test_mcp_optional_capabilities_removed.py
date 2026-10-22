@@ -6,7 +6,7 @@ import json
 
 import httpx
 import pytest
-from xdog.agent.mcp import McpManager
+from xdog.agent.mcp import McpRegistry
 from xdog.agent.mcp.client_capabilities import RootCapability, reverse_response
 from xdog.agent.mcp.config import McpServerConfig
 from xdog.agent.mcp.http import HttpClient
@@ -20,7 +20,7 @@ def test_removed_runtime_modules_and_public_registration_are_absent(tmp_path):
     for module in ('sampling', 'sampling_owner', 'sampling_context', 'sampling_executor', 'elicitation',
                    'elicitation_owner', 'task_registry', 'task_notifications', 'reverse_requests'):
         assert importlib.util.find_spec('xdog.agent.mcp.' + module) is None
-    manager = McpManager({}, tmp_path)
+    manager = McpRegistry({}, tmp_path)
     for name in ('register_sampling', 'answer_sampling', 'detach_sampling', '_sampling', 'register_elicitation',
                  'answer_elicitation', 'detach_elicitation', '_elicitation', 'manage_roots', 'detach_roots'):
         assert not hasattr(manager, name)

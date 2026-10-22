@@ -52,7 +52,6 @@ def setup(api):
         return await propose('command', json.loads(args or '{}'))
 
 
-    api.tool('select', 'Request reviewed selection after the whole original parent run', {'type': 'object'}, tool)
     api.command('select', 'Existing idle command selection path', command)
     api.on('turn_start', event)
     api.before_tool(pre)

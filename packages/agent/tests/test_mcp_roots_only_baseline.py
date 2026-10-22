@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from xdog.agent.mcp import McpError, McpManager
+from xdog.agent.mcp import McpError, McpRegistry
 
 from packages.agent.tests.test_mcp_sampling_http_retirement import (
     METHODS,
@@ -21,7 +21,7 @@ async def test_modern_roots_only_never_depends_on_optional_review_or_task_regist
     tmp_path, method, sse, configured,
 ):
     with SamplingHttpPeer('retained', sse=sse) as peer:
-        manager = McpManager({'owned': {
+        manager = McpRegistry({'owned': {
             'transport': 'http', 'url': peer.url, 'timeout': 2,
             **({'roots': ROOTS} if configured else {}),
         }}, tmp_path)

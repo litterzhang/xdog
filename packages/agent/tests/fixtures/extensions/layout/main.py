@@ -92,4 +92,3 @@ def setup(api):
     api.command('view', 'Structured worker-owned layout', command)
     async def tool(params, context):
         return await command(params.get('mode', ''), context)
-    api.tool('view', 'Structured child layout, not approval', {'type': 'object'}, tool)

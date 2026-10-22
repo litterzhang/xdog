@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from xdog.agent.child_policy import ParentHandle
+    from xdog.agent.mcp import McpRegistry
     from xdog.agent.skills.manager import SkillManager
     from xdog.agent.skills.types import Skill, SkillPlacement
 from dataclasses import replace
@@ -157,22 +158,28 @@ def _place_skills(
     workflow, coding and claw in their group and shared directories.
     """
     if manager is None:
+        if active:
+            raise ValueError("Active skills require a SkillManager or validated prepared placement")
         return "", "", [], {}
     index = ""
     try:
         summary = manager.skills_summary()
         index = summary + "\n\n" if summary else ""
     except Exception:
-        logger.debug("could not build the skill index", exc_info=True)
+        logger.warning("could not build the optional skill index", exc_info=True)
+    from xdog.agent.skills.manager import is_valid_skill_name
+    from xdog.agent.skills.types import validate_active_skill
+
     resolved: list[Skill] = []
-    for slug in active:
-        try:
-            skill = manager.load_skill(slug)
-        except Exception:
-            logger.debug("could not load skill %r", slug, exc_info=True)
-            continue
-        if skill is not None:
-            resolved.append(skill)
+    for slug in dict.fromkeys(active):
+        if not isinstance(slug, str) or not is_valid_skill_name(slug):
+            raise ValueError(f"Invalid active skill slug: {slug!r}")
+        # An explicit selection is a contract, unlike optional index discovery.
+        # Preserve actual loader exceptions (including IO/decoding failures).
+        skill = manager.load_skill(slug)
+        validate_active_skill(slug, skill)
+        assert skill is not None
+        resolved.append(skill)
     fixed = _skill_preamble([sk for sk in resolved if not sk.expires_after_turn])
     return index, fixed, [sk for sk in resolved if sk.expires_after_turn], {sk.slug: sk for sk in resolved}
 
@@ -262,6 +269,7 @@ class Agent:
         input_transform: InputTransformFn | None = None,
         input_settled: Callable[[tuple[QueuedInput, ...]], Awaitable[None]] | None = None,
         parent: ParentHandle | None = None,
+        mcp_registry: McpRegistry | None = None,
     ) -> None:
         self._parent = parent  # Host-injected capability; never encoded/restored from a snapshot.
         cfg = config or AgentConfig()
@@ -350,10 +358,12 @@ class Agent:
         self._resume_turn_skills: tuple[Skill, ...] = ()
         self._restored_run_active = False
         self._unconfirmed_tools: dict[str, str] = {}
+        self._local_tools = tuple(tools_list)
+        self._mcp_registry = mcp_registry  # Host-injected, never restored from conversation data.
         self._state = AgentState(
             system_prompt=cfg.system_prompt,
             model=cfg.model,
-            tools=tuple(tools_list),
+            tools=self._combined_tools(self._local_tools, mcp_registry),
             messages=(),
         )
 
@@ -601,21 +611,63 @@ class Agent:
         self._max_prompt_tokens = max_prompt_tokens
         self._supports_tool_calls = supports_tool_calls
 
-    def set_tools(self, tools: list[AgentTool] | tuple[AgentTool, ...]) -> None:
-        """Replace configured tools; preserve any explicitly narrowed active selection.
+    @property
+    def local_tools(self) -> tuple[AgentTool, ...]:
+        """Ordinary tools only; MCP is consumed from its separate registry."""
+        return self._local_tools
 
-        Removing a selected tool retires that name from the selection. A later
-        registration with that name does not automatically restore the selection.
-        """
-        configured = tuple(tools)
+    @property
+    def mcp_registry(self) -> McpRegistry | None:
+        """Host-injected MCP registration/connection owner, never snapshot authority."""
+        return self._mcp_registry
+
+    @staticmethod
+    def _combined_tools(local: tuple[AgentTool, ...], registry: McpRegistry | None) -> tuple[AgentTool, ...]:
+        remote = () if registry is None else tuple(registry.tools())
+        combined = (*local, *remote)
+        names = [tool.name for tool in combined]
+        if len(set(names)) != len(names):
+            raise ValueError(
+                'Duplicate tool name across local tools and MCP registry; unique configured names required')
+        return combined
+
+    def _publish_tool_inventory(self, configured: tuple[AgentTool, ...]) -> None:
         if self._active_tool_names is not None:
-            names = [tool.name for tool in configured]
-            if len(names) != len(set(names)):
-                raise ValueError('Active tool selection requires unique configured names')
-            self._active_tool_names = self._active_tool_names.intersection(names)
-        if configured != self._state.tools:
+            self._active_tool_names = self._active_tool_names.intersection(tool.name for tool in configured)
+        if tuple(map(id, configured)) != tuple(map(id, self._state.tools)):
             self._tool_selection_revision += 1
-        self._update_state(tools=configured)
+            self._update_state(tools=configured)
+
+    def set_tools(self, tools: list[AgentTool] | tuple[AgentTool, ...]) -> None:
+        """Replace ordinary tools, retaining the separately registered MCP tools.
+
+        Hosts publish local SDK/Capability tools here. Explicit active selection
+        narrows on retirement and never grows just because a name reappears.
+        """
+        local = tuple(tools)
+        configured = self._combined_tools(local, self._mcp_registry)
+        self._local_tools = local
+        self._publish_tool_inventory(configured)
+
+    def set_mcp_registry(self, registry: McpRegistry | None) -> None:
+        """Bind a host-owned registry without connecting, closing or replaying MCP.
+
+        A failed cross-source name check leaves the previous binding/inventory
+        intact. Closing this Agent does not close a registry shared by its host.
+        """
+        self._ensure_open()
+        configured = self._combined_tools(self._local_tools, registry)
+        self._mcp_registry = registry
+        self._publish_tool_inventory(configured)
+
+    def sync_mcp_tools(self) -> None:
+        """Snapshot registered MCP tools on the original Agent owner; performs no IO."""
+        self._ensure_open()
+        self._publish_tool_inventory(self._combined_tools(self._local_tools, self._mcp_registry))
+
+    def _model_tools(self) -> tuple[AgentTool, ...]:
+        self.sync_mcp_tools()
+        return self.active_tools if self._supports_tool_calls is not False else ()
 
     @property
     def active_tools(self) -> tuple[AgentTool, ...]:
@@ -956,7 +1008,10 @@ class Agent:
             omit_messages=omit_messages,
         )
 
-    def restore(self, session: Mapping[str, Any], *, allowed_models: Sequence[str] | None = None) -> None:
+    def restore(
+        self, session: Mapping[str, Any], *, allowed_models: Sequence[str] | None = None,
+        default_skills: Sequence[str] = (),
+    ) -> None:
         """Validate then atomically adopt data; do not start a model or execute tools.
 
         Versionless old snapshots retain partial-patch semantics. New snapshots
@@ -964,6 +1019,12 @@ class Agent:
         permissions, provider and runtime resources. An optional host model
         allowlist restricts the saved model; metadata-capable adapters must also
         recognize it. Neither snapshots nor model IDs confer provider authority.
+
+        default_skills is an explicit host reassembly choice: strictly bind session
+        defaults absent from the snapshot after validating original bindings. Turn
+        defaults never rearm a missing/consumed turn; saved pending/active turns
+        retain their original lifecycle.
+        Bare restore retains its original snapshot-only skill selection.
         """
         self._ensure_open()
         if not self._idle_event.is_set():
@@ -983,6 +1044,14 @@ class Agent:
                 prompt = tuple(SystemPromptBlock(text=b["text"], cache=b.get("cache", False)) for b in prompt)
             options = replace(self._options, **{key: values[key] for key in
                               ("thinking", "temperature", "max_tokens") if key in values})
+            additions = tuple(slug for slug in dict.fromkeys(default_skills)
+                              if slug not in self._active_skill_slugs)
+            defaults = self._restore_default_sessions(additions)
+            combined = {**self._resolved_skills, **{skill.slug: skill for skill in defaults}}
+            fixed = _skill_preamble([skill for skill in combined.values() if not skill.expires_after_turn])
+            self._resolved_skills = combined
+            self._active_skill_slugs = (*self._active_skill_slugs, *(skill.slug for skill in defaults))
+            self._fixed_preamble = fixed
             self._base_system_prompt = prompt
             self._options = options
             self._update_state(messages=messages, model=model)
@@ -993,11 +1062,12 @@ class Agent:
             return
 
         candidate = decode_snapshot(raw)
-        self._restore_candidate(candidate, tuple(raw["options"]), allowed_models=allowed_models)
+        self._restore_candidate(candidate, tuple(raw["options"]), allowed_models=allowed_models,
+                                default_skills=default_skills)
 
     def restore_parts(
         self, metadata: Mapping[str, Any], messages: Sequence[AgentMessage], *,
-        allowed_models: Sequence[str] | None = None,
+        allowed_models: Sequence[str] | None = None, default_skills: Sequence[str] = (),
     ) -> None:
         """Atomically restore v1 metadata and separately bounded typed messages.
 
@@ -1011,10 +1081,12 @@ class Agent:
             raise RuntimeError("Cannot restore during an active run")
         raw = dict(metadata)
         candidate = decode_snapshot_parts(raw, messages)
-        self._restore_candidate(candidate, tuple(raw["options"]), allowed_models=allowed_models)
+        self._restore_candidate(candidate, tuple(raw["options"]), allowed_models=allowed_models,
+                                default_skills=default_skills)
 
     def _restore_candidate(
         self, candidate: Snapshot, option_fields: Sequence[str], *, allowed_models: Sequence[str] | None,
+        default_skills: Sequence[str] = (),
     ) -> None:
         """Shared versioned validation and adoption; failures before adoption are inert."""
         candidate.require_resumable()
@@ -1029,6 +1101,12 @@ class Agent:
             if record.lifecycle != "consumed":
                 bindings[record.slug] = self._skills.load_skill(record.slug) if self._skills is not None else None
         skills = validate_skill_bindings(candidate, bindings)
+        saved_slugs = {record.slug for record in candidate.skills}
+        additions = tuple(slug for slug in dict.fromkeys(default_skills) if slug not in saved_slugs)
+        from xdog.agent.skills.types import validate_active_skill
+        for skill in skills:
+            validate_active_skill(skill.slug, skill)
+        skills = (*skills, *self._restore_default_sessions(additions))
         fixed = _skill_preamble([skill for skill in skills if not skill.expires_after_turn])
         # Keep runtime-only options (including host credentials/headers/cancel)
         # from the current host; restore only the decoder's explicit whitelist.
@@ -1057,6 +1135,14 @@ class Agent:
         self._update_state(messages=candidate.messages, model=candidate.model, error=candidate.error,
                            stream_message=None, pending_tool_calls=frozenset())
         self._recompose_system_prompt()
+
+    def _restore_default_sessions(self, additions: Sequence[str]) -> tuple[Skill, ...]:
+        if not additions:
+            return ()
+        _, _, _, resolved = _place_skills(self._skills, additions)
+        # Missing turn records may mean already consumed: defaults cannot grant
+        # another invocation. Hosts can explicitly rearm with set_active_skills.
+        return tuple(skill for skill in resolved.values() if not skill.expires_after_turn)
 
     def _validate_restored_model(self, model: str, allowed_models: Sequence[str] | None) -> None:
         if allowed_models is not None and model not in allowed_models:
@@ -1530,6 +1616,7 @@ class Agent:
     ) -> AgentEventStream[AgentEvent]:
         """Build the loop config and start the agent loop."""
         self._ensure_open()
+        self.sync_mcp_tools()
         if self._unfinished_tools():
             raise RuntimeError("Unconfirmed tool history requires host reconciliation before another run")
         loop = asyncio.get_running_loop()
@@ -1623,7 +1710,7 @@ class Agent:
             on_model_request=model_requested,
             prepare_request=prepare_request if self._compaction_config.auto else None,
             on_stream_close_error=self._stream_cleanup_errors.append,
-            get_tools=lambda: self.active_tools if self._supports_tool_calls is not False else (),
+            get_tools=self._model_tools,
             get_steering_messages=_steering_cb,
             get_follow_up_messages=self._get_follow_up_messages,
         )

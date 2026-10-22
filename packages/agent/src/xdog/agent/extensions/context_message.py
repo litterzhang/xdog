@@ -18,7 +18,10 @@ from xdog.agent.mcp.schema import json_value
 from xdog.ai.types import ImageContent, TextContent, UserMessage
 
 TYPE = 'xdog.extension_context.v1'
-METHODS = frozenset({'xdog/command', 'tools/call', 'xdog/event', 'xdog/pre', 'xdog/post', 'xdog/input'})
+METHODS = frozenset({'xdog/command', 'xdog/event', 'xdog/pre', 'xdog/post', 'xdog/input'})
+# Historical provenance is data, not a live callback admission route. Preserve
+# already-reviewed messages without reviving the retired Extension tool API.
+_RECORD_METHODS = METHODS | {'tools/call'}
 _COMMON = {'id', 'kind', 'operation', 'title', 'message', 'timeout', 'extension', 'parent_id'}
 _FIELDS = {'custom_type', 'content', 'display', 'details', 'delivery', 'image_summaries', 'trigger_turn'}
 
@@ -97,7 +100,7 @@ def record(value: Any) -> dict[str, Any]:
             raise ValueError('Invalid custom context provenance')
     if (not isinstance(value['extension'], str)
             or re.fullmatch('[A-Za-z][A-Za-z0-9_]{0,31}', value['extension']) is None
-            or value['method'] not in METHODS):
+            or value['method'] not in _RECORD_METHODS):
         raise ValueError('Invalid custom context origin')
     for key in ('session_id', 'branch_id'):
         if (not isinstance(value[key], str) or len(value[key]) > 256

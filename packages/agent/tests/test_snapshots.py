@@ -551,9 +551,12 @@ def test_canonical_change_cannot_be_hidden_by_compatibility_alias() -> None:
         decode_snapshot(raw)
 
 
-def test_known_custom_context_roundtrips_and_projects() -> None:
-    from xdog.agent.extensions.context_message import llm_message
+def test_historical_tool_context_roundtrips_as_data_without_reviving_tool_api() -> None:
+    from xdog.agent.extensions.api import ExtensionAPI
+    from xdog.agent.extensions.context_message import METHODS, llm_message
 
+    assert "tools/call" not in METHODS
+    assert not hasattr(ExtensionAPI, "tool")
     message = _custom_context({"opaque": [1, 2]})
     raw = encode_snapshot(AgentState(messages=(message,)), base_system_prompt="")
     decoded = decode_snapshot(raw)

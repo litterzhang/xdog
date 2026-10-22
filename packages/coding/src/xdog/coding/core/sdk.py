@@ -20,8 +20,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from xdog.agent import AgentTool as CoreAgentTool
 from xdog.agent.agent import Agent
+from xdog.agent.tools import ToolContext, ToolRegistry
 from xdog.ai.types import ThinkingLevel
 from xdog.coding.config import (
     RuntimeConfig,
@@ -32,7 +32,6 @@ from xdog.coding.core.defaults import DEFAULT_MODEL, DEFAULT_THINKING_LEVEL, MAX
 from xdog.coding.core.permissions import PermissionManager
 from xdog.coding.core.session_manager import SessionData, SessionManager
 from xdog.coding.core.settings_manager import SettingsManager
-from xdog.coding.core.tools import get_default_tools
 
 _THINKING_LEVELS: tuple[ThinkingLevel, ...] = ("minimal", "low", "medium", "high", "xhigh")
 
@@ -203,7 +202,8 @@ def _build_agent_session(options: CreateSessionOptions, *, new_session_id: str) 
     max_prompt_tokens = model.max_prompt_tokens if model is not None else 0
 
     # Create tools from agent built-in factories
-    agent_tools: list[CoreAgentTool] = get_default_tools(wd)
+    tool_registry = ToolRegistry()
+    tool_registry.replace_source("inventory", tool_registry.create_tools(context=ToolContext(cwd=wd)))
 
     # Create Agent with explicit stream_fn from provider
     permissions = PermissionManager(config.permission_mode)
@@ -224,7 +224,7 @@ def _build_agent_session(options: CreateSessionOptions, *, new_session_id: str) 
                 thinking=effective_thinking,
             ),
         ),
-        tools=agent_tools,
+        tools=tool_registry.tools,
         tool_ctx={"fs_workspace": str(wd)},
         before_tool_call=permissions.before_tool_call,
         # The Agent owns where the index and the bodies go; this only says which
@@ -246,7 +246,7 @@ def _build_agent_session(options: CreateSessionOptions, *, new_session_id: str) 
         session_data=session_data,
         session_manager=session_mgr,
         settings=settings,
-        tool_registry=None,
+        tool_registry=tool_registry,
         bash=None,
         working_dir=wd,
         context_window=context_window,
@@ -291,18 +291,13 @@ def _build_agent_session(options: CreateSessionOptions, *, new_session_id: str) 
         raise
 
 
-def _coding_skill_manager() -> "SkillManager | None":
-    """coding's SkillManager, or None if it cannot be built.
+def _coding_skill_manager() -> "SkillManager":
+    """Construct the host's skill manager; do not hide activation dependencies.
 
-    Skills are a convenience; failing to read them must not stop a session from
-    starting, which is why this swallows rather than raises.
+    Optional package/index discovery handles unavailable entries itself. Failure
+    to build the manager is different: callers need the real error, not a later
+    "active skill has no manager" failure or a session missing instructions.
     """
-    try:
-        from xdog.coding.core.slash_commands import skill_manager
+    from xdog.coding.core.slash_commands import skill_manager
 
-        return skill_manager()
-    except Exception:  # pragma: no cover - defensive
-        import logging
-
-        logging.getLogger(__name__).debug("no skill manager available", exc_info=True)
-        return None
+    return skill_manager()

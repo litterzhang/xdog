@@ -18,4 +18,3 @@ def setup(api):
         return f"TOOL-EDITOR-{snapshot}-{applied}"
 
     api.command("compose", "CAS transform command editor without sending a turn", compose)
-    api.tool("illegal", "Tool callbacks cannot borrow command editor authority", {"type": "object"}, illegal)

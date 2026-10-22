@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pytest
 from xdog.agent import Agent, AgentConfig
-from xdog.agent.mcp import McpError, McpManager
+from xdog.agent.mcp import McpError, McpRegistry
+from xdog.agent.mcp.registry import McpTool
 from xdog.ai.types import AssistantMessage, TextContent, ToolCall
 from xdog.ai.utils.event_stream import EventStream
 
@@ -18,7 +19,7 @@ FIXTURE = Path(__file__).parent / "fixtures/mcp_schema_peer.py"
 
 
 def manager(tmp_path, profile="modern-array"):
-    return McpManager(
+    return McpRegistry(
         {"peer": {"command": sys.executable, "args": [str(FIXTURE), profile, str(tmp_path / "log")]}}, tmp_path
     )
 
@@ -44,7 +45,11 @@ async def test_real_stdio_typed_structured_results_are_not_omitted_null_conflate
     try:
         await client.connect("peer")
         tool = client.tools()[0]
+        assert not hasattr(client._tools[0], 'registration_id')
+        assert not hasattr(client, '_result_details')
         result = await tool.execute("call", {"value": None})
+        assert result.details == {'mcp_server': 'peer', 'structured_content_present': True,
+                                  'structured_content': expected}
         assert result.details["structured_content_present"] is True
         assert result.details["structured_content"] == expected
         assert result.content[0].text == "human summary without full data"
@@ -160,7 +165,7 @@ def peer():
 async def test_owned_http_nullable_input_and_typed_output_follow_negotiated_version(tmp_path, peer, legacy, choice):
     url, state = peer
     state.update(legacy=legacy, choice=choice)
-    client = McpManager({"peer": {"transport": "http", "url": url}}, tmp_path)
+    client = McpRegistry({"peer": {"transport": "http", "url": url}}, tmp_path)
     try:
         await client.connect("peer")
         result = await client.tools()[0].execute("call", {"value": None})
@@ -243,3 +248,8 @@ async def test_agent_abort_during_pre_permission_validation_settles_without_hook
         assert not any(frame["method"] == "tools/call" for frame in frames(tmp_path))
     finally:
         await client.aclose()
+
+
+def test_extension_registration_identity_is_not_part_of_generic_mcp_tool_contract():
+    assert 'registration_id' not in McpTool.__dataclass_fields__
+    assert not hasattr(McpRegistry, '_result_details')

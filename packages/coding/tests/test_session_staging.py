@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from xdog.agent import Agent, AgentConfig
+from xdog.agent.skills import SkillManager
 from xdog.ai.types import AssistantMessage, UserMessage
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core.agent_session import AgentSession
@@ -36,7 +37,8 @@ async def test_actual_coding_navigation_stages_target_entries_and_preserves_orig
                                    'extension_settings': {'stagedprovider': {'marker': str(marker)}}}))
     manager = SessionManager(tmp_path / 'sessions')
     session = AgentSession(agent=Agent(lambda *args: EventStream.empty(AssistantMessage()),
-                                      config=AgentConfig(model='opaque/original')),
+                                       skills=SkillManager(tmp_path / "skills"),
+                                       config=AgentConfig(model='opaque/original')),
         session_data=manager.create_session(model='opaque/original', working_dir=tmp_path), session_manager=manager,
         settings=SettingsManager(global_path=settings), working_dir=tmp_path, tool_registry=None, bash=None,
         permissions=PermissionManager('deny'))

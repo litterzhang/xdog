@@ -91,13 +91,13 @@ async def test_legacy_worker_prompts_cannot_reach_bound_host_handlers(tmp_path, 
         setattr(runtime, attr, forbidden)
     try:
         await runtime.initialize()
-        original = StdioClient.request
+        original = StdioClient._request_once
         async def legacy(self, method, params, **kwargs):
             if method == 'xdog/command':
                 assert not (REMOVED_HOST_CAPABILITIES & params['context'].keys())
                 return {'xdog_pending': 'legacy', 'xdog_prompt': {'id': 'old', 'title': 'Old control', **packet}}
             return await original(self, method, params, **kwargs)
-        monkeypatch.setattr(StdioClient, 'request', legacy)
+        monkeypatch.setattr(StdioClient, '_request_once', legacy)
         with pytest.raises(ValueError, match='removed'):
             await runtime.command('ext-readonlyhost-probe', '')
         assert not handlers
@@ -105,11 +105,11 @@ async def test_legacy_worker_prompts_cannot_reach_bound_host_handlers(tmp_path, 
         await runtime.aclose()
 
 
-@pytest.mark.parametrize('scope', ['command', 'tool', 'event', 'child-tool'])
+@pytest.mark.parametrize('scope', ['command', 'pre', 'event', 'child-pre'])
 async def test_actual_worker_readonly_queries_keep_original_owner_and_no_control_grant(tmp_path, scope):
     runtime, agent, context = make(tmp_path, scope='event' if scope == 'event' else '')
     before = tuple(agent.messages)
-    if scope == 'child-tool':
+    if scope == 'child-pre':
         context['child_id'] = 'owned-child'
     requests = []
     async def read(extension, prompt):
@@ -145,10 +145,10 @@ async def test_actual_worker_readonly_queries_keep_original_owner_and_no_control
             await runtime.event('turn_start', {})
             value = runtime.entries.for_extension('readonlyhost')[-1]['data']
         else:
-            result = await runtime.tools()[0].execute('owned', {})
-            value = json.loads(result.content[0].text)
+            assert await runtime.pre('safe', {}) == {}
+            value = runtime.entries.for_extension('readonlyhost')[-1]['data']
         assert value['model']['id'] == 'private/model' and value['usage']['tokens'] == 15
-        assert value['tools']['owner_id'] == ('owned-child' if scope == 'child-tool' else 'original')
+        assert value['tools']['owner_id'] == ('owned-child' if scope == 'child-pre' else 'original')
         assert value['active']['active'] == ['safe'] and value['name'] == 'Captured'
         assert value['commands']['commands'][0]['name'] == '/business' and value['pending'] is False
         assert (value['session'] is not None) is (scope == 'command')

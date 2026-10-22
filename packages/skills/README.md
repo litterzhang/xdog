@@ -66,18 +66,26 @@ to the same main Agent and original Inbox/controller. ACP delivers; the skill
 instructs; the main Agent decides. Both settled and task-file signals enter one
 durable coalescer. An accepted pending/running reminder prevents another send;
 new changes remain dirty until consumed. Recovery inspects original receipts, not
-idle time, and known-not-sent retries retain original ID/content. A user/host wait or user pause cannot be washed
-into an automatic task wait and resumed. Interrupted/unknown effects are not
-replayed. No fixed polling loop, hidden tool approval or second Agent is created.
+idle time, and known-not-sent retries retain original ID/content. New waits support only
+user or tasks; historical host waits stay readable and require explicit user conversion.
+A user wait, historical host wait or user pause cannot be washed into an automatic
+task wait and resumed. Execution/delivery failures are separate durable runtime
+facts, never automatic Goal state changes. Interrupted/unknown effects are not
+replayed; unresolved delivery uncertainty remains fenced even across pause/resume. No fixed polling loop, hidden tool approval or second Agent is created.
 
-The runtime generates `eyes.json` and optionally owns a public Eyes ObserverService
-registration observing only this Goal's task JSON directory. Configuration/state
+The runtime generates `eyes.json` and uses the installed Eyes CLI to own a daemon
+registration observing only this Goal's task JSON directory. It imports no Eyes
+SDK, runtime, loader, or daemon protocol. Events arrive through an owned
+`events --follow` JSONL process; only a durable Goal commit permits a separate CLI ACK. Configuration/state
 files are excluded. Pausing stops both proactive continuation and this owned
 registration; only explicit resume restores them and reconciles changed task
 files. Pause does not cancel accepted inputs, tools, children or other observers.
-Clear/close also stops only the owned registration. Missing Eyes or
+Clear stops only the owned registration. Host retirement/close only detaches its
+CLI stream (`suspend=False`), allowing daemon-owned offline observation to remain;
+Goal business stops use `suspend=True`. Missing Eyes or
 an unavailable actual owner endpoint is reported, never silently installed or
-retargeted. Goal depends directly only on Agent/stdlib; integrations import lazily.
+retargeted. Goal depends directly only on Agent/stdlib; optional Eyes operations
+cross the real CLI process boundary, not a Python SDK.
 
 Old `journal.sqlite3` and `goals.json` stay untouched, with their locations reported
 in status/history; no old worker/reviewer is restored. They are not silently
@@ -90,6 +98,7 @@ the business lifetime. Native `/goal` explicitly overlaps only its skill command
 the skill itself remains discoverable/loadable. Builtins and other extension
 owners cannot be shadowed.
 
-See `docs/goal-optimization-design.md`, `docs/goal-optimization-requirements.json`,
+See `docs/goal-host-faults.md` for the current no-host-wait/fault/receipt contract,
+`docs/goal-optimization-design.md`, `docs/goal-optimization-requirements.json`,
 `docs/goal-simple-design.md`, `docs/goal-simple-requirements.json` and the current
 verification record. Earlier Goal kernel/adapter/reviewer records are historical.

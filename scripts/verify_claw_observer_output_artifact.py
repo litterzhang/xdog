@@ -1,263 +1,100 @@
-"""Actual wheel-only observer streaming/recovery; only model/network are scripted.
+"""Wheel-only Eyes CLI/tool -> ordinary ACP/Core intake, without report routing.
 
-Run outside the checkout with the isolated Claw+Eyes+ACP interpreter. Never imports
-repository tests or runtime source, uses user credentials, or calls a provider.
+The historical filename is retained for the artifact verifier entry point. Eyes
+owns no chat-output tracking; separate Core output probes verify user delivery.
+Only an offline model is scripted. Every daemon/data/socket path is temporary.
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import tempfile
-from contextlib import asynccontextmanager
-from datetime import UTC, datetime
 from pathlib import Path
 
-from xdog.agent.capabilities import CapabilitySet
-from xdog.ai.types import AssistantMessage, DoneEvent, TextContent, ToolCall
+from xdog.agent.capabilities import ApplicationPort
+from xdog.ai.types import AssistantMessage, TextContent
 from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.acp.server import ClawAcpServer
-from xdog.claw.channels.weixin.api import WeixinApiClient
-from xdog.claw.channels.weixin.channel import WeixinChannel, _TypingTicketCache
-from xdog.claw.channels.weixin.types import MessageItem, MessageItemType, MessageType, TextItem, WeixinMessage
 from xdog.claw.config import ClawConfig
-from xdog.claw.core.outputs.delivery import DeliveryNotSent
-from xdog.claw.core.runtime.application_ports import ApplicationPorts
+from xdog.claw.core.inputs.models import InputScope
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.types import Group
-from xdog.eyes.hosting import manager as installed
-from xdog.eyes.managed_scheduler import SchedulerClocks
-
-assert Path(installed.__file__).is_relative_to(Path(sys.prefix))
 
 
-class Clock:
-    def __init__(self):
-        self.wall = datetime(2026, 10, 19, tzinfo=UTC).timestamp()
-        self.tick = asyncio.Event()
-
-    async def sleep(self, _seconds):
-        await self.tick.wait()
-
-    def advance(self):
-        self.wall += 60
-        old, self.tick = self.tick, asyncio.Event()
-        old.set()
-
-    def clocks(self):
-        return SchedulerClocks(wall=lambda: self.wall, monotonic=lambda: self.wall, sleep=self.sleep)
+async def cli(*arguments: str) -> dict:
+    process = await asyncio.create_subprocess_exec(sys.executable, '-m', 'xdog.eyes', *arguments,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    output, error = await asyncio.wait_for(process.communicate(), 35)
+    assert process.returncode == 0, (output, error)
+    return json.loads(output)
 
 
-class API(WeixinApiClient):
-    def __init__(self):
-        super().__init__("https://example.invalid", "")
-        self.sent = asyncio.Queue()
-        self.reject = False
-
-    async def send_message(self, request):
-        if self.reject:
-            raise DeliveryNotSent("explicit boundary: original recipient has not accepted output")
-        self.sent.put_nowait(request.msg)
-
-    async def get_config(self, *args, **kwargs):
-        return {}
-
-    async def send_typing(self, *args, **kwargs):
-        pass
-
-
-class Model:
-    def __init__(self, clock):
-        self.clock = clock
-        self.phase = "create"
-        self.creation_calls = 0
-        self.callback_calls = 0
-        self.entered = asyncio.Event()
-        self.release = asyncio.Event()
-
-    def __call__(self, _model, context, options=None):
-        blocked = False
-        if self.phase == "create" and self.creation_calls == 0:
-            source = {"type": "scheduler", "schedule": {
-                "at": datetime.fromtimestamp(self.clock.wall + 60, UTC).isoformat()}}
-            parts = (ToolCall(id="create", name="eyes", arguments={"action": "create", "name": "wheel-watch",
-                     "source": source, "instruction": "Recall the original delegated check and report"}),)
-            self.creation_calls += 1
-        elif self.phase == "callback":
-            first = self.callback_calls == 0
-            self.callback_calls += 1
-            parts = ((TextContent(text="first wheel observer message"),
-                      ToolCall(id="inspect", name="eyes", arguments={"action": "list"})) if first else
-                     (TextContent(text="second wheel observer message"),))
-            blocked = not first
-        else:
-            parts = (TextContent(text="ordinary ready"),)
-        message = AssistantMessage(content=parts,
-            stop_reason="toolUse" if any(isinstance(part, ToolCall) for part in parts) else "stop")
-
-        async def events():
-            if blocked:
-                self.entered.set()
-                await self.release.wait()
-            yield DoneEvent(message=message)
-
-        future = asyncio.get_running_loop().create_future()
-        future.set_result(message)
-        return EventStream.from_async_generator(events(), result_future=future)
-
-
-def no_model(*args, **kwargs):
-    raise AssertionError("observer output transport recovery reran the Agent")
-
-
-@asynccontextmanager
-async def application(root, clock, stream, *, peer=None):
-    root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    app = Orchestrator(ClawConfig(data_dir=str(root / "data"), enabled_tools=("eyes",)),
-                       model="test/dummy", stream_fn=stream, defer_inputs=True)
-    app.register_group(Group(id="main", workspace=str(root / "work"), enabled_tools=("eyes",)))
-    channel = WeixinChannel(root / "channel", "account", "https://example.invalid", "")
-    await channel._api_client.close()
-    api = API()
-    channel._api_client = api
-    channel._typing_tickets = _TypingTicketCache(api)
-    if peer is not None:
-        channel._user_id_map["main"] = peer
-    app.add_channel(channel)
-    server = await ClawAcpServer.start(app, root / "acp.sock")
-    capabilities = CapabilitySet('application')
-    await capabilities.start(ApplicationPorts(app, root / "acp.sock"))
-    app.application_capabilities = capabilities
-    manager = capabilities.get('eyes')  # Acceptance diagnostics, never host execution policy.
-    assert manager is not None
-    manager.clocks = clock.clocks()
-    await app.refresh_application_capabilities()
-    (await app.input_service()).resume()
-    try:
-        yield app, manager, channel, api
-    finally:
-        await capabilities.aclose()
-        await server.close()
-        await app.stop()
-
-
-async def speak(channel, identifier, sender):
-    message = WeixinMessage(message_id=identifier, from_user_id=sender, context_token="ctx:" + sender,
-        message_type=MessageType.USER,
-        item_list=(MessageItem(type=MessageItemType.TEXT, text_item=TextItem(text="Watch for me")),))
-    await channel._accept_inbound(message)
-    await channel._on_inbound(message)
-
-
-async def until(operation):
-    async with asyncio.timeout(5):
-        while True:
-            result = await operation()
-            if result:
-                return result
-            await asyncio.sleep(0.005)
-
-
-async def prepare(app, manager, channel, api, clock, model):
-    await speak(channel, 1, "alice")
-    (created,) = await manager.list("main")
-    model.phase = "ordinary"
-    await speak(channel, 2, "bob")
-    while not api.sent.empty():
-        api.sent.get_nowait()
-    model.phase = "callback"
-    return created["id"]
-
-
-async def outputs_for(app, message_id):
-    return [row for row in await (await app.output_service()).store.records()
-            if row.envelope.message.id == message_id]
-
-
-def assert_message(message, text, output_id=None):
-    assert (message.to_user_id, message.context_token, message.item_list[0].text_item.text) == (
-        "alice", "ctx:alice", text)
-    if output_id is not None:
-        assert message.client_id == output_id
-
-
-async def streaming(root, stop):
-    clock = Clock()
-    model = Model(clock)
-    async with application(root, clock, model) as (app, manager, channel, api):
-        identifier = await prepare(app, manager, channel, api, clock, model)
-        clock.advance()
+async def main() -> None:
+    with tempfile.TemporaryDirectory(prefix='eyes-wheel-') as temporary:
+        root = Path(temporary)
+        os.environ['XDOG_EYES_RUNTIME_DIR'] = str(root / 'daemon')
+        calls = []
+        def model(*args):
+            calls.append(args)
+            return EventStream.empty(AssistantMessage(content=(TextContent(text='ordinary ACP response'),)))
+        app = Orchestrator(ClawConfig(data_dir=str(root / 'data'), enabled_tools=('eyes',)),
+                           model='test/dummy', stream_fn=model, defer_inputs=True)
+        workspace = root / 'workspace'
+        app.register_group(Group(id='main', workspace=str(workspace), enabled_tools=('eyes',)))
+        server = await ClawAcpServer.start(app, root / 'input.sock')
+        owner = 'artifact:explicit-owner'
         try:
-            await asyncio.wait_for(model.entered.wait(), 5)
-            first = await asyncio.wait_for(api.sent.get(), 5)
-            assert_message(first, "first wheel observer message")
-            current = await manager.status("main", identifier)
-            (occurrence,) = current["occurrences"]
-            assert occurrence["execution_status"] == "running" and not model.release.is_set()
-            if stop == "notifications":
-                await manager.cancel_notifications("main", identifier)
-            elif stop == "source":
-                await manager.cancel("main", identifier)
-            model.release.set()
-
-            async def completed():
-                current = await manager.status("main", identifier)
-                (row,) = current["occurrences"]
-                wanted = "cancelled" if stop == "notifications" else "delivered"
-                return row if row["execution_status"] == "succeeded" and row["delivery_status"] == wanted else None
-
-            occurrence = await until(completed)
-            rows = await outputs_for(app, occurrence["message_id"])
-            expected = ["delivered", "cancelled" if stop == "notifications" else "delivered"]
-            assert [row.status for row in rows] == expected
-            assert_message(first, rows[0].text, rows[0].id)
-            if stop != "notifications":
-                second = await asyncio.wait_for(api.sent.get(), 5)
-                assert_message(second, rows[1].text, rows[1].id)
-                assert second.client_id != first.client_id
-            assert api.sent.empty() and model.callback_calls == 2
+            await app.application_capabilities.start(ApplicationPort())
+            tool = next(tool for tool in app.application_capabilities.tools if tool.name == 'eyes')
+            assert not calls
+            config = {'version': 2, 'name': 'wheel-file-event',
+                'sources': [{'id': 'files', 'type': 'file', 'root': '.', 'include': ['*.txt'],
+                             'poll_interval_ms': 50}],
+                'detectors': [{'id': 'changed', 'type': 'file.change', 'source': 'files',
+                               'debounce_ms': 50, 'max_batch_delay_ms': 100}],
+                'handlers': [{'id': 'receive', 'type': 'acp', 'delivery': 'enqueue',
+                    'connection': {'transport': 'unix', 'path': str(server.path)},
+                    'session': 'group:main', 'instruction': 'Read the requested file evidence.'}],
+                'routes': [{'id': 'route', 'detector': 'changed', 'handler': 'receive',
+                            'event_types': ['file.created']}]}
+            path = workspace / 'eyes.json'
+            path.write_text(json.dumps(config))
+            result = await tool.execute('artifact-create', {'action': 'create', 'owner': owner,
+                                                          'definition_path': str(path)})
+            envelope = json.loads(''.join(part.text for part in result.content))
+            assert envelope['exit_code'] == 0, envelope
+            created = json.loads(envelope['stdout'])
+            identifier = created['registration_id']
+            await cli('--owner', owner, 'status', identifier, '--wait-ready', '--timeout', '10')
+            inputs = await app.input_service()
+            scope = InputScope('main', workspace)
+            (workspace / 'evidence.txt').write_text('wheel-only source change')
+            async with asyncio.timeout(15):
+                while not (rows := await inputs.store.records(scope)):
+                    await asyncio.sleep(.025)
+            assert len(rows) == 1 and rows[0].status == 'pending' and not calls
+            original_id = rows[0].envelope.message.id
+            # Remove the entire application binding: the shared daemon and its
+            # original registration remain independently inspectable via CLI.
+            await app.application_capabilities.aclose()
+            assert (await cli('--owner', owner, 'status', identifier))['registration_id'] == identifier
+            await cli('--owner', owner, 'cancel', identifier)
+            assert (await inputs.store.get(scope, original_id)).status == 'pending'
+            inputs.resume()
+            record = await asyncio.wait_for(inputs.wait(scope, original_id), 15)
+            assert record.status == 'succeeded' and len(calls) == 1
+            assert record.envelope.reply is None and record.envelope.message.origin == 'acp'
+            assert not (root / 'data' / 'observers').exists()
+            print(json.dumps({'eyes': 'CLI-backed installed tool, explicit owner, JSON-relative source, cwdless ACP',
+                'shared_daemon_survives_binding_close': True, 'source_cancel_does_not_withdraw_input': True,
+                'ordinary_main_agent_execution': True, 'implicit_chat_reply': False}))
         finally:
-            model.release.set()
+            await server.close()
+            await app.stop()
+            await cli('daemon', 'stop')
 
 
-async def recovery(root):
-    clock = Clock()
-    model = Model(clock)
-    async with application(root, clock, model) as (app, manager, channel, api):
-        identifier = await prepare(app, manager, channel, api, clock, model)
-        api.reject = True
-        model.release.set()
-        clock.advance()
-
-        async def pending():
-            current = await manager.status("main", identifier)
-            rows = current["occurrences"]
-            if rows and rows[0]["execution_status"] == "succeeded" and rows[0]["delivery_status"] == "pending":
-                outputs = await outputs_for(app, rows[0]["message_id"])
-                return outputs if len(outputs) == 2 and all(row.status == "pending" for row in outputs) else None
-            return None
-
-        originals = await until(pending)
-        assert api.sent.empty() and model.callback_calls == 2
-    async with application(root, clock, no_model, peer="new-peer-must-not-receive") as (app, manager, channel, api):
-        for original in originals:
-            received = await asyncio.wait_for(api.sent.get(), 5)
-            assert_message(received, original.text, original.id)
-        await (await app.output_service()).resume()
-        rows = await outputs_for(app, originals[0].envelope.message.id)
-        assert [row.id for row in rows] == [row.id for row in originals]
-        assert all(row.status == "delivered" for row in rows)
-        assert api.sent.empty() and model.callback_calls == 2
-
-
-async def main():
-    root = Path(tempfile.mkdtemp(prefix="installed-observer-output-"))
-    for stop in ("none", "notifications", "source"):
-        await streaming(root / stop, stop)
-    await recovery(root / "restart")
-    print(json.dumps({"installed_observer_outputs": "per-message before turn end, explicit cancel, source stop",
-        "recovery": "original peer/context/output IDs, durable pending, no model replay", "root": str(root)}))
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     asyncio.run(main())

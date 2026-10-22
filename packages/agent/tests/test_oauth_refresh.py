@@ -180,8 +180,8 @@ async def test_success_without_rotation_retains_old_token_only_after_valid_respo
 
 
 async def test_unavailable_refresh_does_not_claim_lease_and_block_another_view(tmp_path):
-    from xdog.agent.mcp.manager import McpManager
-    manager = McpManager({"peer": {"transport": "http", "url": RESOURCE,
+    from xdog.agent.mcp.registry import McpRegistry
+    manager = McpRegistry({"peer": {"transport": "http", "url": RESOURCE,
         "oauth": {"issuer": ISSUER, "client_id": "client", "scopes": ["read"]}}}, tmp_path)
     try:
         for lease in ("first", "second"):

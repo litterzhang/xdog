@@ -1,9 +1,4 @@
-"""Tests for agent.cli helpers — focused on the pure --tool-ctx parser.
-
-The chat command itself needs a live provider + LLM, so it is not unit-tested
-here; the schema/sink behaviour reachable via --tool-ctx is already covered by
-tests/test_submit_result.py.  These tests pin the argument parsing logic.
-"""
+"""Pure CLI argument helpers; offline host assembly is in test_cli_capabilities."""
 
 import json
 

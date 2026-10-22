@@ -11,7 +11,7 @@
 - Coding/Claw 默认依赖 `xdog-skills`，提供 Goal 技能索引、能力工具和 `/goal` 命令。安装/列出不创建 Goal、模型或子 Agent；显式已有工具白名单/readonly/审批依旧生效。
 - Skill 描述主 Agent 的规划、已有工具执行/子 Agent 分派、任务文件更新、处理事件及完成判断。Goal 不调用模型、不创建子 Agent，不保留必选 reviewer、role tool、attempt/report digest 验收系统。
 - 宿主只发布通用生命周期事件、提供 owner 快照与原 ACP 地址，不识别 Goal 状态。ACP 只是把自动消息提交到原 Inbox/Controller，不能赋予用户权限或另建执行器。
-- Eyes 是可选文件观察层；Goal 生成 v2 配置并通过可选公开 ObserverService 拥有一个任务目录 registration，没有常驻外部 daemon。Eyes 不依赖 Goal/Agent。
+- Eyes 是可选文件观察层；Goal 生成 v2 配置，只通过真实 Eyes CLI 管理共享 daemon 中的任务目录 registration、读取 JSONL 事件并 ACK，不导入 Eyes SDK。Claw 本身只加载 Eyes 注册 tool；Eyes 不依赖 Goal/Agent。该边界由 2026-10-22 的 `eyes-daemon-goal-hosting.md` 修订。
 
 ## 用户与模型入口
 
@@ -53,9 +53,12 @@ Goal callback 不在控制器锁内等待模型；订阅通知只安排 owner �
 提醒先持久化为 outbox，再用原 ID 通过 ACP `xdog/enqueue` 扩展发送；不能以普通 prompt 的断线作为未执行证明。
 真实发送前原子 claim 再检查 Goal/version/current/pending。ACK 丢失核对同 namespace/branch/原 ID/不可变内容，未知结果不换 ID 盲重发。
 
-- waiting(user/host) 和 paused 只能由真实用户恢复，不能先改 waiting(tasks) 再洗成自动 resume。
+- 新 wait 只支持 user/tasks；历史 host wait 保持只读兼容，只能显式用户转换，
+  不重放旧工作。详见 `goal-host-faults.md`。
+- waiting(user/历史 host) 和 paused 只能由真实用户恢复，不能先改 waiting(tasks) 再洗成自动 resume。
 - waiting(tasks) 可在任务文件通知后由主 Agent 决定恢复。
-- failed/cancelled/interrupted 宿主执行进入等待检查，不自动重放副作用。
+- failed/cancelled/interrupted/preparation_failed 宿主执行记录独立故障、阻止自动
+  重放，不自动修改 Goal 状态/版本或进入 host wait。
 - pause/clear/complete 停止未来提醒和自有 Eyes；不撤销已接受消息，不自动终止子 Agent 或其它观察者。
 - endpoint 不可用要关闭旧观察并明确报告 unavailable；重新可用可重试绑定，但不重放未知消息。
 - 本轮不实现跨进程自动恢复工具执行。owner/工具过期后不能借后继 parent 授权；关闭结算真实 IO、通知、观察和已接受的本地义务后才释放 journal。

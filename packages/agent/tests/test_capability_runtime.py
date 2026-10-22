@@ -778,3 +778,68 @@ async def test_default_skills_do_not_leak_during_or_after_failed_start(installed
         await settle(start)
         await capabilities.aclose()
     assert capabilities.default_skills == frozenset()
+
+
+async def test_skill_only_provider_metadata_and_binding_need_no_tools_or_model(installed, tmp_path):
+    from xdog.agent.capabilities import CapabilityAssembly
+    from xdog.agent.skills import SkillManager
+
+    provider = Provider('instructions', scopes=('application',), tool_names=())
+    provider.skill_names = ('guard',)
+    provider.default_skills = ('guard',)
+    runtime, _ = installed(provider)
+    capabilities = runtime.CapabilitySet('application')
+    assembly = CapabilityAssembly(capabilities)
+    assert capabilities.declared_skills == assembly.declared_skills == {'guard'}
+    assert not capabilities.tools and not capabilities.default_skills and not provider.hosts
+    path = tmp_path / 'guard'
+    path.mkdir()
+    (path / 'SKILL.md').write_text('---\nname: guard\ndescription: instructions only\n---\nSKILL_ONLY_BODY')
+    owner = runtime.ApplicationPort()
+    await capabilities.start(owner)
+    agent = assembly.create_agent(lambda *_: pytest.fail('Metadata/assembly cannot call a model'),
+                                   skills=SkillManager(tmp_path, packaged={}))
+    try:
+        assert provider.binding.tools == () and capabilities.tools == () and agent.state.tools == ()
+        assert agent.active_skills == ('guard',) and 'SKILL_ONLY_BODY' in str(agent.state.system_prompt)
+        assert capabilities.owner_loop is asyncio.get_running_loop()
+        assert provider.hosts == [owner]
+    finally:
+        await agent.aclose()
+        await capabilities.aclose()
+    assert provider.binding.closes == 1
+
+
+async def test_runtime_extension_only_provider_needs_no_skill_or_tool(installed):
+    from xdog.agent.capabilities import CapabilityAssembly
+
+    provider = Provider('runtime-extension', scopes=('application',), tool_names=())
+    runtime, _ = installed(provider)
+    capabilities = runtime.CapabilitySet('application')
+    before = asyncio.all_tasks()
+    await capabilities.start(runtime.ApplicationPort())
+    try:
+        assembly = CapabilityAssembly(capabilities)
+        assert not assembly.tools and not assembly.declared_skills and not assembly.default_skills
+        assert not hasattr(provider, 'skill_names') and not hasattr(provider, 'default_skills')
+        marker = SimpleNamespace(valid=lambda: True)
+        capabilities.attach(marker)
+        assert provider.binding.parents == [marker]
+        await capabilities.flush()
+        assert provider.binding.flushes == 1
+        assert capabilities.owner_loop is asyncio.get_running_loop()
+        # Startup may own a completed start task; no live second worker/loop was created.
+        assert asyncio.all_tasks() == before
+    finally:
+        await capabilities.aclose()
+    assert provider.binding.closes == 1
+
+
+@pytest.mark.parametrize('metadata', [('duplicate', 'duplicate'), ('bad/name',), 'not-a-tuple'])
+def test_optional_discoverable_skill_metadata_is_validated_without_activation(installed, metadata):
+    provider = Provider('metadata')
+    provider.skill_names = metadata
+    runtime, _ = installed(provider)
+    with pytest.raises(ValueError, match='metadata'):
+        runtime.discover('session')
+    assert not provider.hosts

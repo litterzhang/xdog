@@ -68,16 +68,18 @@ class ToolRegistry:
     """Registry mapping tool names to agent AgentTool objects."""
 
     def __init__(self) -> None:
-        self._tools: dict[str, AgentTool] = {}
+        from xdog.agent.tools import ToolRegistry as AgentToolRegistry
+
+        self._registry = AgentToolRegistry(builtins=False)
 
     def register(self, tool: AgentTool) -> None:
-        self._tools = {**self._tools, tool.name: tool}
+        self._registry.replace_source(tool.name, (tool,))
 
     def get(self, name: str) -> AgentTool:
         try:
-            return self._tools[name]
-        except KeyError:
-            known = ", ".join(sorted(self._tools)) or "<none>"
+            return next(tool for tool in self._registry.tools if tool.name == name)
+        except StopIteration:
+            known = ", ".join(sorted(tool.name for tool in self._registry.tools)) or "<none>"
             raise WorkflowExecutionError(f"Unknown tool {name!r}. Known tools: {known}") from None
 
     def resolve(self, names: "tuple[str, ...]") -> tuple[AgentTool, ...]:
@@ -106,14 +108,15 @@ _ECHO_TOOL = AgentTool(
 
 def _agent_builtin_tools() -> tuple[AgentTool, ...]:
     try:
-        from xdog.agent.tools.registry import get_registered_tools
+        from xdog.agent.tools import ToolRegistry as AgentToolRegistry
     except ImportError:
         return ()
-    return tuple(get_registered_tools())
+    registry = AgentToolRegistry()
+    return tuple(registry.create_tools(names=(*registry.default_names(), "submit_result")))
 
 
 def default_registry() -> ToolRegistry:
-    """A fresh registry with the echo demo tool plus every agent-package builtin."""
+    """A fresh SDK-backed registry with defaults and structured submission."""
     registry = ToolRegistry()
     registry.register(_ECHO_TOOL)
     for tool in _agent_builtin_tools():

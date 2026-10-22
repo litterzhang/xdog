@@ -6,7 +6,7 @@ import time
 from dataclasses import replace
 
 import pytest
-from xdog.agent.mcp import McpManager
+from xdog.agent.mcp import McpRegistry
 from xdog.agent.mcp.oauth import OAuthConfig, OAuthError, OAuthOwner, OAuthReview
 from xdog.agent.mcp.oauth_store import CredentialStore, capture, restore
 
@@ -84,7 +84,7 @@ def test_unsafe_modes_links_duplicates_unknown_fields_and_canceled_save_never_ad
 
 async def test_manager_explicit_review_save_restart_restore_and_forget_have_no_network_or_implicit_load(tmp_path):
     configs = {'peer': {'transport': 'http', 'url': RESOURCE, 'oauth': PROFILE}}
-    manager = McpManager(configs, tmp_path, credential_dir=tmp_path / 'private')
+    manager = McpRegistry(configs, tmp_path, credential_dir=tmp_path / 'private')
     fresh = None
     try:
         manager._oauth['peer'] = seeded()
@@ -95,7 +95,7 @@ async def test_manager_explicit_review_save_restart_restore_and_forget_have_no_n
         saved = await manager.manage_auth('peer', 'credentials_save', review['review_id'], lease='one')
         assert saved['state'] == 'authorized' and 'PRIVATE-' not in json.dumps(saved)
         await manager.aclose()
-        fresh = McpManager(configs, tmp_path, credential_dir=tmp_path / 'private')
+        fresh = McpRegistry(configs, tmp_path, credential_dir=tmp_path / 'private')
         assert not fresh._oauth and not fresh._clients
         loaded = await fresh.manage_auth('peer', 'credentials_restore_prepare', lease='two')
         assert fresh._oauth['peer'].credential() is None and not fresh._clients
@@ -112,7 +112,7 @@ async def test_manager_explicit_review_save_restart_restore_and_forget_have_no_n
 
 
 async def test_detached_or_foreign_storage_reviews_do_not_commit(tmp_path):
-    manager = McpManager({'peer': {'transport': 'http', 'url': RESOURCE, 'oauth': PROFILE}}, tmp_path,
+    manager = McpRegistry({'peer': {'transport': 'http', 'url': RESOURCE, 'oauth': PROFILE}}, tmp_path,
                          credential_dir=tmp_path / 'private')
     try:
         manager._oauth['peer'] = seeded()
@@ -131,7 +131,7 @@ async def test_saved_refresh_snapshot_is_invalidated_before_rotating_post_not_on
     import httpx
     owner = seeded()
     store_dir = tmp_path / 'private'
-    manager = McpManager({'peer': {'transport': 'http', 'url': RESOURCE, 'oauth': PROFILE}}, tmp_path,
+    manager = McpRegistry({'peer': {'transport': 'http', 'url': RESOURCE, 'oauth': PROFILE}}, tmp_path,
                          credential_dir=store_dir)
     posts = []
     async def handler(request):
@@ -159,7 +159,7 @@ async def test_saved_refresh_snapshot_is_invalidated_before_rotating_post_not_on
 async def test_canceling_save_settles_local_writer_and_revokes_atomic_commit(tmp_path, monkeypatch):
     import asyncio
     import threading
-    manager = McpManager({'peer': {'transport': 'http', 'url': RESOURCE, 'oauth': PROFILE}}, tmp_path,
+    manager = McpRegistry({'peer': {'transport': 'http', 'url': RESOURCE, 'oauth': PROFILE}}, tmp_path,
                          credential_dir=tmp_path / 'private')
     entered, release = threading.Event(), threading.Event()
     original = manager.credential_store.save

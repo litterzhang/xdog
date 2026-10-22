@@ -7,13 +7,13 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from xdog.agent.mcp import McpError, McpManager
+from xdog.agent.mcp import McpError, McpRegistry
 
 FIXTURE = Path(__file__).parent / "fixtures" / "mcp_server.py"
 
 
 def manager(tmp_path, mode="modern", timeout=2):
-    return McpManager({"fixture": {"command": sys.executable, "args": [str(FIXTURE), mode, str(tmp_path / "requests")],
+    return McpRegistry({"fixture": {"command": sys.executable, "args": [str(FIXTURE), mode, str(tmp_path / "requests")],
                                     "timeout": timeout}}, tmp_path)
 
 
@@ -155,7 +155,7 @@ def test_owner_loop_survives_coding_style_per_turn_event_loops(tmp_path):
 
 async def test_retired_connection_close_does_not_remove_reloaded_client_or_tools(tmp_path):
     from unittest.mock import AsyncMock, Mock
-    client = McpManager({}, tmp_path)
+    client = McpRegistry({}, tmp_path)
     entered, release = asyncio.Event(), asyncio.Event()
     async def close():
         entered.set()

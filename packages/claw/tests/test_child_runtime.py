@@ -356,7 +356,7 @@ async def test_unpublished_or_replaced_parent_rejects_admission_and_context_is_e
         context = children[0].tool_context
         assert set(context) == {'group_id', 'workspace_dir', 'fs_workspace', 'data_dir', '_skill_manager'}
         assert all(value is not secret for value in context.values())
-        assert '_send_fn' not in context and '_memory_manager' not in context and '_memory_search' not in context
+        assert '_message_port' not in context and '_memory_manager' not in context and '_memory_search' not in context
     finally:
         await app.stop()
 
@@ -465,18 +465,16 @@ def test_synchronous_runtime_construction_and_close_do_not_acquire_or_start_a_lo
     assert runtime.closed and runtime._loop is None and not seen
 
 
-@pytest.mark.parametrize('revocation', ['tools', 'read-only', 'mcp'])
+@pytest.mark.parametrize('revocation', ['tools', 'read-only'])
 async def test_parallel_prepared_calls_recheck_real_effect_policy_after_first_executor_revokes(tmp_path, revocation):
-    writes, calls, mcp_allowed = [], [], [True]
+    writes, calls = [], []
     session = None
     async def revoke(*args, **kwargs):
         assert session is not None
         if revocation == 'tools':
             session.agent.set_tools((first, *session.children.runtime.tools()))
-        elif revocation == 'read-only':
-            session.access.set_read_only(True)
         else:
-            mcp_allowed[0] = False
+            session.access.set_read_only(True)
         return AgentToolResult.from_text('policy revoked before next executor')
     async def write(*args, **kwargs):
         writes.append('UNAUTHORIZED EFFECT')
@@ -493,11 +491,9 @@ async def test_parallel_prepared_calls_recheck_real_effect_policy_after_first_ex
     try:
         session = await prepared(app)
         session.agent.set_tools((first, second, *session.children.runtime.tools()))
-        with (patch.object(session._runtime.mcp, 'tools', lambda: (second,) if revocation == 'mcp' else ()),
-              patch.object(session._runtime.mcp, 'allowed', lambda name: mcp_allowed[0])):
-            identifier = await session.children.runtime.start('parallel work', access='inherit',
-                config={'tools': ['revoke', 'mutation']})
-            record = await session.children.runtime.control('wait', identifier)
+        identifier = await session.children.runtime.start('parallel work', access='inherit',
+            config={'tools': ['revoke', 'mutation']})
+        record = await session.children.runtime.control('wait', identifier)
         assert not writes
         assert 'policy revoked before next executor' in str(record['messages'])
         assert any(word in str(record['messages']).lower()

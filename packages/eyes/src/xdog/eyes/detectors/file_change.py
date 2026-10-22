@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
+from xdog.eyes.checkpoint import restore_snapshot, snapshot_data
 from xdog.eyes.models import FILE_EVENT_TYPES, DetectorDef, Event, FileEvidence, FileState
 from xdog.eyes.sources.file import FileSnapshot
 
@@ -53,3 +55,14 @@ class FileChangeDetector:
         self._first = None
         self._observed.clear()
         return result
+
+    def checkpoint(self) -> dict[str, Any]:
+        return {'baseline': snapshot_data(self._baseline), 'latest': snapshot_data(self._latest),
+                'dirty': self._first is not None}
+
+    def restore(self, value: dict[str, Any], *, now: float) -> None:
+        self._baseline = restore_snapshot(value['baseline'])
+        self._latest = restore_snapshot(value['latest'])
+        self._first = now if value['dirty'] else None
+        self._last = now
+        self._observed = {}  # Monotonic timestamps never cross process lifetimes.

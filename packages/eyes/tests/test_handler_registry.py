@@ -16,9 +16,8 @@ def recording(tmp_path):
         label: str
 
     class Recorder:
-        def __init__(self, definition, cwd):
+        def __init__(self, definition):
             self.definition = definition
-            self.cwd = cwd
             self.calls = []
             self.state = 'new'
             self.deliveries = []
@@ -61,8 +60,8 @@ def recording(tmp_path):
 
     instances = []
 
-    def factory(definition, cwd):
-        instance = Recorder(definition, cwd)
+    def factory(definition):
+        instance = Recorder(definition)
         instances.append(instance)
         return instance
 

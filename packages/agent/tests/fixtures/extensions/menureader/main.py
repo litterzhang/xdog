@@ -68,7 +68,6 @@ def setup(api):
         yield {'type': 'done'}
 
     api.command('inspect', 'Read original host menu metadata', command)
-    api.tool('inspect', 'Read actual host menu, never execute or borrow a composer', {'type': 'object'}, tool)
     api.on('turn_start', event)
     api.before_tool(pre)
     api.after_tool(post)

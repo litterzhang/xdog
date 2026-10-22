@@ -35,12 +35,6 @@ def setup(api):
     async def post(name, params, text, context):
         return text + "-POST-MUST-NOT-DROP-IMAGE"
 
-    api.tool(
-        "output",
-        "Return typed text/image/JSON data",
-        {"type": "object", "properties": {"value": {"type": "string"}}},
-        result,
-    )
     api.after_tool(post)
 
     async def command(args, context):

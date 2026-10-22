@@ -52,8 +52,6 @@ def setup(api):
     api.command("form", "Ask typed multi-field form", form)
     api.command("ask", "Ask select/input/confirm", ask)
     api.command("timeout", "Short dialog deadline", timeout)
-    api.tool("ask", "Ask for user input", {"type": "object"}, callback)
-    api.tool("form", "Ask typed form; host approval remains separate", {"type": "object"}, form_tool)
 
     async def many(args, context):
         import json
@@ -73,4 +71,3 @@ def setup(api):
     api.command('many', 'Ask reviewed typed multi-selection form', many)
     async def many_tool(params, context):
         return await many('', context)
-    api.tool('many', 'Ask several values; original tool approval remains separate', {'type': 'object'}, many_tool)

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 from xdog.skills.goal.host import OperationContext, OwnerRetired
 
+from packages.skills.tests.goal.legacy import wait_goal
 from packages.skills.tests.goal.test_reminder_review import receipt_states
 from packages.skills.tests.goal.test_runtime import close, setup
 
@@ -68,14 +69,14 @@ async def test_version_change_during_wake_reschedules_unconsumed_task(tmp_path, 
         await close(runtime, parent)
 
 
-@pytest.mark.parametrize('boundary', ['epoch_read', 'wait_admission'])
-async def test_old_available_failure_cannot_wait_a_resumed_epoch(tmp_path, monkeypatch, boundary):
+@pytest.mark.parametrize('boundary', ['epoch_read', 'fault_admission'])
+async def test_old_available_failure_cannot_fence_a_resumed_epoch(tmp_path, monkeypatch, boundary):
     runtime, parent, host, state, sent, _, _ = await setup(tmp_path, monkeypatch)
     await receipt_states(monkeypatch)
     entered, release = asyncio.Event(), asyncio.Event()
     pending = None
     original_wake_state = runtime.service.store.wake_state
-    original_change = runtime.service.change
+    original_fault = runtime.service.store.record_fault
 
     async def wake_state(identifier):
         result = await original_wake_state(identifier)
@@ -84,18 +85,18 @@ async def test_old_available_failure_cannot_wait_a_resumed_epoch(tmp_path, monke
             await release.wait()
         return result
 
-    async def change(action, *args, **kwargs):
-        if boundary == 'wait_admission' and action == 'wait' and asyncio.current_task() is pending:
+    async def record_fault(*args, **kwargs):
+        if boundary == 'fault_admission' and asyncio.current_task() is pending:
             entered.set()
             await release.wait()
-        return await original_change(action, *args, **kwargs)
+        return await original_fault(*args, **kwargs)
 
     try:
         goal = await waiting_with_deferred_task(runtime, state)
         fact = {'execution_id': 'old-failure', 'status': 'failed', 'settled_at': time.time()}
         host.latest_execution = AsyncMock(return_value=fact)
         monkeypatch.setattr(runtime.service.store, 'wake_state', wake_state)
-        monkeypatch.setattr(runtime.service, 'change', change)
+        monkeypatch.setattr(runtime.service.store, 'record_fault', record_fault)
         pending = asyncio.create_task(runtime._available())
         await asyncio.wait_for(entered.wait(), 2)
         await runtime.service.change('pause', context=USER)
@@ -143,7 +144,9 @@ async def test_invalidated_wake_does_not_cross_a_protected_fence(tmp_path, monke
         elif fence == 'paused':
             await runtime.service.change('pause', context=USER)
         else:
-            await runtime.service.change('wait', until=fence)
+            await wait_goal(runtime.service, until=fence,
+            **({'question': 'Which delivery target?', 'impact': 'Final target unknown',
+                'resume_when': 'User selects target'} if fence == 'user' else {}))
         await runtime.flush()
         release.set()
         if fence == 'retired':

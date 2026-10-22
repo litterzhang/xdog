@@ -146,6 +146,19 @@ class GroupCapabilityHost:
         snapshot['generation'] = self._generation
         return snapshot
 
+    async def message_delivery(self, reference: str) -> dict[str, Any]:
+        """Read original-group output facts; no feature schema or recipient selection."""
+        self._on_owner()
+        if not self.valid() or self._retiring or self._runtime._closing:
+            raise ValueError('Original output owner is retired')
+        reader = self._runtime.message_delivery
+        if reader is None:
+            return {'status': 'unavailable', 'reason': 'Host has no output receipt reader'}
+        result = await reader(reference)
+        if not self.valid() or self._retiring or self._runtime._closing:
+            raise ValueError('Original output owner changed during read')
+        return result
+
     async def latest_execution(self) -> dict[str, Any] | None:
         """Read original-group attempts, including earlier attempts of retried inputs.
 

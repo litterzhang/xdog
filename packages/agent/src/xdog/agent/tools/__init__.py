@@ -9,13 +9,7 @@ to instantiate tools::
 """
 
 from xdog.agent.skills.tool import create_skill_tool
-from xdog.agent.tools.registry import (
-    clear_tool_registry,
-    get_registered_tools,
-    register_tool,
-    registered_tool_names,
-    unregister_tool,
-)
+from xdog.agent.tools.registry import ToolContext, ToolFactory, ToolRegistration, ToolRegistry
 from xdog.agent.tools.tool_bash import create_bash_tool
 from xdog.agent.tools.tool_current_time import create_current_time_tool
 from xdog.agent.tools.tool_embed import create_embed_tool_from_fn
@@ -31,20 +25,8 @@ __all__ = [
     "create_web_search_tool_from_fn",
     "create_embed_tool_from_fn",
     "create_submit_result_tool",
-    "register_tool",
-    "unregister_tool",
-    "get_registered_tools",
-    "registered_tool_names",
-    "clear_tool_registry",
+    "ToolContext",
+    "ToolFactory",
+    "ToolRegistration",
+    "ToolRegistry",
 ]
-
-
-# Auto-register built-in tools
-def _register_builtin_tools() -> None:
-    register_tool("current_time", lambda config: create_current_time_tool())
-    register_tool("bash", lambda config: create_bash_tool())
-    register_tool("filesystem", lambda config: create_filesystem_tool())
-    register_tool("submit_result", lambda config: create_submit_result_tool())
-
-
-_register_builtin_tools()

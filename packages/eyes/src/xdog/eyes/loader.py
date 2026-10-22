@@ -246,4 +246,10 @@ def load(path: Path) -> ObserverDef:
 def definition_data(definition: ObserverDef) -> dict[str, object]:
     from dataclasses import asdict
 
-    return cast(dict[str, object], json.loads(json.dumps(asdict(definition), default=str, allow_nan=False)))
+    result = cast(dict[str, object], json.loads(json.dumps(asdict(definition), default=str, allow_nan=False)))
+    # Preserve absent enqueue target assertions: a document/daemon base directory
+    # must never become the destination workspace, including on normalized reload.
+    for handler in cast(list[dict[str, object]], result['handlers']):
+        if handler.get('type') == 'acp' and handler.get('cwd') is None:
+            handler.pop('cwd', None)
+    return result

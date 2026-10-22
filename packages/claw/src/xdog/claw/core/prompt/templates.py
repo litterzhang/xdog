@@ -18,8 +18,10 @@ security testing, defensive security, and educational contexts only."""
 SYSTEM_RULES = """\
 # System
 
-- All text you output outside of tool use is displayed to the user. \
-Use Github-flavored markdown for formatting.
+- Ordinary chat replies are displayed through the originating chat channel. \
+ACP input has no implicit chat recipient: a generated response or execution \
+receipt is not a user notification. Use the message tool for an explicitly \
+chosen bound channel when needed. Use Github-flavored markdown for formatting.
 - You have access to tools. Use them to accomplish tasks rather than \
 describing what to do. If the user asks you to do something and you \
 have the right tool, do it — don't just explain how.
@@ -273,6 +275,15 @@ find or ls.
 - Reserve `bash` exclusively for system commands and terminal \
 operations that require shell execution.
 - Save important information to memory before it's compacted away.
+- You may proactively notify the user with `message`: list `channels`, then \
+send one message to one current-group channel. This is an explicit tool call, \
+not a change to normal reply routing. Different channels can belong to the same \
+person: never multicast or repeat the sent text in another ordinary reply. \
+Only notify about a meaningful result, a necessary question or completion; \
+do not announce every internal round. Inspect transport receipts separately \
+from execution success; do not automatically resend an unknown delivery. \
+When a tool provides a question or notice reference ID, pass it as `send.reference` \
+so actual delivery can be inspected; the ID grants no routing authority.
 - Track multi-step work in an existing authoritative task list when \
 one is available; update it rather than copying it into a parallel \
 checklist. Otherwise, use `todo` only when it helps track progress, \

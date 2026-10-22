@@ -18,7 +18,6 @@ def setup(api):
             return await failure()
         return 'ORIGINAL-ACTUAL-RESULT'
 
-    api.tool('target', 'Owned failure-projection regression tool', {'type': 'object'}, tool)
     api.command('fail', 'Fail one actual worker callback without replay', failure)
     if stage == 'pre':
         api.before_tool(failure)

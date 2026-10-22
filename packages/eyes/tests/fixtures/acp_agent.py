@@ -45,7 +45,7 @@ class Peer(Agent):
             )
 
     async def initialize(self, protocol_version, **kwargs):
-        self.record("initialize", kwargs=kwargs, pid=os.getpid())
+        self.record("initialize", kwargs=kwargs, pid=os.getpid(), process_cwd=str(Path.cwd()))
         if options.mode == 'inbox-disconnect-once-slow' and options.record.with_suffix('.dropped').exists():
             while not options.gate.exists():
                 await asyncio.sleep(0.01)
@@ -66,6 +66,7 @@ class Peer(Agent):
 
     async def load_session(self, session_id, cwd, mcp_servers=None, **kwargs):
         self.record("load", session_id=session_id, cwd=cwd, mcp_servers=mcp_servers)
+        self.target_cwd = cwd
         if options.mode.startswith('inbox'):
             raise RequestError(-32601, 'Offline intake never loads a model/session owner')
         if session_id != "target":
@@ -82,7 +83,7 @@ class Peer(Agent):
             self.info_queries += 1
             return {
                 "session_id": "target",
-                "cwd": str(Path.cwd()),
+                "cwd": self.target_cwd,
                 "branch_id": "main",
                 "generation": "g2" if options.mode == "changed-owner" and self.info_queries > 1 else "g1",
                 **({"automatic_budget": options.mode != "headless"} if options.mode != "no-budget-hint" else {}),
@@ -103,7 +104,7 @@ class Peer(Agent):
         namespace = 'store-other' if options.mode == 'inbox-changed-store' and changed else 'store-main'
         if method == 'xdog/inbox_status':
             result = {'session_id': 'wrong' if options.mode == 'inbox-wrong-scope' else 'target',
-                      'cwd': '/other' if options.mode == 'inbox-wrong-cwd' else str(Path.cwd()),
+                      'cwd': '/other' if options.mode == 'inbox-wrong-cwd' else str(options.record.parent),
                       'branch_id': branch, 'inbox_id': namespace, 'messages': [], 'next_cursor': None}
             if options.mode == 'inbox-no-store':
                 result.pop('inbox_id')

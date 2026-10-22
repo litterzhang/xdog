@@ -27,7 +27,6 @@ def setup(api):
         return messages
 
     api.command('inspect', 'Inspect the actual session name without a model call', inspect)
-    api.tool('inspect', 'Read invocation-owned session name; never mutate it', {'type': 'object'}, tool)
     api.on('session_start', started)
 
     api.before_tool(pre)

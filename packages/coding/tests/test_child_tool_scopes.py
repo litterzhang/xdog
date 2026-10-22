@@ -74,7 +74,11 @@ class ScopedProvider:
 
 @asynccontextmanager
 async def host_owner(tmp_path, monkeypatch, host, *, mode='allow-all', action='read', item='a'):
-    monkeypatch.setattr('xdog.agent.capabilities.runtime.discover', lambda scope: ())
+    monkeypatch.setattr('xdog.agent.capabilities.runtime.discover',
+                        lambda scope: ())
+    application_scope = host == 'coding_application'
+    if application_scope:
+        host = 'coding'
     app = None
     if host == 'coding':
         session, contexts = create(tmp_path, mode)
@@ -86,10 +90,14 @@ async def host_owner(tmp_path, monkeypatch, host, *, mode='allow-all', action='r
     async def open_(host):
         return binding
     provider = SimpleNamespace(name='sample', tool_names=('sample',), requirements=(), open=open_)
-    monkeypatch.setattr('xdog.agent.capabilities.runtime.discover', lambda scope: (provider,))
-    capabilities = CapabilitySet('session' if host == 'coding' else 'group')
+    monkeypatch.setattr('xdog.agent.capabilities.runtime.discover',
+                        lambda scope: (provider,) if scope == ('application' if application_scope else
+                                                             'session' if host == 'coding' else 'group') else ())
+    capabilities = CapabilitySet('application' if application_scope else 'session' if host == 'coding' else 'group')
     await capabilities.start(object())
-    if host == 'coding':
+    if application_scope:
+        session.application_capabilities = capabilities
+    elif host == 'coding':
         session.capabilities = capabilities
     else:
         session._runtime.capabilities = capabilities
@@ -123,7 +131,7 @@ def profile(**extra):
     return {'tools': ['sample'], 'tool_scopes': {'sample': {'ids': ['a']}}, **extra}
 
 
-@pytest.mark.parametrize('host', ['coding', 'claw'])
+@pytest.mark.parametrize('host', ['coding', 'coding_application', 'claw'])
 async def test_explicit_scoped_capability_runs_in_ordinary_child_and_persists_only_data(tmp_path, monkeypatch, host):
     async with host_owner(tmp_path, monkeypatch, host) as (session, binding, contexts):
         identifier = await session.children.runtime.start('work', config=profile())
@@ -147,7 +155,7 @@ async def test_explicit_scoped_capability_runs_in_ordinary_child_and_persists_on
         assert len(binding.effects) == 1
 
 
-@pytest.mark.parametrize('host', ['coding', 'claw'])
+@pytest.mark.parametrize('host', ['coding', 'coding_application', 'claw'])
 @pytest.mark.parametrize('failure', ['missing_scope', 'invalid_scope', 'unsupported', 'unselected', 'forged'])
 async def test_scope_failure_precedes_child_catalog_agent_and_model(tmp_path, monkeypatch, host, failure):
     async with host_owner(tmp_path, monkeypatch, host) as (session, binding, contexts):
@@ -172,7 +180,7 @@ async def test_scope_failure_precedes_child_catalog_agent_and_model(tmp_path, mo
         assert not session.children.extensions.owners
 
 
-@pytest.mark.parametrize('host', ['coding', 'claw'])
+@pytest.mark.parametrize('host', ['coding', 'coding_application', 'claw'])
 @pytest.mark.parametrize('restriction', ['scope', 'action', 'child_readonly', 'parent_readonly'])
 async def test_scoped_tools_do_not_bypass_scope_actions_or_readonly(tmp_path, monkeypatch, host, restriction):
     async with host_owner(tmp_path, monkeypatch, host, action='write',
@@ -190,6 +198,7 @@ async def test_scoped_tools_do_not_bypass_scope_actions_or_readonly(tmp_path, mo
         assert 'error' in str(result['messages']).lower() or 'read-only' in str(result['messages'])
 
 
+@pytest.mark.parametrize('host', ['coding', 'coding_application'])
 @pytest.mark.parametrize('mode,access,action,requires_approval,approval,effects', [
     ('deny', 'inherit', 'read', False, None, 1),
     ('deny', 'inherit', 'write', False, None, 0),
@@ -201,8 +210,8 @@ async def test_scoped_tools_do_not_bypass_scope_actions_or_readonly(tmp_path, mo
     ('allow-all', 'read-only', 'write', False, None, 0),
 ])
 async def test_coding_scope_uses_existing_approval_and_effect_policy(
-        tmp_path, monkeypatch, mode, access, action, requires_approval, approval, effects):
-    async with host_owner(tmp_path, monkeypatch, 'coding', mode=mode, action=action) as (session, binding, contexts):
+        tmp_path, monkeypatch, host, mode, access, action, requires_approval, approval, effects):
+    async with host_owner(tmp_path, monkeypatch, host, mode=mode, action=action) as (session, binding, contexts):
         binding.requires_approval = requires_approval
         requests = []
         if approval:
@@ -218,8 +227,8 @@ async def test_coding_scope_uses_existing_approval_and_effect_policy(
             assert requests[0].effect.access == action
 
 
-@pytest.mark.parametrize('host', ['coding', 'claw'])
-@pytest.mark.parametrize('revoke', ['readonly', 'identity', 'validator'])
+@pytest.mark.parametrize('host', ['coding', 'coding_application', 'claw'])
+@pytest.mark.parametrize('revoke', ['readonly', 'identity', 'validator', 'provider_identity', 'scope_owner'])
 async def test_scope_executor_rechecks_after_async_validation(tmp_path, monkeypatch, host, revoke):
     async with host_owner(tmp_path, monkeypatch, host, action='write') as (session, binding, contexts):
         validations = []
@@ -232,6 +241,15 @@ async def test_scope_executor_rechecks_after_async_validation(tmp_path, monkeypa
                 elif revoke == 'identity':
                     session.agent.set_tools(tuple(replace(tool) if tool is binding.tool else tool
                                                   for tool in session.agent.state.tools))
+                elif revoke == 'provider_identity':
+                    binding.tools = (replace(binding.tool),)
+                elif revoke == 'scope_owner':
+                    if host == 'coding_application':
+                        session.application_capabilities = CapabilitySet('application')
+                    elif host == 'coding':
+                        session.capabilities = CapabilitySet('session')
+                    else:
+                        session._runtime.capabilities = CapabilitySet('group')
                 else:
                     binding.valid = False
         binding.on_validate = on_validate
@@ -241,7 +259,7 @@ async def test_scope_executor_rechecks_after_async_validation(tmp_path, monkeypa
         assert not binding.effects
 
 
-@pytest.mark.parametrize('host', ['coding', 'claw'])
+@pytest.mark.parametrize('host', ['coding', 'coding_application', 'claw'])
 async def test_followup_rebuild_revalidates_scope_and_current_authority(tmp_path, monkeypatch, host):
     async with host_owner(tmp_path, monkeypatch, host) as (session, binding, contexts):
         identifier = await session.children.runtime.start('work', config=profile())
@@ -262,7 +280,7 @@ async def test_followup_rebuild_revalidates_scope_and_current_authority(tmp_path
         assert len(binding.effects) == 2 and len(contexts) == before
 
 
-@pytest.mark.parametrize('host', ['coding', 'claw'])
+@pytest.mark.parametrize('host', ['coding', 'coding_application', 'claw'])
 async def test_scoped_advertisement_intersects_action_selection_without_parent_controls(tmp_path, monkeypatch, host):
     async with host_owner(tmp_path, monkeypatch, host) as (session, binding, contexts):
         identifier = await session.children.runtime.start('work', config=profile(tool_actions={'sample': ['read']}))
@@ -276,7 +294,7 @@ async def test_scoped_advertisement_intersects_action_selection_without_parent_c
         assert len(binding.effects) == 1
 
 
-@pytest.mark.parametrize('host', ['coding', 'claw'])
+@pytest.mark.parametrize('host', ['coding', 'coding_application', 'claw'])
 @pytest.mark.parametrize('revoke', [None, 'scope', 'parent_tool'])
 async def test_restored_child_scopes_are_data_only_and_revalidated_before_input_persistence(
         tmp_path, monkeypatch, host, revoke):
@@ -284,7 +302,7 @@ async def test_restored_child_scopes_are_data_only_and_revalidated_before_input_
         identifier = await session.children.runtime.start('work', config=profile())
         await session.children.runtime.control('wait', identifier)
         await session.children.runtime.aclose()
-        if host == 'coding':
+        if host.startswith('coding'):
             session._load_children()
         else:
             from xdog.claw.core.persistence.session_preparation import children
@@ -312,9 +330,10 @@ async def test_restored_child_scopes_are_data_only_and_revalidated_before_input_
             assert len(binding.effects) == len(binding.calls) == 2
 
 
+@pytest.mark.parametrize('host', ['coding', 'coding_application'])
 @pytest.mark.parametrize('revoke', ['permission', 'access', 'selection', 'effect'])
-async def test_scoped_capability_cannot_borrow_authority_changed_during_approval(tmp_path, monkeypatch, revoke):
-    async with host_owner(tmp_path, monkeypatch, 'coding', mode='ask', action='write') as (session, binding, contexts):
+async def test_scoped_capability_cannot_borrow_authority_changed_during_approval(tmp_path, monkeypatch, host, revoke):
+    async with host_owner(tmp_path, monkeypatch, host, mode='ask', action='write') as (session, binding, contexts):
         requests = []
         def approve(identifier, request):
             requests.append(request)
@@ -335,7 +354,7 @@ async def test_scoped_capability_cannot_borrow_authority_changed_during_approval
         assert requests and not binding.effects
 
 
-@pytest.mark.parametrize('host', ['coding', 'claw'])
+@pytest.mark.parametrize('host', ['coding', 'coding_application', 'claw'])
 async def test_modified_saved_scope_cannot_expand_original_schema_ceiling(tmp_path, monkeypatch, host):
     async with host_owner(tmp_path, monkeypatch, host) as (session, binding, contexts):
         identifier = await session.children.runtime.start('work', config=profile())
@@ -348,7 +367,7 @@ async def test_modified_saved_scope_cannot_expand_original_schema_ceiling(tmp_pa
         # accepting this broader current selection must retain the old ceiling.
         record['config']['tool_scopes']['sample']['ids'].append('b')
         session.children.store.save(record)
-        if host == 'coding':
+        if host.startswith('coding'):
             session._load_children()
         else:
             from xdog.claw.core.persistence.session_preparation import children
@@ -364,3 +383,35 @@ async def test_modified_saved_scope_cannot_expand_original_schema_ceiling(tmp_pa
         assert len(binding.effects) == 1
         assert contexts[before].tools[0].parameters['properties']['id']['enum'] == ['a']
         assert 'b' not in contexts[before].tools[0].parameters['properties']['id']['enum']
+
+
+@pytest.mark.parametrize('host', ['coding', 'coding_application', 'claw'])
+async def test_scope_owner_replacement_during_factory_cannot_commit_child_admission(tmp_path, monkeypatch, host):
+    async with host_owner(tmp_path, monkeypatch, host) as (session, binding, contexts):
+        original = binding.delegate_child_tool
+        async def replace_owner(actual, spec, scope):
+            scoped = await original(actual, spec, scope)
+            # The tool object remains in the real parent's selection. Even a
+            # successor scope using that exact object is not the original owner.
+            scope_name = 'application' if host == 'coding_application' else 'session' if host == 'coding' else 'group'
+            successor = CapabilitySet(scope_name)
+            await successor.start(object())
+            if host == 'coding_application':
+                session.application_capabilities = successor
+            elif host == 'coding':
+                session.capabilities = successor
+            else:
+                session._runtime.capabilities = successor
+            return scoped
+        monkeypatch.setattr(binding, 'delegate_child_tool', replace_owner)
+        try:
+            with pytest.raises(ValueError, match='owner retired'):
+                await session.children.runtime.start('must not adopt successor scope', config=profile())
+            assert not contexts and not binding.effects
+            assert not session.children.runtime.snapshot()['children']
+            assert not session.children.store.load()
+            assert not session.children.snapshots and not session.children.scoped_tools
+        finally:
+            owner = (session.application_capabilities if host == 'coding_application' else
+                     session.capabilities if host == 'coding' else session._runtime.capabilities)
+            await owner.aclose()

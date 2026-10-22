@@ -60,7 +60,7 @@ async def test_owned_commit_responsive_and_no_unadmitted_disk_or_runtime_change(
         elif ending == 'withdraw':
             allowed[0] = False
         elif ending == 'changed':
-            session.agent.set_tools((*session.agent.state.tools, AgentTool(name='new', parameters={})))
+            session.agent.set_tools((*session.agent.local_tools, AgentTool(name='new', parameters={})))
         await asyncio.sleep(.02)
         assert not work.done() and session._tool_selection_changing
         release.set()

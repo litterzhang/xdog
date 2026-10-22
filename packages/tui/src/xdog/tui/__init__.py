@@ -98,7 +98,7 @@ from xdog.tui.utils import (
     wrap_text_with_ansi,
 )
 
-__version__ = "2.4.7"
+__version__ = "2.4.8"
 
 __all__ = [
     "BrowserRequest",

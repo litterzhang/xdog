@@ -5,7 +5,7 @@ import asyncio
 import hashlib
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, replace
@@ -14,7 +14,7 @@ from typing import Any, ParamSpec, TypeVar
 
 from xdog.agent.async_work import run_owned, wait_owned
 
-from .codec import decode_task, json_text
+from .codec import decode_task, json_text, read_json
 from .files import TaskFiles, _read, directory
 from .host import OperationContext, OwnerRetired, require_user
 from .models import TASK_STATES, Goal, Task, identity, text
@@ -29,6 +29,7 @@ class GoalService:
                  on_change: Callable[[], None] = lambda: None) -> None:
         self.store, self.valid, self.on_change = store, valid, on_change
         self.info: Callable[[], dict[str, Any]] = lambda: {}
+        self.message_delivery: Callable[[str], Awaitable[dict[str, Any]]] | None = None
         self._lock = asyncio.Lock()
         self._closed = False
         self._close_task: asyncio.Task[None] | None = None
@@ -130,6 +131,8 @@ class GoalService:
                      version: int | None = None, **values: Any) -> Goal:
         async with self._lock:
             goal = await self._selected(identifier)
+            if action == 'wait' and values.get('until', 'user') not in {'user', 'tasks'}:
+                raise ValueError('Goal wait supports only user or tasks; host faults do not change Goal state')
             if goal.status in {'completed', 'cleared'} and action != 'clear':
                 raise ValueError('Completed/historical Goal is read-only; create a new Goal')
             if action == 'activate':
@@ -144,6 +147,17 @@ class GoalService:
                     raise ValueError('Activate only releases waiting; a paused Goal requires actual user resume')
             if version is not None and (type(version) is not int or version != goal.version):
                 raise ValueError('Goal version changed; re-read before updating')
+            same_question = (action == 'wait' and goal.status == 'waiting' and goal.wait_for == 'user'
+                             and bool(goal.question) and values.get('until', 'user') == 'user'
+                             and not set(values) - {'until', 'reason', 'question', 'impact', 'resume_when'}
+                             and all(values.get(name) == getattr(goal, name)
+                                     for name in ('question', 'impact', 'resume_when')))
+            if same_question:
+                text(values.get('reason', goal.reason), empty=True)
+                if values.get('reason', goal.reason) == goal.reason:
+                    # Exact ACK-loss replay is a read of the original wait, not
+                    # authority to alter it. No revision, new reference or wake.
+                    return goal
             if action == 'resume':
                 if goal.status != 'paused':
                     raise ValueError('Resume only restores paused Goals; use activate for a satisfied wait')
@@ -163,8 +177,20 @@ class GoalService:
             elif action in {'pause', 'wait', 'activate', 'resume', 'complete', 'clear'}:
                 status = {'pause': 'paused', 'wait': 'waiting', 'activate': 'active', 'resume': 'active',
                           'complete': 'completed', 'clear': 'cleared'}[action]
-                if set(values) - {'reason', 'summary', 'until'}:
+                allowed = {'pause': {'reason'}, 'wait': {'reason', 'until', 'question', 'impact', 'resume_when'},
+                           'activate': {'reason'}, 'resume': set(), 'complete': {'summary'}, 'clear': {'reason'}}
+                if set(values) - allowed[action]:
                     raise ValueError('Invalid Goal lifecycle fields')
+                question_fields = ('question', 'impact', 'resume_when')
+                user_wait = action == 'wait' and values.get('until', 'user') == 'user'
+                if user_wait:
+                    for name in question_fields:
+                        if name not in values:
+                            raise ValueError(f'wait(user) missing required field: {name}')
+                        text(values[name])
+                elif set(values) & set(question_fields):
+                    raise ValueError('question/impact/resume_when are only supported for wait(user)')
+                changes.update({name: values[name] if user_wait else '' for name in question_fields})
                 changes.update(status=status, reason=values.get('reason', ''),
                                summary=values.get('summary', goal.summary),
                                wait_for=values.get('until', 'user') if action == 'wait' else '')
@@ -176,7 +202,7 @@ class GoalService:
             self._check()
             await self.store.put(current, expected_version=goal.version, wake=action == 'resume',
                                  check=self._captured_check(),
-                                 action=action if action != 'update' else '', context=context)
+                                 action=action if action != 'update' and not same_question else '', context=context)
             self.on_change()
             return current
 
@@ -281,7 +307,10 @@ class GoalService:
         """Project current eligibility without rewriting transport history or receipts."""
         info = dict(self.info())
         delivery = info.get('delivery', {})
-        if delivery.get('status') == 'deferred' and (goal is None or not remindable(goal)):
+        if delivery.get('goal_id') and (goal is None or delivery['goal_id'] != goal.id):
+            info['last_delivery'] = dict(delivery)
+            info['delivery'] = {'status': 'idle', 'reason': 'Delivery belongs to a previous Goal'}
+        elif delivery.get('status') == 'deferred' and (goal is None or not remindable(goal)):
             reason = ('No current Goal' if goal is None else f'Goal waits for {goal.wait_for}'
                       if goal.status == 'waiting' else f'Goal is {goal.status}')
             info['last_delivery'] = dict(delivery)
@@ -307,7 +336,14 @@ class GoalService:
             reason, requires_user = goal.reason or f'Goal waits for {goal.wait_for}', True
         else:
             execution, delivery = info.get('execution', {}), info.get('delivery', {})
-            if delivery.get('status') == 'unknown':
+            faults = info.get('runtime_faults', [])
+            if faults:
+                fault = faults[-1]
+                action, source, reason, requires_user = (
+                    'inspect_delivery' if fault['source'] == 'delivery' else 'inspect_execution',
+                    fault['source'], fault['error'] or 'Inspect the original failure; do not replay blindly',
+                    fault['source'] == 'delivery' or fault['status'] in {'interrupted', 'unknown'})
+            elif delivery.get('status') == 'unknown':
                 action, source, reason, requires_user = (
                     'inspect_delivery', 'delivery', 'Reminder outcome is unknown; do not replay blindly', True)
             elif execution.get('state') in {'unavailable', 'closing'}:
@@ -335,7 +371,57 @@ class GoalService:
                 action, source, reason = 'await_owner_available', 'delivery', 'Reminder delivery is deferred'
             elif goal.status == 'waiting':
                 action, reason = 'inspect_tasks', goal.reason or 'Goal waits for task facts'
-        return {'action': action, 'source': source, 'reason': reason, 'requires_user': requires_user}
+        owner = ('user' if requires_user else 'host' if source in {'execution', 'delivery'}
+                 else 'task_workers' if goal is not None and goal.status == 'waiting' else 'main_agent')
+        if action == 'host_recovery':
+            owner = 'host'
+        return {'action': action, 'owner': owner, 'source': source, 'reason': reason, 'requires_user': requires_user}
+
+    async def _question(self, goal: Goal) -> dict[str, Any] | None:
+        """Read-only correlation to actual host output facts; never sends or releases a wait."""
+        if goal.status != 'waiting' or goal.wait_for != 'user':
+            return None
+        reference = await self.store.question_reference(goal)
+        delivery: dict[str, Any] = {'status': 'unavailable', 'outputs': [],
+                                    'reason': 'Host message delivery query is not available'}
+        if reference is None:
+            delivery['reason'] = 'Original question reference not recorded; delivery cannot be correlated'
+        elif self.message_delivery is not None:
+            def detached(value: dict[str, Any]) -> dict[str, Any]:
+                if not isinstance(value, dict):
+                    raise ValueError('Invalid host message delivery facts')
+                value = dict(value)
+                # Hosts may omit outputs when no correlation/reader exists. This
+                # preserves untracked/unavailable, never proves nothing was sent.
+                if value.get('status') in {'untracked', 'unavailable'}:
+                    value.setdefault('outputs', [])
+                if (value.get('status') not in {
+                        'delivered', 'pending', 'unknown', 'partial', 'cancelled', 'untracked', 'unavailable'}
+                        or not isinstance(value.get('outputs'), list)
+                        or any(not isinstance(item, dict) for item in value['outputs'])
+                        or value['status'] == 'delivered' and not value['outputs']):
+                    raise ValueError('Invalid host message delivery facts')
+                if value['status'] == 'delivered':
+                    for output in value['outputs']:
+                        text(output.get('id'))
+                        if output.get('status') != 'delivered':
+                            raise ValueError('Delivered aggregate requires delivered output receipts')
+                return read_json(json_text(value, maximum=65536))
+            self._check()
+            try:
+                async with asyncio.timeout(5):
+                    facts = await self.message_delivery(reference)
+                    delivery = await self._io(detached, facts)
+            except OwnerRetired:
+                raise
+            except Exception:
+                # Failure/absence is not an empty output journal or proof of not-sent.
+                delivery = {'status': 'unavailable', 'outputs': [],
+                            'reason': 'Host message delivery facts unavailable or invalid'}
+            self._check()
+        return {'id': reference, 'text': goal.question, 'impact': goal.impact, 'resume_when': goal.resume_when,
+                'availability': 'recorded' if goal.question else 'not_recorded', 'delivery': delivery,
+                'notice': 'Saving a question is not proof of delivery to the user'}
 
     async def summary(self, identifier: str = '', *, for_agent: bool = False) -> dict[str, Any]:
         """Native /goal status and model default: facts, counts, bounded previews.
@@ -363,6 +449,12 @@ class GoalService:
                                      'workspace': str(files.root), 'plan_path': str(files.root / 'plan.md'),
                                      'task_dir': str(files.tasks_dir),
                                      'last_transition': await self.store.last_transition(goal)}
+            value['question'] = await self._question(goal)
+            if value['question'] is not None:
+                question = value['question']
+                value['question_record'] = {
+                    'id': question['id'], 'availability': question['availability'],
+                    'delivery_status': question['delivery']['status'], 'notice': question['notice']}
             if detail:
                 tasks = await self._io(files.list)
                 value.update(tasks=await self._io(lambda: [asdict(task) for task in tasks]),
@@ -372,6 +464,7 @@ class GoalService:
                 value.update(report_path=str(files.progress_path),
                              latest_report=await self._io(files.latest_report))
             info = self._status_info(goal)  # Local host snapshots only; no endpoint/network probing.
+            info['runtime_faults'] = (await self.store.wake_state(goal.id))['faults']
             if not detail:
                 value['next'] = self._next_fact(goal, info, for_agent=for_agent)
             return {**value, **info}

@@ -7,7 +7,7 @@ import json
 
 import httpx
 import pytest
-from xdog.agent.mcp import McpManager
+from xdog.agent.mcp import McpRegistry
 from xdog.agent.mcp.client_capabilities import RootCapability, reverse_response
 from xdog.agent.mcp.config import McpServerConfig
 from xdog.agent.mcp.http import HttpClient
@@ -26,7 +26,7 @@ def sampling(params=None, identifier="unsupported-sampling"):
 def test_sampling_public_implementation_and_manager_registration_are_absent(tmp_path):
     for name in ("sampling", "sampling_owner", "sampling_executor", "sampling_context"):
         assert importlib.util.find_spec("xdog.agent.mcp." + name) is None
-    manager = McpManager({}, tmp_path)
+    manager = McpRegistry({}, tmp_path)
     for name in ("register_sampling", "answer_sampling", "detach_sampling", "_sampling"):
         assert not hasattr(manager, name)
     assert manager._thread is None  # No model, transport, helper or background loop on construction.
@@ -75,7 +75,7 @@ async def test_modern_sampling_whole_round_refuses_without_model_review_private_
 
 async def test_owned_stdio_sampling_receives_explicit_refusal_and_reader_stays_live(tmp_path):
     configs, log = reverse_peer_config(tmp_path)
-    manager = McpManager(configs, tmp_path)
+    manager = McpRegistry(configs, tmp_path)
     try:
         await manager.connect("owned")
         client = manager._clients["owned"]

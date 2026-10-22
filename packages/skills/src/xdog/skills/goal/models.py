@@ -62,6 +62,10 @@ class Goal:
     created_at: float = 0
     updated_at: float = 0
 
+    question: str = ''
+    impact: str = ''
+    resume_when: str = ''
+
     def __post_init__(self) -> None:
         identity(self.id)
         text(self.title, maximum=1024)
@@ -70,12 +74,21 @@ class Goal:
         if self.status not in GOAL_STATES:
             raise ValueError('Invalid Goal status')
         number(self.version)
+        # 'host' is decode-only historical v2 data. Service/tools and store
+        # admission reject new host waits; decoding never activates old work.
         if self.wait_for not in {'', 'user', 'tasks', 'host'}:
             raise ValueError('Invalid Goal wait condition')
         if self.status != 'waiting' and self.wait_for:
             raise ValueError('Only a waiting Goal has a wait condition')
         text(self.reason, empty=True)
         text(self.summary, empty=True)
+        for value in (self.question, self.impact, self.resume_when):
+            text(value, empty=True)
+        if any((self.question, self.impact, self.resume_when)):
+            if self.status != 'waiting' or self.wait_for != 'user':
+                raise ValueError('Only wait(user) may hold a question')
+            for value in (self.question, self.impact, self.resume_when):
+                text(value)
         if any(type(v) not in (int, float) or not math.isfinite(v) or v < 0
                for v in (self.created_at, self.updated_at)):
             raise ValueError('Invalid Goal timestamp')

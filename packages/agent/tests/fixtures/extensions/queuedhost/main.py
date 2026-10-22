@@ -24,7 +24,6 @@ def setup(api):
 
     api.command('request', 'Idle commands cannot borrow active-run queue authority', command)
     api.command('pending', 'Read only whether original owner has queued messages', pending)
-    api.tool('request', 'Request reviewed same-run input without borrowing a draft', {'type': 'object'}, request)
 
     async def provider(model, context, options):
         last = context['messages'][-1]

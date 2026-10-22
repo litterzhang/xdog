@@ -27,15 +27,16 @@ from xdog.agent import (
 )
 from xdog.agent.access import AccessScope, AccessState
 from xdog.agent.agent import Agent
-from xdog.agent.capabilities.runtime import CapabilitySet
+from xdog.agent.capabilities import ApplicationPort, CapabilityAssembly, CapabilitySet
 from xdog.agent.child_config import parse_child_start
 from xdog.agent.extensions.command_result import ExtensionCommandResult
 from xdog.agent.extensions.dialogs import DialogBroker
 from xdog.agent.extensions.runtime import ExtensionRuntime
 from xdog.agent.extensions.state import ExtensionEntries, validate_entries
 from xdog.agent.history import history_points, validate_checkpoint
-from xdog.agent.mcp import McpManager
+from xdog.agent.mcp import McpRegistry
 from xdog.agent.tool_effects import ToolEffect
+from xdog.agent.tools import ToolContext, ToolRegistry
 from xdog.agent.types import HandledInput, InputTransformFn, TransformContextFn
 from xdog.ai.types import (
     AssistantMessage,
@@ -187,14 +188,14 @@ class AgentSession:
     session_data: SessionData
     session_manager: SessionManager
     settings: SettingsManager
-    tool_registry: Any  # kept for backward compat, may be None
+    tool_registry: ToolRegistry | None
     bash: Any  # kept for backward compat, may be None
     working_dir: Path
     context_window: int = MAX_CONTEXT_TOKENS
     max_prompt_tokens: int = 0
     model_info: Model | None = None
     permissions: PermissionManager = field(default_factory=PermissionManager)
-    mcp: McpManager | None = None
+    mcp: McpRegistry | None = None
     event_bus: EventBus = field(default_factory=get_event_bus)
     access: AccessScope = field(init=False)
     children: CodingChildren = field(init=False)
@@ -215,9 +216,13 @@ class AgentSession:
     _sdk_disposing: bool = field(default=False, init=False, repr=False)
     _close_receipt: Future[None] | None = field(default=None, init=False, repr=False)
     _resource_closing: Future[None] | None = field(default=None, init=False, repr=False)
-    _retired_resources: list[tuple[CodingChildren, ExtensionRuntime, McpManager | None]] = field(
+    _retired_resources: list[tuple[CodingChildren, ExtensionRuntime, McpRegistry | None]] = field(
         default_factory=list, init=False, repr=False)
     capabilities: CapabilitySet = field(default_factory=lambda: CapabilitySet('session'), init=False, repr=False)
+    application_capabilities: CapabilitySet = field(
+        default_factory=lambda: CapabilitySet('application'), init=False, repr=False)
+    _application_host: ApplicationPort = field(default_factory=ApplicationPort, init=False, repr=False)
+    _application_started: bool = field(default=False, init=False, repr=False)
     _retired_capability_tools: list[AgentTool] = field(default_factory=list, init=False, repr=False)
     _capability_host: Any = field(default=None, init=False, repr=False)
     _capability_loop: asyncio.AbstractEventLoop | None = field(default=None, init=False, repr=False)
@@ -225,6 +230,7 @@ class AgentSession:
     _retired_capabilities: list[tuple[asyncio.AbstractEventLoop, CapabilitySet]] = field(
         default_factory=list, init=False, repr=False)
     _capability_start: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
+    _capability_start_owner: CapabilitySet | None = field(default=None, init=False, repr=False)
     _user_prompt_messages: dict[int, UserMessage] = field(default_factory=dict, init=False, repr=False)
     _authorized_messages: dict[int, UserMessage] = field(default_factory=dict, init=False, repr=False)
     _user_operation_authorized: bool = field(default=False, init=False, repr=False)
@@ -245,10 +251,14 @@ class AgentSession:
     _project_files: tuple[Any, ...] = field(default=(), init=False, repr=False)
     _project_directory: Path | None = field(default=None, init=False, repr=False)
     _active_skills: frozenset[str] = field(default=frozenset(), init=False, repr=False)
+    _extensions_initialized: bool = field(default=False, init=False, repr=False)
     _tool_selection_restore_pending: bool = field(default=False, init=False, repr=False)
     _tool_selection_retiring: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        if self.tool_registry is None:
+            self.tool_registry = ToolRegistry()
+        self.tool_registry.replace_source("inventory", self.agent.local_tools)
         self._refresh_session_hint()
         # Restore session-level settings
         if self.session_data.settings:
@@ -268,12 +278,13 @@ class AgentSession:
         self.agent.set_after_tool_call(self._after_tool_call)
         if self.mcp is None:
             from xdog.coding.config import get_data_dir
-            self.mcp = McpManager(self.settings.mcp_servers, self.working_dir,
+            self.mcp = McpRegistry(self.settings.mcp_servers, self.working_dir,
                                   credential_dir=get_data_dir() / "mcp-credentials",
                                   credential_backend=self.settings.mcp_credential_backend)
+        self.agent.set_mcp_registry(self.mcp)
 
         if self.session_data.active_tools is not None:
-            # Block model tool availability until configured extension inventory
+            # Block model tool availability until configured host inventory
             # is restored. A saved empty list must never become defaults.
             self.agent.set_active_tools([], expected_revision=self.agent.tool_selection_revision)
             self._tool_selection_restore_pending = True
@@ -297,20 +308,18 @@ class AgentSession:
     async def _transform_user_input(self, message: UserMessage, source: str,
                                     cancel: asyncio.Event | None = None) -> UserMessage | HandledInput:
         authorized = self._user_prompt_messages.get(id(message)) is message
-        try:
-            if self._base_input_transform is not None:
-                value = await self._base_input_transform(message, source, cancel)
-                if isinstance(value, HandledInput):
-                    return value
-                message = value
-            value = await self.extensions.input(message, source, channel="coding")
-            if authorized and isinstance(value, UserMessage):
-                self._authorized_messages[id(value)] = value
-            return value
-        finally:
-            await self._sync_extension_tools()
+        if self._base_input_transform is not None:
+            value = await self._base_input_transform(message, source, cancel)
+            if isinstance(value, HandledInput):
+                return value
+            message = value
+        value = await self.extensions.input(message, source, channel="coding")
+        if authorized and isinstance(value, UserMessage):
+            self._authorized_messages[id(value)] = value
+        return value
 
     def _load_extensions(self, prepared: ExtensionRuntime | None = None) -> None:
+        self._extensions_initialized = prepared is not None
         data = self.session_data
         branch = data.active_branch
         def persist(value: dict[str, Any]) -> None:
@@ -363,7 +372,7 @@ class AgentSession:
             raise ValueError('Session inspection tool name is reserved for its actual host binding')
         tool = create_tool(self)
         self._session_info_tool = tool
-        self.agent.set_tools((*[item for item in self.agent.state.tools if item is not previous], tool))
+        self._publish_tools((*[item for item in self.agent.local_tools if item is not previous], tool))
 
     def _extension_session_name(self) -> dict[str, str] | None:
         from xdog.agent.session_name import name_snapshot
@@ -387,9 +396,9 @@ class AgentSession:
     def _load_children(self) -> None:
         from xdog.agent.children import RESERVED_TOOLS
         self.children = CodingChildren(self)
-        base = tuple(tool for tool in self.agent.state.tools if tool.name not in RESERVED_TOOLS
+        base = tuple(tool for tool in self.agent.local_tools if tool.name not in RESERVED_TOOLS
                      and not any(tool is value for value in self._retired_capability_tools))
-        self.agent.set_tools((*base, *self.children.tools))
+        self._publish_tools((*base, *self.children.tools))
         self._retired_capability_tools.clear()
 
     def _children_idle(self) -> None:
@@ -424,69 +433,96 @@ class AgentSession:
         return json.dumps(result, indent=2)
 
     async def _extension_context(self, messages: list[AgentMessage]) -> list[AgentMessage]:
-        try:
-            if self._base_context_transform is not None:
-                messages = await self._base_context_transform(messages)
-            # The SDK supplies run-owned turn skills before this transform.
-            result = await self.extensions.transform(messages)
-            return result
-        finally:
-            await self._sync_extension_tools()
+        if self._base_context_transform is not None:
+            messages = await self._base_context_transform(messages)
+        # The SDK supplies run-owned turn skills before this transform.
+        result = await self.extensions.transform(messages)
+        return result
 
     async def complete_command(self, command: str, prefix: str, identity: str, *,
                                timeout: float = 1, argument_input: dict[str, Any] | None = None) -> dict[str, Any]:
         """Read current registered completion data without command/model/UI authority."""
-        try:
-            return await self.extensions.complete_command(command, prefix, identity, timeout=timeout,
-                                                          argument_input=argument_input)
-        finally:
-            await self._sync_extension_tools()
+        return await self.extensions.complete_command(command, prefix, identity, timeout=timeout,
+                                                      argument_input=argument_input)
 
     async def initialize_capabilities(self) -> None:
-        """Open installed providers on this session's existing execution owner."""
+        """Open installed providers on this session's existing execution owner.
+
+        Startup may overlap owner navigation or shutdown while doing disk IO.
+        Pin the original inventory before suspension; never attach its result
+        to a successor owner, or publish tools after the parent has retired.
+        """
         await self._settle_retired_capabilities()
+        if self._sdk_disposing:
+            return
+        selected = self.capabilities
         if self._capability_start is None:
+            identity = (self.session_id, self.session_data.active_branch, self.working_dir)
+            children = self.children
+            def current() -> bool:
+                return (not self._sdk_disposing and self.capabilities is selected and self.children is children
+                        and identity == (self.session_id, self.session_data.active_branch, self.working_dir))
             async def start() -> None:
                 from xdog.coding.core.capability_ports import SessionCapabilityHost
-                if self._capability_host is None:
-                    self._capability_host = await SessionCapabilityHost.open(self)
+                if not current():
+                    return
+                # Retirement must be able to join this inventory even while its
+                # host's first disk read has not completed yet.
                 self._capability_loop = asyncio.get_running_loop()
-                await self.capabilities.start(self._capability_host)
-                self._capabilities_started = bool(self.capabilities.providers)
-                self.capabilities.tools  # Pin retiring definitions before provider attach.
-                self.capabilities.attach(self._capability_host.parent())
-                existing = tuple(tool for tool in self.agent.state.tools if not self.capabilities.owns_tool(tool))
-                additions = tuple(tool for tool in self.capabilities.tools
-                                  if not any(tool is value for value in existing))
-                if any(tool.name == value.name for tool in additions for value in existing):
-                    raise ValueError("Capability tool name already owned; refusing replacement")
-                replacement = (*existing, *additions)
-                original = self.agent.state.tools
-                if (len(original) != len(replacement)
-                        or {id(tool) for tool in original} != {id(tool) for tool in replacement}):
-                    self.agent.set_tools(replacement)
-                await self.capabilities.flush()
+                await self.application_capabilities.start(self._application_host)
+                self._application_started = bool(self.application_capabilities.providers)
+                if not current():
+                    return
+                host = self._capability_host
+                if host is None:
+                    host = await SessionCapabilityHost.open(self)
+                    if not current():
+                        return
+                    self._capability_host = host
+                if not current():
+                    return
+                await selected.start(host)
+                if not current():
+                    return
+                parent = host.parent()
+                if not parent.valid():
+                    return  # Normal concurrent shutdown, not a provider failure.
+                self._capabilities_started = bool(selected.providers)
+                selected.tools  # Pin retiring definitions before provider attach.
+                selected.attach(parent)
+                self._publish_tools(self.capability_assembly.compose_tools(self.agent.local_tools))
+                if self._extensions_initialized and self._tool_selection_restore_pending:
+                    self._restore_active_tools()
+                await self._persist_tool_retirement()
+                await selected.flush()
+                await self.application_capabilities.flush()
+            self._capability_start_owner = selected
             self._capability_start = asyncio.create_task(start())
         from xdog.agent.async_work import wait_owned
         opening = self._capability_start
+        opening_owner = self._capability_start_owner
         try:
             await wait_owned(opening)
         finally:
             if opening.done() and self._capability_start is opening:
                 self._capability_start = None
+                self._capability_start_owner = None
+        if opening_owner is not self.capabilities and not self._sdk_disposing:
+            # A successor activation may have joined an old in-flight startup.
+            # Restore that successor too, without waiting for a human turn.
+            await self.initialize_capabilities()
 
     def _retire_capabilities(self) -> None:
         if self._capability_host is not None:
             self._capability_host.retire()
         owner = self.capabilities
         self._retired_capability_tools.extend(owner.owned_tools)
-        self.agent.set_tools(tuple(tool for tool in self.agent.state.tools
-                                   if not owner.owns_tool(tool)))
         loop = self._capability_loop
         if loop is not None:
             self._retired_capabilities.append((loop, owner))
             if not loop.is_closed():
                 loop.call_soon_threadsafe(lambda: asyncio.create_task(owner.aclose()))
+        self._publish_tools(tuple(tool for tool in self.agent.local_tools if not owner.owns_tool(tool)))
         self.capabilities = CapabilitySet('session')
         self._capability_host = None
         self._capability_loop = None
@@ -507,39 +543,40 @@ class AgentSession:
                              message='Retired Coding capabilities failed to close')
 
     async def initialize_extensions(self) -> None:
-        try:
-            if self.extensions.enabled or self.extensions.commands():
-                from xdog.agent.async_work import run_owned
-                from xdog.coding.core.slash_commands import command_reservations
-                builtins, skills = await run_owned(command_reservations)
-                self.extensions.reserve_commands(builtins, skill_commands=skills)
-                await self.extensions.initialize()
-            if self.agent.state.model.startswith("ext-") and not self.agent.state.is_streaming:
-                self.model_info = self.extensions.provider_model(self.agent.state.model)
-                if self.model_info is not None:
-                    self.context_window = self.model_info.context_window
-                    self.max_prompt_tokens = self.model_info.max_prompt_tokens
-                    self.agent.set_model_capabilities(context_window=self.context_window,
-                        max_prompt_tokens=self.max_prompt_tokens,
-                        supports_tool_calls=self.model_info.supports_tool_calls)
-        finally:
-            await self._sync_extension_tools()
+        if self.extensions.enabled or self.extensions.commands():
+            from xdog.agent.async_work import run_owned
+            from xdog.coding.core.slash_commands import command_reservations
+            builtins, skills = await run_owned(command_reservations)
+            self.extensions.reserve_commands(builtins, skill_commands=skills)
+            await self.extensions.initialize()
+        if self.agent.state.model.startswith("ext-") and not self.agent.state.is_streaming:
+            self.model_info = self.extensions.provider_model(self.agent.state.model)
+            if self.model_info is not None:
+                self.context_window = self.model_info.context_window
+                self.max_prompt_tokens = self.model_info.max_prompt_tokens
+                self.agent.set_model_capabilities(context_window=self.context_window,
+                    max_prompt_tokens=self.max_prompt_tokens,
+                    supports_tool_calls=self.model_info.supports_tool_calls)
+        self._extensions_initialized = True
         if self._tool_selection_restore_pending:
             self._restore_active_tools()
             await self._persist_tool_retirement()
 
-    async def _sync_extension_tools(self) -> None:
-        from xdog.coding.core.session_info import TOOL_NAME
-        if any(tool.name == TOOL_NAME for tool in self.extensions.tools()):
-            raise ValueError('Extension cannot replace the host session inspection binding')
-        self.extensions.sync_tools(self.agent)
-        await self._persist_tool_retirement()
+    def _publish_tools(self, tools: tuple[AgentTool, ...] | list[AgentTool]) -> None:
+        """Publish local inventory, including caller-owned SDK injections.
+
+        CapabilityAssembly and the actual child/session bindings determine
+        replacement by identity. MCP is bound independently through McpRegistry.
+        """
+        assert self.tool_registry is not None
+        self.tool_registry.replace_source("inventory", tools)
+        self.tool_registry.publish(self.agent)
 
     async def _persist_tool_retirement(self) -> None:
         """Persist only narrowing after inventory changes; never grant a new selection."""
         from xdog.agent.async_work import run_owned
         if self._tool_selection_restore_pending:
-            return  # Temporary startup mask is not retirement of the saved extension inventory.
+            return  # Temporary startup mask is not retirement of the saved host inventory.
         selected, data = self.agent.active_tool_selection, self.session_data
         saved = data.active_tools
         if selected is None or saved is None or not set(selected) < set(saved):
@@ -566,6 +603,12 @@ class AgentSession:
             self._tool_selection_retiring = False
 
     def _restore_active_tools(self) -> None:
+        # Extension-model bootstrap runs before application/session publication.
+        # Its temporary inventory must not retire a user's saved choices.
+        if any(owner.providers and not owner.started for owner in self.capability_assembly.sets):
+            self.agent.set_active_tools([], expected_revision=self.agent.tool_selection_revision)
+            self._tool_selection_restore_pending = True
+            return
         configured = {tool.name for tool in self.agent.state.tools}
         saved = self.session_data.active_tools
         selected = None if saved is None else tuple(name for name in saved if name in configured)
@@ -640,23 +683,19 @@ class AgentSession:
             return output
         finally:
             self._user_operation_authorized = previous_authority
-            await self._sync_extension_tools()
 
     async def _after_tool_call(self, ctx: AfterToolCallContext, cancel: asyncio.Event | None = None
                                ) -> AfterToolCallResult | None:
+        if not self.extensions.enabled or ctx.is_error:
+            return None  # A post hook cannot turn a denied/failed call into success.
+        if any(not isinstance(part, TextContent) for part in ctx.result.content):
+            return None  # Preserve non-text content rather than silently dropping it.
+        text = "\n".join(part.text for part in ctx.result.content if isinstance(part, TextContent))
         try:
-            if not self.extensions.enabled or ctx.is_error:
-                return None  # A post hook cannot turn a denied/failed call into success.
-            if any(not isinstance(part, TextContent) for part in ctx.result.content):
-                return None  # Preserve non-text content rather than silently dropping it.
-            text = "\n".join(part.text for part in ctx.result.content if isinstance(part, TextContent))
-            try:
-                result = await self.extensions.post(ctx.tool_call.name, ctx.args, text)
-            except Exception:
-                return None  # The original actual result remains visible after a post-hook error.
-            return AfterToolCallResult(content=(TextContent(text=result),)) if result != text else None
-        finally:
-            await self._sync_extension_tools()
+            result = await self.extensions.post(ctx.tool_call.name, ctx.args, text)
+        except Exception:
+            return None  # The original actual result remains visible after a post-hook error.
+        return AfterToolCallResult(content=(TextContent(text=result),)) if result != text else None
 
     async def _tool_effect(self, ctx: BeforeToolCallContext) -> ToolEffect:
         """Describe the actual live binding, never model-supplied permission labels."""
@@ -669,7 +708,7 @@ class AgentSession:
         active = tuple(tool for tool in self.agent.active_tools if tool.name == ctx.tool_call.name)
         supplied = tuple(tool for tool in ctx.context.tools or () if tool.name == ctx.tool_call.name)
         if len(active) == len(supplied) == 1 and active[0] is supplied[0]:
-            effect = self.capabilities.tool_effect(active[0], dict(ctx.args))
+            effect = self.capability_assembly.tool_effect(active[0], dict(ctx.args))
             if effect is not None:
                 return effect
         args = dict(ctx.args)
@@ -690,46 +729,43 @@ class AgentSession:
                     and len([tool for tool in self.agent.active_tools if tool.name == TOOL_NAME]) == 1
                     and any(tool is selected for tool in self.agent.active_tools)
                     and ctx.context.tools is not None and any(tool is selected for tool in ctx.context.tools))
-        try:
-            if ctx.tool_call.name == TOOL_NAME and not session_query():
-                return BeforeToolCallResult(block=True, reason="Session inspection binding is unavailable")
-            if self.access.state.read_only and not session_query() and (await self._tool_effect(ctx)).access != 'read':
-                return BeforeToolCallResult(block=True, reason="Host access scope is read-only")
-            if self.extensions.enabled:
-                await self.extensions.event("tool_start", {"tool_name": ctx.tool_call.name})
-                from xdog.ai.utils.validation import validate_tool_arguments
-                try:
-                    effective = await self.extensions.pre(ctx.tool_call.name, dict(ctx.args))
-                    if effective is None:
-                        return BeforeToolCallResult(block=True, reason="Extension vetoed this tool call")
-                    tool = next(tool for tool in self.agent.state.tools if tool.name == ctx.tool_call.name)
-                    if tool.validate_arguments is not None:
-                        checked = tool.validate_arguments(effective)
-                        if inspect.isawaitable(checked):
-                            await checked
-                    elif not validate_tool_arguments(effective, tool.parameters).valid:
-                        raise ValueError("Extension rewrote parameters outside the tool schema")
-                    ctx.args.clear()
-                    ctx.args.update(effective)
-                except Exception as exc:
-                    return BeforeToolCallResult(block=True, reason=str(exc))
-            if ctx.tool_call.name == TOOL_NAME:
-                return None if session_query() else BeforeToolCallResult(
-                    block=True, reason="Session inspection binding changed during validation")
-            effect = await self._tool_effect(ctx)
-            if self.access.state.read_only and effect.access != 'read':
-                return BeforeToolCallResult(block=True, reason="Host access scope is read-only")
-            if self.permissions.mode in {"ask", "deny"} and self.children.approval_free_control(ctx):
-                return None
-            result = await self.permissions.before_tool_call(ctx, cancel, effect=effect)
-            current_effect = await self._tool_effect(ctx)
-            if current_effect != effect:
-                return BeforeToolCallResult(block=True, reason="Tool effect binding changed during approval")
-            if self.access.state.read_only and current_effect.access != 'read':
-                return BeforeToolCallResult(block=True, reason="Host access became read-only during approval")
-            return result
-        finally:
-            await self._sync_extension_tools()
+        if ctx.tool_call.name == TOOL_NAME and not session_query():
+            return BeforeToolCallResult(block=True, reason="Session inspection binding is unavailable")
+        if self.access.state.read_only and not session_query() and (await self._tool_effect(ctx)).access != 'read':
+            return BeforeToolCallResult(block=True, reason="Host access scope is read-only")
+        if self.extensions.enabled:
+            await self.extensions.event("tool_start", {"tool_name": ctx.tool_call.name})
+            from xdog.ai.utils.validation import validate_tool_arguments
+            try:
+                effective = await self.extensions.pre(ctx.tool_call.name, dict(ctx.args))
+                if effective is None:
+                    return BeforeToolCallResult(block=True, reason="Extension vetoed this tool call")
+                tool = next(tool for tool in self.agent.state.tools if tool.name == ctx.tool_call.name)
+                if tool.validate_arguments is not None:
+                    checked = tool.validate_arguments(effective)
+                    if inspect.isawaitable(checked):
+                        await checked
+                elif not validate_tool_arguments(effective, tool.parameters).valid:
+                    raise ValueError("Extension rewrote parameters outside the tool schema")
+                ctx.args.clear()
+                ctx.args.update(effective)
+            except Exception as exc:
+                return BeforeToolCallResult(block=True, reason=str(exc))
+        if ctx.tool_call.name == TOOL_NAME:
+            return None if session_query() else BeforeToolCallResult(
+                block=True, reason="Session inspection binding changed during validation")
+        effect = await self._tool_effect(ctx)
+        if self.access.state.read_only and effect.access != 'read':
+            return BeforeToolCallResult(block=True, reason="Host access scope is read-only")
+        if self.permissions.mode in {"ask", "deny"} and self.children.approval_free_control(ctx):
+            return None
+        result = await self.permissions.before_tool_call(ctx, cancel, effect=effect)
+        current_effect = await self._tool_effect(ctx)
+        if current_effect != effect:
+            return BeforeToolCallResult(block=True, reason="Tool effect binding changed during approval")
+        if self.access.state.read_only and current_effect.access != 'read':
+            return BeforeToolCallResult(block=True, reason="Host access became read-only during approval")
+        return result
 
     @_idle_change
     def access_control(self, read_only: bool) -> AccessState:
@@ -823,9 +859,14 @@ class AgentSession:
     # -- Public API --
 
     @property
+    def capability_assembly(self) -> CapabilityAssembly:
+        """Compose current inventories without taking ownership of either lifetime."""
+        return CapabilityAssembly(self.capabilities, self.application_capabilities)
+
+    @property
     def active_skills(self) -> frozenset[str]:
         """Slugs whose instructions are currently in the system prompt."""
-        return self._active_skills | self.capabilities.default_skills
+        return self.capability_assembly.active_skills(self._active_skills)
 
     @_idle_change
     def activate_skill(self, slug: str) -> None:
@@ -867,7 +908,7 @@ class AgentSession:
         from functools import partial
 
         from xdog.agent.async_work import settle_cleanup
-        async def close(resources: tuple[CodingChildren, ExtensionRuntime, McpManager | None]) -> None:
+        async def close(resources: tuple[CodingChildren, ExtensionRuntime, McpRegistry | None]) -> None:
             children, extensions, mcp = resources
             try:
                 await settle_cleanup(children.runtime.aclose, extensions.aclose,
@@ -889,7 +930,7 @@ class AgentSession:
     async def _close_sdk_owner(self, controller: SessionController) -> None:
         from xdog.coding.core.session_lifecycle import close_input_owner
         await close_input_owner(self, controller, resources=(self._sdk_disposing
-            or self._capabilities_started or bool(self._retired_capabilities)))
+            or self._capabilities_started or self._application_started or bool(self._retired_capabilities)))
 
     async def _acquire_owner(self) -> tuple[SessionController, bool]:
         from xdog.coding.core.sessions.controller import SessionController
@@ -920,7 +961,8 @@ class AgentSession:
                         # Optional callback capabilities outlive an individual
                         # SDK await/asyncio.run; retain the one controller's own
                         # supported loop, never a second controller or daemon.
-                        controller.start(own_thread=bool(self.capabilities.providers))
+                        controller.start(own_thread=bool(
+                            self.capabilities.providers or self.application_capabilities.providers))
                         self._sdk_controller = controller
                     self._sdk_users += 1
                     return self._sdk_controller, True
@@ -930,7 +972,8 @@ class AgentSession:
         with self._sdk_lock:
             self._sdk_users -= 1
             if (self._sdk_users == 0 and self._sdk_controller is controller
-                    and not self._capabilities_started and not self._retired_capabilities):
+                    and not self._capabilities_started and not self._application_started
+                    and not self._retired_capabilities):
                 self._sdk_controller = None
                 self._sdk_closing = controller.close()
                 return self._sdk_closing
@@ -1093,7 +1136,7 @@ class AgentSession:
                 if history_started:
                     await self._persist_async()
             try:
-                await settle_cleanup(stop_run, self._sync_extension_tools, history,
+                await settle_cleanup(stop_run, self._persist_tool_retirement, history,
                                      message='Coding turn finalization failed')
             finally:
                 self._expire_turn_scoped_skills()
@@ -1404,7 +1447,6 @@ class AgentSession:
         if not directory.is_dir():
             raise ValueError("Saved session workspace is unavailable")
         from xdog.coding.core.sdk import _as_thinking_level
-        from xdog.coding.core.tools import get_default_tools
         settings = SettingsManager(global_path=self.settings._global_path, project_dir=directory)
         settings.load_session_settings(loaded.settings)
         selected_model = loaded.model or settings.model or self.agent.state.model
@@ -1415,16 +1457,14 @@ class AgentSession:
                     and selected_metadata.supported_efforts is not None
                     and selected_thinking not in selected_metadata.supported_efforts):
                 raise ValueError('Saved model does not advertise saved thinking level; no fallback')
-        tools = self.agent.state.tools
-        if self.mcp is not None:
-            aliases = {tool.name for tool in self.mcp.tools()}
-            tools = tuple(tool for tool in tools if tool.name not in aliases)
+        tools = self.agent.local_tools
         from xdog.coding.config import get_data_dir
-        next_mcp = McpManager(settings.mcp_servers, directory,
+        next_mcp = McpRegistry(settings.mcp_servers, directory,
                               credential_dir=get_data_dir() / "mcp-credentials",
                               credential_backend=settings.mcp_credential_backend)
         if directory != self.working_dir:
-            defaults = {tool.name: tool for tool in get_default_tools(directory)}
+            assert self.tool_registry is not None
+            defaults = {tool.name: tool for tool in self.tool_registry.create_tools(context=ToolContext(cwd=directory))}
             tools = tuple(defaults.get(tool.name, tool) for tool in tools)
         try:
             staged = self._stage_navigation(settings, directory, loaded.session_id, selected_model,
@@ -1432,8 +1472,7 @@ class AgentSession:
             selected_model = staged.model.id if staged.model is not None else selected_model
             loaded.extension_entries = staged.runtime.entries.snapshot()
             if loaded.active_tools is not None:
-                available = {tool.name for tool in tools if tool.name not in self.extensions.aliases}
-                available.update(tool.name for tool in staged.runtime.tools())
+                available = {tool.name for tool in tools}
                 loaded.active_tools = tuple(name for name in loaded.active_tools if name in available)
             loaded.model = selected_model
             loaded.settings = {**settings.session_to_dict(), 'model': selected_model,
@@ -1453,8 +1492,7 @@ class AgentSession:
             raise
         self._retire_context_resources(mcp=True)
         self.mcp = next_mcp
-        old_ext = self.extensions.aliases
-        tools = tuple(tool for tool in tools if tool.name not in old_ext)
+        self.agent.set_mcp_registry(next_mcp)
         self.access.close()
         self.session_data = loaded
         self.working_dir = directory
@@ -1464,13 +1502,13 @@ class AgentSession:
         self._active_skills = frozenset()
         self._push_skills()
         self.agent.replace_messages(list(loaded.messages))
-        self.agent.set_tools(tools)
+        self._publish_tools(tuple(tool for tool in tools
+                                  if not any(tool is item for item in self._retired_capability_tools)))
         self._load_access()
         self._load_extensions(staged.runtime)
         self._load_children()
         self.agent.set_tool_context({**self.agent.tool_context, "fs_workspace": str(directory)})
         self._publish_navigation_model(selected_model, staged.model, staged.thinking)
-        self.extensions.sync_tools(self.agent)
         self._restore_active_tools()
         self._rebuild_system_prompt()
         return True
@@ -1575,8 +1613,7 @@ class AgentSession:
         staged: StagedExtensions = self._stage_navigation(target_settings, self.working_dir, self.session_id,
             selected_model, branch.get('extension_entries', {}), restored_access.to_dict())
         if restored_tools is not None:
-            available = {tool.name for tool in self.agent.state.tools if tool.name not in self.extensions.aliases}
-            available.update(tool.name for tool in staged.runtime.tools())
+            available = {tool.name for tool in self.agent.state.tools}
             restored_tools = tuple(name for name in restored_tools if name in available)
         selected_model = staged.model.id if staged.model is not None else selected_model
         target_settings.set_session_model(selected_model)
@@ -1614,8 +1651,6 @@ class AgentSession:
         self.access.close()
         self.session_data.access = restored_access.to_dict()
         self._retire_context_resources()
-        old_extensions = self.extensions.aliases
-        self.agent.set_tools(tuple(tool for tool in self.agent.state.tools if tool.name not in old_extensions))
         self.session_data.compaction = restored_compaction
         self.session_data.extension_entries = committed.extension_entries
         self.session_data.active_branch = branch_id
@@ -1626,7 +1661,6 @@ class AgentSession:
         self._publish_navigation_model(selected_model, staged.model, staged.thinking)
         self._active_skills = frozenset()
         self._push_skills()
-        self.extensions.sync_tools(self.agent)
         self._restore_active_tools()
         self._rebuild_system_prompt()
         return True
@@ -1875,7 +1909,7 @@ class AgentSession:
     async def manage_mcp_auth(self, server: str, action: str, receipt: str, lease: str,
                               alive: Callable[[], bool]) -> dict[str, Any]:
         if self.mcp is None:
-            raise ValueError("MCP manager unavailable")
+            raise ValueError("MCP registry unavailable")
         if action in {"status", "cancel"}:
             return await self.mcp.manage_auth(server, action, receipt, lease=lease, alive=alive)
         if self._auth_changing or self.agent.is_streaming:
@@ -1884,11 +1918,9 @@ class AgentSession:
         with self.children.runtime.idle_scope():
             self._auth_changing = True
             try:
-                old = {tool.name for tool in self.mcp.tools()}
                 result = await self.mcp.manage_auth(server, action, receipt, lease=lease, alive=alive)
                 if action == "forget":
-                    self.agent.set_tools((*[tool for tool in self.agent.state.tools if tool.name not in old],
-                                          *self.mcp.tools()))
+                    self.agent.sync_mcp_tools()
                     await self._persist_tool_retirement()
                 return result
             finally:
@@ -1898,7 +1930,7 @@ class AgentSession:
     async def manage_mcp(self, action: str, server: str = "") -> str:
         """Explicit idle-only process trust and tool-set management, not a second loop."""
         if self.mcp is None:
-            raise ValueError("MCP manager unavailable")
+            raise ValueError("MCP registry unavailable")
         if action in {"list", "status"}:
             import json
             return json.dumps(self.mcp.status(), indent=2)
@@ -1908,19 +1940,21 @@ class AgentSession:
         if action not in {"connect", "disconnect", "refresh"} or not server:
             raise ValueError("Usage: /mcp [list|connect SERVER|disconnect SERVER|refresh SERVER]")
         with self.children.runtime.idle_scope():
-            old = {tool.name for tool in self.mcp.tools()}
-            base = tuple(tool for tool in self.agent.state.tools if tool.name not in old)
             if action == "connect":
                 await self.mcp.connect(server)
             elif action == "disconnect":
                 await self.mcp.disconnect(server)
             else:
                 await self.mcp.refresh(server)
-            external = self.mcp.tools()
-            if {tool.name for tool in base} & {tool.name for tool in external}:
+            try:
+                self.agent.sync_mcp_tools()
+            except ValueError:
+                # SDK owns cross-registry name validation. Retire this failed
+                # connection rather than leave a colliding server admitted.
                 await self.mcp.disconnect(server)
-                raise ValueError("MCP tool alias collides with a local tool; server was disconnected")
-            self.agent.set_tools((*base, *external))
+                self.agent.sync_mcp_tools()
+                await self._persist_tool_retirement()
+                raise
             await self._persist_tool_retirement()
             return f"MCP {server}: {action} completed; external tools remain subject to current permission policy"
 

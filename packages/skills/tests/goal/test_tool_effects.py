@@ -22,9 +22,12 @@ REPORT = {'expected_version': 0, 'progress': 'baseline', 'completed': [], 'evide
     ({'action': 'tasks', 'status': 'completed', 'worker': 'main'}, ToolEffect('read', 'tool_data')),
     ({'action': 'plan', 'content': ''}, ToolEffect('write', 'tool_data')),
     ({'action': 'report', 'report': REPORT}, ToolEffect('write', 'tool_data')),
-    ({'action': 'task_update', 'task': {'id': 'one', 'expected_version': 0}}, ToolEffect('write', 'tool_data')),
+    ({'action': 'task_update', 'task': {'id': 'one', 'title': 'One', 'expected_version': 0}},
+     ToolEffect('write', 'tool_data')),
     *[({'action': action, **fields}, ToolEffect('write', 'tool_data', True)) for action, fields in (
-        ('create', {'title': 'Goal'}), ('update', {'version': 1}), ('wait', {'until': 'user'}),
+        ('create', {'title': 'Goal'}), ('update', {'version': 1, 'title': 'New title'}),
+        ('wait', {'until': 'user', 'question': 'Choose target?', 'impact': 'Target unknown',
+                  'resume_when': 'User selects target'}),
         ('pause', {}), ('resume', {}), ('complete', {'summary': 'done'}), ('clear', {}))],
 ])
 async def test_current_goal_effects_do_not_do_io_or_change_authority(tmp_path, monkeypatch, args, effect):
@@ -53,6 +56,10 @@ async def test_current_goal_effects_do_not_do_io_or_change_authority(tmp_path, m
 
 
 @pytest.mark.parametrize('args', [
+    {'action': 'wait'}, {'action': 'wait', 'until': 'user', 'reason': 'not a question'},
+    {'action': 'wait', 'until': 'tasks', 'question': 'not supported'},
+    {'action': 'update', 'version': 1},
+    {'action': 'task_update', 'task': {'id': 'one', 'expected_version': 0}},
     {}, {'action': []}, {'action': 'unknown'}, {'action': 'status', 'content': 'write'},
     {'action': 'summary', 'detail': True}, {'action': 'plan', 'report': REPORT},
     {'action': 'report', 'report': REPORT, 'content': 'other'},

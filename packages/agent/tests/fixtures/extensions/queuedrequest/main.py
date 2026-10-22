@@ -64,7 +64,6 @@ def setup(api):
 
 
     api.command('request', 'Idle command does not gain active-run queue authority', command)
-    api.tool('request', 'Request reviewed input to the current active run only', {'type': 'object'}, tool)
     api.on('turn_start', event)
     api.before_tool(pre)
     api.after_tool(post)

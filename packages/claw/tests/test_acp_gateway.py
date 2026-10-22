@@ -1,4 +1,4 @@
-"""Gateway opt-in ACP lifecycle does not depend on a connected TUI."""
+"""Gateway default ACP lifecycle does not depend on a connected TUI."""
 from __future__ import annotations
 
 import asyncio
@@ -21,7 +21,7 @@ def make_config(tmp_path, acp_path=""):
                       groups=(GroupDef(id="main", workspace=str(tmp_path)),))
 
 
-def test_acp_setting_round_trips_and_is_opt_in(tmp_path):
+def test_acp_address_override_round_trips_without_an_enable_switch(tmp_path):
     config = make_config(tmp_path)
     assert not config.acp_socket_path
     path = tmp_path / "config.yaml"
@@ -34,7 +34,8 @@ def test_acp_setting_round_trips_and_is_opt_in(tmp_path):
         make_config(tmp_path, "relative.sock")
 
 
-async def test_gateway_starts_and_stops_acp_with_live_completion_notice(tmp_path, monkeypatch):
+@pytest.mark.parametrize("updates", [0, 1])
+async def test_gateway_acp_completion_notice_requires_explicit_subscription(tmp_path, monkeypatch, updates):
     monkeypatch.setattr("xdog.claw.core.runtime.gateway._build_model_and_options", lambda config: (
         "test/dummy", lambda *args: EventStream.empty(AssistantMessage(content=(TextContent(text="reviewed"),)))))
 
@@ -54,18 +55,28 @@ async def test_gateway_starts_and_stops_acp_with_live_completion_notice(tmp_path
             await conn.initialize(protocol_version=PROTOCOL_VERSION)
             # Subscribe a real TUI socket to descriptive notifications, not execution ownership.
             tui_reader, tui = await asyncio.open_unix_connection(config.socket_path)
-            tui.write((json.dumps({"type": "ping", "group_id": "main", "acp_updates": 1}) + "\n").encode())
+            tui.write((json.dumps({"type": "ping", "group_id": "main", "acp_updates": updates}) + "\n").encode())
             await tui.drain()
             assert json.loads(await asyncio.wait_for(tui_reader.readline(), 5))["type"] == "pong"
             receipt = await conn.ext_method("xdog/enqueue", {
                 "session_id": "group:main", "cwd": str(tmp_path), "message_id": "gateway-event",
                 "source": "Eyes", "instruction": "Review changes", "evidence": [], "provenance": {}})
             assert receipt["status"] == "queued"
-            notification = json.loads(await asyncio.wait_for(tui_reader.readline(), 5))
-            assert notification["type"] == "acp_input_completed"
-            assert notification["message_id"] == "gateway-event"
-            assert notification["response"] == "reviewed"
-            assert notification["session_id"] == server._orchestrator.get_new_session_id("main")
+            if updates:
+                notification = json.loads(await asyncio.wait_for(tui_reader.readline(), 5))
+                assert notification["type"] == "acp_input_completed"
+                assert notification["message_id"] == "gateway-event"
+                assert notification["response"] == "reviewed"
+                assert notification["session_id"] == server._orchestrator.get_new_session_id("main")
+            else:
+                from xdog.claw.core.inputs.models import InputScope
+                inputs = await server._orchestrator.input_service()
+                record = await asyncio.wait_for(inputs.wait(InputScope("main", tmp_path), "gateway-event"), 5)
+                assert record.response == "reviewed" and record.envelope.reply is None
+                # A transport round trip after settlement observes no automatic chat push.
+                tui.write(b'{"type":"ping"}\n')
+                await tui.drain()
+                assert json.loads(await asyncio.wait_for(tui_reader.readline(), 5))["type"] == "pong"
         finally:
             for stream in (writer, tui):
                 if stream is not None:

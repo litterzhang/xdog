@@ -2,29 +2,59 @@
 from __future__ import annotations
 
 import pytest
+from xdog.agent import AgentTool
+from xdog.agent.tools import ToolContext, ToolRegistry
+from xdog.ai.types import AssistantMessage
+from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.config import ClawConfig, GroupDef
 from xdog.claw.core.runtime.gateway import _build_model_and_options, _groups_from_config
 from xdog.claw.core.runtime.group import GroupRuntime
 from xdog.claw.core.runtime.orchestrator import Orchestrator
-from xdog.claw.core.tools import create_tools, default_enabled_tools, registered_names
+from xdog.claw.core.tools import new_tool_registry
 from xdog.claw.core.types import Group
 
 
 def test_registry_distinguishes_defaults_from_no_tools():
-    assert "generate_image" in registered_names()
-    assert "generate_image" not in default_enabled_tools()
-    assert {tool.name for tool in create_tools()} == set(default_enabled_tools())
-    assert "generate_image" not in {tool.name for tool in create_tools(image_model="antigravity/image")}
-    assert create_tools(enabled=()) == []
-    assert [tool.name for tool in create_tools(enabled=("filesystem",))] == ["filesystem"]
+    registry = new_tool_registry()
+    assert isinstance(registry, ToolRegistry)
+    assert registry.registered_names() == {
+        'bash', 'filesystem', 'current_time', 'submit_result',
+        'memory', 'message', 'skill', 'todo', 'generate_image',
+    }
+    assert {'generate_image', 'submit_result'}.isdisjoint(registry.default_names())
+    assert {tool.name for tool in registry.create_tools()} == set(registry.default_names())
+    tools = registry.create_tools(context=ToolContext(image_model="antigravity/image"))
+    assert "generate_image" not in {tool.name for tool in tools}
+    assert registry.create_tools(names=()) == []
+    assert registry.create_tools(names=[]) == []
+    assert [tool.name for tool in registry.create_tools(names=("filesystem",))] == ["filesystem"]
+    assert [tool.name for tool in registry.create_tools(names=("submit_result",))] == ["submit_result"]
+    assert registry.tools == ()  # Inventory discovery/creation never publishes by itself.
+
+
+def test_groups_own_isolated_sdk_registries_and_factory_context(tmp_path):
+    first = GroupRuntime(group=Group(id='one', enabled_tools=()), data_dir=tmp_path)
+    second = GroupRuntime(group=Group(id='two', enabled_tools=()), data_dir=tmp_path)
+    seen = []
+    def factory(context: ToolContext) -> AgentTool:
+        seen.append(context)
+        return AgentTool('custom')
+    first.tool_registry.register_factory('custom', factory)
+    first._enabled_tools = ('custom',)
+    assert [tool.name for tool in first.tools] == ['custom']
+    assert seen == [ToolContext(cwd=first.workspace_dir)]
+    assert not second.tools
+    assert 'custom' not in second.tool_registry.registered_names()
+    assert 'custom' not in new_tool_registry().registered_names()
 
 
 def test_registry_requires_image_model_and_rejects_unknown_tools():
     with pytest.raises(ValueError, match="image_model configuration"):
-        create_tools(enabled=("generate_image",))
+        new_tool_registry().create_tools(names=("generate_image",))
     with pytest.raises(ValueError, match="Unknown tools"):
-        create_tools(enabled=("typo",))
-    tool = create_tools(enabled=("generate_image",), image_model="antigravity/image")[0]
+        new_tool_registry().create_tools(names=("typo",))
+    tool = new_tool_registry().create_tools(
+        names=("generate_image",), context=ToolContext(image_model="antigravity/image"))[0]
     assert tool.name == "generate_image"
     assert "antigravity/image" in tool.description
     assert "model" not in tool.parameters["properties"]
@@ -94,3 +124,25 @@ def test_gateway_cli_reports_missing_model_before_starting_daemon(tmp_path, monk
     assert result.exit_code == 1
     assert "No primary model configured" in result.output
     start.assert_not_called()
+
+
+async def test_session_retirement_disposes_only_its_original_registry_binding(tmp_path, monkeypatch):
+    monkeypatch.setattr('xdog.agent.capabilities.runtime.discover', lambda scope: ())
+    runtime = GroupRuntime(group=Group(id='main', enabled_tools=()), data_dir=tmp_path,
+                           stream_fn=lambda *_: EventStream.empty(AssistantMessage()))
+    try:
+        first = await runtime.prepare_session(allow_reset=False)
+        old_registration = first._tool_registration
+        assert runtime.tool_registry.tools == first._child_tools
+        runtime.reset_session()
+        assert runtime.tool_registry.tools == ()
+        second = await runtime.prepare_session(allow_reset=False)
+        assert runtime.tool_registry.tools == second._child_tools
+        assert second._child_tools[0] is not first._child_tools[0]
+        old_registration.close()
+        first.dispose()
+        assert runtime.tool_registry.tools == second._child_tools
+        assert tuple(second.agent.state.tools) == runtime.tool_registry.tools
+    finally:
+        await runtime.aclose()
+    assert runtime.tool_registry.tools == ()

@@ -40,4 +40,3 @@ def setup(api):
     api.on_input(input_hook)
     api.context(context_hook)
     api.on('turn_end', event)
-    api.tool('request', 'Request reviewed after-run naming', {'type': 'object'}, tool)

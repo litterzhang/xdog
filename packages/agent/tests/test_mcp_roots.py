@@ -5,7 +5,7 @@ import json
 import sys
 
 import pytest
-from xdog.agent.mcp import McpManager
+from xdog.agent.mcp import McpRegistry
 from xdog.agent.mcp.client_capabilities import RootCapability
 from xdog.agent.mcp.config import McpServerConfig
 
@@ -73,7 +73,7 @@ async def test_actual_stdio_explicit_roots_versioned_declaration_and_disconnect_
     config = {'command': sys.executable, 'args': [str(peer), str(log), 'modern' if modern else 'legacy']}
     if consent:
         config['roots'] = ROOTS
-    manager = McpManager({'owned': config}, tmp_path)
+    manager = McpRegistry({'owned': config}, tmp_path)
     try:
         assert not log.exists()
         await manager.connect('owned')
@@ -135,7 +135,7 @@ def test_internal_root_fence_cannot_expand_ceiling_or_use_stale_revision():
 async def test_config_connect_disconnect_is_only_public_root_disclosure_boundary(tmp_path):
     peer, log = tmp_path / 'peer.py', tmp_path / 'frames'
     write_peer(peer)
-    manager = McpManager({'owned': {'command': sys.executable, 'args': [str(peer), str(log), 'legacy'],
+    manager = McpRegistry({'owned': {'command': sys.executable, 'args': [str(peer), str(log), 'legacy'],
                                   'roots': ROOTS}}, tmp_path)
     try:
         assert not hasattr(manager, 'manage_roots') and not hasattr(manager, 'detach_roots')

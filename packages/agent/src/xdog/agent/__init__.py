@@ -96,12 +96,7 @@ from xdog.agent.tools import (
 )
 
 # -- Tool SPI ---------------------------------------------------------------
-from xdog.agent.tools.registry import (
-    get_registered_tools,
-    register_tool,
-    registered_tool_names,
-    unregister_tool,
-)
+from xdog.agent.tools.registry import ToolContext, ToolFactory, ToolRegistration, ToolRegistry
 
 # -- Types (hooks, callbacks, loop config) ----------------------------------
 from xdog.agent.types import (
@@ -206,10 +201,10 @@ __all__ = [
     "create_skill_tool",
     "create_web_search_tool_from_fn",
     # Tool SPI
-    "register_tool",
-    "unregister_tool",
-    "get_registered_tools",
-    "registered_tool_names",
+    "ToolContext",
+    "ToolFactory",
+    "ToolRegistration",
+    "ToolRegistry",
 ]
 
 # -- Host-backed child SDK (no child execution owner) -------------------------

@@ -4,7 +4,7 @@ from __future__ import annotations
 import importlib
 
 import pytest
-from xdog.agent.mcp import McpManager
+from xdog.agent.mcp import McpRegistry
 from xdog.coding.core.agent_session import AgentSession
 from xdog.tui.components.mcp_panel import McpPanel
 from xdog.tui.keys import KeyEvent
@@ -13,7 +13,7 @@ from xdog.tui.keys import KeyEvent
 def test_mutable_roots_review_modules_and_host_controls_are_absent():
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module('xdog.tui.components.mcp_roots_panel')
-    assert not hasattr(McpManager, 'manage_roots') and not hasattr(McpManager, 'detach_roots')
+    assert not hasattr(McpRegistry, 'manage_roots') and not hasattr(McpRegistry, 'detach_roots')
     assert not hasattr(AgentSession, 'manage_mcp_roots')
     sent = []
     panel = McpPanel(lambda *args: sent.append(args), lambda: None, lambda: None, lambda: None)

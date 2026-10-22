@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -67,6 +68,8 @@ class NativeNoticeChannel(Channel):
     def __init__(self, publish: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
         self._publish = publish
         self._closed = False
+        self._bound_group: str | None = None
+        self._bound_target: str | None = None
 
     @property
     def name(self) -> str:
@@ -77,6 +80,31 @@ class NativeNoticeChannel(Channel):
 
     async def disconnect(self) -> None:
         self._closed = True
+        self._bound_group = None
+        self._bound_target = None
+
+    def bind_group(self, group_id: str) -> None:
+        """Bind only this live connection; switching groups retires old targets."""
+        if not isinstance(group_id, str) or not group_id.strip() or "\x00" in group_id:
+            raise ValueError("Native target requires a nonempty group")
+        if self._closed:
+            return  # A disconnected endpoint cannot be revived by a late bind.
+        if group_id != self._bound_group:
+            self._bound_group = group_id
+            self._bound_target = uuid.uuid4().hex
+
+    def bound_reply(self, group_id: str) -> UserInput | None:
+        if self._closed or self._bound_group != group_id or self._bound_target is None:
+            return None
+        return UserInput(group_id=group_id, channel=self.name,
+                         metadata={"native_bound_target": self._bound_target})
+
+    def reply_context(self, original: UserInput) -> dict[str, object]:
+        # Preserve the proactive fence through host ReplyReference capture. An
+        # observer's original reply has no such marker and retains its semantics.
+        if "native_bound_target" in original.metadata:
+            return {"native_bound_target": original.metadata["native_bound_target"]}
+        return {}
 
     def accepts_group(self, group_id: str) -> bool:
         return False
@@ -88,5 +116,10 @@ class NativeNoticeChannel(Channel):
         from xdog.claw.core.outputs.delivery import DeliveryNotSent
         if self._closed:
             raise DeliveryNotSent('Original Native connection is closed')
+        if "native_bound_target" in original.metadata and (
+            original.channel != self.name or original.group_id != self._bound_group
+            or self._bound_target is None or original.metadata["native_bound_target"] != self._bound_target
+        ):
+            raise DeliveryNotSent('Original Native group binding is no longer current')
         await self._publish({'type': 'notification', 'group_id': original.group_id,
                              'notification_id': output_id, 'content': text})

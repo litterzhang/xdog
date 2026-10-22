@@ -151,80 +151,70 @@ async def test_actual_claw_tui_sends_child_commands_and_preserves_draft(tmp_path
         await server.stop()
 
 
-async def test_claw_child_group_service_executes_and_settles_on_original_host_loop(tmp_path):
+async def test_claw_child_message_without_admitted_parent_input_is_safely_refused(tmp_path):
     from xdog.claw.core.tools.tool_message import create_message_tool
-    host = asyncio.get_running_loop()
-    sent = []
+
     def stream(model, context, options):
         if context.messages[-1].role == "user":
-            message = AssistantMessage(content=(ToolCall(id="send", name="message", arguments={
-                "action": "send", "group_id": "main", "text": "child message"}),))
+            message = AssistantMessage(content=(ToolCall(id="catalog", name="message", arguments={
+                "action": "channels"}),))
         else:
             message = AssistantMessage(content=(TextContent(text="done"),))
         return EventStream.empty(message)
+
     server, _config = await setup(tmp_path, [])
     try:
         runtime = server._orchestrator._runtimes["main"]
         session = runtime.get_or_create_session(allow_reset=False)
-        async def send(group, text):
-            assert asyncio.get_running_loop() is host
-            await asyncio.sleep(0)
-            sent.append((group, text))
-        session.agent.set_tool_context({**session.agent.tool_context, "_send_fn": send})
-        session.agent.set_tools((*[tool for tool in session.agent.state.tools if tool.name != "message"],
+        assert session.agent.tool_context.get("_message_port") is None
+        session.agent.set_tools((*[tool for tool in session.agent.local_tools if tool.name != "message"],
                                 create_message_tool()))
         session.agent.set_stream_fn(stream)
-        identifier = await session.children.runtime.start("send", access="inherit")
+        identifier = await session.children.runtime.start("list channels", access="inherit")
         result = await session.children.runtime.control("wait", identifier)
-        assert result["status"] == "completed" and sent == [("main", "child message")]
-        assert "Message sent." in str(result["messages"])
+        assert result["status"] == "completed"
+        assert "requires an actual admitted host input scope" in str(result["messages"])
+        assert await (await server._orchestrator.output_service()).store.records() == []
     finally:
         await server.stop()
 
 
-@pytest.mark.parametrize("access,restricted,limit,sends", [
-    ("inherit", False, None, True),
-    ("read-only", False, None, False),
-    ("inherit", True, None, False),
-    ("inherit", False, "child", False),
-    ("inherit", False, "parent", False),
+@pytest.mark.parametrize("access,restricted,limit", [
+    ("inherit", False, None),
+    ("read-only", False, None),
+    ("inherit", True, None),
+    ("inherit", False, "child"),
+    ("inherit", False, "parent"),
 ])
-async def test_message_uses_real_channel_route_without_expanding_child_permissions(
-    tmp_path, access, restricted, limit, sends,
+async def test_child_single_channel_message_cannot_invent_scope_or_expand_permissions(
+    tmp_path, access, restricted, limit,
 ):
-    from unittest.mock import AsyncMock, Mock
+    from unittest.mock import AsyncMock
 
-    from xdog.claw.channels.base import Channel
+    from xdog.ai.types import ToolResultMessage
+    from xdog.claw.channels.tui.channel import NativeNoticeChannel
 
-    host = asyncio.get_running_loop()
-    contexts, sent = [], []
+    contexts = []
+    target, other = NativeNoticeChannel(AsyncMock()), NativeNoticeChannel(AsyncMock())
+    target.bind_group("main")
+    other.bind_group("elsewhere")
+    server, _config = await setup(tmp_path, [])
+    binding = server._orchestrator.register_reply_channel(target)
+    server._orchestrator.register_reply_channel(other)
+
     def stream(model, context, options):
         contexts.append(context)
         message = (AssistantMessage(content=(ToolCall(id="send", name="message", arguments={
-            "action": "send", "group_id": "destination", "text": "routed child message"}),))
+            "action": "send", "channel": binding, "text": "current-group child message"}),))
             if context.messages[-1].role == "user" else AssistantMessage(content=(TextContent(text="done"),)))
         return EventStream.empty(message)
 
-    async def deliver(group_id, text):
-        assert asyncio.get_running_loop() is host
-        await asyncio.sleep(0)
-        sent.append((group_id, text))
-
-    server, _config = await setup(tmp_path, [])
-    target, other = Mock(spec=Channel), Mock(spec=Channel)
-    target.accepts_group.side_effect = lambda group_id: group_id == "destination"
-    other.accepts_group.side_effect = lambda group_id: group_id == "elsewhere"
-    target.send_message = AsyncMock(side_effect=deliver)
-    other.send_message = AsyncMock()
-    server._orchestrator.add_channel(target)
-    server._orchestrator.add_channel(other)
     try:
         runtime = server._orchestrator._runtimes["main"]
         session = runtime.get_or_create_session(allow_reset=False)
         assert "message" in {tool.name for tool in session.agent.state.tools}
         assert "group_message" not in {tool.name for tool in session.agent.state.tools}
-        # Keep the actual session context -> runtime callback -> Orchestrator route.
-        assert session.agent.tool_context["_send_fn"] == server._orchestrator._send_to_channels
+        assert session.agent.tool_context.get("_message_port") is None
         session.agent.set_stream_fn(stream)
         if restricted:
             session.access.set_read_only(True)
@@ -236,21 +226,121 @@ async def test_message_uses_real_channel_route_without_expanding_child_permissio
         result = await session.children.runtime.control("wait", identifier)
         assert result["status"] == "completed"
         assert contexts and all("group_message" not in {tool.name for tool in ctx.tools} for ctx in contexts)
+        tool_result = next(message for message in contexts[-1].messages if isinstance(message, ToolResultMessage))
+        assert tool_result.is_error
         if limit is not None:
             assert all({tool.name for tool in ctx.tools} == {"current_time"} for ctx in contexts)
-        if sends:
-            assert sent == [("destination", "routed child message")]
-            target.send_message.assert_awaited_once_with("destination", "routed child message")
-            assert "Message sent." in str(result["messages"])
+            assert "not found" in str(tool_result.content)
+        elif restricted or access == "read-only":
+            assert "read-only" in str(tool_result.content)
         else:
-            assert not sent
-            target.send_message.assert_not_awaited()
-            assert "Message sent." not in str(result["messages"])
-            if restricted or access == "read-only":
-                assert "read-only" in str(result["messages"])
-        other.send_message.assert_not_awaited()
+            assert "requires an actual admitted host input scope" in str(tool_result.content)
+        assert await (await server._orchestrator.output_service()).store.records() == []
+        target._publish.assert_not_awaited()
+        other._publish.assert_not_awaited()
+    finally:
+        await target.disconnect()
+        await other.disconnect()
+        await server.stop()
+
+
+async def test_real_parent_turn_spawns_child_inheriting_message_port_and_settles_on_host_loop(tmp_path):
+    from xdog.ai.types import ToolResultMessage
+    from xdog.claw.channels.weixin.channel import WeixinChannel
+    from xdog.claw.channels.weixin.context_tokens import clear_context_tokens, set_context_token
+    from xdog.claw.core.inputs.models import InputScope
+    from xdog.claw.core.types import UserInput
+
+    from packages.claw.tests.test_weixin_application_intake import ChannelApi, sent_parts
+
+    host = asyncio.get_running_loop()
+    parent_contexts, child_contexts, child_receipts = [], [], []
+    child_id = None
+
+    def text(message):
+        return ''.join(part.text for part in message.content if isinstance(part, TextContent))
+
+    def stream(model, context, options):
+        nonlocal child_id
+        last = context.messages[-1]
+        is_parent = any(tool.name == "agent" for tool in context.tools)
+        (parent_contexts if is_parent else child_contexts).append(context)
+        if is_parent:
+            if last.role == "user":
+                response = ToolCall(id="spawn", name="agent", arguments={"action": "spawn", "access": "inherit",
+                    "task": "Send exactly one current-group Weixin message through message.channels/send",
+                    "config": {"tools": ["message"]}})
+            elif last.tool_call_id == "spawn":
+                assert not last.is_error, text(last)
+                child_id = text(last)
+                response = ToolCall(id="wait", name="agent", arguments={"action": "wait", "id": child_id})
+            else:
+                assert not last.is_error, text(last)
+                assert json.loads(text(last))["status"] == "completed"
+                response = TextContent(text="Parent display only")
+        elif last.role == "user":
+            response = ToolCall(id="catalog", name="message", arguments={"action": "channels"})
+        else:
+            assert isinstance(last, ToolResultMessage) and not last.is_error, text(last)
+            value = json.loads(text(last))
+            if last.tool_call_id == "catalog":
+                binding, = [row["id"] for row in value["channels"] if row["name"] == "weixin"]
+                response = ToolCall(id="send", name="message", arguments={
+                    "action": "send", "channel": binding, "text": "Delegated explicit message",
+                    "reference": "issue:child-42"})
+            else:
+                child_receipts.append(value)
+                response = TextContent(text="Child done, not another channel message")
+        return EventStream.empty(AssistantMessage(content=(response,)))
+
+    server, _config = await setup(tmp_path, [])
+    channel = WeixinChannel(tmp_path / "weixin", "child-outbound", "https://example.invalid", "")
+    await channel._api_client.close()
+    api = ChannelApi()
+    delivered = []
+
+    async def send(request):
+        assert asyncio.get_running_loop() is host
+        await asyncio.sleep(0)
+        delivered.append(request.msg)
+
+    api.send_message = send
+    channel._api_client = api
+    channel._user_id_map["main"] = "original-peer"
+    clear_context_tokens("child-outbound")
+    set_context_token("child-outbound", "original-peer", "original-context")
+    server._orchestrator.add_channel(channel)
+    display = []
+
+    async def show(body):
+        display.append(body)
+
+    try:
+        app = server._orchestrator
+        session = app._runtimes["main"].get_or_create_session(allow_reset=False)
+        assert session.agent.tool_context.get("_message_port") is None
+        session.agent.set_stream_fn(stream)
+        result = await asyncio.wait_for(app.route_message(
+            UserInput(group_id="main", channel="tui", content="Delegate the explicit send"),
+            message_id="parent-input", on_assistant_message=show), 10)
+        assert result is not None and not result.error and result.response_text == "Parent display only"
+        assert display == ["Parent display only"]
+        assert len(parent_contexts) == 3 and len(child_contexts) == 3
+        assert all({tool.name for tool in context.tools} == {"message"} for context in child_contexts)
+        assert len(delivered) == 1
+        assert sent_parts(delivered[0]) == ("original-peer", "original-context", "Delegated explicit message")
+        rows = await (await app.output_service()).store.records(InputScope("main", tmp_path / "workspace"))
+        row, = rows
+        assert row.status == "delivered" and delivered[0].client_id == row.id
+        assert row.envelope.message.provenance["worker"] == child_id
+        assert row.envelope.message.provenance["reference"] == "issue:child-42"
+        assert row.envelope.message.provenance["input_id"] == "parent-input"
+        assert child_receipts[0]["outputs"] == [{"id": row.id, "status": "delivered"}]
+        assert child_receipts[0]["default_reply_route_changed"] is False
+        assert session.agent.tool_context["_message_port"] is None
     finally:
         await server.stop()
+        clear_context_tokens("child-outbound")
 
 
 async def test_actual_claw_child_browser_chunked_source_search_and_context_fences(tmp_path):
@@ -331,7 +421,7 @@ async def test_claw_child_source_streams_running_progress_before_final_result(tm
                 return b"".join(data).decode()
     try:
         session = server._orchestrator._runtimes["main"].get_or_create_session(allow_reset=False)
-        session.agent.set_tools((*session.agent.state.tools,
+        session.agent.set_tools((*session.agent.local_tools,
                                  AgentTool(name="run", parameters={"type": "object"}, execute=execute)))
         session.agent.set_stream_fn(stream)
         child = await session.children.runtime.start("work", access="inherit")

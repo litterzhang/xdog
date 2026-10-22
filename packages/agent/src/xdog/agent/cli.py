@@ -130,8 +130,9 @@ async def _cmd_chat(
 ) -> None:
     """Run an interactive agent chat session."""
     import xdog.ai as ai
+    from xdog.agent._cli_host import application_agents
     from xdog.agent.helpers import stream_fn_from_provider, web_search_fn_from_provider
-    from xdog.agent.tools.registry import get_registered_tools
+    from xdog.agent.tools import ToolContext, ToolRegistry
 
     parsed_tool_ctx = _parse_tool_ctx(tool_ctx)
 
@@ -147,7 +148,7 @@ async def _cmd_chat(
 
     # Build agent
     stream_fn = stream_fn_from_provider(runtime)
-    search_fn = web_search_fn_from_provider(runtime, model_name)
+    search_fn = None if no_tools else web_search_fn_from_provider(runtime, model_name)
     opts = StreamOptions(
         thinking=thinking,  # type: ignore[arg-type]
         temperature=temperature,
@@ -159,93 +160,92 @@ async def _cmd_chat(
         options=opts,
     )
 
-    builtin_tools = get_registered_tools() if not no_tools else []
+    registry = ToolRegistry()
+    builtin_tools = registry.create_tools(context=ToolContext(cwd=Path.cwd())) if not no_tools else []
 
-    agent = Agent(
-        stream_fn,
-        config=config,
-        web_search_fn=search_fn,
-        tools=builtin_tools,
-        tool_ctx=parsed_tool_ctx,
-    )
-
-    # Session state for slash commands
-    session = _Session(agent=agent, runtime=runtime, verbose=verbose)
-
-    # One-shot or interactive
-    messages: list[str] = []
-    if message is not None:
-        if not sys.stdin.isatty():
-            stdin_text = sys.stdin.read().strip()
-            messages.append(f"{message}\n\n{stdin_text}" if stdin_text else message)
-        else:
-            messages.append(message)
-    elif not sys.stdin.isatty():
-        stdin_text = sys.stdin.read().strip()
-        if not stdin_text:
-            print("No input provided.", file=sys.stderr)
-            sys.exit(1)
-        messages.append(stdin_text)
-
-    interactive = len(messages) == 0
-
-    if interactive:
-        tool_count = len(agent.state.tools)
-        tool_info = f" with {tool_count} tools" if tool_count else ""
-        print(
-            f"Chatting with {_cyan(model_name)}{tool_info} "
-            f"(type /help for commands, /exit to quit)\n",
-            file=sys.stderr,
+    async with application_agents(stream_fn, no_tools=no_tools) as create:
+        agent = await create(
+            Path.cwd(), config=config, web_search_fn=search_fn,
+            tools=builtin_tools, tool_ctx=parsed_tool_ctx,
         )
 
-    while True:
-        if interactive:
-            try:
-                user_input = _read_multiline_input()
-            except (EOFError, KeyboardInterrupt):
-                print("\n", file=sys.stderr)
-                break
-            if not user_input.strip():
-                continue
+        # Session state for slash commands
+        session = _Session(agent=agent, runtime=runtime, verbose=verbose)
 
-            # Handle slash commands
-            handled = await session.handle_slash_command(user_input.strip())
-            if handled == "exit":
-                break
-            if handled == "handled":
-                continue
-        else:
-            if not messages:
-                break
-            user_input = messages.pop(0)
-
-        try:
-            # Build prompt with pending images
-            if session.pending_images:
-                content_parts: list[TextContent | ImageContent] = [TextContent(text=user_input)]
-                content_parts.extend(session.pending_images)
-                session.pending_images.clear()
-                stream = await agent.prompt(
-                    __import__("xdog.ai.types", fromlist=["UserMessage"]).UserMessage(
-                        content=tuple(content_parts)
-                    )
-                )
+        # One-shot or interactive
+        messages: list[str] = []
+        if message is not None:
+            if not sys.stdin.isatty():
+                stdin_text = sys.stdin.read().strip()
+                messages.append(f"{message}\n\n{stdin_text}" if stdin_text else message)
             else:
-                stream = await agent.prompt(user_input)
-
-            await _consume_agent_stream(stream, session=session)
-            if parsed_tool_ctx:
-                _print_tool_ctx(parsed_tool_ctx, verbose=verbose)
-        except KeyboardInterrupt:
-            print(f"\n{_dim('[interrupted]')}", file=sys.stderr)
-            agent.abort()
-            agent.reset_abort()
-            if not interactive:
-                sys.exit(130)
-        except Exception as exc:
-            print(f"\n{_red(f'Error: {exc}')}", file=sys.stderr)
-            if not interactive:
+                messages.append(message)
+        elif not sys.stdin.isatty():
+            stdin_text = sys.stdin.read().strip()
+            if not stdin_text:
+                print("No input provided.", file=sys.stderr)
                 sys.exit(1)
+            messages.append(stdin_text)
+
+        interactive = len(messages) == 0
+
+        if interactive:
+            tool_count = len(agent.state.tools)
+            tool_info = f" with {tool_count} tools" if tool_count else ""
+            print(
+                f"Chatting with {_cyan(model_name)}{tool_info} "
+                f"(type /help for commands, /exit to quit)\n",
+                file=sys.stderr,
+            )
+
+        while True:
+            if interactive:
+                try:
+                    user_input = _read_multiline_input()
+                except (EOFError, KeyboardInterrupt):
+                    print("\n", file=sys.stderr)
+                    break
+                if not user_input.strip():
+                    continue
+
+                # Handle slash commands
+                handled = await session.handle_slash_command(user_input.strip())
+                if handled == "exit":
+                    break
+                if handled == "handled":
+                    continue
+            else:
+                if not messages:
+                    break
+                user_input = messages.pop(0)
+
+            try:
+                # Build prompt with pending images
+                if session.pending_images:
+                    content_parts: list[TextContent | ImageContent] = [TextContent(text=user_input)]
+                    content_parts.extend(session.pending_images)
+                    session.pending_images.clear()
+                    stream = await agent.prompt(
+                        __import__("xdog.ai.types", fromlist=["UserMessage"]).UserMessage(
+                            content=tuple(content_parts)
+                        )
+                    )
+                else:
+                    stream = await agent.prompt(user_input)
+
+                await _consume_agent_stream(stream, session=session)
+                if parsed_tool_ctx:
+                    _print_tool_ctx(parsed_tool_ctx, verbose=verbose)
+            except KeyboardInterrupt:
+                print(f"\n{_dim('[interrupted]')}", file=sys.stderr)
+                agent.abort()
+                agent.reset_abort()
+                if not interactive:
+                    sys.exit(130)
+            except Exception as exc:
+                print(f"\n{_red(f'Error: {exc}')}", file=sys.stderr)
+                if not interactive:
+                    sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -539,6 +539,7 @@ def main() -> None:
 
     acp_p = sub.add_parser("acp", help="Run standard stdio Agent Client Protocol")
     acp_p.add_argument("--model", default=None)
+    acp_p.add_argument("--no-tools", action="store_true", help="Disable all tools and application capabilities")
 
     # -- chat ----------------------------------------------------------------
     chat_p = sub.add_parser("chat", help="Chat with an agent")
@@ -551,7 +552,7 @@ def main() -> None:
         "--thinking", choices=["minimal", "low", "medium", "high", "xhigh"],
         help="Thinking level",
     )
-    chat_p.add_argument("--no-tools", action="store_true", help="Disable built-in tools")
+    chat_p.add_argument("--no-tools", action="store_true", help="Disable all tools and application capabilities")
     chat_p.add_argument("--verbose", action="store_true", help="Show thinking, usage, and cost")
     chat_p.add_argument(
         "--tool-ctx",
@@ -571,7 +572,7 @@ def main() -> None:
         if sys.version_info >= (3, 15):
             parser.error("ACP currently requires Python 3.12–3.14")
         from xdog.agent.acp.cli import run
-        asyncio.run(run(args.model))
+        asyncio.run(run(args.model, no_tools=args.no_tools))
     elif args.command == "chat":
         asyncio.run(_cmd_chat(
             model_id=args.model,

@@ -56,7 +56,8 @@ async def close_resources(session: AgentSession) -> None:
                     if session._capability_start is not None:
                         await wait_owned(session._capability_start)
                 async def capabilities() -> None:
-                    await session.capabilities.aclose()
+                    await settle_cleanup(session.capabilities.aclose, session.application_capabilities.aclose,
+                                         message="Coding installed capabilities failed to close")
                 async def mcp() -> None:
                     if session.mcp is not None:
                         await session.mcp.aclose()

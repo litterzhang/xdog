@@ -1,7 +1,7 @@
 
 
 def setup(api):
-    async def illegal(args, context):
+    async def pre(name, args, context):
         current = await api.get_active_tools()
         inventory = await api.get_tool_inventory()
         if current is not None:
@@ -9,9 +9,10 @@ def setup(api):
             assert current['revision'] == inventory['selection_revision']
             assert set(inventory['active_tools']) <= set(current['active'])
         assert not hasattr(api, 'set_active_tools')
-        return 'NO-HOST-TOOL-AUTHORITY'
+        api.status('authority', 'NO-HOST-TOOL-AUTHORITY')
+        return args
+    api.before_tool(pre)
     async def inspect(args, context):
         current = await api.get_active_tools()
         return 'ACTIVE-TOOL-COUNT-' + str(len(current['active'])) if current is not None else 'UNAVAILABLE'
     api.command('inspect', 'Inspect active selection without a model call', inspect)
-    api.tool('illegal', 'Tools cannot grant themselves active-tool host authority', {'type': 'object'}, illegal)

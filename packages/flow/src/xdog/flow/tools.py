@@ -25,11 +25,13 @@ class ToolRegistry:
     """Registry mapping tool names to :class:`~agent.core.AgentTool` objects."""
 
     def __init__(self) -> None:
-        self._tools: dict[str, AgentTool] = {}
+        from xdog.agent.tools import ToolRegistry as AgentToolRegistry
+
+        self._registry = AgentToolRegistry(builtins=False)
 
     def register(self, tool: AgentTool) -> None:
         """Register *tool* by its name (replaces any existing entry)."""
-        self._tools = {**self._tools, tool.name: tool}
+        self._registry.replace_source(tool.name, (tool,))
 
     def get(self, name: str) -> AgentTool:
         """Return the tool registered under *name*.
@@ -37,14 +39,14 @@ class ToolRegistry:
         Raises :class:`~flow.errors.WorkflowValidationError` if unknown.
         """
         try:
-            return self._tools[name]
-        except KeyError:
-            known = ", ".join(sorted(self._tools)) or "<none>"
+            return next(tool for tool in self._registry.tools if tool.name == name)
+        except StopIteration:
+            known = ", ".join(sorted(tool.name for tool in self._registry.tools)) or "<none>"
             raise WorkflowValidationError(f"Unknown tool {name!r}. Known tools: {known}") from None
 
     def names(self) -> frozenset[str]:
         """Return the set of registered tool names."""
-        return frozenset(self._tools)
+        return frozenset(tool.name for tool in self._registry.tools)
 
     def resolve(self, names: Iterable[str]) -> tuple[AgentTool, ...]:
         """Resolve an iterable of tool names to a tuple of tools."""
@@ -85,9 +87,8 @@ _ECHO_TOOL = AgentTool(
 def default_registry() -> ToolRegistry:
     """Return a fresh :class:`ToolRegistry` pre-loaded with built-in tools.
 
-    Includes the demo ``echo`` tool plus every agent-package builtin registered
-    via ``agent.tools`` (``bash``, ``filesystem``, ``current_time``,
-    ``submit_result``, …).  This means a workflow node can declare
+    Includes the demo ``echo`` tool plus the SDK default tools and the
+    explicitly selected ``submit_result`` factory.  This means a workflow node can declare
     ``"tools": ["filesystem"]`` and have it resolve out of the box — including
     from the ``xdog-flow run`` CLI, which uses this registry by default.
     """
@@ -99,16 +100,17 @@ def default_registry() -> ToolRegistry:
 
 
 def _agent_builtin_tools() -> tuple[AgentTool, ...]:
-    """Return the agent-package builtin tools, or empty if unavailable.
+    """Create independent SDK default tools plus Flow's structured result tool.
 
-    Imported lazily so ``flow.tools`` has no import-time dependency on the agent
-    tool registry being populated.
+    Imported lazily; the execution owner creates its own SDK registry. No
+    import-order registration or process-global runtime is consulted.
     """
     try:
-        from xdog.agent.tools.registry import get_registered_tools
+        from xdog.agent.tools import ToolRegistry as AgentToolRegistry
     except ImportError:  # pragma: no cover - agent always present in the workspace
         return ()
-    return tuple(get_registered_tools())
+    registry = AgentToolRegistry()
+    return tuple(registry.create_tools(names=(*registry.default_names(), "submit_result")))
 
 
 # ---------------------------------------------------------------------------

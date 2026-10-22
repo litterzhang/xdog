@@ -16,7 +16,6 @@ from xdog.agent.extensions.provider_auth import ProviderAuth, bind_callback
 from xdog.agent.extensions.provider_oauth import OAuthBinding, ProviderOAuth
 from xdog.agent.extensions.shortcuts import shortcut_key
 from xdog.agent.extensions.tool_result import _UNSET, make_result
-from xdog.agent.mcp.manager import _schema
 
 
 def identifier(value: object) -> str:
@@ -31,16 +30,13 @@ async def invoke(callback: Callable[..., Any], *args: Any) -> Any:
 
 
 class ExtensionAPI:
-    """Register hooks/tools/commands and contribute bounded declarative UI text.
+    """Register hooks/commands and contribute bounded declarative UI text.
 
     Extension code is trusted code with the process user's permissions. This API
     cannot switch host planning/approval modes or start a second model loop.
     """
     def __init__(self, settings: dict[str, Any]) -> None:
         self.settings = settings
-        self.tools: dict[str, tuple[str, dict[str, Any], Callable[..., Any]]] = {}
-        self._tool_revision = 0
-        self._tool_ids: dict[str, str] = {}
         self.commands: dict[str, tuple[str, Callable[..., Any]]] = {}
         self._command_revision = 0
         self._command_public_names: dict[str, str] = {}
@@ -352,38 +348,9 @@ class ExtensionAPI:
     def after_tool(self, callback: Callable[..., Any]) -> Callable[[], None]:
         return self._hook(self.post, callback)
 
-    def _advance_tool_revision(self) -> None:
-        if self._tool_revision >= 2**53:
-            raise ValueError("Extension tool revision capacity reached")
-        self._tool_revision += 1
-
-    def tool_snapshot(self) -> dict[str, Any]:
-        return {"revision": self._tool_revision, "tools": [
-            {"name": name, "registration_id": self._tool_ids[name]} for name in self.tools]}
-
-    def tool(self, name: str, description: str, parameters: dict[str, Any], callback: Callable[..., Any], *,
-             replace: bool = False) -> Callable[[], None]:
-        name = identifier(name)
-        if (not callable(callback) or type(replace) is not bool or not isinstance(description, str)
-                or len(description.encode()) > 4000 or name in self.tools and not replace
-                or name not in self.tools and len(self.tools) >= 32
-                or any(key != name and key.lower() == name.lower() for key in self.tools)):
-            raise ValueError("Invalid/duplicate/capacity-limited extension tool")
-        entry = (description, _schema(parameters), callback)
-        self._advance_tool_revision()
-        self.tools[name] = entry
-        token = uuid.uuid4().hex
-        self._tool_ids[name] = token
-        def dispose() -> None:
-            if self._tool_ids.get(name) == token:
-                self._advance_tool_revision()
-                self.tools.pop(name)
-                self._tool_ids.pop(name)
-        return dispose
-
     def result(self, content: list[dict[str, Any]] | None = None, *, structured: Any = _UNSET,
                details: Any = _UNSET, is_error: bool = False) -> dict[str, Any]:
-        """Build bounded text/image/JSON tool data; no command execution or implicit file reads."""
+        """Build bounded text/image/JSON command artifacts; no command execution or implicit file reads."""
         return make_result(content, structured=structured, details=details, is_error=is_error)
 
     def _advance_command_revision(self) -> None:

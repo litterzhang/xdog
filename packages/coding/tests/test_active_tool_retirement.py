@@ -9,6 +9,13 @@ from packages.coding.tests.test_active_tool_persistence import close as close_co
 from packages.coding.tests.test_active_tool_persistence import create as create_coding
 
 
+@pytest.fixture(autouse=True)
+def builtin_extension_inventory_only(monkeypatch):
+    # These unit owners deliberately have no application/group startup service.
+    # Real installed inventory restoration is covered through SDK/Gateway entrypoints.
+    monkeypatch.setattr('xdog.agent.capabilities.runtime.discover', lambda scope: ())
+
+
 @pytest.mark.parametrize('host', ['coding', 'claw'])
 async def test_navigation_preserves_inventory_or_rejects_claw_route_switch(tmp_path, host):
     import asyncio

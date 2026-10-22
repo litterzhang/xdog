@@ -68,7 +68,15 @@ Keep provider/authentication, model routing, and wire-protocol adaptation separa
 
 `packages/agent/src/xdog/agent/agent.py` owns stateful conversations, lifecycle events, cancellation, steering/follow-ups, skills, and persistence snapshots. `agent_loop.py` converts history to an `xdog.ai` context, streams a response, validates and executes tool calls, appends results, and repeats until the turn ends.
 
-Coding, claw, and SDK-backed flow agent nodes reuse this runtime. Flow's external CLI backends intentionally use `CliRunner`; do not introduce a second in-process tool loop for SDK-backed nodes. Tool calls execute in parallel by default, while preparation/finalization hooks are serial. Callers enforce tool permissions through hooks—the generic tools themselves are not a security boundary. Built-ins are registered at import time and include `bash`, `filesystem`, `current_time`, and `submit_result`.
+Coding, claw, and SDK-backed flow agent nodes reuse this runtime. Flow's external CLI backends intentionally use `CliRunner`; do not introduce a second in-process tool loop for SDK-backed nodes. Tool calls execute in parallel by default, while preparation/finalization hooks are serial. Callers enforce tool permissions through hooks—the generic tools themselves are not a security boundary. Agent provides a host-owned `ToolRegistry` SDK, not a global runtime registry.
+Each host creates its own registry. The SDK supplies default factories for `bash`,
+`filesystem`, `current_time`, plus opt-in `submit_result`; imports do not register
+mutable process-global state. Capability/host tools use owner-local ToolRegistry bindings. MCP uses its own
+`McpRegistry`, consumed directly by Agent, never registered into ToolRegistry.
+Agent merges visible inventories for the same model/tool loop and host permission
+hooks; registry/config/connection handles are never restored from snapshots.
+Extension workers no longer provide model tools; they retain hooks, commands, UI
+and providers. See `docs/host-owned-tool-registry.md`.
 
 Agent's generic extension `ViewRegistry` exposes explicitly granted owner-bound
 read-only JSON snapshots through `api.read_view`, independently of TUI approval.
@@ -85,8 +93,12 @@ this generic protocol alone still grants no business view or task authority.
 `xdog.agent.capabilities` discovers trusted installed `xdog.capabilities` entry
 points and composes providers on real `session`, `group` or `application` owners.
 Discovery/metadata import is inert; snapshots never name code to import. The Goal
-provider belongs to `xdog.skills.goal.runtime`, the managed Eyes provider to
-`xdog.eyes.hosting.runtime`; clients import neither business implementation.
+provider belongs to `xdog.skills.goal.runtime`; Eyes and Flow providers belong to
+`xdog.eyes.capability` and `xdog.flow.capability`. Clients import none of these
+business implementations directly. A capability can contribute skills, tools,
+owned runtime resources and extension hooks; none is mandatory. Skill discovery
+does not activate its body or grant tools. Flow/Eyes bodies are explicitly activated.
+`CapabilityAssembly` is the shared SDK tool/skill composition API, not a new runtime.
 Public parent/child handles, immutable receipt snapshots, opaque reply strings and
 injected schema-neutral IO are the boundary, not raw client session/runtime objects.
 Role/receipt labels grant no authority. Actual tool identity, permissions, owner
@@ -189,32 +201,18 @@ namespace/status are the exact same facts used by native intake. Closing an ACP
 endpoint detaches waiters, not application execution or storage. Endpoint lifecycle does not interrupt work; explicit original-input cancellation
 and actual application shutdown/crash use their separate execution owners. No old-format upgrade is
 provided; the retired `acp/inbox.py` and shared observer store are removed.
-Managed observers own `<data_dir>/observers/journal.sqlite3`; core input receipts
-live in `<data_dir>/inputs/inbox.sqlite3`. Source cursors and immutable outboxes
-commit together; cross-store intake is original-ID idempotent handoff, not a SQL
-join or a second authority. Source stop does not withdraw accepted input or stop
-its report. `eyes cancel_notifications` is separate; actual pending withdrawal
-uses the core input owner. No operation reverses started effects. A schema-neutral
-Agent `LeasedSqlite` helper owns IO only, never domain schema or planning policy.
-Eyes accesses it through injected schema-neutral IO ports, without an Agent dependency.
-Observer journal formatv3 preserves an opaque host-encoded reply reference from the
-actual creating input/tool scope; only the host interprets the destination. Weixin reports use original account/sender/context;
-Native notices use only the original live endpoint, never a newly connected peer.
-No creator destination means not-required, not group broadcast; unavailable original
-recipient remains known-not-sent/pending. Stop notifications separately; source stop
-still does not retract accepted reports. No old journal upgrade is performed.
-The broader assistant-core refactor remains in progress: Coding now adopts the
-standalone optional Goal; both clients now supply only schema-neutral execution
-ports. Goal runtime/role/UI policy belongs to `xdog.skills.goal`; managed observation
-models/journal/recovery/tools belong to `xdog.eyes.hosting`, not Claw. Claw has optional skills/eyes/acp install extras and cold
-base/two-host evidence. The same packaged Goal display and generic owner-bound
-views are verified in both actual source and cold installed hosts. Managed
-observers now use generic Core per-message output receipts, not an aggregate
-report sender. Rebuilt cold artifacts verify the same output IDs/original peer
-across restart without model replay and both independent cancellation modes; see
-`docs/observer-message-output-verification.md`. Inert group queue controls are
-removed; final47-item audit, generic retired-owner investigation, rebuilt final
-artifacts and whole-branch review remain pending.
+Core input receipts live in `<data_dir>/inputs/inbox.sqlite3`. Eyes has its own
+shared daemon journal and delivers through ordinary ACP; Claw owns no observer
+journal, creator-reply capture, report tracker or Eyes-specific output route.
+Source cancel does not withdraw accepted input or undo model/tool effects.
+There is no `eyes cancel_notifications` action. ACP inputs carry no implicit
+chat recipient; the main Agent can use Claw's normal message tool for a verified
+currently bound destination. Ordinary output receipts remain a separate concern.
+Goal runtime/role/UI policy belongs to `xdog.skills.goal`; Eyes observation,
+recovery and delivery belong to its independent daemon. Coding and Claw use
+shared SDK capability composition while preserving real owner/permission fences.
+Earlier observer-message-output verification records describe the retired
+managed-report design, not current Eyes behavior.
 Ordinary output receipts live in `<data_dir>/outputs/journal.sqlite3`: per-message
 send attempts distinguish delivered/pending/proven-not-sent/unknown independently
 from Agent execution. Unknown sends are never automatically replayed. Native
@@ -226,10 +224,12 @@ Eyes callbacks use thin ACP intake into the application-owned Core Inbox as cano
 
 Prompt construction intentionally separates a cacheable static prefix from mutable workspace, memory and environment content. Goal facts are queried through the optional capability, never a hardcoded per-turn summary. Compaction flushes durable memory, summarizes through the LLM, archives the transcript, then replaces older history. Memory uses vector+BM25 search when optional dependencies initialize and falls back to keyword search otherwise.
 
-Importing `xdog.claw.core` intentionally registers claw-specific tools. Preserve these side-effect imports when reorganizing code.
+Claw explicitly creates its own Agent `ToolRegistry` and registers Claw-specific
+factories there. Domain imports must not mutate a process-global tool registry;
+Agent builtin tools are supplied by the SDK, not registered again by Claw.
 
-Claw optionally exposes a private Unix ACP endpoint via `acp_socket_path` or
-`gateway start --acp-socket`. `acp/backend.py` implements the shared Agent ACP
+Claw starts a private Unix ACP endpoint by default. `acp_socket_path` or
+`gateway start --acp-socket` overrides its path. `acp/backend.py` implements the shared Agent ACP
 backend with explicit `group:<id>` addresses and exact workspace validation.
 Prompt/enqueue first persist canonical session inputs in the leased group inbox,
 then the application consumer uses the existing group exclusion/active AgentSession.
@@ -239,30 +239,20 @@ Group scope intentionally follows active conversations, unlike coding's exact
 session/branch binding. Existing Claw tool policy remains unchanged. See
 `docs/claw-eyes-acp.md` for setup, scope, display and recovery limits.
 
-Claw's old TaskScheduler/task tool is removed. Installed `xdog-eyes` package
-presence automatically provides gateway-managed `eyes` create/list/status/cancel;
-there is no `eyes_enabled` setting. Claw never automatically installs the package
-or creates observers; new observers require an explicit user request. Without the
-package, base chat continues without managed Eyes. With the package installed,
-startup retains recovery of already accepted managed time observers, not ordinary
-file observation or replay of interrupted/unknown execution. The gateway reuses
-`acp_socket_path` or owns private `data_dir/acp/agent.sock`, without another daemon;
-explicit standalone ACP configuration and existing tool permissions remain unchanged.
-The host binds the current group/workspace/private ACP endpoint and owns a separate
-definition/cursor/outbox/report journal. Execution facts are read from core receipt
-APIs, never stored or changed by the ACP adapter. One observer has at most one in-flight execution.
-Claimed queue work is not started: explicit core withdrawal fences admission under
-the group lock. Source/reports/worker cancellation are distinct Agent decisions;
-observer enabled/revision fields never automatically cancel an accepted input.
-Known-not-sent reports recover without model replay; unknown sends/interrupted
-execution require review. The 2026-10-18 decision removes all legacy task
-scheduler implementation and migration compatibility: no `tasks_file` configuration,
-no reading/importing `scheduled_tasks.json`, no migration backups or confirmation
-states. Leave users' old data untouched; create new Eyes observers only on explicit
-user request. Eyes scheduler sources and historical transcript labels remain;
-no permanent Eyes daemon or second Agent loop is started.
-See `docs/claw-eyes-scheduler-{plan.md,requirements.json}` for retired scheduler
-scope; `docs/claw-assistant-core-requirements.json` tracks the current refactor.
+Claw's old TaskScheduler/task tool is removed. Installed `xdog-eyes` contributes
+an application-scoped `eyes` tool via the shared Agent SDK; there is no
+`eyes_enabled` setting and no automatic package installation or observation
+creation. Opening its capability ensures the independent user-local Eyes daemon;
+closing a host binding detaches, not daemon stop. Definitions are saved JSON,
+management is caller-selected owner-only, and destinations belong to JSON
+handlers, not the current group/workspace or an extra host adapter. Tool calls
+use the public Eyes CLI. The daemon owns registrations/cursors/outboxes/recovery;
+Claw handles its incoming ACP messages normally. An accepted intake ACK does not
+prove Agent execution or user-channel delivery. Never automatically replay unknown
+or interrupted effects. The retired task scheduler has no migration compatibility:
+do not read/import `scheduled_tasks.json`, expose `tasks_file`, delete old data,
+or create replacement observers without a request. See package READMEs and
+`docs/eyes-thin-tool-design.md`; earlier scheduler/hosting plans are historical.
 
 Claw depends on `xdog-skills` by default, with native /goal commands, Goal model
 tools and skill discovery. No global/project/session Goal enable switch exists.
@@ -270,6 +260,9 @@ Installation opens only the owner registry, never creates a Goal or starts a
 worker/model. The group is the stable Goal owner; context rotation and /new do not
 move it. Runtime is inside xdog.skills.goal, with only generic session/group ports
 in the client. ACP remains a thin generic input adapter with no Goal policy.
+
+Goal declares its packaged skill for discovery, but does not activate the body by
+default. Tool and native command registration are independent of skill activation.
 
 Goal v2 is records, one current binding/history, authoritative task files and
 signal-driven ACP reminders. The current main Agent plans from its actual
@@ -292,10 +285,14 @@ and shared-display records describe the retired protocol, not current acceptance
 Sub-agent orchestration belongs to each application package, not Agent. Coding's
 `core/child_agents.py` owns `CodingChildRuntime`, its durable store, isolated
 extension workers and return leases; its host-local execution thread is closed
-with the original session. Claw's `core/runtime/child_agents.py` owns the matching
+with the original session, and its child execution loop/thread exits between idle
+rounds. A safely completed child's explicit new message rebuilds a fresh Agent
+from saved state under revalidated parent grants; interrupted effects never replay.
+Claw's `core/runtime/child_agents.py` owns the matching
 Claw resources and borrows the gateway's original loop without stopping it.
-`xdog.agent.supervision` contains only inert SDK contracts, `ChildClient`/handles,
-shared schema and data operations; retired `ChildSupervisor` and child-owned
+`xdog.agent.children` contains only inert SDK contracts, `ChildClient`/handles,
+shared schema and data operations in `xdog.agent.child_*`; host child ports expose
+`.runtime`, not `.supervisor`. Retired `ChildSupervisor` and child-owned
 store/extension/lease runtime modules no longer exist in Agent. `ParentHandle`
 is injected by the host, excluded from snapshots, and exposes no parent history,
 system prompt or writable manager. Actual tools/skills must be a frozen subset
@@ -351,20 +348,22 @@ standard prompt outcome-unknown is never blindly resent. Source labels/evidence
 are untrusted, not identities or permissions. New canonical input is
 `xdog.session_input.v1`; old `xdog.external_event.v1` is historical codec only.
 
-Standalone definitions persist, registrations do not. Receiver disconnect pauses collection;
-restart alone does not reconnect. No automatic harness/observer startup,
-permanent installed daemon, hosted broker, TCP/Windows transport, API/web sources,
-scripts or harness-specific Eyes handlers. Claw's ACP backend belongs to Claw,
-not Eyes. Eyes lifecycle controls are not agent
-event delivery endpoints. Old host/capability/descriptor/env wiring is removed.
-See `docs/acp-session-routing.md` and package README for protocol/commands/limits.
-The separate opt-in embedding APIs `ObserverService`, `initial_managed_state`
-and `run_managed_scheduler` support a host-owned journal without changing CLI
-semantics. Strict checkpoints bind source/definition and contain data only;
-cursor+whole pending Delivery must persist before send, including original JSON
-number representation. Busy managed schedules skip ticks without overlapping;
-accepted one-offs survive downtime. Claw restores only its managed time observers,
-never automatically restarts ordinary file observation. Eyes still imports no harness.
+Eyes has a reusable user-local daemon, normally under
+`~/.local/share/xdog/eyes` (honoring XDG_DATA_HOME), and a standalone CLI.
+Registrations, source cursors and pending deliveries persist in its own journal;
+no host journal, ManagedObservers or public EyesClient is used. Application
+capability registration ensures daemon availability without creating observations.
+Consumers use the public CLI or registered tool, not private Python control APIs.
+The control plane becomes ready independently of slow target recovery. Protocol
+compatibility and journal format checks are separate; incompatible old state is
+reported, not migrated, erased, or replayed. Ordinary cancellation stops the
+current CLI wait, not a durable registration or accepted target input. Owner is
+management metadata, never authentication or a destination constraint. JSON file
+sources resolve beside their definition; enqueue receivers resolve existing
+session cwd. Explicit handler cwd is a consistency assertion; standard prompt
+still requires its load-session cwd. Flow uses the same capability discovery and
+CLI-only tool pattern but has no daemon. No feature starts a second Agent loop.
+See `docs/eyes-thin-tool-design.md` and package READMEs for current contracts.
 
 ### `xdog.skills`: common medium-level skills and extension code
 
@@ -389,8 +388,9 @@ main Agent plans, delegates optionally, updates tasks, handles reminders and
 judges completion. Generic host execution events trigger bounded checks; ACP
 only delivers reminders into the original host input queue under its existing
 permissions. Optional Eyes integration creates a data-only file-observation
-configuration and one owned public ObserverService registration, never a daemon
-or agent loop. Import/discovery is inert. The main Agent records a progress assessment through `goal(action="report")` in
+configuration and manages one owner-scoped registration via the public Eyes CLI.
+It consumes raw event JSONL and ACKs only after its own durable signal commit;
+it does not embed an Eyes runtime or create a second Agent loop. Import/discovery is inert. The main Agent records a progress assessment through `goal(action="report")` in
 `progress.md` before each continuation; repeated no progress may lead it to pause,
 never a script progress verdict. Pause disables proactive reminders and the owned
 Eyes registration until explicit resume; accepted work/children are independent.

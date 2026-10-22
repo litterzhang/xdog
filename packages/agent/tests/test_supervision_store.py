@@ -7,7 +7,7 @@ import pytest
 
 
 async def test_shared_mcp_request_cancellation_waits_for_actual_owner_settlement(tmp_path):
-    from xdog.agent.mcp import McpManager
+    from xdog.agent.mcp import McpRegistry
 
     entered, release = threading.Event(), threading.Event()
 
@@ -22,7 +22,7 @@ async def test_shared_mcp_request_cancellation_waits_for_actual_owner_settlement
                 except asyncio.CancelledError:
                     continue
 
-    manager = McpManager({}, tmp_path)
+    manager = McpRegistry({}, tmp_path)
     task = asyncio.create_task(manager._bridge(request()))
     try:
         async with asyncio.timeout(3):

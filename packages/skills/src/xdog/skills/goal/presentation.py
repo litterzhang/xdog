@@ -46,9 +46,33 @@ def _heading(goal: dict[str, Any]) -> str:
 
 def _state(goal: dict[str, Any]) -> list[str]:
     lines = [f"Status: {_text(goal.get('status'), 40)} | wait_for: {_text(goal.get('wait_for') or 'none', 40)}"]
+    if goal.get('status') == 'active':
+        lines.append('Responsibility: main_agent — next useful work; active does not mean running.')
+    elif goal.get('status') == 'waiting':
+        owner = {'user': 'user', 'host': 'host', 'tasks': 'task_workers; main_agent checks evidence'}.get(
+            goal.get('wait_for') or '', 'not recorded')
+        lines.append(f'Responsibility: {owner}')
+    elif goal.get('status') == 'paused':
+        lines.append('Responsibility: user — explicit resume; automatic continuation stopped.')
+    elif goal.get('status') in {'completed', 'cleared'}:
+        lines.append('Responsibility: none for this Goal; user may choose a new Goal.')
+    if goal.get('status') == 'waiting' and goal.get('wait_for') == 'user':
+        for name, label in [('question', 'Question'), ('impact', 'Impact'), ('resume_when', 'Resume when')]:
+            lines.append(f"{label}: {_text(goal[name]) if goal.get(name) else 'not recorded'}")
+
     if goal.get('reason'):
         lines.append(f"Reason: {_text(goal['reason'])}")
     return lines
+
+
+def _question_delivery(facts: dict[str, Any]) -> list[str]:
+    question = _mapping(facts.get('question'))
+    if not question:
+        return []
+    delivery = _mapping(question.get('delivery'))
+    return [f"Question reference: {_text(question.get('id') or 'not recorded', 180)}",
+            f"Question delivery: {_text(delivery.get('status') or 'unavailable', 32)}; "
+            'saving is not proof of delivery to the user.']
 
 
 def _transition(facts: dict[str, Any], goal: dict[str, Any]) -> list[str]:
@@ -100,6 +124,8 @@ def _next(value: Any, goal: dict[str, Any]) -> list[str]:
         # A create hint means no executable Goal, not an empty current binding.
         value = {**value, 'reason': 'Current Goal is completed; create replaces it, /goal clear releases it'}
     line = f"Next: {_text(value.get('action'), 60)}"
+    if value.get('owner'):
+        line += f" | owner: {_text(value['owner'], 32)}"
     if value.get('reason'):
         line += f" — {_text(value['reason'], 140)}"
     if value.get('requires_user') is True:
@@ -120,6 +146,11 @@ def _metadata(facts: dict[str, Any]) -> list[str]:
                 line += f" | {_text(data[detail], 120)}"
                 break
         lines.append(line)
+    faults = facts.get('runtime_faults')
+    if isinstance(faults, list) and faults:
+        fault = _mapping(faults[-1])
+        lines.append(f"Runtime fault: {_text(fault.get('source'), 24)}/{_text(fault.get('status'), 32)}"
+                     f" — {_text(fault.get('error'), 140)}; Goal business state unchanged.")
     if _mapping(facts.get('automation')) or _mapping(facts.get('delivery')):
         lines.append('Automation/delivery are recorded metadata, not proof of Agent execution or Goal completion.')
     return lines
@@ -138,7 +169,7 @@ def format_status(facts: dict[str, Any]) -> str:
     if not goal:
         return '\n'.join(['No current Goal. Create with /goal create <outcome> or view /goal history.',
                           *_transition(facts, goal), *_legacy(facts), _DETAILS])
-    lines = [_heading(goal), *_state(goal), *_transition(facts, goal)]
+    lines = [_heading(goal), *_state(goal), *_question_delivery(facts), *_transition(facts, goal)]
     counts = _mapping(facts.get('task_counts'))
     lines.append(f"Tasks: {_count(counts.get('completed'))}/{_count(facts.get('task_count'))} completed"
                  f" | blocked: {_count(counts.get('blocked'))}"
@@ -190,7 +221,8 @@ def format_history(facts: dict[str, Any]) -> str:
 def format_change(action: str, facts: dict[str, Any]) -> str:
     """Describe an actual change response, not an assumed action outcome."""
     goal = _mapping(facts.get('goal'))
-    lines = [f"Goal change: {_text(action, 40)}", _heading(goal), *_state(goal), *_transition(facts, goal)]
+    lines = [f"Goal change: {_text(action, 40)}", _heading(goal), *_state(goal),
+             *_question_delivery(facts), *_transition(facts, goal)]
     if facts.get('notice'):
         lines.append(f"Notice: {_text(facts['notice'], 240)}")
     lines.extend(_next(facts.get('next'), goal))

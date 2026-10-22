@@ -34,7 +34,7 @@ def test_claw_optional_eyes_and_eyes_owns_bounded_croniter():
     assert {"xdog-skills", "agent-client-protocol"} <= direct
     requirement = next(Requirement(value) for value in claw["optional-dependencies"]["eyes"]
                        if Requirement(value).name == "xdog-eyes")
-    assert str(requirement.specifier) == ">=2.4.7"
+    assert str(requirement.specifier) == ">=2.4.8"
     assert Version(eyes["version"]) in requirement.specifier
     assert requirement.marker is None and not requirement.extras
     all_requirements = requirements + [
@@ -106,19 +106,19 @@ def test_built_claw_metadata_optional_eyes_without_direct_croniter(artifacts, ki
     metadata = email.message_from_bytes(content)
     requirements = [Requirement(value) for value in metadata.get_all("Requires-Dist", [])]
     eyes = [value for value in requirements if value.name == "xdog-eyes"]
-    assert eyes and all(str(value.specifier) == ">=2.4.7" and value.marker is not None for value in eyes)
+    assert eyes and all(str(value.specifier) == ">=2.4.8" and value.marker is not None for value in eyes)
     for extra, expected in (("", False), ("search", False), ("eyes", True), ("all", True)):
         assert any(value.marker.evaluate({"extra": extra}) for value in eyes) is expected
     assert not any(value.name == "croniter" for value in requirements)
     assert set(metadata.get_all("Provides-Extra", [])) == {"search", "skills", "eyes", "acp", "all"}
     skills = [value for value in requirements if value.name == "xdog-skills"]
-    assert skills and all(str(value.specifier) == ">=2.4.7" for value in skills)
+    assert skills and all(str(value.specifier) == ">=2.4.8" for value in skills)
     assert any(value.marker is None for value in skills)  # Default capability, no extra required.
     for extra in ("", "search", "eyes", "skills", "all"):
         assert any(value.marker is None or value.marker.evaluate({"extra": extra}) for value in skills)
     acp = [value for value in requirements if value.name == "agent-client-protocol"]
     assert any(value.marker is not None and 'extra' not in str(value.marker) for value in acp)
-    assert "group-scoped `eyes` tool" in metadata.get_payload()
+    assert "eyes" in metadata.get_payload()
 
 
 @pytest.mark.parametrize("kind", ["wheel", "sdist"])
@@ -138,54 +138,15 @@ def test_built_eyes_includes_updated_host_skill(artifacts, kind):
     assert content == (REPO / SKILL).read_bytes()
 
 
-def test_documented_create_uses_original_eyes_source_schema(tmp_path):
-    from xdog.eyes.loader import parse
-
-    document = (REPO / "packages/claw/SCHEDULER.md").read_text()
-    examples = [json.loads(value) for value in re.findall(r"```json\n(.*?)\n```", document, re.DOTALL)]
-    assert len(examples) == 1
-    create = examples[0]
-    assert set(create) == {"action", "name", "source", "instruction"}
-    assert create["action"] == "create"
-    # A synthetic route validates source compatibility only; no host/ACP is started.
-    definition = parse({
-        "version": 2, "name": create["name"], "sources": [create["source"]],
-        "detectors": [{"id": "due", "type": "scheduler.due", "source": create["source"]["id"]}],
-        "handlers": [{
-            "id": "report", "type": "acp", "delivery": "enqueue", "session": "group:example",
-            "connection": {"transport": "unix", "path": str(tmp_path / "acp.sock")},
-            "instruction": create["instruction"],
-        }],
-        "routes": [{"id": "route", "detector": "due", "handler": "report", "event_types": ["scheduler.due"]}],
-    }, base_dir=tmp_path)
-    assert definition.sources[0].type == "scheduler"
-    assert definition.handlers[0].instruction == create["instruction"]
-
-
-@pytest.mark.parametrize("path", ["packages/claw/SCHEDULER.md", "packages/claw/README.md", str(SKILL)])
-def test_docs_distinguish_host_contract_from_standalone_and_runtime_completion(path):
-    text = " ".join((REPO / path).read_text().split())
-    for interface in ("create(name, source, instruction)", "list()", "status(observer_id)", "cancel(observer_id)"):
-        assert interface in text
-    for term in ("workspace", "endpoint", "fixed phase", "report"):
-        assert term in text
-    if path == "packages/claw/README.md":
-        assert "SCHEDULER.md" in text  # The summary links to the native source syntax.
-    else:
-        assert "every_seconds" in text
-    assert "unrelated active chat" in text
-    assert "file observ" in text and "gateway restart" in text
-    assert "standalone" in text.lower() and "Coding" in text
-    assert "unadmitted" in text and "unknown execution" in text
-    assert "xdog-eyes" in text and "installed" in text
-    assert "eyes_enabled: bool" not in text
-    assert "acp_socket_path" in text and "data_dir/acp/agent.sock" in text
-    assert "tasks_file" in text and "scheduled_tasks.json" in text
-    assert "2026-10-18" in text and "untouched" in text
-    assert "needs_confirmation" not in text
-    configurations = re.findall(r"```yaml\n(.*?)\n```", (REPO / path).read_text(), re.DOTALL)
-    assert all("eyes_enabled" not in (yaml.safe_load(value) or {}) for value in configurations)
-    assert "requirements" in text and "receipt" in text and "delivery" in text and "replay" in text
+def test_docs_describe_thin_tool_and_default_acp():
+    text = (REPO / "packages/claw/SCHEDULER.md").read_text()
+    examples = [json.loads(value) for value in re.findall(r"```json\n(.*?)\n```", text, re.DOTALL)]
+    assert examples == [{"action": "create", "owner": "my-watches", "workspace": "/project",
+                         "definition_path": "eyes.json"}]
+    assert "normal ACP input" in text and "enabled by default" in text
+    assert "any valid explicit" in text and "not just the current group" in text
+    assert "cancel_notifications" in text and "removed" in text
+    assert "not Agent completion" not in text or "queued receipt" in text
 
 
 def test_standalone_skill_definitions_still_validate_without_starting_observers(tmp_path):

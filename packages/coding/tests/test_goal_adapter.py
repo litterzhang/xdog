@@ -111,13 +111,15 @@ async def test_ordinary_child_forged_goal_label_has_no_parent_tool_or_role_exemp
         await close(session)
 
 
-@pytest.mark.parametrize('wait_for', ['tasks', 'user', 'host'])
+@pytest.mark.parametrize('wait_for', ['tasks', 'user'])
 async def test_current_goal_occupies_paused_slot_and_user_clear_releases_it(tmp_path, wait_for):
     session, host, _ = await setup(tmp_path)
     try:
         async def changes():
             goal = await host.service.create('One', 'One target', context=OperationContext(True))
-            waiting = await host.service.change('wait', until=wait_for, reason='Need actual wait evidence')
+            waiting = await host.service.change('wait', until=wait_for, reason='Need actual wait evidence',
+                **({'question': 'Which business outcome?', 'impact': 'Delivery needs this decision',
+                    'resume_when': 'Actual user decides'} if wait_for == 'user' else {}))
             with pytest.raises(ValueError, match='only restores paused'):
                 await host.service.change('resume', context=OperationContext(True))
             activation = {'action': 'activate', 'goal_id': goal.id, 'version': waiting.version,
@@ -133,7 +135,7 @@ async def test_current_goal_occupies_paused_slot_and_user_clear_releases_it(tmp_
             if wait_for != 'tasks':
                 assert await host.service.current() == waiting
                 # The real host binding outside a user operation cannot release
-                # user/host waits; explicit actual-user context is still needed.
+                # user waits; explicit actual-user context is still needed.
                 await host.service.change('activate', goal.id, version=waiting.version,
                     reason=activation['reason'], context=OperationContext(True))
             current = await host.service.current()

@@ -21,6 +21,7 @@ from xdog.eyes.local_control import (
     ControlError,
     JsonValue,
     RuntimeLocation,
+    daemon_location,
     decode_frame,
     encode_frame,
     object_value,
@@ -51,6 +52,9 @@ class ObserverRuntime(ObserverService):
         super().__init__(cwd=location.cwd, clock=clock, sleep=sleep, scanner=scanner,
                          handler_factory=handler_factory, handler_registry=handler_registry,
                          wall_clock=wall_clock, auto_health=False)
+        from xdog.eyes.daemon import DaemonObservers
+        self.daemon = (DaemonObservers(location, clock=clock, wall_clock=wall_clock, sleep=sleep)
+                       if location.cwd == location.directory else None)
         self.stop = self._shutdown
         self._controls: set[asyncio.Task[Any]] = set()
         self._since = self.clock()
@@ -61,10 +65,14 @@ class ObserverRuntime(ObserverService):
 
     async def monitor(self) -> None:
         while not self.stop.is_set():
-            if not self.entries and not self._pending_starts and self.clock() - self._since >= 10:
+            if (self.daemon is None and not self.entries and not self._pending_starts
+                    and self.clock() - self._since >= 10):
                 self.stop.set()
                 break
-            await self.health()
+            if self.daemon is not None:
+                await self.daemon.health()
+            else:
+                await self.health()
             await self.sleep(0.2)
 
     async def dispatch(self, value: object) -> tuple[str, dict[str, JsonValue]]:
@@ -78,7 +86,14 @@ class ObserverRuntime(ObserverService):
         body = object_value(row['body'])
         if action == 'hello':
             object_value(body, allowed=set())
-            return 'ok', {}
+            from xdog.eyes.protocol import hello
+
+            return 'ok', hello(daemon=self.daemon is not None)
+        if self.daemon is not None:
+            if action == 'daemon-stop':
+                object_value(body, allowed=set())
+                return 'accepted', {'shutdown': True}
+            return await self.daemon.dispatch(action, body)
         if action == 'start':
             object_value(body, allowed={'definition'}, required={'definition'})
             result = await self.start(body['definition'])
@@ -111,7 +126,7 @@ class ObserverRuntime(ObserverService):
         listener = None
         staged = self.location.directory / ('.eyes-' + uuid.uuid4().hex[:12] + '.sock')
         staged_identity = None
-        monitor = None
+        monitor = recovery = None
 
         async def connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
             work = gone = None
@@ -125,18 +140,22 @@ class ObserverRuntime(ObserverService):
                 async with asyncio.timeout(125):
                     done, _ = await asyncio.wait({work, gone}, return_when=asyncio.FIRST_COMPLETED)
                     if work not in done:
-                        work.cancel()
-                        await asyncio.gather(work, return_exceptions=True)
+                        if self.daemon is None:
+                            work.cancel()
+                        # Durable accepted controls belong to the daemon, not the
+                        # connection. ACK loss cannot undo registration/cancel.
+                        status, body = await asyncio.shield(work)
+                        shutdown = frame.get('action') == 'daemon-stop' and body.get('shutdown') is True
                         return
                     try:
                         status, body = work.result()
-                        shutdown = frame.get('action') == 'stop' and body.get('shutdown') is True
+                        shutdown = frame.get('action') in {'stop', 'daemon-stop'} and body.get('shutdown') is True
                     except (ValueError, RuntimeError, OSError, ImportError) as exc:
                         status, body = 'rejected', {'error': str(exc)[:2048]}
                     writer.write(encode_frame({'version': 1, 'generation': self.location.generation,
                         'cwd': str(self.location.cwd), 'status': status, 'body': body}))
                     await writer.drain()
-            except (ValueError, OSError, TimeoutError):
+            except (ValueError, OSError, RuntimeError, ImportError, TimeoutError):
                 pass
             finally:
                 if work is not None:
@@ -168,6 +187,8 @@ class ObserverRuntime(ObserverService):
             task.add_done_callback(tasks.discard)
 
         try:
+            if self.daemon is not None:
+                await self.daemon.open()
             path = self.location.socket
             if path.exists() or path.is_symlink():
                 validate_socket(self.location)
@@ -205,6 +226,8 @@ class ObserverRuntime(ObserverService):
             os.link(staged, path)
             self._socket_identity = staged_identity
             unlink_owned(staged, staged_identity)
+            if self.daemon is not None:
+                recovery = asyncio.create_task(self.daemon.recover(), name='eyes-recovery')
             monitor = asyncio.create_task(self.monitor())
             await self.stop.wait()
         finally:
@@ -218,10 +241,14 @@ class ObserverRuntime(ObserverService):
                     pending = set(self._controls) | set(tasks) | set(self._starts)
                     if monitor is not None:
                         pending.add(monitor)
+                    if recovery is not None:
+                        pending.add(recovery)
                     for task in pending:
                         task.cancel()
                     if pending:
                         await asyncio.gather(*pending, return_exceptions=True)
+                    if self.daemon is not None:
+                        await self.daemon.aclose()
                     await self.aclose()
                     if server is not None:
                         await server.wait_closed()
@@ -249,13 +276,16 @@ class ObserverRuntime(ObserverService):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--cwd', required=True)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('--cwd')
+    group.add_argument('--directory')
     options = parser.parse_args()
 
     async def run() -> None:
         from pathlib import Path
 
-        runtime = ObserverRuntime(runtime_location(Path(options.cwd)))
+        runtime = ObserverRuntime(daemon_location(Path(options.directory)) if options.directory
+                                  else runtime_location(Path(options.cwd)))
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, runtime.stop.set)

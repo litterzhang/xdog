@@ -25,7 +25,7 @@ async def receive(reader):
             return value
 
 
-@pytest.mark.parametrize("allowed", [False])
+@pytest.mark.parametrize("allowed", [False, True])
 async def test_gateway_owned_explicit_mcp_controls_tool_registration_policy_and_busy_guard(tmp_path, allowed):
     config = ClawConfig(model="test/model", data_dir=str(tmp_path / "data"), socket_path=str(tmp_path / "gateway.sock"),
                         pid_file=str(tmp_path / "gateway.pid"), groups=(GroupDef(id="main", is_main=True),),
@@ -48,7 +48,17 @@ async def test_gateway_owned_explicit_mcp_controls_tool_registration_policy_and_
             session = runtime.get_or_create_session()
             assert (await control("connect"))["success"]
             tool = runtime.mcp.tools()[0]
-            assert any(value.name == tool.name for value in session.agent.state.tools)
+            published = next(value for value in session.agent.state.tools if value.name == tool.name)
+            assert session.agent.mcp_registry is runtime.mcp
+            assert published is tool
+            assert not any(value is published for value in runtime.tool_registry.tools)
+            assert not any(value is published for value in session.agent.local_tools)
+            assert not any(value is published for value in runtime.tools)
+            revision = session.agent.tool_selection_revision
+            runtime._attach_capabilities(session)
+            assert session.agent.tool_selection_revision == revision
+            assert tuple(runtime.tool_registry.tools) == session.agent.local_tools
+            assert any(value is session._child_tools[0] for value in runtime.tool_registry.tools)
             decision = await session._before_tool_call(BeforeToolCallContext(
                 tool_call=ToolCall(id="call", name=tool.name, arguments={"value": "test"}),
                 assistant_message=AssistantMessage(), args={"value": "test"}, context=AgentContext(),
@@ -63,6 +73,7 @@ async def test_gateway_owned_explicit_mcp_controls_tool_registration_policy_and_
                 server._orchestrator.release_group_reservation(reservation)
             assert (await control("disconnect"))["success"]
             assert not any(value.name == tool.name for value in session.agent.state.tools)
+            assert tuple(runtime.tool_registry.tools) == session.agent.local_tools
         finally:
             writer.close()
             await writer.wait_closed()

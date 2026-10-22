@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import sys
 
-from xdog.agent.mcp import McpManager
+from xdog.agent.mcp import McpRegistry
 
 
 def peer_config(tmp_path):
@@ -37,7 +37,7 @@ for raw in sys.stdin:
 
 async def test_unsolicited_elicitation_and_sampling_receive_refusal_without_registration_or_replay(tmp_path):
     configs, log = peer_config(tmp_path)
-    manager = McpManager(configs, tmp_path)
+    manager = McpRegistry(configs, tmp_path)
     try:
         for attribute in ('register_elicitation', 'answer_elicitation', 'detach_elicitation', '_elicitation'):
             assert not hasattr(manager, attribute)

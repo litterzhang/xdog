@@ -2,6 +2,7 @@
 
 日期：2026-10-21。续接 `goal-simple-design.md`；可计数验收为
 `goal-optimization-requirements.json` 的 GO-01..GO-09。
+2026-10-22 更新：宿主故障与历史 host wait 以 `goal-host-faults.md` 为准。
 
 ## 不增加的职责
 
@@ -13,8 +14,9 @@ reviewer、任务轮数门限、模型轮询或第二 Agent loop。Coding/Claw �
 ## 一个提醒入口
 
 宿主 execution.settled 和 Goal-owned Eyes 的任务变化均先写入 Goal 的幂等原因
-索引，再由同一个 coalescer 投递。Eyes 的公开 handler port 只负责将检测提交给
-Goal；无 Goal callback 的独立观察 API 保持原语义。生成的 eyes.json 仍是数据。
+索引，再由同一个 coalescer 投递。Goal 通过真实 Eyes CLI 的 `events --follow`
+读取通用 JSONL 事件，持久化成功后才调用 CLI ACK；Eyes 不识别 Goal callback 或
+状态。Claw 只加载 Eyes 注册 tool，不直接调用 CLI。生成的 eyes.json 仍是数据。
 
 - `wake_signals` 只存原因 ID/顺序，不复制任务状态或执行结果。创建及显式 resume
   与 Goal 记录在同一事务写入原因；已 active 的 Goal 也可显式 resume 唤醒。
@@ -25,10 +27,10 @@ Goal；无 Goal callback 的独立观察 API 保持原语义。生成的 eyes.js
 - 原 ID、不可变内容和 owner/namespace/branch 仍由现有 ACP 机制验证。本地 claim 后
   再检查 owner、生命周期变更 generation 和快照；读取期间 pause/retire 不得穿透成
   新的传输请求。已开始的传输按原结果结算，不将其误当成可撤回的远端操作。
-- 明确未发送 unavailable 只能重试同一 ID/内容；unknown 进入 host wait，不换 ID
-  盲重发；启动时核对持久原因/outbox 和真实 host 回执，不根据闲置时长猜测完成。
-- 用户明确恢复 paused/user/host wait 后建立新的 continuation epoch；旧失败或
-  unknown 记录仍保留，但不能在新 epoch 反复重新暂停。
+- 明确未发送 unavailable 只能重试同一 ID/内容；unknown 记录独立投递故障并围栏
+  自动提醒，不改变 Goal 状态，不换 ID 盲重发；启动核对原始回执。
+- 用户明确恢复 paused/user wait（或显式转换历史 host wait）建立新的 continuation
+  epoch；旧执行故障留作历史；未解决的 unknown 投递围栏不因 epoch 切换消失。
 
 观察的初始 baseline 不报告历史变化。因此启动/恢复时还检查任务文件内容摘要；
 暂停/离线期间的实际变化成为新的原因，不重放暂停期间的 tick。摘要只是派生

@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from xdog.agent.mcp import McpManager
+from xdog.agent.mcp import McpRegistry
 from xdog.agent.mcp.oauth import OAuthError
 from xdog.agent.mcp.oauth_native_store import NativeCredentialStore
 
@@ -15,7 +15,7 @@ from xdog.agent.mcp.oauth_native_store import NativeCredentialStore
 @pytest.mark.parametrize('value', ['unknown', True, None, 1, []])
 def test_unknown_backend_is_refusal_not_plaintext_fallback(tmp_path, value):
     with pytest.raises(OAuthError, match='no fallback'):
-        McpManager({}, tmp_path, credential_dir=tmp_path / 'private', credential_backend=value)
+        McpRegistry({}, tmp_path, credential_dir=tmp_path / 'private', credential_backend=value)
     assert not (tmp_path / 'private').exists()
 
 

@@ -11,9 +11,11 @@ from xdog.skills.goal.host import OperationContext
 
 from packages.coding.tests.test_child_agents import create
 
+_WAIT_TIMEOUT = 10
+
 
 async def until(predicate):
-    async with asyncio.timeout(10):
+    async with asyncio.timeout(_WAIT_TIMEOUT):
         while not await predicate():
             await asyncio.sleep(.01)
 
@@ -139,7 +141,9 @@ async def test_completed_child_rechecks_deferred_real_eyes_cause_and_wakes_origi
         child_config = {'tools': ['goal'], 'skills': [],
                         'tool_scopes': {'goal': {'goal_id': goal.id, 'task_ids': ['delayed']}}}
         child_id = await session.children.runtime.start('Update assigned task', access='inherit', config=child_config)
-        assert await asyncio.to_thread(entered.wait, 3)
+        # Readiness includes real scoped-tool IO and thread scheduling, not a
+        # three-second performance contract. Keep the same bound as later waits.
+        assert await asyncio.to_thread(entered.wait, _WAIT_TIMEOUT), session.children.runtime.capture_source(child_id)
         if blocker == 'producer':
             controller.hold_producer('unattended-test-operation')
         if blocker != 'draft':

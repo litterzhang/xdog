@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from xdog.agent.mcp.stdio import StdioClient
+from xdog.agent.extensions.runtime import _Client
 from xdog.claw.channels.tui.tui_app import ChatApp
 from xdog.claw.config import ClawConfig, GroupDef
 from xdog.claw.core.runtime.gateway import GatewayServer
@@ -46,7 +46,7 @@ async def test_literal_undo_end_clear_requires_frontend_settlement(
     entered = asyncio.Event()
     armed = threading.Event()
     loop = asyncio.get_running_loop()
-    original_request = StdioClient.request
+    original_request = _Client._worker_request
     async def gated_request(client, method, params, **kwargs):
         result = await original_request(client, method, params, **kwargs)
         if method == 'xdog/command_complete' and armed.is_set():
@@ -54,7 +54,7 @@ async def test_literal_undo_end_clear_requires_frontend_settlement(
             loop.call_soon_threadsafe(entered.set)
             await asyncio.wrap_future(gate)
         return result
-    monkeypatch.setattr(StdioClient, 'request', gated_request)
+    monkeypatch.setattr(_Client, '_worker_request', gated_request)
 
     def no_model(*args):
         pytest.fail('Completion insertion must never run a model')

@@ -44,7 +44,7 @@ def test_host_projection_retains_kind_and_context_without_borrowing_payload_auth
         assert saved.human_authorized is True and saved.reply.recipient == 'user-1'
     elif kind == 'external':
         assert restored.canonical.id == 'one' and restored.canonical.instruction == 'event instruction'
-        assert saved.human_authorized is False
+        assert saved.human_authorized is False and saved.reply is None
     elif kind == 'continuation':
         assert restored.record_id == 'context-record-1'
     else:

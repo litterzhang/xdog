@@ -55,7 +55,6 @@ def setup(api):
 
 
     api.command('write', 'Propose editor text without reading/submitting', command)
-    api.tool('write', 'Propose original owner draft under explicit review', {'type': 'object'}, tool)
     api.on('turn_start', event)
     api.before_tool(pre)
     api.after_tool(post)

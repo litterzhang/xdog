@@ -17,21 +17,18 @@ def root(tmp_path):
     return path
 
 
-async def test_owned_process_load_events_tools_commands_ui_and_stop_without_raw_console(root, tmp_path, capsys):
+async def test_owned_process_load_events_hooks_commands_ui_and_stop_without_raw_console(root, tmp_path, capsys):
     marker = tmp_path / "marker"
     runtime = ExtensionRuntime(["sample"], root, tmp_path, settings={"sample": {"marker": str(marker)}})
     events = []
     runtime.publish = events.append
-    assert not marker.exists() and not runtime.tools()
+    assert not marker.exists() and not hasattr(runtime, "tools")
     try:
         await asyncio.gather(runtime.initialize(), runtime.initialize())
         assert marker.read_text() == "started\n"
         assert runtime.commands() == {"ext-sample-hello": "Test extension command"}
-        tool = runtime.tools()[0]
-        assert tool.name.startswith("ext_sample_")
-        assert (await tool.execute("call", {"value": "text"})).content[0].text == "EXTENSION-RESULT-text"
-        assert await runtime.pre(tool.name, {"value": "veto"}) is None
-        assert await runtime.post(tool.name, {}, "result") == "result-POST"
+        assert await runtime.pre("filesystem", {"value": "veto"}) is None
+        assert await runtime.post("filesystem", {}, "result") == "result-POST"
         assert await runtime.command("ext-sample-hello", "input") == "EXTENSION-COMMAND-input"
         await runtime.event("turn_start", {"user_input": "test"})
         assert any("EXTENSION-TURN-START" in event.get("text", "") for event in events)
@@ -52,7 +49,7 @@ async def test_timed_out_extension_callback_reaps_process_and_required_hook_fail
         from dataclasses import replace
         client.config = replace(client.config, timeout=0.2)
         with pytest.raises(TimeoutError):
-            await runtime.tools()[0].execute("hang", {"value": "hang"})
+            await runtime.command("ext-sample-hello", "hang")
         assert process.returncode is not None and client.process is None
         with pytest.raises(ValueError, match="validation unavailable"):
             await runtime.pre("filesystem", {"action": "read"})

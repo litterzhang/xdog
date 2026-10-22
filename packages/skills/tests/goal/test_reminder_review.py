@@ -5,7 +5,6 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-from xdog.skills.goal.automation import _EnqueueHandler
 from xdog.skills.goal.host import OperationContext
 from xdog.skills.goal.models import Task
 from xdog.skills.goal.runtime import GoalRuntime
@@ -112,17 +111,21 @@ async def test_task_delivery_is_not_acknowledged_when_revision_race_drops_its_ca
         runtime.service.files(goal).write(Task('worker', 'Actual external result', status='completed'),
                                          expected_version=0)
         state['state'] = 'running'  # Busy coalescing must persist the cause, not enqueue immediately.
-        handler = _EnqueueHandler({}, 'unused', lambda delivery: runtime._task_changed(goal.id, delivery))
-        pending = asyncio.create_task(handler.deliver(SimpleNamespace(id='changed-during-plan')))
+        delivery = SimpleNamespace(id='changed-during-plan')
+        pending = asyncio.create_task(runtime._task_changed(goal.id, delivery))
         await asyncio.wait_for(entered.wait(), 2)
         await runtime.service.plan('A concurrent legitimate main-Agent plan revision')
         release.set()
         result = await asyncio.wait_for(pending, 2)
         await runtime.flush()
         after = await runtime.service.store.wake_state(goal.id)
-        assert result.status == 'queued'
+        assert result is True
         assert after['sequence'] > before['sequence'], (
-            'Eyes returned queued/coalesced but a current/remindable Goal revision race discarded the cause')
+            'The callback returned but a current/remindable Goal revision race discarded the cause')
+        assert 'tasks:changed-during-plan' in after['causes']
+        await runtime._task_changed(goal.id, delivery)
+        await runtime.flush()
+        assert (await runtime.service.store.wake_state(goal.id))['sequence'] == after['sequence']
     finally:
         release.set()
         if pending is not None:
@@ -143,7 +146,7 @@ async def test_fast_worker_change_in_initial_baseline_is_reconciled(tmp_path, mo
                                              expected_version=0)
             return {'status': 'watching'}
 
-        async def aclose(self):
+        async def aclose(self, *, suspend=True):
             pass
 
     monkeypatch.setattr(automation, 'TaskObserver', FastBaseline)
@@ -172,7 +175,7 @@ async def test_unknown_reopen_requires_explicit_epoch_and_never_reuses_unknown_i
         await runtime.flush()
         await runtime._wake('execution:unknown')
         original_id = attempts[0].id
-        assert (await runtime.service.current()).wait_for == 'host'
+        assert await runtime.service.current() == goal
         await runtime.aclose()
         runtime = await GoalRuntime.open(host)
         runtime.attach(parent)
@@ -180,11 +183,13 @@ async def test_unknown_reopen_requires_explicit_epoch_and_never_reuses_unknown_i
             await runtime._available()
         assert len(attempts) == 1
         waiting = await runtime.service.current()
-        await runtime.service.change('activate', waiting.id, version=waiting.version,
-                                     reason='User inspected original unknown outcome', context=USER)
+        assert waiting == goal
+        await runtime.service.change('pause', reason='Inspect original unknown outcome', context=USER)
+        await runtime.service.change('resume', context=USER)
         await runtime._available()
         await asyncio.wait_for(runtime.flush(), 2)
-        assert len(attempts) == 2 and attempts[1].id != original_id
+        assert len(attempts) == 1 and attempts[0].id == original_id
+        assert runtime.delivery['status'] == 'unknown'
         old = next(row for row in await runtime.service.store.reminders() if row['id'] == original_id)
         assert old['status'] == 'unknown' and (await runtime.service.current()).id == goal.id
     finally:
@@ -203,8 +208,8 @@ async def test_repeated_failure_signals_do_not_create_an_automatic_retry_loop(tm
             await runtime._available()
         await asyncio.wait_for(runtime.flush(), 2)
         assert await runtime.service.current() == waiting
-        assert waiting.wait_for == 'host' and not sent
-        assert runtime._observer is None
+        assert waiting.status == 'active' and not waiting.wait_for and not sent
+        assert len((await runtime.service.summary())['runtime_faults']) == 1
     finally:
         await close(runtime, parent)
 

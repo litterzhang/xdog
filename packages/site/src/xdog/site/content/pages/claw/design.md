@@ -15,7 +15,7 @@ Claw embedding API. The root `xdog.claw` package does not re-export runtime clas
 Coding's SDK remains distinct.
 
 The product entry points are the `xdog-claw` CLI, configuration and channels. The
-native gateway socket serves the local terminal client; optional private ACP serves
+native gateway socket serves the local terminal client; default private ACP serves
 explicit group-addressed inputs. These necessary communication paths retain
 capability/ownership checks and do not create a general-purpose remote control
 plane or imply a public Python runtime embedding contract.
@@ -66,31 +66,37 @@ Python/process code is not an OS sandbox.
 
 ## Optional reusable Goals
 
-Claw is a long-term personal assistant with optional task autonomy. Installing
-`xdog-skills` supplies the capability and built-in skill automatically, with no enable
-setting; ordinary conversation never silently delegates a Goal. The independent `xdog-skills` service owns leased storage, historical
-contracts, reports/reviews and notification outbox. Claw's thin host binds a stable
-group/workspace/inbox owner to existing supervised children and Core durable
-intake; Coding uses the same service with its intentionally exact session/branch
-binding. No GoalManager, implicit planner, turn-end review or Gateway Goal loop
-remains. Scripts/tests are evidence, never completion verdicts.
+Claw is a long-term assistant with optional task autonomy. Installed `xdog-skills`
+provides Goal tools/skill without silently creating a Goal. The current group
+main Agent plans from its conversation, optionally delegates through existing
+authorized child tools, reports progress and judges completion. There is no
+mandatory independent reviewer, hidden planner or Goal-owned child runner.
 
-A submitted report needs explicit parent acceptance; completing a Goal requires
-explicit request_complete and a fresh independent readonly review of each original
-condition. Idle context rotation is not blocked by unfinished Goal data. Original
-terminal child execution remains inspectable after rotation without constructing
-or replaying an offline Agent. User authority follows actual consumed human input,
-not provenance, source labels, anonymous steering or extension display.
+Goal owns its leased registry, authoritative workspace task files and reminder
+outbox. Claw contributes its real stable group owner and existing Core intake;
+Coding intentionally binds its own session/branch. User waits and pauses are not
+released by untrusted events. Rotation does not replay interrupted effects.
 
-## Eyes and channels
+## Capabilities, Eyes and channels
 
-Explicit Eyes observers deliver source-neutral events through the private
-`group:<gid>` ACP endpoint and existing Core Inbox/GroupController. Neither ACP nor
-channels project Goal policy into input. Goal notices use the same durable input
-path, not a separate handler host or main-Agent loop. There is no message approval;
-existing tool authorization still applies. Observation, notification and worker
-cancellation remain explicit independent Agent decisions. No Goal status implicitly
-stops/restores another resource. Unknown effects are not blindly replayed.
+Coding/Claw use the same `xdog.agent.capabilities.CapabilityAssembly` to compose
+actual tool identities and skill selections. A capability may provide tools,
+skills, runtime resources or extension hooks; it need not provide all of them.
+The SDK creates no second execution owner. Hosts own scope lifecycle, tool grants,
+read-only/approval policy and parent/child authority. Packaged skill discovery
+does not activate a body or grant a tool. Flow/Eyes bodies are activated on demand.
+
+Eyes' application binding ensures its independent shared daemon through the CLI;
+Flow's application tool invokes the CLI without a daemon. Saved Eyes JSON defines
+sources, routing and destinations. The owner label is a management namespace, not
+an authorization token or restriction to the current group/workspace.
+
+Configured ACP deliveries enter ordinary Core intake and the existing group
+main Agent. An intake ACK does not prove execution or user notification. Eyes
+owns no model watcher, creator reply capture or extra output route. The main
+Agent uses normal messaging when notification is needed. Source cancellation,
+accepted input, Agent execution and user-channel output remain separate facts.
+Unknown effects are never blindly replayed.
 
 ## Prompt and memory
 

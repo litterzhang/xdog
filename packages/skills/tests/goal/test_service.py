@@ -7,6 +7,8 @@ from xdog.skills.goal.models import Owner
 from xdog.skills.goal.service import GoalService
 from xdog.skills.goal.store import GoalStore
 
+from packages.skills.tests.goal.legacy import wait_goal
+
 USER = OperationContext(True)
 
 
@@ -41,7 +43,12 @@ async def test_main_agent_plans_executes_and_completes_without_child_support(tmp
         await service.close()
 
 
-@pytest.mark.parametrize('state,fields', [('pause', {}), ('wait', {'until': 'user'}), ('wait', {'until': 'tasks'})])
+@pytest.mark.parametrize('state,fields', [
+    ('pause', {}),
+    ('wait', {'until': 'user', 'question': 'Choose target?', 'impact': 'Target unknown',
+              'resume_when': 'User selects target'}),
+    ('wait', {'until': 'tasks'}),
+])
 async def test_paused_and_waiting_goals_still_occupy_single_current_slot(tmp_path, state, fields):
     service = await opened(tmp_path)
     try:
@@ -78,13 +85,15 @@ async def test_only_task_wait_can_be_released_by_an_automatic_input(tmp_path):
     try:
         await service.create('One', 'Original', context=USER)
         for until in ['user', 'host']:
-            await service.change('wait', until=until, reason='Needs actual input')
+            await wait_goal(service, until=until, reason='Needs actual input',
+            **({'question': 'Which delivery target?', 'impact': 'Final target unknown',
+                'resume_when': 'User selects target'} if until == 'user' else {}))
             with pytest.raises(ValueError):
                 await service.change('resume')
             waiting = await service.current()
             await service.change('activate', waiting.id, version=waiting.version,
                                  reason='Actual user input', context=USER)
-        waiting = await service.change('wait', until='tasks')
+        waiting = await wait_goal(service, until='tasks')
         assert (await service.change('activate', waiting.id, version=waiting.version,
                                      reason='Main verified the task result')).status == 'active'
     finally:

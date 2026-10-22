@@ -9,7 +9,8 @@ Use this skill to turn a recurring, multi-step process into a **saved, replayabl
 workflow** and then run it. flow is a typed, single-machine workflow kernel: you
 describe nodes (agent / script / human / subflow) and the typed edges between
 them as JSON, then `xdog-flow run` executes it — or `xdog-flow generate` compiles
-it to a self-contained Python module.
+it to Python. Some generated workflows (notably subflows) still require the
+installed Flow runtime; use portable bundles when packaging dependencies.
 
 The key move: an **agent node can call a coding-agent CLI** (`claude`, `codex`)
 for its step instead of a hosted provider. So this CLI can crystallize your own
@@ -22,6 +23,61 @@ or provider to configure.
 - A task is a fixed pipeline of steps (classify → route, draft → critique → revise,
   research → summarize) worth replaying deterministically around the LLM steps.
 - You need typed, inspectable orchestration rather than an ad-hoc prompt chain.
+
+## Installation and the `flow` tool
+
+Install `xdog-flow` in the same Python environment as the host. It registers an
+`xdog.capabilities` entry point with **application** scope. Hosts discover the
+tool through capabilities and the packaged skill through SkillManager; there is
+no host-specific adapter. The skill body is activated explicitly, not injected
+by default. Registration and skill loading do not
+start a process or execute a workflow.
+
+**Prefer the single `flow` tool.** Its parameters are:
+
+- `arguments: list[str]` — the `xdog-flow` command and arguments, **without** the
+  executable name. Pass separate tokens, not a shell command string.
+- `cwd` (optional) — an **absolute process working directory**, not the workflow's
+  `--workspace` setting.
+
+For example, call `flow` with:
+
+```json
+{"arguments": ["validate", "workflow.json", "--json"], "cwd": "/absolute/project"}
+```
+
+Then, when execution is authorized:
+
+```json
+{"arguments": ["run", "workflow.json", "--input", "topic=typed workflows"], "cwd": "/absolute/project"}
+```
+
+Each call starts an independent CLI process using the host's same-environment
+Python interpreter with `-m xdog.flow`. The executable/module is fixed; no shell
+is used, so shell expansion, pipes and redirection are not interpreted. The tool
+returns JSON with `exit_code`, `stdout` and `stderr`; those streams are strings,
+even when a CLI flag such as `--json` makes their contents JSON. Nonzero exit
+codes and diagnostics are returned honestly, not converted into success.
+Output is bounded: exceeding the limit terminates the invocation and explicitly
+reports the overflow. There is **no automatic retry**; inspect the result before
+considering an authorized new invocation, since effects may already have occurred.
+Cancellation or capability shutdown terminates and reaps the process group owned
+by that invocation; it does not undo effects already performed.
+
+The tool supports non-interactive `validate`, `run`, `generate`, `graph`, `test`,
+`scheduling` and `--help`. **`build` is an interactive TUI for the user to launch
+manually from the CLI, never through the tool.** The command examples below are
+CLI notation: translate them to `arguments` tokens for the tool. Use direct CLI
+execution only when the tool is unavailable **and** that execution is permitted;
+a denied or failed tool call is not a reason to bypass permissions through a shell.
+
+Flow has **no daemon**. Scheduling is explicit deployment to an external scheduler
+such as systemd, not a background service started by discovery or skill loading.
+Normal host permissions and approval requirements still apply. Workflows can
+execute scripts, call models and import custom code. Even `validate` may import
+referenced modules and run import-time code: do not describe it as side-effect-free
+or automatically allowed. Review and authorize the actual operation, including
+scheduling changes; the tool is not a sandbox.
 
 ## Workflow JSON at a glance
 
@@ -79,8 +135,9 @@ CLI. Then:
   still needs a top-level `"provider"`.)
 - **Tools are narrowed, not provided.** `allowed_tools` is an allow-list of the
   CLI's own tools — built-ins (`"Read"`, `"WebSearch"`) or MCP tools
-  (`"mcp__github__create_issue"`). `[]` (the default) = no tools, tightest sandbox.
-  flow ships no tools.
+  (`"mcp__github__create_issue"`). `[]` (the default) = no node tools; this is
+  not an OS sandbox. The host `flow` tool is a separate CLI entry point, not a
+  grant of tools to workflow nodes.
 - **MCP servers (optional).** A node may declare `mcp_servers` to bring a tool the
   base CLI lacks; flow generates the CLI's MCP config for that node. Secrets use
   `${ENV_VAR}` (resolved at run time — never hardcode a token):
@@ -110,7 +167,7 @@ bounded loops (`loop: {max: N}` on a back-edge), and dynamic fan-out
 ## Commands
 
 ```bash
-xdog-flow validate workflow.json     # fast structural + type check (do this first)
+xdog-flow validate workflow.json     # structural + type check (may import referenced code)
 xdog-flow run      workflow.json     # execute; prints success/message/output/context JSON
 xdog-flow run      workflow.json --input key=value   # override a $in seed
 xdog-flow generate workflow.json -o out.py           # compile to a Python module

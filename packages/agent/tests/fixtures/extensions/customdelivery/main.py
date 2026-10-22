@@ -23,4 +23,3 @@ def setup(api):
     api.command('request', 'Review canonical custom delivery', command)
     async def tool(params, context):
         return await command(json.dumps(params), context)
-    api.tool('request', 'Canonical custom message, not a user input or permission', {'type': 'object'}, tool)

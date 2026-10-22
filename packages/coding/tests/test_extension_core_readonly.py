@@ -11,6 +11,7 @@ import pytest
 from xdog.agent import Agent, AgentConfig
 from xdog.agent.core import CustomAgentMessage
 from xdog.agent.extensions.compaction import CompactionVeto
+from xdog.agent.skills import SkillManager
 from xdog.ai.types import AssistantMessage, TextContent, UserMessage
 from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.config import ClawConfig, GroupDef
@@ -96,7 +97,9 @@ def session(tmp_path, names=(), settings=None):
     def stream(*args):
         calls.append(args)
         return EventStream.empty(AssistantMessage(content=(TextContent(text='RETAINED NATIVE RESPONSE'),)))
-    parent = AgentSession(agent=Agent(stream, config=AgentConfig(model='offline/model', context_window=4000)),
+    parent = AgentSession(agent=Agent(stream,
+                                      skills=SkillManager(tmp_path / "skills"),
+                                      config=AgentConfig(model='offline/model', context_window=4000)),
         session_data=store.create_session(working_dir=tmp_path, model='offline/model'), session_manager=store,
         settings=SettingsManager(global_path=config), working_dir=tmp_path, tool_registry=None, bash=None,
         permissions=PermissionManager('deny'))

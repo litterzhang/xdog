@@ -139,7 +139,8 @@ async def test_two_turns_drain_bounded_events_keep_skills_and_product_persistenc
         assert "TURN-BODY-ONCE" not in _message_text(stream.contexts[1])
         # Explicit selections retire turn skills independently of live defaults.
         assert session._active_skills == frozenset({"guard"})
-        assert session.active_skills == frozenset({"guard"}) | session.capabilities.default_skills
+        assert session.active_skills == (frozenset({"guard"}) | session.capabilities.default_skills
+                                         | session.application_capabilities.default_skills)
         assert session.agent.active_skills == tuple(sorted(session.active_skills))
         loaded = session.session_manager.load_session(session.session_id)
         assert loaded is not None

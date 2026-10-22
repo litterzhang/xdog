@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 
 import pytest
-from xdog.agent.mcp import McpManager
+from xdog.agent.mcp import McpRegistry
 from xdog.agent.mcp.http import HttpClient
 
 SDK_ROOT = os.environ.get('XDOG_MCP_OFFICIAL_SDK_ROOT')
@@ -31,7 +31,7 @@ async def test_official_modern_input_requests_same_owner_reviews_and_exact_fresh
     else:
         config = {'command': NODE, 'args': [str(PEER), transport, str(log)], 'timeout': 5}
     config['roots'] = [{'uri': 'file:///explicit', 'name': 'Explicit'}]
-    manager, work = McpManager({'sdk': config}, tmp_path), None
+    manager, work = McpRegistry({'sdk': config}, tmp_path), None
     try:
         await manager.connect('sdk')
         client = manager._clients['sdk']

@@ -182,6 +182,18 @@ class InboxCoordinator:
             if self._enabled:
                 return
             await self._initialize()
+            # Installed owner capabilities must recover when the execution owner
+            # resumes, not only after its first new human/model turn. Keep this
+            # on the existing controller loop and behind the intake setup fence.
+            if self.controller.owns_current_task:
+                await self.controller.session.initialize_capabilities()
+            else:
+                # Background intake startup cannot race a navigation control.
+                # Rebind/turn operations already own this same serialized route.
+                from xdog.agent.async_work import wait_owned
+                await wait_owned(asyncio.wrap_future(self.controller.control(
+                    self.controller.session.initialize_capabilities, name='capability-owner-start')))
+            self._context()
             await self._drain(initial=True)
             self._context()
             self._enabled = True

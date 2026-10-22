@@ -154,7 +154,7 @@ def test_cli_help_works_in_a_fresh_process(tmp_path: Path, args: tuple[str, ...]
     assert not result.stderr, result.stderr
 
 
-def test_explicit_core_import_still_registers_domain_tools(tmp_path: Path) -> None:
+def test_core_import_is_inert_and_explicit_inventory_contains_domain_tools(tmp_path: Path) -> None:
     _run_python(tmp_path, """
         import sys
         import xdog.claw
@@ -162,13 +162,17 @@ def test_explicit_core_import_still_registers_domain_tools(tmp_path: Path) -> No
         # Inspecting the registry first would itself import core and hide a root regression.
         assert 'xdog.claw.core.tools.registry' not in sys.modules
         import xdog.claw.core
-        from xdog.claw.core.tools.registry import create_tools, registered_names
+        assert 'xdog.claw.core.tools' not in sys.modules
+        assert 'xdog.claw.core.runtime' not in sys.modules
+        assert 'xdog.claw.core.memory' not in sys.modules
+        assert 'xdog.claw.core.skills' not in sys.modules
+        from xdog.claw.core.tools import new_tool_registry
 
         # Representative built-in and domain registrations; new tools may be added freely.
         required = {'filesystem', 'message', 'memory', 'skill'}
-        assert required <= registered_names(), required - registered_names()
-        assert 'group_message' not in registered_names()
-        assert 'eyes' not in registered_names() and 'goal' not in registered_names()
+        assert required <= new_tool_registry().registered_names(), required - new_tool_registry().registered_names()
+        assert 'group_message' not in new_tool_registry().registered_names()
+        assert not {'eyes', 'goal'} & new_tool_registry().registered_names()
         assert 'xdog.eyes.hosting.manager' not in sys.modules
         assert 'xdog.skills.goal' not in sys.modules
         from xdog.agent.capabilities import CapabilitySet
@@ -176,17 +180,19 @@ def test_explicit_core_import_still_registers_domain_tools(tmp_path: Path) -> No
         assert 'eyes' in application.declared_tools
         assert application.tools == ()  # Discovery is not a live service binding.
         try:
-            create_tools(enabled=('group_message',))
+            new_tool_registry().create_tools(names=('group_message',))
         except ValueError as exc:
             assert 'Unknown tools' in str(exc)
         else:
             raise AssertionError('Legacy tool name is still accepted')
-        tools = create_tools(enabled=tuple(sorted(required)))
+        tools = new_tool_registry().create_tools(names=tuple(sorted(required)))
         assert {tool.name for tool in tools} == required
         message = next(tool for tool in tools if tool.name == 'message')
-        assert message.parameters['properties']['action']['enum'] == ['send']
-        assert set(message.parameters['required']) == {'action', 'group_id', 'text'}
-        for name in ('group_id', 'text'):
+        assert message.parameters['properties']['action']['enum'] == ['channels', 'send']
+        assert set(message.parameters['required']) == {'action'}
+        assert message.parameters['additionalProperties'] is False
+        assert not {'group_id', 'recipient', 'channels'} & message.parameters['properties'].keys()
+        for name in ('channel', 'text', 'reference'):
             assert message.parameters['properties'][name]['type'] == 'string'
     """)
 
@@ -206,3 +212,45 @@ def test_internal_application_entry_points_remain_importable(tmp_path: Path) -> 
         ):
             assert callable(entrypoint)
     """)
+
+
+def _direct_eyes_dependencies(source: str) -> list[str]:
+    """Flag imports and literal CLI/dynamic-import calls, not generic user tools."""
+    violations = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            names = [node.module or '']
+        elif isinstance(node, ast.Call):
+            names = [value.value for value in ast.walk(node)
+                     if isinstance(value, ast.Constant) and isinstance(value.value, str)]
+        else:
+            continue
+        for name in names:
+            if name == 'xdog.eyes' or 'xdog.eyes.' in name or 'xdog-eyes' in name:
+                violations.append(f'{node.lineno}: {name}')
+    return violations
+
+
+@pytest.mark.parametrize('source', [
+    'import xdog.eyes',
+    'from xdog.eyes._daemon_control import DaemonControl',
+    'importlib.import_module("xdog.eyes.hosting.manager")',
+    '__import__("xdog.eyes")',
+    'subprocess.run(["xdog-eyes", "status"])',
+    'await asyncio.create_subprocess_exec("python", "-m", "xdog.eyes.cli", "status")',
+    'os.system("xdog-eyes daemon status")',
+])
+def test_source_boundary_detects_direct_eyes_imports_and_cli_calls(source: str) -> None:
+    assert _direct_eyes_dependencies(source)
+
+
+def test_claw_product_sources_use_no_direct_eyes_imports_or_cli_invocations() -> None:
+    root = Path(__file__).resolve().parents[1] / 'src/xdog/claw'
+    violations = {str(path.relative_to(root)): found for path in sorted(root.rglob('*.py'))
+                  if (found := _direct_eyes_dependencies(path.read_text(encoding='utf-8')))}
+    assert not violations, violations
+    assert not _direct_eyes_dependencies("capabilities = CapabilitySet('application')")
+    assert not _direct_eyes_dependencies('await tool.execute(call_id, arguments, ctx=context)')
+    assert not _direct_eyes_dependencies('subprocess.run(user_arguments)')

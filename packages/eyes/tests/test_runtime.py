@@ -128,7 +128,7 @@ async def test_cli_uses_unix_acp_without_coding_cli(tmp_path,observer_data,unix_
 
     from xdog.eyes import process
     from xdog.eyes.cli import main
-    from xdog.eyes.local_control import runtime_location
+    from xdog.eyes.local_control import daemon_location
 
     path,events,gate,writers = unix_peer
     (tmp_path/'src').mkdir()
@@ -142,25 +142,27 @@ async def test_cli_uses_unix_acp_without_coding_cli(tmp_path,observer_data,unix_
     try:
         assert await asyncio.to_thread(main,['start',str(definition)])==0
         identifier = json.loads(capsys.readouterr().out)['registration_id']
-        child = process._children[str(runtime_location(tmp_path).directory)]
+        child = process._children[str(daemon_location().directory)]
         assert await asyncio.to_thread(main,['start',str(definition)])==0
         assert json.loads(capsys.readouterr().out)['registration_id']==identifier
         async with asyncio.timeout(5):
             while True:
                 assert await asyncio.to_thread(main,['status',identifier])==0
-                row = json.loads(capsys.readouterr().out)['registrations'][0]
+                row = json.loads(capsys.readouterr().out)
                 if row['sources']['files']=='watching':
                     break
                 await asyncio.sleep(0.02)
         (tmp_path/'src'/'a.py').write_text('changed')
         await wait_for(lambda:any(kind=='prompt' for kind,value in events))
         assert await asyncio.to_thread(main,['stop',identifier])==0
-        assert json.loads(capsys.readouterr().out)['stopped'] is True
+        assert json.loads(capsys.readouterr().out)['state'] == 'cancelled'
+        assert child.poll() is None  # last cancel does not stop a shared daemon
+        assert await asyncio.to_thread(main,['daemon','stop']) == 0
         assert await asyncio.to_thread(child.wait,timeout=5)==0
-        assert not runtime_location(tmp_path).socket.exists()
+        assert not daemon_location().socket.exists()
     finally:
-        if identifier is not None and child is not None and child.poll() is None:
-            await asyncio.to_thread(main,['stop',identifier])
+        await asyncio.to_thread(main,['daemon','stop'])
+        if child is not None and child.poll() is None:
             await asyncio.to_thread(child.wait,timeout=5)
 
 
@@ -224,14 +226,14 @@ async def test_runtime_shutdown_settles_a_direct_pending_start(tmp_path,observer
         await asyncio.gather(serving,return_exceptions=True)
 
 
-async def test_crashed_runtime_is_not_restarted_by_status_and_explicit_start_rebaselines(
+async def test_crashed_daemon_status_is_readonly_and_explicit_start_restores_original_cursor(
     tmp_path,observer_data,unix_peer,monkeypatch,capsys
 ):
     import json
 
     from xdog.eyes import process
     from xdog.eyes.cli import main
-    from xdog.eyes.local_control import runtime_location
+    from xdog.eyes.local_control import daemon_location
 
     path,events,gate,writers = unix_peer
     (tmp_path/'src').mkdir()
@@ -242,30 +244,29 @@ async def test_crashed_runtime_is_not_restarted_by_status_and_explicit_start_reb
     monkeypatch.chdir(tmp_path)
     assert await asyncio.to_thread(main,['start',str(document)])==0
     first = json.loads(capsys.readouterr().out)['registration_id']
-    location = runtime_location(tmp_path)
+    location = daemon_location()
     child = process._children[str(location.directory)]
     child.kill()
     await asyncio.to_thread(child.wait,timeout=5)
     changed.write_text('changed while no observer exists')
-    assert await asyncio.to_thread(main,['status'])==2
+    assert await asyncio.to_thread(main,['status'])==0
     capsys.readouterr()
     assert len([e for e in events if e[0]=='initialize'])==1
     assert await asyncio.to_thread(main,['start',str(document)])==0
     second = json.loads(capsys.readouterr().out)['registration_id']
-    assert first!=second
+    assert first==second
     new_child = process._children[str(location.directory)]
     try:
         async with asyncio.timeout(5):
             while True:
                 await asyncio.to_thread(main,['status',second])
-                row = json.loads(capsys.readouterr().out)['registrations'][0]
+                row = json.loads(capsys.readouterr().out)
                 if row['sources']['files']=='watching':
                     break
                 await asyncio.sleep(0.01)
-        await asyncio.sleep(0.2)
-        assert not [e for e in events if e[0]=='prompt']
+        await wait_for(lambda:any(e[0]=='prompt' for e in events))
     finally:
-        await asyncio.to_thread(main,['stop',second])
+        await asyncio.to_thread(main,['daemon','stop'])
         await asyncio.to_thread(new_child.wait,timeout=5)
 
 

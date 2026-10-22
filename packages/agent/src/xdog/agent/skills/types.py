@@ -50,6 +50,17 @@ class Skill:
         return self.path.parent if self.path is not None else None
 
 
+def validate_active_skill(slug: str, skill: Skill | None) -> None:
+    """Explicit activation must bind the exact slug and nonempty instructions."""
+    from xdog.agent.skills.manager import is_valid_skill_name
+
+    if not isinstance(slug, str) or not is_valid_skill_name(slug):
+        raise ValueError(f"Invalid active skill slug: {slug!r}")
+    if (not isinstance(skill, Skill) or skill.slug != slug or skill.scope not in ("session", "turn")
+            or not isinstance(skill.content, str) or not skill.content.strip()):
+        raise ValueError(f"Active skill {slug!r} is missing, empty or has an invalid binding")
+
+
 @dataclass(frozen=True)
 class SkillPlacement:
     """Detached prompt placement; hosts may resolve filesystem skills in owned IO."""
@@ -69,4 +80,15 @@ class SkillPlacement:
         return cls(tuple(dict.fromkeys(selected)), index, fixed, tuple(transient), tuple(resolved.values()))
 
     def unpack(self) -> tuple[str, str, list[Skill], dict[str, Skill]]:
+        from xdog.agent.agent import _skill_preamble
+
+        if (self.slugs != tuple(dict.fromkeys(self.slugs))
+                or tuple(skill.slug for skill in self.resolved) != self.slugs):
+            raise ValueError("Prepared skills do not bind every selected slug exactly once")
+        for slug, skill in zip(self.slugs, self.resolved, strict=True):
+            validate_active_skill(slug, skill)
+        if (self.transient != tuple(skill for skill in self.resolved if skill.expires_after_turn)
+                or self.fixed != _skill_preamble([skill for skill in self.resolved if not skill.expires_after_turn])
+                or not isinstance(self.index, str)):
+            raise ValueError("Prepared skills have inconsistent prompt placement")
         return self.index, self.fixed, list(self.transient), {skill.slug: skill for skill in self.resolved}

@@ -128,6 +128,7 @@ import asyncio,json,sys
 from pathlib import Path
 from dataclasses import replace
 from xdog.agent import Agent,AgentConfig
+from xdog.agent.skills import SkillManager
 from xdog.agent.session_input import TYPE,decode_input
 from xdog.ai.types import AssistantMessage,TextContent,UserMessage
 from xdog.ai.utils.event_stream import EventStream
@@ -153,7 +154,7 @@ async def maximum_input(manager,root):
  def model(*args):
   calls.append(args)
   return EventStream.empty(AssistantMessage(content=(TextContent(text='maximum handled'),)))
- session=AgentSession(agent=Agent(model,config=AgentConfig(model='test')),
+ session=AgentSession(agent=Agent(model,config=AgentConfig(model='test'),skills=SkillManager(root/'skills')),
   session_data=manager.load_session(data.session_id),session_manager=manager,
   settings=SettingsManager(global_path=root/'settings.json'),working_dir=root,tool_registry=None,bash=None)
  runtime=SessionRuntime(session,bound=True,inbox_store=store)
@@ -183,7 +184,7 @@ async def main():
  def model(_,context,options):
   calls.append(context)
   return EventStream.empty(AssistantMessage(content=(TextContent(text='wheel batch answer'),)))
- session=AgentSession(agent=Agent(model,config=AgentConfig(model='test')),
+ session=AgentSession(agent=Agent(model,config=AgentConfig(model='test'),skills=SkillManager(root/'skills')),
   session_data=manager.load_session(data.session_id),session_manager=manager,
   settings=SettingsManager(global_path=root/'settings.json'),working_dir=root,tool_registry=None,bash=None)
  try:
@@ -222,73 +223,61 @@ asyncio.run(main())
 
 
 CLAW = r'''
-import asyncio, json, os, sys, tempfile
+import asyncio,json,os,sys,tempfile
 from pathlib import Path
-for key in ('XDG_CONFIG_HOME','XDG_DATA_HOME','XDG_STATE_HOME'):
- os.environ[key]=str(Path.cwd()/key.lower())
+from acp import PROTOCOL_VERSION,connect_to_agent
 from xdog.ai.types import AssistantMessage,TextContent,DoneEvent
 from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.config import ClawConfig
 from xdog.claw.core.runtime.orchestrator import Orchestrator
-from xdog.claw.core.types import Group,GroupConfig
+from xdog.claw.core.types import Group
 from xdog.claw.core.inputs.models import InputScope
-from xdog.eyes.hosting.journal import ObserverJournal
-from xdog.claw.core.runtime.application_ports import ApplicationPorts
 from xdog.claw.acp.server import ClawAcpServer
-from xdog.eyes.acp_client import AcpClient
-from xdog.eyes.connections import UnixConnection
 import xdog.claw.core.inputs.store as storage
 assert Path(storage.__file__).is_relative_to(Path(sys.prefix))
+class Client:
+ async def session_update(self,**kwargs):raise AssertionError('enqueue has no model response stream')
+async def connect(endpoint):
+ reader,writer=await asyncio.open_unix_connection(endpoint)
+ connection=connect_to_agent(Client(),writer,reader)
+ await connection.initialize(protocol_version=PROTOCOL_VERSION)
+ return connection,writer
 async def main():
- root=Path.cwd()
- entered,release=asyncio.Event(),asyncio.Event()
- calls=[]
+ root=Path.cwd();entered,release=asyncio.Event(),asyncio.Event();calls=[]
  def model(_,context,options=None):
-  calls.append(context)
-  response=AssistantMessage(content=(TextContent(text='wheel Claw reply'),))
+  calls.append(context);response=AssistantMessage(content=(TextContent(text='wheel Claw reply'),))
   async def events():
-   entered.set()
-   await release.wait()
-   yield DoneEvent(message=response)
+   entered.set();await release.wait();yield DoneEvent(message=response)
   future=asyncio.get_running_loop().create_future();future.set_result(response)
   return EventStream.from_async_generator(events(),result_future=future)
  app=Orchestrator(ClawConfig(data_dir=str(root/'app')),model='test/dummy',stream_fn=model)
- app.register_group(Group(id='main',workspace=str(root),enabled_tools=(),config=GroupConfig()))
- await app.start()
- inputs=await app.input_service();scope=InputScope('main',root)
+ app.register_group(Group(id='main',workspace=str(root),enabled_tools=()))
+ await app.start();inputs=await app.input_service();scope=InputScope('main',root)
  namespace=await inputs.store.namespace(scope)
  with tempfile.TemporaryDirectory(prefix='claw-wheel-') as private:
-  endpoint=Path(private)/'acp.sock'
-  server=await ClawAcpServer.start(app,endpoint)
-  client=AcpClient(UnixConnection(endpoint),'group:main',root,delivery='enqueue')
-  params={'session_id':'group:main','cwd':str(root),'message_id':'wheel-event',
-          'instruction':'Check the deployment requested ten minutes earlier and report.',
+  endpoint=Path(private)/'acp.sock';server=await ClawAcpServer.start(app,endpoint)
+  conn,writer=await connect(endpoint)
+  params={'session_id':'group:main','message_id':'wheel-event','instruction':'Inspect the delegated evidence.',
           'source':'Eyes','evidence':[{'type':'scheduler.due'}],'provenance':{}}
   try:
-   await client.connect();assert client.inbox_id==namespace
-   assert (await client.enqueue(params))['status']=='queued'
-   await asyncio.wait_for(entered.wait(),5)
-   await client.close();await server.close()
+   status=await conn.ext_method('xdog/inbox_status',{'session_id':'group:main'})
+   assert status['inbox_id']==namespace and status['cwd']==str(root)
+   assert (await conn.ext_method('xdog/enqueue',params))['status']=='queued'
+   await asyncio.wait_for(entered.wait(),10)
+   await conn.close();writer.close();await writer.wait_closed();await server.close()
    assert (await inputs.store.get(scope,'wheel-event')).status=='running'
-   server=await ClawAcpServer.start(app,endpoint)
-   client=AcpClient(UnixConnection(endpoint),'group:main',root,delivery='enqueue')
-   await client.connect();assert client.inbox_id==namespace
-   status=await client.inbox_status('wheel-event')
-   assert status['messages'][0]['status']=='running'
-   release.set()
-   result=await asyncio.wait_for(inputs.wait(scope,'wheel-event'),5)
+   server=await ClawAcpServer.start(app,endpoint);conn,writer=await connect(endpoint)
+   status=await conn.ext_method('xdog/inbox_status',{'session_id':'group:main','message_id':'wheel-event'})
+   assert status['inbox_id']==namespace and status['messages'][0]['status']=='running'
+   release.set();result=await asyncio.wait_for(inputs.wait(scope,'wheel-event'),10)
    assert result.status=='succeeded' and result.response=='wheel Claw reply'
-   assert (await client.enqueue(params))['status']=='duplicate' and len(calls)==1
-   journal=await ObserverJournal.open(root/'app'/'observer'/'state.sqlite3',ApplicationPorts(app,endpoint))
-   try:
-    saved=await journal.create('main',root,'storage-only',{'version':2})
-    assert saved.inbox_id==namespace
-   finally:await journal.close()
-   assert (await inputs.store.get(scope,'wheel-event')).status=='succeeded'
-   print(json.dumps({'claw':'wheel-only generic Unix ACP, authoritative core receipt, endpoint restart',
-                     'model_calls':len(calls),'observer_journal_independent':True}))
+   assert (await conn.ext_method('xdog/enqueue',params))['status']=='duplicate' and len(calls)==1
+   assert result.envelope.reply is None
+   assert not (root/'app'/'observers').exists()
+   print(json.dumps({'claw':'ordinary Unix ACP intake, cwdless enqueue, exact Core receipt, endpoint restart',
+                     'model_calls':len(calls),'implicit_chat_reply':False,'managed_observers':False}))
   finally:
-   release.set();await client.close();await server.close();await app.stop()
+   release.set();await conn.close();writer.close();await writer.wait_closed();await server.close();await app.stop()
 asyncio.run(main())
 '''
 
@@ -304,6 +293,11 @@ def main() -> None:
     uv = shutil.which('uv')
     if uv is None:
         raise RuntimeError('uv is required for artifact verification')
+    # Credentials/config/runtime are isolated; sharing only uv's inert package
+    # cache lets offline wheel/dependency verification use already cached artifacts.
+    environment['UV_CACHE_DIR'] = subprocess.check_output([uv, 'cache', 'dir'], text=True).strip()
+    environment.update(XDG_DATA_HOME=str(home / '.local/share'), XDG_STATE_HOME=str(home / '.local/state'),
+                       CODING_DIR=str(home / 'coding'))
     result = {'distributions': str(dist), 'root': str(root), 'environments': {}}
     for name, packages, script in (
         ('eyes', ('eyes',), EYES),
@@ -322,6 +316,7 @@ def main() -> None:
         wheels = [str(next(dist.glob('xdog_' + package + '-*.whl'))) for package in packages]
         subprocess.run([uv, 'pip', 'install', '--python', str(python), 'agent-client-protocol==0.12.1', *wheels],
                        env=environment, cwd=root, check=True)
+        environment['XDOG_EYES_RUNTIME_DIR'] = str(work / 'eyes-daemon')
         file = work / 'consumer.py'
         file.write_text(script)
         args = [str(python), str(file)]
@@ -329,20 +324,26 @@ def main() -> None:
             peer = work / 'peer.py'
             peer.write_text(AGENT_PEER)
             args.append(str(peer))
-        subprocess.run(args, env=environment, cwd=work, check=True, timeout=30)
-        if name == 'claw':
-            output_probe = work / 'output_consumer.py'
-            output_probe.write_text(Path(__file__).with_name('verify_claw_output_artifact.py').read_text())
-            subprocess.run([str(python), str(output_probe)], env=environment, cwd=work, check=True, timeout=30)
-            native_probe = work / 'native_consumer.py'
-            native_probe.write_text(Path(__file__).with_name('verify_claw_native_artifact.py').read_text())
-            subprocess.run([str(python), str(native_probe)], env=environment, cwd=work, check=True, timeout=30)
-            observer_probe = work / 'observer_output_consumer.py'
-            observer_probe.write_text(Path(__file__).with_name('verify_claw_observer_output_artifact.py').read_text())
-            subprocess.run([str(python), str(observer_probe)], env=environment, cwd=work, check=True, timeout=40)
-        if name == 'eyes':
-            subprocess.run([str(env / 'bin' / 'xdog-eyes'), '--help'],
-                           env=environment, cwd=work, check=True, stdout=subprocess.DEVNULL)
+        try:
+            subprocess.run(args, env=environment, cwd=work, check=True, timeout=30)
+            if name == 'claw':
+                output_probe = work / 'output_consumer.py'
+                output_probe.write_text(Path(__file__).with_name('verify_claw_output_artifact.py').read_text())
+                subprocess.run([str(python), str(output_probe)], env=environment, cwd=work, check=True, timeout=30)
+                native_probe = work / 'native_consumer.py'
+                native_probe.write_text(Path(__file__).with_name('verify_claw_native_artifact.py').read_text())
+                subprocess.run([str(python), str(native_probe)], env=environment, cwd=work, check=True, timeout=30)
+                observer_probe = work / 'observer_output_consumer.py'
+                observer_probe.write_text(Path(__file__).with_name('verify_claw_observer_output_artifact.py').read_text())
+                subprocess.run([str(python), str(observer_probe)], env=environment, cwd=work, check=True, timeout=40)
+            if name == 'eyes':
+                subprocess.run([str(env / 'bin' / 'xdog-eyes'), '--help'],
+                               env=environment, cwd=work, check=True, stdout=subprocess.DEVNULL)
+        finally:
+            if 'eyes' in packages:
+                # Only this probe's explicit temporary instance, never a user daemon.
+                subprocess.run([str(python), '-m', 'xdog.eyes', 'daemon', 'stop'],
+                               env=environment, cwd=work, check=True, timeout=35)
         result['environments'][name] = str(env)
     (root / 'verification.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result, indent=2))

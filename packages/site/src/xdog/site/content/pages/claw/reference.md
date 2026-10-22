@@ -25,13 +25,11 @@ Coding's SDK is separate and is not removed by this boundary.
   messages, status, reset and negotiated product controls. Capabilities, request/
   connection/group ownership and context revisions fence control requests. It is
   not a general public embedding API; unsupported controls must not be guessed.
-- **Optional Unix ACP ingress**: configure explicitly with `acp_socket_path` or
-  `gateway start --acp-socket PATH`. Installed `xdog-eyes` also supplies managed
-  capability automatically: the gateway reuses `acp_socket_path` or owns the private
-  `data_dir/acp/agent.sock` endpoint, without another daemon.
-  ACP uses explicit `group:<id>` addresses and exact workspace validation. Prompt
-  and negotiated durable enqueue enter the existing group inbox/queue and active
-  Agent, not a second loop or a historical-session activation route.
+- **Default private Unix ACP ingress**: the gateway opens `data_dir/acp/agent.sock`;
+  `acp_socket_path` or `gateway start --acp-socket PATH` overrides the address.
+  ACP addresses the existing `group:<id>` main Agent through ordinary durable
+  input. Enqueue can omit cwd; a supplied cwd must match the target group.
+  It creates no second Agent loop or implicit chat reply route.
 - Pending ACP inputs survive receiver restart; interrupted execution and uncertain
   effects are not automatically replayed. No socket/capability bypasses tool policy
   or grants approval. There is no hosted control plane or public TCP endpoint.
@@ -39,24 +37,32 @@ Coding's SDK is separate and is not removed by this boundary.
 See the [ACP setup and recovery boundaries](https://github.com/litterzhang/xdog/blob/main/docs/claw-eyes-acp.md)
 for the private endpoint contract and receipt/cancellation limits.
 
-## Optional managed Eyes
+## Optional Eyes and Flow capabilities
 
-Installed `xdog-eyes` provides the gateway-managed, group-scoped `eyes` tool
-without an `eyes_enabled` setting. Claw never installs the package automatically;
-without it, base chat continues without managed Eyes. Package presence creates no
-observers: new observers require an explicit user request. The host binds the
-current group, exact workspace and private ACP destination; model arguments and
-source labels cannot override them or grant tool permissions. Standalone ACP
-configuration remains explicit and independent.
+Installed `xdog-eyes` and `xdog-flow` are discovered as application capabilities
+through the shared Agent SDK. The host does not install packages automatically.
+SkillManager makes their packaged skills discoverable, but full bodies are loaded
+only on explicit activation. Tools remain subject to host permission/read-only
+and per-Agent selection; a skill is never an execution grant.
 
-With the package installed, startup retains recovery of already accepted managed
-**time** observers, including due/pending one-offs through downtime. Reconcile
-original input IDs and receipts; never automatically replay running, interrupted
-or outcome-unknown execution. Recurring recovery skips missed periods, and ordinary
-file observers do not automatically resume. Intake, execution and output delivery
-are separate facts; unknown sends are not automatically retried. Stopping a source
-does not withdraw accepted input or stop its reports; notification cancellation
-and actual Core input/execution cancellation remain separate and cannot undo effects.
+Eyes uses an independent user-local daemon, normally `~/.local/share/xdog/eyes`.
+The registered tool invokes the public Eyes CLI. Each registration has an explicit
+caller-selected owner; its saved JSON sources/handlers/routes determine what to
+observe and where to deliver. It is not restricted to the creating group or
+workspace. No observer is created merely by installation or skill discovery.
+Claw owns no observer journal, notification cancellation or creator-reply capture.
+Closing a tool binding does not stop the daemon. Cancelling a source does not
+withdraw accepted target work, reverse effects or cancel chat output.
+
+Flow has no daemon. Each tool invocation runs its existing CLI as a separate
+owned process. CLI execution, including workflow code and imports, requires the
+normal host authorization. Neither capability starts another Agent loop.
+
+An ACP ACK proves durable intake, not execution or channel delivery. ACP execution
+has no implicit chat recipient; the main Agent uses the normal message tool if
+an authorized user-facing notification is required. Unknown/interrupted effects
+are not automatically retried. Incompatible persistent formats are reported and
+left untouched rather than migrated or replayed.
 
 ## Workspace files
 
@@ -71,7 +77,7 @@ running `onboard`) changes the agent.
 | `USER.md` | What the agent knows about the user. |
 | `MEMORY.md` | Long-term memory snapshot. |
 | `BOOTSTRAP.md` | One-time first-run setup, consumed then deleted. |
-| `.xdog/goals/<goal_id>/` | Disposable Goal projections; authoritative state is the optional package's private journal under `data_dir/groups/<id>/goals/`. |
+| `.xdog/goals/<goal_id>/` | Goal plans, progress and authoritative task files; the private registry under `data_dir/groups/<id>/goals/` owns binding/history. |
 
 ## CLI — `xdog-claw`
 
@@ -119,23 +125,19 @@ and explicitly rejected. Legacy branch/checkpoint files are not deleted or activ
 Startup restores only the current committed context; uncertain requests and
 interrupted side effects are not automatically replayed. Coding branching is unchanged.
 
-## Optional Goal tool and roles
+## Optional Goal tool and skill
 
-Installing the optional Goal distribution makes the capability and built-in skill
-available automatically, with no enable setting. Availability is not delegation. The
-same `xdog-skills` service/skill is reused by Coding. Parent actions include create,
-list/status, add_task, assign, accept_task, revise, wait/pause/resume, abandon,
-cancel_task, cancel_notifications and request_complete. Workers have separately
-bound task_report/context tools. Submitted is not accepted, and only an explicit
-request_complete starts independent readonly review. Turn end is not acceptance.
+Installed `xdog-skills` supplies the same Goal domain/tools used by Coding.
+Availability does not create a Goal. The current main Agent plans, optionally
+delegates, updates task files, reports progress and judges completion. No required
+reviewer or Goal-owned worker scheduler is introduced. The registry owns the
+current binding/history; workspace task files are authoritative, not disposable
+report projections. Completion remains visible until an explicit clear/archive.
 
-Claw's owner is the persistent group/workspace/inbox binding, not its current
-conversation. Context rotation cannot move or delete Goals; original terminal
-child execution supports explicit acceptance without offline replay. Actual human
-input authorizes condition changes/user-pause release; labels cannot. Goal state,
-worker control, source control and notification control remain independent.
-The native Goal widget and implicit Gateway Goal runner are removed. Shared Python
-extension UI and final architecture acceptance remain separately tracked.
+The stable group owns the Goal across context rotation. User waits/pauses and
+tool permission decisions cannot be released by untrusted source labels. Goal
+reminders use ordinary ACP input; the Goal runtime manages only its own optional
+Eyes CLI registration and cannot cancel unrelated observations or accepted work.
 
 ## Child settings and resource boundaries
 
@@ -147,8 +149,8 @@ extension UI and final architecture acceptance remain separately tracked.
 The settings shape is `label`, `instructions`, `tools`, `inherit_context`, `model`,
 `thinking`, `preset`; named presets are explicit data-only trusted configuration.
 They grant no tool approval, role authority, recursion or provider activation.
-Dedicated Goal workers/reviewers use the host-bound Goal workflow, not a plain
-child label/preset claiming to be a privileged role.
+A child label or preset is not a capability, tool grant or privileged role;
+actual parent-owned tool/skill subsets and host permissions remain authoritative.
 
 The main Agent manages child concurrency/waiting/cancellation/closure. There is no
 fixed child runtime timeout, call count, cumulative-token quota, active-child count

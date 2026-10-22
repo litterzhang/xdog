@@ -29,8 +29,13 @@ class GoalView:
             facts = await self.service.summary(goal.id)
             current = facts['current']
             report = facts['latest_report']
+            question = facts['question']
+            question_preview = None if question is None else {
+                **question, **{name: question[name][:160] for name in ('text', 'impact', 'resume_when')},
+                'preview_fields': [name for name in ('text', 'impact', 'resume_when') if len(question[name]) > 160]}
             rows.append({'id': goal.id, 'title': current['title'][:160], 'status': current['status'],
                          'version': current['version'], 'wait_for': current['wait_for'],
+                         'question': question_preview, 'question_record': facts.get('question_record'),
                          'reason': current['reason'][:160], 'next': {**facts['next'],
                              'reason': facts['next']['reason'][:160],
                              'preview_fields': ['reason'] if len(facts['next']['reason']) > 160 else []},

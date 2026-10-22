@@ -7,7 +7,8 @@ import threading
 from pathlib import Path
 
 import pytest
-from xdog.agent.mcp import McpManager
+from xdog.agent.mcp import McpRegistry
+from xdog.agent.skills import SkillManager
 from xdog.coding.core.sessions.ownership import SessionLease, lease_directory
 
 from packages.coding.tests.extension_session_helpers import session as extension_session
@@ -20,8 +21,9 @@ async def test_cleanup_error_cannot_release_writer_before_remaining_real_worker(
     session, calls = extension_session(tmp_path, extra=('contextual',))
     session.mcp.close()
     peer = Path(__file__).parents[2] / 'agent/tests/fixtures/mcp_server.py'
-    session.mcp = McpManager({'fixture': {'command': sys.executable,
+    session.mcp = McpRegistry({'fixture': {'command': sys.executable,
         'args': [str(peer), 'modern', str(tmp_path / 'mcp-requests')]}}, tmp_path)
+    session.agent.set_mcp_registry(session.mcp)
     if mode == 'runtime':
         runtime = session.enable_runtime(bound=False)
         runtime.start(own_thread=True, setup_pending=True)
@@ -165,7 +167,7 @@ async def test_goal_display_cleanup_error_still_closes_actual_domain_store(tmp_p
 
     from packages.coding.tests.test_child_agents import create
 
-    session, _ = create(tmp_path)
+    session, _ = create(tmp_path, skills=SkillManager(tmp_path / 'skills'))
     await session.send_message('initialize installed capability')
     controller = session._sdk_controller
     host = session.capabilities.get("goal")
@@ -250,9 +252,12 @@ async def test_navigation_joins_retired_extension_before_releasing_original_writ
     client = extension._manager._clients['contextual']
     actual_close = client.close
     entered, release = threading.Event(), threading.Event()
+    admission_timeout = 10
     async def gated():
         entered.set()
-        assert await asyncio.to_thread(release.wait, 8)
+        # Outlast both readiness windows; this artificial gate must not expire
+        # before the test reaches its ownership assertions under CPU/IO load.
+        assert await asyncio.to_thread(release.wait, 3 * admission_timeout)
         await actual_close()
     monkeypatch.setattr(client, 'close', gated)
     rebinding = threading.Event()
@@ -268,8 +273,12 @@ async def test_navigation_joins_retired_extension_before_releasing_original_writ
         return await asyncio.to_thread(session.new_session)
     navigation = controller.control(navigate, name='new')
     try:
-        assert await asyncio.to_thread(entered.wait, 3)
-        assert await asyncio.to_thread(rebinding.wait, 3)
+        # Staging starts real extension workers; readiness is not a speed SLA.
+        if not await asyncio.to_thread(entered.wait, admission_timeout):
+            if navigation.done():
+                navigation.result()  # Surface the real operation error before cleanup.
+            pytest.fail('Navigation did not reach the original extension close')
+        assert await asyncio.to_thread(rebinding.wait, admission_timeout)
         await asyncio.sleep(.1)
         assert not navigation.done(), 'Navigation released the old callback owner before worker exit'
         with pytest.raises(RuntimeError, match='owned'):

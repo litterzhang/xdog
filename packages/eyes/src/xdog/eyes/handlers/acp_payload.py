@@ -15,8 +15,10 @@ def observation_details(delivery: Delivery) -> dict[str, Any]:
                            "delivery_id": delivery.id, "event_ids": [event.id for event in delivery.events]}}
 
 
-def enqueue_parameters(delivery: Delivery, *, session_id: str, cwd: str, instruction: str) -> dict[str, Any]:
-    return {"session_id": session_id, "cwd": cwd, "message_id": delivery.id,
+def enqueue_parameters(
+    delivery: Delivery, *, session_id: str, cwd: str | None = None, instruction: str,
+) -> dict[str, Any]:
+    return {"session_id": session_id, **({"cwd": cwd} if cwd is not None else {}), "message_id": delivery.id,
             "instruction": instruction, **observation_details(delivery)}
 
 

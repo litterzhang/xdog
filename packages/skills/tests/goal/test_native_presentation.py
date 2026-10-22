@@ -11,7 +11,9 @@ async def test_native_waiting_status_is_compact_unicode_and_does_not_resume_or_s
     runtime, parent, host, state, sent, authorized, listeners = await setup(tmp_path, monkeypatch)
     try:
         await runtime.service.create('无人值守续跑测试', '真实 Eyes 事件验证', context=OperationContext(True))
-        await runtime.service.change('wait', until='user', reason='子 Agent 权限不足；等待用户确认')
+        await runtime.service.change('wait', until='user', reason='交付目标未定；等待用户选择',
+            question='Which delivery target should be used?', impact='The final target cannot be selected',
+            resume_when='User selects the delivery target')
         await runtime.flush()
         before = await runtime.service.summary()
         authorized[0] = False
@@ -19,7 +21,7 @@ async def test_native_waiting_status_is_compact_unicode_and_does_not_resume_or_s
             text = await parent.extensions.command('goal', args)
             assert 'Goal: 无人值守续跑测试' in text
             assert 'Status: waiting | wait_for: user' in text
-            assert '子 Agent 权限不足；等待用户确认' in text
+            assert '交付目标未定；等待用户选择' in text
             assert 'waiting for user input; no automatic retry' in text
             assert '/goal status --json' in text
             assert r'\u' not in text and '"criteria"' not in text

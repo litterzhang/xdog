@@ -65,7 +65,6 @@ def setup(api):
         return messages
 
     api.command('inspect', 'Read owning configured tools, never permissions', command)
-    api.tool('inspect', 'Read invocation tools, never execute a listed tool', {'type': 'object'}, tool)
     api.on('session_start', event)
     api.on('turn_start', event)
     api.before_tool(pre)

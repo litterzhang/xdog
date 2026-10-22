@@ -30,8 +30,11 @@ def setup(api):
         return json.dumps(value, sort_keys=True)
 
     api.command('probe', 'Read original owner metadata only', lambda args, ctx: probe('command', ctx))
-    api.tool('probe', 'Read original invocation metadata; normal tool policy still applies',
-             {'type': 'object'}, lambda args, ctx: probe('tool', ctx))
+
+    async def pre(name, params, context):
+        await probe('pre', context)
+        return params
+    api.before_tool(pre)
 
     async def event(context):
         if api.settings.get('scope') == 'event':

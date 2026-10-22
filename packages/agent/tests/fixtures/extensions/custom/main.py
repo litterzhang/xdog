@@ -37,5 +37,3 @@ def setup(api):
 
     async def tool(params, context):
         return await command(params.get('mode', ''), context)
-
-    api.tool('view', 'Custom UI data, never host tool approval', {'type': 'object'}, tool)

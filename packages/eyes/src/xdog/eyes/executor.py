@@ -8,8 +8,9 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, replace
-from pathlib import Path
+from typing import Any
 
+from xdog.eyes.checkpoint import data, delivery_data, restore_delivery
 from xdog.eyes.deliveries import Delivery
 from xdog.eyes.detectors.file_change import FileChangeDetector
 from xdog.eyes.detectors.scheduler_due import SchedulerDueDetector
@@ -33,6 +34,7 @@ class _Pending:
     task: asyncio.Task[DeliveryResult] | None = None
     paused: bool = False
     terminal: bool = False
+    inflight: bool = False
 
 
 def _bounded(delivery: Delivery) -> bool:
@@ -59,11 +61,13 @@ async def observe(
     sleep: Callable[[float], Awaitable[None]],
     cancel: asyncio.Event,
     resume: asyncio.Event | None = None,
-    cwd: Path | None = None,
     suspended: asyncio.Event | None = None,
     validate: Callable[[Delivery], None] | None = None,
     wall_clock: Callable[[], float] = time.time,
     scheduler_sources: dict[str, SchedulerSource] | None = None,
+    checkpoint: dict[str, Any] | None = None,
+    save: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    replay_safe: bool = False,
 ) -> None:
     sources = {item.id: item for item in definition.sources if isinstance(item, SourceDef)}
     detectors = {
@@ -72,11 +76,19 @@ async def observe(
     }
     timed_detectors = {item.id: SchedulerDueDetector(item) for item in definition.detectors
                        if not isinstance(item, DetectorDef)}
-    schedulers = (prepare_schedulers(definition, wall_now=wall_clock(), monotonic_now=clock())
+    schedulers = ({} if checkpoint is not None else
+                  prepare_schedulers(definition, wall_now=wall_clock(), monotonic_now=clock())
                   if scheduler_sources is None else scheduler_sources)
+    if checkpoint is not None:
+        from xdog.eyes.models import SchedulerSourceDef
+        schedulers = {item.id: SchedulerSource.restore(item, checkpoint['schedulers'][item.id],
+                      wall_now=wall_clock(), monotonic_now=clock())
+                      for item in definition.sources if isinstance(item, SchedulerSourceDef)}
     active_detectors: tuple[FileChangeDetector | SchedulerDueDetector, ...] = (
         *detectors.values(), *timed_detectors.values())
     router = EventRouter(definition)
+    detector_sources = {item.id: item.source for item in definition.detectors}
+    route_sources = {item.id: detector_sources[item.detector] for item in definition.routes}
     scans: dict[str, asyncio.Task[FileSnapshot]] = {}
     next_scan = {item.id: clock() for item in definition.sources}
     baselined: set[str] = set()
@@ -84,6 +96,32 @@ async def observe(
     pending: dict[str, _Pending] = {}
     backlog: dict[str, Delivery] = {}
     overflowed = False
+
+    if checkpoint is not None:
+        for key, value in checkpoint['detectors'].items():
+            detectors[key].restore(value, now=clock())
+            if value['baseline'] is not None:
+                baselined.add(detectors[key].definition.source)
+        for key, value in checkpoint['pending'].items():
+            ambiguous = value['inflight'] and not replay_safe
+            pending[key] = _Pending(restore_delivery(value['delivery'], definition, registration_id),
+                attempts=value['attempts'], paused=value['paused'] or ambiguous,
+                terminal=value['terminal'] or ambiguous, inflight=value['inflight'])
+        backlog = {key: restore_delivery(value, definition, registration_id)
+                   for key, value in checkpoint['backlog'].items()}
+        overflowed = checkpoint['overflowed']
+
+    async def persist() -> None:
+        if save is not None:
+            await save(data({'version': 1,
+                'detectors': {key: detector.checkpoint() for key, detector in detectors.items()},
+                'schedulers': {key: source.export_checkpoint(wall_now=wall_clock(), monotonic_now=clock())
+                               for key, source in schedulers.items()},
+                'pending': {key: {'delivery': delivery_data(item.delivery), 'attempts': item.attempts,
+                                  'paused': item.paused, 'terminal': item.terminal, 'inflight': item.inflight}
+                            for key, item in pending.items()},
+                'backlog': {key: delivery_data(value) for key, value in backlog.items()},
+                'overflowed': overflowed}))
 
     def report(kind: str, *, source: str = "", delivery: Delivery | None = None, error: str = "",
                receipt: DeliveryResult | None = None) -> None:
@@ -133,11 +171,21 @@ async def observe(
         return await deliver(value)
 
     report("baselining")
+    for identifier in baselined:
+        report("watching", source=identifier)
+    for item in pending.values():
+        if item.terminal:
+            report('delivery_outcome_unknown', delivery=item.delivery,
+                   error='Interrupted delivery is unknown; never automatically replayed')
     for identifier in schedulers:
         report("watching", source=identifier)
     try:
         while not cancel.is_set():
             now = clock()
+            # A deadline that raced the completion ACK was still busy. Capture
+            # source ownership before removing settled pending deliveries, just
+            # like the existing managed scheduler actor's poll-before-ACK rule.
+            busy_sources = {route_sources[key] for key in pending} if save is not None else set()
             if resume is not None and resume.is_set():
                 resume.clear()
                 if overflowed or any(item.terminal for item in pending.values()):
@@ -152,6 +200,7 @@ async def observe(
                 if item.task is None or not item.task.done():
                     continue
                 finished, item.task = item.task, None
+                item.inflight = False
                 try:
                     result = finished.result()
                     if not isinstance(result, DeliveryResult):
@@ -192,7 +241,8 @@ async def observe(
                 break
             for source_id, scheduler in schedulers.items():
                 was_completed = scheduler.completed
-                timed_snapshot = scheduler.poll(wall_now=wall_clock(), monotonic_now=now, suspended=bool(paused))
+                timed_snapshot = scheduler.poll(wall_now=wall_clock(), monotonic_now=now,
+                    suspended=bool(paused or source_id in busy_sources))
                 if timed_snapshot.completed and not was_completed:
                     report("source_completed", source=source_id)
                 if not paused:
@@ -200,6 +250,7 @@ async def observe(
                         if detector.definition.source == source_id:
                             detector.observe(timed_snapshot)
             if paused:
+                await persist()
                 await sleep(0.05)
                 continue
             for source in sources.values():
@@ -239,11 +290,17 @@ async def observe(
                             break
                     if overflowed:
                         break
-            for item in pending.values():
-                if not overflowed and not item.paused and item.task is None and now >= item.retry_at:
-                    item.attempts += 1
-                    report("delivery_processing", delivery=item.delivery)
-                    item.task = asyncio.create_task(send(item.delivery))
+            ready = [item for item in pending.values()
+                     if not overflowed and not item.paused and item.task is None and now >= item.retry_at]
+            for item in ready:
+                item.attempts += 1
+                item.inflight = True
+            # Cursor, debounced detector state and immutable pending identities
+            # commit together BEFORE any handler can observe the delivery.
+            await persist()
+            for item in ready:
+                report("delivery_processing", delivery=item.delivery)
+                item.task = asyncio.create_task(send(item.delivery))
             if not cancel.is_set():
                 await sleep(0.05)
     finally:
@@ -266,7 +323,7 @@ async def observe(
 
 
 class Registration:
-    """Own and await one observer task; active state is not persisted."""
+    """Own one live task; durable checkpoint data stays outside this handle."""
 
     def __init__(
         self,

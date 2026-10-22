@@ -1,4 +1,4 @@
-"""Typed trusted-extension tool results, validated at worker and host boundaries."""
+"""Bounded rich data codec shared by extension command artifacts."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ def details_snapshot(value: Any) -> Any:
 
 def normalize_result(value: Any) -> dict[str, Any]:
     if isinstance(value, str):
-        return {"content": [{"type": "text", "text": value}]}  # Existing text callbacks keep their wire behavior.
+        return {"content": [{"type": "text", "text": value}]}  # Commands may return plain text as well as rich data.
     if isinstance(value, AgentToolResult):
         content = []
         for part in value.content:
@@ -30,21 +30,21 @@ def normalize_result(value: Any) -> dict[str, Any]:
             elif isinstance(part, ImageContent):
                 content.append({"type": "image", "data": part.data, "mimeType": part.mime_type})
             else:
-                raise ValueError("Unsupported typed extension tool content; it was not discarded")
+                raise ValueError("Unsupported typed extension rich content; it was not discarded")
         if type(value.is_error) is not bool:
-            raise ValueError("Invalid typed extension tool error flag")
+            raise ValueError("Invalid typed extension rich error flag")
         value = {"content": content, **({"details": value.details} if value.details is not None else {}),
                  **({"isError": True} if value.is_error else {})}
     if not isinstance(value, dict) or set(value) - {"content", "structuredContent", "details", "isError"}:
-        raise ValueError("Extension tool result must be text or typed content/structuredContent/details/isError")
+        raise ValueError("Extension rich result must be text or typed content/structuredContent/details/isError")
     content = value.get("content", [])
     if not isinstance(content, list) or len(content) > 64:
-        raise ValueError("Extension tool content must contain at most 64 blocks")
+        raise ValueError("Extension rich content must contain at most 64 blocks")
     blocks = []
     images = 0
     for block in content:
         if not isinstance(block, dict):
-            raise ValueError("Invalid extension tool content block")
+            raise ValueError("Invalid extension rich content block")
         kind = block.get("type")
         if kind == "text" and set(block) == {"type", "text"} and isinstance(block.get("text"), str):
             if len(block["text"].encode()) > 1024 * 1024:
@@ -59,11 +59,11 @@ def normalize_result(value: Any) -> dict[str, Any]:
                 raise ValueError("Extension result contains more than four images")
             blocks.append(dict(block))
         else:
-            raise ValueError("Unsupported/invalid extension tool block; it was not silently discarded")
+            raise ValueError("Unsupported/invalid extension rich block; it was not silently discarded")
     result: dict[str, Any] = {"content": blocks}
     if "isError" in value:
         if type(value["isError"]) is not bool:
-            raise ValueError("Invalid extension tool error flag")
+            raise ValueError("Invalid extension rich error flag")
         result["isError"] = value["isError"]
     if "structuredContent" in value:
         result["structuredContent"] = details_snapshot(value["structuredContent"])
@@ -86,7 +86,7 @@ def make_result(
 ) -> dict[str, Any]:
     value: dict[str, Any] = {"content": content or []}
     if type(is_error) is not bool:
-        raise ValueError("Invalid extension tool error flag")
+        raise ValueError("Invalid extension rich error flag")
     if is_error:
         value["isError"] = True
     if structured is not _UNSET:
@@ -94,31 +94,3 @@ def make_result(
     if details is not _UNSET:
         value["details"] = details
     return normalize_result(value)
-
-
-def worker_result(value: Any) -> dict[str, Any]:
-    result = normalize_result(value)
-    if "details" in result:
-        result["xdog_result_details"] = result.pop("details")
-    if not isinstance(value, str):
-        result["xdog_rich_result"] = 1
-    return result
-
-
-def host_result(value: dict[str, Any]) -> dict[str, Any]:
-    if "xdog_rich_result" not in value:
-        return value  # Original text-only callback protocol.
-    if type(value["xdog_rich_result"]) is not int or value["xdog_rich_result"] != 1:
-        raise ValueError("Unsupported extension result version")
-    envelope = {"content": value.get("content", [])}
-    if "isError" in value:
-        envelope["isError"] = value["isError"]
-    if "structuredContent" in value:
-        envelope["structuredContent"] = value["structuredContent"]
-    if "xdog_result_details" in value:
-        envelope["details"] = value["xdog_result_details"]
-    normalized = normalize_result(envelope)
-    result = {**value, **normalized}
-    if "details" in result:
-        result["xdog_result_details"] = result.pop("details")
-    return result

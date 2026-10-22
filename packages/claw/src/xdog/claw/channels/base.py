@@ -30,6 +30,15 @@ class Channel(ABC):
         """Whether this channel can route reports to this group."""
         return True
 
+    def bound_reply(self, group_id: str) -> UserInput | None:
+        """Capture a currently bound proactive destination for the host only.
+
+        Broadcast eligibility is not a recipient binding. Hosts must freeze the
+        returned routing data in a ReplyReference, not expose it in channel lists
+        (it may contain private transport context). No input is submitted here.
+        """
+        return None
+
     async def send_chunk(self, group_id: str, chunk: str) -> None:
         """Send a single chunk of a longer response.
 

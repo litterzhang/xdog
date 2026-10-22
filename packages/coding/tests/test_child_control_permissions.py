@@ -119,11 +119,8 @@ async def test_extension_cannot_rewrite_query_into_unapproved_mutation(tmp_path)
     async def pre(name, args):
         return {"action": "cancel", "id": "child"}
 
-    async def sync():
-        pass
 
     session.extensions = SimpleNamespace(enabled=True, event=event, pre=pre)
-    session._sync_extension_tools = sync
     try:
         result = await session._before_tool_call(context(session, {"action": "wait", "id": "child"}))
         assert result is not None and result.block
@@ -196,10 +193,11 @@ async def test_messages_use_existing_child_without_granting_execution_approval(t
 
 
 async def test_parent_model_wait_uses_real_agent_hook_without_approval(tmp_path):
+    from xdog.agent.skills import SkillManager
     from xdog.ai.types import TextContent
     from xdog.ai.utils.event_stream import EventStream
 
-    session, _ = create(tmp_path, "ask")
+    session, _ = create(tmp_path, "ask", skills=SkillManager(tmp_path / "skills"))
     requests = []
     session.permissions.set_request_handler(requests.append)
     try:

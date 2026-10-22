@@ -24,13 +24,86 @@ _ACTIONS = {
     'plan': {'goal_id', 'content', 'revision', 'offset', 'limit'},
     'report': {'goal_id', 'report'},
     'task_update': {'goal_id', 'task'},
-    'wait': {'goal_id', 'reason', 'until'},
+    'wait': {'goal_id', 'reason', 'until', 'question', 'impact', 'resume_when'},
     'pause': {'goal_id', 'reason'},
     'activate': {'goal_id', 'version', 'reason'},
     'resume': {'goal_id'},
     'complete': {'goal_id', 'summary'},
     'clear': {'goal_id', 'reason'},
 }
+
+
+class _ArgumentError(ValueError):
+    def __init__(self, code: str, action: str, fields: list[str], message: str) -> None:
+        super().__init__(message)
+        self.data = {'code': code, 'action': action, 'fields': fields}
+
+
+def _validate(params: dict[str, Any], properties: dict[str, Any]) -> str:
+    """Action-specific fields first; then exact required paths and strict JSON types."""
+    action = params.get('action')
+    if 'action' not in params:
+        raise _ArgumentError('missing_required', '', ['action'], 'Missing required field: action')
+    if not isinstance(action, str):
+        raise _ArgumentError('type', '', ['action'], 'action must be a string')
+    if action not in _ACTIONS:
+        raise _ArgumentError('unknown_action', action, ['action'], f'Unknown Goal action: {action}')
+    unsupported = sorted(set(params) - {'action'} - _ACTIONS[action])
+    if unsupported:
+        message = f'{action} does not accept fields: {", ".join(unsupported)}'
+        if action == 'update':
+            message += '; accepts goal_id (optional), version, title/outcome/criteria; reason is not accepted'
+        raise _ArgumentError('unsupported_fields', action, unsupported, message)
+    if action == 'wait' and params.get('until', 'user') == 'host':
+        raise _ArgumentError('invalid_value', action, ['until'],
+                             'wait(host) is no longer supported; record capability blockers without a host wait')
+    if action == 'wait' and params.get('until', 'user') != 'user':
+        extra = sorted(set(params) & {'question', 'impact', 'resume_when'})
+        if extra:
+            raise _ArgumentError('unsupported_fields', action, extra,
+                                 'Only wait(user) accepts question/impact/resume_when')
+    required = {'create': ['title'], 'task_update': ['task'], 'report': ['report'],
+                'update': ['version'], 'activate': ['goal_id', 'version', 'reason'],
+                'complete': ['summary']}.get(action, [])
+    if action == 'wait' and params.get('until', 'user') == 'user':
+        required = ['question', 'impact', 'resume_when']
+    missing = [key for key in required if key not in params]
+    if missing:
+        raise _ArgumentError('missing_required', action, missing,
+                             f'{action} missing required fields: {", ".join(missing)}')
+
+    def check(value: Any, schema: dict[str, Any], path: str) -> None:
+        kind = schema['type']
+        valid = (isinstance(value, str) if kind == 'string' else type(value) is int if kind == 'integer'
+                 else type(value) is bool if kind == 'boolean' else isinstance(value, list) if kind == 'array'
+                 else isinstance(value, dict))
+        if not valid:
+            raise _ArgumentError('type', action, [path], f'{action}.{path} must be {kind}')
+        if kind == 'object':
+            extra = sorted(set(value) - set(schema['properties']))
+            if extra:
+                paths = [path + '.' + key for key in extra]
+                raise _ArgumentError('unsupported_fields', action, paths,
+                                     f'{action} does not accept fields: {", ".join(paths)}')
+            missing = [path + '.' + key for key in schema.get('required', []) if key not in value]
+            if missing:
+                raise _ArgumentError('missing_required', action, missing,
+                                     f'{action} missing required fields: {", ".join(missing)}')
+            for key, item in value.items():
+                check(item, schema['properties'][key], path + '.' + key)
+        elif kind == 'array':
+            for index, item in enumerate(value):
+                check(item, schema['items'], f'{path}[{index}]')
+
+    for key, value in params.items():
+        check(value, properties[key], key)
+    if action == 'task_update' and params['task'].get('expected_version') == 0 and 'title' not in params['task']:
+        raise _ArgumentError('missing_required', action, ['task.title'],
+                             'task_update create missing required field: task.title')
+    if action == 'update' and not set(params) & {'title', 'outcome', 'criteria'}:
+        raise _ArgumentError('missing_required', action, ['title', 'outcome', 'criteria'],
+                             'update requires at least one of title/outcome/criteria; reason is not accepted')
+    return action
 
 
 def _strings(value: Any) -> tuple[str, ...]:
@@ -59,6 +132,12 @@ def create_goal_tool(service: GoalService, context: Callable[[], OperationContex
                              {'type': 'string', 'enum': ['baseline', 'advanced', 'unchanged', 'regressed']}
                              if name == 'progress' else {'type': 'string'} if name == 'summary' else
                              {'type': 'array', 'items': {'type': 'string'}}) for name in report_fields}}
+    for name in ('question', 'impact', 'resume_when'):
+        properties[name]['description'] = (
+            'Required nonempty text for wait(until=user), omitted until defaults to user. '
+            'Saved atomically as data, not proof of user delivery or permission.')
+    properties['until']['enum'] = ['user', 'tasks']
+    properties['until']['description'] = 'wait only: user decision/material or task evidence; never host faults.'
     properties['detail']['description'] = 'status only: opt into legacy full tasks and plan; default false.'
     properties['status']['description'] = 'tasks only: exact task status filter.'
     properties['content']['description'] = 'plan: supply to write; omit to read only the plan.'
@@ -69,9 +148,7 @@ def create_goal_tool(service: GoalService, context: Callable[[], OperationContex
         if cancel is not None and cancel.is_set():
             raise asyncio.CancelledError
         try:
-            action = params.get('action')
-            if not isinstance(action, str) or action not in _ACTIONS or set(params) - {'action'} - _ACTIONS[action]:
-                raise ValueError('Unsupported Goal action/fields; Goal does not run workers or reviewers')
+            action = _validate(params, properties)
             identifier = params.get('goal_id', '')
             if not isinstance(identifier, str):
                 raise ValueError('Invalid Goal identity')
@@ -125,6 +202,9 @@ def create_goal_tool(service: GoalService, context: Callable[[], OperationContex
                 page, committed=committed)
             service._check()
             return AgentToolResult.from_text(rendered)
+        except _ArgumentError as exc:
+            return AgentToolResult.from_text(json_text({'error': str(exc), **exc.data}, ensure_ascii=False),
+                                             is_error=True)
         except (ValueError, KeyError, TypeError) as exc:
             return AgentToolResult.from_text(json_text({'error': str(exc)}, ensure_ascii=False), is_error=True)
         # Storage/host failures deliberately propagate to the runtime, not a fake success.
@@ -135,8 +215,11 @@ def create_goal_tool(service: GoalService, context: Callable[[], OperationContex
         'tasks reads task_id or status/worker filters; use next_query unchanged for byte pages. '
         'plan reads when content is omitted, writes when supplied. report records the main Agent assessment '
         'with expected_version; no semantic verdict or wait release. '
+        'wait(user) requires question/impact/resume_when; saving is not delivery. '
+        'update accepts title/outcome/criteria with version and optional goal_id, never reason. '
         'activate requires goal_id/version/reason and releases a satisfied wait; resume only restores a user pause. '
-        'Use the already-loaded goal skill. Explicit user authority is required to create/revise a target '
+        'Use the goal skill; load it through the host skill mechanism if not already active. '
+        'Explicit user authority is required to create/revise a target '
         'or release a user pause.',
         {'type': 'object', 'required': ['action'], 'additionalProperties': False, 'properties': properties},
         execute=execute)

@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from xdog.agent.mcp.manager import McpManager
 from xdog.agent.mcp.oauth import OAuthConfig, OAuthError, OAuthOwner
 from xdog.agent.mcp.oauth_discovery import challenge, issuer_candidates, resource_candidates
+from xdog.agent.mcp.registry import McpRegistry
 
 RESOURCE = "https://resource.test/api/mcp"
 ISSUER = "https://issuer.test/tenant"
@@ -121,7 +121,7 @@ async def test_actual_denial_pointer_and_operation_scope_are_retained_without_re
     monkeypatch.setattr(module, "httpx", SimpleNamespace(
         AsyncClient=lambda **kwargs: original(transport=transport, **kwargs), Limits=httpx.Limits,
         HTTPError=httpx.HTTPError, Headers=httpx.Headers))
-    manager = McpManager({"peer": {"transport": "http", "url": RESOURCE, "oauth": CONFIG}}, tmp_path)
+    manager = McpRegistry({"peer": {"transport": "http", "url": RESOURCE, "oauth": CONFIG}}, tmp_path)
     try:
         with pytest.raises(Exception, match="authorization required"):
             await manager.connect("peer")
@@ -159,7 +159,7 @@ async def test_malformed_received_challenge_does_not_turn_into_a_fallback_author
     monkeypatch.setattr(module, "httpx", SimpleNamespace(
         AsyncClient=lambda **kwargs: original(transport=transport, **kwargs), Limits=httpx.Limits,
         HTTPError=httpx.HTTPError, Headers=httpx.Headers))
-    manager = McpManager({"peer": {"transport": "http", "url": RESOURCE, "oauth": CONFIG}}, tmp_path)
+    manager = McpRegistry({"peer": {"transport": "http", "url": RESOURCE, "oauth": CONFIG}}, tmp_path)
     try:
         with pytest.raises(Exception, match="Invalid MCP authorization challenge"):
             await manager.connect("peer")

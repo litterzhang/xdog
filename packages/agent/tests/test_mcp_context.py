@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from xdog.agent.mcp import McpError, McpManager
+from xdog.agent.mcp import McpError, McpRegistry
 from xdog.agent.mcp.context import prompt_blocks, resource_blocks
 
 FIXTURE = Path(__file__).parent / "fixtures" / "mcp_server.py"
@@ -31,7 +31,7 @@ def test_resource_requires_exactly_one_payload_and_valid_blob():
 async def test_resource_and_prompt_only_servers_connect_and_refresh_without_tools(tmp_path):
     for mode, kind, name in (("context-only", "resource", "fixture://text"), ("prompts-only", "prompt", "review")):
         log = tmp_path / mode
-        manager = McpManager({"fixture": {"command": sys.executable,
+        manager = McpRegistry({"fixture": {"command": sys.executable,
                              "args": [str(FIXTURE), mode, str(log)]}}, tmp_path)
         try:
             await manager.connect("fixture")

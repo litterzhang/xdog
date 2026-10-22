@@ -15,6 +15,13 @@ from xdog.claw.core.runtime.group import GroupRuntime
 from xdog.claw.core.types import Group
 
 
+@pytest.fixture(autouse=True)
+def builtin_extension_inventory_only(monkeypatch):
+    # These unit owners deliberately have no application/group startup service.
+    # Real installed inventory restoration is covered through SDK/Gateway entrypoints.
+    monkeypatch.setattr('xdog.agent.capabilities.runtime.discover', lambda scope: ())
+
+
 def create(tmp_path, *, extensions=()):
     calls = []
     def stream(*args):
@@ -102,7 +109,7 @@ async def test_unavailable_saved_name_does_not_reappear_on_late_registration(tmp
         session = runtime.get_or_create_session(allow_reset=False)
         await session.initialize_extensions()
         assert session.agent.active_tool_selection == ('current_time',)
-        session.agent.set_tools((*session.agent.state.tools, AgentTool(name='missing', parameters={})))
+        session.agent.set_tools((*session.agent.local_tools, AgentTool(name='missing', parameters={})))
         assert session.agent.active_tool_selection == ('current_time',) and not calls
     finally:
         await close(runtime)

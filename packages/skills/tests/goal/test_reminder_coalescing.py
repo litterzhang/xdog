@@ -129,7 +129,8 @@ async def test_unknown_original_after_restart_waits_and_never_sends_new_id(tmp_p
         await runtime._available()
         assert not sent
         current = await runtime.service.current()
-        assert current.status == 'waiting' and current.wait_for == 'host'
+        assert current == goal
+        assert (await runtime.service.summary())['runtime_faults'][-1]['status'] == 'unknown'
         assert runtime.delivery['message_id'] == 'original'
     finally:
         await close(runtime, parent)
@@ -146,7 +147,7 @@ async def test_startup_uses_actual_persisted_execution_fact(tmp_path, monkeypatc
         await runtime._available()
         current = await runtime.service.current()
         assert len(sent) == (1 if fact_status == 'succeeded' else 0)
-        assert current.status == ('active' if fact_status == 'succeeded' else 'waiting')
+        assert current == goal
         await runtime._available()
         assert len(sent) <= 1
     finally:
@@ -193,9 +194,9 @@ async def test_explicit_resume_does_not_reapply_old_failed_execution_fact(tmp_pa
                                                        'settled_at': settled_at, 'message_ids': ['old']})
         await runtime._available()
         waiting = await runtime.service.current()
-        assert waiting.wait_for == 'host'
-        await runtime.service.change('activate', waiting.id, version=waiting.version,
-                                     reason='Actual user inspected the old failure', context=USER)
+        assert waiting.status == 'active' and not waiting.wait_for
+        await runtime.service.change('pause', reason='Actual user inspected the old failure', context=USER)
+        await runtime.service.change('resume', context=USER)
         await runtime.flush()
         await runtime._available()
         assert (await runtime.service.current()).status == 'active' and len(sent) == 1

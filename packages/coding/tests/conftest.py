@@ -2,6 +2,7 @@
 
 import pytest
 from xdog.agent import Agent, AgentConfig
+from xdog.agent.skills import SkillManager
 from xdog.ai.types import AssistantMessage
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core.agent_session import AgentSession
@@ -14,7 +15,8 @@ def coding_session(tmp_path):
     manager = SessionManager(sessions_dir=tmp_path / "sessions")
     data = manager.create_session(model="test", working_dir=tmp_path)
     value = AgentSession(
-        agent=Agent(lambda *_: EventStream.empty(AssistantMessage(content=())), config=AgentConfig(model="test")),
+        agent=Agent(lambda *_: EventStream.empty(AssistantMessage(content=())), config=AgentConfig(model="test"),
+                    skills=SkillManager(tmp_path / "skills")),
         session_data=data,
         session_manager=manager,
         settings=SettingsManager(),
@@ -24,3 +26,11 @@ def coding_session(tmp_path):
     )
     yield value
     value.dispose()
+
+
+@pytest.fixture(autouse=True)
+async def isolated_eyes_daemon():
+    from test_support.eyes_daemon import isolated_eyes_daemon as isolate
+
+    async with isolate(prefix='coding-eyes-') as directory:
+        yield directory

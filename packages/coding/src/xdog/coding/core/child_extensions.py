@@ -171,7 +171,7 @@ class ChildExtensions:
             self.check_parent()
             # Parent hooks retain authority, including in-memory validation
             # established by its commands; a fresh worker alone cannot inherit it.
-            # Only child TOOL executors/state/dialog workers are independent.
+            # Child hook state and dialog workers remain independent.
             if self.parent.enabled:
                 with silent_extension_ui():
                     effective = await self.parent.pre(ctx.tool_call.name, dict(ctx.args))

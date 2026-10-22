@@ -8,7 +8,7 @@ from xdog.eyes.service import ObserverService
 from xdog.eyes.sources.file import FileSnapshot
 
 from packages.eyes.tests.test_handler_registry import record_data, recording
-from packages.eyes.tests.test_managed_scheduler import Clock, until
+from test_support.eyes_clock import Clock, until
 
 __all__ = ['recording']
 
@@ -38,7 +38,7 @@ async def test_explicit_cwd_lifecycle_has_no_ipc_or_automatic_restore(tmp_path, 
     assert (await service.start(deepcopy(data)))['duplicate']
     await until(lambda: scans)
     assert set(scans) == {project}
-    assert instances[0].cwd == project
+    assert not hasattr(instances[0], 'cwd')  # Definition base never becomes handler routing state.
     clock.advance(.1)
     await until(lambda: service.entries[identifier].sources['files'] == 'watching')
     assert (await service.health())['registrations'][0]['state'] == 'watching'

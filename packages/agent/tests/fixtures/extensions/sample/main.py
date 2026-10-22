@@ -10,13 +10,9 @@ def setup(api):
     api.status("mode", "EXTENSION-READY")
     api.status("checks", "Safe declarative status")
 
-    async def tool(params, context):
-        if params.get("value") == "hang":
-            await asyncio.sleep(60)
-        print("EXTENSION-TOOL-PRINT")
-        return "EXTENSION-RESULT-" + params.get("value", "default")
-
     async def command(args, context):
+        if args == "hang":
+            await asyncio.sleep(60)
         api.status("mode", "EXTENSION-COMMAND-STATUS")
         api.notify("EXTENSION-COMMAND-NOTICE")
         return "EXTENSION-COMMAND-" + args
@@ -29,7 +25,7 @@ def setup(api):
         return params
 
     async def post(name, params, result, context):
-        if name.startswith("ext_"):
+        if name == "filesystem":
             return result + "-POST"
         return result
 
@@ -42,8 +38,6 @@ def setup(api):
                 file.write("stopped\n")
         print("EXTENSION-STOP-PRINT")
 
-    api.tool("echo", "A controlled test extension tool", {"type": "object", "properties": {
-        "value": {"type": "string"}}}, tool)
     api.command("hello", "Test extension command", command)
     api.before_tool(pre)
     api.after_tool(post)

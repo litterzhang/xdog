@@ -73,6 +73,15 @@ async def test_session_tool_rejects_other_targets_and_stale_navigation_handles(c
         await asyncio.to_thread(session.new_session)
         with pytest.raises(RuntimeError, match='binding|owner'):
             await selected.execute('inspect', {})
+        # Navigation retains the startup mask until the successor's complete
+        # application/session inventory and extensions are published. Inspection
+        # must wait for that public readiness path, not bypass its tool fence.
+        assert session._tool_selection_restore_pending
+        assert session.agent.active_tool_selection == ()
+        session.agent.set_stream_fn(lambda *_: pytest.fail('Inspection setup must not call a model'))
+        await session.initialize_capabilities()
+        await session.initialize_extensions()
+        assert not session._tool_selection_restore_pending
         assert (await tool(session).execute('inspect', {})).details['session_id'] == session.session_id
         current = tool(session)
         await session.aclose()
@@ -86,7 +95,7 @@ async def test_disabled_session_tool_is_not_advertised_or_implicitly_reenabled(c
     session = coding_session
     try:
         session.agent.set_active_tools([], expected_revision=session.agent.tool_selection_revision)
-        await session._sync_extension_tools()
+        session.tool_registry.publish(session.agent)
         session._rebuild_system_prompt()
         assert not session.agent.active_tools
         prompt = session.agent.state.system_prompt

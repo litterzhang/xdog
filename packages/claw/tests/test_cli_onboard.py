@@ -120,7 +120,7 @@ def test_onboard_rejects_image_tool_without_supported_models(runtime, tmp_path):
 
 
 def test_onboard_default_tool_selection_does_not_enable_images(runtime, tmp_path):
-    from xdog.claw.core.tools import default_enabled_tools
+    from xdog.claw.core.tools import new_tool_registry
 
     runtime.sync_models.return_value = (_model("chat"),)
     result = CliRunner().invoke(cli, ["onboard"], input="n\n1\n\nClaw\n")
@@ -129,7 +129,7 @@ def test_onboard_default_tool_selection_does_not_enable_images(runtime, tmp_path
     from xdog.agent.capabilities import CapabilitySet
 
     capabilities = CapabilitySet("group").declared_tools | CapabilitySet("application").declared_tools
-    assert config.enabled_tools == tuple(sorted(set(default_enabled_tools()) | capabilities))
+    assert config.enabled_tools == tuple(sorted(set(new_tool_registry().default_names()) | capabilities))
     assert "generate_image" not in config.enabled_tools
     assert config.image_model == ""
 
@@ -145,7 +145,7 @@ def test_onboard_reprompts_for_invalid_tools_and_image_choice(runtime, tmp_path)
 
 
 def test_onboard_all_tools_and_numeric_selection(runtime, tmp_path):
-    from xdog.claw.core.tools import registered_names
+    from xdog.claw.core.tools import new_tool_registry
 
     runtime.sync_models.return_value = (_model("chat"), replace(_model("image"), output=("image",)))
     result = CliRunner().invoke(cli, ["onboard"], input="n\n1\nall\n1\nClaw\n")
@@ -153,7 +153,7 @@ def test_onboard_all_tools_and_numeric_selection(runtime, tmp_path):
     from xdog.agent.capabilities import CapabilitySet
 
     capabilities = CapabilitySet("group").declared_tools | CapabilitySet("application").declared_tools
-    names = sorted(registered_names() | capabilities)
+    names = sorted(new_tool_registry().registered_names() | capabilities)
     assert set(load_config(tmp_path / "config.yaml").enabled_tools) == set(names)
     selected = names.index("filesystem") + 1
     result = CliRunner().invoke(cli, ["onboard"], input=f"n\n1\n{selected}\nClaw\n")

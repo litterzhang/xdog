@@ -8,7 +8,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-from xdog.agent.mcp import McpError, McpManager
+from xdog.agent.mcp import McpError, McpRegistry
 from xdog.agent.mcp.config import parse_servers
 
 
@@ -114,7 +114,7 @@ def peer():
 
 
 def manager(url, tmp_path, **options):
-    return McpManager({"http": {"transport": "http", "url": url, "timeout": 2, **options}}, tmp_path)
+    return McpRegistry({"http": {"transport": "http", "url": url, "timeout": 2, **options}}, tmp_path)
 
 
 @pytest.mark.parametrize("mode", ["modern", "sse", "legacy"])

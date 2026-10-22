@@ -5,8 +5,9 @@ import asyncio
 import copy
 import inspect
 import re
+import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from importlib.metadata import entry_points
 from typing import TYPE_CHECKING, Any
 from weakref import WeakValueDictionary
@@ -22,6 +23,17 @@ if TYPE_CHECKING:
     from xdog.agent.extensions.runtime import ExtensionRuntime
 
 _SCOPES = frozenset({"session", "group", "application"})
+
+
+@dataclass(frozen=True)
+class ApplicationPort:
+    """Inert application identity, independent of any conversation or tool owner.
+
+    Hosts retain this marker for their application lifetime. It grants no Agent,
+    filesystem, permission or routing authority and starts no resources.
+    """
+    scope: str = field(default='application', init=False)
+    identity: str = field(default_factory=lambda: uuid.uuid4().hex)
 
 
 @dataclass(frozen=True)
@@ -65,6 +77,7 @@ def discover(scope: str) -> tuple[Any, ...]:
         _names(getattr(provider, "command_names", ()))
         _names(getattr(provider, "optional_requirements", ()))
         _names(getattr(provider, "default_skills", ()))
+        _names(getattr(provider, "skill_names", ()))
         if tools.intersection(selected):
             raise ValueError("Duplicate installed capability tool name")
         names.add(provider.name)
@@ -88,6 +101,13 @@ class CapabilitySet:
         self._owner_loop: asyncio.AbstractEventLoop | None = None
 
     @property
+    def started(self) -> bool:
+        """Whether this original owner completed startup and is not closing."""
+        task = self._start_task
+        return (not self._closing and task is not None and task.done()
+                and not task.cancelled() and task.exception() is None)
+
+    @property
     def declared_tools(self) -> frozenset[str]:
         return frozenset(name for provider in self.providers for name in provider.tool_names)
 
@@ -95,6 +115,17 @@ class CapabilitySet:
     def declared_commands(self) -> frozenset[str]:
         """Inert native command discovery; unrelated local controls need no owner startup."""
         return frozenset(name for provider in self.providers for name in getattr(provider, "command_names", ()))
+
+    @property
+    def declared_skills(self) -> frozenset[str]:
+        """Inert optional discoverable names, independent of skill body scanning.
+
+        A declaration does not require a tool/runtime/extension or activate a
+        skill. SkillManager still discovers packaged skills independently.
+        """
+        return frozenset(name for provider in self.providers
+                         for name in (*getattr(provider, "skill_names", ()),
+                                      *getattr(provider, "default_skills", ())))
 
     @property
     def default_skills(self) -> frozenset[str]:

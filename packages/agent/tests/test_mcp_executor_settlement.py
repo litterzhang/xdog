@@ -5,11 +5,11 @@ import asyncio
 import threading
 
 import pytest
-from xdog.agent.mcp import McpManager
+from xdog.agent.mcp import McpRegistry
 
 
 async def test_cancelled_close_joins_default_executor_before_releasing_owner(tmp_path, monkeypatch):
-    manager = McpManager({}, tmp_path)
+    manager = McpRegistry({}, tmp_path)
     owner_loop = await asyncio.to_thread(manager._ensure_loop)
     owner = manager._thread
     assert owner is not None

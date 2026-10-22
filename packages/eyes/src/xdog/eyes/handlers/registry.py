@@ -7,7 +7,7 @@ from xdog.eyes.handlers.contracts import EventHandler
 from xdog.eyes.models import HandlerDef
 
 HandlerParser = Callable[[object, str, Path], HandlerDef]
-HandlerFactory = Callable[[HandlerDef, Path], EventHandler]
+HandlerFactory = Callable[[HandlerDef], EventHandler]
 
 
 class HandlerRegistry:
@@ -37,24 +37,35 @@ class HandlerRegistry:
             raise ObserverValidationError('Handler parser changed definition identity', path=path)
         return definition
 
-    def create(self, definition: HandlerDef, cwd: Path) -> EventHandler:
+    def create(self, definition: HandlerDef) -> EventHandler:
         factory = self._factories.get(definition.type)
         if factory is None:
             raise ObserverValidationError('Unknown handler type: ' + definition.type, code='unknown_type')
-        return factory(definition, cwd)
+        return factory(definition)
 
 
 def builtin_handlers() -> HandlerRegistry:
     from xdog.eyes.handlers.acp_config import parse_definition
 
-    def create(definition: HandlerDef, cwd: Path) -> EventHandler:
+    def create(definition: HandlerDef) -> EventHandler:
         from xdog.eyes.handlers.acp import AcpHandler
         from xdog.eyes.models import AcpHandlerDef
 
         if not isinstance(definition, AcpHandlerDef):
             raise ValueError('Expected ACP definition')
-        return AcpHandler(definition, cwd=cwd)
+        return AcpHandler(definition)
 
     registry = HandlerRegistry()
     registry.register('acp', parse_definition=parse_definition, create=create)
+    registry.register('events', parse_definition=_parse_events, create=_events_only)
     return registry
+
+
+def _parse_events(value: object, path: str, base_dir: Path) -> HandlerDef:
+    from xdog.eyes.loader import _object, _text
+    row = _object(value, path, {'id', 'type'})
+    return HandlerDef(_text(row.get('id'), path + '.id'), 'events')
+
+
+def _events_only(definition: HandlerDef) -> EventHandler:
+    raise ValueError('events handlers require the durable daemon events delivery mode')

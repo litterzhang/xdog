@@ -49,7 +49,7 @@ async def test_display_cannot_register_critical_hooks_events_or_tools(tmp_path, 
     try:
         await runtime.initialize()
         assert runtime.snapshot()["extensions"] == [{"name": "display", "state": "failed"}]
-        assert not runtime.tools() and runtime.entries.snapshot() == {}
+        assert not hasattr(runtime, "tools") and runtime.entries.snapshot() == {}
         assert await runtime.pre("filesystem", {"action": "read"}) == {"action": "read"}
     finally:
         await runtime.aclose()

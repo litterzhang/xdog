@@ -67,7 +67,9 @@ async def test_stdio_bridge_uses_existing_process_and_leaves_owner_alive(tmp_pat
 
     client = Client()
     try:
-        async with asyncio.timeout(10):
+        # This covers two cold processes, a prompt, and the SDK transport
+        # shutdown grace period; it is not a ten-second performance contract.
+        async with asyncio.timeout(30):
             ready = json.loads(await owner.stdout.readline())
             sid = ready["session_id"]
             async with spawn_agent_process(

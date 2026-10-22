@@ -6,7 +6,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from xdog.agent.mcp import McpManager
+from xdog.agent.mcp import McpRegistry
 from xdog.agent.mcp.oauth import OAuthConfig, OAuthError, OAuthOwner, OAuthReview
 from xdog.agent.mcp.oauth_native_store import NativeCredentialStore
 from xdog.agent.mcp.oauth_store import capture, restore
@@ -48,7 +48,7 @@ else:
 
 async def managed():
     config = {'peer': {'transport': 'http', 'url': resource, 'oauth': profile}}
-    manager = McpManager(config, root, credential_dir=root / 'managed', credential_backend='secret-service')
+    manager = McpRegistry(config, root, credential_dir=root / 'managed', credential_backend='secret-service')
     fresh = None
     try:
         manager._oauth['peer'] = owner
@@ -62,7 +62,7 @@ async def managed():
         assert review['storage_backend'] == 'secret-service' and 'PRIVATE-NATIVE' not in json.dumps(review)
         assert 'NATIVE SECRET SERVICE' in review['storage_notice']
         await manager.manage_auth('peer', 'credentials_save', review['review_id'], lease='one')
-        fresh = McpManager(config, root, credential_dir=root / 'managed', credential_backend='secret-service')
+        fresh = McpRegistry(config, root, credential_dir=root / 'managed', credential_backend='secret-service')
         assert not fresh._oauth and not fresh._clients
         loaded = await fresh.manage_auth('peer', 'credentials_restore_prepare', lease='two')
         assert fresh._oauth['peer'].credential() is None

@@ -1,18 +1,25 @@
-"""Claw tools — registry + domain-less tools.
+"""Claw factory composition for a caller-owned Agent SDK registry.
 
-Agent built-in tools and claw-specific tools without a domain register
-here. Domain tools register in their own ``__init__.py`` and are loaded
-by ``core/__init__.py``.
+Importing a domain never registers tools. Each group owns its registry; inventory
+callers may create a fresh one without starting host resources or capabilities.
 """
-from xdog.agent.tools import create_bash_tool, create_current_time_tool, create_filesystem_tool
-from xdog.claw.core.tools.registry import create_tools, default_enabled_tools, register, registered_names
+from xdog.agent.tools import ToolRegistry
 from xdog.claw.core.tools.tool_generate_image import create_generate_image_tool
+from xdog.claw.core.tools.tool_memory import create_memory_tool
+from xdog.claw.core.tools.tool_message import create_message_tool
+from xdog.claw.core.tools.tool_skill import create_skill_tool
 from xdog.claw.core.tools.tool_todo import create_todo_tool
 
-register("current_time", create_current_time_tool)
-register("filesystem", create_filesystem_tool)
-register("bash", create_bash_tool)
-register("todo", create_todo_tool)
-register("generate_image", create_generate_image_tool)
 
-__all__ = ["create_tools", "default_enabled_tools", "register", "registered_names"]
+def new_tool_registry() -> ToolRegistry:
+    """Add only Claw factories to the SDK's built-in factory inventory."""
+    registry = ToolRegistry()
+    registry.register_factory("memory", lambda context: create_memory_tool(), default=True)
+    registry.register_factory("message", lambda context: create_message_tool(), default=True)
+    registry.register_factory("skill", lambda context: create_skill_tool(), default=True)
+    registry.register_factory("todo", lambda context: create_todo_tool(), default=True)
+    registry.register_factory("generate_image", lambda context: create_generate_image_tool(model=context.image_model))
+    return registry
+
+
+__all__ = ["new_tool_registry"]

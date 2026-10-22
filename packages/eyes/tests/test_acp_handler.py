@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -48,17 +49,22 @@ async def wait_for(predicate):
             await asyncio.sleep(0.01)
 
 
-async def test_generic_sdk_agent_gets_explicit_target_and_untrusted_evidence(tmp_path):
+async def test_generic_sdk_agent_gets_explicit_target_and_untrusted_evidence(tmp_path, monkeypatch):
     from xdog.eyes.handlers.acp import AcpHandler
 
+    caller = tmp_path / "stdio-caller"
+    caller.mkdir()
+    monkeypatch.chdir(caller)
     record = tmp_path / "record;touch should-not-exist"
-    handler = AcpHandler(definition(record), cwd=tmp_path)
+    handler = AcpHandler(replace(definition(record), cwd=tmp_path))
     try:
         await handler.start()
         assert handler.owner_generation is None
         result = await handler.deliver(delivery())
         assert result.status == "succeeded"
         data = rows(record)
+        initialized = next(row for row in data if row["kind"] == "initialize")
+        assert initialized["process_cwd"] == str(caller)
         loaded = next(row for row in data if row["kind"] == "load")
         assert loaded["session_id"] == "target" and loaded["cwd"] == str(tmp_path)
         assert loaded["mcp_servers"] == []
@@ -81,7 +87,7 @@ async def test_update_is_not_completion_and_shared_handler_serializes_prompts(tm
     from xdog.eyes.handlers.acp import AcpHandler
 
     record, gate = tmp_path / "record", tmp_path / "gate"
-    handler = AcpHandler(definition(record, mode="wait", gate=gate), cwd=tmp_path)
+    handler = AcpHandler(replace(definition(record, mode="wait", gate=gate), cwd=tmp_path))
     first = second = None
     try:
         await handler.start()
@@ -118,7 +124,7 @@ async def test_explicit_result_and_disconnect_have_distinct_semantics(tmp_path, 
     from xdog.eyes.handlers.acp import AcpHandler
 
     record = tmp_path / "record"
-    handler = AcpHandler(definition(record, mode=mode), cwd=tmp_path)
+    handler = AcpHandler(replace(definition(record, mode=mode), cwd=tmp_path))
     try:
         async with asyncio.timeout(8):
             await handler.start()
@@ -140,7 +146,7 @@ async def test_extensions_are_used_only_when_negotiated_and_do_not_follow_a_new_
     from xdog.eyes.handlers.acp import AcpHandler
 
     record = tmp_path / "record"
-    handler = AcpHandler(definition(record, mode="changed-owner", xdog=True), cwd=tmp_path)
+    handler = AcpHandler(replace(definition(record, mode="changed-owner", xdog=True), cwd=tmp_path))
     try:
         await handler.start()
         assert handler.owner_generation == "g1"
@@ -154,7 +160,7 @@ async def test_resume_does_not_request_message_execution_permission(tmp_path):
     from xdog.eyes.handlers.acp import AcpHandler
 
     record = tmp_path / "record"
-    handler = AcpHandler(definition(record, mode="deny-resume", xdog=True), cwd=tmp_path)
+    handler = AcpHandler(replace(definition(record, mode="deny-resume", xdog=True), cwd=tmp_path))
     try:
         await handler.start()
         assert not await handler.resume()
@@ -168,7 +174,7 @@ async def test_load_support_and_exact_session_are_required_before_any_prompt(tmp
     from xdog.eyes.handlers.acp import AcpHandler
 
     record = tmp_path / "record"
-    handler = AcpHandler(definition(record, mode="no-load"), cwd=tmp_path)
+    handler = AcpHandler(replace(definition(record, mode="no-load"), cwd=tmp_path))
     try:
         with pytest.raises(ValueError, match="load"):
             await handler.start()
@@ -182,7 +188,7 @@ async def test_negotiated_target_extensions_do_not_require_a_resume_request(tmp_
     from xdog.eyes.handlers.acp import AcpHandler
 
     record = tmp_path / 'record'
-    handler = AcpHandler(definition(record, xdog=True), cwd=tmp_path)
+    handler = AcpHandler(replace(definition(record, xdog=True), cwd=tmp_path))
     try:
         await handler.start()
         for identifier in ('first', 'second'):
@@ -198,7 +204,7 @@ async def test_target_metadata_does_not_grant_message_execution_credit(tmp_path)
     from xdog.eyes.handlers.acp import AcpHandler
 
     record, gate = tmp_path / "record", tmp_path / "human-credit"
-    handler = AcpHandler(definition(record, mode="human-credit", xdog=True, gate=gate), cwd=tmp_path)
+    handler = AcpHandler(replace(definition(record, mode="human-credit", xdog=True, gate=gate), cwd=tmp_path))
     try:
         await handler.start()
         assert (await handler.deliver(delivery())).status == "succeeded"
@@ -216,7 +222,7 @@ async def test_missing_or_false_budget_metadata_does_not_block_second_message(tm
     from xdog.eyes.handlers.acp import AcpHandler
 
     record = tmp_path/'peer.jsonl'
-    handler = AcpHandler(definition(record,mode=mode,xdog=True),cwd=tmp_path)
+    handler = AcpHandler(replace(definition(record,mode=mode,xdog=True), cwd=tmp_path))
     try:
         await handler.start()
         assert (await handler.deliver(delivery())).status=='succeeded'
@@ -230,7 +236,7 @@ async def test_two_prompt_deliveries_need_no_human_credit(tmp_path):
     from xdog.eyes.handlers.acp import AcpHandler
 
     record = tmp_path / 'auto-delivery.jsonl'
-    handler = AcpHandler(definition(record), cwd=tmp_path)
+    handler = AcpHandler(replace(definition(record), cwd=tmp_path))
     try:
         await handler.start()
         assert (await handler.deliver(delivery('first'))).status == 'succeeded'

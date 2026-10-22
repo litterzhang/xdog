@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 
 from xdog.eyes.acp_client import AcpClient, RequestError
 from xdog.eyes.deliveries import Delivery
@@ -15,9 +14,10 @@ from xdog.eyes.models import AcpHandlerDef
 
 
 class AcpHandler:
-    def __init__(self, definition: AcpHandlerDef, *, cwd: Path) -> None:
+    def __init__(self, definition: AcpHandlerDef) -> None:
         self.definition = definition
-        self.client = AcpClient(definition.connection, definition.session, cwd, delivery=definition.delivery)
+        self.client = AcpClient(definition.connection, definition.session, definition.cwd,
+                                delivery=definition.delivery)
         self.state = "new"
         self._health_failed = False
         self._serial = asyncio.Lock()
@@ -96,7 +96,8 @@ class AcpHandler:
 
     async def _enqueue(self, delivery: Delivery) -> DeliveryResult:
         try:
-            parameters = enqueue_parameters(delivery, session_id=self.definition.session, cwd=str(self.client.cwd),
+            parameters = enqueue_parameters(delivery, session_id=self.definition.session,
+                                            cwd=str(self.client.cwd) if self.client.cwd is not None else None,
                                             instruction=self.definition.instruction)
             canonical = json.dumps(parameters, ensure_ascii=True, allow_nan=False, sort_keys=True)
             if len(canonical.encode()) > 1024 * 1024 - 4096:
@@ -171,7 +172,8 @@ class AcpHandler:
             return True
 
     def validate(self, delivery: Delivery) -> None:
-        parameters = (enqueue_parameters(delivery, session_id=self.definition.session, cwd=str(self.client.cwd),
+        parameters = (enqueue_parameters(delivery, session_id=self.definition.session,
+                                            cwd=str(self.client.cwd) if self.client.cwd is not None else None,
                                           instruction=self.definition.instruction)
                       if self.definition.delivery == 'enqueue' else
                       prompt_parameters(delivery, instruction=self.definition.instruction))
@@ -181,7 +183,8 @@ class AcpHandler:
     def snapshot(self) -> HandlerSnapshot:
         return HandlerSnapshot(self.state, {
             'session': self.definition.session, 'delivery': self.definition.delivery,
-            'connected': self.client.connected, 'owner_generation': self.owner_generation})
+            'connected': self.client.connected, 'owner_generation': self.owner_generation,
+            'inbox_id': self.client.inbox_id, 'branch_id': self.client.branch_id})
 
     async def check(self) -> None:
         if self.state in {'processing', 'outcome-unknown', 'closed'}:

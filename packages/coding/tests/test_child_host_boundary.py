@@ -406,24 +406,27 @@ async def test_completed_side_effect_result_survives_parent_revocation_without_r
         await close(session)
 
 
-@pytest.mark.parametrize('revoke_before_call', [False, True])
-async def test_child_extension_executor_is_independent_but_stays_bound_to_original_parent_registration(
-        tmp_path, revoke_before_call):
+@pytest.mark.parametrize('operation', ['reload', 'unload'])
+async def test_child_extensions_keep_independent_hooks_not_delegated_tools(tmp_path, operation):
     import shutil
     from pathlib import Path
+
     source = Path(__file__).parents[2] / 'agent/tests/fixtures/extensions/sample'
     root = tmp_path / 'extensions'
     shutil.copytree(source, root / 'sample')
     (tmp_path / 'settings.json').write_text(json.dumps({'extensions': ['sample'], 'extension_dir': str(root)}))
+    (tmp_path / 'material').write_text('LOCAL-TOOL-RESULT')
     session, _ = create(tmp_path, 'allow-all')
     entered, release = threading.Event(), threading.Event()
     requests, agents = [], []
     await session.initialize_extensions()
-    name = next(tool.name for tool in session.agent.active_tools if tool.name.startswith('ext_sample_'))
+    assert not any(tool.name.startswith('ext_sample_') for tool in session.agent.state.tools)
+
     def stream(model, context, options):
         requests.append(context)
-        message = (AssistantMessage(content=(ToolCall(id='echo1', name=name, arguments={'value': 'child'}),))
-                   if len(requests) == 1 else AssistantMessage(content=(TextContent(text='done'),)))
+        message = (AssistantMessage(content=(ToolCall(id='read1', name='filesystem',
+            arguments={'action': 'read', 'path': 'material'}),)) if len(requests) == 1
+            else AssistantMessage(content=(TextContent(text='done'),)))
         completed = asyncio.get_running_loop().create_future()
         completed.set_result(message)
         async def generate():
@@ -437,27 +440,24 @@ async def test_child_extension_executor_is_independent_but_stays_bound_to_origin
     async def factory(spec, publish):
         agent = await original(spec, publish)
         agents.append(agent)
+        assert session.children.tool_registries[spec.id].tools == tuple(agent.state.tools)
         return agent
     session.children.runtime.factory = factory
     try:
-        identifier = await session.children.runtime.start('work', access='inherit', config={'tools': [name]})
+        identifier = await session.children.runtime.start('work', access='inherit', config={'tools': ['filesystem']})
         assert await asyncio.to_thread(entered.wait, 3)
         assert session.children.extensions.owners[identifier] is not session.extensions
-        assert agents[0].state.tools[0] is not next(tool for tool in session.agent.active_tools if tool.name == name)
-        if revoke_before_call:
-            await session.extensions.manage('unload', 'sample')
-            # Deliberately do not sync parent Agent inventory: stale source identities
-            # alone cannot keep an unloaded extension registration delegated.
-            assert any(tool.name == name for tool in session.agent.active_tools)
+        assert [tool.name for tool in agents[0].state.tools] == ['filesystem']
+        inventory = tuple(session.agent.state.tools)
+        await session.extensions.manage(operation, 'sample')
+        assert tuple(session.agent.state.tools) == inventory
         release.set()
         record = await session.children.runtime.control('wait', identifier)
         assert record['status'] == 'completed', record['error']
         result = next(row for row in record['messages'] if row['role'] == 'toolResult')
-        if revoke_before_call:
-            assert result['is_error'] and 'EXTENSION-RESULT-child' not in str(result['content'])
-            assert not requests[-1].tools
-        else:
-            assert not result['is_error'] and 'EXTENSION-RESULT-child-POST' in str(result['content'])
+        assert not result.get('is_error') and 'LOCAL-TOOL-RESULT' in str(result['content'])
+        assert '-POST' in str(result['content'])  # Child post hook survives parent worker replacement.
+        assert all([tool.name for tool in request.tools] == ['filesystem'] for request in requests)
         assert not session.agent.messages and len(requests) == 2
     finally:
         release.set()

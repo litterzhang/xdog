@@ -110,12 +110,14 @@ async def test_main_task_files_and_completion_never_start_worker_reviewer_or_acc
         assert len(model.calls) == calls
 
 
-@pytest.mark.parametrize('wait_for', ['tasks', 'user', 'host'])
+@pytest.mark.parametrize('wait_for', ['tasks', 'user'])
 async def test_paused_and_waiting_goals_keep_single_current_slot_until_explicit_clear(tmp_path, wait_for):
     async with application(tmp_path) as (app, runtime, _):
         host = runtime.capabilities.get('goal')
         goal = await planned(host)
-        waiting = await host.service.change('wait', reason='Need actual wait evidence', until=wait_for)
+        waiting = await host.service.change('wait', reason='Need actual wait evidence', until=wait_for,
+            **({'question': 'Which business outcome?', 'impact': 'Delivery needs this decision',
+                'resume_when': 'Actual user decides'} if wait_for == 'user' else {}))
         with pytest.raises(ValueError, match='current Goal'):
             await host.service.create('Another', 'Not allowed', context=OperationContext(True))
         with pytest.raises(ValueError, match='only restores paused'):
@@ -134,10 +136,53 @@ async def test_paused_and_waiting_goals_keep_single_current_slot_until_explicit_
         assert (await host.service.current()).id == goal.id
         with pytest.raises(ValueError, match='user'):
             await host.service.change('resume')
+        resumed = await host.service.change('resume', context=OperationContext(True))
+        assert resumed.status == 'active' and resumed.wait_for == ''
+        await host.service.change('pause', context=OperationContext(True), reason='User pauses again')
         await host.service.change('clear', context=OperationContext(True), reason='Archive')
         assert await host.service.current() is None
         assert (await host.service.status(goal.id))['current']['status'] == 'cleared'
         assert runtime._active_session is None
+
+
+async def test_new_host_wait_is_rejected_without_changing_current_goal(tmp_path):
+    async with application(tmp_path) as (_, runtime, model):
+        host = runtime.capabilities.get('goal')
+        goal = await planned(host)
+        goal = await host.service.current()
+        history = await host.service.store.history(goal.id)
+        with pytest.raises(ValueError, match='wait supports only user or tasks'):
+            await host.service.change('wait', until='host', reason='Not a supported business wait')
+        assert await host.service.current() == goal
+        assert await host.service.store.history(goal.id) == history
+        assert runtime._active_session is None and not model.calls
+
+
+async def test_historical_host_wait_restores_without_automatic_release_or_new_host_wait_support(tmp_path):
+    # Seed only historical test data; never use the production lifecycle API to
+    # claim that a new host wait is admitted. The fixture preserves old records.
+    from packages.skills.tests.goal.legacy import wait_goal
+
+    async with application(tmp_path) as (_, runtime, _):
+        host = runtime.capabilities.get('goal')
+        goal = await planned(host)
+        historical = await wait_goal(host.service, goal.id, until='host', reason='Historical host fault')
+        original_history = await host.service.store.history(goal.id)
+    async with application(tmp_path) as (app, runtime, model):
+        host = runtime.capabilities.get('goal')
+        assert await host.service.current() == historical
+        assert (await host.service.status(goal.id))['current']['wait_for'] == 'host'
+        scope = InputScope('main', runtime.workspace_dir)
+        inputs = await app.input_service()
+        inputs.publish_available(scope)
+        await host.flush()
+        assert not await inputs.store.records(scope)
+        assert host._observer is None and runtime._active_session is None and not model.calls
+        with pytest.raises(ValueError, match='actual user operation'):
+            await host.service.change('activate', goal.id, version=historical.version,
+                                      reason='Automatic availability does not release a historical wait')
+        assert await host.service.current() == historical
+        assert await host.service.store.history(goal.id) == original_history
 
 
 async def test_forged_child_role_label_never_inherits_parent_goal_tool_or_filesystem_authority(tmp_path):
@@ -252,7 +297,7 @@ async def test_first_weixin_slash_uses_native_binding_and_original_core_receipts
         assert not runtime._active_session._user_operation_authorized
 
 
-async def test_default_capability_skill_body_is_in_first_model_context_without_filesystem_search(tmp_path):
+async def test_goal_tool_and_commands_are_available_without_default_skill_activation(tmp_path):
     from xdog.ai.types import system_prompt_text
 
     async with application(tmp_path) as (app, runtime, model):
@@ -260,12 +305,15 @@ async def test_default_capability_skill_body_is_in_first_model_context_without_f
         await activate(app)
         context = model.calls[0][1]
         prompt = system_prompt_text(context.system_prompt) or ''
-        assert '# Goal: main-Agent-owned work' in prompt
+        assert '# Goal: main-Agent-owned work' not in prompt
         session = runtime.get_or_create_session(allow_reset=False)
-        assert 'goal' in session.agent.active_skills
+        assert 'goal' not in session.agent.active_skills
+        assert not runtime.capabilities.default_skills
+        assert 'goal' in runtime.capabilities.declared_skills
+        assert any(tool.name == 'goal' for tool in session.agent.active_tools)
         assert 'goal' not in session._active_skills  # capability instructions are not user delegation
         assert await runtime.capabilities.get('goal').service.current() is None
         assert len(model.calls) == 1 and not session.children.runtime._children
         await activate(app)
         next_prompt = system_prompt_text(model.calls[-1][1].system_prompt) or ''
-        assert next_prompt.count('# Goal: main-Agent-owned work') == 1
+        assert '# Goal: main-Agent-owned work' not in next_prompt

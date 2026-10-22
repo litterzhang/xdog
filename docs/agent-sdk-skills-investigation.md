@@ -1,5 +1,12 @@
 # SDK skills: investigation and approved F1 WIP verification
 
+> **Historical / superseded:** this record predates the current capability SDK.
+> Old skill slugs, hosting APIs and activation examples below are not current
+> integration instructions. Use `sdk-capability-assembly.md`, package READMEs and
+> `eyes-thin-tool-design.md` for the supported contracts; canonical slugs are
+> `flow`, `eyes`, `goal` and `plan`.
+
+
 > 后续状态（2026-10-12）：服务运行时goal已完成当前Linux验收，包括跨进程skill恢复与关闭。本文保留此前调查及F1子任务记录；最终范围、结果与限制见 [运行时验收](agent-sdk-service-runtime-plan.md#10-最终验收2026-10-12)。
 Updated **October 12, 2026**. The initial investigation is historical; **the current
 checkout implements an opt-in read-only loader and request-local turn skills**.

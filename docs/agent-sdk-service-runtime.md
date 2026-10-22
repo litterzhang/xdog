@@ -1,5 +1,12 @@
 # xdog-agent SDK：会话恢复、Skills、Compaction 与关闭
 
+> **Historical / superseded:** this record predates the current capability SDK.
+> Old skill slugs, hosting APIs and activation examples below are not current
+> integration instructions. Use `sdk-capability-assembly.md`, package READMEs and
+> `eyes-thin-tool-design.md` for the supported contracts; canonical slugs are
+> `flow`, `eyes`, `goal` and `plan`.
+
+
 状态：**实现与当前Linux验收完成；本次发行版本为2.4.0**。范围与验收记录见
 [实施清单](agent-sdk-service-runtime-plan.md)。本文API对应2.4.0；发布状态以仓库工作流和包索引为准。
 

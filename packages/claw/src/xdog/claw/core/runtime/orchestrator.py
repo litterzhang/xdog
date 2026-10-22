@@ -26,16 +26,7 @@ from xdog.claw.core.inputs.consumer import Admit, InputOutcome, InputService
 from xdog.claw.core.inputs.models import InputEnvelope, InputScope, ReplyTarget
 from xdog.claw.core.inputs.store import InputRecord, InputStore
 from xdog.claw.core.outputs.delivery import OutputDelivery
-from xdog.claw.core.outputs.routes import (
-    OutputRoute,
-    Policy,
-    ReadPolicy,
-    ResolveReply,
-    apply_route,
-    saved_route,
-    source_name,
-)
-from xdog.claw.core.outputs.store import OutputRecord, OutputStore
+from xdog.claw.core.outputs.store import OutputStore
 from xdog.claw.core.outputs.targets import ReplyReference
 from xdog.claw.core.runtime.channel_adapter import ChannelReplies, ChannelReply, durable_reply
 from xdog.claw.core.runtime.group import GroupRuntime
@@ -111,7 +102,6 @@ class Orchestrator:
         self._input_calls: dict[tuple[InputScope, str], _InputCall] = {}
         self._inputs_stopping = False
         self._input_listeners: set[Callable[[InputScope], None]] = set()
-        self._output_sources: dict[str, tuple[ResolveReply, ReadPolicy]] = {}
 
     # -- Group registration ----------------------------------------------------
 
@@ -122,18 +112,25 @@ class Orchestrator:
             enabled_tools=self._config.enabled_tools if group.enabled_tools is None else group.enabled_tools,
             image_model=group.image_model or self._config.image_model,
         )
+        async def delivery(reference: str) -> dict[str, Any]:
+            workspace = self.get_group_workspace(group.id)
+            if workspace is None:
+                raise ValueError('Original output group is unavailable')
+            outputs = await self.output_service()
+            return await outputs.store.delivery_for_reference(InputScope(group.id, workspace), reference)
         runtime = GroupRuntime.create(
             group,
             self._data_dir,
             model=self._model,
             stream_fn=self._stream_fn,
-            send_fn=self._send_to_channels, application_tools=lambda: self.application_capabilities.tools,
-            application_tool_names=self.application_capabilities.declared_tools, mcp_servers=self._config.mcp_servers,
+            message_delivery=delivery, application_capabilities=self.application_capabilities,
+            mcp_servers=self._config.mcp_servers,
             mcp_credential_backend=self._config.mcp_credential_backend,
             extensions=self._config.extensions, extension_dir=self._config.extension_dir,
             extension_settings=self._config.extension_settings,
-            extension_allow_tools=self._config.extension_allow_tools, child_presets=self._config.child_presets,
+            child_presets=self._config.child_presets,
         )
+        runtime.input_address = lambda: self.input_address(group.id, runtime.workspace_dir)
         return runtime
 
     def register_group(self, group: Group) -> None:
@@ -236,7 +233,7 @@ class Orchestrator:
         outputs: OutputDelivery | None = None
         try:
             output_store = await OutputStore.open(self._data_dir / 'outputs' / 'journal.sqlite3')
-            outputs = OutputDelivery(output_store, self._channel_replies.resolve, gate=self._output_policy)
+            outputs = OutputDelivery(output_store, self._channel_replies.resolve)
             scopes = [InputScope(group, workspace) for group in tuple(self._runtimes)
                       if (workspace := self.get_group_workspace(group)) is not None]
             for scope in scopes:
@@ -324,58 +321,20 @@ class Orchestrator:
             except Exception:
                 logger.exception('Optional application input listener failed')
 
-    def register_output_source(self, name: str, resolve: ResolveReply, policy: ReadPolicy) -> Callable[[], None]:
-        """Register host-owned ports, never a source/provenance-selected capability."""
-        name = source_name(name)
-        if name in self._output_sources or not callable(resolve) or not callable(policy) or self._inputs_stopping:
-            raise ValueError("Output source already owned, invalid or stopping")
-        ports = resolve, policy
-        self._output_sources[name] = ports
-
-        def remove() -> None:
-            if self._output_sources.get(name) is ports:
-                self._output_sources.pop(name)
-        return remove
-
-    async def _output_policy(self, row: OutputRecord) -> Policy:
-        route = saved_route(row.envelope)
-        if route is None:
-            return "ready"
-        ports = self._output_sources.get(route.source)
-        if ports is None:
-            return "pending"  # Unknown/offline capability never means new destination or approval.
-        result = await ports[1](row)
-        return result if self._output_sources.get(route.source) is ports else "pending"
-
-    async def _route_external_output(self, envelope: InputEnvelope) -> InputEnvelope:
-        selected: OutputRoute | None = None
-        for name, ports in tuple(self._output_sources.items()):
-            reference = await ports[0](envelope)
-            if self._output_sources.get(name) is not ports:
-                raise RuntimeError("Output source changed during intake; no route was committed")
-            if reference is not None:
-                if selected is not None:
-                    raise ValueError("Ambiguous original output route")
-                selected = OutputRoute(name, reference)
-        return apply_route(envelope, selected) if selected is not None else envelope
-
     async def accept_external(self, scope: InputScope, message: SessionInput) -> tuple[InputRecord, bool]:
         if self.get_group_workspace(scope.group_id) != scope.workspace:
             raise ValueError('External input target/workspace changed')
-        envelope = freeze_input(ExternalInput(group_id=scope.group_id, content='', sender='acp', channel='acp',
-            metadata={'input_origin': 'external'}, canonical=message), scope.workspace, message_id=message.id)
+        envelope = freeze_input(ExternalInput(group_id=scope.group_id, content='', sender='acp', channel='',
+            metadata={'input_origin': 'acp'}, canonical=message), scope.workspace, message_id=message.id)
         service = await self.input_service()
         existing = await service.store.get(scope, message.id)
         if existing is not None:
-            saved_route(existing.envelope)  # Validate any persisted host route before returning its receipt.
             if (existing.envelope.message != envelope.message or existing.envelope.scope != envelope.scope
                     or existing.envelope.images != envelope.images or existing.envelope.human_authorized
                     or existing.envelope.context.get('kind') != 'external'):
                 raise ValueError("Accepted external input content conflict")
             # ACK loss/restart cannot reselect a destination from a later live source.
             envelope = existing.envelope
-        else:
-            envelope = await self._route_external_output(envelope)
         maximum = self._runtimes[scope.group_id].group.config.max_queued_messages
         return await service.submit(envelope, max_pending=maximum)
 
@@ -414,21 +373,17 @@ class Orchestrator:
                     reference = ReplyReference(record.envelope.scope, 'saved-original-channel', original)
             if reference is not None and reference.scope != record.envelope.scope:
                 raise ValueError('Reply reference no longer matches the input workspace')
-            routed = saved_route(record.envelope)
-            if routed is not None:
-                reference = routed.reference
             options['reply_reference'] = reference
-            if isinstance(reply, ChannelReply) or recovered or routed is not None:
+            if isinstance(reply, ChannelReply) or recovered:
                 if self._outputs is None:
                     raise RuntimeError('Application output receipts were not initialized')
-                binding = (routed.reference.binding if routed is not None and routed.reference is not None else
-                           reply.binding if isinstance(reply, ChannelReply) else 'saved-original-channel')
+                binding = reply.binding if isinstance(reply, ChannelReply) else 'saved-original-channel'
                 send = durable_reply(self._outputs, record, binding)
                 options['on_assistant_message'] = send
                 async def send_error(error: str) -> None:
                     await send(f'Error: {error}')
                 on_error = send_error
-            result = await self._execute_owned_input(value, admit=admit, **options)
+            result = await self._execute_owned_input(value, admit=admit, message_record=record, **options)
             if result is None:
                 # A host fence explicitly refused this unstarted submission.
                 result = TurnResult(error='Host input admission was withdrawn')
@@ -531,6 +486,7 @@ class Orchestrator:
         before_admission: Callable[[], Awaitable[bool]] | None = None,
         command_menu: CommandMenuHost | None = None,
         admit: Admit | None = None, reply_reference: ReplyReference | None = None,
+        message_record: InputRecord | None = None,
     ) -> TurnResult | None:
         """Execute a message with concurrency control."""
         group_id = message.group_id
@@ -551,7 +507,22 @@ class Orchestrator:
             if admit is not None and not await admit(session.meta.session_id):
                 return None
             await runtime.initialize_capabilities(await self.input_service())
-            session.agent.set_tool_context({**session.agent.tool_context, '_reply_reference': reply_reference})
+            from xdog.claw.core.runtime.outbound_messages import OutboundMessages
+            actual_agent = session.agent
+            message_tool = next((tool for tool in runtime.tools if tool.name == 'message'), None)
+            def message_valid() -> bool:
+                return (not self._inputs_stopping and not runtime._closing
+                        and runtime._active_session is session and session.agent is actual_agent
+                        and message_record is not None
+                        and runtime.workspace_dir == message_record.envelope.scope.workspace
+                        and runtime.group.id == message_record.envelope.scope.group_id
+                        and not session.access.state.read_only
+                        and message_tool is not None
+                        and any(tool is message_tool for tool in actual_agent.active_tools))
+            message_port = (OutboundMessages(message_record, self._channel_replies, self._outputs, message_valid)
+                            if message_record is not None and self._outputs is not None else None)
+            session.agent.set_tool_context({**session.agent.tool_context,
+                                           '_reply_reference': reply_reference, '_message_port': message_port})
             previous_menu = session.extensions.command_menu_handler
             menu_handler = self._command_menu_handler(session, command_menu) if command_menu is not None else None
             previous_pending = session.extensions.pending_messages
@@ -576,7 +547,7 @@ class Orchestrator:
                             output = await session.extensions.command(parts[0], parts[1] if len(parts) > 1 else '')
                         finally:
                             session._user_operation_authorized = previous_authority
-                            await session._sync_extension_tools()
+                            await session._persist_tool_retirement()
                         text = output.summary if isinstance(output, ExtensionCommandResult) else str(output)
                         if on_assistant_message is not None:
                             await on_assistant_message(text)
@@ -590,7 +561,8 @@ class Orchestrator:
                 )
                 return replace(result, session_id=session.meta.session_id) if result is not None else None
             finally:
-                session.agent.set_tool_context({**session.agent.tool_context, '_reply_reference': None})
+                session.agent.set_tool_context({**session.agent.tool_context,
+                                               '_reply_reference': None, '_message_port': None})
                 session.extensions.pending_messages = previous_pending
                 if session.extensions.command_menu_handler is menu_handler:
                     session.extensions.command_menu_handler = previous_menu
@@ -628,11 +600,6 @@ class Orchestrator:
 
 
     # -- Channel delivery ------------------------------------------------------
-
-    async def _send_to_channels(self, group_id: str, text: str) -> None:
-        for channel in self._channels:
-            if channel.accepts_group(group_id):
-                await channel.send_message(group_id, text)
 
     async def _send_response(self, group_id: str, text: str, *, require_delivery: bool = False) -> None:
         channels = [channel for channel in self._channels if channel.accepts_group(group_id)]
@@ -759,6 +726,16 @@ class Orchestrator:
                 self._acp_endpoints.pop(owner)
                 changed()
         return cancel
+
+    def input_address(self, owner: str, workspace: Path) -> dict[str, Any] | None:
+        """Existing private receiver facts; no feature-specific routing policy."""
+        if (self._inputs_stopping or self.get_group_workspace(owner) != workspace
+                or len(self._acp_endpoints) != 1):
+            return None
+        endpoint, valid = next(iter(self._acp_endpoints.values()))
+        if not valid():
+            return None
+        return {'endpoint': str(endpoint), 'session_id': 'group:' + owner, 'cwd': str(workspace)}
 
     async def _capability_acp_target(self, scope: InputScope) -> dict[str, Any] | None:
         if (self._inputs_stopping or self.get_group_workspace(scope.group_id) != scope.workspace
@@ -1114,7 +1091,7 @@ class Orchestrator:
         finally:
             host.revoke()
             session.extension_dialogs.publish = previous
-            await session._sync_extension_tools()
+            await session._persist_tool_retirement()
 
     async def manage_extensions(self, group_id: str, action: str, name: str, args: str,
                                 expected_session: str,
@@ -1222,7 +1199,7 @@ class Orchestrator:
                 if session.extensions.publish is publish:
                     session.extensions.publish = previous_publish
                 session.extension_dialogs.publish = previous_dialog_publish
-                await session._sync_extension_tools()
+                await session._persist_tool_retirement()
 
     async def complete_extension_argument(self, group_id: str, expected_session: str,
                                           command: str, prefix: str, identity: str,
@@ -1242,7 +1219,7 @@ class Orchestrator:
                     raise ValueError('Argument completion owner changed')
                 return {**result, 'snapshot': session.extensions.snapshot()}
             finally:
-                await session._sync_extension_tools()
+                await session._persist_tool_retirement()
 
     def extension_failure_snapshot(self, group_id: str, expected_session: str) -> dict[str, Any] | None:
         """Descriptive failure data only; never bootstrap/switch a viewer or activate a worker."""
@@ -1308,10 +1285,10 @@ class Orchestrator:
             if runtime._active_session is not None:
                 runtime._active_session._children_idle()
             result = await runtime.mcp.manage_auth(server, action, receipt, lease=lease, alive=alive)
-            if action == "forget" and runtime._active_session is not None:
-                runtime._active_session.agent.set_tools((*runtime.tools,
-                    *runtime._active_session.extensions.tools(), *runtime._active_session.children.runtime.tools()))
-                await runtime._active_session._persist_tool_retirement()
+            if action == "forget":
+                if runtime._active_session is not None:
+                    runtime._active_session.agent.sync_mcp_tools()
+                    await runtime._active_session._persist_tool_retirement()
             return result
 
     async def mcp_context(self, group_id: str, action: str, server: str, name: str,
@@ -1479,8 +1456,8 @@ class Orchestrator:
                 continue
             if session.agent.state.is_streaming:
                 raise RuntimeError("Application capability publication requires an idle owner")
-            session.agent.set_tools((*runtime.tools, *session.extensions.tools(),
-                                     *session.children.runtime.tools()))
+            runtime.publish_tools(session)
+            session._restore_active_tools()
             await session._persist_tool_retirement()
         self.channels_ready()
 

@@ -3,6 +3,7 @@
 import asyncio
 import os
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -82,7 +83,7 @@ def handler_for(path, cwd, session='target'):
     from xdog.eyes.handlers.acp import AcpHandler
     from xdog.eyes.models import AcpHandlerDef
 
-    return AcpHandler(AcpHandlerDef('handler', 'acp', UnixConnection(path), session, 'Review tests'), cwd=cwd)
+    return AcpHandler(replace(AcpHandlerDef('handler', 'acp', UnixConnection(path), session, 'Review tests'), cwd=cwd))
 
 
 async def wait_until(predicate):

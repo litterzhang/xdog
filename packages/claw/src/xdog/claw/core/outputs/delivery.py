@@ -4,11 +4,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Sequence
+from typing import Literal
 
 from xdog.agent.async_work import wait_owned
 from xdog.claw.core.inputs.models import InputEnvelope, InputScope
-from xdog.claw.core.outputs.routes import Policy, ReadPolicy
 from xdog.claw.core.outputs.store import OutputRecord, OutputStore
+
+Policy = Literal["ready", "pending", "cancelled"]
+ReadPolicy = Callable[[OutputRecord], Awaitable[Policy]]
 
 Sender = Callable[[OutputRecord], Awaitable[None]]
 ResolveSender = Callable[[OutputRecord], Sender | None]
@@ -82,6 +85,10 @@ class OutputDelivery:
         return cancelled
 
     async def _policy(self, row: OutputRecord) -> Policy:
+        # Retired implicit automatic routes are never reactivated on upgrade.
+        # Keep their durable records untouched, without loading a source plugin.
+        if 'output' in row.envelope.context:
+            return 'pending'
         try:
             value = await self.gate(row) if self.gate is not None else "ready"
         except (OSError, RuntimeError):

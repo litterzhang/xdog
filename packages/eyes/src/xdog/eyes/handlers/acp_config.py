@@ -28,12 +28,14 @@ def _connection(value: object, path: str) -> ConnectionDef:
 
 
 def parse_definition(value: object, path: str, base_dir: Path) -> AcpHandlerDef:
-    data = _object(value, path, {"id", "type", "connection", "session", "instruction", "delivery"})
+    data = _object(value, path, {"id", "type", "connection", "session", "instruction", "delivery", "cwd"})
     if data.get("type") != "acp":
         raise ObserverValidationError("Only ACP handlers are supported", path=path, code="unknown_type")
     delivery = data.get("delivery", "prompt")
     if delivery not in ("prompt", "enqueue"):
         raise ObserverValidationError("Expected prompt or enqueue delivery", path=path + ".delivery")
+    if delivery == "prompt" and data.get("cwd") is None:
+        raise ObserverValidationError("ACP prompt requires explicit target cwd", path=path + ".cwd")
     return AcpHandlerDef(
         _text(data.get("id"), path + ".id"),
         "acp",
@@ -41,5 +43,7 @@ def parse_definition(value: object, path: str, base_dir: Path) -> AcpHandlerDef:
         _text(data.get("session"), path + ".session"),
         _text(data.get("instruction"), path + ".instruction", maximum=65536),
         delivery,
+        (base_dir / _text(data["cwd"], path + ".cwd", maximum=4096)).resolve()
+        if data.get("cwd") is not None else None,
     )
 

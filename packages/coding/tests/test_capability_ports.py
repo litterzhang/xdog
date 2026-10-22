@@ -46,7 +46,8 @@ class Provider:
 
 async def test_generic_provider_gets_owner_ports_and_normal_children_do_not_inherit_parent_tools(tmp_path, monkeypatch):
     provider = Provider()
-    monkeypatch.setattr('xdog.agent.capabilities.runtime.discover', lambda scope: (provider,))
+    monkeypatch.setattr('xdog.agent.capabilities.runtime.discover',
+                        lambda scope: (provider,) if scope == 'session' else ())
     session, contexts = create(tmp_path)
     try:
         await session.initialize_capabilities()
@@ -77,7 +78,8 @@ async def test_generic_provider_gets_owner_ports_and_normal_children_do_not_inhe
 
 async def test_owner_navigation_invalidates_frozen_public_parent_handle(tmp_path, monkeypatch):
     provider = Provider()
-    monkeypatch.setattr('xdog.agent.capabilities.runtime.discover', lambda scope: (provider,))
+    monkeypatch.setattr('xdog.agent.capabilities.runtime.discover',
+                        lambda scope: (provider,) if scope == 'session' else ())
     session, _ = create(tmp_path)
     try:
         await session.initialize_capabilities()

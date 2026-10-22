@@ -207,3 +207,29 @@ def test_linux_unix_endpoint_capacity_is_bytes_not_characters():
     assert len(str(UnixConnection(Path('/' + '界' * 35 + 'a')).path).encode()) == 107
     with pytest.raises(ValueError, match='capacity'):
         UnixConnection(Path('/' + '界' * 36))
+
+
+def test_enqueue_workspace_is_optional_and_roundtrips_without_default(tmp_path, observer_data):
+    from xdog.eyes.handlers.registry import builtin_handlers
+    from xdog.eyes.loader import definition_data, parse
+
+    row = observer_data['handlers'][0]
+    row['delivery'] = 'enqueue'
+    row.pop('cwd', None)
+    definition = parse(observer_data, base_dir=tmp_path)
+    assert definition.handlers[0].cwd is None
+    assert 'cwd' not in definition_data(definition)['handlers'][0]
+    handler = builtin_handlers().create(definition.handlers[0])
+    assert handler.client.cwd is None
+    from packages.eyes.tests.test_acp_handler import delivery
+
+    handler.validate(delivery())
+
+
+def test_prompt_requires_explicit_target_workspace(tmp_path, observer_data):
+    from xdog.eyes.errors import ObserverValidationError
+    from xdog.eyes.loader import parse
+
+    observer_data['handlers'][0].pop('cwd', None)
+    with pytest.raises(ObserverValidationError, match='explicit target cwd'):
+        parse(observer_data, base_dir=tmp_path)

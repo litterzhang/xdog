@@ -194,7 +194,7 @@ async def test_native_user_command_scope_restores_after_await_and_failure(tmp_pa
     ('group', True, True), ('group', False, True), ('application', False, True),
     ('group', False, False), ('application', False, False), ('group', True, False),
 ])
-async def test_generic_requirement_owns_private_acp_or_optionally_degrades(
+async def test_gateway_default_acp_is_independent_of_optional_capability_requirements(
         tmp_path, monkeypatch, scope, hard, available):
     class Binding:
         tools = ()
@@ -221,17 +221,13 @@ async def test_generic_requirement_owns_private_acp_or_optionally_degrades(
         gateway = GatewayServer(ClawConfig(data_dir=str(root / 'data'), socket_path=str(root / 'native.sock'),
             pid_file=str(root / 'native.pid'), groups=(GroupDef(id='main', workspace=str(tmp_path)),)))
         try:
-            if hard and not available:
-                with pytest.raises(RuntimeError, match='optional SDK'):
+            if not available:
+                with pytest.raises(RuntimeError, match='requires the ACP SDK'):
                     await gateway.start()
                 assert not (root / 'native.sock').exists()
                 return
             await gateway.start()
             assert gateway._application_capabilities.tools == ()
-            if not available:
-                assert gateway._acp_server is None
-                assert await gateway._orchestrator._runtimes['main']._capability_host.acp_target() is None
-                return
             assert gateway._acp_server is not None
             runtime = gateway._orchestrator._runtimes['main']
             target = await runtime._capability_host.acp_target()

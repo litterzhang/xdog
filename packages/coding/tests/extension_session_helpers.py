@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 
 from xdog.agent import Agent, AgentConfig
+from xdog.agent.skills import SkillManager
 from xdog.ai.types import AssistantMessage, TextContent, UserMessage
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core.agent_session import AgentSession
@@ -28,7 +29,8 @@ def session(tmp_path, *, extra=()):
     def stream(*args):
         calls.append(args)
         return EventStream.empty(AssistantMessage())
-    owner = AgentSession(agent=Agent(stream, config=AgentConfig(model='offline/model')),
+    owner = AgentSession(agent=Agent(stream, config=AgentConfig(model='offline/model'),
+                                   skills=SkillManager(tmp_path / 'skills')),
         session_data=manager.create_session(working_dir=tmp_path), session_manager=manager,
         settings=SettingsManager(global_path=settings), working_dir=tmp_path, tool_registry=None, bash=None,
         permissions=PermissionManager('deny'))

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 from xdog.agent.extensions.provider_oauth_store import storage_config
-from xdog.agent.mcp import McpManager
+from xdog.agent.mcp import McpRegistry
 from xdog.agent.mcp.oauth import OAuthError
 from xdog.agent.mcp.oauth_native_store import NativeCredentialStore, storage_backend
 from xdog.agent.mcp.oauth_store import CredentialStore
@@ -22,7 +22,7 @@ def test_removed_backend_rejected_before_factory_or_process_start(tmp_path, monk
     with pytest.raises(OAuthError, match='no fallback'):
         storage_backend(backend)
     with pytest.raises(OAuthError, match='no fallback'):
-        McpManager({}, tmp_path, credential_dir=tmp_path / 'private', credential_backend=backend)
+        McpRegistry({}, tmp_path, credential_dir=tmp_path / 'private', credential_backend=backend)
     with pytest.raises(ValueError, match='storage'):
         storage_config({'backend': backend, 'namespace': str(tmp_path / 'private')})
     assert not (tmp_path / 'private').exists()
@@ -34,7 +34,7 @@ def test_explicit_linux_storage_choices_remain_distinct_without_startup(tmp_path
         pytest.fail('Choosing storage must not start a service or read credentials')
 
     monkeypatch.setattr('xdog.agent.mcp.oauth_native_store.subprocess.Popen', forbidden)
-    manager = McpManager({}, tmp_path, credential_dir=tmp_path / 'private', credential_backend=backend)
+    manager = McpRegistry({}, tmp_path, credential_dir=tmp_path / 'private', credential_backend=backend)
     expected = CredentialStore if backend == 'file' else NativeCredentialStore
     assert type(manager.credential_store) is expected
     assert storage_backend(backend) == backend

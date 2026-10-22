@@ -141,13 +141,7 @@ def extension_runtime(tmp_path, stream):
     root.mkdir(parents=True)
     (root / 'extension.yaml').write_text('name: guarded\nentry_point: main\n')
     (root / 'main.py').write_text(textwrap.dedent('''
-        from pathlib import Path
         def setup(api):
-            async def execute(params, context):
-                Path(context['cwd'], 'extension-effect').write_text(params['value'])
-                return 'ACTUAL EXTENSION EFFECT'
-            api.tool('target', 'Test actual isolated registration',
-                {'type': 'object', 'properties': {'value': {'type': 'string'}}, 'required': ['value']}, execute)
             async def rewrite(name, args, context):
                 if context.get('child_id') and args.get('value') == 'rewrite':
                     return {'value': 'blocked'}
@@ -158,57 +152,45 @@ def extension_runtime(tmp_path, stream):
     workspace.mkdir()
     return GroupRuntime(group=Group(id='main', enabled_tools=()), workspace_dir=workspace,
         data_dir=tmp_path / 'data', model='test/parent', stream_fn=stream,
-        extensions=('guarded',), extension_dir=str(root.parent), extension_allow_tools=('guarded',))
+        extensions=('guarded',), extension_dir=str(root.parent))
 
 
-@pytest.mark.parametrize('failure', ['parent-after-rewrite', 'child-executor-validator'])
-async def test_actual_extension_proxy_preserves_both_parent_and_child_validators(tmp_path, failure):
-    alias, calls, parent_validation, child_validation = '', [], [], []
+@pytest.mark.parametrize('failure', ['parent-after-rewrite', 'executor-validator'])
+async def test_delegated_host_tool_preserves_validator_with_isolated_child_hooks(tmp_path, failure):
+    calls, validation, effects = [], [], []
     def stream(model, context, options):
         calls.append(context)
-        content = ((ToolCall(id='extension-call', name=alias,
+        content = ((ToolCall(id='host-call', name='target',
                             arguments={'value': 'rewrite' if failure == 'parent-after-rewrite' else 'safe'}),)
                    if len(calls) == 1 else (TextContent(text='denied'),))
         return EventStream.empty(AssistantMessage(content=content))
+    async def validate(params):
+        validation.append(dict(params))
+        if params['value'] == 'blocked':
+            raise ValueError('parent validator denied rewritten arguments')
+        if failure == 'executor-validator' and len(validation) > 1:
+            raise ValueError('original validator denied effect')
+    async def execute(*args, **kwargs):
+        effects.append('UNAUTHORIZED')
+        return AgentToolResult.from_text('must not execute')
     runtime = extension_runtime(tmp_path, stream)
     session = await runtime.prepare_session(allow_reset=False)
     try:
         await session.initialize_extensions()
-        parent_source = next(tool for tool in session.agent.active_tools if tool.name in session.extensions.aliases)
-        alias = parent_source.name
-        original_parent_validate = parent_source.validate_arguments
-        async def parent_validate(params):
-            parent_validation.append(dict(params))
-            if original_parent_validate is not None:
-                await original_parent_validate(params)
-            if params['value'] == 'blocked':
-                raise ValueError('parent validator denied rewritten arguments')
-        parent_source.validate_arguments = parent_validate
-        original_start = session.children.extensions.start
-        async def start(spec, extension):
-            await original_start(spec, extension)
-            child_source = next(tool for tool in extension.tools() if tool.name == alias)
-            original_child_validate = child_source.validate_arguments
-            async def child_validate(params):
-                child_validation.append(dict(params))
-                if original_child_validate is not None:
-                    await original_child_validate(params)
-                if failure == 'child-executor-validator' and len(child_validation) > 1:
-                    raise ValueError('child registration validator denied effect')
-            child_source.validate_arguments = child_validate
-        session.children.extensions.start = start
-        identifier = await session.children.runtime.start('use extension', access='inherit',
-            config={'tools': [alias]})
+        source = AgentTool('target', parameters={'type': 'object', 'properties': {'value': {'type': 'string'}},
+                                                'required': ['value']},
+                           execute=execute, validate_arguments=validate)
+        session.agent.set_tools((source, *session.children.runtime.tools()))
+        identifier = await session.children.runtime.start('use host tool with extension hooks', access='inherit',
+            config={'tools': ['target']})
         record = await session.children.runtime.control('wait', identifier)
         assert record['status'] == 'completed', record['error']
-        assert not (runtime.workspace_dir / 'extension-effect').exists()
-        assert len(parent_validation) == 2
+        assert not effects and len(validation) == 2
         if failure == 'parent-after-rewrite':
-            assert parent_validation == [{'value': 'rewrite'}, {'value': 'blocked'}]
+            assert validation == [{'value': 'rewrite'}, {'value': 'blocked'}]
             assert 'parent validator denied rewritten arguments' in str(record['messages'])
         else:
-            assert len(child_validation) == 2
-            assert 'child registration validator denied effect' in str(record['messages'])
+            assert 'original validator denied effect' in str(record['messages'])
     finally:
         await runtime.aclose()
 

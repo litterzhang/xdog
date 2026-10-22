@@ -9,8 +9,8 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 import httpx
 import pytest
 from xdog.agent.mcp.config import McpServerConfig
-from xdog.agent.mcp.manager import McpManager
 from xdog.agent.mcp.oauth import OAuthConfig, OAuthError, OAuthOwner
+from xdog.agent.mcp.registry import McpRegistry
 
 RESOURCE = "https://resource.test/mcp"
 ISSUER = "https://issuer.test/tenant"
@@ -263,7 +263,7 @@ async def test_changed_resource_definition_cannot_receive_previous_resources_bea
     value = owner(peer)
     value._token = "SECRET-OLD-RESOURCE"
     value._expires = float("inf")
-    manager = McpManager({"peer": {"transport": "http", "url": RESOURCE, "oauth": CONFIG}}, tmp_path)
+    manager = McpRegistry({"peer": {"transport": "http", "url": RESOURCE, "oauth": CONFIG}}, tmp_path)
     manager._oauth["peer"] = value
     manager.configs["peer"] = replace(manager.configs["peer"], url="https://foreign.test/mcp")
     try:
@@ -371,7 +371,7 @@ async def test_callback_connections_are_bounded_and_foreign_burst_cannot_commit_
 async def test_consent_lease_rejects_foreign_start_and_live_guard_blocks_late_credential_commit(monkeypatch, tmp_path):
     peer = Peer()
     monkeypatch.setattr(OAuthOwner, "client", lambda self: httpx.AsyncClient(transport=peer.transport))
-    manager = McpManager({"peer": {"transport": "http", "url": RESOURCE, "oauth": CONFIG}}, tmp_path)
+    manager = McpRegistry({"peer": {"transport": "http", "url": RESOURCE, "oauth": CONFIG}}, tmp_path)
     alive = [True]
     try:
         review = await manager.manage_auth("peer", "prepare", lease="first", alive=lambda: alive[0])

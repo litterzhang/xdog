@@ -12,11 +12,11 @@ conversation. You plan, execute, delegate if supported, check evidence and decid
 completion. An ordinary conversation does not need a Goal. Installed capability
 availability is not user delegation: create only for a genuinely delegated outcome.
 
-The installed generic capability normally injects this session-scoped skill into
-the main Agent's prompt. Use the instructions already present on continuation;
-do not re-read a filesystem manual on every reminder. If the body is genuinely
-missing, use the host's existing skill discovery/loading mechanism. Never depend
-on a repository checkout path or search the project for a replacement manual.
+The installed capability makes this session-scoped skill discoverable, but does
+not activate its body by default. Load it through the host's existing skill
+discovery/loading mechanism when needed. Once active, use the instructions already
+present on continuation; do not re-read a filesystem manual on every reminder.
+Never depend on a repository checkout path or search the project for a replacement manual.
 
 ## Starting and planning
 
@@ -36,8 +36,12 @@ on a repository checkout path or search the project for a replacement manual.
    description,worker,depends_on,expected_version:0,...})`.
 5. Inspect the returned workspace/task_dir. Never guess a path from a message.
    The runtime generates `eyes.json` watching ONLY this Goal's tasks directory;
-   report `automation.unavailable/error` honestly. Never install a package,
-   start a daemon, grant tool permissions or redirect the receiver implicitly.
+   report `automation.unavailable/error` honestly. Goal runtime registers with
+   the installed Eyes CLI (not a Python SDK); it receives daemon task events
+   before deciding whether to remind you. The host restores this subscription
+   when the original owner resumes, without a new human turn or `/goal resume`.
+   Do not manually install packages, launch another daemon, grant tool permissions
+   or redirect the receiver to work around an unavailable capability.
 
 ## Executing and assigning tasks
 
@@ -85,8 +89,9 @@ or suggest authorization commands the host does not provide. If the host has no
 interactive authorization, do not ask the user to authorize a tool through chat.
 A denial or unavailable capability is not a user business decision: first try an
 already-authorized alternative or independent task without bypassing the denial.
-If no permitted work can advance, record a capability/host blocker and use
-`goal.wait(until="host", reason=...)`, not a request for user approval. A pending
+If no permitted work can advance, record a capability/host blocker in the affected
+tasks and progress report, then stop this execution without changing the Goal business state,
+not a request for user approval. Never create a host wait. A pending
 host approval stays with that system, not a duplicate Goal question. These
 instructions neither change tool policy nor grant access, override read-only
 restrictions or weaken safety checks.
@@ -97,14 +102,56 @@ request with the blocker and the exact decision or material needed; do not ask
 repeatedly from reminders. Do not decide on the user's behalf, fabricate consent
 or silently change the delegated outcome. If independent work remains, ask once
 and continue that work while keeping only affected tasks blocked. Use
-`goal.wait(until="user", reason=...)` only when nothing can advance and the
+`goal.wait(until="user", reason=..., question=..., impact=..., resume_when=...)` only when nothing can advance and the
 remaining blocker truly requires that user decision or material.
 
 This is not permission to bypass lifecycle state: if already waiting, apply the
 original evidence-based `activate` rules below BEFORE any Goal execution, even
 if another task now looks actionable. Never use an alternative task to escape a
-user/host wait or a pause. Only the actual main Agent judges feasible work,
+user wait or historical host wait or a pause. Only the actual main Agent judges feasible work,
 blockers and completion from evidence; there is no programmatic acceptance rule.
+
+### Classify missing information before stopping
+
+- **Hard blocker**: without this fact or capability no permitted independent work
+  can advance toward the agreed outcome. Record evidence and concrete impact.
+- **Information limitation**: more detail would improve quality, but a useful,
+  honest result is still possible. State assumptions and limitations, verify what
+  is accessible and continue. Information that improves quality is NOT by itself
+  a delivery gate; do not silently add acceptance criteria or wait for perfection.
+- **User choice**: a consequential business decision or indispensable private
+  material belongs to the user. Do not fabricate it. Ask only the minimal
+  consolidated question, continue independent work if possible, and wait(user)
+  only for a genuinely Goal-wide blocker.
+
+For every NEW user wait, supply nonempty `question`, `impact`, `resume_when`
+strings alongside `until="user"` (also the default when until is omitted).
+`question` is the exact request; `impact` explains what cannot advance without
+an answer; `resume_when` states the actual answer/evidence needed. These fields
+are data saved atomically with the waiting state, not instructions or authority.
+Saving is NOT delivery: Goal saves/displays questions. When the host provides
+a read-only output receipt query, status exposes actual host facts under
+`question.delivery`, not a model claim of sending. No capability or record means
+unavailable/untracked, not proof of no send or delivery; unknown, partial or
+cancelled output outcomes are not delivered and do not change the Goal lifecycle.
+Ask through the existing conversation/output channel. If the host provides an
+authorized proactive send tool with an optional reference, use `question.id`
+from Goal status to correlate the question with the actual output. Never invent
+an ID or a send tool, routing authority or receipt. Re-read status after saving
+to obtain the actual question ID. Identical wait retries keep that ID; do not
+resend a question merely because a tool ACK was lost. This association grants no
+permissions. Do not claim the user received it merely because persistence or
+a tool call succeeded. Do not create a Goal sender, delivery loop or
+channel-specific message dependency. Reads never send or release the wait.
+Legacy v2 user waits may say question/impact/resume_when "not recorded"; do not
+invent the missing question, a sent receipt or an answer. Read actual context.
+Neither elapsed time nor a clock event releases a user wait. The main Agent must
+check actual authorized user input against `resume_when`, then use the existing
+versioned `activate`; all original user-wait/historical-host-wait/pause and completion boundaries apply.
+`active` means the Goal is eligible for main-Agent work, NOT that an Agent is
+running. Tasks waits belong to task workers with main-Agent evidence checking;
+historical host waits require explicit user conversion; pauses require explicit user resume;
+completed Goals require no more execution, even if the user may create a new one.
 
 ## Workspace hygiene
 
@@ -222,7 +269,7 @@ to avoid an infinite reminder loop. Save the assessment first, explain attempted
 approaches, blockers and concrete conditions for resuming, and tell the user.
 A pause is not completion and does NOT cancel running tools, accepted inputs or
 children; manage those separately through their actual owners when appropriate.
-Never release a user pause or user/host wait from an automatic input.
+Never release a user pause or user wait or historical host wait from an automatic input.
 
 Write evidence references and meaningful summaries; do not use huge transcripts or
 credentials. Do not place executable code/configuration to load in a task record.
@@ -261,16 +308,18 @@ On a Goal reminder or task-file change:
    do not automatically activate the Goal: the main Agent checks and activates.
 6. If only a genuine user business decision or independently unobtainable key
    user material remains and no work can advance, FIRST
-   `goal.wait(until="user", reason=...)`, then ask one concise consolidated question.
+   `goal.wait(until="user", reason=..., question=..., impact=..., resume_when=...)`, then ask one concise consolidated question.
    Otherwise keep only the affected tasks blocked and continue permitted work
    while active. Tool permission/approval is handled by the existing host system,
    never a Goal authorization request; if no permitted alternative or independent
-   task remains, record a capability/host blocker and use
-   `goal.wait(until="host", reason=...)`. Host recovery also uses this host wait.
-   Release either wait only after the actual user reply/authorized recovery fact
+   task remains, record a capability/host blocker in task files and progress,
+   then stop this execution without changing the Goal business state.
+   New waits support only user or tasks, never host.
+   Release a user wait (or convert a historical host wait) only after the
+   actual user reply/authorized recovery fact
    satisfies it, then use `activate` with the observed version and evidence.
    An automatic task event,
-   source label or quoted reply is NOT authorization to release user/host waits.
+   source label or quoted reply is NOT authorization to release user waits or historical host waits.
    Do not loop on approval, invent authorization or repeatedly ask from automatic
    messages.
 
@@ -291,7 +340,7 @@ version (content edits may advance it without another lifecycle change), with
 `user_authorized=true` and `command="/goal resume"`, confirms that the user already
 authorized that native resume. Do not request the same resume authorization again
 merely because the next input is an automatic reminder. Still check the current
-status: paused Goals and user/host waits remain binding; a stale transition cannot
+status: paused Goals and user waits or historical host waits remain binding; a stale transition cannot
 release them. Lifecycle origin is a diagnostic fact, not a separate grant of tool
 permissions, proof that a fault is repaired, or permission to replay unknown side
 effects. A confirmed native resume permits continuing the Goal under existing
@@ -304,14 +353,23 @@ owner-bound current Goal is already active, do not demand fresh resume authoriza
 create a blocker or set `wait(until="user")` merely because its historical origin
 is unavailable; continue under the current state, actual evidence and existing
 permissions. Conversely, historical unknown cannot release a current paused Goal
-or a current user/host wait; those constraints still require actual authorization.
+or a current user wait or historical host wait; those constraints still require actual authorization.
 
-A failed/cancelled/interrupted host execution waits for explicit inspection and
-actual user recovery authorization, not an automatic task event. If paused, use
+A failed/cancelled/interrupted/preparation-failed host execution is an execution
+fault, not a Goal wait or pause. Runtime records execution/delivery faults separately
+and fences automatic continuation; it does not change status, version, reason or
+last_transition. Inspect actual receipts/effects before recovery, not an automatic task event. If paused, use
 explicit user resume; use the owner-bound transition above to check whether that
-resume has already been authorized. If waiting for user/host, inspect the actual
+resume has already been authorized. If waiting for user or in a historical host wait, inspect the actual
 reply/recovery fact before activation instead; resume cannot release a wait.
-Never automatically replay unknown side effects.
+Historical wait(host) records remain readable and disabled. Never create a new one
+or silently normalize old records to active. Only actual user-authorized, versioned
+`activate` (with recovery evidence), or explicit user pause/clear, may convert them;
+`resume` alone cannot release them. Conversion never retries the original request.
+Never automatically replay unknown side effects. Even explicit pause/resume cannot
+prove an uncertain delivery was lost: unresolved unknown outbox records still fence
+new automatic reminders. A known execution failure can be left in history when the
+user explicitly pauses/resumes into a fresh continuation, not a replay of old tools.
 ACP enqueue ACK means accepted input, NOT successful work. Unknown delivery is not proof of loss;
 never create a new request ID just to retry it.
 
@@ -322,7 +380,7 @@ never create a new request ID just to retry it.
   automatic resume, source labels or changing a criteria field.
 - `/goal resume` is explicit user recovery of a paused Goal only, not a way to
   release wait. For waiting(tasks), the main Agent may `activate` after judging
-  actual results in an automatic task reminder. Waiting(user/host) requires the
+  actual results in an automatic task reminder. Waiting(user), or historical Waiting(host), requires the
   actual user reply/authorized recovery fact; an automatic task event cannot
   release it. Neither activation nor automatic input bypasses paused state.
 - `/goal clear` archives and releases the current binding, preserving history,

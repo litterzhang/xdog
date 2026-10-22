@@ -65,7 +65,7 @@ class ObserverService:
     def _handler(self, definition: HandlerDef) -> EventHandler:
         if self.handler_factory is not None:
             return self.handler_factory(definition)
-        return self.handler_registry.create(definition, self.cwd)
+        return self.handler_registry.create(definition)
 
     async def start(self, data: object) -> dict[str, JsonValue]:
         task = asyncio.current_task()
@@ -126,7 +126,7 @@ class ObserverService:
 
                 task = asyncio.create_task(observe(definition, registration_id=identifier, scanner=self.scanner,
                     deliver=deliver, emit=lambda event: self.emit(identifier, event), clock=self.clock,
-                    sleep=self.sleep, cancel=cancel, resume=resume, cwd=self.cwd,
+                    sleep=self.sleep, cancel=cancel, resume=resume,
                     suspended=suspended, validate=validate, wall_clock=self.wall_clock,
                     scheduler_sources=schedulers))
                 registration = Registration(identifier, definition, task, cancel, resume)

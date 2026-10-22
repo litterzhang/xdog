@@ -104,7 +104,7 @@ async def test_active_selection_cannot_change_while_provider_or_cleanup_is_runni
     assert not agent.active_tools
 
 
-async def test_actual_extension_refresh_keeps_explicit_selection_and_removal_retires_alias(tmp_path):
+async def test_extension_lifecycle_cannot_project_tools_or_change_explicit_host_selection(tmp_path):
     import shutil
     from pathlib import Path
 
@@ -114,26 +114,19 @@ async def test_actual_extension_refresh_keeps_explicit_selection_and_removal_ret
     runtime = ExtensionRuntime(['sample'], root, tmp_path)
     configured = tools([])
     agent = Agent(lambda *args: EventStream.empty(AssistantMessage()), tools=configured)
+    agent.set_active_tools(['allowed'], expected_revision=agent.tool_selection_revision)
+    before = agent.state, agent.active_tools, agent.tool_selection_revision
     try:
-        await runtime.initialize()
-        runtime.sync_tools(agent)
-        extension = runtime.tools()[0].name
-        agent.set_active_tools(['allowed', extension], expected_revision=agent.tool_selection_revision)
-        revision = agent.tool_selection_revision
-        runtime.sync_tools(agent)
-        assert agent.tool_selection_revision == revision
-        assert {tool.name for tool in agent.active_tools} == {'allowed', extension}
-        assert 'excluded' in {tool.name for tool in agent.state.tools}
-        agent.set_active_tools(['allowed'], expected_revision=agent.tool_selection_revision)
-        runtime.sync_tools(agent)
-        assert [tool.name for tool in agent.active_tools] == ['allowed']
-        agent.set_active_tools([extension], expected_revision=agent.tool_selection_revision)
-        await runtime.manage('unload', 'sample')
-        runtime.sync_tools(agent)
-        assert agent.active_tools == ()
-        await runtime.manage('reload', 'sample')
-        runtime.sync_tools(agent)
-        assert extension in {tool.name for tool in agent.state.tools} and not agent.active_tools
+        for operation in ('initialize', 'unload', 'reload'):
+            if operation == 'initialize':
+                await runtime.initialize()
+            else:
+                await runtime.manage(operation, 'sample')
+            assert not hasattr(runtime, 'tools') and not hasattr(runtime, 'sync_tools')
+            with pytest.raises(AttributeError):
+                getattr(runtime, 'sync_tools')(agent)
+            assert before == (agent.state, agent.active_tools, agent.tool_selection_revision)
+        assert agent.state.tools == configured and [tool.name for tool in agent.active_tools] == ['allowed']
     finally:
         await runtime.aclose()
     assert not runtime._manager._thread.is_alive()
@@ -182,8 +175,10 @@ async def test_extension_active_tools_api_is_unavailable_without_command_host_co
     runtime = ExtensionRuntime(['toolselector'], root, tmp_path)
     try:
         await runtime.initialize()
-        response = await runtime.tools()[0].execute('call', {})
-        assert response.content[0].text == 'NO-HOST-TOOL-AUTHORITY'
+        assert await runtime.pre('filesystem', {}) == {}
+        assert runtime.snapshot()['ui']['toolselector:authority']['lines'] == ['NO-HOST-TOOL-AUTHORITY']
+        assert await runtime.command('ext-toolselector-inspect', '') == 'UNAVAILABLE'
+        assert not hasattr(runtime, 'tools')
         assert 'ext-toolselector-select' not in runtime.commands()
     finally:
         await runtime.aclose()

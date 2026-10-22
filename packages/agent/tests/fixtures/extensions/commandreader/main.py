@@ -36,4 +36,3 @@ def setup(api):
     async def illegal(args, context):
         assert await api.get_command_catalog() is None
         return 'TOOL-MENU-UNAVAILABLE'
-    api.tool('inspect', 'Tools cannot borrow interactive command-menu authority', {'type': 'object'}, illegal)

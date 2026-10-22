@@ -23,9 +23,11 @@ Its session methods adapt the shared runtime for the gateway; they are not a sec
 client SDK alongside Coding's SDK.
 
 The reusable Agent SDK is **`xdog.agent`**. Its MCP client
-(`xdog.agent.mcp.McpManager`), extension API (`xdog.agent.extensions.ExtensionAPI`)
-and child supervision (`xdog.agent.supervision.ChildSupervisor`) live in that
-layer. SDK/embedding examples below refer to those shared interfaces or explicitly
+(`xdog.agent.mcp.McpRegistry`), extension API (`xdog.agent.extensions.ExtensionAPI`)
+and inert child SDK contracts (`xdog.agent.children.ChildClient`/`ChildHandle`)
+live in that layer. Child execution remains in each application's host-owned
+runtime, exposed internally as `children.runtime`, not in the Agent SDK.
+SDK/embedding examples below refer to those shared interfaces or explicitly
 to Coding's SDK, not to a public Claw SDK.
 Claw retains its product controls for MCP, trusted extensions, children, Goals,
 memory and history; its internal adapters apply group ownership and tool policy.
@@ -76,92 +78,39 @@ snapshots are local client save/recovery operations, not gateway requests. Codin
 former `--rpc` JSON-lines frontend is removed too; this does not remove the private
 extension-worker protocol, MCP JSON-RPC or Coding's separate ACP session ingress.
 
-## Eyes and ACP callbacks
+## ACP input (enabled by default)
 
-For standalone ACP access, explicitly configure a private Unix endpoint on the
-existing gateway (managed Eyes owns one automatically when `xdog-eyes` is installed):
+Every gateway starts its private Unix ACP receiver at `data_dir/acp/agent.sock`;
+`acp_socket_path` only overrides its address. This is independent of Eyes, Goal,
+and TUI. The main Agent's dynamic prompt publishes the actual endpoint, opaque
+session address, cwd and `xdog/enqueue` payload shape so it can tell another
+sender how to contact it. ACP inputs use the ordinary Core Inbox and main Agent.
+They do not imply a chat reply route or grant tool permissions. For user-facing
+notifications the Agent uses the normal message tool.
 
-```bash
-xdog-claw gateway start --foreground \
-  --acp-socket "$HOME/.local/state/xdog/claw/acp/agent.sock"
-```
+## Scheduling and observation with Eyes
 
-Point Eyes' **generic ACP handler** at that socket with `session: "group:main"`
-and `delivery: "enqueue"`, from the group's exact workspace. The stable group
-address follows its current AgentSession; it is not a TUI or exact transcript
-address. Inputs first enter a durable inbox, then automatically use the existing
-Orchestrator queue and tool policies. No message approval, second Agent loop, or
-TUI connection is needed. Standard ACP prompt is also supported and waits for
-its actual result. Interrupted execution is not automatically replayed.
+See [SCHEDULER.md](SCHEDULER.md). Installed `xdog-eyes` contributes the `eyes` tool
+through generic capability discovery. Registration ensures the independent Eyes
+daemon is available; it does not create an observer. Claw has no ManagedObservers,
+observer DB, event relay, report tracker, or extra output-source route.
 
-See [Claw/Eyes ACP design and setup](../../docs/claw-eyes-acp.md) for definition
-examples, scope/receipt/cancel semantics, recovery and limits. Without installed
-`xdog-eyes`, ACP requires explicit configuration; stopping Eyes does not stop Claw
-or retract accepted messages.
+The Agent follows Eyes' application-neutral skill: choose an owner, write the
+complete JSON, then call create/status with the same explicit owner.
+The caller decides owner naming; Eyes does not derive it from the group.
+JSON sources/detectors/handlers/routes select what to observe and where to deliver;
+other valid endpoints/sessions are allowed. For enqueue, the receiver resolves the existing session directory; no handler
+`cwd` is required. The tool does not limit destinations to the current group.
+Normal receiver access/protocol checks still apply.
 
-## Scheduling: gateway-managed Eyes
-
-To install managed observation explicitly, use `pip install 'xdog-claw[eyes,acp]'`.
-Installed `xdog-eyes` automatically supplies the managed capability; Claw never
-installs it automatically. Without the package, base chat continues without managed
-Eyes. Eyes is an optional dependency; croniter is owned by Eyes (`croniter>=2.0,<7`), not a
-direct Claw dependency. The scheduler source is in Eyes; Claw owns its
-group-scoped observation intent and Core input/output receipts.
-
-The group-scoped `eyes` tool exposes `create(name, source, instruction)`,
-`list()`, `status(observer_id)`, `cancel(observer_id)` and `cancel_notifications(observer_id)`. `source` is an original Eyes source object.
-The host binds the current group's workspace/private ACP endpoint and destination;
-callers cannot redirect observers into other groups. When the installed capability
-is available, prefer it over manually wiring a standalone CLI registration. The old
-`task` tool and old timer engine are removed. A registered tool name alone is not
-proof of a live host; unavailable management must return an explicit error.
-Standalone Eyes CLI/ACP setup above remains available and unchanged; Coding keeps
-its exact session/project/branch semantics, unlike Claw's active group conversation.
-
-Package presence is the capability contract; there is no `eyes_enabled` setting.
-Availability does not create an observer: new observers require an explicit user
-request. With `xdog-eyes` installed, gateway startup recovers already accepted
-managed time observers under the recovery rules below. Loading a skill or merely
-registering a tool does not start observation.
-
-The gateway reuses configured `acp_socket_path` or owns the private
-`data_dir/acp/agent.sock` endpoint, with no extra daemon. The installed capability binds the tool to public host ports, never to a model-selected host. The gateway owns these resources
-and joins them during shutdown. Explicit standalone ACP configuration is unchanged;
-package presence and callback instructions do not grant tool permissions.
-
-Managed time recovery must retain an unadmitted `at` through downtime without
-silently losing it, while interrupted or unknown execution must **not** be
-automatically replayed. Execution status and report-delivery status must remain
-separate; queued receipt is not completed work. Cancelling an owned pending
-callback requires explicit input withdrawal; stopping observation alone leaves
-accepted execution/reporting intact. `cancel_notifications` stops unsent reports
-without stopping observation or execution. Each actual assistant message uses
-Core output receipts and the original creating input's recipient/context, even
-before the whole turn finishes; there is no final aggregated report resend.
-Observer status mirrors those receipts, not a separate sending state machine.
-Unsent outputs become `cancelled`; already delivered or unknown sends retain
-those facts. An unavailable original recipient leaves output pending without
-broadcasting to another peer or running the model again. No operation undoes
-started effects. Ordinary file observation must not automatically resume after
-gateway restart. See `docs/observer-message-output-verification.md` for the
-source-runtime evidence and remaining cold-artifact gate.
-
-Eyes intervals have a monotonic **fixed phase**, not a delay after completion.
-The **2026-10-18 decision** removes the legacy task scheduler and all migration
-compatibility: no `tasks_file` configuration and no reading or importing
-`scheduled_tasks.json`, whether or not `xdog-eyes` is installed. Old user data stays
-untouched: do not delete, rewrite, back up for migration, or convert it into Eyes
-records or confirmation states. Users may explicitly request new Eyes observers;
-never automatically translate old schedules or replay missed periods.
-
-Eyes scheduler sources and generic historical transcript labels remain; the implicit Goal runner is removed.
-See [Scheduling with Eyes](SCHEDULER.md) for the tool contract, source examples,
-recovery requirements and bounded storage limits. A known not-sent report can
-recover without a second Agent run; unknown channel effects are not automatically
-retried. The revised removal scope is **in implementation/verification**; earlier
-regression evidence applies to the superseded migration implementation, not final
-acceptance of this decision. Current status is tracked in
-[`claw-eyes-scheduler-requirements.json`](../../docs/claw-eyes-scheduler-requirements.json).
+Eyes daemon sends directly through the configured handler into normal ACP intake.
+Eyes does not track subsequent Agent execution or chat output. `list`, `pause`,
+`resume` and `cancel(observer_id)` manage daemon state, not downstream messages.
+No `cancel_notifications` or implicit creator reply exists. Tool binding close
+does not stop registrations; daemon recovery is independent of Claw startup.
+Old observer and scheduled-task files are left untouched; no migration or replay.
+No Eyes enable switch or automatic installation is provided. Timers use native
+Eyes `at`, fixed-phase `every_seconds`, or zoned five-field cron.
 
 ## Default group-owned Goal support
 
@@ -795,20 +744,17 @@ names activate lazily at the first agent turn, `/extensions`, or extension comma
 from xdog.agent.extensions import ExtensionAPI
 
 def setup(api: ExtensionAPI):
-    async def echo(params, context):
-        return "echo: " + params.get("text", "")
     async def hello(args, context):
         api.notify("Hello from the explicitly trusted extension")
         return "hello: " + args
-    api.tool("echo", "Echo text", {"type": "object", "properties": {
-        "text": {"type": "string"}}}, echo)
     api.command("hello", "Say hello", hello)
     api.status("ready", "Extension ready")
     api.status("summary", "Bounded status text")
 ```
 
-Tools get collision-safe `ext_...` aliases; slash commands are namespaced as
-`/ext-sample-hello ARGS`. The live completion provider reflects current commands.
+Extensions cannot register model tools or delegate extension tools to children.
+Slash commands are namespaced as `/ext-sample-hello ARGS`. The live completion
+provider reflects current commands.
 `/extensions [list|reload NAME|unload NAME]` manages ONLY globally trusted IDs and
 requires idle ownership. Commands do not silently submit an agent prompt. API v1
 supports sync/async callbacks, session/turn/message/tool lifecycle events, pre-tool
@@ -825,14 +771,23 @@ until explicit unload/reload. Shutdown runs bounded stop hooks and reaps normal
 owned process groups; cancellation cannot roll back already completed effects.
 
 The supported extension surface is intentionally bounded, not full Pi API
-compatibility. Durable entries/context hooks, typed tool/command results, registered
+compatibility. Durable entries/context hooks, typed command results, registered
 shortcuts and session-owned providers are documented below. Arbitrary custom
 rendering/forms/layouts, raw terminal interception/observation and host editor/session
 mutation APIs are removed. Code can deliberately escape normal process ownership;
 do not load untrusted code.
 
-Claw additionally requires `extension_allow_tools: [sample]` in its trusted config
-to let the agent call a plugin tool. Default tool use remains blocked after loading.
+Each group owns an Agent SDK `ToolRegistry` for ordinary built-in, capability and
+child control tools, plus a separate `McpRegistry` for external MCP tools. The
+session binds that MCP registry directly to its Agent; MCP tools never enter the
+ordinary ToolRegistry. MCP connect/refresh/disconnect/auth retirement syncs the
+Agent's combined inventory while retaining explicit active-tool restrictions.
+Children receive connection-free delegated MCP registries containing only the
+original parent-authorized proxies; closing a child never closes its parent MCP
+connection. UI/permissions/grants use the full combined inventory; `local_tools`
+contains only ordinary tools. Claw adds only memory/message/skill/todo/generate_image factories; domain imports do not register
+tools. `generate_image` and the SDK `submit_result` factory are not enabled by default.
+Extension hooks, providers, commands and UI remain independent of tool registration.
 Configuration `extensions`, `extension_dir` and `extension_settings` use the same
 names/shape in `config.yaml`. Cached sessions own their processes; group/session
 controls, run-correlated UI events and gateway-loop delivery fence stale output.
@@ -936,15 +891,24 @@ removed. Registered command shortcuts and submitted-input hooks remain separate;
 none of these interfaces grants tool permission or full Pi API compatibility.
 
 
-### Supervised child agents
+### Host-managed child agents
 
 The TUI supports `/agents start TASK` (read-only), `/agents start --inherit TASK`,
 `/agents list` and `inspect/steer/follow-up/cancel/wait/close ID` controls (steer and
 follow-up take trailing text). Parents expose the unified `agent` tool;
 children cannot recursively delegate through the `agent` tool.
 
-Children share their group's workspace, model/options and selected tools. Inherited
-access cannot exceed current parent read-only restrictions or configured MCP/extension
+A safely completed child is a retained conversation, not an always-running Agent.
+An explicit new `steer`/`follow-up` writes its new input, revalidates parent grants,
+restores the child history into a fresh runtime, and closes that Agent after the
+round. Claw borrows the gateway's original loop and never stops it for child idle
+cleanup. Interrupted/failed work and unknown effects are never automatically
+replayed. Old records without safe continuation metadata require a fresh child;
+see `docs/child-continuation.md` for recovery and permission boundaries.
+
+Children share their group's workspace but never inherit the parent's conversation
+history or system prompt. Model/options may be independently selected; tools/skills
+remain a captured subset. Inherited access cannot exceed current parent read-only restrictions or configured MCP/extension
 allow-tools gates. Independent child extension workers/entries/tool executors do not
 borrow the parent's stateful tool proxies; parent validation/context hooks still
 retain authority. Read-only children permit only known read-only filesystem calls
@@ -1025,8 +989,8 @@ with child results and appear in complete child source. The removed `--timeout`,
 keys are rejected on new starts; historical saved values are inert compatibility
 data, not restored limits. Actual model output/context options remain separate from
 a removed cumulative child token quota; usage is not exact billable accounting.
-`--fresh` omits canonical history/child entry inheritance, not mandatory parent
-validation/context or the shared workspace. Model/reasoning inherit by default; explicit overrides now use the actual adapter.
+`--fresh` is the explicit no-parent-history mode; parent conversation/system
+context is never inherited. It does not remove parent validation or workspace restrictions. Model/reasoning inherit by default; explicit overrides now use the actual adapter.
 Named presets now use explicit user configuration. Claw specialized
 starts require its advertised `child_config` capability, avoiding silent old-gateway
 settings loss.
@@ -1172,7 +1136,7 @@ resource, actual grant scopes, pinned endpoints, client ID and public method
 refresh POST, not a new browser login or client registration. Claw requires
 `mcp_refresh:1`; unsupported gateways cannot submit it.
 
-On an `xdog.agent.mcp.McpManager` instance, Agent MCP SDK hosts use
+On an `xdog.agent.mcp.McpRegistry` instance, Agent MCP SDK hosts use
 `manage_auth("remote", "refresh_prepare")` followed by
 `manage_auth("remote", "refresh", review_id)` under the same live consent lease.
 Receipts are single-use and expire after five minutes. Refresh uses the previous
@@ -1249,58 +1213,19 @@ helper test covers this; generated-output/vendored-package licence boundaries ar
 unchanged. Lock updates only declare the already-resolved dependency, not unrelated
 version upgrades.
 
-### Rich extension tool results
+### Host-owned tool results
 
-Trusted extension tools are no longer text-only. Existing string callbacks are
-unchanged. A callback may return a typed `AgentToolResult`, a content/structuredContent/
-details object, or use the validated builder:
-
-```python
-return api.result([
-    {"type": "text", "text": "Result summary"},
-    {"type": "image", "data": png_base64, "mimeType": "image/png"},
-], structured=[False, 0, None], details={"count": 0, "enabled": False})
-```
-
-Text and PNG/JPEG/WebP images remain typed through the one existing agent loop,
-model context, tool UI and transcript persistence. Structured JSON (including
-explicit null) remains canonical inspectable content, not hidden behind a summary.
-Extension metadata is separate: `extension_details_present` distinguishes omission
-from explicit null and `extension_details` retains the exact bounded JSON value.
-It is not converted to a model message or interpreted as host permissions. Typed
-AgentToolResult content/details is accepted too; structured data uses the builder
-or explicit structuredContent envelope.
-
-Rich tool data is snapshotted and independently checked at worker and host boundaries.
-Unknown content kinds/extra fields, invalid image base64/MIME, nonfinite/non-JSON
-values, coercions and oversized frames fail rather than silently discard data.
-Limits: 64 content blocks, four images, 2 MiB decoded per image, 1 MiB per rich text
-block, 256 KiB each for structured data/details, and 3 MiB for the encoded rich
-result envelope. These are explicit API/frame limits, not OS-enforced sandboxing.
-No file/URI is implicitly opened and no image is automatically saved or attached
-as a new user prompt. Raise an exception for tool errors; rich isError/audio/resource
-payloads are not silently guessed in this API version. Commands remain bounded text.
-
-Coding approvals, Claw extension_allow_tools, read-only and child inherited permission
-restrictions still gate execution. Text-only post-hooks do not replace or drop a
-result containing images. Legacy text callbacks/post-hooks retain their behavior.
-Both UIs display tool images without printing base64. Claw now forwards final tool
-image parts (previously missing from its display events), with a bounded live image
-budget. Larger generic tool images are visibly marked as omitted from the live
-preview; original data stays in canonical model/transcript history, not in an
-oversized socket line. The new rich-extension envelope fits that transport budget.
-
-Independent real workers, denied/allowed live app paths, typed persistence, inherited
-child output, malformed/unsupported results, large-preview notices and both private-
-tmux image/JSON inspectors are verified. These typed tool results do not grant
-extension editor/session mutations, custom rendering or terminal interception.
-Audio/resource/error-image interoperability, remaining MCP/credential and native-
-platform gaps remain separate from the retained tool-result contract.
+Model tools are supplied by the host's SDK registry, not Python extension callbacks.
+Text/image/structured results still use the existing Agent loop, UI and transcript
+persistence. Read-only, MCP allowlists and frozen child grants remain execution
+authority; registration never bypasses those gates. Text-only extension post-hooks
+do not replace or drop a result containing images. Original typed data stays in
+canonical model/transcript history even when a large live preview is bounded.
 
 ### Rich extension command artifacts
 
-Extension command callbacks now accept the same typed text/image/structured JSON/
-details result builder as tool callbacks. Legacy string commands remain strings.
+Extension command callbacks accept typed text/image/structured JSON/details
+through the validated result builder. Legacy string commands remain strings.
 The shared `xdog.agent` extension runtime's `runtime.command()` returns either str
 or a frozen `ExtensionCommandResult` with extension/command identity, a validated
 result snapshot and safe summary.
@@ -1854,7 +1779,7 @@ claims remote revocation. Save/erase cancellation revokes storage admission and 
 for the actual writer to settle; if an operation committed before cancellation,
 inspect local state rather than automatically retrying it.
 
-Agent MCP SDK callers can opt in with `McpManager(..., credential_dir=...)` and prepare/confirm
+Agent MCP SDK callers can opt in with `McpRegistry(..., credential_dir=...)` and prepare/confirm
 `credentials_save`, `credentials_restore`, or `credentials_forget` through the
 existing owned `manage_auth` API. A manager without a credential directory remains
 memory-only. Actual client restart/consent and private-tmux tests cover the file
@@ -1867,7 +1792,7 @@ Set the top-level `mcp_credential_backend: secret-service` in
 The default remains `file`; each group has a separate native storage namespace.
 
 Agent MCP SDK hosts select
-`McpManager(..., credential_dir=..., credential_backend="secret-service")`.
+`McpRegistry(..., credential_dir=..., credential_backend="secret-service")`.
 The directory is used only to derive a stable namespace; this backend creates no
 local token files. Moving that directory changes which saved credentials are found.
 
@@ -2319,8 +2244,8 @@ This native view has no editor, reorder/remove/return control, recovery-copy but
 or permission-confirmation action. Paste cannot submit or adopt a draft.
 
 The ordinary main-Agent `agent` tool retains `action="queue"` with a typed
-JSON `text` request. The `xdog.agent` SDK
-`ChildSupervisor.control("queue", ...)` also remains.
+JSON `text` request. The host child runtime
+`children.runtime.control("queue", ...)` also remains.
 Their edit/remove/move/text-return and explicit stopped recovery operations use the
 real owner loop and existing identity, revision, selected-input, image-byte and
 write-before-publication safeguards. They are not native UI actions and do not
@@ -2407,7 +2332,7 @@ but uses a rough image allowance alongside the conservative text guard. This is
 not exact provider token accounting or a promise that any image fits any model.
 Final actual-context model validation, permissions and protocol/resource guards still apply.
 
-`xdog.agent` SDK callers can pass `images=tuple[ImageContent, ...]` to `ChildSupervisor.start`
+Host integrations can pass `images=tuple[ImageContent, ...]` to `children.runtime.start`
 or its steering/follow-up `control` methods. The application child APIs propagate
 these same typed inputs. No file URI, remote fetch or implicit text fallback is
 introduced. Claw requires the gateway's exact `child_images:1` capability and sends
@@ -2443,7 +2368,7 @@ existing limitations.
 ### Typed stopped-child image recovery through Agent/SDK
 
 `recover_images` remains an explicit SDK/main-Agent queue operation with exact
-input `id` and queue `revision`. `ChildSupervisor.control` returns the verified
+input `id` and queue `revision`. `children.runtime.control` returns the verified
 non-destructive `image_recovery` payload and `queue.image_receipt`; the ordinary
 `agent` wrapper returns typed images plus receipt/count metadata. The
 text-only `recover` action refuses image-bearing inputs rather than dropping bytes.
@@ -2525,7 +2450,7 @@ The main Agent can use its ordinary permissioned `agent` tool with
 Preparation returns typed image content and bounded token/receipt metadata; it
 never dequeues and does not embed raw base64 into model-visible prose.
 
-The tool supplies its private nonserialized supervisor owner; models cannot pick
+The tool supplies its private nonserialized child-runtime owner; models cannot pick
 one. Cancellation/abort/close revoke that owner. The existing token expiry,
 selection/revision/receipt checks and retained-byte limits remain. Durable removal
 and return-backup writes keep their existing owned settlement/no-automatic-replay

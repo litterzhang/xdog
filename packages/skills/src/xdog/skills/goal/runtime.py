@@ -26,7 +26,7 @@ from .models import Goal, Owner
 from .presentation import format_change, format_history, format_status
 from .service import GoalService
 from .store import GoalStore, remindable
-from .tools import _ACTIONS, create_goal_tool
+from .tools import _validate, create_goal_tool
 from .ui_binding import GoalDisplay
 
 logger = logging.getLogger(__name__)
@@ -53,8 +53,10 @@ class GoalRuntime:
         self._closing = False
         self._close_task: asyncio.Task[None] | None = None
         self.automation: dict[str, Any] = {'status': 'idle'}
+        self.execution_fault: dict[str, Any] | None = None
         self.delivery: dict[str, Any] = {'status': 'idle'}
         self._legacy_paths: tuple[str, ...] = ()
+        self._restore_pending = False
 
     @property
     def owner(self) -> Owner:
@@ -76,10 +78,14 @@ class GoalRuntime:
             root / 'journal.sqlite3', host.storage_root / 'goals.json') if os.path.lexists(path)))
         store = await GoalStore.open(root / 'registry.sqlite3', runtime.owner)
         runtime.service = GoalService(store, valid=runtime._valid, on_change=runtime._changed)
+        message_delivery = getattr(host, 'message_delivery', None)
+        if callable(message_delivery):
+            runtime.service.message_delivery = message_delivery
         runtime.service.info = lambda: {
             'automation': dict(runtime.automation), 'delivery': dict(runtime.delivery),
             'execution': runtime.host.execution_snapshot(), 'legacy_storage': list(runtime._legacy_paths)}
         try:
+            runtime._restore_pending = await store.current() is not None
             runtime._unsubscribe = host.subscribe_events(runtime._event)
         except BaseException:
             await store.close()
@@ -103,16 +109,12 @@ class GoalRuntime:
         if (parent is None or actual_tool is not self._tool or not self._current(parent)
                 or not isinstance(args, dict)):
             return None
-        action = args.get('action')
-        if (not isinstance(action, str) or action not in _ACTIONS
-                or set(args) - {'action'} - _ACTIONS[action]):
+        try:
+            action = _validate(args, actual_tool.parameters['properties'])
+        except ValueError:
             return None
         validator = self._effect_validator
         if validator is None or not validator.is_valid(args):
-            return None
-        required = {'create': {'title'}, 'update': {'version'}, 'activate': {'goal_id', 'version', 'reason'},
-                    'report': {'report'}, 'task_update': {'task'}}
-        if not required.get(action, set()) <= args.keys():
             return None
         read = action in {'status', 'summary', 'tasks', 'history'} or action == 'plan' and 'content' not in args
         if not read and set(args) & {'revision', 'offset', 'limit'}:
@@ -164,6 +166,8 @@ class GoalRuntime:
         previous = self._parent
         if previous is not None and previous.agent is parent.agent and previous.extensions is parent.extensions:
             if self._current(previous):
+                self._schedule(self._refresh)
+                self._schedule(self._available)
                 return
         self._remove_commands()
         if self._display is not None:
@@ -204,15 +208,18 @@ class GoalRuntime:
             self._display = GoalDisplay(self.service, parent.extensions.views,
                 valid=lambda: self._current(parent), notify=parent.extensions.notify_view_changed)
         self._changed()
+        if self._restore_pending:
+            self._restore_pending = False
+            self._schedule(self._available)  # Reconcile original persisted facts on restored host attachment.
 
-    def _schedule(self, operation: Callable[[], Coroutine[Any, Any, Any]]) -> None:
+    def _schedule(self, operation: Callable[[], Coroutine[Any, Any, Any]], *, retiring: bool = False) -> None:
         if self._closing or self.loop.is_closed():
             return
         def admit() -> None:
             if self._closing:
                 return
             async def run() -> Any:
-                if not self._valid():
+                if not retiring and not self._valid():
                     return None
                 try:
                     return await operation()
@@ -240,12 +247,15 @@ class GoalRuntime:
         self._schedule(self._refresh)
 
     def _event(self, event: dict[str, Any]) -> None:
-        if not self._valid():
-            return
         kind = event.get('type')
         if kind == 'owner.retiring':
-            self._schedule(self._stop_observer)
-        elif kind == 'execution.settled':
+            # The intake gate may already be closed. Detachment still belongs
+            # to this runtime, but must not suspend the daemon registration.
+            self._schedule(lambda: self._stop_observer(suspend=False), retiring=True)
+            return
+        if not self._valid():
+            return
+        if kind == 'execution.settled':
             if self._display is not None:
                 self._display.changed()
             identifier = str(event.get('execution_id', ''))
@@ -262,11 +272,49 @@ class GoalRuntime:
         if not self._valid():
             return
         if status in {'failed', 'interrupted', 'cancelled', 'canceled', 'preparation_failed'}:
-            await self._host_wait(status, expected=expected)
+            async with self._wake_lock:
+                await self._record_fault('execution', identifier, status, 'Host execution ' + status, expected=expected)
         elif status == 'succeeded':
+            await self._reconcile_success(identifier, expected=expected)
             goal = await self.service.current()
             if goal is not None and goal.status == 'active' and (expected is None or goal == expected):
                 await self._wake('execution:' + identifier)
+
+    async def _reconcile_success(self, identifier: str, *, expected: Goal | None = None) -> None:
+        """Actual later host success can supersede known failure, never uncertain effects.
+
+        Read the failure snapshot before asking for the latest durable host fact;
+        this fences a delayed success read from releasing a new concurrent failure.
+        No original input, tool or receipt is retried or rewritten here.
+        """
+        latest = getattr(self.host, 'latest_execution', None)
+        if not callable(latest):
+            return
+        async with self._wake_lock:
+            goal = await self.service.current()
+            if goal is None or not remindable(goal) or expected is not None and goal != expected:
+                return
+            wake = await self.service.store.wake_state(goal.id)
+            if wake['accepted']:
+                target = await self.host.acp_target()
+                if target is not None:
+                    # Discover any old terminal receipt before the recovery cause
+                    # is added; it must not consume the new success watermark.
+                    await self._outstanding(target, wake['accepted'][-1:], wake['epoch'], expected=goal,
+                                            recovered=set(wake['recovered']))
+                    wake = await self.service.store.wake_state(goal.id)
+            if not any(row['source'] == 'execution' and row['status'] in {'failed', 'cancelled', 'canceled'}
+                       for row in wake['faults']):
+                return
+            try:
+                fact = await latest()
+            except (RuntimeError, ValueError):
+                if not self._valid() or self.host.execution_snapshot().get('state') == 'closing':
+                    return
+                raise
+            if (self._valid() and fact is not None and fact.get('execution_id') == identifier
+                    and fact.get('status') == 'succeeded' and fact.get('settled_at', 0) >= wake['epoch_time']):
+                await self.service.store.recover_execution(goal, identifier, wake['faults'])
 
     async def _available(self) -> None:
         """Reconcile persisted facts, never infer execution from idle time."""
@@ -296,32 +344,29 @@ class GoalRuntime:
                 return
         await self._wake(None)  # Original pending causes/outbox survive a new process.
 
-    async def _host_wait(self, reason: str, *, expected: Goal | None = None) -> None:
+    async def _record_fault(self, source: str, identifier: str, status: str, reason: str,
+                            *, expected: Goal | None = None) -> None:
+        """Transport/execution failure is not a Goal business-state transition."""
         if not self._valid():
             return
-        generation = self._change_generation
-        goal = await self.service.current()
-        if expected is not None and goal != expected:
-            return  # The original fact cannot put a newer Goal/continuation into host wait.
-        if goal is not None and remindable(goal):
-            try:
-                # Fence both service-lock admission and the actual database commit.
-                # End the pin before refreshing our own newly committed wait.
-                with self.service.invocation(lambda: generation == self._change_generation):
-                    await self.service.change('wait', goal.id, version=goal.version,
-                                              reason='Host execution ' + reason, until='host',
-                                              context=OperationContext(origin='runtime'))
-            except OwnerRetired:
-                if not self._valid() or generation == self._change_generation:
-                    raise
-                return  # A concurrent lifecycle change revoked only this original fact.
-        await self._refresh()
+        goal = expected if expected is not None else await self.service.current()
+        if goal is None or not remindable(goal):
+            return
+        if not await self.service.store.record_fault(goal, source, identifier, status, reason):
+            return
+        fact = {'status': status, 'error': reason, 'source': source, 'identity': identifier}
+        if source == 'execution':
+            self.execution_fault = fact
+        else:
+            self.delivery = {**fact, 'message_id': identifier, 'goal_id': goal.id}
+        if self._display is not None:
+            self._display.changed()
 
-    async def _stop_observer(self) -> None:
+    async def _stop_observer(self, *, suspend: bool = True) -> None:
         observer, self._observer = self._observer, None
         self._observer_key = None
         if observer is not None:
-            await observer.aclose()
+            await observer.aclose(suspend=suspend)
 
     async def _refresh(self) -> None:
         async with self._refresh_lock:
@@ -335,13 +380,14 @@ class GoalRuntime:
                 return
             target = await self.host.acp_target()
             if target is None:
-                await self._stop_observer()
+                await self._stop_observer(suspend=False)
                 self.automation = {'status': 'unavailable', 'reason': 'No active owner ACP endpoint'}
                 return
             key = goal.id, json_text(target)
-            if self._observer_key == key:
+            if self._observer_key == key and self.automation.get('status') == 'watching':
                 return
-            await self._stop_observer()
+            await self._stop_observer(suspend=self._observer_key is not None
+                                      and self._observer_key[0] != goal.id)
             from .automation import TaskObserver
             observer = TaskObserver()
             files = self.service.files(goal)
@@ -349,16 +395,16 @@ class GoalRuntime:
                 result = await observer.start(target, files.tasks_dir, files.root / 'eyes.json', goal.id,
                                               lambda delivery: self._task_changed(goal.id, delivery))
             except BaseException:
-                await observer.aclose()
+                await observer.aclose(suspend=False)
                 raise
             if not self._valid():
-                await observer.aclose()
+                await observer.aclose(suspend=False)
                 return
             self.automation = result
             if result.get('status') == 'watching':
                 self._observer, self._observer_key = observer, key
             else:
-                await observer.aclose()
+                await observer.aclose(suspend=False)
                 self._observer, self._observer_key = None, None
             # Observation baselines do not emit historical changes. Reconcile a
             # bounded authoritative snapshot to notice edits made while paused/offline.
@@ -382,23 +428,29 @@ class GoalRuntime:
         if await self.service.store.signal(goal, f"task-snapshot:{wake['sequence']}:{digest}"):
             self._schedule(lambda: self._wake(None))
 
-    async def _task_changed(self, goal_id: str, delivery: Any) -> None:
-        """Eyes commits detection into this Goal's coalescer, not a second inbox sender."""
+    async def _task_changed(self, goal_id: str, delivery: Any) -> bool:
+        """Acknowledge Eyes only after this original Goal durably accepts its cause."""
         if not self._valid():
-            return
+            return False
         goal = await self.service.current()
         if goal is None or goal.id != goal_id or not remindable(goal):
-            return
-        if await self.service.store.signal(goal, 'tasks:' + str(delivery.id)):
-            self._schedule(lambda: self._wake(None))
+            return False
+        if not await self.service.store.signal(goal, 'tasks:' + str(delivery.id)):
+            return False
+        self._schedule(lambda: self._wake(None))
+        return True  # Includes an already committed duplicate original delivery ID.
 
     async def _outstanding(self, target: dict[str, Any],
-                           rows: list[dict[str, Any]], epoch: int) -> bool:
+                           rows: list[dict[str, Any]], epoch: int, *, expected: Goal,
+                           recovered: set[str] | None = None) -> bool:
         """Accepted is storage ACK, not completion. Inspect the original receipt."""
         for row in rows:
             if row['status'] == 'unknown':
-                self.delivery = {'status': 'unknown', 'message_id': row['id'], 'error': row['error']}
-                await self._host_wait('reminder delivery uncertain; inspect original receipt')
+                self.delivery = {'status': 'unknown', 'message_id': row['id'], 'goal_id': expected.id,
+                                 'error': row['error']}
+                await self._record_fault('delivery', row['id'], 'unknown',
+                                         'Reminder delivery uncertain; inspect original receipt: ' + row['error'],
+                                         expected=expected)
                 return True
             if row['status'] != 'accepted':
                 continue
@@ -406,24 +458,35 @@ class GoalRuntime:
                 from xdog.agent.acp.client import inbox_status
                 value = await inbox_status(target, row['id'])
             except Exception as exc:
-                self.delivery = {'status': 'unavailable', 'message_id': row['id'], 'error': str(exc)}
+                self.delivery = {'status': 'unavailable', 'message_id': row['id'], 'goal_id': expected.id,
+                                 'error': str(exc)}
                 return True
-            if not self._valid():
-                return True
+            if not self._valid() or await self.service.current() != expected:
+                return True  # A receipt lookup cannot pin a later continuation to its old failure.
             messages = value['messages']
-            if len(messages) != 1:
-                self.delivery = {'status': 'unknown', 'message_id': row['id'], 'error': 'Original receipt missing'}
-                await self._host_wait('Original accepted reminder receipt missing; inspect before resuming')
+            if len(messages) != 1 or messages[0].get('message_id') != row['id']:
+                self.delivery = {'status': 'unknown', 'message_id': row['id'], 'goal_id': expected.id,
+                                 'error': 'Original receipt missing or mismatched'}
+                await self._record_fault('delivery', row['id'], 'unknown',
+                                         'Original accepted reminder receipt missing or mismatched; '
+                                         'inspect before resuming',
+                                         expected=expected)
                 return True
             state = messages[0].get('status')
             if state not in {'pending', 'claimed', 'running', 'succeeded', 'failed', 'interrupted',
                              'cancelled', 'preparation_failed', 'pending_review', 'approved'}:
                 raise ValueError('Invalid original reminder execution receipt')
-            self.delivery = {'status': state, 'message_id': row['id']}
+            self.delivery = {'status': state, 'message_id': row['id'], 'goal_id': expected.id}
             if state in {'failed', 'interrupted', 'cancelled', 'preparation_failed'}:
-                if read_json(row['payload']).get('provenance', {}).get('goal_version', 1) < epoch:
-                    continue  # Explicit recovery may continue, but an old pending send still backpressures.
-                await self._host_wait('Original reminder execution ' + state)
+                attempt = messages[0].get('attempt_id')
+                fault_id = row['id'] + ':attempt:' + attempt if isinstance(attempt, str) and attempt else row['id']
+                if state != 'interrupted' and (fault_id in (recovered or set()) or
+                        read_json(row['payload']).get('provenance', {}).get('goal_version', 1) < epoch):
+                    continue  # Known old failure was superseded, not replayed.
+                await self._record_fault('execution', fault_id, state, 'Original reminder execution ' + state,
+                                         expected=expected)
+                if state == 'preparation_failed':
+                    continue  # Nothing executed; only a NEW cause may request another continuation.
                 return True
             if state != 'succeeded':
                 return True
@@ -452,14 +515,20 @@ class GoalRuntime:
                 return
             wake = await self.service.store.wake_state(goal.id)
             rows = wake['reminders']
-            accepted = [row for row in rows if row['status'] == 'accepted']
-            through = max((read_json(row['payload']).get('provenance', {}).get('wake_through', 0)
-                           for row in accepted), default=0)
+            through = wake['through']
+            eligible_through = max(through, wake['failure_through'])
             retry = next((row for row in rows if row['status'] in {'pending', 'unavailable'}), None)
+            if wake['faults']:
+                fault = wake['faults'][-1]
+                if fault['source'] == 'execution':
+                    self.execution_fault = dict(fault)
+                else:
+                    self.delivery = {**fault, 'message_id': fault['identity']}
+                return  # Availability/task signals never authorize replay of failed/uncertain work.
             # Inspect unknown even when there is no new cause. Never replace it with a new ID.
             uncertain = any(row['status'] == 'unknown' for row in rows)
             if (goal.status == 'waiting' and goal.wait_for == 'tasks'
-                    and wake['task_sequence'] <= through and not uncertain):
+                    and wake['task_sequence'] <= eligible_through and not uncertain):
                 return  # Ordinary settlement/availability is not a task-change wakeup.
             if not rows and not wake['sequence']:
                 return
@@ -474,10 +543,15 @@ class GoalRuntime:
                 return
             # Check only the most recent accepted receipt; older terminal receipts do not need rescanning.
             check = [row for row in rows if row['status'] == 'unknown'] + wake['accepted'][-1:]
-            if await self._outstanding(target, check, wake['epoch']):
+            if await self._outstanding(target, check, wake['epoch'], expected=goal,
+                                       recovered=set(wake['recovered'])):
                 return
-            if wake['sequence'] <= through and retry is None and not uncertain:
+            if wake['sequence'] <= eligible_through and (retry is None or wake['failure_through']) and not uncertain:
                 return
+            if retry is not None and wake['failure_through'] and read_json(retry['payload']).get(
+                    'provenance', {}).get('wake_through', 0) <= wake['failure_through']:
+                await self.service.store.cancel_pending(retry['id'])
+                retry = None  # New evidence creates a fresh reminder, never retries an old failed input.
             if await self.service.current() != goal or not self._valid():
                 return
             if retry is not None:
@@ -490,11 +564,13 @@ class GoalRuntime:
                     [self.owner.key, goal.id, goal.version, wake['sequence']]).encode()).hexdigest()
                 files = self.service.files(goal)
                 message = SessionInput(identifier, 'automatic', 'goal',
-                    f'Goal reminder for {goal.id}. Follow the already-loaded Goal skill; '
+                    f'Goal reminder for {goal.id}. Follow the Goal skill; '
+                    'load it through the host skill mechanism if not already active; '
                     'read current Goal status first. '
                     f'Goal workspace: {files.root}. Continue only if this is still your current Goal and '
                     'is active (or waiting for tasks whose changes you must inspect before resuming). '
-                    'If paused, completed, cleared or waiting for user/host, do not continue or release that state. '
+                    'If paused, completed, cleared or waiting for user (including historical host waits), '
+                    'do not continue or release that state. '
                     'For a tasks wait, inspect the changed tasks and use goal.activate with the exact goal_id, '
                     'observed version and reason only when you judge the wait condition satisfied. '
                     'Before doing more work, compare actual results against the previous progress report, '
@@ -506,7 +582,8 @@ class GoalRuntime:
                     'If a protected call cannot run, do not retry or bypass it; continue other authorized work if '
                     'possible, otherwise record the host capability blocker.', (),
                     {'goal_id': goal.id, 'goal_version': goal.version, 'wake_through': wake['sequence'],
-                     'triggers': wake['causes']})
+                     'triggers': wake['causes'], 'triggers_count': wake['cause_count'],
+                     'triggers_preview_only': wake['cause_count'] > len(wake['causes'])})
                 receipt = await self.service.store.reminder(goal, input_data(message))
                 if receipt['status'] not in {'pending', 'unavailable'}:
                     return
@@ -536,7 +613,10 @@ class GoalRuntime:
             except BaseException as exc:
                 await self.service.store.settle_reminder(identifier, 'unknown', str(exc))
                 if self._valid():
-                    await self._host_wait('reminder delivery uncertain; inspect original receipt')
+                    await self._record_fault('delivery', identifier, 'unknown',
+                                             'Reminder delivery uncertain; inspect original receipt: '
+                                             + str(exc)[:4096],
+                                             expected=goal)
                 raise
             status = result.get('status')
             if status == 'unavailable':
@@ -545,9 +625,10 @@ class GoalRuntime:
                 return
             if status not in {'accepted', 'duplicate', 'queued'}:
                 await self.service.store.settle_reminder(identifier, 'unknown', json_text(result))
-                await self._host_wait('reminder delivery uncertain; inspect original receipt')
-                self.delivery = {'status': 'unknown', 'message_id': identifier, 'receipt': result}
-                self.automation = dict(self.delivery)
+                await self._record_fault('delivery', identifier, 'unknown',
+                                         'Reminder delivery uncertain; inspect original receipt: '
+                                         + json_text(result)[:4096], expected=goal)
+                self.delivery = {'status': 'unknown', 'message_id': identifier, 'receipt': result, 'goal_id': goal.id}
                 return
             await self.service.store.settle_reminder(identifier, 'accepted')
             self.delivery = {'status': result.get('message_state', 'accepted'), 'message_id': identifier,
@@ -636,7 +717,8 @@ class GoalRuntime:
                     await self._display.aclose()
             async def close() -> None:
                 try:
-                    await settle_cleanup(detach, jobs, self._stop_observer, display, self.service.close,
+                    await settle_cleanup(detach, jobs, lambda: self._stop_observer(suspend=False),
+                                         display, self.service.close,
                                          message='Goal extension cleanup failed')
                 finally:
                     self._parent = None
@@ -651,7 +733,7 @@ class GoalProvider:
     scopes = ('session', 'group')
     tool_names = ('goal',)
     command_names = ('goal',)
-    default_skills = ('goal',)
+    skill_names = ('goal',)
     requirements: tuple[str, ...] = ()
     optional_requirements = ('acp',)
 

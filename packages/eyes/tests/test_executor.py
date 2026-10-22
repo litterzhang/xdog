@@ -393,7 +393,7 @@ async def test_unknown_receipt_retries_only_an_explicitly_resumed_durable_route(
         await clock.sleep(seconds)
 
     await observe(definition,registration_id='r',scanner=scan,deliver=send,emit=emit,
-                  clock=clock.now,sleep=sleep,cancel=cancel,resume=resume,cwd=tmp_path)
+                  clock=clock.now,sleep=sleep,cancel=cancel,resume=resume)
     assert len(sent)==attempts
     if attempts==2:
         assert sent[0]==sent[1] and sent[0].id==sent[1].id

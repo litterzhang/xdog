@@ -6,7 +6,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-from xdog.agent.mcp import McpError, McpManager
+from xdog.agent.mcp import McpError, McpRegistry
 
 from packages.agent.tests.test_mcp_elicitation import form
 
@@ -138,7 +138,7 @@ class SamplingHttpPeer:
 
 
 def make_manager(peer, tmp_path):
-    return McpManager({"owned": {"transport": "http", "url": peer.url, "timeout": 2, "roots": ROOTS}}, tmp_path)
+    return McpRegistry({"owned": {"transport": "http", "url": peer.url, "timeout": 2, "roots": ROOTS}}, tmp_path)
 
 
 async def invoke(manager, method, value):

@@ -1,7 +1,7 @@
 """A prompt's unknown outcome is never confused with a safe pre-send retry."""
 
 import asyncio
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 import pytest
 from xdog.eyes.events import DeliveryResult
@@ -75,7 +75,7 @@ async def test_real_sdk_disconnect_records_one_request_and_freezes_source_until_
         connection={"transport": "stdio", "command": list(target.connection.command)}, session=target.session
     )
     config = parse(observer_data, base_dir=tmp_path)
-    handler = AcpHandler(config.handlers[0], cwd=tmp_path)
+    handler = AcpHandler(replace(config.handlers[0], cwd=tmp_path))
     clock, cancel, resume = FakeClock(limit=8), asyncio.Event(), asyncio.Event()
     attempts, events, scans = [], [], []
     paused_at = None
@@ -175,7 +175,7 @@ async def test_wire_capacity_counts_both_text_and_structured_evidence_without_tr
     from xdog.eyes.handlers.acp import AcpHandler
 
     config = parse(observer_data, base_dir=tmp_path)
-    handler = AcpHandler(config.handlers[0], cwd=tmp_path)
+    handler = AcpHandler(replace(config.handlers[0], cwd=tmp_path))
 
     clock, cancel, scans, attempted, events = FakeClock(limit=5), asyncio.Event(), [], [], []
 

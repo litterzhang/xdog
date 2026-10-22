@@ -7,6 +7,7 @@ from xdog.skills.goal.host import OperationContext
 from xdog.skills.goal.service import GoalService
 from xdog.skills.goal.store import GoalStore
 
+from packages.skills.tests.goal.legacy import wait_goal
 from packages.skills.tests.goal.test_runtime import close, setup
 from packages.skills.tests.goal.test_service import USER, opened
 
@@ -15,7 +16,7 @@ async def test_task_wait_activate_is_agent_chosen_versioned_and_idempotent(tmp_p
     service = await opened(tmp_path)
     try:
         goal = await service.create('Wait', 'Continue only when useful', context=USER)
-        waiting = await service.change('wait', until='tasks', reason='Worker running')
+        waiting = await wait_goal(service, until='tasks', reason='Worker running')
         with pytest.raises(ValueError, match='Resume only'):
             await service.change('resume', context=USER)
         active = await service.change('activate', goal.id, version=waiting.version,
@@ -40,7 +41,9 @@ async def test_automatic_task_reminder_cannot_release_user_or_host_wait(tmp_path
     service = await opened(tmp_path)
     try:
         goal = await service.create('Wait', 'Real decision/recovery', context=USER)
-        waiting = await service.change('wait', until=until)
+        waiting = await wait_goal(service, until=until,
+            **({'question': 'Which delivery target?', 'impact': 'Final target unknown',
+                'resume_when': 'User selects target'} if until == 'user' else {}))
         with pytest.raises(ValueError, match='user operation'):
             await service.change('activate', goal.id, version=waiting.version, reason='Untrusted event claims recovery')
         assert await service.current() == waiting
@@ -75,14 +78,16 @@ async def test_stale_activate_cannot_overwrite_a_new_wait_or_another_goal(tmp_pa
     service = await opened(tmp_path)
     try:
         goal = await service.create('One', 'Original wait', context=USER)
-        waiting = await service.change('wait', until='tasks')
-        newer = await service.change('wait', until='user', reason='Need a decision')
+        waiting = await wait_goal(service, until='tasks')
+        newer = await wait_goal(service, until='user', reason='Need a decision',
+            question='Which delivery target should be used?', impact='The final target cannot be selected',
+            resume_when='User selects the delivery target')
         with pytest.raises(ValueError, match='version'):
             await service.change('activate', goal.id, version=waiting.version, reason='Stale result', context=USER)
         assert await service.current() == newer
         await service.change('clear', context=USER)
         other = await service.create('Two', 'Different goal', context=USER)
-        await service.change('wait', until='tasks')
+        await wait_goal(service, until='tasks')
         with pytest.raises(ValueError, match='matching current'):
             await service.change('activate', goal.id, version=2, reason='Late old call', context=USER)
         assert (await service.current()).id == other.id
@@ -134,7 +139,7 @@ async def test_waiting_tasks_idle_is_not_a_new_wake_cause_and_reminder_does_not_
     state['state'] = 'running'
     try:
         goal = await runtime.service.create('One', 'No busy loop', context=USER)
-        waiting = await runtime.service.change('wait', until='tasks')
+        waiting = await wait_goal(runtime.service, until='tasks')
         await runtime.flush()
         state['state'] = 'idle'
         before = await runtime.service.store.wake_state(goal.id)
@@ -146,7 +151,7 @@ async def test_waiting_tasks_idle_is_not_a_new_wake_cause_and_reminder_does_not_
         await runtime._task_changed(goal.id, SimpleNamespace(id='real-change'))
         await runtime.flush()
         assert len(sent) == 1 and await runtime.service.current() == waiting
-        assert 'already-loaded Goal skill' in sent[0].instruction
+        assert 'load it through the host skill mechanism if not already active' in sent[0].instruction
         assert 'Read the goal skill' not in sent[0].instruction
         result = await runtime.tools[0].execute('activate', {'action': 'activate', 'goal_id': goal.id,
             'version': waiting.version, 'reason': 'Checked task; wait is satisfied'})

@@ -1,61 +1,155 @@
-"""Author, validate and explicitly manage observers, like flow's CLI boundary."""
-
+"""Explicit Eyes control: bounded JSON commands and unacknowledged event JSONL."""
 from __future__ import annotations
 
 import argparse
 import asyncio
-import json
+import math
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import cast
 
-from xdog.eyes.control import request
-from xdog.eyes.loader import definition_data, load
-from xdog.eyes.local_control import MAX_FRAME, JsonValue, object_value, read_location, runtime_location
-from xdog.eyes.process import ensure_runtime, reap_runtime
+from xdog.eyes._cli_io import JsonOutput, OutputClosed, _read_definition, argument_json, read_stdin_json
+from xdog.eyes._daemon_control import DaemonControl
+from xdog.eyes.loader import parse
+from xdog.eyes.local_control import daemon_location
+from xdog.eyes.process import reap_runtime
+
+
+def _positive_timeout(value: str) -> float:
+    result = float(value)
+    if not math.isfinite(result) or result <= 0:
+        raise argparse.ArgumentTypeError('timeout must be finite positive seconds')
+    return result
+
+
+async def _follow(control: DaemonControl, output: JsonOutput, *, after: int | None, limit: int) -> None:
+    async def consume() -> None:
+        async for event in control.subscribe(after=after, limit=limit):
+            await output.write(event)
+
+    reader = asyncio.create_task(consume())
+    detached = asyncio.create_task(output.wait_closed())
+    try:
+        done, _ = await asyncio.wait({reader, detached}, return_when=asyncio.FIRST_COMPLETED)
+        if reader in done:
+            reader.result()
+    finally:
+        for task in (reader, detached):
+            task.cancel()
+        await asyncio.gather(reader, detached, return_exceptions=True)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--directory', type=Path, help='Private daemon isolation directory (default: shared per UID)')
+    parser.add_argument('--owner', default='cli', help='Stable owner namespace within this user')
     commands = parser.add_subparsers(dest='command', required=True)
-    for name in ('validate', 'start'):
-        commands.add_parser(name).add_argument('definition', type=Path)
-    commands.add_parser('status').add_argument('registration_id', nargs='?')
-    for name in ('stop', 'resume'):
+    commands.add_parser('validate').add_argument('definition', type=Path)
+    daemon = commands.add_parser('daemon').add_subparsers(dest='daemon_command', required=True)
+    for name in ('start', 'status', 'stop'):
+        daemon.add_parser(name)
+    start = commands.add_parser('start')
+    start.add_argument('definition', help=(
+        'Definition file (roots relative to JSON directory), or - for bounded JSON with roots relative to cwd'))
+    start.add_argument('--delivery', choices=('events', 'handlers', 'auto'), default='handlers')
+    start.add_argument('--key')
+    start.add_argument('--no-recover', action='store_true')
+    start.add_argument('--no-wait', action='store_true',
+                       help='Return registration receipt without waiting for baseline')
+    start.add_argument('--source-checkpoints-json',
+                       help='JSON object of definition-bound scheduler source checkpoints')
+    status = commands.add_parser('status')
+    status.add_argument('registration_id', nargs='?')
+    status.add_argument('--wait-ready', action='store_true', help='Read-only wait for original registration baseline')
+    status.add_argument('--timeout', type=_positive_timeout, default=30.)
+    commands.add_parser('list')
+    for name in ('stop', 'cancel', 'pause', 'resume'):
         commands.add_parser(name).add_argument('registration_id')
+    events = commands.add_parser('events')
+    events.add_argument('--after', type=int)
+    events.add_argument('--limit', type=int, default=64)
+    events.add_argument('--follow', action='store_true', help='Stream one event per JSON line, without ACK or startup')
+    commands.add_parser('ack').add_argument('sequence', type=int)
+    for scope in [*commands.choices.values(), *daemon.choices.values()]:
+        scope.add_argument('--directory', type=Path, default=argparse.SUPPRESS)
+        scope.add_argument('--owner', default=argparse.SUPPRESS)
     options = parser.parse_args(argv)
+    if options.command == 'status' and options.wait_ready and options.registration_id is None:
+        parser.error('status --wait-ready requires a registration ID or key')
+    if options.command == 'events' and (not 1 <= options.limit <= 128
+                                      or options.after is not None and options.after < 0):
+        parser.error('events requires --limit 1..128 and nonnegative --after')
+
+    async def run() -> None:
+        control = DaemonControl(owner=options.owner, directory=options.directory)
+        output = JsonOutput()
+        try:
+            if options.command == 'validate':
+                data, base_dir = await asyncio.to_thread(_read_definition, str(options.definition.absolute()))
+                definition = parse(data, base_dir=base_dir)
+                await output.write({'valid': True, 'name': definition.name, 'sources': len(definition.sources)})
+            elif options.command == 'daemon':
+                if options.daemon_command == 'start':
+                    result = await control.start_daemon()
+                else:
+                    try:
+                        result = (await control.daemon_status() if options.daemon_command == 'status'
+                                  else await control.stop_daemon())
+                    except (FileNotFoundError, ConnectionRefusedError):
+                        result = {'state': 'not-running'}
+                await output.write(result)
+            elif options.command == 'start':
+                if options.definition == '-':
+                    definition = parse(read_stdin_json(), base_dir=Path.cwd())
+                else:
+                    data, base_dir = await asyncio.to_thread(
+                        _read_definition, str(Path(options.definition).absolute()))
+                    definition = parse(data, base_dir=base_dir)
+                checkpoints = (argument_json(options.source_checkpoints_json)
+                               if options.source_checkpoints_json is not None else None)
+                # Invalid stdin/definition/checkpoint JSON cannot start a daemon.
+                delivery = options.delivery
+                if delivery == 'auto':
+                    delivery = 'events' if all(item.type == 'events' for item in definition.handlers) else 'handlers'
+                await control.start_daemon()
+                await output.write(await control.start(definition, delivery=delivery,
+                    key=options.key, recover=not options.no_recover, wait_ready=not options.no_wait,
+                    source_checkpoints=checkpoints))
+            elif options.command == 'events':
+                if options.follow:
+                    await _follow(control, output, after=options.after, limit=options.limit)
+                else:
+                    await output.write({'events': await control.events(after=options.after, limit=options.limit)})
+            elif options.command == 'ack':
+                await output.write(await control.ack(options.sequence))
+            elif options.command in {'status', 'list'}:
+                if options.command == 'status' and options.wait_ready:
+                    await output.write(await control.wait_ready(options.registration_id, timeout=options.timeout))
+                else:
+                    try:
+                        result = await control.status(getattr(options, 'registration_id', None))
+                    except (FileNotFoundError, ConnectionRefusedError):
+                        result = {'registrations': [], 'state': 'not-running'}
+                    await output.write(result)
+            else:
+                method = control.cancel if options.command in {'stop', 'cancel'} else getattr(control, options.command)
+                await output.write(await method(options.registration_id))
+        finally:
+            await control.aclose()  # detach only, even after EOF, pipe close or cancellation
+            output.close()
+
     try:
-        if options.command == 'validate':
-            definition = load(options.definition)
-            print(json.dumps({'valid': True, 'name': definition.name, 'sources': len(definition.sources)}))
-            return 0
-        location = runtime_location()
-        body: dict[str, JsonValue] = {}
-        if options.command == 'start':
-            data = definition_data(load(options.definition))
-            if len(json.dumps(data, ensure_ascii=True).encode()) > MAX_FRAME - 4096:
-                raise ValueError('Observer definition exceeds control capacity')
-            body['definition'] = cast(dict[str, JsonValue], data)
-            location = ensure_runtime(location)
-        else:
-            try:
-                location = read_location(location)
-            except FileNotFoundError:
-                if options.command == 'status':
-                    print(json.dumps({'registrations': [], 'state': 'not-running'}))
-                    return 0
-                raise RuntimeError('No active Eyes runtime for this project') from None
-            if options.registration_id:
-                body['registration_id'] = options.registration_id
-        response = asyncio.run(request(
-            location, options.command, body, timeout=125 if options.command == 'resume' else 30))
-        if response['status'] not in {'ok', 'accepted', 'duplicate'}:
-            raise ValueError(str(object_value(response['body']).get('error', 'Eyes command refused; inspect status')))
-        print(json.dumps(response['body'], ensure_ascii=True, allow_nan=False))
-        if options.command == 'stop':
-            reap_runtime(location, timeout=0.25)
+        asyncio.run(run())
+        if options.command == 'daemon' and options.daemon_command == 'stop':
+            reap_runtime(daemon_location(options.directory), timeout=.5)
         return 0
+    except OutputClosed:
+        return 0
+    except KeyboardInterrupt:
+        return 130
     except (OSError, ValueError, RuntimeError, TimeoutError, ImportError) as exc:
-        print(str(exc), file=sys.stderr)
+        try:
+            print(str(exc)[:2048], file=sys.stderr)
+        except (OSError, ValueError):
+            pass
         return 2

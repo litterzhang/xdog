@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 
 from xdog.agent import Agent, AgentConfig
+from xdog.agent.skills import SkillManager
 from xdog.ai.types import AssistantMessage, DoneEvent, TextContent, ToolCall
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core.agent_session import AgentSession
@@ -33,11 +34,7 @@ def create(tmp_path, mode="ask", project_only=False):
         calls.append(context)
         last = context.messages[-1]
         text = str(last.content)
-        if last.role == "user" and "external" in text:
-            tool = next(tool for tool in context.tools if tool.name.startswith("ext_sample_"))
-            message = AssistantMessage(content=(ToolCall(id="external", name=tool.name,
-                                                       arguments={"value": "input"}),), stop_reason="toolUse")
-        elif last.role == "user" and "rewrite" in text:
+        if last.role == "user" and "rewrite" in text:
             message = AssistantMessage(content=(ToolCall(id="filesystem", name="filesystem",
                                                        arguments={"action": "read", "path": "rewrite"}),),
                                        stop_reason="toolUse")
@@ -49,7 +46,9 @@ def create(tmp_path, mode="ask", project_only=False):
         future.set_result(message)
         return EventStream.from_async_generator(generate(), result_future=future)
     store = SessionManager(tmp_path / "sessions")
-    session = AgentSession(agent=Agent(stream, config=AgentConfig(model="test/model"),
+    session = AgentSession(agent=Agent(stream,
+                                       skills=SkillManager(tmp_path / "skills"),
+                                       config=AgentConfig(model="test/model"),
                                        tools=get_default_tools(tmp_path), tool_ctx={"fs_workspace": str(tmp_path)}),
                            session_data=store.create_session(model="test/model", working_dir=tmp_path),
                            session_manager=store, settings=SettingsManager(global_path=settings, project_dir=tmp_path),

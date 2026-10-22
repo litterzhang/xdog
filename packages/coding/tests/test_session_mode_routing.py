@@ -29,6 +29,7 @@ async def test_new_sdk_input_does_not_reuse_a_controller_whose_last_user_is_clos
     # An absent capability releases a transient controller after the last call.
     monkeypatch.setattr("xdog.agent.capabilities.runtime.discover", lambda scope: ())
     coding_session.capabilities.providers = ()
+    coding_session.application_capabilities.providers = ()
     original = SessionController.close
     closing = asyncio.Event()
     receipt = Future()

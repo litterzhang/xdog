@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 from xdog.agent.cross_loop import settle_on
 from xdog.agent.extensions.runtime import ExtensionRuntime
-from xdog.agent.mcp.manager import McpManager
+from xdog.agent.mcp.registry import McpRegistry
 from xdog.agent.mcp.stdio import McpError
 
 from test_support.child_runtime.cross_loop import TestChildCrossLoop as TestChildCrossLoop
@@ -30,7 +30,7 @@ class Harness:
     thread_id: int
     ownership: Any
     closed_error: type[Exception]
-    owner: McpManager
+    owner: McpRegistry
     loop: asyncio.AbstractEventLoop
     dispatch: Callable[[Coroutine[Any, Any, Any]], Awaitable[Any]]
     host: bool
@@ -38,13 +38,13 @@ class Harness:
 
 @pytest.fixture(params=["mcp", "extension", "host"])
 async def harness(request: pytest.FixtureRequest, tmp_path: Path) -> AsyncIterator[Harness]:
-    owner: McpManager
+    owner: McpRegistry
     if request.param == "mcp":
-        owner = McpManager({}, tmp_path)
+        owner = McpRegistry({}, tmp_path)
     elif request.param == "extension":
         owner = ExtensionRuntime([], tmp_path, tmp_path)._manager
     else:
-        owner = McpManager({}, tmp_path)
+        owner = McpRegistry({}, tmp_path)
     loop = await asyncio.to_thread(owner._ensure_loop)
     host = request.param == "host"
     dispatch = (lambda work: settle_on(loop, work)) if host else owner._bridge

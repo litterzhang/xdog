@@ -39,5 +39,3 @@ def setup(api):
 
     async def tool(params, context):
         return await command('', context)
-
-    api.tool('view', 'Live worker background state', {'type': 'object'}, tool)

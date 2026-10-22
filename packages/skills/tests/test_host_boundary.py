@@ -326,7 +326,8 @@ async def test_goal_close_settles_observer_display_and_store_after_detach_failur
         raise ValueError("unsubscribe failed")
 
     class Observer:
-        async def aclose(self):
+        async def aclose(self, *, suspend=True):
+            assert suspend is False
             entered.set()
             await release.wait()
             order.append("observer joined")

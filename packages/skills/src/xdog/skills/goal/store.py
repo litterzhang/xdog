@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -11,13 +11,26 @@ from xdog.agent.leased_sqlite import LeasedSqlite
 
 from .codec import decode_goal, encode_goal, json_text, read_json
 from .host import OperationContext
-from .models import Goal, Owner
+from .models import Goal, Owner, number, text
 from .transitions import transition_data
 
 _FORMAT = 'xdog.goal.registry.v2'
 _SIGNAL_SCHEMA = '''CREATE TABLE IF NOT EXISTS wake_signals(
  sequence INTEGER PRIMARY KEY AUTOINCREMENT,goal_id TEXT NOT NULL REFERENCES goals(id),
  trigger TEXT NOT NULL,UNIQUE(goal_id,trigger));'''
+
+
+_FAULT_SCHEMA = '''CREATE TABLE IF NOT EXISTS runtime_faults(
+ goal_id TEXT NOT NULL REFERENCES goals(id),version INTEGER NOT NULL,
+ source TEXT NOT NULL,identity TEXT NOT NULL,status TEXT NOT NULL,error TEXT NOT NULL,
+ PRIMARY KEY(goal_id,source,identity),
+ FOREIGN KEY(goal_id,version) REFERENCES revisions(goal_id,version));'''
+
+
+_FAULT_STATE_SCHEMA = '''CREATE TABLE IF NOT EXISTS runtime_fault_state(
+ goal_id TEXT NOT NULL,source TEXT NOT NULL,identity TEXT NOT NULL,
+ through INTEGER NOT NULL,recovery_id TEXT NOT NULL,PRIMARY KEY(goal_id,source,identity),
+ FOREIGN KEY(goal_id,source,identity) REFERENCES runtime_faults(goal_id,source,identity));'''
 
 
 _TRANSITION_SCHEMA = '''CREATE TABLE IF NOT EXISTS transitions(
@@ -77,6 +90,10 @@ def _validate(db: sqlite3.Connection, owner: Owner) -> None:
         columns['wake_signals'] = {'sequence', 'goal_id', 'trigger'}
     if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='transitions'").fetchone():
         columns['transitions'] = {'goal_id', 'version', 'payload', 'digest'}
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_faults'").fetchone():
+        columns['runtime_faults'] = {'goal_id', 'version', 'source', 'identity', 'status', 'error'}
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_fault_state'").fetchone():
+        columns['runtime_fault_state'] = {'goal_id', 'source', 'identity', 'through', 'recovery_id'}
     if any({row[1] for row in db.execute(f'PRAGMA table_info({table})')} != expected
            for table, expected in columns.items()):
         raise ValueError('Unsupported Goal registry schema')
@@ -112,11 +129,47 @@ def _validate(db: sqlite3.Connection, owner: Owner) -> None:
     if 'transitions' in columns:
         for row in db.execute('SELECT * FROM transitions'):
             _transition(db, row)
+    if 'runtime_faults' in columns:
+        for row in db.execute('SELECT * FROM runtime_faults'):
+            _validate_fault(row['source'], row['identity'], row['status'], row['error'])
+            number(row['version'])
+    if 'runtime_fault_state' in columns:
+        for row in db.execute('SELECT * FROM runtime_fault_state'):
+            if type(row['through']) is not int or row['through'] < 0:
+                raise ValueError('Invalid Goal fault watermark')
+            text(row['recovery_id'], empty=True, maximum=1024)
+            if row['recovery_id']:
+                fault = db.execute('SELECT status FROM runtime_faults WHERE goal_id=? AND source=? AND identity=?',
+                                   (row['goal_id'], row['source'], row['identity'])).fetchone()
+                if row['source'] != 'execution' or fault['status'] not in {'failed', 'cancelled', 'canceled'}:
+                    raise ValueError('Uncertain Goal effects cannot be released by later execution')
     for row in db.execute('SELECT * FROM reminders'):
         value = read_json(row['payload'])
         if (value.get('id') != row['id'] or _digest(row['payload']) != row['digest']
                 or row['status'] not in {'pending', 'sending', 'accepted', 'unknown', 'cancelled', 'unavailable'}):
             raise ValueError('Corrupt Goal reminder')
+
+
+def _validate_fault(source: str, identifier: str, status: str, error: str) -> None:
+    if (source not in {'execution', 'delivery'} or status not in {
+            'failed', 'interrupted', 'cancelled', 'canceled', 'preparation_failed', 'unknown'}
+            or source == 'delivery' and status != 'unknown'):
+        raise ValueError('Invalid Goal runtime fault')
+    text(identifier, maximum=1024)
+    text(error, empty=True)
+
+
+def _epoch(db: sqlite3.Connection, goal_id: str) -> tuple[int, float]:
+    history = [decode_goal(row[0]) for row in db.execute(
+        'SELECT payload FROM revisions WHERE goal_id=? ORDER BY version', (goal_id,))]
+    starts = {row[0] for row in db.execute("SELECT trigger FROM wake_signals WHERE goal_id=? "
+               "AND trigger LIKE 'goal-state:%'", (goal_id,))}
+    epoch, epoch_time = 1, history[0].created_at if history else 0
+    for before, after in zip(history, history[1:]):
+        if after.status == 'active' and ('goal-state:' + str(after.version) in starts
+                or before.status == 'paused' or before.status == 'waiting' and before.wait_for in {'user', 'host'}):
+            epoch, epoch_time = after.version, after.updated_at
+    return epoch, epoch_time
 
 
 def _recover(db: sqlite3.Connection) -> None:
@@ -141,6 +194,15 @@ class GoalStore:
             def ensure(connection: sqlite3.Connection) -> None:
                 connection.execute(_SIGNAL_SCHEMA)
                 connection.execute(_TRANSITION_SCHEMA)
+                connection.execute(_FAULT_SCHEMA)
+                connection.execute(_FAULT_STATE_SCHEMA)
+                # Earlier fault records have no cause boundary. Preserve them and
+                # conservatively cover existing causes; only fresh work may wake.
+                connection.execute(
+                    "INSERT OR IGNORE INTO runtime_fault_state "
+                    "SELECT f.goal_id,f.source,f.identity,COALESCE(MAX(w.sequence),0),'' "
+                    "FROM runtime_faults f LEFT JOIN wake_signals w ON w.goal_id=f.goal_id "
+                    "GROUP BY f.goal_id,f.source,f.identity")
             await db.disk(ensure)
         except BaseException:
             await db.close()
@@ -183,6 +245,8 @@ class GoalStore:
             if (previous is None and expected_version != 0
                     or previous is not None and previous['version'] != expected_version):
                 raise ValueError('Goal changed; re-read before updating')
+            if goal.wait_for == 'host' and (previous is None or _goal(previous).wait_for != 'host'):
+                raise ValueError('wait(host) is historical read-only data; new host waits are not supported')
             bound = db.execute('SELECT goal_id FROM current').fetchone()[0]
             if previous is None:
                 if bound is not None:
@@ -238,6 +302,30 @@ class GoalStore:
                 if {'status': saved.status, 'wait_for': saved.wait_for} != state:
                     return unavailable
             return {'availability': 'available', **data}
+        return await self.database.disk(read)
+
+    async def question_reference(self, goal: Goal) -> str | None:
+        """Reference the actual recorded user-wait revision, not a later plan version.
+
+        Old records without a question or proven wait origin get no invented ID.
+        Reading immutable revisions never upgrades their payloads or digests.
+        """
+        if goal.status != 'waiting' or goal.wait_for != 'user' or not goal.question:
+            return None
+        transition = await self.last_transition(goal)
+        if transition.get('availability') != 'available' or transition.get('action') != 'wait':
+            return None
+        def read(db: sqlite3.Connection) -> str | None:
+            row = db.execute('SELECT goal_id AS id,version,payload,digest FROM revisions '
+                             'WHERE goal_id=? AND version=?', (goal.id, transition['version'])).fetchone()
+            if row is None:
+                raise ValueError('Missing question origin revision')
+            saved = _goal(row)
+            if (saved.status != 'waiting' or saved.wait_for != 'user'
+                    or any(getattr(saved, key) != getattr(goal, key)
+                           for key in ('question', 'impact', 'resume_when'))):
+                return None
+            return f"goal-question:{goal.id}:{saved.version}"
         return await self.database.disk(read)
 
     async def reminder(self, goal: Goal, message: dict[str, Any]) -> dict[str, Any]:
@@ -319,33 +407,98 @@ class GoalStore:
         def read(db: sqlite3.Connection) -> dict[str, Any]:
             sequence = db.execute('SELECT COALESCE(MAX(sequence),0) FROM wake_signals WHERE goal_id=?',
                                   (goal_id,)).fetchone()[0]
-            causes = [row[0] for row in db.execute('SELECT trigger FROM wake_signals WHERE goal_id=? '
-                       'ORDER BY sequence DESC LIMIT 16', (goal_id,))]
             reminders = [dict(row) for row in db.execute('SELECT * FROM reminders WHERE goal_id=? ORDER BY rowid',
                                                          (goal_id,))]
-            history = [decode_goal(row[0]) for row in db.execute(
-                'SELECT payload FROM revisions WHERE goal_id=? ORDER BY version', (goal_id,))]
-            starts = {row[0] for row in db.execute("SELECT trigger FROM wake_signals WHERE goal_id=? "
-                       "AND trigger LIKE 'goal-state:%'", (goal_id,))}
-            epoch = 1
-            epoch_time = history[0].created_at if history else 0
-            for before, after in zip(history, history[1:]):
-                if after.status == 'active' and ('goal-state:' + str(after.version) in starts
-                        or before.status == 'paused' or (before.status == 'waiting'
-                        and before.wait_for in {'user', 'host'})):
-                    epoch_time = after.updated_at
-                    epoch = after.version  # Explicitly authorized new continuation, not an old send replay.
+            epoch, epoch_time = _epoch(db, goal_id)
             accepted = [row for row in reminders if row['status'] == 'accepted']
-            reminders = [row for row in reminders if read_json(row['payload']).get(
+            reminders = [row for row in reminders if row['status'] == 'unknown' or read_json(row['payload']).get(
                 'provenance', {}).get('goal_version', 1) >= epoch]
+            fault_history = [dict(row) for row in db.execute(
+                'SELECT f.*,s.through,s.recovery_id FROM runtime_faults f JOIN runtime_fault_state s '
+                'USING(goal_id,source,identity) WHERE f.goal_id=? ORDER BY f.rowid', (goal_id,))]
+            faults = [row for row in fault_history if (
+                row['source'] == 'delivery' or row['status'] in {'interrupted', 'unknown'}
+                or row['status'] != 'preparation_failed' and row['version'] >= epoch and not row['recovery_id'])]
+            failure_through = max((row['through'] for row in fault_history
+                                   if row['source'] == 'execution'), default=0)
+            recovered = [row['identity'] for row in fault_history if row['recovery_id']]
+            # Recovery scheduling keeps its original epoch-local coverage. Body
+            # deltas use all accepted history so a new epoch cannot repeat old causes.
+            # Both describe Inbox acceptance, NOT handled work; runtime still checks
+            # the original execution receipt before admitting another reminder.
+            through = max((read_json(row['payload']).get('provenance', {}).get('wake_through', 0)
+                           for row in reminders if row['status'] == 'accepted'), default=0)
+            cause_through = max((read_json(row['payload']).get('provenance', {}).get('wake_through', 0)
+                                 for row in accepted), default=0)
+            causes = [row[0] for row in db.execute(
+                'SELECT trigger FROM wake_signals WHERE goal_id=? AND sequence>? AND sequence<=? '
+                'ORDER BY sequence DESC LIMIT 16', (goal_id, cause_through, sequence))]
+            cause_count = db.execute('SELECT COUNT(*) FROM wake_signals WHERE goal_id=? '
+                                     'AND sequence>? AND sequence<=?', (goal_id, cause_through, sequence)).fetchone()[0]
             task_sequence = db.execute("SELECT COALESCE(MAX(sequence),0) FROM wake_signals WHERE goal_id=? "
                 "AND (trigger LIKE 'tasks:%' OR trigger LIKE 'task-snapshot:%')", (goal_id,)).fetchone()[0]
             manifest = db.execute("SELECT trigger FROM wake_signals WHERE goal_id=? AND trigger LIKE "
                                   "'task-snapshot:%' ORDER BY sequence DESC LIMIT 1", (goal_id,)).fetchone()
-            return {'sequence': sequence, 'causes': causes, 'reminders': reminders, 'epoch': epoch,
+            return {'sequence': sequence, 'causes': causes, 'cause_count': cause_count, 'through': through,
+                    'cause_through': cause_through, 'reminders': reminders, 'epoch': epoch,
                     'manifest': manifest[0] if manifest is not None else '', 'epoch_time': epoch_time,
-                    'task_sequence': task_sequence, 'accepted': accepted}
+                    'task_sequence': task_sequence, 'accepted': accepted, 'faults': faults,
+                    'fault_history': fault_history, 'failure_through': failure_through, 'recovered': recovered}
         return await self.database.disk(read)
+
+    async def record_fault(self, goal: Goal, source: str, identifier: str, status: str, error: str) -> bool:
+        """Persist original execution/delivery facts without a lifecycle revision or wake.
+
+        A stale asynchronous fact cannot fence a newer continuation. Content-only
+        edits are harmless; explicit recovery epochs, not generic version bumps,
+        fence stale admission; later verified host success may supersede known failures.
+        """
+        _validate_fault(source, identifier, status, error)
+        def write(db: sqlite3.Connection) -> bool:
+            row = db.execute('SELECT g.* FROM goals g JOIN current c ON c.goal_id=g.id').fetchone()
+            if row is None or _goal(row).id != goal.id or not remindable(_goal(row)):
+                return False
+            saved = db.execute('SELECT payload FROM revisions WHERE goal_id=? AND version=?',
+                               (goal.id, goal.version)).fetchone()
+            if saved is None or decode_goal(saved[0]) != goal or _epoch(db, goal.id)[0] > goal.version:
+                return False  # Content revisions do not discard a fault; explicit recovery epochs do.
+            db.execute('INSERT OR IGNORE INTO runtime_faults VALUES(?,?,?,?,?,?)',
+                       (goal.id, goal.version, source, identifier, status, error[:4096]))
+            db.execute("INSERT OR IGNORE INTO runtime_fault_state "
+                       "SELECT ?,?,?,COALESCE(MAX(sequence),0),'' FROM wake_signals WHERE goal_id=?",
+                       (goal.id, source, identifier, goal.id))
+            return True
+        return await self.database.disk(write)
+
+    async def recover_execution(self, goal: Goal, identifier: str, faults: Sequence[dict[str, Any]]) -> bool:
+        """Record actual later success for the exact previously observed failures.
+
+        Caller verifies the host's latest durable execution AFTER taking this
+        snapshot. Late/new faults cannot be cleared by an earlier read. Original
+        fault/outbox rows and Goal lifecycle remain unchanged; uncertain effects
+        are deliberately ineligible, even across user pause/resume.
+        """
+        text(identifier, maximum=1024)
+        eligible = [row for row in faults if row['source'] == 'execution'
+                    and row['status'] in {'failed', 'cancelled', 'canceled'} and row['identity'] != identifier]
+        def write(db: sqlite3.Connection) -> bool:
+            row = db.execute('SELECT g.* FROM goals g JOIN current c ON c.goal_id=g.id').fetchone()
+            if row is None or _goal(row).id != goal.id or not remindable(_goal(row)):
+                return False
+            saved = db.execute('SELECT payload FROM revisions WHERE goal_id=? AND version=?',
+                               (goal.id, goal.version)).fetchone()
+            if saved is None or decode_goal(saved[0]) != goal or _epoch(db, goal.id)[0] > goal.version:
+                return False
+            for fault in eligible:
+                if fault['goal_id'] != goal.id:
+                    raise ValueError('Recovery cannot borrow another Goal fault')
+                db.execute('UPDATE runtime_fault_state SET recovery_id=? WHERE goal_id=? AND source=? AND identity=? '
+                           "AND recovery_id='' AND EXISTS(SELECT 1 FROM runtime_faults f WHERE "
+                           'f.goal_id=runtime_fault_state.goal_id AND f.source=runtime_fault_state.source '
+                           'AND f.identity=runtime_fault_state.identity AND f.version=? AND f.status=?)',
+                           (identifier, goal.id, fault['source'], fault['identity'], fault['version'], fault['status']))
+            return True
+        return await self.database.disk(write)
 
     async def cancel_pending(self, identifier: str) -> None:
         # Only unclaimed local work. Never withdraw host-accepted input.

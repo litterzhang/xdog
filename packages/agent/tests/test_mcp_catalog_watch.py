@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from xdog.agent.mcp import McpError, McpManager
+from xdog.agent.mcp import McpError, McpRegistry
 from xdog.agent.mcp.resource_metadata import CATALOGS, ResourceMetadataError, catalog_notice
 
 PEER = Path(__file__).parent / 'fixtures/mcp_subscription_peer.py'
@@ -15,7 +15,7 @@ PEER = Path(__file__).parent / 'fixtures/mcp_subscription_peer.py'
 @pytest.mark.parametrize('kind', sorted(CATALOGS))
 async def test_legacy_unsolicited_catalog_notice_never_reads_or_reregisters_without_explicit_refresh(tmp_path, kind):
     log = tmp_path / 'frames'
-    manager = McpManager({'peer': {'command': sys.executable, 'args': [str(PEER), 'legacy', str(log)]}}, tmp_path)
+    manager = McpRegistry({'peer': {'command': sys.executable, 'args': [str(PEER), 'legacy', str(log)]}}, tmp_path)
     try:
         await manager.connect('peer')
         client = manager._clients['peer']
@@ -37,7 +37,7 @@ async def test_legacy_unsolicited_catalog_notice_never_reads_or_reregisters_with
 @pytest.mark.parametrize('kind', sorted(CATALOGS))
 async def test_current_unsolicited_catalog_notice_cannot_create_a_hidden_subscription_or_reconnect(tmp_path, kind):
     log = tmp_path / 'frames'
-    manager = McpManager({'peer': {'command': sys.executable, 'args': [str(PEER), 'modern', str(log)]}}, tmp_path)
+    manager = McpRegistry({'peer': {'command': sys.executable, 'args': [str(PEER), 'modern', str(log)]}}, tmp_path)
     try:
         await manager.connect('peer')
         client = manager._clients['peer']

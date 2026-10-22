@@ -170,14 +170,11 @@ class GatewayServer:
         capabilities = CapabilitySet("application")
         group_capabilities = CapabilitySet("group")
         requirements = capabilities.requirements | group_capabilities.requirements
-        optional = capabilities.optional_requirements | group_capabilities.optional_requirements
         unsupported = requirements - {"acp"}
         if unsupported:
             raise RuntimeError("Unsupported installed capability requirements: " + ", ".join(sorted(unsupported)))
-        acp_required = bool(self._config.acp_socket_path or "acp" in requirements)
-        acp_available = find_spec("acp") is not None if acp_required or "acp" in optional else False
-        if acp_required and not acp_available:
-            raise RuntimeError("ACP transport requires the optional SDK: install xdog-claw[acp]")
+        if find_spec("acp") is None:
+            raise RuntimeError("Claw gateway requires the ACP SDK: install xdog-claw[acp]")
         logger.info("Starting claw gateway...")
         if self._stop_task is not None:
             if not self._stop_task.done():
@@ -238,21 +235,19 @@ class GatewayServer:
                         await channel.disconnect()
                         self._orchestrator._channels.remove(channel)
                     logger.exception("Failed to connect WeChat channel — gateway continues without it")
-            if acp_required or ("acp" in optional and acp_available):
-                from xdog.claw.acp.server import ClawAcpServer
-                endpoint = (Path(self._config.acp_socket_path) if self._config.acp_socket_path else
-                            data_dir / 'acp' / 'agent.sock')
-                self._acp_server = await ClawAcpServer.start(
-                                             self._orchestrator,
-                                             endpoint,
-                                             recover_stale=not bool(self._config.acp_socket_path),
-                                         )
+            from xdog.claw.acp.server import ClawAcpServer
+            endpoint = (Path(self._config.acp_socket_path) if self._config.acp_socket_path else
+                        data_dir / 'acp' / 'agent.sock')
+            self._acp_server = await ClawAcpServer.start(
+                                         self._orchestrator,
+                                         endpoint,
+                                         recover_stale=not bool(self._config.acp_socket_path),
+                                     )
             if self._application_capabilities.providers:
-                from xdog.claw.core.runtime.application_ports import ApplicationPorts
-                service_endpoint = self._acp_server.path if self._acp_server is not None else None
-                await self._application_capabilities.start(ApplicationPorts(self._orchestrator, service_endpoint))
+                from xdog.agent.capabilities.runtime import ApplicationPort
+                await self._application_capabilities.start(ApplicationPort())
                 await self._orchestrator.refresh_application_capabilities()
-            # Bootstrap holds accepted inputs until optional source policies are ready.
+            # Bootstrap holds accepted inputs until installed tools are ready.
             inputs.resume()
         except BaseException as error:
             try:
@@ -627,6 +622,11 @@ class GatewayServer:
                     })
                     continue
                 msg_type = request.get("type", "")
+                if msg_type == 'ping':
+                    selected_group = request.get('group_id', 'main')
+                    if (isinstance(selected_group, str) and self._orchestrator is not None
+                            and self._orchestrator.get_group_workspace(selected_group) is not None):
+                        notice_channel.bind_group(selected_group)
                 if msg_type == "ping" and "acp_updates" in request:
                     value, group = request["acp_updates"], request.get("group_id", "main")
                     if type(value) is not int or value not in (0, 1) or not isinstance(group, str):
@@ -1820,6 +1820,7 @@ class GatewayServer:
                         if not future.done():
                             future.set_result(identity)
                     request['_on_execution_started'] = admitted
+                    notice_channel.bind_group(group_id)
                     request['_reply_reference'] = self._orchestrator.capture_reply(notice_channel,
                         UserInput(group_id=group_id, sender='user', channel='tui'))
                     task = asyncio.create_task(

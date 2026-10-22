@@ -83,6 +83,8 @@ class AcpHandlerDef(HandlerDef):
     session: str
     instruction: str
     delivery: Literal["prompt", "enqueue"] = "prompt"
+    # Target workspace assertion only; never the stdio process startup directory.
+    cwd: Path | None = None
 
 
 @dataclass(frozen=True)

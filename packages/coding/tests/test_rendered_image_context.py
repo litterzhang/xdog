@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 from xdog.agent import Agent, AgentConfig
+from xdog.agent.skills import SkillManager
 from xdog.ai.types import AssistantMessage, ImageContent, Model, TextContent, UserMessage, VisionLimits
 from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.config import ClawConfig, GroupDef
@@ -43,7 +44,9 @@ async def test_retained_plus_new_image_exceeds_actual_model_context_without_prun
     server = ui = None
     if mode != 'claw':
         store = SessionManager(tmp_path / 'sessions')
-        owner = AgentSession(agent=Agent(adapter, config=AgentConfig(model=adapter.profile.id)),
+        owner = AgentSession(agent=Agent(adapter,
+                                         skills=SkillManager(tmp_path / "skills"),
+                                         config=AgentConfig(model=adapter.profile.id)),
             session_data=store.create_session(working_dir=tmp_path, model=adapter.profile.id), session_manager=store,
             settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
             tool_registry=None, bash=None, permissions=PermissionManager('deny'))

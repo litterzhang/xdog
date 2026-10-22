@@ -12,7 +12,7 @@ import shutil
 from pathlib import Path
 
 import pytest
-from xdog.agent.mcp import McpManager
+from xdog.agent.mcp import McpRegistry
 
 SDK_ROOT = os.environ.get('XDOG_MCP_OFFICIAL_SDK_ROOT')
 NODE = shutil.which('node')
@@ -43,7 +43,7 @@ async def test_official_sdk_resource_prompt_template_completion_and_link_preview
         config = {'transport': 'http', 'url': f'http://127.0.0.1:{port}/mcp'}
     else:
         config = {'command': NODE, 'args': [str(PEER), transport, str(log)]}
-    manager = McpManager({'sdk': config}, tmp_path)
+    manager = McpRegistry({'sdk': config}, tmp_path)
     try:
         await manager.connect('sdk')
         assert len(await manager.catalog('sdk', 'resource')) == 1
@@ -89,7 +89,7 @@ async def test_official_sdk_failed_tool_preserves_image_text_and_unsuccessful_st
         config = {'transport': 'http', 'url': f'http://127.0.0.1:{port}/mcp'}
     else:
         config = {'command': NODE, 'args': [str(PEER), transport, str(log)]}
-    manager = McpManager({'sdk': config}, tmp_path)
+    manager = McpRegistry({'sdk': config}, tmp_path)
     try:
         await manager.connect('sdk')
         tool = next(tool for tool in manager.tools() if '/diagnostic' in tool.label)
@@ -141,7 +141,7 @@ async def test_official_serving_sdk_mixed_content_tool_validates_preserves_metad
         config = {'transport': 'http', 'url': f'http://127.0.0.1:{port}/mcp'}
     else:
         config = {'command': NODE, 'args': [str(PEER), transport, str(log)]}
-    manager = McpManager({'sdk': config}, tmp_path)
+    manager = McpRegistry({'sdk': config}, tmp_path)
     try:
         await manager.connect('sdk')
         tool = next(tool for tool in manager.tools() if '/content' in tool.label)
@@ -175,7 +175,7 @@ async def test_official_sdk_subscription_advertisement_cannot_open_any_implicit_
         config = {'transport': 'http', 'url': f'http://127.0.0.1:{port}/mcp'}
     else:
         config = {'command': NODE, 'args': [str(PEER), transport, str(log)]}
-    manager = McpManager({'sdk': config}, tmp_path)
+    manager = McpRegistry({'sdk': config}, tmp_path)
     try:
         await manager.connect('sdk')
         client = manager._clients['sdk']

@@ -8,7 +8,6 @@ from typing import Any
 
 try:
     from acp import PromptResponse, RequestError
-    from acp.schema import AgentMessageChunk, TextContentBlock
 except ImportError as exc:
     raise ImportError('Claw ACP requires Python3.12-3.14 and agent-client-protocol>=0.12.1,<0.13') from exc
 
@@ -65,9 +64,11 @@ class ClawBackend:
         except ValueError as exc:
             raise invalid(str(exc)) from exc
 
-    async def _resolved_target(self, session_id: object, cwd: object, peer: Peer) -> tuple[str, Path]:
+    async def _resolved_target(self, session_id: object, cwd: object | None, peer: Peer) -> tuple[str, Path]:
         self._active(peer)
         expected = self._target(session_id)  # Capture original registry identity on its loop.
+        if cwd is None:
+            return expected  # Existing group identity, never the caller/process workspace.
         if not isinstance(cwd, (str, Path)) or not Path(cwd).is_absolute():
             raise ValueError("Expected absolute workspace path")
         resolved = await run_owned(Path(cwd).resolve)
@@ -92,6 +93,8 @@ class ClawBackend:
 
     async def load_session(self, session_id: str, cwd: Path, peer: Peer, emit: UpdateSink) -> SessionRef:
         try:
+            if not isinstance(cwd, Path) or not cwd.is_absolute():
+                raise ValueError("load_session requires an explicit absolute workspace path")
             _group, workspace = await self._resolved_target(session_id, cwd, peer)
         except ValueError as exc:
             raise invalid(str(exc)) from exc
@@ -122,9 +125,8 @@ class ClawBackend:
             if record.status != 'succeeded':
                 raise RequestError(-32000, record.error or 'Input did not complete; inspect its durable receipt')
             self._active(peer)
-            for offset in range(0, len(record.response), 16_384):
-                await emit(AgentMessageChunk(session_update='agent_message_chunk', content=TextContentBlock(
-                    type='text', text=record.response[offset:offset + 16_384])))
+            # ACP is input ingress, not a chat reply channel. The result stays
+            # in the original application receipt and transcript for explicit reads.
             return PromptResponse.model_validate({'stopReason': 'end_turn', '_meta': {'xdog': {
                 'message_id': identifier, 'execution_session_id': record.session_id, 'status': record.status}}})
         except asyncio.CancelledError:
@@ -170,11 +172,13 @@ class ClawBackend:
                 return {'session_id': ref.id, 'cwd': str(ref.cwd), 'generation': ref.generation}
             if method not in {'xdog/enqueue', 'xdog/inbox_status'}:
                 raise RequestError(-32601, 'Unsupported Claw ACP extension')
-            group, cwd = await self._resolved_target(params.get('session_id'), params.get('cwd', ''), peer)
+            if 'cwd' in params and not isinstance(params['cwd'], str):
+                raise ValueError('Expected absolute workspace path')
+            group, cwd = await self._resolved_target(params.get('session_id'), params.get('cwd'), peer)
             scope = InputScope(group, cwd)
             if method == 'xdog/enqueue':
                 fields = {'session_id', 'cwd', 'message_id', 'instruction', 'source', 'evidence', 'provenance'}
-                if set(params) != fields:
+                if set(params) - fields or fields - {'cwd'} - set(params):
                     raise ValueError('Invalid enqueue fields')
                 message = decode_input({'id': params['message_id'], 'origin': 'acp', 'source': params['source'],
                     'instruction': params['instruction'], 'evidence': params['evidence'],
@@ -182,13 +186,28 @@ class ClawBackend:
                 record, duplicate = await self.orchestrator.accept_external(scope, message)
                 return {'session_id': params['session_id'], 'message_id': message.id, 'branch_id': '',
                         'status': 'duplicate' if duplicate else 'queued', 'message_state': record.status}
-            if set(params) - {'session_id', 'cwd', 'message_id', 'cursor'}:
+            if set(params) - {'session_id', 'cwd', 'message_id', 'cursor', 'response_offset'}:
                 raise ValueError('Invalid inbox status fields')
             selected, cursor = params.get('message_id'), params.get('cursor', 0)
             if selected is not None and 'cursor' in params:
                 raise ValueError('Select a message or a cursor, not both')
+            offset = params.get('response_offset', 0)
+            if (type(offset) is not int or not 0 <= offset <= 1024 * 1024
+                    or 'response_offset' in params and selected is None):
+                raise ValueError('Response offset requires a selected message and a bounded integer')
             namespace = await self.inputs.store.namespace(scope)
             messages, next_cursor = await self.inputs.store.status(scope, selected=selected, cursor=cursor)
+            if selected is not None:
+                selected_record = await self.inputs.store.get(scope, selected)
+                if selected_record is not None:
+                    # One immutable receipt supplies both result and execution identity.
+                    # Bound explicit reads even for escaped/non-ASCII model output.
+                    end = offset + 16_384
+                    messages = [{'message_id': selected, 'status': selected_record.status,
+                        'attempt_id': selected_record.attempt_id,
+                        'session_id': selected_record.session_id, 'error': selected_record.error[:1024],
+                        'response': selected_record.response[offset:end], 'response_offset': offset,
+                        'response_next_offset': end if end < len(selected_record.response) else None}]
             return {'session_id': params['session_id'], 'cwd': str(cwd), 'branch_id': '', 'inbox_id': namespace,
                     'messages': [{**row, 'branch_id': ''} for row in messages], 'next_cursor': next_cursor}
         except (ValueError, TypeError, UnicodeError) as exc:

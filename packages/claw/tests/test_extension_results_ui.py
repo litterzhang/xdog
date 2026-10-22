@@ -47,7 +47,7 @@ async def test_claw_large_tool_images_preserve_canonical_data_without_oversized_
         await server.start()
     try:
         session = server._orchestrator._runtimes["main"].get_or_create_session()
-        session.agent.set_tools((*session.agent.state.tools, tool))
+        session.agent.set_tools((*session.agent.local_tools, tool))
         events = []
         await session.run_turn(UserInput(content="large image", channel="tui"), on_display_event=events.append)
         finished = next(event for event in events if isinstance(event, ToolFinished))

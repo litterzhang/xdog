@@ -700,7 +700,14 @@ class ClawChildRuntime:
                 available = {tool.name for tool in agent.state.tools}
                 if allowed - available:
                     raise ValueError("Child tool selection is unavailable: " + ", ".join(sorted(allowed - available)))
-                agent.set_tools(tuple(tool for tool in agent.state.tools if tool.name in allowed))
+                from xdog.agent.tools import ToolRegistry
+                selection = ToolRegistry()
+                selection.replace_source("child", (tool for tool in agent.local_tools if tool.name in allowed))
+                if agent.mcp_registry is not None:
+                    agent.mcp_registry.replace_delegated_tools(
+                        tool for tool in agent.mcp_registry.tools() if tool.name in allowed)
+                    agent.sync_mcp_tools()
+                selection.publish(agent)
             validate_checkpoint(agent.messages, len(agent.messages) - 1)
             if any(tool.name in RESERVED_TOOLS for tool in child.agent.state.tools):
                 raise ValueError("Child tools cannot supervise children or mutate a parent plan")

@@ -54,6 +54,17 @@ class ChannelReplies:
         self._channels[binding] = channel
         return binding
 
+    def bound(self, scope: InputScope) -> dict[str, ReplyReference]:
+        """Only explicit live bindings can be proactive destinations; never broadcast."""
+        result = {}
+        for binding, channel in tuple(self._channels.items()):
+            original = channel.bound_reply(scope.group_id)
+            if original is not None:
+                if original.group_id != scope.group_id or original.channel != channel.name:
+                    raise ValueError('Channel returned another group or channel binding')
+                result[binding] = self.capture(scope, channel, original)
+        return result
+
     def unregister(self, binding: str) -> None:
         self._channels.pop(binding, None)
 

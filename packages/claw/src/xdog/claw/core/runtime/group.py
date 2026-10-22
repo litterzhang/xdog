@@ -17,10 +17,11 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from weakref import WeakSet
 
 from xdog.agent import AgentConfig, AgentTool, StreamFn
-from xdog.agent.capabilities.runtime import CapabilitySet
+from xdog.agent.capabilities import CapabilityAssembly, CapabilitySet
 from xdog.agent.history import history_points
-from xdog.agent.mcp import McpManager
+from xdog.agent.mcp import McpRegistry
 from xdog.agent.skills import SkillManager
+from xdog.agent.tools import ToolContext
 from xdog.ai.types import ImageContent, SystemPromptBlock
 from xdog.ai.utils.image_files import validate_references
 from xdog.claw.core.compaction.flush_runner import FlushRunner
@@ -31,7 +32,7 @@ from xdog.claw.core.persistence.transcript_store import TranscriptStore
 from xdog.claw.core.prompt import build_system_prompt, init_workspace, workspace_path
 from xdog.claw.core.runtime.display_events import display_arguments, display_result
 from xdog.claw.core.runtime.transcript_source import SourceCapture
-from xdog.claw.core.tools import create_tools
+from xdog.claw.core.tools import new_tool_registry
 from xdog.claw.core.types import Group
 from xdog.tui.transcript_browser import TranscriptRecord
 
@@ -105,14 +106,12 @@ class GroupRuntime:
         skill_manager: SkillManager | None = None,
         flush_runner: FlushRunner | None = None,
         summarizer: Summarizer | None = None,
-        send_fn: Callable[..., Awaitable[None]] | None = None,
-        application_tools: Callable[[], tuple[AgentTool, ...]] | None = None,
-        application_tool_names: frozenset[str] = frozenset(),
+        message_delivery: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
+        application_capabilities: CapabilitySet | None = None,
         mcp_servers: dict[str, Any] | None = None,
         mcp_credential_backend: str = 'file',
         extensions: tuple[str, ...] = (), extension_dir: str = "",
         extension_settings: dict[str, dict[str, Any]] | None = None,
-        extension_allow_tools: tuple[str, ...] = (),
         child_presets: dict[str, Any] | None = None,
     ) -> None:
         self.group = group
@@ -131,6 +130,7 @@ class GroupRuntime:
         )
         self.memory = memory
         self.capabilities = CapabilitySet("group")
+        self.application_capabilities = application_capabilities
         self._capability_host: Any = None
         self._capability_start: asyncio.Task[None] | None = None
         self.skill_manager = skill_manager or SkillManager(
@@ -139,18 +139,17 @@ class GroupRuntime:
         )
         self.flush_runner = flush_runner
         self.summarizer = summarizer
-        self._send_fn = send_fn
-        self.application_tools = application_tools or (lambda: ())
-        self.application_tool_names = application_tool_names
+        self.message_delivery = message_delivery
+        self.input_address: Callable[[], dict[str, Any] | None] = lambda: None
         self._enabled_tools = group.enabled_tools
+        self.tool_registry = new_tool_registry()
         self._tools: list[AgentTool] | None = None
-        self.mcp = McpManager(mcp_servers or {}, self.workspace_dir,
+        self.mcp = McpRegistry(mcp_servers or {}, self.workspace_dir,
                               credential_dir=data_dir / "groups" / group.id / "mcp-credentials",
                               credential_backend=mcp_credential_backend)
         self.extension_names = extensions
         self.extension_root = Path(extension_dir) if extension_dir else data_dir / "extensions"
         self.extension_settings = extension_settings or {}
-        self.extension_allow_tools = extension_allow_tools
         from xdog.agent.child_config import ChildPresets
         self.child_presets = ChildPresets(child_presets)
         # Closing worker/callbacks own their lifetime; do not retain settled histories.
@@ -176,14 +175,12 @@ class GroupRuntime:
         *,
         model: str = "",
         stream_fn: StreamFn | None = None,
-        send_fn: Callable[..., Awaitable[None]] | None = None,
-        application_tools: Callable[[], tuple[AgentTool, ...]] | None = None,
-        application_tool_names: frozenset[str] = frozenset(),
+        message_delivery: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
+        application_capabilities: CapabilitySet | None = None,
         mcp_servers: dict[str, Any] | None = None,
         mcp_credential_backend: str = 'file',
         extensions: tuple[str, ...] = (), extension_dir: str = "",
         extension_settings: dict[str, dict[str, Any]] | None = None,
-        extension_allow_tools: tuple[str, ...] = (),
         child_presets: dict[str, Any] | None = None,
     ) -> GroupRuntime:
         """Build a fully-initialized GroupRuntime from a Group config."""
@@ -234,11 +231,12 @@ class GroupRuntime:
             skill_manager=skill_manager,
             flush_runner=flush_runner,
             summarizer=summarizer,
-            send_fn=send_fn, application_tools=application_tools, application_tool_names=application_tool_names,
+            message_delivery=message_delivery,
+            application_capabilities=application_capabilities,
             mcp_servers=mcp_servers,
             mcp_credential_backend=mcp_credential_backend,
             extensions=extensions, extension_dir=extension_dir,
-            extension_settings=extension_settings, extension_allow_tools=extension_allow_tools,
+            extension_settings=extension_settings,
             child_presets=child_presets,
         )
         # Acquire optional search workers last: a failed constructor must not
@@ -250,21 +248,36 @@ class GroupRuntime:
     # -- Tools -----------------------------------------------------------------
 
     @property
+    def capability_assembly(self) -> CapabilityAssembly:
+        """Project current owners; replacing a host Set cannot retain stale grants."""
+        return CapabilityAssembly(
+            *(owner for owner in (self.capabilities, self.application_capabilities) if owner is not None))
+
+    @property
+    def default_skills(self) -> frozenset[str]:
+        """Live owner defaults; instruction selection grants no tool authority."""
+        return self.capability_assembly.default_skills
+
+    @property
     def tools(self) -> list[AgentTool]:
         if self._tools is None:
             self._tools = self._builtin_tools()  # Explicit synchronous fixture/composition fallback.
-        installed = (*self.capabilities.tools, *self.application_tools())
-        selected = self._enabled_tools
-        return [*self._tools, *self.mcp.tools(),
-                *(tool for tool in installed if selected is None or tool.name in selected)]
+        return list(self.capability_assembly.compose_tools(
+            self._tools, enabled_tools=self._enabled_tools))
+
+    def publish_tools(self, session: AgentSession) -> None:
+        """Publish host inventory only; extension hooks cannot contribute tools."""
+        session._tool_registration = self.tool_registry.replace_source("host", (*self.tools, *session._child_tools))
+        self.tool_registry.publish(session.agent)
 
     def _builtin_tools(self) -> list[AgentTool]:
         enabled = self._enabled_tools
         if enabled is not None:
-            declared = (self.capabilities.declared_tools | self.application_tool_names
-                        | {tool.name for tool in self.application_tools()})
-            enabled = tuple(name for name in enabled if name not in declared)
-        return create_tools(enabled=enabled, workspace_dir=self.workspace_dir, image_model=self.group.image_model)
+            declared = self.capability_assembly.declared_tools | {tool.name for tool in self.capability_assembly.tools}
+            builtins = self.tool_registry.registered_names()
+            enabled = tuple(name for name in enabled if name not in declared or name in builtins)
+        return self.tool_registry.create_tools(
+            enabled, context=ToolContext(cwd=self.workspace_dir, image_model=self.group.image_model))
 
     async def initialize_capabilities(self, inputs: InputService) -> None:
         self.require_open()
@@ -284,25 +297,15 @@ class GroupRuntime:
                 self._capability_start = None
         if self._active_session is not None:
             self._attach_capabilities(self._active_session)
+            await self._active_session._persist_tool_retirement()
 
     def _attach_capabilities(self, session: AgentSession) -> None:
-        if self._capability_host is None:
-            return
-        # Record identities before attach can replace feature-owned definitions.
-        self.capabilities.tools
-        self.capabilities.attach(self._capability_host.parent(session))
-        existing = tuple(tool for tool in session.agent.state.tools if not self.capabilities.owns_tool(tool))
-        selected = self._enabled_tools
-        published = (*self.capabilities.tools, *self.application_tools())
-        additions = tuple(tool for tool in published
-                          if (selected is None or tool.name in selected)
-                          and not any(tool is value for value in existing))
-        if any(tool.name == value.name for tool in additions for value in existing):
-            raise ValueError("Capability tool name already owned; refusing replacement")
-        replacement = (*existing, *additions)
-        original = session.agent.state.tools
-        if len(original) != len(replacement) or {id(tool) for tool in original} != {id(tool) for tool in replacement}:
-            session.agent.set_tools(replacement)
+        if self._capability_host is not None:
+            # Record identities before attach can replace feature-owned definitions.
+            self.capabilities.tools
+            self.capabilities.attach(self._capability_host.parent(session))
+        self.publish_tools(session)
+        session._restore_active_tools()
 
     async def manage_mcp(self, action: str, server: str = "") -> tuple[dict[str, Any], ...]:
         if action in {"list", "status"}:
@@ -320,9 +323,7 @@ class GroupRuntime:
         else:
             raise ValueError("Unknown MCP management action")
         if self._active_session is not None:
-            self._active_session.agent.set_tools((*self.tools,
-                                                  *self._active_session.extensions.tools(),
-                                                  *self._active_session.children.runtime.tools()))
+            self._active_session.agent.sync_mcp_tools()
             await self._active_session._persist_tool_retirement()
         return self.mcp.status()
 
@@ -347,10 +348,8 @@ class GroupRuntime:
     def build_system_prompt(
         self, bootstrap_content: str | None = None
     ) -> tuple[SystemPromptBlock, ...]:
-        tools = self.tools
-        if self._active_session is not None:
-            active = {tool.name for tool in self._active_session.agent.active_tools}
-            tools = [tool for tool in tools if tool.name in active]
+        tools = (list(self._active_session.agent.active_tools) if self._active_session is not None
+                 else [*self.tools, *self.mcp.tools()])
         return build_system_prompt(
             self.workspace_dir,
             tools=tools,

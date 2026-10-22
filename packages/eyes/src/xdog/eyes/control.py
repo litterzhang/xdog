@@ -1,4 +1,4 @@
-"""Eyes lifecycle requests never carry agent input or a harness capability."""
+"""Shared Unix control for daemon lifecycle, scoped registrations and data-only event reads."""
 
 from __future__ import annotations
 
@@ -28,7 +28,10 @@ async def request(location: RuntimeLocation, action: str, body: dict[str, JsonVa
             writer.write(encode_frame(
                 {'version': 1, 'generation': location.generation, 'action': action, 'body': body}))
             await writer.drain()
-            response = decode_frame(await reader.readline())
+            frame = await reader.readline()
+            if not frame:
+                raise ConnectionError('Eyes daemon closed the control connection before replying')
+            response = decode_frame(frame)
             if (set(response) != {'version', 'generation', 'cwd', 'status', 'body'}
                     or type(response['version']) is not int or response['version'] != 1
                     or response['cwd'] != str(location.cwd)

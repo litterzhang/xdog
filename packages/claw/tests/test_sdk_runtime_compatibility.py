@@ -248,7 +248,7 @@ async def test_versioned_sdk_restore_keeps_claw_read_only_access_gate(owner):
         "type": "object", "properties": {"action": {"type": "string"}}, "required": ["action"],
     })
     runtime._tools = [tool]
-    session.agent.set_tools([*session.agent.state.tools, tool])
+    session.agent.set_tools([*session.agent.local_tools, tool])
     session.access.set_read_only(True)
     for turn in range(2):
         stream.responses = [AssistantMessage(content=(

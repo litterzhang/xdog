@@ -170,3 +170,49 @@ async def test_service_shutdown_settles_an_inflight_durable_writer(ingress, tmp_
         release.set()
         await asyncio.gather(*(t for t in (request,closing) if t is not None),return_exceptions=True)
     assert len(list(config.inbox_dir.rglob('*.json'))) == 1
+
+
+async def test_existing_session_resolves_enqueue_workspace_without_caller_cwd(ingress, tmp_path, monkeypatch):
+    server, config, manager, data = ingress
+    elsewhere = tmp_path / 'caller'
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    request = payload(data, tmp_path)
+    request.pop('cwd')
+    async with connected(config.address) as (conn, client, hello):
+        status = await conn.ext_method('xdog/inbox_status', {'session_id': data.session_id})
+        assert status['cwd'] == str(tmp_path)
+        receipt = await conn.ext_method('xdog/enqueue', request)
+        assert receipt['status'] == 'queued'
+        assert receipt['branch_id'] == status['branch_id']
+        # Omitted and explicitly correct cwd describe the exact same canonical input.
+        duplicate = await conn.ext_method('xdog/enqueue', {**request, 'cwd': str(tmp_path)})
+        assert duplicate['status'] == 'duplicate'
+        again = await conn.ext_method('xdog/inbox_status', {'session_id': data.session_id})
+        assert again['inbox_id'] == status['inbox_id']
+        assert again['messages'][0]['message_id'] == request['message_id']
+        assert not client.updates
+
+
+@pytest.mark.parametrize('cwd', [None, '', '.', '/wrong'])
+async def test_optional_cwd_does_not_allow_invalid_explicit_workspace(ingress, tmp_path, cwd):
+    server, config, manager, data = ingress
+    async with connected(config.address) as (conn, client, hello):
+        for method, params in (
+            ('xdog/enqueue', {**payload(data, tmp_path), 'cwd': cwd}),
+            ('xdog/inbox_status', {'session_id': data.session_id, 'cwd': cwd}),
+        ):
+            with pytest.raises(RequestError):
+                await conn.ext_method(method, params)
+    assert not list(config.inbox_dir.rglob('*.json'))
+
+
+async def test_cwdless_enqueue_requires_existing_valid_session(ingress, tmp_path):
+    server, config, manager, data = ingress
+    request = payload(data, tmp_path)
+    request.pop('cwd')
+    async with connected(config.address) as (conn, client, hello):
+        for session_id in ('missing', '../escape'):
+            with pytest.raises(RequestError):
+                await conn.ext_method('xdog/enqueue', {**request, 'session_id': session_id})
+    assert not list(config.inbox_dir.rglob('*.json'))

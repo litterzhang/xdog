@@ -16,6 +16,7 @@ from xdog.agent import Agent, AgentConfig, AgentMessage, BeforeToolCallContext, 
 from xdog.agent.access import AccessScope, read_only_call
 from xdog.agent.async_work import run_owned
 from xdog.agent.capabilities.children import ChildPort
+from xdog.agent.capabilities.runtime import CapabilitySet
 from xdog.agent.child_compaction import ArchivedSummaryStream, preserve_model_metadata
 from xdog.agent.child_config import ChildPresets
 from xdog.agent.child_model import resolve_child_model
@@ -23,9 +24,11 @@ from xdog.agent.child_policy import ChildDelegation, ChildSkills, ParentHandle, 
 from xdog.agent.children import RESERVED_TOOLS, ChildSpec, child_prompt
 from xdog.agent.core import AgentTool, AgentToolResult, StreamFn, ToolExecutionMode
 from xdog.agent.cross_loop import settle_on
+from xdog.agent.mcp import McpRegistry
 from xdog.agent.skills.manager import SkillManager
 from xdog.agent.skills.tool import _Reader
 from xdog.agent.tool_effects import ToolEffect
+from xdog.agent.tools import ToolRegistry
 from xdog.agent.types import AfterToolCallContext, AfterToolCallResult, HandledInput
 from xdog.ai.types import AssistantMessage, Context, StreamOptions, ToolCall, UserMessage
 from xdog.ai.utils.event_stream import EventStream
@@ -47,7 +50,7 @@ class _ParentMetadata:
     context_window: int
     max_prompt_tokens: int
     supports_tool_calls: bool | None
-    extension_owners: tuple[tuple[str, str], ...] = ()
+    mcp_tools: tuple[AgentTool, ...]
 
 
 def _argument_fingerprint(params: dict[str, Any]) -> str:
@@ -100,7 +103,9 @@ class CodingChildren:
         branch = session.session_data.active_branch or "head"
         self.store = ChildStore.scoped(session.session_manager._dir, session.session_id, branch)
         self.capabilities = ChildPort(session.session_id, branch,
-            lambda: (*session.capabilities.owned_tools, *session.capabilities.tools),
+            lambda: (*session._retired_capability_tools,
+                     *(tool for owner in session.capability_assembly.sets
+                       for tool in (*owner.owned_tools, *owner.tools))),
             parent_valid=lambda identifier: identifier in self.parents and self.parents[identifier].live)
         self._closed = False
         self.snapshots: dict[str, _ParentMetadata] = {}
@@ -108,6 +113,7 @@ class CodingChildren:
         self.skill_limits: dict[str, ChildSkills] = {}
         self.delegations: dict[str, ChildDelegation] = {}
         self.scoped_tools: dict[str, dict[str, AgentTool]] = {}
+        self.scoped_owners: dict[str, dict[str, CapabilitySet]] = {}
         self.tool_limits: dict[str, tuple[str, ...] | None] = {}
         self.extensions = ChildExtensions(session.extensions, self.store)
         self.permissions: dict[str, PermissionManager] = {}
@@ -130,6 +136,8 @@ class CodingChildren:
             persist_admission=self.store.save_admission, archive_compaction=self.store.archive_compaction,
                                           forget=self.store.forget, finalize=self.finish,
             on_event=self.extensions.event, records=records, presets=presets)
+        self.tool_registries = self.runtime.tool_registries
+        self.mcp_registries = self.runtime.mcp_registries
         self.capabilities.runtime = self.runtime
         self.runtime.diagnostic = diagnostic
         self.tools = self.runtime.tools()
@@ -202,6 +210,12 @@ class CodingChildren:
             raise ValueError("Original Coding parent skill owner changed during catalog read")
         return rows
 
+    def _scope_owner(self, tool: AgentTool) -> CapabilitySet | None:
+        # A retired identity is parent-only, but only its actual live binding
+        # may manufacture a scoped executor. Never resolve authority by name.
+        return next((owner for owner in self.session.capability_assembly.sets
+                     if owner.can_delegate_child_tool(tool)), None)
+
     def capture(self, spec: ChildSpec) -> Awaitable[ChildSpec]:
         session = self.session
         spec = replace(spec, tool_scopes=spec.config().to_dict()["tool_scopes"])
@@ -212,14 +226,14 @@ class CodingChildren:
         identifier = session.session_id
         branch = session.session_data.active_branch or "head"
         def delegable_tools() -> tuple[AgentTool, ...]:
-            live_extensions = session.extensions.tools()
+            mcp = original.mcp_registry
+            actual = (*original.local_tools, *(mcp.tools() if mcp is not None else ()))
             return tuple(tool for tool in original.active_tools
-                         if tool.name not in RESERVED_TOOLS and tool is not session._session_info_tool
+                         if any(tool is live for live in actual)
+                         and tool.name not in RESERVED_TOOLS and tool is not session._session_info_tool
                          and (self.capabilities.inherited(tool) or (spec.tools is not None
                               and tool.name in spec.tool_scopes
-                              and session.capabilities.can_delegate_child_tool(tool)))
-                         and (tool.name not in session.extensions.aliases
-                              or any(tool is value for value in live_extensions)))
+                              and self._scope_owner(tool) is not None)))
         parent = ParentHandle(
             alive=lambda: (not self._closed and not self.runtime.closed
                            and session.agent is original and session.children is self
@@ -236,8 +250,9 @@ class CodingChildren:
             model=original.state.model, stream=original.stream_fn, options=original.options,
             tool_execution=original.tool_execution, context_window=original.context_window,
             max_prompt_tokens=original.max_prompt_tokens, supports_tool_calls=original.supports_tool_calls,
-            extension_owners=tuple((tool.name, session.extensions.tool_owner(tool.name)) for tool in grant.tools
-                                   if tool.name in session.extensions.aliases))
+            mcp_tools=tuple(tool for tool in (original.mcp_registry.tools()
+                            if original.mcp_registry is not None else ())
+                            if any(tool is source for source in grant.tools)))
         async def admit() -> ChildSpec:
             skills = await run_owned(parent.capture_skills, spec.skills)
             current = parent.capture_tools(None).tools
@@ -253,11 +268,18 @@ class CodingChildren:
                     raise ValueError("Saved child delegation is unavailable; no implicit grant on continuation")
                 selected = replace(selected, schemas=tuple(copy.deepcopy(ceilings[name]) for name in selected.names))
             scoped = {}
+            scope_owners = {}
             for name, scope in spec.tool_scopes.items():
                 actual = next((tool for tool in selected.tools if tool.name == name), None)
                 if actual is None:
                     raise ValueError("Scoped tool is outside the original child delegation")
-                scoped[name] = await session.capabilities.delegate_child_tool(actual, spec, scope)
+                owner = self._scope_owner(actual)
+                if owner is None:
+                    raise ValueError("Original capability scope owner retired before delegation")
+                scoped[name] = await owner.delegate_child_tool(actual, spec, scope)
+                if owner not in session.capability_assembly.sets:
+                    raise ValueError("Original capability scope owner retired during delegation")
+                scope_owners[name] = owner
                 selected.scoped_parameters(name, scoped[name].parameters)
             selected = replace(selected, schemas=tuple(
                 selected.scoped_parameters(tool.name, scoped[tool.name].parameters)
@@ -269,6 +291,7 @@ class CodingChildren:
             self.parents[spec.id] = parent
             self.skill_limits[spec.id] = skills
             self.scoped_tools[spec.id] = scoped
+            self.scoped_owners[spec.id] = scope_owners
             self.delegations[spec.id] = selected
             self.tool_limits[spec.id] = selected.names  # Never None, even without a parent selection.
             self.snapshots[spec.id] = metadata
@@ -284,6 +307,10 @@ class CodingChildren:
             raise ValueError("Original parent owner retired before child construction")
         skills = self.skill_limits[spec.id]
         scoped = self.scoped_tools[spec.id]
+        scoped_owners = self.scoped_owners[spec.id]
+        if any(self._scope_owner(tool) is not scoped_owners[tool.name]
+               for tool in grant.tools if tool.name in scoped):
+            raise ValueError("Original scoped capability owner retired before child construction")
         await run_owned(parent.check_skills, skills)
         role_tools = await self.capabilities.tools(spec)
         allowed_tools = (*grant.names, *(tool.name for tool in role_tools))
@@ -313,11 +340,12 @@ class CodingChildren:
             if name not in scoped:
                 return None
             actual = next(tool for tool in grant.tools if tool.name == name)
-            if not session.capabilities.can_delegate_child_tool(actual):
+            owner = scoped_owners[name]
+            if owner not in session.capability_assembly.sets or not owner.can_delegate_child_tool(actual):
                 raise ValueError("Original scoped capability tool is no longer delegable")
             if not _matches(scoped[name].parameters, params):
                 return ToolEffect("execute", "unknown")
-            return session.capabilities.tool_effect(actual, params) or ToolEffect("execute", "unknown")
+            return owner.tool_effect(actual, params) or ToolEffect("execute", "unknown")
 
         def safe_call(name: str, params: dict[str, Any]) -> bool:
             classified = effect(name, params)
@@ -383,8 +411,8 @@ class CodingChildren:
 
         def protect(tool: AgentTool, source: AgentTool | None = None) -> AgentTool:
             async def validate(params: dict[str, Any]) -> None:
-                # A fresh child worker's executor does not replace the original
-                # parent's registration fence. Validate both without executing either.
+                # A scoped proxy does not replace the original parent's grant
+                # fence. Validate both without executing either.
                 seen: set[int] = set()
                 for candidate in (None if tool.name in scoped else source, tool):
                     if (candidate is not None and candidate.validate_arguments is not None
@@ -421,8 +449,10 @@ class CodingChildren:
                             async def deliver() -> None:
                                 await on_update(result)
                             await settle_on(caller, deliver())
-                    return await settle_on(session.capabilities.owner_loop,
-                                           invoke(call_id, params, None, update, ctx=ctx))
+                    owner = scoped_owners[tool.name]
+                    if owner not in session.capability_assembly.sets:
+                        raise ValueError("Original scoped capability owner retired before execution")
+                    return await settle_on(owner.owner_loop, invoke(call_id, params, None, update, ctx=ctx))
                 return await invoke(call_id, params, cancel, on_update, ctx=ctx)
             protected = replace(tool, execute=execute, validate_arguments=validate)
             return protected
@@ -436,30 +466,38 @@ class CodingChildren:
         delegated_tools = tuple(protect(skills.tool(tool, lambda: parent.live) if tool.name == "skill"
                                         else tool, source)
                                 for tool, source in zip(delegated_tools, grant.tools, strict=True))
-        extension_bindings: dict[str, tuple[AgentTool, AgentTool]] = {}
-        extension_names = dict(state.extension_owners)
+        # Classification is pinned to the original parent's actual MCP handles,
+        # not aliases or a caller-controlled name prefix. Proxies stay immutable.
+        delegated_pairs = tuple(zip(grant.tools, delegated_tools, strict=True))
+        mcp_proxies = tuple(proxy for source, proxy in delegated_pairs
+                            if any(source is actual for actual in state.mcp_tools))
+        local_proxies = tuple(proxy for proxy in delegated_tools
+                              if not any(proxy is actual for actual in mcp_proxies))
+        registry = ToolRegistry(builtins=False)
+        self.tool_registries[spec.id] = registry
+        mcp_registry = McpRegistry.from_tools(mcp_proxies)
+        self.mcp_registries[spec.id] = mcp_registry
 
-        def sync_tools() -> None:
+        def publish_tools() -> None:
             try:
                 current = parent.capture_tools(None).tools if parent.live else ()
             except (ValueError, RuntimeError):
-                current = ()  # Concurrent retirement removes inventory, not completed effect facts.
-            current_extensions = extension.tools()
-            selected = []
-            for source, proxy in zip(grant.tools, delegated_tools, strict=True):
-                if not any(source is value for value in current):
-                    continue
-                if source.name in extension_names:
-                    binding = extension_bindings.get(source.name)
-                    if binding is not None and any(binding[0] is value for value in current_extensions):
-                        selected.append(binding[1])
-                else:
-                    selected.append(proxy)
-            selected.extend(tool for tool in role_tools if parent.live
-                            and self.capabilities.permits(spec.id, tool.name, (tool,)))
-            agent.set_tools(tuple(selected))
+                current = ()  # Retirement narrows inventory, not completed effect facts.
+            selected = tuple(proxy for source, proxy in delegated_pairs
+                             if any(source is value for value in current))
+            selected += tuple(tool for tool in role_tools if parent.live
+                              and self.capabilities.permits(spec.id, tool.name, (tool,)))
+            ceiling = self.runtime.tool_selections.get(spec.id)
+            if ceiling is not None:
+                selected = tuple(tool for tool in selected if tool.name in ceiling)
+            mcp_registry.replace_delegated_tools(tuple(tool for tool in selected
+                if any(tool is proxy for proxy in mcp_proxies)))
+            registry.replace_source("inventory", tuple(tool for tool in selected
+                if not any(tool is proxy for proxy in mcp_proxies)))
+            registry.publish(agent)
+            agent.sync_mcp_tools()
 
-        tools = tuple(tool for tool in delegated_tools if tool.name not in extension_names) + role_tools
+        registry.replace_source("inventory", (*local_proxies, *role_tools))
         async def before(ctx: BeforeToolCallContext, cancel: asyncio.Event | None = None
                          ) -> BeforeToolCallResult | None:
             nonlocal last_authority
@@ -531,7 +569,7 @@ class CodingChildren:
             except (ValueError, RuntimeError) as exc:
                 return BeforeToolCallResult(block=True, reason=str(exc))
             finally:
-                sync_tools()
+                publish_tools()
 
         async def after(ctx: AfterToolCallContext, cancel: asyncio.Event | None = None) -> AfterToolCallResult | None:
             try:
@@ -557,9 +595,12 @@ class CodingChildren:
                             and admission.context.context is ctx.context):
                         admissions.pop(key, None)
                 try:
-                    sync_tools()
+                    publish_tools()
                 except (ValueError, RuntimeError):
-                    agent.set_tools(())  # Cleanup cannot replace an already completed tool result.
+                    mcp_registry.replace_delegated_tools(())
+                    registry.replace_source("inventory", ())
+                    registry.publish(agent)
+                    agent.sync_mcp_tools()  # Preserve the already completed effect result.
 
         agent: Agent
         async def context(messages: list[AgentMessage]) -> list[AgentMessage]:
@@ -570,7 +611,7 @@ class CodingChildren:
                 result = await self.extensions.context(extension, messages)
                 return result
             finally:
-                sync_tools()
+                publish_tools()
 
         async def input_transform(message: UserMessage, source: str,
                                   cancel: asyncio.Event | None = None) -> UserMessage | HandledInput:
@@ -578,7 +619,7 @@ class CodingChildren:
                 self.extensions.check_parent()
                 return await extension.input(message, source, channel="child")
             finally:
-                sync_tools()
+                publish_tools()
 
         from xdog.agent.extensions.providers import ExtensionProviderStream
         base_stream = state.stream
@@ -593,7 +634,7 @@ class CodingChildren:
                 raise ValueError("Original parent owner retired during child model admission")
         def guarded(model: str, context: Context, options: StreamOptions) -> EventStream[AssistantMessage]:
             def start_request() -> EventStream[AssistantMessage]:
-                sync_tools()
+                publish_tools()
                 names = {tool.name for tool in agent.active_tools}
                 request = replace(context, tools=tuple(tool for tool in context.tools or () if tool.name in names))
                 return routed_stream(model, request, options)
@@ -605,13 +646,10 @@ class CodingChildren:
             tool_execution=state.tool_execution,
             context_window=selected.context_window, max_prompt_tokens=selected.max_prompt_tokens,
             supports_tool_calls=selected.supports_tool_calls, options=selected.options,
-            compaction=selected.compaction(child_stream)), tools=tools,
+            compaction=selected.compaction(child_stream)), tools=registry.tools, mcp_registry=mcp_registry,
             tool_ctx={"fs_workspace": str(session.working_dir)}, skills=skills, active_skills=skills.slugs,
             transform_context=context,
             before_tool_call=before, after_tool_call=after, input_transform=input_transform)
-        if allowed_tools is not None:
-            allowed = set(allowed_tools)
-            agent.set_tools(tuple(tool for tool in agent.state.tools if tool.name in allowed))
         from xdog.agent.extensions.inspection import capture
         inspection_session = str(extension.context().get("session_id", ""))
         def inspection() -> dict[str, Any] | None:
@@ -632,26 +670,25 @@ class CodingChildren:
 
         self.extensions.bind_pending_messages(spec.id, agent)
         await self.extensions.start(extension_spec, extension)
-        for tool in extension.tools():
-            if (tool.name in extension_names
-                    and extension.tool_owner(tool.name) == extension_names[tool.name]):
-                index = grant.names.index(tool.name)
-                extension_bindings[tool.name] = tool, protect(replace(tool,
-                    parameters=grant.provider_parameters(tool.name)), grant.tools[index])
-        sync_tools()
+        publish_tools()
         return agent
 
     async def finish(self, spec: ChildSpec) -> None:
+        self.tool_registries.pop(spec.id, None)
+        mcp = self.mcp_registries.pop(spec.id, None)
         self.snapshots.pop(spec.id, None)
         self.parents.pop(spec.id, None)
         self.skill_limits.pop(spec.id, None)
         self.delegations.pop(spec.id, None)
         self.scoped_tools.pop(spec.id, None)
+        self.scoped_owners.pop(spec.id, None)
         self.tool_limits.pop(spec.id, None)
         manager = self.permissions.pop(spec.id, None)
         if manager is not None:
             manager.close()
-        await self.extensions.close(spec)
+        from xdog.agent.async_work import settle_cleanup
+        await settle_cleanup(lambda: self.extensions.close(spec), *((mcp.aclose,) if mcp is not None else ()),
+                             message="Coding child extension/MCP cleanup failed")
 
     def resolve(self, child_id: str, request_id: str, decision: PermissionDecision) -> bool:
         manager = self.permissions.get(child_id)

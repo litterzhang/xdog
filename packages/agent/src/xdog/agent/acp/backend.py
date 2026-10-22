@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,7 @@ from xdog.ai.types import AssistantMessage, TextContent
 class AgentBackend:
     extensions: dict[str, int] = {}
 
-    def __init__(self, factory: Callable[[Path], Agent]) -> None:
+    def __init__(self, factory: Callable[[Path], Agent | Awaitable[Agent]]) -> None:
         self.factory = factory
         self.agents: dict[str, tuple[SessionRef, Agent]] = {}
         self.running: dict[str, tuple[str, asyncio.Task[Any]]] = {}
@@ -33,7 +34,9 @@ class AgentBackend:
 
     async def new_session(self, cwd: Path, peer: Peer) -> SessionRef:
         ref = SessionRef(uuid.uuid4().hex, cwd, uuid.uuid4().hex)
-        self.agents[ref.id] = ref, self.factory(cwd)
+        candidate = self.factory(cwd)
+        agent = await candidate if inspect.isawaitable(candidate) else candidate
+        self.agents[ref.id] = ref, agent
         self.owners[ref.id] = peer.id
         return ref
 

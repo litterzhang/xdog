@@ -30,7 +30,12 @@ async def test_child_model_and_executor_never_regain_parent_unselected_tools(tmp
         assert not parent.agent.messages
         assert 'filesystem' in {tool.name for tool in parent.agent.state.tools}
         assert parent.agent.active_tool_selection == tuple(selection)
-        assert not parent.children.snapshots and not parent.children.tool_limits
+        assert not parent.children.snapshots
+        if host == 'coding':
+            assert not parent.children.tool_limits and not parent.children.runtime.tool_registries
+        else:
+            assert not parent.children.grants and not parent.children.scoped_tools
+            assert not parent.children.scope_owners and not parent.children.skill_grants
     finally:
         if server is not None:
             await server.stop()
@@ -55,7 +60,12 @@ async def test_child_capture_rejects_profile_outside_parent_selection_before_wor
             admission = parent.children.capture(spec)
             if inspect.isawaitable(admission):
                 await admission
-        assert not parent.children.snapshots and not parent.children.tool_limits
+        assert not parent.children.snapshots
+        if host == 'coding':
+            assert not parent.children.tool_limits and not parent.children.runtime.tool_registries
+        else:
+            assert not parent.children.grants and not parent.children.scoped_tools
+            assert not parent.children.scope_owners and not parent.children.skill_grants
         assert not parent.children.extensions.owners
     finally:
         if server is not None:

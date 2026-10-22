@@ -6,8 +6,10 @@ import hashlib
 import json
 import sqlite3
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from xdog.agent.leased_sqlite import LeasedSqlite
 from xdog.claw.core.inputs.models import InputEnvelope, InputScope, decode_envelope, encode_envelope
@@ -71,6 +73,22 @@ class OutputRecord:
     status: str = "pending"
     send_id: str = ""
     error: str = ""
+
+
+def delivery_status(rows: Sequence[OutputRecord]) -> str:
+    """Aggregate actual chunk receipts without claiming a partial send succeeded."""
+    states = {row.status for row in rows}
+    if not states:
+        return 'untracked'
+    if states == {'delivered'}:
+        return 'delivered'
+    if 'unknown' in states:
+        return 'unknown'
+    if states <= {'pending', 'sending'}:
+        return 'pending'
+    if states == {'cancelled'}:
+        return 'cancelled'
+    return 'partial'
 
 
 def _record(row: sqlite3.Row) -> OutputRecord:
@@ -203,13 +221,35 @@ class OutputStore:
 
         return await self._database.disk(write)
 
-    async def records(self, scope: InputScope | None = None) -> list[OutputRecord]:
+    async def records(self, scope: InputScope | None = None, *, message_id: str | None = None) -> list[OutputRecord]:
         def read(db: sqlite3.Connection) -> list[OutputRecord]:
             query, args = _QUERY, () if scope is None else (scope.group_id, str(scope.workspace))
             if scope is not None:
                 query += " WHERE b.group_id=? AND b.workspace=?"
+            if message_id is not None:
+                _label(message_id)
+                query += (" AND" if scope is not None else " WHERE") + " b.message_id=?"
+                args = (*args, message_id)
             return [_record(row) for row in db.execute(query + " ORDER BY o.sequence", args)]
 
+        return await self._database.disk(read)
+
+    async def delivery_for_reference(self, scope: InputScope, reference: str) -> dict[str, Any]:
+        """Bounded public delivery facts, never destinations or message contents."""
+        if not isinstance(reference, str) or not reference.strip() or len(reference.encode()) > 256:
+            raise ValueError('Invalid output correlation reference')
+        def read(db: sqlite3.Connection) -> dict[str, Any]:
+            values = db.execute(_QUERY + " WHERE b.group_id=? AND b.workspace=? AND "
+                "json_extract(b.payload,'$.context.outbound_tool')='message' AND "
+                "json_extract(b.payload,'$.message.provenance.reference')=? ORDER BY o.sequence LIMIT 257",
+                (scope.group_id, str(scope.workspace), reference)).fetchall()
+            if len(values) > 256:
+                return {'status': 'unavailable', 'reason': 'Correlated output facts exceed bounded read capacity'}
+            rows = [_record(row) for row in values]
+            if not rows:
+                return {'status': 'untracked',
+                        'reason': 'No correlated output receipt; this is not proof nothing was sent'}
+            return {'status': delivery_status(rows), 'outputs': [{'id': row.id, 'status': row.status} for row in rows]}
         return await self._database.disk(read)
 
     async def cancel_pending(self, scope: InputScope, message_ids: tuple[str, ...]) -> tuple[str, ...]:

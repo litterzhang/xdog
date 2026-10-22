@@ -123,13 +123,20 @@ the timer. Worker locks and cancellation signals remain separate from UI state.
 Potentially mutating tool calls are gated immediately before execution. By
 default, read-only filesystem operations and `current_time` run automatically;
 the exact host-bound `ext_coding_session` inspection also needs no approval;
-`bash`, filesystem writes/edits/deletes, and unknown extension tools ask first.
+`bash`, filesystem writes/edits/deletes, and unknown SDK-supplied tools ask first.
+In `ask`/`deny` mode, the actual host-bound child `agent` tool also permits
+`list`, `presets`, `inspect`, `wait`, `steer`, and `follow-up` without approval.
+Sending a message grants no permission for the child's subsequent tool calls:
+its independent approvals and the live parent permission ceiling still apply.
+`spawn`, `cancel`, `close`, prompt changes, and queue management are not exempt.
+Explicit `ask-all` still asks for these child queries/messages; the separate host
+read-only scope is unchanged and does not permit child control calls.
 
 ```bash
 xdog-coding --permission-mode ask       # default: ask for dangerous calls
 xdog-coding --permission-mode ask-all   # ask before every tool
 xdog-coding --permission-mode allow-all # trusted unattended automation
-xdog-coding --permission-mode deny      # allow read-only calls only
+xdog-coding --permission-mode deny      # safe reads and existing-child messages only
 ```
 
 Interactive approvals offer **Allow once**, **Allow for this session** (the exact
@@ -444,7 +451,7 @@ to the platform's normal persistent clipboard process.
 
 ### Read-only session inspection
 
-`/session` and the built-in host extension tool `ext_coding_session` share the
+`/session` and the built-in host tool `ext_coding_session` share the
 same current-session query. The tool takes `{}` and returns structured JSON:
 current session/branch/name/workspace, selected model and known capabilities,
 thinking, effective permission/read-only state, and measured context usage.
@@ -458,7 +465,7 @@ an empty/narrowed selection does not silently re-enable inspection, and prompts
 state when the tool is unavailable. This is a Coding-owned tool, not a new Python
 plugin worker or a generic slash-command execution bridge. Its actual bound tool
 may read without frontend approval even in ask-all/deny/read-only mode; arbitrary
-extension tools and same-name replacements gain no exemption. Existing extension
+SDK-supplied tools and same-name replacements gain no exemption. Existing extension
 validation/vetoes remain active. Navigation/close retire old handles, and children
 do not inherit their parent's inspection callback. Neither ACP nor a TUI is needed.
 
@@ -599,7 +606,7 @@ Use the native host control separately:
 
 With host read-only scope on, only local `filesystem` read/ls/grep/find,
 `current_time` calls and the host-bound `ext_coding_session` query are eligible.
-Shell, workspace writes, arbitrary MCP/extension tools and child-control tools
+Shell, workspace writes, arbitrary MCP/SDK-supplied tools and child-control tools
 are blocked. Ordinary eligible calls retain their normal permission policy;
 the exact bound session query needs no approval. Cached approvals, `allow-all`, skill text, model arguments and
 delayed approvals cannot release or bypass this restriction. Keep planning notes
@@ -644,19 +651,15 @@ names activate lazily at the first agent turn, `/extensions`, or extension comma
 from xdog.agent.extensions import ExtensionAPI
 
 def setup(api: ExtensionAPI):
-    async def echo(params, context):
-        return "echo: " + params.get("text", "")
     async def hello(args, context):
         api.notify("Hello from the explicitly trusted extension")
         return "hello: " + args
-    api.tool("echo", "Echo text", {"type": "object", "properties": {
-        "text": {"type": "string"}}}, echo)
     api.command("hello", "Say hello", hello)
     api.status("ready", "Extension ready")
     api.status("summary", "Bounded status text")
 ```
 
-Tools get collision-safe `ext_...` aliases; slash commands are namespaced as
+Extensions do not register tools. Slash commands are namespaced as
 `/ext-sample-hello ARGS`. The live completion provider reflects current commands.
 `/extensions [list|reload NAME|unload NAME]` manages ONLY globally trusted IDs and
 requires idle ownership. Commands do not silently submit an agent prompt. API v1
@@ -674,7 +677,7 @@ until explicit unload/reload. Shutdown runs bounded stop hooks and reaps normal
 owned process groups; cancellation cannot roll back already completed effects.
 
 The supported extension surface is intentionally bounded, not full Pi API
-compatibility. Durable entries/context hooks, typed tool/command results, registered
+compatibility. Durable entries/context hooks, typed command results, registered
 shortcuts and session-owned providers are documented below. Arbitrary custom
 rendering/forms/layouts, raw terminal interception/observation and host editor/session
 mutation APIs are removed. Code can deliberately escape normal process ownership;
@@ -779,18 +782,26 @@ removed. Registered command shortcuts and submitted-input hooks remain separate;
 none of these interfaces grants tool permission or full Pi API compatibility.
 
 
-### Supervised child agents
+### Host-managed child agents
 
 `/agents start TASK` starts host-managed read-only child work. `/agents start --inherit
 TASK` inherits the current host policy; it does not copy approval grants or bypass
 read-only. Inspect with `/agents list` or `/agents inspect ID`; use `steer ID TEXT`,
 `follow-up ID TEXT`, `cancel ID`, `wait ID` and `close ID` under `/agents`.
 Parents also receive the reserved unified `agent` tool; children cannot
-recursively delegate through their parent's supervision tools.
+recursively delegate through their parent's child tools.
 
-Children share the workspace, so coordinate conflicting writes. Context is copied
-at admission through a complete tool/result checkpoint. Model/options/tool execution
-mode are inherited. There is no fixed concurrent-child or retained-record count
+A safely completed child remains a retained conversation, not a live Agent. An
+explicit `steer`/`follow-up` recreates a fresh runtime with its saved history and
+revalidated current parent authority, runs only the new message, then closes the
+Agent and its workers. Coding's child loop/thread exits when idle and is acquired
+on demand; Claw keeps using its original gateway loop. Interrupted/failed effects
+are not automatically replayed; old records without continuation metadata fail
+clearly rather than inventing recoverability. See `docs/child-continuation.md`.
+
+Children share the workspace, so coordinate conflicting writes. Parent conversation
+history and system prompts are never copied; task knowledge is first-user material.
+The child captures its independently selected model/options and delegated tools/skills. There is no fixed concurrent-child or retained-record count
 limit, elapsed-time deadline, model-call cap or cumulative reported-token stop
 threshold. The main Agent/host manages lifecycle with cancel/wait/close. Usage
 counters remain reported usage, not exact billable accounting; actual model
@@ -801,7 +812,7 @@ silently truncated.
 
 Coding and Claw child factories explicitly enable the Agent's existing built-in
 compaction policy through `AgentConfig(compaction=selected.compaction(child_stream))`
-and provide `archive_compaction=store.archive_compaction` to the supervisor.
+and provide `archive_compaction=store.archive_compaction` to the child runtime.
 This does **not** change the generic Agent default: automatic compaction is off
 unless explicitly configured. The selected helper uses the executing adapter's
 real context/prompt/output capacity; unknown metadata, context capacity or output
@@ -810,7 +821,7 @@ A host requiring automatic compaction must reject that case or explicitly supply
 trusted capacity/reserve through native `CompactionConfig`.
 
 With the policy enabled, one long tool turn can compact repeatedly at safe paired
-boundaries. The supervisor waits for a durable full pre-compaction snapshot before
+boundaries. The child runtime waits for a durable full pre-compaction snapshot before
 the native summary request starts. Archive, summary or stream-cleanup failure does
 not commit a history cut, and cancellation settles owned writes/cleanup. The native
 summary's per-request timeout/capacity checks remain; there is no replacement child
@@ -1108,58 +1119,39 @@ helper test covers this; generated-output/vendored-package licence boundaries ar
 unchanged. Lock updates only declare the already-resolved dependency, not unrelated
 version upgrades.
 
-### Rich extension tool results
+### Host-owned SDK tools
 
-Trusted extension tools are no longer text-only. Existing string callbacks are
-unchanged. A callback may return a typed `AgentToolResult`, a content/structuredContent/
-details object, or use the validated builder:
+Coding sessions own an `xdog.agent.tools.ToolRegistry`; there is no mutable global
+registry or Coding-maintained list of default factory names. The same owner registry
+creates SDK defaults with `ToolContext(cwd=working_dir)` and assembles local/SDK
+injections, session inspection, child controls and installed Capability tools.
+MCP tools instead belong to an independent owner-held `McpRegistry`, bound through
+`Agent.set_mcp_registry`. Connection/schema/auth retirement uses `sync_mcp_tools`,
+not ordinary ToolRegistry sources. CapabilityAssembly still supplies live capabilities and effect metadata;
+publication goes through the session registry and preserves explicit tool selection.
+Empty selections stay empty, repeated identical publication is a no-op, and duplicate
+tool names fail before inventory replacement. Children have separate Coding-owned
+ToolRegistry instances for local proxies and capability tools, plus independent
+`McpRegistry.from_tools` bindings for delegated MCP proxies. MCP classification uses
+captured original parent tool identities, never a name prefix. Runtime ceilings
+narrow both inventories and later publication cannot restore excluded tools.
 
-```python
-return api.result([
-    {"type": "text", "text": "Result summary"},
-    {"type": "image", "data": png_base64, "mimeType": "image/png"},
-], structured=[False, 0, None], details={"count": 0, "enabled": False})
-```
+`agent.local_tools` is the local assembly surface; `state.tools`/`active_tools`
+remain the merged local-plus-MCP view for model context, permissions, UI and child
+grants. Cross-registry visible-name conflicts are rejected by Agent. Navigation
+rebinds the new session-owned MCP registry, while the original host lifecycle still
+owns connection and worker shutdown.
 
-Text and PNG/JPEG/WebP images remain typed through the one existing agent loop,
-model context, tool UI and transcript persistence. Structured JSON (including
-explicit null) remains canonical inspectable content, not hidden behind a summary.
-Extension metadata is separate: `extension_details_present` distinguishes omission
-from explicit null and `extension_details` retains the exact bounded JSON value.
-It is not converted to a model message or interpreted as host permissions. Typed
-AgentToolResult content/details is accepted too; structured data uses the builder
-or explicit structuredContent envelope.
-
-Rich tool data is snapshotted and independently checked at worker and host boundaries.
-Unknown content kinds/extra fields, invalid image base64/MIME, nonfinite/non-JSON
-values, coercions and oversized frames fail rather than silently discard data.
-Limits: 64 content blocks, four images, 2 MiB decoded per image, 1 MiB per rich text
-block, 256 KiB each for structured data/details, and 3 MiB for the encoded rich
-result envelope. These are explicit API/frame limits, not OS-enforced sandboxing.
-No file/URI is implicitly opened and no image is automatically saved or attached
-as a new user prompt. Raise an exception for tool errors; rich isError/audio/resource
-payloads are not silently guessed in this API version. Commands remain bounded text.
-
-Coding approvals, Claw extension_allow_tools, read-only and child inherited permission
-restrictions still gate execution. Text-only post-hooks do not replace or drop a
-result containing images. Legacy text callbacks/post-hooks retain their behavior.
-Both UIs display tool images without printing base64. Claw now forwards final tool
-image parts (previously missing from its display events), with a bounded live image
-budget. Larger generic tool images are visibly marked as omitted from the live
-preview; original data stays in canonical model/transcript history, not in an
-oversized socket line. The new rich-extension envelope fits that transport budget.
-
-Independent real workers, denied/allowed live app paths, typed persistence, inherited
-child output, malformed/unsupported results, large-preview notices and both private-
-tmux image/JSON inspectors are verified. These typed tool results do not grant
-extension editor/session mutations, custom rendering or terminal interception.
-Audio/resource/error-image interoperability, remaining MCP/credential and native-
-platform gaps remain separate from the retained tool-result contract.
+Extension workers retain hooks, providers, commands and UI queries/dialogs, but have
+no tool registration, aliases, ownership map or parent/child tool executor rebuilding.
+Rich `AgentToolResult` content remains supported for actual SDK/Capability/MCP tools;
+Coding's original approval, read-only, identity and child-delegation gates still apply.
+Text-only post-hooks cannot replace non-text results or turn a denied call into success.
 
 ### Rich extension command artifacts
 
 Extension command callbacks now accept the same typed text/image/structured JSON/
-details result builder as tool callbacks. Legacy string commands remain strings.
+details result builder. Legacy string commands remain strings.
 The SDK `runtime.command()` returns either str or a frozen `ExtensionCommandResult`
 with extension/command identity, a validated result snapshot and safe summary.
 For example, a command can return:
@@ -1696,7 +1688,7 @@ claims remote revocation. Save/erase cancellation revokes storage admission and 
 for the actual writer to settle; if an operation committed before cancellation,
 inspect local state rather than automatically retrying it.
 
-SDK callers can opt in with `McpManager(..., credential_dir=...)` and prepare/confirm
+SDK callers can opt in with `McpRegistry(..., credential_dir=...)` and prepare/confirm
 `credentials_save`, `credentials_restore`, or `credentials_forget` through the
 existing owned `manage_auth` API. A manager without a credential directory remains
 memory-only. Actual client restart/consent and private-tmux tests cover the file
@@ -1708,7 +1700,7 @@ Set `"mcp_credential_backend": "secret-service"` in your global
 `~/.config/xdog/coding/settings.json`. Project and session settings cannot override
 this global storage choice. The default remains `"file"`.
 
-SDK hosts select `McpManager(..., credential_dir=..., credential_backend="secret-service")`.
+SDK hosts select `McpRegistry(..., credential_dir=..., credential_backend="secret-service")`.
 The directory is used only to derive a stable namespace; this backend creates no
 local token files. Moving that directory changes which saved credentials are found.
 
@@ -2084,7 +2076,7 @@ This native view has no editor, reorder/remove/return control, recovery-copy but
 or permission-confirmation action. Paste cannot submit or adopt a draft.
 
 The ordinary main-Agent `agent` tool retains `action="queue"` with a typed
-JSON `text` request. SDK `ChildSupervisor.control("queue", ...)` also remains.
+JSON `text` request. Host `children.runtime.control("queue", ...)` also remains.
 Their edit/remove/move/text-return and explicit stopped recovery operations use the
 real owner loop and existing identity, revision, selected-input, image-byte and
 write-before-publication safeguards. They are not native UI actions and do not
@@ -2169,7 +2161,7 @@ but uses a rough image allowance alongside the conservative text guard. This is
 not exact provider token accounting or a promise that any image fits any model.
 Final actual-context model validation and all existing permission/budget rules apply.
 
-SDK callers can pass `images=tuple[ImageContent, ...]` to `ChildSupervisor.start`
+Host integrations can pass `images=tuple[ImageContent, ...]` to `children.runtime.start`
 or its steering/follow-up `control` methods. The application child APIs propagate
 these same typed inputs. No file URI, remote fetch or implicit text fallback is
 introduced. Claw requires the gateway's exact `child_images:1` capability and sends
@@ -2199,7 +2191,7 @@ existing limitations.
 ### Typed stopped-child image recovery through Agent/SDK
 
 `recover_images` remains an explicit SDK/main-Agent queue operation with exact
-input `id` and queue `revision`. `ChildSupervisor.control` returns the verified
+input `id` and queue `revision`. `children.runtime.control` returns the verified
 non-destructive `image_recovery` payload and `queue.image_receipt`; the ordinary
 `agent` wrapper returns typed images plus receipt/count metadata. The
 text-only `recover` action refuses image-bearing inputs rather than dropping bytes.
@@ -2281,7 +2273,7 @@ The main Agent can use its ordinary permissioned `agent` tool with
 Preparation returns typed image content and bounded token/receipt metadata; it
 never dequeues and does not embed raw base64 into model-visible prose.
 
-The tool supplies its private nonserialized supervisor owner; models cannot pick
+The tool supplies its private nonserialized child-runtime owner; models cannot pick
 one. Cancellation/abort/close revoke that owner. The existing token expiry,
 selection/revision/receipt checks and retained-byte limits remain. Durable removal
 and return-backup writes keep their existing owned settlement/no-automatic-replay
@@ -2746,3 +2738,22 @@ stopping Goal automation does not cancel unrelated observers or accepted work.
 See `docs/goal-simple-design.md` and its requirement/verification record. Earlier
 capability-boundary and Goal reviewer lifecycle evidence describes its old frozen
 implementation, not the current Goal contract.
+
+## Application-scoped installed capabilities
+
+Coding now discovers `application` providers in addition to session providers. A
+top-level Coding controller opens application bindings on its existing owner loop
+and keeps them across `/new`, session switches and branch navigation. They close
+with that application controller, not an individual conversation/turn. Independent
+SDK controller instances remain independent applications; no module-global runtime
+or second model loop is introduced. Tool name collisions fail closed; explicit
+active-tool selections, readonly/approval policy and child grants still apply.
+
+Installing `xdog-eyes` makes its application-scoped tool available by default; the
+package is not installed automatically and no Eyes-specific adapter is used. Eyes
+only ensures its independent daemon is running. Every tool call supplies a stable
+caller-chosen owner, e.g. `eyes(action="list", owner="my-watches")`. Owner is persisted with the accepted JSON registration,
+not inferred from a Coding session or branch and not used to restrict destinations.
+The normal default Eyes directory is `~/.local/share/xdog/eyes` (or the XDG data
+home override). Goal uses the same owner-only CLI/raw-event controls. Enqueue destinations need
+only an endpoint and existing session ID, not the target working directory.

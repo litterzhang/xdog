@@ -12,6 +12,8 @@ from xdog.skills.goal.runtime import GoalRuntime
 from xdog.skills.goal.service import GoalService
 from xdog.skills.goal.store import GoalStore
 
+from packages.skills.tests.goal.legacy import wait_goal
+
 USER = OperationContext(True)
 
 
@@ -71,9 +73,11 @@ async def test_automatic_input_cannot_launder_protected_wait_through_task_wait(t
     service = await service_at(tmp_path)
     try:
         await service.create('One', 'Original user outcome', context=USER)
-        await service.change('wait', until=until)
+        await wait_goal(service, until=until,
+            **({'question': 'Which delivery target?', 'impact': 'Final target unknown',
+                'resume_when': 'User selects target'} if until == 'user' else {}))
         with pytest.raises(ValueError, match='user|wait|resume'):
-            await service.change('wait', until='tasks')
+            await wait_goal(service, until='tasks')
         goal = await service.current()
         assert goal.status == 'waiting' and goal.wait_for == until
     finally:
@@ -124,7 +128,8 @@ async def test_endpoint_unavailable_closes_existing_owned_observation(tmp_path):
     runtime = await GoalRuntime.open(host)
     closed = asyncio.Event()
 
-    async def aclose():
+    async def aclose(*, suspend=True):
+        assert suspend is False
         closed.set()
 
     runtime.service.on_change = lambda: None
@@ -134,7 +139,7 @@ async def test_endpoint_unavailable_closes_existing_owned_observation(tmp_path):
         runtime._observer_key = ('old', 'target')
         host.target = None
         await runtime._refresh()
-        assert closed.is_set(), 'Unavailable original endpoint must stop the existing owned registration'
+        assert closed.is_set(), 'Unavailable endpoint must detach without suspending daemon collection'
     finally:
         await runtime.aclose()
 
@@ -150,7 +155,7 @@ async def test_unavailable_start_can_be_retried_when_same_owner_becomes_availabl
             calls.append(args)
             return {'status': 'unavailable' if len(calls) == 1 else 'watching'}
 
-        async def aclose(self):
+        async def aclose(self, *, suspend=True):
             pass
 
     monkeypatch.setattr(automation, 'TaskObserver', Observer)
@@ -276,7 +281,9 @@ async def test_automatic_completion_cannot_release_protected_wait(tmp_path, unti
     service = await service_at(tmp_path)
     try:
         await service.create('One', 'Inspect before any completion', context=USER)
-        await service.change('wait', until=until)
+        await wait_goal(service, until=until,
+            **({'question': 'Which delivery target?', 'impact': 'Final target unknown',
+                'resume_when': 'User selects target'} if until == 'user' else {}))
         with pytest.raises(ValueError, match='user operation'):
             await service.change('complete', summary='Automatic attempt to skip protected wait')
         assert (await service.current()).wait_for == until
@@ -323,7 +330,7 @@ async def test_retired_invocation_cannot_commit_after_waiting_for_database_admis
 
     async def change():
         with service.invocation(lambda: valid):
-            await service.change('wait', until='tasks')
+            await wait_goal(service, until='tasks')
 
     pending = None
     try:

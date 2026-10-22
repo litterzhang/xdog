@@ -94,7 +94,7 @@ class ClawConfig:
     model: str = ""
     base_url: str = ""
     api_key: str = ""
-    # None preserves the legacy tool set (without opt-in image generation).
+    # None uses host defaults (without opt-in image generation/submit_result).
     # An explicitly empty tuple disables all tools.
     enabled_tools: tuple[str, ...] | None = None
     image_model: str = ""
@@ -102,14 +102,13 @@ class ClawConfig:
     mcp_servers: dict[str, Any] = field(default_factory=dict)
     mcp_credential_backend: str = 'file'
     extensions: tuple[str, ...] = ()
-    extension_allow_tools: tuple[str, ...] = ()
     extension_dir: str = ""
     extension_settings: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     # Paths (XDG defaults)
     data_dir: str = ""
     socket_path: str = ""
-    acp_socket_path: str = ""  # explicit opt-in private Unix ACP endpoint
+    acp_socket_path: str = ""  # override for the default private Unix ACP endpoint
     pid_file: str = ""
 
     # Gateway settings (flattened from gateway: section)
@@ -130,9 +129,6 @@ class ClawConfig:
         """Fill in XDG defaults for empty path fields."""
         from xdog.agent.extensions.runtime import names
         object.__setattr__(self, "extensions", names(self.extensions))
-        object.__setattr__(self, "extension_allow_tools", names(self.extension_allow_tools))
-        if not set(self.extension_allow_tools) <= set(self.extensions):
-            raise ToolConfigError("extension_allow_tools must be explicitly enabled extension IDs")
         from xdog.agent.child_config import ChildPresets
         try:
             ChildPresets(self.child_presets)

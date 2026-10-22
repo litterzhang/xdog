@@ -3017,8 +3017,6 @@ class InteractiveMode:
         if event.get('type') == 'argument_completion':
             event = thaw_event(event)  # Own mutable row copies before strict feed validation/presentation.
             if event.get('session_token') == id(self._session) and event['request'].owner == self._mcp_context_key():
-                if not self._worker_active and self._command is None and not self._session.agent.is_streaming:
-                    self._session.extensions.sync_tools(self._session.agent)
                 try:
                     self._extension_snapshot = validate_snapshot(event['snapshot'])
                 except (ValueError, TypeError):

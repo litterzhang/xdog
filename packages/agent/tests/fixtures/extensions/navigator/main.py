@@ -13,7 +13,6 @@ def setup(api):
             assert usage["session_id"] == inspected["session_id"]
         return f"TOOL-NAVIGATION-{snapshot}-{queued}"
 
-    api.tool("illegal", "Tools cannot request command session actions", {"type": "object"}, illegal)
 
     async def catalogs(args, context):
         import json

@@ -553,3 +553,20 @@ def test_every_package_links_to_its_pypi_project(client: FlaskClient) -> None:
         body = client.get(f"/packages/{pkg.name}").get_data(as_text=True)
         assert f"https://pypi.org/project/xdog-{pkg.name}/" in body, pkg.name
         assert f"xdog-{pkg.name}" in body, pkg.name
+
+
+def test_claw_docs_describe_current_capability_and_observation_boundary(client: FlaskClient) -> None:
+    reference = client.get('/packages/claw/reference').get_data(as_text=True)
+    overview = client.get('/packages/claw').get_data(as_text=True)
+    design = client.get('/packages/claw/design').get_data(as_text=True)
+    features = client.get('/packages/claw/features').get_data(as_text=True)
+    assert 'Default private Unix ACP ingress' in reference
+    assert 'independent user-local daemon' in reference
+    assert 'full bodies are loaded' in reference and 'explicit activation' in reference
+    assert 'currently bound channel' in overview and 'no implicit chat reply recipient' in overview
+    assert 'CapabilityAssembly' in design and 'Flow/Eyes bodies are activated on demand' in design
+    for page in (reference, overview, design, features):
+        assert 'gateway-managed' not in page
+        assert 'creator\u2019s reply destination is bound' not in page
+        assert 'independent completion review' not in page
+        assert 'separate notification cancellation' not in page

@@ -58,4 +58,3 @@ def setup(api):
     api.command('control', 'Fixture-only owned background controller', control)
     async def tool(params, context):
         return await command(params.get('mode', ''), context)
-    api.tool('view', 'Owned live overlay, not tool approval', {'type': 'object'}, tool)

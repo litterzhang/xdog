@@ -60,16 +60,12 @@ def test_invalid_or_unsupported_rich_results_are_not_coerced_or_silently_dropped
         normalize_result(value)
 
 
-def test_host_revalidates_rich_result_version_image_limits_and_typed_metadata():
-    from xdog.agent.extensions.tool_result import host_result, worker_result
-    wire = worker_result(ExtensionAPI({}).result([{'type': 'image', 'data': PNG, 'mimeType': 'image/png'}],
-                                               structured=None, details=False))
-    assert wire['xdog_rich_result'] == 1
-    validated = host_result(wire)
-    assert validated['xdog_result_details'] is False and 'structuredContent' in validated
-    for bad in ({**wire, 'xdog_rich_result': True}, {**wire, 'xdog_rich_result': 2},
-                {**wire, 'content': [{'type': 'image', 'data': 'bad', 'mimeType': 'image/png'}]},
-                {**wire, 'xdog_result_details': float('nan')}):
-        with pytest.raises((ValueError, RuntimeError)):
-            host_result(bad)
-    assert worker_result('legacy') == {'content': [{'type': 'text', 'text': 'legacy'}]}
+def test_tool_wire_codecs_are_absent_but_command_rich_data_is_retained():
+    from xdog.agent.extensions import tool_result
+    assert not hasattr(tool_result, 'host_result')
+    assert not hasattr(tool_result, 'worker_result')
+    result = ExtensionAPI({}).result([{'type': 'image', 'data': PNG, 'mimeType': 'image/png'}],
+                                    structured=None, details=False)
+    from xdog.agent.extensions.command_result import normalize_command_result
+    validated = normalize_command_result(result)
+    assert validated['details'] is False and validated['structuredContent'] is None

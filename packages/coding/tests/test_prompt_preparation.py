@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import threading
 
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillManager, packaged_skills, render_skill_body
 from xdog.ai.types import AssistantMessage, Model
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core import resource_loader, slash_commands
@@ -24,7 +24,7 @@ async def test_real_sdk_model_receives_supported_instructions_and_single_skill_i
     skill = shared / 'sample'
     skill.mkdir(parents=True)
     (skill / 'SKILL.md').write_text('---\nname: sample\ndescription: UNIQUE_SKILL_INDEX\n---\nSKILL_BODY')
-    manager = SkillManager(shared_dir=shared, packaged={})
+    manager = SkillManager(shared_dir=shared, packaged={"goal": packaged_skills()["goal"]})
     monkeypatch.setattr(slash_commands, 'skill_manager', lambda: manager)
     monkeypatch.setenv('CODING_DIR', str(tmp_path / 'data'))
     provider = _Provider(Model(id='offline/model', context_window=100_000))
@@ -40,6 +40,10 @@ async def test_real_sdk_model_receives_supported_instructions_and_single_skill_i
         await asyncio.to_thread(session.activate_skill, 'sample')
         await session.send_message('show project instructions')
         prompt = contexts[-1].system_prompt
+        goal = manager.load_skill('goal')
+        assert goal is not None and render_skill_body(goal) not in prompt
+        assert 'goal' not in session.agent.active_skills
+        assert '- `goal`' in prompt
         assert 'OTHER_HARNESS_CONFIG_MARKER' not in prompt
         for marker in ('PROJECT_AGENT_MARKER', 'PROJECT_UPPER_MARKER', 'PROJECT_LOWER_MARKER',
                        'UNIQUE_SKILL_INDEX', 'SKILL_BODY'):
@@ -82,7 +86,7 @@ async def test_project_preparation_uses_owned_worker_not_model_owner(coding_sess
 
 
 async def test_builtin_skill_activation_prepares_off_owner_loop(coding_session, tmp_path, monkeypatch):
-    manager = SkillManager(shared_dir=tmp_path / 'skills', packaged={})
+    manager = SkillManager(shared_dir=tmp_path / 'skills', packaged={"goal": packaged_skills()["goal"]})
     skill = tmp_path / 'skills' / 'sample'
     skill.mkdir(parents=True)
     (skill / 'SKILL.md').write_text('---\nname: sample\ndescription: example\n---\nBODY')

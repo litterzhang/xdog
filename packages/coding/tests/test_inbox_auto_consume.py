@@ -54,6 +54,7 @@ async def test_sdk_only_transient_owner_consumes_pending_with_its_human_message(
     # This transient-owner contract is the package-absent path.
     monkeypatch.setattr("xdog.agent.capabilities.runtime.discover", lambda scope: ())
     coding_session.capabilities.providers = ()
+    coding_session.application_capabilities.providers = ()
     store = seed(coding_session, 2)
     calls = []
     coding_session.agent.set_stream_fn(lambda model, context, options: calls.append(tuple(context.messages))

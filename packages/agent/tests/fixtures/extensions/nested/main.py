@@ -43,5 +43,3 @@ def setup(api):
 
     async def tool(params, context):
         return await command(params.get('mode', ''), context)
-
-    api.tool('view', 'Nested UI data, never tool approval', {'type': 'object'}, tool)

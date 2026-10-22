@@ -182,13 +182,25 @@ class IngressBackend:
                 self._refs.pop(key, None)
                 await remote.close()
 
+    async def _workspace(self, params: dict[str, Any]) -> tuple[str, Path]:
+        """Resolve existing durable session identity without creating/loading an Agent."""
+        session_id = label(params.get('session_id'))
+        cwd = None
+        if 'cwd' in params:
+            cwd = Path(label(params['cwd'], maximum=4096))
+            if not cwd.is_absolute():
+                raise ValueError('Inbox workspace must be absolute')
+        working, _branch = await self._disk(self.store.identity, session_id, cwd)
+        return session_id, working
+
     async def extension(self, peer: Peer, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if peer.id in self._disconnected:
             raise invalid('ACP peer is closed')
         try:
             finite_json(params)
             if method == 'xdog/enqueue':
-                message = message_from_data(params)
+                _session_id, cwd = await self._workspace(params)
+                message = message_from_data({**params, 'cwd': str(cwd)})
                 receipt = await self._disk(self.store.enqueue, message)
                 return {'session_id': message.session_id, 'message_id': message.message_id,
                         'status': 'duplicate' if receipt.duplicate else 'queued',
@@ -196,9 +208,7 @@ class IngressBackend:
             if method == 'xdog/inbox_status':
                 if not isinstance(params, dict) or set(params) - {'session_id', 'cwd', 'message_id', 'cursor'}:
                     raise ValueError('Invalid inbox status fields')
-                session_id, cwd = label(params.get('session_id')), Path(label(params.get('cwd'), maximum=4096))
-                if not cwd.is_absolute():
-                    raise ValueError('Inbox status workspace must be absolute')
+                session_id, cwd = await self._workspace(params)
                 selected = label(params['message_id']) if 'message_id' in params else None
                 cursor = params.get('cursor', 0)
                 if (type(cursor) is not int or not 0 <= cursor <= 4096

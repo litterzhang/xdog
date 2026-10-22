@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 from xdog.agent import Agent, AgentConfig
+from xdog.agent.skills import SkillManager
 from xdog.ai.types import AssistantMessage, DoneEvent, TextContent, ToolCall
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core.agent_session import AgentSession
@@ -30,7 +31,9 @@ def create(tmp_path, mode="ask"):
         future.set_result(message)
         return EventStream.from_async_generator(generate(), result_future=future)
     store = SessionManager(tmp_path / "sessions")
-    session = AgentSession(agent=Agent(stream, config=AgentConfig(model="test/model"),
+    session = AgentSession(agent=Agent(stream,
+                                       skills=SkillManager(tmp_path / "skills"),
+                                       config=AgentConfig(model="test/model"),
                                        tools=get_default_tools(tmp_path), tool_ctx={"fs_workspace": str(tmp_path)}),
                            session_data=store.create_session(model="test/model", working_dir=tmp_path),
                            session_manager=store, settings=SettingsManager(global_path=tmp_path / "settings.json"),
@@ -169,12 +172,9 @@ async def test_hard_scope_denies_unknown_external_and_child_tools_before_extensi
     calls = []
     async def event(*args):
         calls.append(args)
-    async def sync():
-        pass
     try:
         session.access_control(True)
         session.extensions = SimpleNamespace(enabled=True, event=event)
-        session._sync_extension_tools = sync
         ctx = BeforeToolCallContext(assistant_message=AssistantMessage(), args={},
             tool_call=ToolCall(id='external', name=name, arguments={}), context=AgentContext())
         result = await session._before_tool_call(ctx)
@@ -194,12 +194,9 @@ async def test_read_rewritten_to_write_by_extension_is_rechecked(tmp_path):
         pass
     async def pre(name, args):
         return {'action': 'write', 'path': 'target', 'content': 'unapproved'}
-    async def sync():
-        pass
     try:
         session.access_control(True)
         session.extensions = SimpleNamespace(enabled=True, event=event, pre=pre)
-        session._sync_extension_tools = sync
         args = {'action': 'read', 'path': 'target'}
         ctx = BeforeToolCallContext(assistant_message=AssistantMessage(), args=args,
             tool_call=ToolCall(id='rewritten', name='filesystem', arguments=args), context=AgentContext())

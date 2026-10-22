@@ -5,14 +5,14 @@ from pathlib import Path
 
 import httpx
 import pytest
-from xdog.agent.mcp import McpError, McpManager
+from xdog.agent.mcp import McpError, McpRegistry
 from xdog.agent.mcp.http import _sse_messages, _SseState
 
 ResumePeer = runpy.run_path(str(Path(__file__).parent / "fixtures" / "mcp_resume_peer.py"))["ResumePeer"]
 
 
 def manager(peer, tmp_path, **options):
-    return McpManager({"http": {"transport": "http", "url": peer.url, "timeout": 2, **options}}, tmp_path)
+    return McpRegistry({"http": {"transport": "http", "url": peer.url, "timeout": 2, **options}}, tmp_path)
 
 
 def calls(peer):

@@ -36,7 +36,6 @@ def setup(api):
         return messages
 
     api.command('inspect', 'Read invocation-owned model/context without UI or model work', command)
-    api.tool('inspect', 'Read invocation-owned model/context, not tool permission', {'type': 'object'}, tool)
     api.on('session_start', event)
     api.on('turn_start', event)
     api.before_tool(pre)

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "xdog-flow"
-version = "2.4.7"
+version = "2.4.8"
 requires-python = ">=3.12"
 classifiers = [
     "Operating System :: POSIX :: Linux",
@@ -21,9 +21,9 @@ readme = "README.md"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE", "LICENSE-EXCEPTION.md"]
 dependencies = [
-    "xdog-ai>=2.4.7",
-    "xdog-agent>=2.4.7",
-    "xdog-tui>=2.4.7",
+    "xdog-ai>=2.4.8",
+    "xdog-agent>=2.4.8",
+    "xdog-tui>=2.4.8",
     "pydot",
     "jsonpath-ng",
     "fastjsonschema",
@@ -34,6 +34,9 @@ Homepage = "https://xdog.942295.xyz"
 Repository = "https://github.com/litterzhang/xdog"
 Documentation = "https://xdog.942295.xyz"
 Issues = "https://github.com/litterzhang/xdog/issues"
+
+[project.entry-points."xdog.capabilities"]
+flow = "xdog.flow.capability:provider"
 
 [project.scripts]
 xdog-flow = "xdog.flow.cli:main"

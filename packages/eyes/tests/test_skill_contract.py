@@ -27,11 +27,45 @@ def test_shipped_definition_does_not_request_message_approval(tmp_path,index):
     assert 'tool permissions' in instruction
 
 
-def test_packaged_skill_describes_router_handlers_and_automatic_bounded_batches():
+def test_packaged_skill_teaches_generic_tool_and_delivery_contract():
     body = skill()
     assert 'EventRouter' in body and 'EventHandler' in body
-    assert '/inbox approve' not in body and '/inbox cancel' in body and '/inbox retry' in body
-    assert 'max_messages_per_turn' in body and '1..128' in body and '10' in body
+    for instruction in ('definition_path="/project/eyes.json"',
+                        'action="status"', 'action="cancel"', 'action="pause"', 'action="resume"'):
+        assert instruction in body
+    for field in ('owner', 'definition_path'):
+        assert field in body
+    for contract in ('relative', 'instruction', 'untrusted', 'unavailable',
+                     'not task completion', 'before ACK', 'does not start observation'):
+        assert contract in " ".join(body.split())
+    assert 'Do not pass a tool `workspace` or CLI `--workspace`' in body
     assert 'one-turn fallback' not in body and 'grants at most one automatic turn' not in body
-    assert 'message delivery does not require approval' in body.lower()
-    assert 'untrusted' in body and 'unavailable' in body and 'does not\nstart observation' in body
+
+
+def test_packaged_skill_has_no_harness_specific_policy_or_setup():
+    body = skill()
+    assert not re.search(r'\b(claw|coding|goal|flow)\b', body, re.IGNORECASE)
+    for host_detail in ('group:', 'max_messages_per_turn', 'allow-all', '/inbox',
+                        'acp_socket_path', 'data_dir/acp/agent.sock', 'scheduled_tasks.json'):
+        assert host_detail not in body
+
+
+def test_tool_schema_itself_explains_the_workflow_and_exact_action_fields():
+    from xdog.eyes.tool import EyesTool
+
+    schema = EyesTool.parameters
+    assert schema['required'] == ['action', 'owner'] and schema['additionalProperties'] is False
+    assert 'workspace' not in schema['properties']
+    action = schema['properties']['action']
+    assert set(action['enum']) == {'create', 'list', 'status', 'pause', 'resume', 'cancel'}
+    assert all(name in action['description'] for name in action['enum'])
+    for detail in ('definition_path', 'observer_id', 'Omit', 'null', 'accepted'):
+        assert detail in action['description']
+    path = schema['properties']['definition_path']['description']
+    for detail in ('ALREADY SAVED', 'sources', 'detectors', 'handlers', 'routes', 'absolute', 'relative', 'snapshot'):
+        assert detail in path
+    for detail in ('enqueue needs no cwd', 'receiver resolves', 'assertion', 'prompt requires', 'load_session'):
+        assert detail in path
+    for detail in ('eyes skill', 'owner', 'JSON', 'destinations', 'permissions'):
+        assert detail in EyesTool.description
+    assert not re.search(r'\b(claw|coding|goal|flow)\b', json.dumps(schema) + EyesTool.description, re.IGNORECASE)

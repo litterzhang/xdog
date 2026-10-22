@@ -5193,7 +5193,7 @@ class ChatApp:
 
                          "tool_inventory": 1,
                          "skill_controls": 1, "session_compaction": 1, "saved_source": 1, "saved_timeline": 1,
-                         "acp_updates": 1, "input_receipts": 1}
+                         "acp_updates": 0, "input_receipts": 1}
                 writer.write((json.dumps(hello) + "\n").encode("utf-8"))
                 await asyncio.wait_for(writer.drain(), timeout=self._TRANSPORT_TIMEOUT)
                 await asyncio.wait_for(ready.wait(), timeout=self._TRANSPORT_TIMEOUT)

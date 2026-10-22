@@ -109,7 +109,7 @@ def answer(query: dict[str, Any], value: Any) -> dict[str, Any] | None:
 
 # Read-only menu authority is independent of session/editor mutation. Render,
 # provider, setup, terminal interception and silent inherited validation are absent.
-METHODS = frozenset({'xdog/command', 'tools/call', 'xdog/event', 'xdog/pre', 'xdog/post',
+METHODS = frozenset({'xdog/command', 'xdog/event', 'xdog/pre', 'xdog/post',
                      'xdog/input', 'xdog/context_finish'})
 
 

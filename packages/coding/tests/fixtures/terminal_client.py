@@ -140,55 +140,12 @@ class FixtureProvider:
                 yield TextDoneEvent(text=answer)
                 yield DoneEvent(message=AssistantMessage(content=(TextContent(text=answer),)))
                 return
-            if "live-dynamic-tool" in text and last.role == "user":
-                external = next(tool for tool in context.tools if tool.name.startswith("ext_toolmock_target_"))
-                value = 7 if external.parameters["properties"]["value"]["type"] == "integer" else "first"
-                call = ToolCall(id="dynamic", name=external.name, arguments={"value": value})
-                yield DoneEvent(stop_reason="toolUse", message=AssistantMessage(content=(call,), stop_reason="toolUse"))
-                return
-            if "callback-inspection" in text and last.role == "user":
-                external = next(tool for tool in context.tools if tool.name.startswith("ext_inspector_"))
-                call = ToolCall(id="callback-inspection", name=external.name, arguments={})
-                yield DoneEvent(stop_reason="toolUse", message=AssistantMessage(model=_model, content=(call,),
-                    usage=Usage(input=11, output=2), stop_reason="toolUse"))
-                return
             if "INPUT-HOOK-" in text and last.role == "user":
                 answer = "INPUT-FILTERED-BY-FIXTURE"
                 yield TextStartEvent()
                 yield TextDeltaEvent(delta=answer)
                 yield TextDoneEvent(text=answer)
                 yield DoneEvent(message=AssistantMessage(content=(TextContent(text=answer),)))
-                return
-            if "child-nested" in text and last.role == "user":
-                external = next(tool for tool in context.tools if tool.name.startswith("ext_nested_"))
-                call = ToolCall(id="child-nested", name=external.name, arguments={"mode": "full"})
-                yield DoneEvent(stop_reason="toolUse", message=AssistantMessage(content=(call,), stop_reason="toolUse"))
-                return
-            if "child-custom" in text and last.role == "user":
-                external = next(tool for tool in context.tools if tool.name.startswith("ext_custom_"))
-                call = ToolCall(id="child-custom", name=external.name,
-                                arguments={"mode": "rich" if "child-custom-rich" in text else ""})
-                yield DoneEvent(stop_reason="toolUse", message=AssistantMessage(content=(call,), stop_reason="toolUse"))
-                return
-            if "child-dialog" in text and last.role == "user":
-                external = next(tool for tool in context.tools if tool.name.startswith("ext_dialogue_"))
-                call = ToolCall(id="child-dialog", name=external.name, arguments={})
-                yield DoneEvent(stop_reason="toolUse", message=AssistantMessage(content=(call,), stop_reason="toolUse"))
-                return
-            if "extension-rich" in text and last.role == "user":
-                external = next(tool for tool in context.tools if tool.name.startswith("ext_rich_"))
-                arguments = {"value": "error"} if os.environ.get("XDOG_FIXTURE_RICH_ERROR") else {}
-                call = ToolCall(id="extension-rich", name=external.name, arguments=arguments)
-                yield ToolCallStartEvent(id=call.id, name=call.name)
-                yield ToolCallDoneEvent(id=call.id, name=call.name, arguments=call.arguments)
-                yield DoneEvent(stop_reason="toolUse", message=AssistantMessage(content=(call,), stop_reason="toolUse"))
-                return
-            if "extension-call" in text and last.role == "user":
-                external = next(tool for tool in context.tools if tool.name.startswith("ext_sample_"))
-                call = ToolCall(id="extension-call", name=external.name, arguments={"value": "fixture"})
-                yield ToolCallStartEvent(id=call.id, name=call.name)
-                yield ToolCallDoneEvent(id=call.id, name=call.name, arguments=call.arguments)
-                yield DoneEvent(stop_reason="toolUse", message=AssistantMessage(content=(call,), stop_reason="toolUse"))
                 return
             if "plan-build" in text and last.role == "user":
                 call = ToolCall(id="plan-build", name="update_plan", arguments={"expected_revision": 1,
