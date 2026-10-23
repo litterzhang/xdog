@@ -2,115 +2,167 @@
 title: Design
 ---
 
-Claw coordinates a persistent group main Agent, its task Agents and durable memory
-through one gateway and the existing Agent runtime—not another task/Agent engine.
+Claw coordinates a persistent group main Agent, host-owned children and durable
+memory through one gateway and the existing Agent runtime, not another task engine.
 
 ## Application boundary and shared runtime
 
-Claw owns application lifecycle, configuration, channels and group policy. The
-reusable SDK is `xdog.agent`, including its MCP client, extension API and child
-supervision. Claw adapts those facilities internally; `Orchestrator`, `GroupRuntime`
-and `AgentSession` are implementation wiring, not a separately supported public
-Claw embedding API. The root `xdog.claw` package does not re-export runtime classes.
-Coding's SDK remains distinct.
+Claw owns application lifecycle, configuration, channels and group tool policy.
+`Orchestrator`, `GroupRuntime` and `AgentSession` are internal wiring, not a public
+Python embedding SDK; the root `xdog.claw` package re-exports no runtime classes.
+Coding's session SDK is separate.
 
-The product entry points are the `xdog-claw` CLI, configuration and channels. The
-native gateway socket serves the local terminal client; default private ACP serves
-explicit group-addressed inputs. These necessary communication paths retain
-capability/ownership checks and do not create a general-purpose remote control
-plane or imply a public Python runtime embedding contract.
+Reusable functionality belongs to `xdog.agent`: `Agent`, its host-owned `ToolRegistry`,
+`xdog.agent.mcp.McpRegistry`, extension APIs and inert child contracts such as
+`ChildClient`/`ChildHandle`. Agent owns no child supervisor, child execution loop,
+store or extension-worker runtime. Claw's `core/runtime/child_agents.py` and
+`ClawChildRuntime` own those resources and borrow the original gateway loop.
 
-## One gateway and one route per group
+The native Unix socket and default private ACP endpoint are necessary local
+communication paths, not a hosted control plane, arbitrary remote embedding API or
+permission bypass. Negotiated capabilities and original owner/attempt/context
+identities fence native controls and later callback output.
 
-The long-lived gateway (`core/runtime/gateway.py`) exposes a private Unix socket
-(`0600`) for `message`, `reset`, `status`, `ping` and negotiated native controls.
-The `Orchestrator.route_message` path serves TUI, channels, canonical ACP inputs
-and Goal system input through the same durable input service and group execution owner. Each
-`GroupRuntime` owns its workspace, transcript store, memory, Goals, skills, tools
-and one cached active AgentSession.
+## One group, one route, separate durable facts
 
-A session is a context/history persistence unit, not a second main-Agent identity.
-Idle `/new` or `/reset` can rotate context; Goals remain with the group, and active
-children must first settle. Unfinished stored Goals do not suppress automatic
-daily/idle resets.
-Historical `resume`, `fork`, `branch` and `goto` controls and target-session staging
-are removed and explicitly rejected. Saved transcripts/checkpoints/legacy branch
-files remain readable/exportable, never executable routes. Restart restores only
-the committed current context and does not replay interrupted model/tool effects.
-Coding's independent branching features are unchanged.
+Native TUI, Weixin and ACP inputs enter the application-owned input service through
+`Orchestrator.route_message`. Immutable envelopes freeze input identity, attachments,
+host-only context and original reply bindings before application admission. The
+Core Inbox is `<data_dir>/inputs/inbox.sqlite3`, not an ACP-owned receipt database
+or UI queue. One `GroupController` fences the admitted input/attempt/session until
+settlement; `claimed` is not `running`, and preparation failure is not execution
+failure. Busy ordinary input waits rather than implicitly steering the active Agent.
 
-## Group admission is not a child quota
+Each group runtime owns workspace, tools, memory, prompt construction, transcript
+storage, one cached active AgentSession and optional capability bindings. Goal
+business data belongs to the skills package. JSONL transcripts and `sessions.json`
+store context/history, not Goal ownership, event destinations or execution authority.
 
-Background group turns use the gateway's configured `max_concurrent_agents`
-admission semaphore (default 3) and per-group locks. User input bypasses that
-background semaphore so autonomous work does not hold human input behind it.
-Ordinary messages are committed to one durable group Inbox with bounded pending
-admission; busy input never implicitly steers the current turn. Explicit identified
-steer/follow-up input belongs to `xdog.agent`, including its consumption modes and
-checkpoint receipts. No separate Claw queue policy or debounce controls remain;
-Eyes file-detector debounce is a different live source feature.
+The application separately owns `<data_dir>/outputs/journal.sqlite3`. Output and
+transport-attempt facts distinguish pending/sending/delivered/unknown/cancelled
+from proven-not-sent attempts. Input ACK, Agent success and chat delivery are not
+interchangeable. Recipients freeze with the original binding, not on restart.
+Unknown sends/interrupted effects are never automatically replayed.
 
-Within a group, the main Agent manages child concurrency, progress, waiting,
-cancellation and closure. Child runtime timeout, fixed model-call count,
-cumulative-token quota, fixed active-child count and retained-record count limits
-are removed. Ending a parent reply does not close children still working. Long
-child tool loops reuse native compaction with durable original-history checkpoints
-when required model metadata is available; no cumulative-history limit replaces
-the removed runtime caps.
+Native `run_ack` follows actual durable intake. Connection/ACP endpoint detachment
+only detaches waiters, not accepted application execution/storage. Receiver-only
+restart preserves pending/running work. Actual application shutdown/crash marks
+started work interrupted; explicit original-input cancellation has its own owner.
+Retries must inspect original receipts, not guess from elapsed time or an ACK loss.
+These are local recovery fences, not exactly-once side-effect guarantees.
 
-Tool permissions, inherited read-only scope, actual model context/output/vision
-capacity, bounded protocol frames, per-message/storage chunks, image/input resources
-and labeled display retention remain. Tool/extension RPC deadlines and owned
-cancellation/shutdown are distinct from a removed child lifetime timeout. Trusted
-Python/process code is not an OS sandbox.
+## Context rotation, not branch navigation
 
-## Optional reusable Goals
+Idle `/new` and `/reset`, or configured daily/idle reset, rotate only the current
+context. The stable group main Agent, Goal binding, selected model/reasoning,
+active tools/skills and access restrictions remain; messages/counters/context-owned
+extension entries start fresh. Active children must first settle. Unfinished Goals
+do not disable normal daily/idle reset.
 
-Claw is a long-term assistant with optional task autonomy. Installed `xdog-skills`
-provides Goal tools/skill without silently creating a Goal. The current group
-main Agent plans from its conversation, optionally delegates through existing
-authorized child tools, reports progress and judges completion. There is no
-mandatory independent reviewer, hidden planner or Goal-owned child runner.
+Saved transcripts/checkpoints/legacy branches remain readable/exportable.
+`/resume`, `/fork`, `/branch`, `/goto` and target-session staging are removed and
+explicitly rejected. Restart restores only committed current context, not an old
+execution route. Compaction preserves the complete original indexed checkpoint
+before replacing current history, without replaying models/tools. Coding's branch
+navigation is a separate product feature.
 
-Goal owns its leased registry, authoritative workspace task files and reminder
-outbox. Claw contributes its real stable group owner and existing Core intake;
-Coding intentionally binds its own session/branch. User waits and pauses are not
-released by untrusted events. Rotation does not replay interrupted effects.
+## Group admission and child authority
 
-## Capabilities, Eyes and channels
+The gateway's `max_concurrent_agents` (default 3) controls background **group-turn**
+admission, not a child quota; human inputs bypass that background semaphore.
+Group `max_queued_messages` bounds unfinished accepted inputs (default 50), never
+evicting accepted records to make room. No queue-mode/debounce/trigger-pattern/
+per-group-concurrency policy is restored. Explicit steer/follow-up belongs to
+Agent's identified input queue/checkpoints; Eyes detector debounce is separate.
 
-Coding/Claw use the same `xdog.agent.capabilities.CapabilityAssembly` to compose
-actual tool identities and skill selections. A capability may provide tools,
-skills, runtime resources or extension hooks; it need not provide all of them.
-The SDK creates no second execution owner. Hosts own scope lifecycle, tool grants,
-read-only/approval policy and parent/child authority. Packaged skill discovery
-does not activate a body or grant a tool. Flow/Eyes bodies are activated on demand.
+Children never copy parent conversation/system prompts. Task knowledge is first-user
+material; model/reasoning and a child-owned prompt may differ. Actual parent tools
+and available skills form frozen subsets. Labels, presets, `--inherit`, instructions
+and saved records grant no new authority or shared approval cache.
 
-Eyes' application binding ensures its independent shared daemon through the CLI;
-Flow's application tool invokes the CLI without a daemon. Saved Eyes JSON defines
-sources, routing and destinations. The owner label is a management namespace, not
-an authorization token or restriction to the current group/workspace.
+Hosts validate actual tool identity/schema/action/scope, skills, readonly and
+permissions at admission, after approval and at executor entry. Parallel pending
+calls cannot borrow later broader grants. Effective configuration, tool schema
+ceilings and filesystem roots persist before the model runs and fence explicit
+continuation. Missing legacy filesystem metadata is deny-all, not unconfined.
+Scoped capability tools are rebound only by their actual original owner; for Goal
+this permits assigned-task reads/result updates, never the parent's lifecycle,
+plan/report authority or unrestricted Goal tool.
 
-Configured ACP deliveries enter ordinary Core intake and the existing group
-main Agent. An intake ACK does not prove execution or user notification. Eyes
-owns no model watcher, creator reply capture or extra output route. The main
-Agent uses normal messaging when notification is needed. Source cancellation,
-accepted input, Agent execution and user-channel output remain separate facts.
-Unknown effects are never blindly replayed.
+A safely completed child's explicit new message rebuilds a fresh Agent from saved
+history under current original-owner checks. Idle cleanup does not stop the gateway
+loop. Parent reply completion does not close still-working children. No fixed child
+runtime/call/token/concurrency/retained-record quota exists; actual model capacity,
+protocol/image/per-operation storage guards and owner cancellation remain. Long
+loops use native compaction only with actual model metadata and durable original
+history archives. Trusted Python/process code is not an OS sandbox.
+
+## Default Goal capability, optional delegated work
+
+Claw includes `xdog-skills` by default. Native `/goal` commands, the owner-bound tool
+and skill metadata are independent of full-body activation; the Goal body is **not
+active by default**. Ordinary chat/installation creates no Goal or worker/model.
+The current main Agent plans, works/delegates using existing tools, checks evidence,
+saves progress before each continuation and judges completion. No Goal-owned
+planner/worker/reviewer loop or independent acceptance protocol exists.
+
+Goal owns its registry/binding/history/reminder outbox; workspace `tasks/*.json`
+is the only task-state authority. One current Goal belongs to the stable group,
+including completed/waiting/paused. Completed remains visible; explicit clear
+releases it, or a new delegated Goal may replace completed while preserving history.
+Unfinished bindings are never silently overwritten.
+
+New waits support only user/tasks. User waits require `question`, `impact` and
+`resume_when` and genuine authorized user evidence; task waits require the main
+Agent's evidence check and versioned `activate`. Automatic inputs cannot release
+user waits, historical host waits or user pauses. New `wait(host)` is rejected;
+host/tool/delivery failures are separate runtime facts. Pause stops reminders and
+only Goal's Eyes registration until explicit user resume, not accepted work or
+unrelated observations. Generic settled/task signals coalesce ACP reminders into
+the original Core Inbox/main Agent under its unchanged tool policy.
+
+## Capabilities, Eyes and message routing
+
+The shared `CapabilityAssembly` composes installed provider tools/skills/resources
+on real group/application owners, not another execution owner. Discovery/import is
+inert; bodies load on demand, and skill loading grants no tools. Extension workers
+retain hooks/commands/basic dialogs/providers, not model tools or UI interception.
+
+Eyes' application binding ensures its shared user-local daemon via the public CLI;
+Flow invokes public CLI argv without a daemon. Their tools return actual
+`exit_code`/`stdout`/`stderr`; failure/cancellation is not proof no effect occurred.
+Eyes JSON defines sources/routes/destinations; owner is management metadata, not
+authentication or a restriction to the current group/workspace. Claw owns no
+observer journal, event relay, creator-reply capture or report tracker. Goal separately
+manages only its own task observation through the same CLI boundary.
+
+Ordinary ACP inputs have no default chat recipient. Standard prompt returns a stop
+reason/identifiers without assistant-message chunks; selected receipt reads expose
+bounded saved results. TUI `acp_updates: 0` suppresses live automatic completions,
+not history. Ordinary channel messages keep their captured reply bindings.
+
+For explicit notification, `message.channels` lists live host bindings, then
+`message.send` selects one currently bound channel of the current group per message.
+The host revalidates and freezes its recipient; arbitrary recipients/groups and
+broadcast are rejected. Sending changes neither default reply routing nor Goal
+state. Optional `reference` correlates real output facts, such as a saved question ID,
+not authority. Persisting a question, intake ACK and delivered output remain distinct.
 
 ## Prompt and memory
 
 `build_system_prompt` separates a cacheable static base from mutable workspace,
-memory and generic skill/context content. The workspace holds `IDENTITY.md`, `AGENTS.md`, `SOUL.md`,
-`USER.md`, `MEMORY.md` and a one-time `BOOTSTRAP.md`. Session-scoped skills belong
-to the cacheable prefix; turn-scoped skill messages do not rewrite that prefix.
+memory and environment content. The workspace holds `IDENTITY.md`, `AGENTS.md`,
+`SOUL.md`, `USER.md`, `MEMORY.md` and a one-time `BOOTSTRAP.md`. Session-scoped skill
+bodies belong in the cacheable prefix; turn-scoped skill messages do not rewrite it.
+Goal facts come through the optional capability, not hardcoded per-turn policy.
 
-`MemoryManager` combines daily logs, long-term memory and search. Optional search
-uses sentence-transformers/sqlite-vec vectors plus BM25; keyword search remains a
-fallback. Compaction archives original context and rebuilds the current one; its
-saved checkpoints are historical evidence, not a branch switch operation.
+Memory combines daily logs, long-term Markdown and optional vector/BM25 search;
+keyword search remains the fallback. Compaction flushes durable memory, summarizes
+through the LLM and archives/replaces older context. Original history remains
+readable evidence, not a branch-switch or tool-replay operation.
 
-See the shared Goal skill in `packages/skills` and the assistant-core design and
-47-item acceptance checklist in the repository. Shared Python extension UI,
-packaging isolation and final whole-branch acceptance remain separate gates;
-this page does not claim those unfinished milestones are complete.
+See [reference](/packages/claw/reference), [skills](/packages/skills),
+[package README](https://github.com/litterzhang/xdog/blob/main/packages/claw/README.md)
+and [assistant-core acceptance](https://github.com/litterzhang/xdog/blob/main/docs/claw-assistant-core-requirements.json).
+Acceptance records distinguish verified behavior from remaining integration limits;
+this page does not claim live-channel, whole-product or non-Linux verification.

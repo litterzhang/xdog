@@ -34,26 +34,62 @@ Claw policy. Applications own permission decisions and lifecycle state, while
 `BoundedDetails` remain compatible aliases at their original import paths.
 
 See [terminal stability and verification](../../docs/tui-pi-parity.md) for scope,
-test commands, and platform limitations. Fullscreen applications and remote
-coding are outside this stability work.
+test commands, and platform limitations. Dedicated fullscreen applications and remote
+coding are outside this stability work; the explicit temporary transcript
+alternate-screen surface is described below.
 
-## Part of xdog
+## Install and basic use
 
-This package is one piece of [xdog](https://github.com/litterzhang/xdog), a
-local-first toolkit for building, running and scheduling LLM workflows. The
-centrepiece is [`xdog-flow`](https://pypi.org/project/xdog-flow/) — a typed
-workflow format and compiler.
+Requires **Python 3.12+ on Linux**. Install `pip install xdog-tui`, or use `uv sync`
+from the workspace root. The only direct runtime dependency is `wcwidth`; there
+is **no `xdog-tui` CLI entry point** and no Agent/provider dependency.
 
-Documentation: **https://xdog.942295.xyz**
+Components return ANSI string rows; they can be rendered/tested without starting
+a terminal or making network calls:
 
-## Licence
+```python
+from xdog.tui import visible_width
+from xdog.tui.components import Text
 
-Copyright (c) 2026 HugeMan <942295.xyz>
+component = Text("Hello, 终端", padding_x=0, padding_y=0)
+lines = component.render(20)
+assert all(visible_width(line) <= 20 for line in lines)
+print("\n".join(lines))
+component.set_text("Updated")  # Invalidates component render caches.
+assert [line.rstrip() for line in component.render(20)] == ["Updated"]
+```
 
-GNU Affero General Public License v3.0 or later — see
-[LICENSE](https://github.com/litterzhang/xdog/blob/main/LICENSE). Output compiled
-by `xdog-flow` is exempt; see the
-[Generated Output Exception](https://github.com/litterzhang/xdog/blob/main/LICENSE-EXCEPTION.md).
+`TUI()` is a synchronous terminal-loop owner: add components with `add_child()`,
+set focus with `set_focus()`, then call `start()` on the UI thread. Actual startup
+requires an interactive terminal (raw mode, protocol negotiation and cursor
+reports), unlike the pure rendering example. `request_render()` schedules a frame;
+`on_tick(callback)` runs host callbacks, and `stop()` restores terminal ownership.
+Do not block ticks/input handlers on filesystem/network/model work. Workers should
+publish immutable events for the UI owner to apply; applications own their shutdown.
+
+### Import map
+
+Not all host-facing helpers are re-exported from the package root or
+`xdog.tui.components`; use their actual modules:
+
+| Import | Surface |
+| --- | --- |
+| `xdog.tui` | TUI/Component, keys, PromptKeymap, Unicode utilities, completion, attachments, navigation, transcript-browser data and external-editor helpers |
+| `xdog.tui.components` | Text/Markdown, Input/Editor/InputPanel, PermissionPanel, DetailsPanel, StatusLine, NavigationPanel, TranscriptPanel, AttachmentPanel and other basic components |
+| `xdog.tui.components.inline_layout` | `InlineLayout` for height allocation |
+| `xdog.tui.event_queue` | `EventQueue` for bounded UI-thread delivery |
+| `xdog.tui.components.messages` | `Transcript` and source-record projection |
+| `xdog.tui.transcript_actions` / `xdog.tui.transcript_transfer` | Explicit reviewed output lifecycle and prepared transfers/workers |
+| `xdog.tui.components.child_panel` / `child_queue_panel` | `ChildPanel` / read-only `ChildQueuePanel` |
+| `xdog.tui.components.mcp_panel` / `oauth_panel` | `McpPanel` / `OAuthPanel` presentation, not connections or credentials |
+
+The library does not open a model/provider, discover capabilities, activate
+skills, restore Agent snapshots, compact history or own a child runtime.
+MCP/child/permission panels are data-and-callback UI components, not SDK execution
+or authorization owners. Likewise typed transcript snapshot output below is an
+explicit host-prepared export, not `Agent.dump()` or a resumable execution receipt.
+
+## Component and integration reference
 
 ### Non-blocking prompt path completion
 
@@ -73,8 +109,8 @@ semantics for repositories and non-repositories through private metadata; no
 workspace Git state or hooks are changed/executed. Missing/failing Git is a
 visible basic-exclusion fallback. `CompletionStatusProvider` optionally supplies
 non-blocking progress text; InputPanel clamps it to the existing menu budget and
-never treats status as a selectable path. See `docs/agent-ui-gap-plan.md` for the
-full application goal and verification.
+never treats status as a selectable path. See the repository’s
+[UI gap plan](../../docs/agent-ui-gap-plan.md) for historical application goals and verification; it is not an additional library API.
 
 ### Prompt keymaps and foreground terminal handoff
 
@@ -164,8 +200,9 @@ keys cannot submit through a pending transition. `InlineLayout.fullscreen_view`
 lets hosts provide a height-bounded alternate surface; no normal transcript/editor
 is painted there. Hosts must leave fullscreen for approvals/other dialogs.
 Stop/failure cleans temporary screen ownership; suspend retains it for re-entry.
-The default remains native scrollback, with no main-buffer clear/replay. Helpers
-are exported from `xdog.tui` and `TranscriptPanel` from `xdog.tui.components`.
+The default remains native scrollback, with no main-buffer clear/replay. `TranscriptBrowser`/record types
+are exported from `xdog.tui` and `TranscriptPanel` from `xdog.tui.components`;
+`Transcript` lives in `xdog.tui.components.messages`.
 
 
 Hosts with asynchronous remote sources can supply `TranscriptPanel(on_refresh=...)`,
@@ -229,17 +266,6 @@ while an owner request is busy. Components dispatch `auth_refresh_prepare` and
 Child task submission can prepare a local review while a roster request is pending,
 without losing the input draft. Final confirmation remains blocked until that
 request settles; review preparation itself never starts a child or grants access.
-
-`clipboard_macos.read_macos_clipboard()` supplies a static JXA/AppKit program to the
-reader's existing bounded subprocess runner: PNG/JPEG/WebP first, TIFF-to-PNG
-conversion with pixel/byte limits, then Unicode text. A change-count guard refuses
-mixed clipboard snapshots. Strict bounded JSON/base64 decoding rejects helper
-failure without reflecting contents or retrying as text. No clipboard URL/file
-reads, browser/app automation, clipboard polling or input submission are added.
-Node-based contract tests exercise the exact shipped program with an independent
-AppKit interface; they are not validation of Apple's real JXA bridge/pasteboard.
-The script-contract tests explicitly skip if Node is unavailable; Node is not a
-runtime dependency of the clipboard adapter or either client.
 
 ### Read-only extension command display
 
@@ -330,3 +356,22 @@ and widget layouts are removed. Private native field-review components remain fo
 host-owned editor/navigation/queued-input confirmations; these are not a plugin
 layout API or permission grant. Core TUI overlays, transcript fullscreen, Unicode,
 clipping, cursor and tool-approval behavior remain.
+
+
+## Part of xdog
+
+This package is one piece of [xdog](https://github.com/litterzhang/xdog), a
+local-first toolkit for building, running and scheduling LLM workflows. The
+centrepiece is [`xdog-flow`](https://pypi.org/project/xdog-flow/) — a typed
+workflow format and compiler.
+
+Documentation: **https://xdog.942295.xyz**
+
+## Licence
+
+Copyright (c) 2026 HugeMan <942295.xyz>
+
+GNU Affero General Public License v3.0 or later — see
+[LICENSE](https://github.com/litterzhang/xdog/blob/main/LICENSE). Output compiled
+by `xdog-flow` is exempt; see the
+[Generated Output Exception](https://github.com/litterzhang/xdog/blob/main/LICENSE-EXCEPTION.md).

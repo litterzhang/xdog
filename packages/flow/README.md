@@ -5,8 +5,8 @@
 
 **Flow is a local-first, typed workflow format and compiler for developers and
 Coding Agents. Design repeatable agent workflows visually or generate them with
-AI, validate the JSON artifact, then run, compile, or schedule it as standalone
-Python.**
+AI, validate the JSON artifact, then run it, generate a Python module, or install
+an OS schedule.**
 
 Flow exists for two primary workflows:
 
@@ -27,7 +27,7 @@ Coding Agent + Skill ┘
 
 The JSON workflow is the product's canonical intermediate representation. The
 TUI/Web UI and Coding Agents are editors; the frontier executor is its interpreter;
-codegen is its standalone Python backend; scheduling is an optional deployment
+codegen is its Python backend; scheduling is an optional deployment
 adapter. Flow is deliberately not a hosted low-code platform or a general-purpose
 distributed workflow service.
 
@@ -40,7 +40,8 @@ distributed workflow service.
 - **Interpret equals compile:** local execution and generated Python share one
   frontier transition kernel.
 - **Local-first deployment:** no control plane is required; a workflow can become
-  one Python artifact and an optional systemd schedule.
+  a generated Python artifact and an optional systemd schedule. Generated modules
+  still need their runtime dependencies; subflows explicitly depend on `xdog.flow`.
 - **Fixed workflows, not open-ended autonomy:** Flow crystallizes processes that
   have become stable enough to repeat, inspect, and maintain.
 
@@ -120,13 +121,25 @@ changes. The tool and workflow confinement guards are not an OS sandbox.
 
 ---
 
+## Reading this documentation
+
+Repository command examples below run from the repository root after `uv sync`.
+The guides cover [execution and limits](docs/expressiveness.md),
+[agent backends](docs/cli-agent.md), [fan-out](docs/fan-out.md),
+[subflows](docs/subflow.md), [testing](docs/testing.md) and
+[scheduling](docs/scheduling.md). The [competitive analysis](docs/competitive-analysis.md)
+is a historical positioning record, not a current CLI reference.
+
 ## JSON Schema
 
 Data flows between nodes through **named ports** wired by **explicit edge
 mappings** — `nodeA.output.x -> nodeB.input.a` — not a shared global state. Each
 node declares `inputs` and `outputs` port lists; an edge's `map` says which
 source output port feeds which destination input port. The workflow's `state`
-block seeds the output ports of a reserved source node `$in`.
+block seeds the output ports of a reserved source node `$in`; `$output` is the
+synthetic sink collecting explicitly exported values. The following JSONC is a
+schematic excerpt (additional nodes are omitted); use the checked-in examples
+for complete runnable definitions.
 
 ```jsonc
 {
@@ -142,7 +155,7 @@ block seeds the output ports of a reserved source node `$in`.
   "nodes": [
     {
       "id": "research",           // unique node identifier
-      "type": "agent",            // "agent" (LLM) or "script" (Python fn)
+      "type": "agent",            // agent | script | human | subflow
       "model": "...",             // optional; overrides defaults.model
       "system_prompt": "...",     // system prompt for the agent
       "inputs": ["topic"],        // bare string port, or {name,schema,required}
@@ -185,8 +198,9 @@ for two people with no way to tell from the file. An unresolvable name fails
 `validate`, because an agent asked to produce a format it was never shown does
 not fail — it produces something plausible and wrong.
 
-**Declared, not discovered — and so loaded eagerly.** The body goes into the
-system prompt when the node is built, rather than behind a "load this skill"
+**Explicit node activation, not default host activation.** Unlike installed-capability
+discovery, a node's `skills` list explicitly activates those bodies. The body goes
+into the system prompt when the node is built, rather than behind a "load this skill"
 tool the model may call. Two-step disclosure exists to solve *which of the
 hundred skills on this machine do I need*, and a workflow that names its skills
 has already answered that. Making the guarantee depend on the model choosing to
@@ -204,7 +218,7 @@ structured, or non-required ports use the canonical object form
 `{"name": "sum", "schema": {"type": "integer"}, "required": true}`. Values are
 stored as native JSON/Python types and scripts receive values described by the schema.
 
-**Validation** rejects: an input port fed by no edge mapping; a `map` referencing
+**Validation** rejects: a required input port fed by no edge mapping; a `map` referencing
 a port that doesn't exist on the source/destination; and — critically — **two
 unconditional edges feeding the same input port** (the ambiguous-producer clash
 that a shared global state used to allow silently).
@@ -263,8 +277,8 @@ their import-time code; this is not a side-effect-free or automatically allowed
 operation.
 
 ```bash
-xdog-flow validate examples/refine_loop.json
-# OK: refine_loop
+xdog-flow validate packages/flow/examples/refine_loop.json
+# OK: refine-loop
 ```
 
 `--json` reports the **whole** per-node and per-edge pass in one envelope, each
@@ -294,6 +308,12 @@ xdog-flow validate broken.json --json
 
 Exit status is 1 when `ok` is false, either way. A read or parse failure is still
 a single error — there is no graph yet to say more about.
+
+**Path-subflow limitation:** the current `--json` parsing path does not pass the
+file's base directory into the parser. A valid `"subflow": "./child.json"` can
+therefore report `invalid-subflow` ("needs a base directory"). Use ordinary
+`validate FILE` for those workflows; inline children do not need this workaround.
+See [Subflows](docs/subflow.md).
 
 #### Error codes
 
@@ -337,14 +357,20 @@ collected `output`, and timing/token `context`.
 
 ```bash
 # Live execution using the provider declared in the JSON
-xdog-flow run examples/refine_loop.json
+xdog-flow run packages/flow/examples/refine_loop.json
 
 # Override the provider from the command line
-xdog-flow run examples/refine_loop.json --provider anthropic
+xdog-flow run packages/flow/examples/refine_loop.json --provider copilot
 
-# Offline dry-run (no LLM calls; nodes echo "DRYRUN:<model>")
-xdog-flow run examples/refine_loop.json --dry-run
+# SDK-only example: replace SDK streaming with "DRYRUN:<model>"
+xdog-flow run packages/flow/examples/refine_loop.json --dry-run
 ```
+
+`--input K=V` is repeatable; values are parsed as JSON when possible, otherwise
+kept as strings. `--dry-run` replaces SDK model streaming only: it is **not** a
+sandbox, does not stub scripts, and does not replace external CLI backends.
+Structured SDK nodes may fail because the echo does not call `submit_result`.
+For model-free graph checks, use companion test suites with explicit stubs.
 
 ### test
 
@@ -355,8 +381,8 @@ coercion and `$output` collection all run for real, because those are what the t
 is for.
 
 ```bash
-xdog-flow test examples/release_readiness.json --allow-script-stub
-xdog-flow test examples/                      # every *.test.json under a directory
+xdog-flow test packages/flow/examples/release_readiness.json --allow-script-stub
+xdog-flow test packages/flow/examples/ --allow-script-stub  # companion suites
 ```
 
 Stubs are injected at the provider call, so prompts are still interpolated for real
@@ -368,11 +394,11 @@ other workflow operations. See `docs/testing.md`.
 
 ### generate
 
-Compile the workflow to a self-contained Python module.
+Compile the workflow to a Python module with inlined runtime helpers.
 
 ```bash
-xdog-flow generate examples/refine_loop.json -o workflow.py
-python workflow.py
+xdog-flow generate packages/flow/examples/refine_loop.json -o workflow.py
+python workflow.py  # real execution; may call models
 ```
 
 Generated output structure:
@@ -404,17 +430,30 @@ if __name__ == "__main__":
 
 The static metadata and node functions are workflow-specific; the inlined
 frontier transition kernel is the same implementation used by the interpreter.
+This is a behavioral parity guarantee, **not** a dependency-free deployment
+promise. Generated modules do not implement the CLI's `run --dry-run` switch;
+passing `--dry-run` to `python workflow.py` does not make execution model-free.
+SDK nodes import `xdog.agent`/`xdog.ai`; subflow nodes import
+`xdog.flow.executor` and `xdog.flow.loader` to run their embedded child.
+Custom imports and third-party libraries still need to be available.
+
+`--portable -o DIR` packages a runnable directory and selected vendored sources;
+`--offline` additionally downloads dependency wheels (it is a build-time network
+operation, not an offline validation flag). Subflow bundles vendor `xdog.flow`,
+but inspect their requirements and test in the target environment: vendoring is
+not proof that every transitive/custom dependency is included. See
+[Subflows](docs/subflow.md) and [scheduling](docs/scheduling.md).
 
 ### graph
 
 Print an ASCII topology map, a Mermaid diagram, or an SVG.
 
 ```bash
-xdog-flow graph examples/refine_loop.json
+xdog-flow graph packages/flow/examples/refine_loop.json
 # research -> write -> review --(REVISE, max 2)--> write
 
-xdog-flow graph examples/refine_loop.json --mermaid
-xdog-flow graph examples/refine_loop.json --svg > diagram.svg
+xdog-flow graph packages/flow/examples/refine_loop.json --mermaid
+xdog-flow graph packages/flow/examples/refine_loop.json --svg > diagram.svg
 ```
 
 The `--svg` output uses **Graphviz** (via `pydot` + the system `dot` binary) for
@@ -443,7 +482,7 @@ is focused (the focused box is highlighted). The right panel follows the focus:
 |---------------|-------------------|
 | **Graph** | the live ASCII flow diagram (boxed nodes + arrows/loops) |
 | **Nodes** | the selected node's details (id, type, model/prompt/tools, or script `code`/`run` + typed I/O) |
-| **Edges** | the selected edge as `src → dst`, its guard/loop, and the **parameter flow** (which state key the source produces and the destination consumes) |
+| **Edges** | the selected edge as `src → dst`, its guard/loop, and the **parameter flow** (which output port maps to which input port) |
 
 Keys inside the builder: `Tab` switch the focused block, `a` add an agent node,
 `s` add a script node, `j`/`k` (or arrows) move the selection **within the
@@ -477,7 +516,7 @@ targets.
 ## Declared input ports
 
 Agent and script nodes declare their input ports via `"inputs"`. Each input port
-**must be fed by an incoming edge's `map`** — checked statically at validate time.
+**must be fed by an incoming edge's `map` when required** — checked statically at validate time.
 Prompt `{{x}}` and script arguments read the node's own input port `x` (they are
 port-local, not a global lookup).
 
@@ -492,15 +531,18 @@ port-local, not a global lookup).
 // wired by, e.g.:  {"from": "pull", "to": "enrich", "map": {"record": "record"}}
 ```
 
-If an input port is fed by no edge mapping, `xdog-flow validate` raises a
+If a required input port is fed by no edge mapping, `xdog-flow validate` raises a
 `WorkflowValidationError` immediately.
 
 ---
 
-## Structured output (`output_schema`)
+## Structured agent output
 
-When a node declares `"output_schema"`, the agent **must** call the built-in `submit_result`
-tool before finishing. The tool validates the submitted value and the executor stores it as a
+Structured output is derived from the node's typed `outputs` and their `schema`
+objects, not an `output_schema` field. No outputs, or exactly one plain
+`{"type": "string"}` output, use assistant text. Other output contracts are
+structured. With the default **SDK backend**, the agent **must** call the injected
+`submit_result` tool before finishing. The tool validates the submitted value and the executor stores it as a
 native structured value in the node's output port(s), not as prose or a JSON string.
 
 The SDK runner and generated code both pass the generic Agent tool context keys
@@ -508,8 +550,8 @@ The SDK runner and generated code both pass the generic Agent tool context keys
 A successful submission writes `result_sink["result"]`; a validation error leaves the
 sink unchanged so the agent can correct and resubmit. A single structured port uses
 its own schema and can accept an array or scalar; multiple ports receive the fields
-of a validated object. This internal context contract does not rename Flow's
-workflow-level `output_schema` configuration. The retired runtime keys
+of a validated object. These are generic Agent runtime keys; Flow's authoring
+contract remains typed `outputs`. The retired runtime keys
 `flow_output_schema` / `flow_result_sink` are explicitly rejected by `submit_result`,
 even if empty or mixed with the new keys; they are not compatibility aliases.
 
@@ -517,12 +559,18 @@ even if empty or mixed with the new keys; they are not compatibility aliases.
 {
   "id": "enrich",
   "type": "agent",
-  "outputs": ["enriched"],
-  "output_schema": {               // field name -> JSON type
-    "category": "string",
-    "token": "string",
-    "summary": "string"
-  }
+  "outputs": [{
+    "name": "enriched",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "category": {"type": "string"},
+        "token": {"type": "string"},
+        "summary": {"type": "string"}
+      },
+      "required": ["category", "token", "summary"]
+    }
+  }]
 }
 ```
 
@@ -533,8 +581,11 @@ enriched = result.runtime["state"]["enrich"]["enriched"]
 print(enriched["category"])   # "IoT / Wireless Infrastructure"
 ```
 
-If the agent finishes without calling `submit_result`, the executor raises
-`WorkflowExecutionError("did not submit a result")`.
+For SDK structured nodes, if the agent finishes without calling `submit_result`, the runner raises
+a `WorkflowExecutionError` reporting that the node did not submit a result.
+External CLI backends instead use their native schema flags and parse the CLI's
+structured result; they do not receive this in-process sink or SDK tool.
+See [agent backends](docs/cli-agent.md).
 
 ---
 
@@ -548,7 +599,7 @@ coerced back and stored in the node's output port (a node with multiple output
 ports returns a dict keyed by port name). Ports are **typed** with JSON types
 (`string`/`integer`/`number`/`boolean`/`array`/`object`).
 
-Two code sources — a workflow is self-contained either way:
+Two code sources — both still need any libraries they import:
 
 **Inline `code`** (fully decoupled — the JSON carries the function):
 
@@ -562,11 +613,11 @@ Two code sources — a workflow is self-contained either way:
 }
 // wired by:  {"from": "$in", "to": "add", "map": {"a": "a", "b": "b"}}
 ```
-The input ports `a`/`b` arrive as ints (from `"3"`/`"4"`), so `sum` is `"7"`
-(not `"34"`). See `examples/pure_script.json`.
+The input ports `a`/`b` arrive as ints (from `"3"`/`"4"`), so `sum` is integer `7`
+(not string `"34"`). See also `examples/agent_calculator.json`.
 
 **Ref `run`** (imports a `.py` sitting next to the workflow file — JSON + sibling
-`.py` = a portable bundle; the workflow's own directory is put on `sys.path` for
+`.py` plus imported dependencies = a deployable artifact; the workflow's own directory is put on `sys.path` for
 the import, not the global path):
 
 ```jsonc
@@ -574,8 +625,9 @@ the import, not the global path):
   "inputs": [{"name": "topic", "schema": {"type": "string"}}], "outputs": [{"name": "brief", "schema": {"type": "string"}}] }
 ```
 
-`ctx` exposes `ctx.inputs` (this node's input ports as a mapping),
-`ctx.workflow_name`, and `ctx.node_id`.
+`ctx` exposes runtime metadata: `step`, `workflow_name`, `node_id`, `workspace`,
+`allow_paths` and `confined`. Input values arrive as keyword arguments, not
+through `ctx.inputs` or a shared mutable state.
 
 **Validation** at load time: a script node sets exactly one of `code`/`run`;
 inline `code` must compile and its function must be `ctx`-first with parameter
@@ -732,10 +784,10 @@ nothing while looking like it had.
 
 ### What this is and is not
 
-It is **containment**: every filesystem access in a confinable workflow goes
-through a tool that checks the path against the allowlist, resolving symlinks so
-a link out of the workspace is caught by where it lands. That stops the
-realistic failure — an agent that wanders into `~/.ssh`.
+It is **cooperative containment**: the built-in filesystem tool and script audit
+checks can reject accidental out-of-bound paths. Custom tools, import-time code
+and native libraries are not universally mediated; do not infer an all-access
+security boundary from the workflow passing the preflight checks.
 
 It is **not a sandbox**. Nothing here restricts the process at the OS level; the
 guarantee comes entirely from the refusals above holding. Confining a run
@@ -760,10 +812,14 @@ Agent nodes can declare a `"tools"` list.  Each name is resolved from the
 
 ### ToolRegistry
 
-The executor ships a default registry pre-loaded with the `echo` built-in:
+Each executor creates a fresh Flow registry: the demo `echo` tool, the Agent
+SDK default factories (`bash`, `filesystem`, `current_time`), and the opt-in
+`submit_result` factory. A node's `tools` list selects its ordinary tools; the SDK
+runner injects structured submission when needed. Imports do not register a
+mutable process-global inventory:
 
 ```python
-from flow.tools import default_registry
+from xdog.flow.tools import default_registry
 
 registry = default_registry()
 ```
@@ -771,8 +827,8 @@ registry = default_registry()
 Register custom tools before calling `execute()`:
 
 ```python
-from agent.core import AgentTool
-from flow.executor import execute
+from xdog.agent.core import AgentTool
+from xdog.flow.executor import execute
 
 my_tool = AgentTool(name="my_tool", ...)
 registry = default_registry()
@@ -789,7 +845,7 @@ so the same registry API applies to compiled workflows too.
 ## Current examples
 
 The checked-in examples are executable. The flat ones are mirrored into
-`skill/examples/` as templates for an authoring Agent to imitate.
+`src/xdog/flow/skills/flow/examples/` as templates for an authoring Agent to imitate.
 
 - `agent_calculator.json` — typed agent output and arithmetic scripting.
 - `refine_loop.json` — conditional review/revision loop with a non-required
@@ -812,12 +868,12 @@ The checked-in examples are executable. The flat ones are mirrored into
   See `examples/depins_enrich/README.md`.
 
 ```bash
-xdog-flow validate examples/refine_loop.json
-xdog-flow run examples/refine_loop.json --dry-run
-xdog-flow graph examples/refine_loop.json --mermaid
-xdog-flow generate examples/refine_loop.json -o workflow.py
-python workflow.py
-xdog-flow test examples/ --allow-script-stub
+xdog-flow validate packages/flow/examples/refine_loop.json
+xdog-flow run packages/flow/examples/refine_loop.json --dry-run
+xdog-flow graph packages/flow/examples/refine_loop.json --mermaid
+xdog-flow generate packages/flow/examples/refine_loop.json -o workflow.py
+python -m py_compile workflow.py  # syntax check only; no model execution
+xdog-flow test packages/flow/examples/ --allow-script-stub
 ```
 
 ---

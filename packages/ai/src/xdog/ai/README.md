@@ -1,10 +1,13 @@
-# ai
+# xdog.ai SDK and protocol reference
 
-Unified multi-provider LLM API for Python. Stream chat completions, generate embeddings, and perform web searches through a single interface.
+Linux-only Python 3.12+ SDK. Stream chat, generate embeddings/images and perform
+web searches through provider-neutral types where the selected model supports
+them. See the [package README](../../../README.md) for installation, complete CLI
+examples and proxy compatibility limits.
 
 ## Architecture
 
-Four concepts with clear boundaries:
+The request path has separate provider, vendor, routing and wire responsibilities:
 
 ```
 Provider (user-facing, thin)
@@ -17,13 +20,19 @@ Provider (user-facing, thin)
     |       +-- openai-completions    /v1/chat/completions
     |       +-- anthropic-messages    /v1/messages
     |       +-- openai-responses      /v1/responses
+    |       +-- google-generative-ai Gemini generateContent / streamGenerateContent
     |
     +-- normalized path: Context + StreamOptions -> EventStream[AssistantMessage]
     |
     +-- native path: ProtocolRequest -> NativeResponse | NativeEventStream
 ```
 
-- **Provider** -- user-facing: `stream`, `complete`, `embed`, `web_search`, `login`, `models`
+- **Provider** -- user-facing: `stream`, `complete`, `embed`, `web_search`, `image_generation`, `login`, `models`, `sync_models`
+- **Registered providers** -- `copilot` and `antigravity`, not Anthropic/OpenAI wire
+  adapters or model brands. A provider owns its vendor credentials and dispatch.
+- **Runtime** -- aggregates active providers, routing execution by `provider/model`;
+  bare IDs require exactly one active provider. Catalogue `model()` lookup is not
+  proof that a bare execution ID is unambiguous. No cross-provider auth fallback.
 - **Vendor** -- internal: authentication (returns `AuthResult`), model sync (returns `Model` objects)
 - **Protocol** -- internal: normalized wire adaptation plus optional protocol-native request hooks
 - **ProtocolRequest** -- immutable canonical JSON bytes, an allowlisted header tuple, and operation metadata
@@ -39,56 +48,77 @@ fallback when that exact capability is absent; Chat Completions is native-only.
 ## Installation
 
 ```bash
-pip install -e .
+# From the repository root:
+uv sync
+uv run xdog-ai --help
+# Standalone installation:
+pip install xdog-ai
 ```
 
-Registers the `xdog-ai` CLI command automatically.
+The distribution registers `xdog-ai`; optional `xdog-ai[openai]` installs the OpenAI
+SDK dependency, not an OpenAI provider. Model generation needs provider login and
+network. Construction/cache inspection is local; explicit login or
+`await provider.sync_models(force=True)` performs network IO.
 
 ## Quick Start
 
 ### Python API
 
 ```python
-import ai
+import asyncio
+import xdog.ai as ai
 
-# Get a provider
-copilot = ai.provider("copilot")
+async def main():
+    copilot = ai.provider("copilot")
+    ctx = ai.Context(messages=(ai.UserMessage(content="Hello!"),))
+    opts = ai.StreamOptions(thinking="high")
+    stream = copilot.stream("claude-sonnet-4.5", ctx, opts)
+    async for event in stream:
+        if event.type == "thinking_delta":
+            print(f"[thinking] {event.delta}")
+        elif event.type == "text_delta":
+            print(event.delta, end="", flush=True)
+    msg = await stream.result()
+    print(msg.stop_reason)
 
-# Stream chat
-ctx = ai.Context(messages=(ai.UserMessage(content="Hello!"),))
-async for event in copilot.stream("claude-sonnet-4.5", ctx):
-    if event.type == "text_delta":
-        print(event.delta, end="")
+    # Independent calls; the SDK does not store conversation history for you.
+    msg = await copilot.complete("gpt-4o", ctx)
+    print(msg.content)
+    embedding = await copilot.embed(
+        "text-embedding-3-small",
+        ai.EmbeddingRequest(input="Hello world", dimensions=256),
+    )
+    print(len(embedding.data[0].embedding))
+    searched = await copilot.web_search("goldeneye", "Python release documentation")
+    print(searched.content)
 
-# Complete (non-streaming)
-msg = await copilot.complete("gpt-4o", ctx)
-print(msg.content[0].text)
-
-# With reasoning
-opts = ai.StreamOptions(thinking="high")
-async for event in copilot.stream("claude-sonnet-4.6", ctx, opts):
-    if event.type == "thinking_delta":
-        print(f"[thinking] {event.delta}")
-    elif event.type == "text_delta":
-        print(event.delta, end="")
-
-# Embeddings
-result = await copilot.embed("text-embedding-3-small", "Hello world")
-print(f"{len(result.data[0].embedding)} dimensions")
-
-# Web search
-result = await copilot.web_search("goldeneye", "latest Python release")
-print(result.content[0].text)
+asyncio.run(main())
 ```
+
+Model IDs, reasoning levels and operations depend on the provider catalogue and
+account; select suitable IDs with `xdog-ai models <provider> --details`. The calls
+above illustrate separate APIs, not a guarantee that every listed model remains
+available. Check `supports_web_search`/other tri-state metadata; unknown is not a
+positive capability assertion. Tool definitions alone do not prove hosted search.
 
 ### Runtime (multi-provider)
 
-```python
-import ai
+Inside an async caller:
 
-runtime = ai.load()  # discovers active providers from auth.json
-runtime.stream("copilot/claude-sonnet-4.5", ctx)
+```python
+import xdog.ai as ai
+
+runtime = ai.load()  # Reads XDOG auth storage; does not log in or sync models.
+ctx = ai.Context(messages=(ai.UserMessage(content="Hello!"),))
+stream = runtime.stream("copilot/claude-sonnet-4.5", ctx)
+async for event in stream:
+    if event.type == "text_delta":
+        print(event.delta, end="")
 ```
+
+`provider()` constructs one registered provider independently of active auth
+storage. `load()` creates a `Runtime` containing recognized providers with auth
+entries; it does not prove tokens or upstream connectivity are currently valid.
 
 ### Native Anthropic Messages transport
 
@@ -165,8 +195,11 @@ without native Chat generation receives an OpenAI HTTP 400 error with `param: "m
 
 ### Vision
 
+Within an async caller (local image read shown for simplicity; async hosts should
+prepare file IO off-loop):
+
 ```python
-import ai
+import xdog.ai as ai
 import base64
 
 image_data = base64.b64encode(open("photo.jpg", "rb").read()).decode()
@@ -183,8 +216,10 @@ async for event in ai.provider("copilot").stream("gpt-4o", ctx):
 
 ### Tool Calling
 
+Within an async caller:
+
 ```python
-import ai
+import xdog.ai as ai
 
 weather_tool = ai.Tool(
     name="get_weather",
@@ -204,6 +239,30 @@ async for event in ai.provider("copilot").stream("gpt-4o", ctx):
     if event.type == "tool_call_done":
         print(f"Tool: {event.name}({event.arguments})")
 ```
+
+Tool events describe requests; this SDK does not execute them. The caller must
+validate/authorize execution, append paired `ToolResultMessage` history and make
+the next request, or use `xdog-agent` for that loop. Signed/opaque thinking content
+must retain its original identity during history replay.
+
+### Image generation
+
+Inside an async caller:
+
+```python
+import xdog.ai as ai
+
+response = await ai.provider("antigravity").image_generation(
+    "gemini-3.1-flash-image",
+    ai.ImageGenerationRequest(prompt="A small robot reading a book", aspect_ratio="1:1"),
+)
+for image in response.images:
+    print(image.mime_type, len(image.data))  # Bytes; the SDK writes no files.
+```
+
+Unsupported implementations raise `NotImplementedError`, not a text-chat fallback.
+The CLI `image`/`image_generation` writes uniquely named files; see the package
+README for reference-image/size limits and model capability handling.
 
 ## CLI
 
@@ -256,11 +315,12 @@ src/xdog/ai/
   core.py                  ABCs: BaseProvider, BaseProtocol, BaseVendor, AuthResult
   types.py                 Frozen dataclasses (Model, Context, Message, StreamOptions, events)
   native.py                Immutable native requests, responses, SSE events, and HTTP errors
-  paths.py                 XDG-compliant storage paths
+  paths.py                 Fixed home-relative config/data paths
   cli.py                   xdog-ai CLI entry point
   providers/
     __init__.py            Provider factory
-    copilot.py             CopilotProvider (thin, dispatches to protocols)
+    copilot.py             CopilotProvider (dispatches by model protocol)
+    antigravity.py         AntigravityProvider (Gemini chat/search/images)
     runtime.py             Runtime (aggregates multiple providers)
     testing.py             TestProvider + TestProtocol for unit tests
   protocols/
@@ -269,10 +329,13 @@ src/xdog/ai/
     anthropic_native.py    Lossless Anthropic JSON and SSE transport
     openai_responses.py    Responses normalization, web search, and native delegation
     openai_native.py       Lossless Responses and Chat JSON/SSE transport
+    google_generative.py   Gemini context encoding and response decoding
+    google_images.py       Image request/response adaptation
     native_auth.py         Native request projection used only for vendor auth headers
     _message_builder.py    Shared mutable message builder for streaming
     _transform_messages.py Message format transformation for OpenAI
   vendors/
+    antigravity/           Google OAuth, tokens, model sync and transport
     copilot/
       __init__.py          CopilotVendor (auth + token management)
       _model_sync.py       Model sync with API fallback models
@@ -289,7 +352,7 @@ src/xdog/ai/
 
 ## Key Types
 
-All core types are **frozen dataclasses**. State updates use `dataclasses.replace()`.
+Core request/message/model types are **frozen dataclasses**. State updates use `dataclasses.replace()`.
 
 | Type | Purpose |
 |------|---------|
@@ -308,6 +371,8 @@ All core types are **frozen dataclasses**. State updates use `dataclasses.replac
 | `EventStream` | Async iterator over streaming events with final result |
 | `EmbeddingRequest` | Input text(s) with optional dimensions |
 | `EmbeddingResponse` | Embedding vectors with usage |
+| `ImageGenerationRequest` / `ImageGenerationResponse` | Image prompt/options and decoded output images |
+| `GeneratedImage` | Image bytes and MIME type |
 | `BaseProvider` | ABC for provider implementations |
 | `BaseProtocol` | ABC for wire-format protocols |
 | `BaseVendor` | ABC for vendor auth + model sync |
@@ -332,7 +397,9 @@ These events belong to the normalized `EventStream` contract and are discriminat
 
 ## Storage
 
-XDG-compliant paths under `~/.local/xdog/`:
+AI storage uses the fixed home-relative `~/.local/xdog/` directory (the current
+`paths.py` does **not** read `XDG_DATA_HOME` or `XDG_CONFIG_HOME`). Do not infer the
+AI credential location from other XDOG applications’ path rules:
 
 | File | Purpose |
 |------|---------|
@@ -347,7 +414,7 @@ uv run pytest packages/ai/tests -q
 
 ## Model Limits
 
-Each `Model` carries three token limits from the API:
+Each `Model` carries three token limits from the catalogue (`0` means unreported):
 
 | Field | Meaning |
 |-------|---------|
@@ -362,4 +429,7 @@ Each `Model` carries three token limits from the API:
 - **Copilot** — `cost.input` = premium request multiplier (0 = free, 0.33 = lightweight, 1 = standard, 3 = premium)
 - **Per-token providers** — `cost.input`/`output`/`cache_read`/`cache_write` = per-million-token dollar rates
 
-All protocols call `usage_with_cost(model, usage)` at stream end, populating `Usage.cost.total` on every `AssistantMessage`.
+Copilot's normalized adapters use `usage_with_cost(model, usage)` to populate
+`Usage.cost`. Other paths may retain default/unknown pricing; a zero total is not
+proof of free access or a billing guarantee. Native responses preserve upstream
+usage rather than reconstructing the normalized cost object.

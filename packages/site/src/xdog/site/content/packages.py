@@ -1,8 +1,7 @@
-"""Authored metadata for each xdog package.
+"""Authored product catalog; rendering metadata imports no business runtime.
 
-Content is hand-written (kept accurate against each package's ``pyproject.toml``
-description, README, and public modules) rather than introspected at runtime, so
-the site has no import-time dependency on the packages it describes.
+Home, package routes, navigation and sitemap share the eight public packages.
+The workspace-only site application is documented in its repository README.
 """
 
 from __future__ import annotations
@@ -14,10 +13,10 @@ _GITHUB = "https://github.com/litterzhang/xdog"
 
 @dataclass(frozen=True)
 class Package:
-    """A single xdog package as presented on the site."""
+    """One published distribution in the public product catalog."""
 
     name: str
-    cli: str  # console-script command, or "" when it's a library
+    cli: str
     tagline: str
     summary: tuple[str, ...]
     highlights: tuple[str, ...]
@@ -29,102 +28,101 @@ class Package:
 
     @property
     def dist(self) -> str:
-        """The name to `pip install` — derived, so it cannot drift from reality."""
         return f"xdog-{self.name}"
 
     @property
     def pypi_url(self) -> str:
-        return f"https://pypi.org/project/xdog-{self.name}/"
+        return f"https://pypi.org/project/{self.dist}/"
 
 
 PACKAGES: tuple[Package, ...] = (
     Package(
         name="ai",
         cli="xdog-ai",
-        tagline="Unified, typed LLM API",
+        tagline="Typed model APIs, providers and wire protocols",
         summary=(
-            "A single, typed interface over LLM backends, built on a Provider / Protocol / Vendor "
-            "split so application code never hard-codes a model SDK. The shipped vendor today is "
-            "GitHub Copilot, reached over three wire protocols (openai-completions, "
-            "anthropic-messages, openai-responses); the architecture is multi-vendor by design.",
-            "Streaming, tool calls, web search, and token accounting are normalised behind one "
-            "immutable Context / StreamOptions model.",
+            "Provider-neutral Context, model metadata and streaming APIs with separate authentication, "
+            "routing and protocol adaptation. Copilot and Antigravity are the registered providers.",
+            "Model capabilities determine streaming, tools, search, embedding and image support; "
+            "wire protocols do not imply separately configured model providers.",
         ),
         highlights=(
-            "One provider(id) call resolves the backend; swap models without touching app code",
-            "Streaming event union, tool calls, and web search behind a typed interface",
-            "Copilot auth via GitHub device code; model catalog sync with offline fallback",
-            "Pure-Python message/type model — no vendor SDK leaks into your code",
+            "Copilot and Antigravity provider implementations",
+            "Typed streams, usage and cancellation",
+            "Model-dependent tools, search, embeddings and image generation",
+            "Local protocol proxy",
         ),
         install="pip install xdog-ai",
     ),
     Package(
         name="agent",
         cli="xdog-agent",
-        tagline="Agent runtime with tool calling and state management",
+        tagline="Reusable Agent and host-owned composition SDKs",
         summary=(
-            "The loop that turns a model plus a set of tools into an autonomous agent: it streams "
-            "the model, dispatches tool calls, applies steering, and manages conversation state "
-            "and compaction.",
-            "Tools are plain AgentTool objects — name, description, JSON-schema params, and an "
-            "async execute — so adding a capability is a small, testable unit.",
+            "One tool-calling loop with structured history, steering, follow-ups, cancellation and "
+            "versioned snapshots.",
+            "Hosts own ToolRegistry, separate McpRegistry, capability bindings, permissions and child runtimes. "
+            "The SDK supplies reusable contracts rather than a global execution service.",
         ),
         highlights=(
-            "Tool-calling loop with parallel execution and cancellation",
-            "Steering and follow-up queues for interactive control",
-            "Built-in tools: filesystem, bash, current_time, web_search, submit_result",
-            "Context compaction keeps long sessions within the model window",
+            "Parallel tools and owned cancellation",
+            "Structured dump/restore with runtime reinjection",
+            "Host-owned tool/MCP registries and installed capabilities",
+            "Opt-in built-in compaction",
         ),
         install="pip install xdog-agent",
     ),
     Package(
         name="tui",
         cli="",
-        tagline="Terminal UI library with differential rendering",
+        tagline="Shared terminal rendering and input components",
         summary=(
-            "A string-based component toolkit for terminal apps: components return lines, the "
-            "engine diffs frames and repaints only what changed — no alternate screen, no flicker.",
-            "Ships a full key-event parser (xterm + Kitty keyboard protocol) and inline image "
-            "support via the Kitty and iTerm2 graphics protocols.",
+            "Differential main-buffer rendering, Unicode-aware text, input parsing and reusable "
+            "message/editor components.",
+            "A rendering library shared by Coding and Claw, not an owner of approvals, sessions or model execution. "
+            "Linux is the supported host platform; terminal image protocols are capability-dependent.",
         ),
         highlights=(
-            "Differential line-based rendering in the main terminal buffer",
-            "Rich key parsing: modifiers, Kitty protocol, backtab, function keys",
-            "Inline images (Kitty / iTerm2) with pure-Python PNG/JPEG/GIF sizing",
-            "Editor component, autocomplete, fuzzy match, kill-ring, keybindings",
+            "Scrollback-preserving differential rendering",
+            "Unicode clipping, cursor and key handling",
+            "Editors, messages, pickers and transcript views",
+            "Terminal-capability-aware images",
         ),
+        install="pip install xdog-tui",
     ),
     Package(
         name="coding",
         cli="xdog-coding",
-        tagline="Interactive coding agent CLI",
+        tagline="Interactive coding assistant with explicit permissions",
         summary=(
-            "A terminal coding assistant built on agent + tui: session management, a live TUI, and "
-            "the filesystem/bash tools an agent needs to read and edit a real repository.",
-            "It is the reference application for how the lower-level packages compose into a "
-            "product.",
+            "A repository assistant with native TUI and print modes, persistent sessions/branches and "
+            "an independent ACP ingress.",
+            "The session controller owns execution, approvals and isolated child Agents. Installed capabilities "
+            "supply tools and discoverable skills without replacing that owner.",
         ),
         highlights=(
-            "Session-based interactive coding in your terminal",
-            "Composes the agent runtime with the tui rendering engine",
-            "Filesystem and shell tools for real repository work",
+            "TUI/print over one session controller",
+            "ask, ask-all, deny and explicit allow-all modes",
+            "Persistent history, compaction and explicit steering",
+            "Child tool/skill subsets and filesystem ceilings",
         ),
         install="pip install xdog-coding",
     ),
     Package(
         name="claw",
         cli="xdog-claw",
-        tagline="Agent orchestration runtime with long-term memory",
+        tagline="Persistent multi-channel assistant application",
         summary=(
-            "A higher-level orchestration runtime (the NanoClaw / OpenClaw pattern) that gives "
-            "agents durable, long-term memory across runs.",
-            "Where agent is one loop, claw coordinates agents and the state that outlives a single "
-            "conversation.",
+            "A gateway with one logical main Agent per group, durable input/output, workspace memory, "
+            "TUI and Weixin channels.",
+            "Claw owns application execution and delivery, not a public Python embedding SDK. Context rotation "
+            "does not change the group's Goal owner or create another execution route.",
         ),
         highlights=(
-            "Long-term memory that persists across agent runs",
-            "Orchestration layer above the single-agent loop",
-            "Configurable runtime for multi-agent patterns",
+            "One main Agent and execution route per group",
+            "Durable intake and independent delivery receipts",
+            "Workspace memory and authorized child delegation",
+            "Private ACP intake; explicit single-channel sends",
         ),
         install="pip install xdog-claw",
     ),
@@ -133,29 +131,63 @@ PACKAGES: tuple[Package, ...] = (
         cli="xdog-flow",
         tagline="Typed workflows for humans and Coding Agents",
         summary=(
-            "A local-first workflow format and compiler: developers design repeatable Agent "
-            "workflows in the TUI (and future Web UI), while Coding Agents generate the same "
-            "Git-friendly JSON artifact and repair it through precise validation feedback.",
-            "Run the JSON directly, compile it to standalone Python, or install a local timer/hook "
-            "schedule. Both execution paths share one typed frontier kernel.",
+            "Git-friendly workflow JSON with node-private ports, explicit edge mappings, whole-graph validation "
+            "and matching interpreter/code-generation semantics.",
+            "Run repeatable processes, test them with stubs, generate Python or deploy local schedules. "
+            "Generated artifacts retain the dependencies required by their node and subflow paths; Flow has no daemon.",
         ),
         highlights=(
-            "One canonical workflow JSON for visual editors, Coding Agents, Git, and deployment",
-            "Typed ports, explicit mappings, and fail-fast validation",
-            "Interpret directly or compile to standalone Python with identical semantics",
-            "SDK and Claude Code/Codex CLI agent nodes with tools and MCP",
-            "Dynamic fan-out, subflows, checkpoints, human signals, and local scheduling",
-            "Interactive TUI today; local Workflow JSON Web UI is the next product surface",
+            "Typed ports, mappings, loops and fan-out",
+            "Script, SDK/CLI Agent, human and subflow nodes",
+            "Workflow tests, checkpoints and code generation",
+            "CLI-backed application tool and discoverable flow skill",
         ),
         install="pip install xdog-flow",
     ),
+    Package(
+        name="eyes",
+        cli="xdog-eyes",
+        tagline="JSON observations and an independent shared daemon",
+        summary=(
+            "File and scheduler sources collect evidence, detectors emit events and explicit JSON "
+            "routes select handlers and destinations.",
+            "The user-local daemon owns registrations, cursors and delivery recovery. A caller-selected owner "
+            "is a management namespace, not authentication or a restriction to the current session/group.",
+        ),
+        highlights=(
+            "File, at, interval and zoned cron observations",
+            "One shared daemon, CLI and CLI-backed tool",
+            "Explicit JSON destinations and owner-scoped management",
+            "Durable intake is not Agent completion or chat delivery",
+        ),
+        install="pip install xdog-eyes",
+    ),
+    Package(
+        name="skills",
+        cli="",
+        tagline="Goal and plan skills with isolated domain support",
+        summary=(
+            "The common skills hub ships goal and plan plus Goal records, task files, progress reports "
+            "and signal-driven reminders.",
+            "The current main Agent plans, works/delegates and judges completion. Goal never starts a second "
+            "Agent loop; Flow and Eyes keep their independent packages and skills.",
+        ),
+        highlights=(
+            "Discoverable skill bodies, not default prompt injection",
+            "Native /goal commands and scoped model tools",
+            "Main-Agent progress reports and evidence-based completion",
+            "ACP reminders and optional Eyes task observation",
+        ),
+        install="pip install xdog-skills",
+    ),
+
 )
 
-PACKAGES_BY_NAME: dict[str, Package] = {p.name: p for p in PACKAGES}
+PACKAGES_BY_NAME: dict[str, Package] = {package.name: package for package in PACKAGES}
 
-# Layered story shown on the home page: which packages build on which.
 LAYERS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Foundation", ("ai", "tui")),
-    ("Runtime", ("agent", "flow")),
-    ("Products", ("coding", "claw")),
+    ("Foundations", ("ai", "tui")),
+    ("Agent SDK", ("agent",)),
+    ("Workflows and capabilities", ("flow", "eyes", "skills")),
+    ("Applications", ("coding", "claw")),
 )

@@ -53,14 +53,16 @@ Dependency direction (`A -> B` means A builds on B):
 ```text
 flow   -----> agent -----> ai
 coding -----> agent/ai + tui
-claw   -----> agent/ai + tui + eyes
+claw   -----> agent/ai + tui
+skills -----> agent
+eyes          independent observation daemon / CLI / ACP delivery
 site   -----> flow/agent/ai (workflow demo integration)
 tui           standalone terminal rendering/components
 ```
 
 ### `xdog.ai`: model and protocol foundation
 
-`packages/ai/src/xdog/ai/` defines the provider-neutral model, context, streaming event, completion, embedding, and web-search interfaces. `providers/runtime.py` resolves provider/model names; the production provider currently registered is GitHub Copilot. Files under `protocols/` implement Anthropic/OpenAI wire formats used according to model metadata—they are not separate configured providers. `proxy.py` exposes an Anthropic-compatible local HTTP/SSE facade over the same runtime.
+`packages/ai/src/xdog/ai/` defines the provider-neutral model, context, streaming event, completion, embedding, and web-search interfaces. `providers/runtime.py` resolves provider/model names; the registered providers are GitHub Copilot and Antigravity. Files under `protocols/` implement Anthropic/OpenAI wire formats used according to model metadata—they are not separate configured providers. `proxy.py` exposes an Anthropic-compatible local HTTP/SSE facade over the same runtime.
 
 Keep provider/authentication, model routing, and wire-protocol adaptation separate when changing this layer.
 

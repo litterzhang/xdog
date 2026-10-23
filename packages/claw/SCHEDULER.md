@@ -9,13 +9,28 @@ The main Agent follows the packaged, application-neutral `eyes` skill. It writes
 an ordinary Eyes v2 JSON file, then calls:
 
 ```json
-{"action": "create", "owner": "my-watches", "workspace": "/project", "definition_path": "eyes.json"}
+{"action": "create", "owner": "my-watches", "definition_path": "/absolute/project/eyes.json"}
+```
+
+These are `eyes` tool arguments. `definition_path` must be absolute; there is no
+`workspace` tool argument. Results contain actual CLI `exit_code`, `stdout` and
+`stderr`: nonzero exit is failure, and cancellation does not prove registration
+was not durably accepted. Source roots resolve beside the definition file.
+
+The equivalent public CLI (use your real saved definition) is:
+
+```bash
+uv run xdog-eyes daemon start
+uv run xdog-eyes --owner my-watches start /absolute/project/eyes.json --delivery auto --no-wait
+uv run xdog-eyes --owner my-watches list
 ```
 
 Sources, detectors, handlers and routes are all defined by the JSON. Multiple
 sources/routes are supported. Handler destinations may be any valid explicit
-ACP endpoints/sessions, not just the current group. Optional handler `cwd` gives
-the target workspace independently from source roots. Claw does not inspect or
+ACP endpoints/sessions, not just the current group. Enqueue handlers need no
+`cwd`: the receiver resolves the existing session directory. Explicit handler
+`cwd` is a consistency assertion against that directory, not a relocation request.
+Standard prompt still requires its load-session cwd, independently of source roots. Claw does not inspect or
 rewrite the definition or restrict its destinations through an Eyes adapter.
 The receiver retains its normal access/protocol checks.
 
@@ -66,6 +81,7 @@ package installation. The skill contains no Claw-specific policy.
 
 Owner is supplied by the caller for every tool operation; Claw/Eyes do not impose
 a session/group naming scheme. Keep the chosen owner with your task materials and
-reuse it with the same workspace. Eyes persists it as registration metadata next
+reuse the exact value for management (it is not authentication or a destination
+restriction). Eyes persists it as registration metadata next
 to the accepted definition, independently of the destination. Default daemon data
 lives in `~/.local/share/xdog/eyes`; explicit directory overrides remain supported.

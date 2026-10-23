@@ -11,6 +11,7 @@ from pathlib import Path
 
 from flask import Flask, render_template, url_for
 from xdog.site.blueprints import init_bp
+from xdog.site.content.packages import Package
 
 
 def create_app() -> Flask:
@@ -42,6 +43,13 @@ def create_app() -> Flask:
             except OSError:
                 pass
         return url
+
+    @app.template_global()
+    def site_packages() -> tuple[Package, ...]:
+        """Navigation uses the same inert catalog as package routes and sitemap."""
+        from xdog.site.content.packages import PACKAGES
+
+        return PACKAGES
 
     @app.template_global()
     def havefun_packages() -> tuple[str, ...]:

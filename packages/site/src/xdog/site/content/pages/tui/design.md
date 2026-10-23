@@ -2,42 +2,74 @@
 title: Design
 ---
 
-How tui paints a terminal UI without flicker or an alternate screen — the ideas
-behind the differential renderer and the string-returning component model.
+A string-row rendering toolkit for Linux/Python 3.12+, not an owner of models,
+approvals, sessions or child execution.
 
-## Differential line rendering, in the main buffer
+## Differential rendering and native scrollback
 
-Each component returns its view as a list of strings — `Component.render(width)` →
-`list[str]`. The engine (`tui.py`) diffs a frame against the previous one and
-emits only the lines that changed, using relative cursor moves wrapped in
-synchronized-output escapes so a repaint never tears.
+`Component.render(width)` returns `list[str]`. The default `TUI` renderer diffs
+owned rows against the prior frame and emits bounded terminal updates. Startup,
+resize and resume use cursor reports to re-anchor the transient tail; Ctrl+L
+repaints visible owned rows without clearing native scrollback. Geometry changes
+can defer a frame rather than painting under stale dimensions. Actual terminal
+behavior still depends on the emulator and supported protocols; this is not an
+unconditional no-flicker guarantee.
 
-It renders in the terminal's main buffer, not the alternate screen — so
-scrollback is preserved and the app's output stays in your history like any other
-command.
+The default is the main terminal buffer. Hosts can explicitly request a temporary
+fullscreen surface with `request_fullscreen(enabled)`; the owned transition uses
+an alternate painter and restores main-buffer ownership on return. This does
+not make all applications fullscreen or grant extension custom-layout authority.
 
-## Components compose by concatenation
+## Components, focus and visible confirmation
 
-A `Container` stacks its children vertically by concatenating their rendered
-lines; `TUI` is itself a `Container`. A `Component` adds `handle_input` and
-`invalidate`. There is no retained widget tree to reconcile — the model is
-"functions that return strings."
+A `Container` vertically concatenates child rows; `TUI` is itself a Container.
+Components handle input and invalidate cached views. Overlays composite by display
+cells, can capture focus and restore base focus on close. Focused editor markers
+position the terminal cursor; a panel without a marker hides it.
 
-## Overlays with focus capture
+Shared `InputPanel`, `PermissionPanel`, `DetailsPanel` and `StatusLine` accept
+data, theme functions and callbacks. `InlineLayout` allocates height; it does not
+choose permission or execution policy. Confirmation panels require the relevant
+fields/actions to be painted, invalidate review on geometry/focus changes and
+refuse clipped, pasted or otherwise unreviewed confirmation input.
 
-The overlay system composites a floating panel over the base view: anchored,
-sized by integer or percentage, with margins and offsets. An overlay can capture
-focus, which is how modals, pickers, and autocomplete popups work.
+## Input and workers stay on their owners
 
-## Real key parsing
+Key parsing distinguishes press/repeat/release and modifiers. `PromptKeymap`
+resolves effective host actions; editor paste is atomic rather than interpreted
+as terminal commands. Unicode-aware width/clipping preserves display-cell and
+grapheme boundaries where required.
 
-`keys.py` parses VT100/xterm sequences and the Kitty keyboard protocol (CSI-u),
-distinguishing press, repeat, and release events and decoding modifiers, function
-keys, and backtab. A `KeybindingManager` maps those events to actions by scope.
+`TUI.start()` owns a synchronous raw-terminal loop on the UI thread. Host tick
+callbacks must not block on files, networks or model calls. Workers publish
+immutable events; the host applies them and requests repaint. `EventQueue.drain()`
+uses bounded FIFO batches (64 events or 8 ms between callbacks by default) to
+avoid monopolizing a tick. Hosts close owned completion, attachment, navigation,
+transcript and output workers during shutdown.
 
-## Inline images without Pillow
+`run_outside_terminal(callback)` hands off only at an owned boundary, restores
+terminal modes around foreground work and re-enters negotiation afterward.
+External-editor results remain drafts until the host explicitly applies/submits
+them. Neither handoff nor a UI confirmation is tool approval.
 
-`terminal_image.py` speaks the Kitty Graphics and iTerm2 inline-image protocols,
-detecting terminal capability from the environment. Image dimensions are read by
-pure-Python PNG / JPEG / GIF / WebP parsers, so there is no native-library
-dependency.
+## Images and clipboard are different capabilities
+
+Inline Kitty/iTerm2 image output depends on terminal detection, not the operating
+system name in a protocol. Dimension parsing for PNG/JPEG/GIF/WebP is pure Python;
+there is no Pillow dependency. Validated composer attachments separately support
+PNG/JPEG/WebP and bounded reads.
+
+Linux clipboard reads use explicit Wayland `wl-paste` or X11 `xclip` operations,
+not polling. No non-Linux clipboard adapter is shipped. Terminal image compatibility
+does not imply macOS/native-platform support or model vision capability.
+
+## Host policy remains outside rendering
+
+MCP/OAuth panels do not connect servers or manage credentials. Child panels and
+the read-only child queue inspector do not create children or mutate execution
+queues. Transcript search/export and typed snapshot review operate on host-supplied
+source/artifacts, not Agent persistence or resumable execution authority. Hosts
+retain permissions, scope, storage and lifecycle fences.
+
+See [API/import reference](/packages/tui/reference) and the
+[terminal verification scope](https://github.com/litterzhang/xdog/blob/main/docs/tui-pi-parity.md).

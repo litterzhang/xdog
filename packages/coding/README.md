@@ -18,6 +18,10 @@ The selector lists all matching sessions, newest first. Use Up/Down, Page Up/Dow
 Home/End and Enter to choose; Escape cancels. `--working-dir PATH` changes the
 directory being listed. `--pick-session` opens the same selector.
 
+For durable work see [Goal](#goal-records-and-main-agent-reminders),
+[ACP automatic inputs](#acp-session-routing-automatic-inbox-and-batched-turns),
+and [child authority](#child-authority-and-persisted-constraints).
+
 `--resume-id ID` restores a session directly, including in non-interactive modes.
 The selector shows current-directory sessions first, followed by older sessions
 marked `[Unknown dir]` whose directory was never recorded. Choosing and resuming
@@ -797,7 +801,7 @@ revalidated current parent authority, runs only the new message, then closes the
 Agent and its workers. Coding's child loop/thread exits when idle and is acquired
 on demand; Claw keeps using its original gateway loop. Interrupted/failed effects
 are not automatically replayed; old records without continuation metadata fail
-clearly rather than inventing recoverability. See `docs/child-continuation.md`.
+clearly rather than inventing recoverability. See [child continuation](../../docs/child-continuation.md).
 
 Children share the workspace, so coordinate conflicting writes. Parent conversation
 history and system prompts are never copied; task knowledge is first-user material.
@@ -880,10 +884,15 @@ starts with flags. Plain tasks preserve quotes/newlines. `--tools none` gives th
 child no executable tools; otherwise selected names must exist in its inherited tool
 set and cannot include recursive delegation tools. Unknown/malformed flags
 fail visibly. Instructions append to, rather than replace, parent restrictions.
+`--system-prompt TEXT` supplies child-specific prompt content; `--skills slug1,slug2`
+selects only available parent skill bodies (`--skills none` selects none).
+Action/scoped grants use JSON settings, not invented command-line flags.
 
 In `/agents` press `n`, then Ctrl+G for settings JSON. Supported keys are `label`,
-`instructions`, `tools` (array or null for inherited tools), `inherit_context`,
-`model`, `thinking` and `preset`. Enter applies the settings draft only;
+`instructions`, `system_prompt`, `tools` (array or null for the delegable parent
+subset), `skills`, `tool_actions`, `tool_scopes`, `inherit_context`, `model`,
+`thinking` and `preset`. `inherit_context` must be false; new children never copy
+parent conversation/system context. Enter applies the settings draft only;
 start review requires every page to be painted before confirmation. Resize invalidates
 that review. This confirmation does NOT approve tool use. Effective settings persist
 with child results and appear in complete child source. Runtime budget options
@@ -892,12 +901,61 @@ with child results and appear in complete child source. Runtime budget options
 these budget fields remain readable; the fields are inert and never reapply a
 budget or restart work. This removal does not remove the actual model's per-request
 output token ceiling.
-`--fresh` omits canonical history/child entry inheritance, not mandatory parent
-validation/context or the shared workspace. Model/reasoning inherit by default; explicit overrides now use the actual adapter.
+`--fresh` explicitly selects the no-parent-history behavior (also the default);
+`inherit_context: true` is rejected. It does not remove parent validation/context
+hooks or workspace restrictions. Model/reasoning inherit by default; explicit
+overrides use the actual adapter.
 Named presets now use explicit user configuration. Claw specialized
 starts require its advertised `child_config` capability, avoiding silent old-gateway
 settings loss.
 
+
+### Child authority and persisted constraints
+
+A child receives a **frozen subset of the actual live parent's delegable active
+tools and available skills**, not authority inferred from names or task text.
+`--inherit` selects access policy, never parent history or approval grants.
+`tools: []` selects no tools; null selects the host's delegable subset.
+`skills: []` (the default) selects no skill bodies; an explicit list must be in the
+parent's available catalog, while null selects that catalog. Selected bodies are
+independent child knowledge, not access to a writable parent skill manager.
+`system_prompt` is child-specific content, not a replacement for host restrictions.
+
+`tool_actions` narrows a multi-action tool to literal allowed actions, for example
+`{"filesystem": ["read"]}`. It is not shell-command matching or wildcard expansion;
+`bash` has no `action`, so select it with `tools`, not `tool_actions`.
+`tool_scopes` is finite JSON for explicitly selected, capability-delegable tools;
+unknown/unavailable scope support is rejected, not replaced with an unrestricted
+parent tool. For Goal, an explicit grant can take this settings shape:
+
+```json
+{
+  "tools": ["goal"],
+  "skills": [],
+  "tool_scopes": {
+    "goal": {"goal_id": "EXACT_CURRENT_GOAL_ID", "task_ids": ["assigned-task"]}
+  }
+}
+```
+
+Use actual current IDs and create the assigned tasks first. This grants only
+single-task reads and version-checked updates of status/summary/evidence for those
+existing tasks, not task creation/reassignment, planning, reports or Goal lifecycle
+control. Execution tools must be granted separately under the original policy.
+A read-only child cannot write a task merely because Goal was selected. Results
+from an already granted child may be recorded while Goal is waiting/paused; they
+do not release that wait/pause. Completed/cleared/replaced Goals reject old grants.
+
+Hosts check actual tool identity, schema/action/scope and skill grants at admission,
+after approvals and at executor entry. Parent revocation or changed skill content
+fails closed; pending parallel calls cannot borrow a later broader grant.
+Child records persist effective configuration, tool schema ceilings and filesystem
+execution roots before the model runs. Explicit continuation revalidates the live
+original owner **and** saved ceilings; later parent/schema/root expansion cannot
+silently widen an old child. Missing legacy filesystem metadata is deny-all, not
+unconfined access. Saved records restore data, never live registry/connection handles
+or approval caches. Interrupted effects are not automatically replayed. These
+constraints are host execution policy, not an OS sandbox.
 
 ### Child model and reasoning overrides
 
@@ -1554,7 +1612,7 @@ model input or an automatic replay. Coding uses the current worker-owned image
 batch for recovery, not a potentially lagging UI active-image pointer. Claw applies
 its existing per-connection/run input-ID normalization/fencing to transform/refusal
 receipts too. Child agents use their own extension worker/input history, not parent
-history. Claw scheduler/goal/system initial inputs are explicitly NOT human input
+history. Claw automatic ACP/Goal/system initial inputs are explicitly NOT human input
 hooks; queued human steering/follow-up remains intercepted. Channel metadata is the
 active turn channel, not a claim of a separate queued sender's identity.
 
@@ -2718,42 +2776,90 @@ model tool names and permissions do not change. See
 `docs/extension-public-commands.md` for the shared Coding/Claw contract.
 
 
-### Installed capability code boundaries
+## Goal: records and main-Agent reminders
 
-Trusted installed native capabilities use generic owner, lifecycle event, ACP
-routing and receipt ports. Coding/Claw default dependencies include xdog-skills:
-`/goal` commands and the model tool are available without a display-worker setting
-or Goal enable flag. The packaged skill remains discoverable/loadable. No Goal is
-created merely by installation or ordinary chat.
+Coding includes `xdog-skills` by default. Native `/goal create OUTCOME`, `/goal status`,
+`/goal pause [REASON]`, `/goal resume`, `/goal clear [REASON]` and `/goal history`,
+the `goal` model tool and skill discovery need no Goal enable flag or display worker.
+The **skill body is not active by default**: load it through the existing skill
+mechanism when needed. Availability creates neither a Goal nor a worker/model.
 
-Goal owns one current binding/history, task files and ACP reminders. The current
-main Agent plans, executes itself or uses existing child tools, updates tasks and
-judges completion according to the skill. No Goal-owned worker/reviewer scheduler
-or independent acceptance protocol remains. Tasks/*.json are authoritative, not
-projections of duplicate database task state. Pauses and user/host waits cannot be
-released by an automatic message. Existing readonly/permissions/approval checks
-remain in force. Eyes watches only the generated task directory configuration;
-stopping Goal automation does not cancel unrelated observers or accepted work.
+The current main Agent plans from its conversation, saves `plan.md`, performs work
+or delegates through existing host tools, checks actual evidence and judges
+completion. Before initial work and each continuation it records its assessment
+with `goal(action="report", report={...})` in `progress.md`. Task truth is only
+`<workspace>/.xdog/goals/<goal-id>/tasks/*.json`; no duplicate todo/DB status or
+mandatory reviewer/Goal-owned scheduler exists. Restricted child Goal delegation
+uses the [explicit task scope](#child-authority-and-persisted-constraints).
 
-See `docs/goal-simple-design.md` and its requirement/verification record. Earlier
-capability-boundary and Goal reviewer lifecycle evidence describes its old frozen
-implementation, not the current Goal contract.
+Coding binds one current Goal to the **exact session/branch**. A completed Goal
+remains current/viewable; a new delegated Goal may replace that completed binding
+without rewriting history. Explicit clear releases it. Paused/waiting Goals still
+occupy the binding. This differs from Claw's stable group ownership across `/new`.
+
+New waits are only `user` or `tasks`. The Agent checks task evidence and uses
+versioned `activate` to release a satisfied task wait; a file change alone does
+not release it. User waits require `question`, `impact` and `resume_when`, and actual
+authorized user input satisfying the condition. Saving a question is not sending
+it. Automatic inputs cannot release user waits, historical host waits or user
+pauses. Pauses stop proactive reminders and Goal's own Eyes registration until
+explicit user resume; they do not cancel accepted inputs, tools or children.
+Host/tool/delivery failures are separate runtime facts, not new `wait(host)` states.
+
+Generic owner/settled/task signals coalesce stable-ID ACP reminders into the
+original automatic Inbox and controller, never a second Agent loop or UI approval
+interceptor. Original readonly/tool approval gates remain. Known-not-sent retries
+retain original identity; unknown/interrupted effects are not automatically
+replayed. Optional Eyes observation watches only this Goal's task directory through
+the shared daemon CLI. Legacy Goal files are reported and left untouched.
+
+See the [skills README](../skills/README.md) for actions, progress/task protocols and
+wait/question delivery details, and [Goal design](../../docs/goal-simple-design.md).
+The optional explicitly enabled `goal_ui` display is read-only; it does not own
+Goal lifetime or intercept ordinary UI input.
 
 ## Application-scoped installed capabilities
 
-Coding now discovers `application` providers in addition to session providers. A
-top-level Coding controller opens application bindings on its existing owner loop
-and keeps them across `/new`, session switches and branch navigation. They close
-with that application controller, not an individual conversation/turn. Independent
-SDK controller instances remain independent applications; no module-global runtime
-or second model loop is introduced. Tool name collisions fail closed; explicit
-active-tool selections, readonly/approval policy and child grants still apply.
+Coding discovers trusted installed `application` providers as well as session
+providers. Application bindings stay on the controller's existing owner loop
+across `/new`, session switches and branch navigation, closing with that controller.
+Independent SDK controllers are independent applications. Discovery/metadata import
+is inert; no module-global runtime, permission grant or second model loop exists.
+Tool collisions fail closed; active-tool selection, readonly/approvals and frozen
+child grants still apply.
 
-Installing `xdog-eyes` makes its application-scoped tool available by default; the
-package is not installed automatically and no Eyes-specific adapter is used. Eyes
-only ensures its independent daemon is running. Every tool call supplies a stable
-caller-chosen owner, e.g. `eyes(action="list", owner="my-watches")`. Owner is persisted with the accepted JSON registration,
-not inferred from a Coding session or branch and not used to restrict destinations.
-The normal default Eyes directory is `~/.local/share/xdog/eyes` (or the XDG data
-home override). Goal uses the same owner-only CLI/raw-event controls. Enqueue destinations need
-only an endpoint and existing session ID, not the target working directory.
+Installed `xdog-eyes` contributes the application-scoped `eyes` tool. Opening its
+binding ensures the independent shared user-local daemon, not an observation;
+closing detaches without stopping registrations. Calls use the **public CLI** and
+return `exit_code`, `stdout`, `stderr`; nonzero exit is failure, and cancellation
+does not prove a registration was not accepted. There is no package auto-install
+or Eyes enable flag. For example, these are tool arguments, not shell syntax:
+
+```json
+{"action":"list","owner":"my-watches"}
+```
+
+Every action requires a stable caller-chosen owner. `create` also requires an
+absolute `definition_path`; status/pause/resume/cancel require `observer_id`.
+No `workspace` argument exists. Owner is management metadata, not authentication
+or a group/session destination restriction. JSON handlers choose explicit targets;
+enqueue requires endpoint + existing session ID, with receiver-resolved cwd.
+Standard prompt requires the handler's load-session cwd. Default daemon data is
+`~/.local/share/xdog/eyes` (honoring `XDG_DATA_HOME`); explicit directory overrides
+isolate the same daemon implementation. See [Eyes](../eyes/README.md).
+
+Installed `xdog-flow` likewise contributes a discoverable skill and `flow` tool,
+but **has no daemon**. The tool invokes public `xdog-flow` argv, not a second Python
+workflow API or shell. For example:
+
+```json
+{"arguments":["validate","/absolute/project/workflow.json","--json"]}
+```
+
+Optional `cwd` must be an absolute existing directory. Non-interactive validate,
+run, generate, graph, test, scheduling and help are supported; interactive `build`
+is manual CLI only. Inspect `exit_code`/`stdout`/`stderr`; workflow imports/code,
+models and scheduling can have effects even during validation, so normal tool
+permissions apply. Loading/registering Flow starts no workflow. Cancellation
+settles its owned CLI process group, never automatically retries interrupted
+effects. See [Flow](../flow/README.md).

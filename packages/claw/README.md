@@ -8,8 +8,9 @@
 A local-first gateway with one logical main Agent per group, optional durable Goals,
 supervised task Agents, long-term memory, and JSON/JSONL conversation persistence.
 Installed Eyes provides explicitly requested observations and scheduling through
-the existing private group ACP inbox; SQLite is used for durable intake/output, optional Goal journals and
-optional memory-search indexes.
+the existing private group ACP input; SQLite is used for application-owned intake/output,
+Goal registries and optional memory-search indexes. Session files store context/history,
+not another main Agent or a navigable execution branch.
 
 ## Application and SDK boundaries
 
@@ -31,9 +32,29 @@ SDK/embedding examples below refer to those shared interfaces or explicitly
 to Coding's SDK, not to a public Claw SDK.
 Claw retains its product controls for MCP, trusted extensions, children, Goals,
 memory and history; its internal adapters apply group ownership and tool policy.
-The native gateway socket and optional ACP endpoint are private local communication
+The native gateway socket and default ACP endpoint are private local communication
 surfaces, not a hosted API or permission bypass. Native clients must negotiate
 capabilities and preserve ownership, cancellation and no-blind-replay fences.
+
+## Quick start
+
+```bash
+uv run xdog-claw onboard
+uv run xdog-claw gateway start
+uv run xdog-claw tui --group main
+```
+
+The gateway uses `~/.config/xdog/claw/config.yaml` by default, honoring XDG paths
+or `CLAW_DIR`. `gateway start --config PATH --foreground` runs a selected profile
+in the foreground; TUI accepts the same `--config PATH`. Each group has one logical
+main Agent and execution route. History inspection is read-only; `/new` rotates
+context rather than navigating to a saved branch.
+
+- [Goal](#default-group-owned-goal-support) and [skills protocol](../skills/README.md)
+- [Durable input/output](#durable-intake-and-explicit-input-control)
+- [ACP replies and explicit messaging](docs/acp-input-replies.md)
+- [Eyes scheduling](SCHEDULER.md) and [Flow CLI tool](#installed-capabilities-eyes-and-flow)
+- [Child authority](#child-authority-and-persisted-constraints)
 
 ## Interactive terminal
 
@@ -63,12 +84,15 @@ run. Cancellation and busy rejection restore submitted and queued text ahead
 of a newer draft; input submitted during cancellation stays editable. Ctrl+Z
 suspends on POSIX. Remote coding and fullscreen application modes are excluded.
 The client waits for a fresh session handshake before sending on reconnect.
-Offline submissions stay in the editor. Connection loss restores active/queued
-text for **explicit** resubmission; it never replays uncertain requests itself.
-A restored draft does not undo completed tool effects: review before resending.
+Offline unsent drafts remain editable in client memory. Native staged submissions
+retain original IDs and images across ACK loss; `run_ack` means actual durable
+intake, not completed execution. Reconnect/detach does not cancel accepted
+application work. Inspect original receipts before explicit recovery; never submit
+an uncertain accepted request as a new ID. A restored draft undoes no tool effects.
 `/status` preserves active-run timing; `/reset` and `/clear` are blocked while busy.
-EOF, terminal errors and exit cancel socket work, including blocked reads/drains
-and reconnect waits.
+EOF, terminal errors and exit settle client socket work, blocked reads/drains and
+reconnect waits; they do not revoke already accepted application input. Explicit
+original-input cancellation and gateway shutdown have separate execution owners.
 
 See [terminal verification](../../docs/tui-pi-parity.md) for tests and limitations.
 
@@ -85,23 +109,33 @@ Every gateway starts its private Unix ACP receiver at `data_dir/acp/agent.sock`;
 and TUI. The main Agent's dynamic prompt publishes the actual endpoint, opaque
 session address, cwd and `xdog/enqueue` payload shape so it can tell another
 sender how to contact it. ACP inputs use the ordinary Core Inbox and main Agent.
-They do not imply a chat reply route or grant tool permissions. For user-facing
-notifications the Agent uses the normal message tool.
+They do not imply a chat reply route or grant tool permissions. `session/prompt`
+returns execution identifiers/stop reason without assistant-message chunks;
+`xdog/enqueue` ACKs durable intake. Read saved results explicitly with
+`xdog/inbox_status`; neither ACK nor saved result proves chat delivery. The TUI's
+`acp_updates: 0` default suppresses live automatic completions, not history reads.
+For notifications, the Agent may use the permission-gated `message` tool below.
+See [ACP result reads and reply policy](docs/acp-input-replies.md).
 
 ## Scheduling and observation with Eyes
 
 See [SCHEDULER.md](SCHEDULER.md). Installed `xdog-eyes` contributes the `eyes` tool
-through generic capability discovery. Registration ensures the independent Eyes
-daemon is available; it does not create an observer. Claw has no ManagedObservers,
-observer DB, event relay, report tracker, or extra output-source route.
+through generic capability discovery. Metadata discovery/import is inert; opening
+the application binding ensures the independent shared user-local daemon, without
+creating an observation. Its tool calls public CLI subprocesses and returns actual
+`exit_code`, `stdout`, `stderr`; nonzero exit is failure. Claw owns no observer DB,
+event relay, report tracker or feature-specific output route.
 
 The Agent follows Eyes' application-neutral skill: choose an owner, write the
-complete JSON, then call create/status with the same explicit owner.
+complete JSON, then call create/status with the same explicit owner. `create`
+requires an absolute `definition_path`, not `workspace`; status/pause/resume/cancel
+require the returned `observer_id`.
 The caller decides owner naming; Eyes does not derive it from the group.
 JSON sources/detectors/handlers/routes select what to observe and where to deliver;
 other valid endpoints/sessions are allowed. For enqueue, the receiver resolves the existing session directory; no handler
 `cwd` is required. The tool does not limit destinations to the current group.
-Normal receiver access/protocol checks still apply.
+Owner is management metadata, not authentication. Normal receiver access/protocol
+checks still apply. Standard prompt handlers still need their load-session cwd.
 
 Eyes daemon sends directly through the configured handler into normal ACP intake.
 Eyes does not track subsequent Agent execution or chat output. `list`, `pause`,
@@ -114,27 +148,71 @@ Eyes `at`, fixed-phase `every_seconds`, or zoned five-field cron.
 
 ## Default group-owned Goal support
 
-Claw includes xdog-skills by default: `/goal create/status/pause/resume/clear/history`,
-the `goal` model tool and the packaged skill are available without extra settings.
-Only an explicitly delegated outcome creates a Goal. One logical main Agent per
-group owns its current Goal, even after context rotation; there is at most one,
-including paused/waiting state. Clear archives and releases it, not deletion.
+Claw includes `xdog-skills` by default. `/goal create OUTCOME`, `/goal status`,
+`/goal pause [REASON]`, `/goal resume`, `/goal clear [REASON]`, `/goal history` and the
+`goal` model tool require no Goal enable flag or display worker. The packaged
+skill is discoverable, but its **body is not active by default**; load it through
+normal skill discovery/loading when needed. Installation/ordinary chat creates
+no Goal or model/worker. Create only for an explicitly delegated outcome.
 
-The main Agent plans using its real conversation, works itself or delegates using
-existing host tools, and decides completion. The skill tells workers how to update
-their assigned task JSON file. Goal contains no worker/reviewer scheduling or
-mandatory independent review. It owns groups/<id>/goals/registry.sqlite3 and the
-workspace/.xdog/goals/<goal-id>/ plan/tasks; task files are the sole task truth.
+The group's single main Agent plans from its actual conversation, saves `plan.md`,
+works itself or delegates using existing host tools, reconciles actual task evidence
+and judges completion. Before initial work and every continuation it saves a progress
+assessment through `goal(action="report", report={...})` in `progress.md`. There is
+no Goal-owned worker/reviewer scheduler or mandatory independent acceptance step.
+Workers maintain only their assigned tasks; labels/task text grant no authority.
+Use [explicit child scope](#child-authority-and-persisted-constraints) to delegate
+task reads/result updates without the main Agent's Goal-wide tool authority.
 
-Generic host events drive ACP reminders into the original group input queue.
-Existing permissions apply; automatic reminders cannot release user pauses or
-user/host waits. Optional Eyes task observation uses a generated bounded file
-configuration, not a new daemon. Context rotation and /new do not move the Goal.
-The optional goal_ui display remains read-only and independent from default
-commands/tools. Legacy journal.sqlite3/goals.json are reported and preserved, not
-silently rewritten or resumed. See docs/goal-simple-design.md for the full contract.
+One current Goal belongs to the **stable group**, including paused/waiting state;
+context rotation and `/new` do not move it. Completed remains current and viewable;
+a new delegated Goal may atomically replace completed, preserving history. Clear
+releases the binding, not task-file deletion or cancellation of accepted work.
+The registry is `<data_dir>/groups/<id>/goals/registry.sqlite3`; artifacts are
+`<workspace>/.xdog/goals/<goal-id>/`. `tasks/*.json` is the sole task-state authority.
+Legacy `journal.sqlite3`/`goals.json` are reported and preserved, not upgraded/replayed.
+
+New waits support only `user` and `tasks`. Task changes may prompt an evidence
+check; only the main Agent's versioned `activate` releases a satisfied task wait.
+User waits require `question`, `impact` and `resume_when` and actual authorized
+user input satisfying the condition. Saving a question is not delivering it:
+automatic ACP input has no chat recipient. An authorized Agent may explicitly
+send it through `message`, correlating the actual saved `question.id`; output
+receipts remain independent of Goal state. See [question delivery](docs/acp-input-replies.md#goal-questions).
+
+Automatic inputs cannot release user waits, historical host waits or user pauses.
+Host/tool/delivery failures remain runtime facts, never a new `wait(host)` state.
+Pause disables proactive reminders and Goal's own Eyes registration until explicit
+user resume; it does not cancel accepted inputs/tools/children or unrelated
+observations. Repeated no progress is assessed by the Agent, not an automatic
+round counter; it should explain blockers and pause when no viable strategy remains.
+
+Generic owner/settled/task signals coalesce stable-ID ACP reminders into the same
+application Inbox/controller/main Agent, with the original tool policy. Optional
+Eyes task observation uses the shared daemon's public CLI, not a Claw observer
+runtime. Unknown/interrupted effects are not automatically replayed. The optional
+explicitly enabled `goal_ui` display is read-only and owns no business lifetime.
+See [skills actions and state protocol](../skills/README.md) and
+[Goal design](../../docs/goal-simple-design.md).
 
 ## Durable intake and explicit input control
+
+Native TUI, messaging channels and ACP persist immutable input envelopes (including
+attachments and original reply bindings) before execution admission. The application
+owns `<data_dir>/inputs/inbox.sqlite3`, not the ACP receiver or UI. Its single group
+controller fences input/attempt/session ownership through receipt settlement.
+`claimed` is not `running`; preparation failure differs from execution failure.
+Receiver disconnect/restart leaves accepted pending/running work owned by the
+application. Gateway shutdown/crash marks started execution interrupted, never
+replaying potentially executed model/tool effects. Recovery/retry must preserve
+original receipt facts; no exactly-once side-effect guarantee is implied.
+
+Outgoing messages have separate application-owned receipts in
+`<data_dir>/outputs/journal.sqlite3`. They distinguish pending/sending/delivered/
+unknown/cancelled output and proven-not-sent transport attempts. A successful
+Agent turn or intake ACK is not delivered output. Unknown sends are not automatically
+replayed; original destinations are frozen rather than reselected on restart.
+Session JSONL and `sessions.json` are context/history, not Inbox/outbox authority.
 
 Ordinary messages share the group Inbox and wait behind its single execution
 owner; busy messages never implicitly steer a running Agent. Claw's internal
@@ -163,9 +241,36 @@ the orchestrator. A later arrival does not change the active message's reply
 recipient or typing indicator. When the inbox fills, polling pauses until space
 is available rather than dropping messages.
 
-The inbox is in-memory, not a durable job queue: stopping/restarting the gateway
-cancels the active handler and discards pending messages. Wait for replies
-before restarting; messages left pending may need to be resent.
+The channel poller's FIFO is a bounded in-memory transport staging buffer, not
+the canonical application Inbox. The built-in Weixin path durably accepts supported
+input before advancing the upstream cursor or handing it to that FIFO. Accepted
+input and original reply bindings remain durable as described above. A poller acknowledgement,
+Core intake ACK, Agent result and channel delivery are different facts; inspect
+receipts before retrying uncertain work instead of blindly resending after restart.
+
+### Explicit proactive message tool
+
+The permission-gated `message` tool sends **one message to one currently bound
+channel of the current group**. These JSON objects are tool arguments:
+
+```json
+{"action":"channels"}
+```
+
+Then use the exact host-issued ID from that operation's channel list:
+
+```json
+{"action":"send","channel":"EXACT_RETURNED_CHANNEL_ID","text":"Verified result"}
+```
+
+No arbitrary group/recipient, multi-channel broadcast or recipient inferred from
+ACP/Eyes provenance is supported. Sending revalidates the live binding and freezes
+the destination; a stale/changed binding fails closed. It is one tool side effect,
+not a new default reply route or end-of-turn action. Inspect returned `message_id`,
+`status` and per-output receipts; do not duplicate sent text as an ordinary reply or
+retry an unknown send. Optional `reference` correlates output facts (for example a
+saved Goal `question.id`), granting no routing authority or permission. A child
+needs an explicit permitted message-tool grant and retains the same group fence.
 
 ## Image generation with xdog-ai
 
@@ -904,7 +1009,7 @@ restores the child history into a fresh runtime, and closes that Agent after the
 round. Claw borrows the gateway's original loop and never stops it for child idle
 cleanup. Interrupted/failed work and unknown effects are never automatically
 replayed. Old records without safe continuation metadata require a fresh child;
-see `docs/child-continuation.md` for recovery and permission boundaries.
+see [child continuation](../../docs/child-continuation.md) for recovery and permission boundaries.
 
 Children share their group's workspace but never inherit the parent's conversation
 history or system prompt. Model/options may be independently selected; tools/skills
@@ -978,10 +1083,15 @@ starts with flags. Plain tasks preserve quotes/newlines. `--tools none` gives th
 child no executable tools; otherwise selected names must exist in its inherited tool
 set and cannot include recursive delegation tools. Unknown/malformed flags
 fail visibly. Instructions append to, rather than replace, parent restrictions.
+`--system-prompt TEXT` supplies child-specific prompt content; `--skills slug1,slug2`
+selects only available parent skill bodies (`--skills none` selects none).
+Action/scoped grants use JSON settings, not invented command-line flags.
 
 In `/agents` press `n`, then Ctrl+G for settings JSON. Supported keys are `label`,
-`instructions`, `tools` (array or null for inherited tools), `inherit_context`,
-`model`, `thinking` and `preset`. Enter applies the settings draft only;
+`instructions`, `system_prompt`, `tools` (array or null for the delegable parent
+subset), `skills`, `tool_actions`, `tool_scopes`, `inherit_context`, `model`,
+`thinking` and `preset`. `inherit_context` must be false; new children never copy
+parent conversation/system context. Enter applies the settings draft only;
 start review requires every page to be painted before confirmation. Resize invalidates
 that review. This confirmation does NOT approve tool use. Effective settings persist
 with child results and appear in complete child source. The removed `--timeout`,
@@ -989,12 +1099,61 @@ with child results and appear in complete child source. The removed `--timeout`,
 keys are rejected on new starts; historical saved values are inert compatibility
 data, not restored limits. Actual model output/context options remain separate from
 a removed cumulative child token quota; usage is not exact billable accounting.
-`--fresh` is the explicit no-parent-history mode; parent conversation/system
-context is never inherited. It does not remove parent validation or workspace restrictions. Model/reasoning inherit by default; explicit overrides now use the actual adapter.
+`--fresh` explicitly selects the no-parent-history behavior (also the default);
+`inherit_context: true` is rejected. It does not remove parent validation/context
+hooks or workspace restrictions. Model/reasoning inherit by default; explicit
+overrides use the actual adapter.
 Named presets now use explicit user configuration. Claw specialized
 starts require its advertised `child_config` capability, avoiding silent old-gateway
 settings loss.
 
+
+### Child authority and persisted constraints
+
+A child receives a **frozen subset of the actual live parent's delegable active
+tools and available skills**, not authority inferred from names or task text.
+`--inherit` selects access policy, never parent history or approval grants.
+`tools: []` selects no tools; null selects the host's delegable subset.
+`skills: []` (the default) selects no skill bodies; an explicit list must be in the
+parent's available catalog, while null selects that catalog. Selected bodies are
+independent child knowledge, not access to a writable parent skill manager.
+`system_prompt` is child-specific content, not a replacement for host restrictions.
+
+`tool_actions` narrows a multi-action tool to literal allowed actions, for example
+`{"filesystem": ["read"]}`. It is not shell-command matching or wildcard expansion;
+`bash` has no `action`, so select it with `tools`, not `tool_actions`.
+`tool_scopes` is finite JSON for explicitly selected, capability-delegable tools;
+unknown/unavailable scope support is rejected, not replaced with an unrestricted
+parent tool. For Goal, an explicit grant can take this settings shape:
+
+```json
+{
+  "tools": ["goal"],
+  "skills": [],
+  "tool_scopes": {
+    "goal": {"goal_id": "EXACT_CURRENT_GOAL_ID", "task_ids": ["assigned-task"]}
+  }
+}
+```
+
+Use actual current IDs and create the assigned tasks first. This grants only
+single-task reads and version-checked updates of status/summary/evidence for those
+existing tasks, not task creation/reassignment, planning, reports or Goal lifecycle
+control. Execution tools must be granted separately under the original policy.
+A read-only child cannot write a task merely because Goal was selected. Results
+from an already granted child may be recorded while Goal is waiting/paused; they
+do not release that wait/pause. Completed/cleared/replaced Goals reject old grants.
+
+Hosts check actual tool identity, schema/action/scope and skill grants at admission,
+after approvals and at executor entry. Parent revocation or changed skill content
+fails closed; pending parallel calls cannot borrow a later broader grant.
+Child records persist effective configuration, tool schema ceilings and filesystem
+execution roots before the model runs. Explicit continuation revalidates the live
+original owner **and** saved ceilings; later parent/schema/root expansion cannot
+silently widen an old child. Missing legacy filesystem metadata is deny-all, not
+unconfined access. Saved records restore data, never live registry/connection handles
+or approval caches. Interrupted effects are not automatically replayed. These
+constraints are host execution policy, not an OS sandbox.
 
 ### Child model and reasoning overrides
 
@@ -1643,7 +1802,7 @@ model input or an automatic replay. Coding uses the current worker-owned image
 batch for recovery, not a potentially lagging UI active-image pointer. Claw applies
 its existing per-connection/run input-ID normalization/fencing to transform/refusal
 receipts too. Child agents use their own extension worker/input history, not parent
-history. Claw scheduler/goal/system initial inputs are explicitly NOT human input
+history. Claw automatic ACP/Goal/system initial inputs are explicitly NOT human input
 hooks; queued human steering/follow-up remains intercepted. Channel metadata is the
 active turn channel, not a claim of a separate queued sender's identity.
 
@@ -2767,36 +2926,33 @@ owned; they expose no plugin layout or editor/session-mutation authority. Core T
 overlays, transcript fullscreen, Unicode, clipping, cursor and tool-approval behavior
 remain.
 
-### Application input and observer ownership
+## Installed capabilities: Eyes and Flow
 
-ACP namespace/status now expose the same application receipts as native intake;
-there is no adapter-owned inbox/consumer. Endpoint detachment does not stop accepted
-work. Core receipt and observer journals are separate private SQLite files under
-`data_dir/inputs/` and `data_dir/observers/`. Cursor+outbox commits precede idempotent
-ACP handoff. Namespace/attempt fences and unknown-send handling remain fail closed;
-there is no old-format migration. The wider optional Goal/shared UI refactor is
-tracked in `docs/claw-assistant-core-requirements.json`, not claimed complete here.
+Trusted installed providers use generic owner/lifecycle, ACP routing and receipt
+ports. Business policy stays in its package, not a Claw UI/input interceptor.
+Tool selection, group readonly/allow-tools policy and original child grants remain
+in force; no installed capability can create a second main-Agent execution route.
+Claw is still an application, not a public SDK for those internal host adapters.
 
-None of these controls may abort unrelated active chat or undo started effects.
+Eyes is application-scoped: opening its binding ensures the independent shared
+daemon; closing detaches without stopping registrations. Default data is
+`~/.local/share/xdog/eyes` (honoring `XDG_DATA_HOME`); explicit directory overrides
+isolate the same daemon implementation. The public CLI/tool owns observation and
+handler-delivery facts, never downstream Agent completion or chat receipt policy.
+See [scheduling and CLI management](SCHEDULER.md).
 
+Installed `xdog-flow` contributes the application-scoped `flow` tool and a
+discoverable skill. It invokes **public CLI argv**, has no daemon and starts no
+workflow merely on registration/skill loading. For example, tool arguments are:
 
-### Installed capability code boundaries
+```json
+{"arguments":["validate","/absolute/project/workflow.json","--json"]}
+```
 
-Trusted installed native capabilities use generic owner, lifecycle event, ACP
-routing and receipt ports. Coding/Claw default dependencies include xdog-skills:
-`/goal` commands and the model tool are available without a display-worker setting
-or Goal enable flag. The packaged skill remains discoverable/loadable. No Goal is
-created merely by installation or ordinary chat.
-
-Goal owns one current binding/history, task files and ACP reminders. The current
-main Agent plans, executes itself or uses existing child tools, updates tasks and
-judges completion according to the skill. No Goal-owned worker/reviewer scheduler
-or independent acceptance protocol remains. Tasks/*.json are authoritative, not
-projections of duplicate database task state. Pauses and user/host waits cannot be
-released by an automatic message. Existing readonly/permissions/approval checks
-remain in force. Eyes watches only the generated task directory configuration;
-stopping Goal automation does not cancel unrelated observers or accepted work.
-
-See `docs/goal-simple-design.md` and its requirement/verification record. Earlier
-capability-boundary and Goal reviewer lifecycle evidence describes its old frozen
-implementation, not the current Goal contract.
+Optional `cwd` is an absolute existing process directory, not a group/session
+selector or permission grant. Non-interactive validate/run/generate/graph/test/
+scheduling/help are supported; interactive `build` is manual CLI only. Results
+contain `exit_code`, `stdout`, `stderr`; nonzero exit is failure. Workflow code,
+imports, models and scheduling can have effects even during validation, so normal
+host policy still applies. Cancellation settles the owned CLI process group,
+never automatically replays interrupted effects. See [Flow](../flow/README.md).

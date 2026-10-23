@@ -7,10 +7,13 @@ release_readiness.json
 release_readiness.test.json
 ```
 
+Commands below assume the repository root after `uv sync`:
+
 ```bash
-xdog-flow test release_readiness.json      # finds the sibling suite
-xdog-flow test examples/                   # every *.test.json under a directory
-xdog-flow test release_readiness.json --case "critical finding blocks the release"
+uv run xdog-flow test packages/flow/examples/release_readiness.json --allow-script-stub  # sibling suite
+uv run xdog-flow test packages/flow/examples/ --allow-script-stub  # companion suites
+uv run xdog-flow test packages/flow/examples/release_readiness.json \
+  --allow-script-stub --case "critical finding blocks the release"
 ```
 
 Exit status is 1 if any case fails, so it drops straight into a pre-commit hook or
@@ -50,8 +53,12 @@ check and `to_state` coercion. Two consequences worth knowing:
   the stub.
 
 Because the stub runner answers *every* agent node — whatever its `backend` — no
-provider or CLI is ever constructed. A test cannot reach the network by accident;
-an agent node with no stub fails loudly instead of falling back to anything real.
+provider or external agent CLI is ever constructed. An agent node with no stub
+fails loudly instead of falling back to a real backend. This is **not a no-effects guarantee for the whole suite**:
+unstubbed scripts and import-time custom code can still read/write files, launch
+processes or use the network. Review them or supply permitted script stubs.
+`run --dry-run` is different: it replaces SDK streaming only, does not replace
+CLI backends/scripts, and may not satisfy structured-result contracts.
 
 ## Suite shape
 
@@ -80,7 +87,8 @@ convention is for. Name it explicitly if a suite lives somewhere else.
 
 ## Stubs
 
-A stub is always authored as the node's **output ports**. Either a constant:
+The following snippets are fragments of a case object. A stub is always authored
+as the node's **output ports**. Either a constant:
 
 ```json
 "agents": {
@@ -172,8 +180,8 @@ separate assertions:
 | how many loop iterations? | `{"critique": 2}` |
 
 `calls` counts *invocations*, so a fan-out node reports its instance count, not its
-activation count. For a fan node inside a loop the two multiply; use `output` to
-disambiguate if that ever matters.
+activation count. Current validation rejects fan workers inside bounded loops;
+the count does not imply support for that topology.
 
 ### Matching rules
 

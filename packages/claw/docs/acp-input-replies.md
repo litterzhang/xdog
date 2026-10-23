@@ -1,143 +1,147 @@
-# ACP input origins and optional chat reply targets
+# ACP input, explicit result reads and proactive messages
 
-ACP is an input transport into the application's existing group Inbox. It is not
-an installed chat channel and does not identify a user reply recipient.
+ACP is a private input transport into Claw's application-owned group Inbox, not
+an installed chat channel or a user reply recipient. Claw is an application, not
+a public Python SDK; use the CLI/configuration/channels and documented protocols.
+Each group has one logical main Agent and execution route. Session transcripts
+store context/history; they do not provide branch navigation or a second Agent.
 
 ## Default behavior
 
-- `xdog/enqueue` keeps its durable queued/duplicate ACK and original message ID.
-  Standard `session/prompt` waits for the original receipt and returns its stop
-  reason and `_meta.xdog` execution identifiers, **without agent-message chunks**.
-- Both paths execute on the group's existing main Agent, under the same group
-  controller and tool policy. Results remain in the Core input receipt and
-  session transcript; there is no second agent, channel broadcast or extra turn.
-- Host input metadata records `input_origin: acp`; the input has no reply channel
-  or default `ReplyTarget`. Even an `ExternalInput` carrying a nonempty channel
-  label cannot infer a reply target. Untrusted source/provenance cannot choose one.
-- Standard prompt execution errors remain ACP request errors. Enqueue validation,
-  capacity errors, cancellation/detachment, durable receipts and ACK-loss
-  idempotency retain their existing semantics.
-- The shipped TUI sends `acp_updates: 0` by default, so automatic ACP completions do
-  not appear as live chat replies. The existing explicit `acp_updates: 1`
-  diagnostic subscription remains available. Historical transcript display can
-  still use `channel: acp` as a source label; it is not delivery routing.
+- `xdog/enqueue` returns a durable queued/duplicate ACK and original message ID,
+  **not** an execution result or proof of user notification.
+- Standard `session/prompt` waits for the original receipt, returning stop reason
+  and `_meta.xdog` execution identifiers, **without agent-message chunks**.
+- Both paths use the same group controller/main Agent and original tool policy.
+  Results remain in Core input receipts and the session transcript. There is no
+  second Agent, automatic channel broadcast or extra reply turn.
+- Host metadata records `input_origin: acp`; the accepted input has no default
+  reply channel/`ReplyTarget`. Untrusted channel/source/provenance labels cannot
+  select a recipient, even if an input claims a nonempty channel label.
+- Standard prompt execution failures remain ACP request errors. Validation,
+  capacity errors, durable receipts and ACK-loss idempotency remain separate facts.
+- The TUI defaults to `acp_updates: 0`, suppressing live automatic ACP completions.
+  Explicit `acp_updates: 1` is a diagnostic subscription, not chat routing.
+  Historical `channel: acp` labels are provenance, not delivery destinations.
+
+Every gateway starts its private Unix ACP receiver at
+`<data_dir>/acp/agent.sock`. `acp_socket_path` or `gateway start --acp-socket PATH`
+overrides it. The prompt publishes the real endpoint, opaque session address,
+cwd and enqueue shape; never guess these from a transcript or event label.
+See [Claw/Eyes ACP setup](../../../docs/claw-eyes-acp.md).
+
+## Application-owned intake and output
+
+Native, messaging and ACP input share `<data_dir>/inputs/inbox.sqlite3`. ACP owns
+no receipt DB, consumer, observer query or report-delivery policy. Detaching a
+connection/endpoint only detaches waiters, not accepted application work or storage.
+Receiver-only restart does not replay or cancel accepted work. Explicit original-input
+cancellation and actual application shutdown/crash use separate owners; started
+crashed execution becomes interrupted and is never automatically replayed.
+
+Outgoing messages have independent application-owned facts in
+`<data_dir>/outputs/journal.sqlite3`. Pending/sending/delivered/unknown/cancelled
+outputs and proven-not-sent send attempts are distinct from Agent execution. An
+intake ACK, successful turn or persisted question does not prove delivery. Unknown
+sends are not automatically replayed, and original destinations are not reselected
+on reconnect. Same-ID/content enqueue retry handles ACK loss, not exactly-once
+model/tool/channel effects; never blindly resend outcome-unknown standard prompts.
 
 ## Explicit reads
 
-`xdog/inbox_status` retains its namespace, status, attempt ID, execution session ID,
-error and cursor fields. Selecting `message_id` additionally returns a bounded
-`response` with `response_offset` (default `0`) and `response_next_offset` in that
-message row. Pass `response_next_offset` as the next request's `response_offset`
-until it is `null`. Offsets count Python Unicode characters, not encoded bytes;
-each response page contains at most 16,384 characters. The offset must be a strict
-integer in `0..1048576` and requires a selected message. Cursor/list pages do not
-include response bodies. Error previews remain limited to 1,024 characters.
+`xdog/inbox_status` keeps namespace, status, attempt ID, execution session ID,
+error and cursor fields. Selecting `message_id` also returns bounded `response`,
+`response_offset` (default `0`) and `response_next_offset` in that message row.
+Pass `response_next_offset` as the next request's `response_offset` until null.
 
-Each selected result's state, attempt/session identity and response come from one
-immutable receipt snapshot. Callers reading across an explicit retry must compare
-`attempt_id` and restart pagination if it changes. These are explicit result reads,
-not unsolicited ACP chat messages. They neither execute a model nor retry tools.
+Offsets count Python Unicode characters, not bytes. Each page contains at most
+16,384 characters. The offset must be a strict integer in `0..1048576` and requires
+a selected message. List/cursor pages omit response bodies; error previews remain
+limited to 1,024 characters. These are bounded receipt results, not an unbounded
+transcript export.
 
-## Existing explicit delivery is independent
+State, attempt/session identity and response come from one immutable receipt
+snapshot. Across an explicit retry, compare `attempt_id` and restart pagination
+if it changes. Reads do not invoke models, retry tools, send chat or release waits.
+Clients formerly consuming streamed ACP answers must explicitly read the receipt.
+Suppression is not transcript redaction; history remains inspectable.
 
-Ordinary Weixin and TUI user messages still reply through their original captured
-channel bindings. Trusted installed output sources may supply an optional frozen
-original `ReplyReference`; this remains distinct from the ACP input origin.
-Accepted routes are not reselected after ACK loss or restart.
+## Explicit delivery
 
-The existing, separately developed `message channels` / single-channel
-`message send` implementation is retained. A main Agent handling an ACP input may
-explicitly invoke that tool under its original permissions. Its per-message output
-receipt is independent from the ordinary saved turn result, and sending does not
-change the default reply route. There is no automatic fallback or broadcast.
+Ordinary Weixin/TUI messages keep their original captured reply bindings. Trusted
+installed output sources may supply a frozen original `ReplyReference`, independently
+of ACP input origin. Accepted routes are not reselected after ACK loss/restart.
 
-## Installed capability owner restoration audit
+A main Agent handling automatic input may use the normal permission-gated `message`
+tool. First list current bindings, then select one exact host-issued ID in the
+same operation. These are tool arguments, not additional CLI subcommands:
 
-No Goal-specific branch was added to Claw. The existing generic lifecycle already:
+```json
+{"action":"channels"}
+```
 
-1. Activates the group input scope and stable Inbox namespace.
-2. Opens `GroupCapabilityHost` and the installed group providers without preparing
-   an AgentSession or calling a model.
-3. Publishes the initial `owner.available` snapshot when a provider subscribes.
-4. Publishes availability changes when the actual ACP endpoint is installed or
-   retired, whether it precedes or follows capability initialization.
-5. Settles capability jobs, retires the original owner, and closes its resources
-   before releasing storage on application shutdown.
+```json
+{"action":"send","channel":"EXACT_RETURNED_CHANNEL_ID","text":"Verified result"}
+```
 
-`test_capability_owner_recovery.py` restores real persisted Goal records with both
-startup orders. Active/task-wait records restore their owned observation and can
-persist one coalesced ACP reminder without constructing an AgentSession. Paused,
-user-wait and completed records neither release their wait nor enqueue
-work. Repeated availability hints do not duplicate accepted reminders, and endpoint
-retirement stops the owned observation. This tests Goal as an installed capability;
-all production host code remains schema-neutral.
+Each send targets **one currently bound channel of the current group**. Arbitrary
+group/recipient fields and multicast are rejected. The host revalidates that the
+listed recipient binding is still current, then freezes it for the send. Stale or
+changed bindings fail closed; no inferred creator reply or fallback broadcast exists.
+A permitted child grant still has the same group/channel fence.
 
-## Limits and deployment
+Sending is one tool effect with its own `message_id`, `status` and per-output
+receipts, not a default-route change or end-of-turn instruction. Do not repeat
+sent text as an ordinary reply or retry unknown output. Optional `reference` is
+only a bounded correlation string, never routing authority or permission.
 
-- This changes the default standard-prompt reply behavior; clients that consumed
-  streamed ACP answer chunks must explicitly query the receipt instead.
-- Explicit diagnostic completion subscriptions and transcript/history inspection
-  remain possible. This is default reply suppression, not transcript redaction.
-- Existing persisted inputs/routes are not migrated or rewritten. A duplicate ID
-  retains its original accepted envelope. The existing receipt result-size limit
-  and uncertain-send/interrupted-execution review requirements still apply.
-- Current verification uses temporary test data, scripted model transports and
-  isolated Unix endpoints. No running user gateway is restarted. Earlier runs,
-  before daemon isolation was added, were found to register test-only workspaces
-  in the default Eyes daemon; evidence-preserving cleanup is coordinated
-  separately, not silently performed by this fixture.
-- Existing processes must load the updated code through a separately authorized
-  normal deployment; this change does not hot-patch them.
+## Goal questions
 
-### Verification scope
+Goal's skill body is discoverable, not active by default. Once loaded, the main
+Agent owns planning, task evidence and completion; reminders use this same ACP
+intake, not a UI interceptor or Goal-specific execution loop.
 
-Run `uv run ruff check packages/claw`, `uv run mypy --strict -p xdog.claw` and
-`uv run pytest packages/claw/tests -q` from the repository root. Focused coverage
-includes `test_acp_silent_inputs.py`, `test_acp_backend.py`, `test_acp_gateway.py`,
-`test_capability_owner_recovery.py`, existing output-source routing tests and the
-uncommitted outbound-message / Goal-question delivery tests.
+New waits support only `user` or `tasks`. A new `wait(user)` requires nonempty
+`question`, `impact`, `resume_when`. Saving it is **not sending it**. Read Goal
+status for the real `question.id`; if notification is needed and permitted,
+explicitly send through a listed `message` channel, optionally using that ID as
+`reference`. Do not fabricate an ID/channel or duplicate a question after ACK loss.
 
-The admitted public wait states in `test_goal_host.py` are `user` and `tasks`;
-the same test covers user pause and the requirement for explicit user resume.
-Separate coverage rejects new `wait(host)` without a revision or current-binding
-change, and restores a historical host-wait fixture without rewriting it,
-automatically releasing it, starting observation or executing a model. Historical
-fixture creation uses the existing Goal test helper, never a production API that
-claims to admit a new host wait.
+Optional `question.delivery` reads actual correlated host output facts. Unavailable/
+untracked does not prove nothing was sent; unknown/partial/cancelled does not mean
+delivered. No output receipt or read activates Goal. The main Agent checks actual
+authorized user input against `resume_when` before versioned `activate`.
+Automatic task/clock/ACP input cannot release user waits, historical host waits or
+user pauses. New `wait(host)` is rejected: host/tool/delivery faults are runtime
+facts, not Goal business-state transitions. See [Goal states](../../skills/README.md#waiting-pause-and-question-delivery).
 
-### Test-owned Eyes daemon isolation
+## Eyes and Flow boundaries
 
-`tests/conftest.py` supplies an autouse, function-scoped fixture for all Claw tests,
-including synchronous tests that launch child interpreters. It overrides both
-`XDG_STATE_HOME` and `XDOG_EYES_RUNTIME_DIR` with a fresh short `/tmp/claw-eyes-*`
-root; child processes inherit those values. Ambient user runtime overrides cannot
-redirect these tests to a real user's daemon. No daemon starts just to create the
-fixture or to run cleanup.
+Installed Eyes is an application-scoped capability whose tool invokes the public
+Eyes CLI and ensures the shared user-local daemon, without creating observations.
+It owns registration/cursors/handler delivery, not later Agent execution or chat
+receipt policy. Goal separately manages only its own task observation via that
+CLI; Claw contains no Eyes runtime/private daemon adapter or observer journal.
+Closing a host binding detaches, not daemon stop or cancellation of registrations.
+Installed Flow likewise invokes public CLI argv, but has no daemon. Both tools
+retain normal host policy and return actual CLI exit/stdout/stderr facts.
 
-At teardown the fixture addresses only its own explicit directory and original
-generation, submits `daemon-stop`, waits for endpoint removal and original lease
-release, and reaps a child started by the current interpreter. It does not signal
-arbitrary PIDs or stop a daemon found in the default user directory. Only after
-successful settlement is that private test root removed; a failed teardown leaves
-its private state intact for diagnosis and fails the test.
+## Limits and verification
 
-`test_eyes_daemon_isolation.py` invokes the actual installed `eyes` AgentTool in
-both the parent and child interpreters. Create/list/status/cancel use generic Claw
-capability ports and share the fixture-owned daemon rather than the default
-instance; no host-side Eyes SDK or Eyes CLI invocation is involved. The three-process
-managed observer recovery test seeds an already accepted historical checkpoint
-against a past wall time: the now-independent daemon uses real wall time, not the
-old host-injected fixed future clock. Its exactly-one execution and report/no-replay
-assertions are retained.
+Existing persisted inputs/routes are not migrated or rewritten. A duplicate ID
+keeps its accepted envelope. Original namespace/message/attempt/session fences,
+bounded results and unknown-send/interrupted-execution review still apply.
+No exactly-once or automatic replay guarantee is implied.
 
-### Host source boundary
+From the repository root, focused regression coverage is:
 
-Claw application source contains no direct Eyes implementation import or Eyes CLI
-invocation. `test_application_boundary.py` checks every Claw product Python source
-for ordinary/dynamic imports and literal CLI calls, and tests that the detector
-rejects representative violations while permitting generic capability/tool IO.
-The Eyes extension internally uses private `_daemon_control.DaemonControl` to
-implement its registered tool. This is not a public client SDK. Goal's separately
-installed main-owner capability uses CLI subprocesses instead; Claw owns neither
-that domain policy nor a feature-specific runner. The real tool/isolation test
-proves that enforcing this source boundary does not merely remove the live tool.
+```bash
+uv run pytest -q packages/claw/tests/test_acp_silent_inputs.py \
+  packages/claw/tests/test_outbound_messages.py \
+  packages/claw/tests/test_goal_host.py \
+  packages/claw/tests/test_capability_owner_recovery.py
+```
+
+These tests use temporary stores/scripted model transports/private endpoints and
+fixture-owned Eyes daemon isolation, not a running user's gateway or registrations.
+They are regression checks, not proof of live provider or external-channel delivery.

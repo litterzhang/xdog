@@ -2,174 +2,304 @@
 title: Reference
 ---
 
-Application boundaries, the `xdog-claw` CLI, workspace files, private local
-communication, durable intake and explicit Agent input controls.
+Application boundaries, CLI/configuration, workspace files, private local input,
+output receipts and host-owned child authority. Linux is the supported platform.
 
 ## Application boundary
 
-Claw is operated as an application through its CLI, configuration, terminal and
-messaging channels. It does not offer a separately supported public Python SDK
-for embedding its gateway or group/session runtime. The root `xdog.claw` package
-does not re-export runtime classes. Internal runtime/session adapters remain
-importable for application composition and tests, not as a public API contract or
-recommended direct embedding entry point.
+Claw is an application operated through `xdog-claw`, configuration, channels and
+documented private protocols. The root `xdog.claw` package re-exports no runtime
+classes. Internal `Orchestrator`/`GroupRuntime`/`AgentSession` adapters remain
+importable for application composition/tests, not as a supported public embedding API.
 
-For reusable Python Agent functionality, use **`xdog.agent`**. Its Agent runtime,
-MCP client (`xdog.agent.mcp.McpManager`), extension API and child supervision are
-shared SDK facilities; their existence does not make Claw an independent SDK.
-Coding's SDK is separate and is not removed by this boundary.
-
-## Private local communication
-
-- **Native gateway Unix socket**: the terminal client's private transport for
-  messages, status, reset and negotiated product controls. Capabilities, request/
-  connection/group ownership and context revisions fence control requests. It is
-  not a general public embedding API; unsupported controls must not be guessed.
-- **Default private Unix ACP ingress**: the gateway opens `data_dir/acp/agent.sock`;
-  `acp_socket_path` or `gateway start --acp-socket PATH` overrides the address.
-  ACP addresses the existing `group:<id>` main Agent through ordinary durable
-  input. Enqueue can omit cwd; a supplied cwd must match the target group.
-  It creates no second Agent loop or implicit chat reply route.
-- Pending ACP inputs survive receiver restart; interrupted execution and uncertain
-  effects are not automatically replayed. No socket/capability bypasses tool policy
-  or grants approval. There is no hosted control plane or public TCP endpoint.
-
-See the [ACP setup and recovery boundaries](https://github.com/litterzhang/xdog/blob/main/docs/claw-eyes-acp.md)
-for the private endpoint contract and receipt/cancellation limits.
-
-## Optional Eyes and Flow capabilities
-
-Installed `xdog-eyes` and `xdog-flow` are discovered as application capabilities
-through the shared Agent SDK. The host does not install packages automatically.
-SkillManager makes their packaged skills discoverable, but full bodies are loaded
-only on explicit activation. Tools remain subject to host permission/read-only
-and per-Agent selection; a skill is never an execution grant.
-
-Eyes uses an independent user-local daemon, normally `~/.local/share/xdog/eyes`.
-The registered tool invokes the public Eyes CLI. Each registration has an explicit
-caller-selected owner; its saved JSON sources/handlers/routes determine what to
-observe and where to deliver. It is not restricted to the creating group or
-workspace. No observer is created merely by installation or skill discovery.
-Claw owns no observer journal, notification cancellation or creator-reply capture.
-Closing a tool binding does not stop the daemon. Cancelling a source does not
-withdraw accepted target work, reverse effects or cancel chat output.
-
-Flow has no daemon. Each tool invocation runs its existing CLI as a separate
-owned process. CLI execution, including workflow code and imports, requires the
-normal host authorization. Neither capability starts another Agent loop.
-
-An ACP ACK proves durable intake, not execution or channel delivery. ACP execution
-has no implicit chat recipient; the main Agent uses the normal message tool if
-an authorized user-facing notification is required. Unknown/interrupted effects
-are not automatically retried. Incompatible persistent formats are reported and
-left untouched rather than migrated or replayed.
-
-## Workspace files
-
-The files under a group's workspace that shape the system prompt. Editing them (or
-running `onboard`) changes the agent.
-
-| File | Role |
-|---|---|
-| `IDENTITY.md` | Who the agent is — the Name line is the agent's name. |
-| `AGENTS.md` | Operating instructions / behavioural rules. |
-| `SOUL.md` | Persona and voice. |
-| `USER.md` | What the agent knows about the user. |
-| `MEMORY.md` | Long-term memory snapshot. |
-| `BOOTSTRAP.md` | One-time first-run setup, consumed then deleted. |
-| `.xdog/goals/<goal_id>/` | Goal plans, progress and authoritative task files; the private registry under `data_dir/groups/<id>/goals/` owns binding/history. |
+Reusable interfaces are in **`xdog.agent`**: Agent, host-owned `ToolRegistry`,
+`xdog.agent.mcp.McpRegistry` and extension APIs. `xdog.agent.children` supplies inert
+`ChildClient`/`ChildHandle` contracts/shared data, not child supervision/execution.
+Claw owns `ClawChildRuntime`/storage/extension workers on the gateway's original
+loop; Coding owns its separate child runtime and session SDK.
 
 ## CLI — `xdog-claw`
 
-Subcommands of the claw console script (`cli/cli.py`).
+Subcommands of the console script, verified against current `--help`:
 
 | Command | Does |
 |---|---|
-| `onboard` | Setup wizard: provider login, model, agent name, workspace. |
-| `gateway start [--config PATH] [--foreground] [--acp-socket PATH]` | Start the gateway daemon. |
-| `gateway stop · gateway status` | Stop / inspect the gateway. |
-| `tui [--group]` | Attach a terminal client to a group. |
-| `channel login --weixin [--base-url]` | Authenticate the WeChat channel. |
-| `generate-image PROMPT [--workspace PATH] [--output-dir PATH]` | Generate local image assets with the configured image model. |
+| `onboard [--config PATH]` | Setup wizard for provider/model, workspace/identity and tool selection; no hardcoded chat/image model default. |
+| `gateway start [--config PATH] [--foreground] [--acp-socket PATH]` | Start the daemon, optionally in the foreground or with an ACP address override. |
+| `gateway stop [--config PATH] · gateway status [--config PATH]` | Stop or inspect the selected gateway profile. |
+| `tui [--config PATH] [--group GROUP]` | Attach a terminal client; group defaults to `main`. |
+| `channel login --weixin [--config PATH] [--group GROUP] [--base-url URL]` | Authenticate Weixin and bind it to a group, not a new Agent per sender. |
+| `generate-image PROMPT [--config PATH] [--workspace PATH] [--output-dir PATH]` | Generate local assets with the configured image tool/model. Also accepts repeated `--reference`, `--aspect-ratio`, `--image-size 1K/2K/4K`. |
+| `--version · --help` | Version or root command help. |
 
-## Ordinary intake and explicit Agent input
+```bash
+uv run xdog-claw onboard
+uv run xdog-claw gateway start
+uv run xdog-claw tui --group main
+```
 
-Ordinary TUI, Weixin and ACP messages commit to the same durable group Inbox
-before acknowledgment. Busy input waits for the existing group execution owner;
-it is not silently steered into an in-flight turn. Input IDs deduplicate intake,
-while execution attempts and channel-output receipts remain separate facts.
-`max_queued_messages` bounds unfinished accepted inputs (pending/claimed/running,
-default50); accepted messages are never evicted to make room. Claw does not batch independent messages into one turn
-or expose collect/steer-backlog/debounce queue policies.
+For foreground operation, use `gateway start --foreground` instead. Image generation
+must first be enabled and an image-output model selected during onboarding; it saves
+local files, not chat image uploads. See the
+[image/configuration details](https://github.com/litterzhang/xdog/blob/main/packages/claw/README.md).
 
-Explicit steer/follow-up uses the existing identified `xdog.agent` queue and safe
-checkpoints. It is neither cancellation/rollback nor a second Claw queue. The
-Agent's native input modes remain independent of group admission settings.
+## Configuration and workspace files
+
+Default config is `~/.config/xdog/claw/config.yaml`, honoring XDG paths or `CLAW_DIR`.
+`--config PATH` is a subcommand option, not a root model/permission override.
+
+| Configuration | Role |
+|---|---|
+| `model · image_model` | Explicit configured chat and image models; image generation is independently opt-in. |
+| `enabled_tools` | Host tool selection; `[]` disables tools, absent/null uses defaults. Selection grants no permission. |
+| `groups` | Operator-defined group identity/workspace and model/reasoning options. |
+| `gateway.max_concurrent_agents` | Background group-turn admission (default 3), not child concurrency. |
+| `gateway.daily_reset_hour · gateway.idle_reset_seconds` | Current-context rotation settings; default daily reset is 04:00 UTC. |
+| `data_dir · socket_path · acp_socket_path` | Data/native-socket paths and override of default private ACP input address. |
+| `mcp_servers · mcp_credential_backend` | Explicit MCP configuration and selected credential storage backend. |
+| `extensions · extension_dir · extension_settings` | Trusted extension selection and settings; not model-tool registration. |
+| `child_presets` | Explicit operator-owned data-only child templates; no permissions/provider activation. |
+
+No Goal/Eyes enable switch, retired task-scheduler `tasks_file`, queue-mode/debounce/
+trigger-pattern or per-group-concurrency setting is a current feature. Old
+`scheduled_tasks.json`/observer journals are not imported, migrated or replayed.
+Create Eyes definitions only for explicitly requested work.
+
+Workspace files shape the prompt and memory:
+
+| File | Role |
+|---|---|
+| `IDENTITY.md` | Agent identity/name. |
+| `AGENTS.md` | Operating instructions and behavioral rules. |
+| `SOUL.md` | Persona and voice. |
+| `USER.md` | User context. |
+| `MEMORY.md` | Long-term memory snapshot. |
+| `BOOTSTRAP.md` | One-time first-run setup, consumed then deleted. |
+| `.xdog/goals/<goal-id>/plan.md` | Main-Agent plan. |
+| `.xdog/goals/<goal-id>/progress.md` | Main-Agent versioned progress assessments. |
+| `.xdog/goals/<goal-id>/tasks/*.json` | The sole task-state authority. |
+
+Private application storage is separate from these artifacts:
+
+| Path under `<data_dir>` | Owns |
+|---|---|
+| `inputs/inbox.sqlite3` | Application input envelopes/receipts and execution attempts. |
+| `outputs/journal.sqlite3` | Independent outgoing messages and transport-attempt facts. |
+| `groups/<id>/goals/registry.sqlite3` | Goal binding, revision history and reminder outbox, owned by the skills capability. |
+
+## Private local communication and durable intake
+
+- **Native Unix socket**: TUI messages/status/reset and negotiated controls. Actual
+  connection/group/input/attempt/session/context ownership fences every operation.
+  `run_ack` follows durable intake, not execution success. Staged submissions retain
+  original IDs/images across ACK loss; unsent editable drafts remain local memory.
+- **Default private Unix ACP endpoint**: `<data_dir>/acp/agent.sock`, overridden with
+  `acp_socket_path` or `gateway start --acp-socket PATH`. Addresses use `group:<id>`
+  and the actual advertised endpoint/session. Enqueue can omit cwd; an explicit cwd
+  must match the existing group workspace. Standard prompt requires load-session cwd.
+- **One Core Inbox**: ordinary TUI/Weixin/ACP inputs persist immutable envelopes
+  before acknowledgement, including original reply bindings. Busy messages wait;
+  they never implicitly steer. The Weixin poller durably accepts supported inputs
+  before advancing its upstream cursor or volatile FIFO handoff.
+- **Separate output facts**: pending/sending/delivered/unknown/cancelled outputs and
+  proven-not-sent attempts do not equal Agent status. Original recipients are frozen;
+  unknown sends are never automatically replayed.
+
+`GroupConfig.max_queued_messages` bounds unfinished accepted inputs
+(pending/claimed/running, default 50); accepted records are not evicted to make room.
+It is distinct from removed queue policies and the background group-turn semaphore.
+Claw does not batch independent ordinary messages into one turn. Explicit
+steer/follow-up uses Agent's identified queue/checkpoints, not another Claw queue or
+rollback of tools already started.
+
+Connection/endpoint detachment detaches waiters, not accepted application execution
+or storage. Receiver-only restart preserves pending/running work. Application
+shutdown/crash marks started execution interrupted, never automatic model/tool
+replay. Explicit original-input cancellation/retry remains separately fenced.
+No socket grants tool approval or exactly-once effects. See
+[ACP setup/recovery](https://github.com/litterzhang/xdog/blob/main/docs/claw-eyes-acp.md).
+
+## ACP result reads and explicit notification
+
+Ordinary ACP input has no default chat reply target. `xdog/enqueue` ACKs durable
+intake; standard `session/prompt` returns stop reason and `_meta.xdog` identifiers,
+**without agent-message chunks**. Results remain in receipts/transcripts.
+TUI `acp_updates: 0` suppresses live automatic completions; explicit `1` is diagnostic,
+not chat routing or a new recipient. Ordinary TUI/Weixin user replies keep their
+original captured destinations.
+
+`xdog/inbox_status` selected by `message_id` returns bounded `response`,
+`response_offset` and `response_next_offset`. Each page is at most 16,384 Unicode
+characters; offset is a strict integer 0..1048576. Follow the next offset until
+null, restarting if `attempt_id` changes across explicit retry. List pages omit
+response bodies. Reads never invoke a model, resend output or release Goal waits.
+
+For an authorized notification, use these **`message` tool arguments**, not CLI
+subcommands. First list bindings in the current operation:
+
+```json
+{"action":"channels"}
+```
+
+Then choose an exact returned ID:
+
+```json
+{"action":"send","channel":"EXACT_RETURNED_CHANNEL_ID","text":"Verified result"}
+```
+
+One send targets **one currently bound channel of the current group**. Arbitrary
+group/recipient fields, multicast or routing inferred from ACP/Eyes labels are
+rejected. The host revalidates the listed binding and freezes its recipient.
+Sending returns independent `message_id`/`status`/per-output receipts; it does not
+change the ordinary reply route or end the turn. Do not repeat sent text as an
+ordinary reply or retry unknown sends. Optional `reference` only correlates facts,
+for example a real saved Goal `question.id`, never grants authority. A child needs
+an explicit permitted message-tool grant with the same group fence.
+
+See the [complete ACP reply contract](https://github.com/litterzhang/xdog/blob/main/packages/claw/docs/acp-input-replies.md).
 
 ## Context and read-only history
 
-A group has one logical main Agent. `/new` and `/reset` rotate idle context without
-deleting its Goals; active child work must first settle. Unfinished stored Goals
-do not suppress automatic daily/idle resets. Runtime/gateway context identities fence stale requests,
-not route events to another main Agent.
+A group has one logical main Agent. `/new` and `/reset` rotate idle context, not
+Goals/identity; active children must first settle. Model/reasoning, active tools/
+skills and access restrictions remain, while messages/counters/context-owned
+extension entries start fresh. Unfinished Goals do not disable daily/idle reset.
 
-`/sessions` and `/tree` inspect history; **Enter/v** opens read-only source. `/` searches,
-Right/Left inspects/returns, `r` refreshes and Escape closes. The browser has no
-activation or `n` new-context shortcut. `/transcript saved SESSION_ID [BRANCH_ID]`,
-`/transcript branch BRANCH_ID` and `/transcript timeline [SESSION_ID]` retain their
-negotiated group-scoped read-only boundaries, with checksummed source and reviewed
-copy/export/share. Saved source never substitutes for a failed live/archived read.
+`/sessions` and `/tree` inspect history; **Enter/v** opens readonly source. `/`
+searches, Right/Left inspects/returns, `r` refreshes and Escape closes. There is no
+activation or browser `n` new-context shortcut. `/transcript saved SESSION_ID
+[BRANCH_ID]`, `/transcript branch BRANCH_ID` and `/transcript timeline [SESSION_ID]`
+retain their negotiated group-scoped readonly source/copy/export/share boundaries.
+Failed reads never substitute another live/archived source.
 
-`/resume ID`, `/fork`, `/branch` and `/goto` historical execution controls are removed
-and explicitly rejected. Legacy branch/checkpoint files are not deleted or activated.
-Startup restores only the current committed context; uncertain requests and
-interrupted side effects are not automatically replayed. Coding branching is unchanged.
+`/resume ID`, `/fork`, `/branch` and `/goto` execution controls are removed and
+explicitly rejected. Legacy checkpoints/branches stay readable, never activated.
+Startup restores only committed current context; uncertain requests/interrupted
+effects are not automatically replayed. Coding branch navigation is unchanged.
 
-## Optional Goal tool and skill
+## Goal tool and lifecycle
 
-Installed `xdog-skills` supplies the same Goal domain/tools used by Coding.
-Availability does not create a Goal. The current main Agent plans, optionally
-delegates, updates task files, reports progress and judges completion. No required
-reviewer or Goal-owned worker scheduler is introduced. The registry owns the
-current binding/history; workspace task files are authoritative, not disposable
-report projections. Completion remains visible until an explicit clear/archive.
+Claw includes `xdog-skills` by default: native `/goal` controls and the actual
+owner-bound model tool need no enable flag/display worker. The skill body is
+available but **not active by default**. Availability creates no Goal/model/worker.
 
-The stable group owns the Goal across context rotation. User waits/pauses and
-tool permission decisions cannot be released by untrusted source labels. Goal
-reminders use ordinary ACP input; the Goal runtime manages only its own optional
-Eyes CLI registration and cannot cancel unrelated observations or accepted work.
+| Command/action | Purpose |
+|---|---|
+| `/goal create OUTCOME · /goal status · /goal history` | Create a genuinely delegated outcome, inspect current state or read history. |
+| `/goal pause [REASON] · /goal resume · /goal clear [REASON]` | Pause proactive work, explicitly resume user pause, or release current binding without deleting artifacts. |
+| Model `plan · task_update · report · complete` | Save the main Agent's plan, CAS task updates, versioned progress assessment and evidence-based completion. |
+| Model `wait · activate` | Save a genuine user/tasks wait; main Agent releases a satisfied wait with exact Goal ID/observed version/reason. |
 
-## Child settings and resource boundaries
+The main Agent plans, optionally delegates through authorized host tools, reconciles
+authoritative task JSON and reports in `progress.md` before initial work/every
+continuation. There is no mandatory reviewer or Goal-owned worker/acceptance loop.
+One current Goal belongs to the stable group across `/new`/reset. Completed remains
+current/viewable; a newly delegated Goal may atomically replace completed while
+preserving history. Only explicit clear releases it without replacement; unfinished
+bindings cannot be overwritten. Legacy Goal files remain untouched/reported.
+
+New waits support only `user` and `tasks`. User waits need nonempty `question`,
+`impact`, `resume_when` and actual authorized user evidence; task changes trigger
+checks, not automatic activation/acceptance. New `wait(host)` is rejected; host/tool/
+delivery faults are separate runtime facts. Automatic input cannot release user
+waits, historical host waits or user pauses. Pause stops reminders and only Goal's
+own Eyes registration until explicit user resume, not accepted inputs/tools/children.
+
+Saving a question is not delivery. Read status for the real `question.id`, and use
+an authorized explicit send when needed. Optional readonly `question.delivery`
+reflects host output facts: unavailable/untracked is not proof of no send, and
+unknown/partial/cancelled is not delivered. Output/read receipts never release waits.
+See [skills](/packages/skills) and the
+[Goal skill](https://github.com/litterzhang/xdog/blob/main/packages/skills/src/xdog/skills/skills/goal/SKILL.md).
+
+## Child settings and authority
 
 ```text
 /agents start --label Inspector --instructions "Inspect only" --tools filesystem,current_time --fresh -- TASK
 /agents start --preset inspector -- TASK
 ```
 
-The settings shape is `label`, `instructions`, `tools`, `inherit_context`, `model`,
-`thinking`, `preset`; named presets are explicit data-only trusted configuration.
-They grant no tool approval, role authority, recursion or provider activation.
-A child label or preset is not a capability, tool grant or privileged role;
-actual parent-owned tool/skill subsets and host permissions remain authoritative.
+The preset example requires explicit operator `child_presets.inspector` configuration.
+Starts are readonly by default; `--inherit` selects current host access policy, not
+parent history or approval grants.
 
-The main Agent manages child concurrency/waiting/cancellation/closure. There is no
-fixed child runtime timeout, call count, cumulative-token quota, active-child count
-or retained-record count. Removed `--timeout`/`--calls`/`--tokens` flags and child
-`timeout`/`max_model_calls`/`max_tokens` keys are rejected for new work; historical
-values are inert. Provider per-response output/context limits remain separate.
-Parent reply completion does not close working children; supported long loops use
-native compaction and durable original-history checkpoints.
+| Settings field | Meaning |
+|---|---|
+| `label · instructions · system_prompt` | Child label/task material/child-owned prompt; no parent conversation/system inheritance or permission grant. |
+| `tools` | Frozen subset of actual live parent delegable active tools; `[]` selects none, null selects the delegable set. |
+| `skills` | Subset of available parent skill bodies; default `[]` selects none, null selects the available catalog. |
+| `tool_actions` | Literal action narrowing for multi-action tools, not wildcards/shell matching. |
+| `tool_scopes` | Explicit supported capability scope for selected tools; no unrestricted fallback. |
+| `inherit_context` | Must be false; new true values are rejected. `--fresh` makes this default explicit. |
+| `model · thinking · preset` | Actual-adapter routing/reasoning or operator template; no increased permissions/authentication fallback. |
 
-Permissions/read-only/MCP/extension policy, actual model capacity, bounded protocol
-frames, per-message/chunk storage, image/input resources, display limits and
-RPC operation deadlines remain. They are not task-lifetime quotas or an OS sandbox.
-User cancellation, shutdown cleanup and no-blind-replay crash recovery still apply.
-The gateway's background **group-turn** admission policy is separate from child
-concurrency; human inputs keep priority.
+`--system-prompt TEXT` and `--skills slug1,slug2` are supported child flags.
+Actions/scopes use JSON settings. Named presets grant no recursion, tool approval,
+privileged role or provider activation. Children never receive a writable parent
+history/system/policy manager; approvals and extension state are independent.
 
-Current scope and acceptance evidence are tracked in the
-[objective](https://github.com/litterzhang/xdog/blob/main/docs/superpowers/specs/2026-10-19-claw-assistant-core-design.md),
-[design](https://github.com/litterzhang/xdog/blob/main/docs/superpowers/specs/2026-10-19-claw-assistant-core-design.md)
-and [checklist](https://github.com/litterzhang/xdog/blob/main/docs/claw-assistant-core-requirements.json).
-Linux is the supported platform; this reference does not claim non-Linux validation
-or completed acceptance gates.
+For Goal, an explicit scope selects current `goal_id` and existing assigned
+`task_ids`. It grants only per-task reads/CAS status/summary/evidence updates, never
+creation/reassignment, whole-Goal reports/plans or lifecycle control. Readonly still
+forbids writes. Existing child results may be saved during Goal wait/pause without
+releasing it; completion/clear/replacement fences old scopes.
+
+Actual identity/schema/action/scope/skills and permissions are checked at admission,
+after approvals and executor entry. Effective configuration, tool schema ceilings
+and filesystem roots persist before model execution. Continuation revalidates the
+original live owner and saved ceilings, never borrowing broader later grants.
+Missing legacy filesystem metadata means deny-all, not unconfined access. Saved
+records restore no live registry handles or approval caches.
+
+The main Agent manages children; no fixed lifetime/call/token/concurrency/record
+quota exists. Removed `--timeout`/`--calls`/`--tokens` and child `timeout`/
+`max_model_calls`/`max_tokens` keys are rejected for new work; historical values are
+inert, not restored budgets. Actual model context/output/vision limits, permissions,
+protocol/image/per-operation storage bounds and operation deadlines remain.
+Parent reply completion does not close working children; native compaction preserves
+original history durably when model metadata supports it. Cancellation/shutdown
+settle actual owners, never automatically replay interrupted effects.
+
+## Installed Eyes and Flow tools
+
+Installed optional packages contribute application-scoped tools/discoverable skills
+through `CapabilityAssembly`. Discovery/import is inert; bodies activate on demand,
+never grant tools or auto-install a package. Selection/readonly/permissions and
+frozen child grants still apply.
+
+Eyes uses the shared independent user-local daemon, normally
+`~/.local/share/xdog/eyes` (honoring `XDG_DATA_HOME`). Opening the binding ensures
+daemon availability but no observation; closing detaches without stopping accepted
+registrations. Tool calls invoke the public CLI:
+
+```json
+{"action":"create","owner":"my-watches","definition_path":"/absolute/project/eyes.json"}
+```
+
+Every action needs caller-chosen `owner`. `create` additionally requires an absolute
+saved `definition_path`, not `workspace`; status/pause/resume/cancel use returned
+`observer_id`. JSON handlers select destinations, not the current group/workspace.
+Owner is management metadata, not authentication. Enqueue resolves existing target
+cwd; explicit cwd asserts consistency, while standard prompt requires load-session
+cwd. Eyes tracks observation/handler delivery, not Agent/chat completion. No
+`cancel_notifications`, observer journal or creator-reply route exists in Claw.
+
+Flow has no daemon. Its tool invokes public CLI argv, not a second workflow API:
+
+```json
+{"arguments":["validate","/absolute/project/workflow.json","--json"]}
+```
+
+Optional `cwd` must be an absolute existing directory. Noninteractive validate/run/
+generate/graph/test/scheduling/help are supported; `build` remains manual interactive
+CLI only. Both tools return actual `exit_code`/`stdout`/`stderr`; nonzero exit is
+failure. Workflow code/imports/models/scheduling may have effects even during
+validation, so host authorization still applies. Cancellation settles the owned
+CLI wait/process, not proof no durable registration/effect was accepted. Unknown/
+interrupted effects are not blindly retried.
+
+See [Eyes](/packages/eyes), [Flow](/packages/flow),
+[full package README](https://github.com/litterzhang/xdog/blob/main/packages/claw/README.md)
+and [current acceptance](https://github.com/litterzhang/xdog/blob/main/docs/claw-assistant-core-requirements.json).
+These are host policy/recovery boundaries, not an OS sandbox or proof of live
+external-channel, non-Linux or complete whole-product validation.

@@ -24,10 +24,15 @@ def _load_package_docs() -> dict[str, PackageDocs]:
     from xdog.site.content.ai import DOCS as AI_DOCS
     from xdog.site.content.claw import DOCS as CLAW_DOCS
     from xdog.site.content.coding import DOCS as CODING_DOCS
+    from xdog.site.content.eyes import DOCS as EYES_DOCS
     from xdog.site.content.flow_docs import DOCS as FLOW_DOCS
+    from xdog.site.content.skills import DOCS as SKILLS_DOCS
     from xdog.site.content.tui import DOCS as TUI_DOCS
 
-    return {d.name: d for d in (AI_DOCS, AGENT_DOCS, TUI_DOCS, CODING_DOCS, CLAW_DOCS, FLOW_DOCS)}
+    return {
+        d.name: d
+        for d in (AI_DOCS, AGENT_DOCS, TUI_DOCS, CODING_DOCS, CLAW_DOCS, FLOW_DOCS, EYES_DOCS, SKILLS_DOCS)
+    }
 
 
 PACKAGE_DOCS: dict[str, PackageDocs] = _load_package_docs()
@@ -213,9 +218,7 @@ def package_static(name: str, page: str) -> str:
 @bp.route("/packages/<name>/features")
 def package_features(name: str) -> str:
     pkg, docs = _docs_or_404(name)
-    return render_template(
-        "packages/docs/features.html", pkg=pkg, docs=docs, groups=docs.grouped_features()
-    )
+    return render_template("packages/docs/features.html", pkg=pkg, docs=docs, groups=docs.grouped_features())
 
 
 @bp.route("/packages/<name>/roadmap")

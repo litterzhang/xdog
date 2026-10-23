@@ -8,23 +8,242 @@
 The agent loop that sits on top of [`xdog-ai`](https://pypi.org/project/xdog-ai/):
 tool registration and dispatch, structured output contracts, and mid-run steering.
 
-## Part of xdog
+## Install and CLI
 
-This package is one piece of [xdog](https://github.com/litterzhang/xdog), a
-local-first toolkit for building, running and scheduling LLM workflows. The
-centrepiece is [`xdog-flow`](https://pypi.org/project/xdog-flow/) — a typed
-workflow format and compiler.
+Requires **Python 3.12+ on Linux**. From the workspace root use `uv sync`;
+for a standalone installation use `pip install xdog-agent` (or
+`pip install 'xdog-agent[acp]'` for the optional ACP adapter).
 
-Documentation: **https://xdog.942295.xyz**
+```bash
+uv run xdog-agent --help
+uv run xdog-agent login  # Copilot login; other provider logins use xdog-ai
+uv run xdog-agent chat copilot/claude-sonnet-4.5 "Explain this runtime" --no-tools
+uv run xdog-agent chat copilot/claude-sonnet-4.5 --no-tools  # Interactive on a TTY
+uv run xdog-agent chat --help
+```
 
-## Licence
+Use a model from `xdog-ai models <provider>`; example model IDs are not an
+availability promise. With multiple active providers use `provider/model`, not
+an ambiguous bare ID. AI owns authentication/routing/protocol adaptation; Agent
+accepts an injected request adapter and does not choose fallback credentials.
 
-Copyright (c) 2026 HugeMan <942295.xyz>
+`--no-tools` disables all tools **and application capability discovery/startup**.
+Without it, the CLI creates default bash/filesystem/current-time tools, injects
+web search, and opens installed application capabilities (which may start owned
+resources such as the Eyes daemon). Neither CLI tool availability nor SDK
+registration is an approval gate or OS sandbox. Use only in trusted environments;
+SDK hosts must install their own `before_tool_call` policy.
+`--tool-ctx` accepts a JSON object or `@file`; it does not enable `submit_result`.
 
-GNU Affero General Public License v3.0 or later — see
-[LICENSE](https://github.com/litterzhang/xdog/blob/main/LICENSE). Output compiled
-by `xdog-flow` is exempt; see the
-[Generated Output Exception](https://github.com/litterzhang/xdog/blob/main/LICENSE-EXCEPTION.md).
+## SDK quick start
+
+```python
+import asyncio
+
+import xdog.ai as ai
+from xdog.agent import Agent, AgentConfig, stream_fn_from_provider
+
+async def main():
+    # Provider construction is local; prompting needs an existing login and network.
+    async with Agent(
+        stream_fn_from_provider(ai.provider("copilot")),
+        config=AgentConfig(model="claude-sonnet-4.5", system_prompt="You are helpful."),
+    ) as agent:
+        stream = await agent.prompt("Explain the distinction between a tool and a skill.")
+        async for event in stream:
+            print(event.type)
+        await stream.result()  # Completion only; Agent history is on the Agent.
+        print(f"Retained messages: {len(agent.messages)}")
+
+asyncio.run(main())
+```
+
+Bare `Agent(...)` installs no bash/filesystem tools and discovers no capabilities.
+It adds `web_search`/`embed` only when their functions are injected. Skills and
+MCP are also explicit constructor inputs. `AgentConfig.tool_execution` defaults
+to `"parallel"`; tool preparation/finalization hooks run serially. The permission
+hook sees the actual selected tool; transformed arguments must still pass the
+host's policy before execution. Generic tools are not a security boundary.
+
+Consume the event stream while the producer runs: the default event buffer is
+bounded (256 events), and awaiting only `stream.result()` can stall on
+backpressure. For `Agent.prompt()`, read retained history from `agent.messages`
+or the terminal `AgentEndEvent.messages`, not the stream result value.
+`agent.subscribe(listener)` observes events and returns a disposer;
+listener callbacks and optional `SnapshotEvent`s are not durable commit ACKs.
+Always settle/close the Agent on its owning loop before disposing host resources.
+
+## Host-owned tool inventories
+
+```python
+from pathlib import Path
+from xdog.agent.tools import ToolContext, ToolRegistry
+
+registry = ToolRegistry()  # Fresh catalog, no global registration side effects.
+tools = registry.create_tools(["current_time"], context=ToolContext(cwd=Path.cwd()))
+binding = registry.replace_source("host", tools)
+# agent is an existing idle Agent on the host's execution owner.
+registry.publish(agent)
+# Later: remove this revision and explicitly publish the resulting inventory.
+binding.close()
+registry.publish(agent)
+```
+
+| Operation | Contract |
+| --- | --- |
+| `ToolRegistry(builtins=True)` | Factory catalog: bash, filesystem, current_time by default; submit_result is opt-in. `builtins=False` starts empty. |
+| `register_factory(name, factory, default=False)` | Register a fresh-tool factory; duplicate names fail. |
+| `create_tools(names=None, context=...)` | Create only; `None` selects defaults, `[]` selects none. No publication or permission grant. |
+| `replace_source(source, tools)` | Atomically bind actual tools. Duplicate names across sources fail; its `ToolRegistration.close()` removes only that revision. |
+| `tools` / `publish(agent)` | Read/publish the ordinary inventory. Publication uses `agent.set_tools()` and does not broaden explicit active selection. |
+
+The host owns resources and publication timing; removing a binding does not close
+a tool's resources or undo its effects. Capability tools join this ordinary
+inventory through the same SDK. **MCP stays separate**: pass a host-owned
+`McpRegistry` directly to Agent; do not bind its proxies into `ToolRegistry`.
+`local_tools` is the ordinary inventory; `state.tools` is the combined inventory,
+and `active_tools` is its effective selection. Use
+`set_active_tools(names, expected_revision=agent.tool_selection_revision)` for
+an idle, revision-checked selection (`None` means all, `[]` means none).
+Extensions contribute hooks, commands, UI and providers, **not model tools**.
+See [registry reference](../../docs/host-owned-tool-registry.md) and
+[the MCP lifecycle example](#separate-mcp-registry-and-agent-integration).
+
+## Generic structured results
+
+`submit_result` is an optional Agent tool, not a Flow-specific parser or an
+Agent constructor option. Opt in with
+`ToolRegistry().create_tools(["submit_result"])` or
+`from xdog.agent.tools import create_submit_result_tool`. Inject **`result_schema`
+and `result_sink` through `tool_ctx`**:
+
+```python
+from xdog.agent import Agent, AgentConfig
+from xdog.agent.tools import ToolRegistry
+
+async def collect_result(stream_fn):
+    sink = {}  # A new caller-owned sink for this collection.
+    schema = {
+        "type": "object",
+        "properties": {"summary": {"type": "string"}},
+        "required": ["summary"],
+        "additionalProperties": False,
+    }
+    async with Agent(
+        stream_fn,
+        config=AgentConfig(model="copilot/claude-sonnet-4.5"),
+        tools=ToolRegistry().create_tools(["submit_result"]),
+        tool_ctx={"result_schema": schema, "result_sink": sink},
+    ) as agent:
+        stream = await agent.prompt("Summarize the task and call submit_result with {summary: ...}.")
+        async for _event in stream:
+            pass
+        await stream.result()
+    if "result" not in sink:
+        raise RuntimeError("The model did not submit an accepted result")
+    return sink["result"]
+```
+
+Here `stream_fn` must route the qualified model (for example an adapter over
+`ai.load()`). JSON Schema objects with `type`/`properties` are validated with
+fastjsonschema; the legacy flat form `{"summary": "string"}` requires declared
+fields and permits extras. With no schema, any JSON value is accepted, including
+arrays/scalars/null. Validation errors return `Error: ...` so the model may fix
+and resubmit. The old `flow_output_schema` / `flow_result_sink` keys are rejected.
+
+The tool writes `sink["result"]` only after validation; use a shared nested dict
+because ToolDef dispatch shallow-copies the outer context. Without a dict sink,
+acceptance does not retain a value for the caller. Acceptance does not stop the
+Agent, guarantee submission, or mean durable task completion. Later successful
+submissions replace that key; a failed submission does not erase an earlier one.
+Hosts decide when to accept/persist a result and whether the overall run succeeded.
+
+## Skills and Capability SDK
+
+`SkillManager(shared_dir, group_dir)` discovers packaged skills, then shared and
+group overrides. Discovery exposes an index, **not active bodies or permissions**.
+Pass `skills=manager, active_skills=("plan",)` to Agent (when that skill is
+installed/loadable), or explicitly call `set_active_skills()` while idle.
+Session-scoped bodies stay in the cacheable prefix; turn-scoped bodies are
+messages with a consumed/pending lifecycle. Invalid explicit activation fails
+rather than silently claiming a missing skill is active. A host may prepare
+`SkillPlacement.read(manager, slugs)` off-loop and pass `prepared_skills` to avoid
+filesystem IO during construction. The optional read-only skill tool must also
+be injected, for example
+`create_skill_tool(manager, allowed_slugs=("plan",))` from `xdog.agent.skills`.
+Its `list`/`load` actions return metadata/instructions as tool results; they do
+not activate a session/turn body or mutate permissions. Its availability and
+`allowed_slugs` filter are independent of the Agent’s discovery index.
+
+`xdog.agent.capabilities` exports `ApplicationPort`, `CapabilitySet`,
+`CapabilityAssembly` and `discover`. Installed trusted `xdog.capabilities` entry
+points supply optional tools, skills, resources and extension hooks on actual
+session/group/application owners. Discovery/metadata are inert; **starting a Set
+can open provider resources**. `CapabilityAssembly` only composes already-opened
+Sets; it is not a runtime, permission layer or another model loop.
+
+A host explicitly calls `await capabilities.start(ApplicationPort())`, constructs
+`assembly = CapabilityAssembly(capabilities)`, then calls
+`assembly.create_agent(stream_fn, skills=manager, config=..., tools=...,
+enabled_tools=..., active_skills=...)`. `enabled_tools=None` includes all capability
+tools, `[]` includes none; it does not filter supplied base tools. Tool-name
+collisions fail instead of shadowing another owner. `declared_skills` and
+`declared_tools` are metadata; `default_skills` are live defaults, not an implied
+activation of every declared skill. Flow, Eyes **and Goal** declare packaged
+skills but do not activate their bodies by default. Explicit skill activation
+never grants tool permission or child access.
+
+Close all Agents before their shared Sets, including on failure. Closing an Eyes
+binding detaches from the daemon; it does not stop it or cancel registrations.
+Reinject current adapters, tools, managers and permission hooks before restoring;
+`assembly.restore_agent()` / `restore_agent_parts()` validate saved bindings and
+merge current default session skills without rearming consumed turn skills.
+See [complete capability SDK example](../../docs/sdk-capability-assembly.md) and
+[installed capability details](#installed-host-capabilities).
+
+## Snapshots, compaction and cancellation
+
+- `agent.dump()` returns versioned JSON at an idle, fully settled checkpoint;
+  the host writes it. `restore(snapshot, allowed_models=...)` validates then
+  atomically adopts data without model/tool execution. Saved model IDs, tool
+  names or skill text are not authority. Live registries, connections, tool
+  context/sinks, parent handles, permission hooks and compaction policy must be
+  supplied by the host, never reconstructed from snapshot instructions.
+- `dump_metadata()` plus separately encoded messages / `restore_parts()` supports
+  long retained histories without the whole-document limit; individual parts
+  and complete tool-call/result pairing are still validated. See
+  [snapshot reference](#session-metadata-and-separately-retained-history).
+- `dump(recovery=True)` is diagnostic, marked non-resumable, and does not authorize
+  replay of uncertain effects. Unconfirmed tool work requires reconciliation.
+  `AgentConfig(emit_snapshots=True)` enables immutable safe-boundary observations,
+  not persistence barriers or automatically saved recovery files.
+- Generic automatic compaction defaults **off**. Opt in with
+  `AgentConfig(compaction=CompactionConfig(auto=True, ...))`; capacity/reserve
+  must come from the executing adapter's real metadata or explicit trusted host
+  limits, not the historical `AgentConfig.context_window` default. Manual
+  `await agent.compact(instructions)` requires idle, paired history and does not
+  enable auto mode. Summary/cleanup failure retains original history. Compaction
+  is context management, not a token/lifetime task budget or durable archival;
+  the host owns archival and persistence.
+- `abort()` is a cooperative cross-thread stop request. On the owning loop,
+  `await agent.cancel_and_wait()` cancels and joins the producer and hook cleanup;
+  `wait_for_idle()` only waits. Always use `await agent.aclose()` (or `async with`)
+  for owned Agent cleanup; borrowed providers and MCP registries remain host-owned.
+  Cancellation cannot kill blocking/native or cancellation-suppressing code,
+  revoke approval, roll back effects or justify automatic replay.
+
+Child execution belongs to the application, **not this SDK**. `ChildClient`,
+`ChildHandle`, `ChildBackend`, `ChildSpec` and injected `ParentHandle` are inert
+contracts/data access. Coding and Claw own their respective child runtimes,
+stores, workers and grants; there is no Agent `ChildSupervisor` or SDK child loop.
+Do not infer child permission from role labels or restored records. See
+[child contracts and host behavior](#child-sdk-and-host-owned-runtimes).
+
+## Detailed reference
+
+The following sections retain protocol limits and useful host API usage. Mentions
+of Coding/Claw describe those applications' adapters, not services automatically
+created by importing or constructing Agent.
 
 ### Identified steering and follow-up inputs
 
@@ -44,10 +263,10 @@ pre-tool hooks, grant permission, or provide OS isolation.
 
 ### Separate MCP registry and Agent integration
 
-`xdog.agent.mcp.McpRegistry` owns configured stdio connections on one background
+`xdog.agent.mcp.McpRegistry` owns configured stdio/HTTP connections on one background
 asyncio loop, so SDK callers can use proxies across per-turn event loops. Declaring
 servers does **not** launch commands. `connect`, `refresh`, `disconnect`, `status`,
-`tools` and `aclose` are the explicit lifecycle surface; synchronous `close`
+`tools` and `aclose` are the explicit lifecycle surface; synchronous `close()`
 requests owned cleanup without blocking terminal restoration. Hosts own command
 trust, idle tool-set changes and permission hooks.
 
@@ -229,7 +448,7 @@ unchanged. Real third-party replay retention behavior remains unverified.
 
 ### Task planning skill and host access scope
 
-`plan`, supplied by optional `xdog-skills`, is discovered through the
+`plan`, supplied by optional `xdog-skills`, is discovered (not activated) through the
 normal packaged-skill mechanism for objective/scope/dependency notes, acceptance
 criteria and evidence-backed progress. It grants no permissions,
 creates no parallel task database and starts no second Agent loop. The former
@@ -357,7 +576,7 @@ submission. Trusted extension code decides what to do with the answer.
 
 The worker suspends the callback and returns an owned pending-callback/dialog
 receipt. The host displays a focused basic dialog, then resumes that SAME callback
-with the validated answer; it does not rerun a command/tool to obtain the answer.
+with the validated answer; it does not rerun the callback to obtain the answer.
 Multiple sequential dialogs work. Without an interactive host, canceled values are
 returned immediately rather than hanging unattended execution.
 
@@ -416,7 +635,7 @@ child loop/thread retires at idle; Claw never stops its borrowed gateway loop.
 This is not automatic replay of interrupted, failed or unconfirmed effects.
 See `docs/child-continuation.md` for acceptance and legacy-record limits.
 
-The one model-facing tool is `agent`: use `action="spawn"` with `task` and optional
+The shipped hosts expose one model-facing child tool, `agent`: use `action="spawn"` with `task` and optional
 `access`/`inherit_context`/`config`; use `list`, `presets`, `inspect`, `steer`,
 `follow-up`, `cancel`, `wait`, `close` or `queue` with the applicable `id`/`text`.
 `list` and `presets` require no child ID. Spawn-only fields cannot be mixed into
@@ -444,8 +663,8 @@ the `agent` tool, or change the parent plan.
 Protocol capacities remain: 32 identified queued inputs, 16 KiB text per input,
 512 KiB single-message text capacity, image/retained-byte limits and per-file record
 limits. Complete history is not killed at a cumulative 512 KiB or 2,000 messages:
-`ChildStore` splits large histories into immutable linked chunks and atomically
-commits the record index after those chunks are durable. It neither silently clips
+the host-owned `ChildStore` splits large histories into immutable linked chunks
+and atomically commits the record index after those chunks are durable. It neither silently clips
 history nor drops half a tool batch. Missing/corrupt chunks fail visibly rather than
 returning a partial history. Persistence callbacks and all parallel tool siblings
 settle before lifecycle completion; failed callbacks are visible. Transcripts carry
@@ -468,7 +687,7 @@ fallback window. No separate `set_compaction` hook or second Agent loop is neede
 For supervised auto-compaction, `archive_compaction(spec, generation, messages)` is
 a synchronous durable callback. The child runtime waits for its owned thread work to
 persist the complete paired original history **before the native summary request
-starts**. `ChildStore.archive_compaction` implements this callback;
+starts**. The hosts’ `ChildStore.archive_compaction` implements this callback;
 `store.compaction_archives(child_id)` reads the retained full snapshots without
 replaying work. The built-in planner/summary/commit policy remains authoritative:
 archival, summarization or stream-cleanup failure does not commit a history cut;
@@ -497,8 +716,8 @@ are applied through validated `ChildConfig`. Per-child model/reasoning is now wi
 specialist presets are now wired too; complex extension forms/renderers are removed.
 
 
-`ChildExtensions` captures the origin UI binding at admission, creates an independent
-per-child `DialogBroker`, and fences replies by child/session/lease identity. Detach
+The host-local `ChildExtensions` captures the origin UI binding at admission,
+creates an independent per-child `DialogBroker`, and fences replies by child/session/lease identity. Detach
 returns canceled values to pending and subsequent questions, without replay/adoption.
 Inherited parent validation still runs under `silent_extension_ui()`; it never
 borrows a child's or parent's unrelated question reservation. Actual child callback
@@ -1081,7 +1300,7 @@ page = await api.get_command_catalog(query="", offset=0, revision="")
 ```
 
 A live native host may bind read-only menu inspection to an eligible owned command,
-tool, lifecycle/pre/post-tool, submitted-input or context callback. It reads the
+lifecycle/pre/post-tool, submitted-input or context callback. It reads the
 same sanitized terminal menu used by `/help` and completion, in 32-entry pages:
 normalized name/description, source label, session identity, revision and explicit
 pagination only. Host availability and exact invocation/session/child admission
@@ -1112,8 +1331,8 @@ remain checked; queries neither start a model nor grant permissions.
 Extensions cannot read/replace the unsent editor, rename/navigate sessions,
 select tools, request compaction or enqueue prompt/context/follow-up input through
 host control APIs. Native USER `/name`, `/model`, `/compact`, `/sessions` and
-`/tools` remain independent. Business tool/provider/command/hook registration and
-basic input/confirm/select/status remain supported.
+`/tools` remain independent. Provider/command/hook registration and basic
+input/confirm/select/status remain supported; model tools use the host SDK instead.
 
 Claw's read-only session bridge uses `extension_session:1` and
 `extension_session_inspection:1`; terminal command-menu inspection separately uses
@@ -1180,7 +1399,7 @@ prompts/history, credentials/endpoints and model/provider work are not introduce
 Caller-supplied context cannot override the protected inspection/session/child
 identity. Inconsistent or foreign producer snapshots become unavailable.
 
-This is independent of command authority: tools/hooks/children cannot borrow another
+This is independent of command authority: hooks/child callbacks cannot borrow another
 invocation's `get_session` or catalog authority. Editor/session/navigation mutations
 are removed for all extension callbacks. Interactive parent commands retain the
 fresh read-only host bridge and Claw inspection capability gate;
@@ -1194,7 +1413,7 @@ inherited parent response counters are excluded from the child's measurements un
 the child actually receives its own response. Changing/closing the original parent
 session invalidates the child producer rather than adopting another conversation.
 
-The owned-worker tests cover headless tools/hooks/context/commands, original task
+The owned-worker tests cover headless hooks/context/commands, original task
 copies, model changes and spoofed caller identity. Both real clients exercise UI and
 headless parent/child callbacks with independent model selection, explicit tool-policy
 allow/deny and persisted snapshots. This closes the earlier command-only inspection
@@ -1237,7 +1456,7 @@ settles on cancellation, then refuse late adoption. An OS-blocked thread cannot 
 forcibly killed; these limits/ownership checks are not an OS sandbox.
 
 Only actual interactive extension-worker command invocations receive catalog
-authority. Tools/hooks/context/child/unattended callbacks return None; original worker
+authority. Hooks/context/child/unattended callbacks return None; original worker
 invocation and host extension/command/group/session ownership are independently
 checked. Missing/foreign/unreadable targets or membership changes yield unavailable
 without disabling the extension or replaying reads. Invalid plugin request/response
@@ -1706,7 +1925,7 @@ not removed by this simplification.
 
 `await api.get_tool_inventory(query="", offset=0, revision="")` returns a paged
 snapshot of the actual owning Agent's configured model-facing tool definitions.
-This works in commands, tools, hooks, context/provider callbacks and headless
+This works in commands, hooks, context/provider callbacks and headless
 invocations where the host supplies an inventory. Parent and child runtimes project
 independent owners; explicit child tool profiles are applied before startup hooks
 and retained during final startup inventory projection.
@@ -1760,7 +1979,7 @@ Both sides keep at most eight snapshot identities; the worker owns at most eight
 so an already admitted callback retains its snapshot even after cache eviction.
 Missing references are explicitly unavailable. The host clears that cache entry
 and transfers metadata on a later invocation, never automatically replaying the
-current command/tool/hook. Reload starts a new worker/cache; stale references cannot
+current command/hook/provider callback. Reload starts a new worker/cache; stale references cannot
 resolve to a successor's snapshot.
 
 Optional inventory metadata is omitted for an invocation when it would exceed the
@@ -1982,3 +2201,22 @@ Use `assembly.restore_agent(agent, snapshot, allowed_models=...)` (or
 saved bindings before atomically adding missing current default session skills;
 consumed/pending turn skill lifecycle, current executors and host approval policy
 are preserved. Native `Agent.restore()` remains independent of capability discovery.
+
+
+## Part of xdog
+
+This package is one piece of [xdog](https://github.com/litterzhang/xdog), a
+local-first toolkit for building, running and scheduling LLM workflows. The
+centrepiece is [`xdog-flow`](https://pypi.org/project/xdog-flow/) — a typed
+workflow format and compiler.
+
+Documentation: **https://xdog.942295.xyz**
+
+## Licence
+
+Copyright (c) 2026 HugeMan <942295.xyz>
+
+GNU Affero General Public License v3.0 or later — see
+[LICENSE](https://github.com/litterzhang/xdog/blob/main/LICENSE). Output compiled
+by `xdog-flow` is exempt; see the
+[Generated Output Exception](https://github.com/litterzhang/xdog/blob/main/LICENSE-EXCEPTION.md).

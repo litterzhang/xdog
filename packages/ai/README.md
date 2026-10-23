@@ -5,13 +5,67 @@
 
 **Unified LLM provider API.**
 
-A single interface over LLM providers — chat, embeddings, web search, and local
+A single interface over LLM providers — chat, embeddings, image generation, web
+search, and local
 Anthropic Messages, OpenAI Responses, and OpenAI Chat Completions facades. Ships
 the `xdog-ai` CLI for logging in, listing models, and talking to one from a terminal.
 
+## Install, providers and SDK
+
+Requires **Python 3.12+ on Linux**. Install with `pip install xdog-ai`, or run
+`uv sync` from the workspace root. The `openai` extra
+(`pip install 'xdog-ai[openai]'`, also included by `all`) adds the optional OpenAI
+Python SDK dependency; it does **not** register a provider or supply credentials.
+
+The production factory currently registers **`copilot`** (GitHub Copilot) and
+**`antigravity`** (Google Antigravity). `xdog-ai providers` lists the active
+providers found in XDOG’s auth storage, not every registered factory or a live
+login-health check; `ai.load()` builds that active runtime. Provider availability,
+active login and model availability are separate facts. Examples below require a valid login/network for generation;
+choose actual model IDs using `xdog-ai models <provider>` rather than assuming
+an example ID is available to every account.
+
+| Layer | Responsibility |
+| --- | --- |
+| Provider / vendor | Provider-facing API, authentication, token refresh and model catalogue sync. |
+| `Runtime` | Route `provider/model` to an active provider. A bare ID is accepted for execution only with exactly one active provider; no cross-provider fallback login. |
+| Wire adapters | Encode/decode Anthropic Messages, OpenAI Responses/Chat Completions or Gemini formats according to model metadata. These are **not separate configured providers**. |
+| Local proxy | Expose the supported HTTP/SSE facades over that runtime, using native transport or the explicitly documented compatibility paths. |
+
+An Anthropic/OpenAI-branded model reached through Copilot is still routed through
+`copilot`, not a separately configured `anthropic` or `openai` provider.
+Normalized SDK calls return XDOG types; native proxy calls preserve the selected
+wire contract. Neither path is an Agent tool loop: tool execution/permissions,
+conversation storage and orchestration belong to the caller or `xdog-agent`.
+
+```python
+import asyncio
+import xdog.ai as ai
+
+async def main():
+    runtime = ai.load()  # Local auth/catalogue discovery, not login or model sync.
+    context = ai.Context(messages=(ai.UserMessage(content="Hello!"),))
+    stream = runtime.stream("copilot/claude-sonnet-4.5", context)
+    async for event in stream:
+        if event.type == "text_delta":
+            print(event.delta, end="", flush=True)
+    message = await stream.result()
+    print(f"\nStop reason: {message.stop_reason}")
+
+asyncio.run(main())
+```
+
+For a single provider use `ai.provider("copilot").stream("claude-sonnet-4.5", context)`.
+`stream()` returns an async event stream; `await complete(...)` returns its final
+`AssistantMessage`. Core types are available from `xdog.ai`, not the retired
+bare `ai` import. See the [SDK and protocol reference](src/xdog/ai/README.md)
+for embeddings, tool definitions, images, types and native transport details.
+
+## CLI quick start
+
 ```bash
 uv run xdog-ai login copilot
-uv run xdog-ai chat copilot gpt-5.6-sol "Explain the CAP theorem in three sentences."
+uv run xdog-ai chat copilot claude-sonnet-4.5 "Explain the CAP theorem in three sentences."
 ```
 
 ## Antigravity login
@@ -157,7 +211,7 @@ Copilot:
 ```bash
 curl http://127.0.0.1:8082/v1/responses \
   -H 'Content-Type: application/json' \
-  -d '{"model":"copilot/gpt-5.6-sol","input":"Hello!","store":false,"stream":true}'
+  -d '{"model":"copilot/gpt-4o","input":"Hello!","store":false,"stream":true}'
 ```
 
 An OpenAI SDK client can use `base_url="http://127.0.0.1:8082/v1"` and call
@@ -173,8 +227,8 @@ proxy authentication, an SDK may use any dummy API key.
 user-level defaults for XDOG's native clients:
 
 ```bash
-uv run xdog-ai switch-cli coding copilot --model copilot/gpt-6-astra
-uv run xdog-ai switch-cli claw copilot --model copilot/gpt-6-astra
+uv run xdog-ai switch-cli coding copilot --model copilot/gpt-4o
+uv run xdog-ai switch-cli claw copilot --model copilot/gpt-4o
 ```
 
 These targets use the local XDOG model catalog and do not require a running
@@ -208,7 +262,7 @@ connectivity. Cached model listings do not imply that upstream generation is onl
 uv run xdog-ai switch-cli set-url http://127.0.0.1:8082
 uv run xdog-ai switch-cli set-key your-proxy-key  # only needed for an authenticated proxy
 uv run xdog-ai switch-cli codex list
-uv run xdog-ai switch-cli codex copilot --model copilot/gpt-6-astra
+uv run xdog-ai switch-cli codex copilot --model copilot/gpt-4o
 
 # Interactive model selection, including Claude's Opus/Sonnet/Haiku roles:
 uv run xdog-ai switch-cli codex copilot
@@ -434,7 +488,7 @@ These use an isolated read-only workspace and a loopback mock provider—no paid
 upstream calls. They cover standard requests, Responses Lite namespaces with
 custom tools, and a real namespace tool-call/result round trip using Codex's
 read-only `collaboration.list_agents` tool, including encrypted reasoning ID
-preservation during replay, including provisional and opaque Copilot-style IDs.
+preservation during replay with provisional and opaque Copilot-style IDs.
 Hosted web search is disabled.
 
 ## Part of xdog

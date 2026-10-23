@@ -141,8 +141,17 @@ def test_built_eyes_includes_updated_host_skill(artifacts, kind):
 def test_docs_describe_thin_tool_and_default_acp():
     text = (REPO / "packages/claw/SCHEDULER.md").read_text()
     examples = [json.loads(value) for value in re.findall(r"```json\n(.*?)\n```", text, re.DOTALL)]
-    assert examples == [{"action": "create", "owner": "my-watches", "workspace": "/project",
-                         "definition_path": "eyes.json"}]
+    import fastjsonschema
+    from xdog.eyes.tool import EyesTool
+
+    assert len(examples) == 1
+    example, = examples
+    # Validate against the actual tool instead of freezing an obsolete workspace
+    # argument into both the documentation and this test.
+    fastjsonschema.compile(EyesTool.parameters)(example)
+    assert example["action"] == "create" and example["owner"] == "my-watches"
+    assert set(example) == {"action", "owner", "definition_path"}
+    assert Path(example["definition_path"]).is_absolute()
     assert "normal ACP input" in text and "enabled by default" in text
     assert "any valid explicit" in text and "not just the current group" in text
     assert "cancel_notifications" in text and "removed" in text

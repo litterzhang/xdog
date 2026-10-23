@@ -3,28 +3,24 @@
 
 {% block content %}
 <section>
-  xdog is a Python monorepo of small, composable packages for building AI
-  agents and managing LLM deployments. Each package does one thing and they
-  stack: a provider API at the bottom, an agent runtime and a workflow engine
-  in the middle, ready-to-use tools on top.
+  <p>Eight composable Python packages for local-first model APIs, Agents, terminal applications,
+    typed workflows, observations and skills. Each host owns its execution and permissions;
+    no hosted control plane or external database is required.</p>
+  <p>Linux and Python 3.12+. Durable features use local files and SQLite.
+    Real model calls require an authenticated, configured provider.</p>
 </section>
 
 <section>
-  <h2>Install</h2>
-  <p>
-    Published on PyPI. Requires Python 3.12+ — nothing else: no server, no
-    database, no account.
-  </p>
-  <pre><code>pip install xdog-flow</code></pre>
-  <p>
-    That pulls in <a href="https://pypi.org/project/xdog-ai/"><code>xdog-ai</code></a>,
-    <a href="https://pypi.org/project/xdog-agent/"><code>xdog-agent</code></a> and
-    <a href="https://pypi.org/project/xdog-tui/"><code>xdog-tui</code></a>, and puts
-    <code>xdog-flow</code> and <code>xdog-ai</code> on your PATH.
-  </p>
-  <pre><code>xdog-ai login copilot
-xdog-flow validate my_workflow.json
-xdog-flow run my_workflow.json</code></pre>
+  <h2>Choose an entry point</h2>
+  <pre><code>pip install xdog-coding xdog-claw xdog-flow xdog-eyes
+xdog-ai login copilot
+xdog-ai models copilot --sync
+xdog-coding --permission-mode ask</code></pre>
+  <p>Install these packages in the same environment for installed capability discovery.
+    Coding and Claw include <code>xdog-skills</code>. Flow and Eyes provide their own
+    discoverable skills and CLI-backed tools; skill bodies are not activated by default.</p>
+  <p>Eight distributions publish to PyPI. This site is the ninth workspace package:
+    use <code>uv sync --locked</code> and <code>uv run xdog-site</code> in a checkout.</p>
 </section>
 
 {% for title, pkgs in layers %}

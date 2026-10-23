@@ -200,7 +200,7 @@ def test_flow_docs_module_importable() -> None:
 
 # --- generic package sub-pages (ai / agent / tui / coding / claw / flow) ------
 
-_DOC_PACKAGES = ["ai", "agent", "tui", "coding", "claw", "flow"]
+_DOC_PACKAGES = [package.name for package in PACKAGES]
 _DOC_SUBPAGES = ["design", "features", "reference", "roadmap"]
 
 
@@ -259,9 +259,16 @@ def test_package_docs_content_is_accurate(client: FlaskClient) -> None:
     assert "submit_result" in client.get("/packages/agent/reference").get_data(as_text=True)
     assert "differential" in client.get("/packages/tui/design").get_data(as_text=True).lower()
     assert "IDENTITY.md" in client.get("/packages/claw/reference").get_data(as_text=True)
-    # every roadmap carries a forward-looking 2026 phase
+    # Shipped facts and future intent are distinct, not an invented release date.
+    from xdog.site.blueprints.main import PACKAGE_DOCS
+
     for name in _DOC_PACKAGES:
-        assert "2026" in client.get(f"/packages/{name}/roadmap").get_data(as_text=True)
+        docs = PACKAGE_DOCS[name]
+        assert any(phase.done for phase in docs.roadmap)
+        assert any(not phase.done for phase in docs.roadmap)
+        assert docs.roadmap_intro
+        body = client.get(f"/packages/{name}/roadmap").get_data(as_text=True)
+        assert "state-success" in body
 
 
 def test_static_markdown_renders_tables(client: FlaskClient) -> None:
@@ -285,18 +292,13 @@ def test_docpages_loader_unit() -> None:
 
 
 def test_docs_content_modules_importable() -> None:
-    from xdog.site.content.agent import DOCS as AGENT_DOCS
-    from xdog.site.content.ai import DOCS as AI_DOCS
-    from xdog.site.content.claw import DOCS as CLAW_DOCS
-    from xdog.site.content.coding import DOCS as CODING_DOCS
-    from xdog.site.content.flow_docs import DOCS as FLOW_DOCS
-    from xdog.site.content.tui import DOCS as TUI_DOCS
+    from xdog.site.blueprints.main import PACKAGE_DOCS
 
-    for docs in (AI_DOCS, AGENT_DOCS, TUI_DOCS, CODING_DOCS, CLAW_DOCS, FLOW_DOCS):
+    assert set(PACKAGE_DOCS) == {package.name for package in PACKAGES}
+    for docs in PACKAGE_DOCS.values():
         assert docs.features and docs.roadmap
-        # grouped_features drops empty buckets and preserves every feature
         grouped = docs.grouped_features()
-        assert sum(len(feats) for _, feats in grouped) == len(docs.features)
+        assert sum(len(features) for _, features in grouped) == len(docs.features)
 
 
 # --- HaveFun page + async run ------------------------------------------------
@@ -531,7 +533,7 @@ def test_sitemap_tracks_the_registries_it_is_built_from(client: FlaskClient) -> 
 def test_home_shows_how_to_install_from_pypi(client: FlaskClient) -> None:
     """The front page has to answer "how do I get this" without a detour."""
     body = client.get("/").get_data(as_text=True)
-    assert "pip install xdog-flow" in body
+    assert "pip install xdog-coding xdog-claw xdog-flow xdog-eyes" in body
     assert "https://pypi.org/project/xdog-ai/" in body
     # The namespace (installed as xdog-flow, imported as xdog.flow) is no
     # longer stated here. It is a real surprise -- the dist name and the import
@@ -541,18 +543,12 @@ def test_home_shows_how_to_install_from_pypi(client: FlaskClient) -> None:
     # visitor learns the import name from the READMEs or by trying.
 
 
-def test_every_package_links_to_its_pypi_project(client: FlaskClient) -> None:
-    """A package page that does not say how to install it is a dead end.
-
-    The distribution name is derived (`xdog-<name>`), so this also catches a
-    package renamed on one side and not the other.
-    """
-    from xdog.site.content.packages import PACKAGES
-
+def test_every_package_links_to_its_actual_installation_surface(client: FlaskClient) -> None:
+    """Every public catalog entry links to its published distribution."""
     for pkg in PACKAGES:
         body = client.get(f"/packages/{pkg.name}").get_data(as_text=True)
-        assert f"https://pypi.org/project/xdog-{pkg.name}/" in body, pkg.name
-        assert f"xdog-{pkg.name}" in body, pkg.name
+        assert pkg.pypi_url in body, pkg.name
+        assert pkg.dist in body, pkg.name
 
 
 def test_claw_docs_describe_current_capability_and_observation_boundary(client: FlaskClient) -> None:
@@ -560,11 +556,12 @@ def test_claw_docs_describe_current_capability_and_observation_boundary(client: 
     overview = client.get('/packages/claw').get_data(as_text=True)
     design = client.get('/packages/claw/design').get_data(as_text=True)
     features = client.get('/packages/claw/features').get_data(as_text=True)
-    assert 'Default private Unix ACP ingress' in reference
+    assert 'Default private Unix ACP endpoint' in reference
     assert 'independent user-local daemon' in reference
-    assert 'full bodies are loaded' in reference and 'explicit activation' in reference
+    assert 'bodies activate on demand' in reference and 'never grant tools' in reference
     assert 'currently bound channel' in overview and 'no implicit chat reply recipient' in overview
-    assert 'CapabilityAssembly' in design and 'Flow/Eyes bodies are activated on demand' in design
+    assert 'CapabilityAssembly' in design and 'bodies load on demand' in design
+    assert 'Flow invokes public CLI argv without a daemon' in design
     for page in (reference, overview, design, features):
         assert 'gateway-managed' not in page
         assert 'creator\u2019s reply destination is bound' not in page

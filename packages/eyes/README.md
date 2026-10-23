@@ -24,8 +24,11 @@ daemon directory, never a project, delivery target or filesystem permission.
 An independently managed receiver and an existing session ID are prerequisites.
 Copy the packaged `source-test-review.json` into your project root and replace
 its Unix endpoint and `EXPLICIT_SESSION_ID`. Roots resolve relative to that file.
-The v2 example uses `delivery: "enqueue"` to retain evidence while TUI/session
-owners are offline. It negotiates durable inbox support, never loads an owner or
+The v2 example uses `delivery: "enqueue"` for **durable receiver intake** while
+TUI/session owners are offline. An accepted/duplicate receipt proves only that
+the receiver has accepted the original message into its persistent namespace;
+it does **not** prove Agent execution, model completion, a reply, or delivery to
+a user channel. It negotiates durable inbox support, never loads an owner or
 starts a model. If the receiver is also offline, report unavailable—not receipt.
 Eyes never launches a coding CLI to provide a callback.
 
@@ -48,17 +51,20 @@ Only the CLI uses the private, versioned, generation-fenced Unix control protoco
 private directory is `$XDG_DATA_HOME/xdog/eyes` (otherwise
 `~/.local/share/xdog/eyes`). Use `--directory /private/path` or
 `XDOG_EYES_RUNTIME_DIR` for isolation; an explicit directory takes precedence.
-Directories/sockets/journals are UID-owned and private. No service is installed;
+Directories/sockets/journals are UID-owned and private. No systemd service is installed;
 importing/listing skills does not start a daemon. There is no daemon idle timeout.
 
 Owner/key plus normalized definition is idempotent across CLI processes/tools,
 host retirement and daemon restart. Within one daemon instance, `owner` is the
-only management namespace; `--owner` defaults to `cli`. There is no management
+management namespace, **not authentication, a filesystem permission boundary or
+a destination constraint**; `--owner` defaults to `cli`. There is no management
 `workspace` parameter or `--workspace` option. Changing the CLI current directory
 does not select another inventory. Keys default to definition names; different
 content requires a new key. Cancelled keys are tombstones, not silently reusable.
+JSON handlers and routes alone choose delivery destinations; the CLI's cwd,
+owner and currently calling application do not choose or restrict them.
 Source/route/connection status is separate. Queued or
-duplicate enqueue receipts are not model completion. The receiver's TUI shows
+duplicate enqueue receipts are not model completion. Coding's TUI can show
 pending evidence; an activated owner consumes it automatically. `/inbox list` and
 `/inbox show ID` are read-only, `/inbox cancel ID` targets pending intake, and
 `/inbox retry ID` explicitly retries interrupted work. There is no message approval
@@ -233,7 +239,7 @@ The wait is read-only and never registers or resumes anything. Optional
 `--source-checkpoints-json JSON_OBJECT` supplies definition-bound scheduler cursor
 mapping for already accepted source recovery, not executable code or a clock.
 
-Commands exit 0 on success; errors exit 2 with a bounded diagnostic only on stderr.
+Commands exit 0 on success; Ctrl-C exits 130. Errors exit 2 with a bounded diagnostic only on stderr.
 A timed-out wait emits no success JSON. JSON output frames are bounded to one MiB;
 follow writes with pipe backpressure, not an unbounded output queue. Closing stdin
 of a follow process is harmless; closing stdout, terminating it or reaching a
@@ -259,6 +265,25 @@ through its gateway, without an Eyes dependency or a special router path; see
 [Claw/Eyes ACP](../../docs/claw-eyes-acp.md) for `group:<id>` addressing and setup.
 Stdio is an optional generic ACP transport; Unix is the XDOG-local transport for
 coding and Claw callbacks.
+
+## Model-free checks without daemon access
+
+From the repository root after `uv sync`, the following only parse help or
+validate saved JSON. They do not start/connect to a daemon, contact ACP targets
+or call a model:
+
+```bash
+uv run xdog-eyes --help
+uv run xdog-eyes start --help
+uv run xdog-eyes daemon start --help
+uv run xdog-eyes validate packages/eyes/src/xdog/eyes/examples/source-test-review.json
+uv run xdog-eyes validate packages/eyes/src/xdog/eyes/examples/scheduled-review.json
+```
+
+The lifecycle examples elsewhere in this README are **real management
+operations**, not validation commands. Use an explicit private `--directory` for
+an intentionally isolated live test; do not stop or change a user's shared
+instance as part of documentation verification.
 
 ## Installation and development
 
@@ -293,6 +318,22 @@ JSON handlers/routes select all destinations, including other endpoints/sessions
 The current host address is convenience metadata, not an allowlist. Normal
 receiver authentication and protocol checks remain; the tool does not restrict
 targets to the current host/group.
+
+### Tool parameters
+
+| Action | Required parameters in addition to `action` |
+| --- | --- |
+| `create` | `owner`, absolute `definition_path` |
+| `list` | `owner` |
+| `status`, `pause`, `resume`, `cancel` | `owner`, `observer_id` (the returned `registration_id`) |
+
+Do not send unrelated fields or null placeholders. The tool has no `cwd`,
+`workspace`, destination override or `directory` parameter; explicit daemon
+isolation is selected by the CLI/environment, not an application owner string.
+Create invokes public CLI `start --delivery auto --no-wait`: success is a
+registration receipt, not proof of baseline readiness, target intake or execution.
+Use status to inspect observation/handler state. Accepted normalized definitions
+are snapshots; editing the source JSON later does not update a registration.
 
 The registered tool returns a CLI envelope `{exit_code, stdout, stderr}`. The
 CLI's JSON result remains a string in stdout; check exit_code before decoding it.

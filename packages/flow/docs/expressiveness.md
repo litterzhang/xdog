@@ -1,388 +1,136 @@
-# flow — Expressiveness Gaps & Remediation Plan
+# Workflow execution, typed data and current limits
 
-Status: draft · Audience: flow maintainers · Scope: what the workflow *model*
-can and cannot express today, and how to close the gaps without breaking the
-`interpret == compile` guarantee.
+This is the current usage reference, not an unimplemented gap/remediation plan.
+Flow is a single-machine workflow interpreter and Python code generator. Both
+paths share the frontier transition kernel; behavioral parity does **not** mean
+that every generated module is dependency-free.
 
-This is a design analysis, not a task list. Every gap below is stated against
-the actual source (`models.py`, `conditions.py`, `interpolate.py`, `coerce.py`,
-`executor.py`, `codegen.py`), with a concrete repro of what you *can't* write
-today.
+## Ports and edges, not shared state
 
----
+Every node reads its own `inputs` and writes its own `outputs`. Bare port names
+mean required string ports; structured/typed/optional ports use objects:
 
-## Framing: what flow is, and why that bounds expressiveness
-
-flow is a **single-machine, type-safe, compilable workflow kernel**. Its
-defining property is `interpret == compile`: the same workflow JSON runs through
-the interpreter (`execute()`) or compiles to a self-contained, `mypy --strict`
--clean Python module, and the two agree node-for-node. That guarantee is only
-cheap to hold because the graph is **static** — the set of nodes and edges is
-fully known at load time, so codegen can emit a fixed function per node and a
-fixed control-flow skeleton.
-
-Most of the gaps below are the *shadow* of that decision. They are not bugs; the
-kernel does exactly what it was scoped to do. The question this document answers
-is: **which of these are worth relaxing, and what does each cost the
-`interpret == compile` invariant?**
-
----
-
-## The gaps, most-limiting first
-
-### G1 — No dynamic fan-out (can't map a node over a runtime-sized list)
-
-**This is the only capability-level gap. Everything else is convenience or
-correctness.** **→ SHIPPED (v1, Strategy A). See [`fan-out.md`](./fan-out.md).**
-
-A loop is a bounded back-edge known in the static graph:
-
-```python
-# models.py
-class EdgeDef:
-    ...
-    loop_max: int | None = None
+```json
+{"name": "score", "schema": {"type": "number"}, "required": true}
 ```
 
-Interpreter and codegen now execute that edge through the same frontier state
-machine. Codegen emits static edge metadata and node functions; it does **not**
-translate the graph into a separate lexical Python `for` loop. This also makes
-multiple back-edges entering one destination a graph-native conditional AND join.
+The workflow's `state` seeds synthetic source `$in`; it is not a global mutable
+namespace visible to all nodes. Synthetic sink `$output` collects only explicit
+mappings. An edge maps **source output names to destination input names**:
 
-Bounded loops still cannot express dynamic task mapping by themselves. You
-**cannot** express:
-
-> "The `plan` node produced a list of 7 subtasks. Run the `work` node once per
-> subtask, in parallel, then gather the 7 results into the `merge` node."
-
-…because 7 is only known at runtime. This is *dynamic task mapping*
-(Airflow's `.expand()`, Prefect's `.map()`, Temporal child-workflow fan-out) —
-the single most common pattern flow can't model. You can hack it by pre-declaring
-a fixed number of parallel branches and leaving some idle, but the count must be
-a compile-time constant, and the branches are wired by hand.
-
-**Root cause:** the frontier scheduler intentionally activates a *static* node
-for each edge transition. There is no notion of "one edge, N runtime instances";
-dynamic fan-out therefore remains an explicit node-local capability.
-
-**Why it's hard (and why my earlier "impossible" claim was wrong):** codegen
-*can* emit `await asyncio.gather(*[_body(x) for x in items])` — dynamic fan-out
-is expressible in generated Python. The real cost is everywhere else:
-
-- **Trace & state identity.** `runtime.stack` and `_OUT[node_id]` are keyed by
-  node id. Ten instances of one node need ten distinct keys
-  (`node_id#0 … node_id#9`) or the trace and port storage collide.
-- **Checkpoint granularity.** Resume must know *which* of the N instances
-  finished. The checkpoint schema (`completed: list[str]`) would need
-  instance-level ids.
-- **Fan-in / reduce.** A `gather` edge needs a defined aggregation (list-concat?
-  reduce fn? first-wins?) — a new edge kind, not just a flag.
-- **Validation.** "unfed input / ambiguous producer" checks (loader) assume a
-  node has one instance.
-
-**Fix (phased, largest gap → smallest safe step):**
-
-1. **Model.** Add a `fan_out` edge attribute: `EdgeDef.fan_out: str | None` naming
-   the source array port whose elements become per-instance inputs, plus a
-   `fan_in` reducer on the collecting edge (`concat` | `list` to start).
-2. **Interpreter.** In the scheduler, when a node is reached via a `fan_out`
-   edge, materialise N logical instances keyed `node_id#i`; store outputs and
-   trace frames under those keys; the `fan_in` edge collects `[node_id#i]` in
-   order. Concurrency already flows through the existing semaphore.
-3. **Checkpoint.** Extend `completed` to record instance ids; a resumed run skips
-   finished instances and re-runs only the rest.
-4. **Codegen.** Emit `results = await asyncio.gather(*[node_X(provider, _x) for
-   _x in _items])` guarded by the same completion/isolation scaffolding, then a
-   reduce into the collecting port.
-5. **Cross-engine test.** A `map-reduce` example added to
-   `test_integration.py` so interpreter and generated module must agree on the
-   fanned output for a runtime-sized list.
-
-**`interpret == compile` impact:** HIGH but tractable. The invariant holds as
-long as the reduce order is defined (instance index order) and instance ids are
-identical across engines. This is the one gap that deserves its own design doc
-before code.
-
-> **Design doc:** [`fan-out.md`](./fan-out.md) resolves the instance-identity and
-> reduce-semantics questions and picks the smallest-blast-radius strategy
-> (fan group as a single scheduler node, dynamic count confined to one node's
-> execution) so the static-graph property — and `interpret == compile` — holds.
-
----
-
-### G2 — The condition language can't compare numbers
-
-`conditions.py` supports exactly five ops, and the two leaf ops are
-**string-only**:
-
-```python
-# conditions.py
-equals   → interpolate(value) == interpolate(text)     # string equality
-contains → interpolate(text) in interpolate(value)     # substring
-not / and / or                                          # boolean combinators
+```json
+{"from": "review", "to": "publish", "map": {"score": "quality"}}
 ```
 
-So a loop that should stop *"when the critic score ≥ 0.8"* cannot be written
-directly — score is a number, and there is no `>=`. You are forced into brittle
-string hacks (`equals: "0.8"`, or `contains` against a formatted string), which
-break the moment the value is `0.80` or `0.8000001`.
+An empty map is a control dependency. Prompts read the receiving node's inputs;
+conditions read the source node's outputs. JSONPath can select nested fields,
+e.g. `{{ $.plan.tasks[0] }}` or an edge source `"$.verdict.within_budget"`.
+Missing output leaves are omitted rather than invented.
 
-**Root cause:** conditions were designed for routing on categorical string
-labels (a classifier emitting `"bug"` / `"feature"`), not numeric thresholds.
+The loader checks referenced nodes/ports, required inputs, ambiguous producers,
+schema compatibility, templates, loops, fan topology and child signatures before
+execution. Optional inputs (`required: false`) may be absent on an initial loop
+pass. `$in` type checks use explicit `in_schema` where supplied; untyped seeds
+are not a general static-type guarantee. Complex JSONPath expressions may not be
+fully statically typable. Runtime coercion/schema validation remains necessary.
 
-**Fix (low risk, local):**
+## Readiness and joins
 
-1. Add ops `gt` / `gte` / `lt` / `lte` to `Condition.op` (a `Literal` union) and
-   `conditions.evaluate`, coercing both sides via `coerce.to_python(..., "number")`
-   with a clear error on non-numeric operands.
-2. Mirror the four ops in `codegen._condition_to_expr` (the generated expression
-   is just `float(a) >= float(b)`).
-3. Add condition tests + one codegen parity test.
+Entry nodes are derived from ordinary predecessors unless `entry` explicitly
+selects one node. Ready nodes run concurrently, subject to `max_concurrency`.
+An ordinary join waits for all ordinary predecessors; only enabled conditional
+edges contribute mapped values. A completed activation evaluates outgoing edges
+against that activation's outputs. No work ready/running means graph completion.
 
-**`interpret == compile` impact:** LOW. Both engines already share the same
-condition surface; this adds four symmetric cases.
+Independent branches can run in parallel; this is not distributed execution.
+Errors normally fail the workflow. Per-node `retry` and `on_error: "isolate"`
+are explicit policies, not compensation or exactly-once effects.
 
----
+## Conditions and bounded loops
 
-### G3 — Interpolation silently swallows typos (correctness hazard)
-
-`interpolate.py` is one line, and a missing key becomes the empty string:
-
-```python
-# interpolate.py
-_PATTERN = re.compile(r"\{\{\s*(\w+)\s*\}\}")
-def interpolate(template, state):
-    return _PATTERN.sub(lambda m: state.get(m.group(1), ""), template)   # ← "" on miss
-```
-
-Consequences:
-
-- **Typos vanish.** `{{cotnext}}` interpolates to `""`. The prompt silently
-  loses a whole section and the run *succeeds* with a degraded prompt — the
-  worst kind of failure: invisible.
-- **No nested access.** `{{user.name}}` never matches (`.` isn't `\w`), so
-  structured values can't be reached from a template at all.
-- **No transforms / defaults.** No `{{x | upper}}`, no `{{x or "n/a"}}`.
-
-**Fix (highest value-for-effort in this document):**
-
-1. Add a **strict mode**: an unknown key raises `WorkflowValidationError` naming
-   the key and the node, instead of returning `""`. Make it the default for
-   *validation* (load-time check that every `{{key}}` in a prompt is a declared
-   input port), and keep runtime lenient-or-strict configurable.
-2. Because ports are declared, this can be a **load-time** check: for each node,
-   every `{{key}}` in `system_prompt` / `prompt` must be a declared input port
-   name. This catches typos before the run, with zero runtime cost, and works
-   identically for interpreter and codegen (it's a validation pass, not an
-   execution path).
-3. (Optional, later) nested access `{{a.b}}` by looking up JSON in the port.
-
-**`interpret == compile` impact:** NONE for the load-time validation (it runs
-before either engine). LOW for a runtime strict flag (both engines call the same
-`interpolate`).
-
----
-
-### G4 — Data between agent nodes is stringly-typed
-
-The wire format is a flat `dict[str, str]`; typing exists only at *script* node
-boundaries via `coerce.to_python` / `to_state`:
-
-```python
-# coerce.py docstring
-# Workflow state is a flat dict[str, str]. Typed script nodes convert a stored
-# string INTO the declared Python type before a script runs, and BACK to a
-# string for storage.
-```
-
-`models.py` says the quiet part out loud: *"Agent ports are almost always
-string."* So when one agent produces a structured object and another consumes
-it, the only channel is a JSON string the downstream agent must re-parse in its
-prompt. Type safety — flow's headline property — **does not hold across
-agent→agent edges**.
-
-**Root cause:** a deliberate simplification. A flat `dict[str, str]` is trivial
-to checkpoint (JSON), interpolate, and reason about. Structured wire values would
-complicate all three.
-
-**Fix (medium; do *after* G1/G2/G3):**
-
-- Lean on `output_schema` (already shipped): an agent with a schema emits
-  validated JSON into its port. Extend interpolation (G3 nested access) so a
-  downstream prompt can pull `{{plan.subtasks}}` from that structured port
-  without hand-parsing.
-- This is mostly *composition of G3 + existing structured output*, not a new
-  primitive — which is why it's ranked low despite sounding fundamental.
-
-**`interpret == compile` impact:** LOW-MEDIUM, and mostly inherited from G3.
-
----
-
-### G5 — No sub-workflow / reusable unit
-
-`WorkflowDef` is flat: `nodes + edges`. There is no primitive to call another
-workflow as a single node.  **→ SHIPPED (v1). See [`subflow.md`](./subflow.md).** So a common sub-graph (e.g. a
-"draft → critic → revise" triad) must be copy-pasted into every workflow that
-needs it, and — combined with G1 — you can't say *"run this sub-flow once per
-item."*
-
-**Root cause:** the model is single-level by construction; it keeps loader
-validation and codegen (one function per node) simple.
-
-**Fix (medium; independent of the others):**
-
-1. Add `type: "subflow"` to `NodeDef` with a `run`-style reference to another
-   workflow JSON.
-2. Interpreter: load and `execute()` the child, mapping the parent node's input
-   ports to the child's `$in` and the child's `$output` back to the parent
-   node's output ports.
-3. Codegen: inline the child module's `main()` as a nested async call, or emit an
-   import — inlining keeps the "self-contained module" property of `--portable`.
-
-**`interpret == compile` impact:** MEDIUM. Both engines must agree on child
-input/output mapping and on how child checkpoints nest under the parent run id.
-
-> **Design doc:** [`subflow.md`](./subflow.md) — chooses an **opaque node** (the
-> child is NOT expanded/inlined; both engines run it through the same
-> `flow.executor.execute()`), which removes the five cross-cutting nesting
-> concerns and makes `interpret == compile` *stronger*. Trade: a subflow-using
-> generated module depends on `flow` (bundles vendor it). ~2–2.5 days.
-
----
-
-### G6 — Condition-driven loops (**shipped**)
-
-A plain loop remains *"at most N back-edge firings, exit early if the back-edge
-`when` fails."* For clearer authoring, an edge may now use bounded `while` sugar:
+Supported operators are `contains`, `equals`, numeric `gt`/`gte`/`lt`/`lte`, and
+`not`/`and`/`or`. For example, a review back-edge can use:
 
 ```json
 {
-  "from": "review",
-  "to": "draft",
+  "from": "review", "to": "draft",
+  "map": {"feedback": "feedback"},
   "while": {
-    "cond": {"lt": {"value": "{{ $.score }}", "text": "0.8"}},
-    "max": 20
+    "cond": {"lt": {"value": "{{score}}", "text": "0.8"}},
+    "max": 2
   }
 }
 ```
 
-The short form `"while": <condition>` uses a safe default bound of 100. The
-loader desugars either form to the same static bounded back-edge (`when` +
-`loop_max`), so the graph remains static. Its only semantic distinction from an
-explicit `loop.max` is exhaustion: if the condition is still true at the bound,
-both engines raise a non-convergence error instead of silently stopping.
+This is an edge fragment; nodes must declare/wire the corresponding ports.
+`loop` combines `when` with `loop.max`; `while` carries its own `cond` and `max`
+and must not be combined with `when` or `loop`. If omitted, a `while` bound uses
+the implementation's safe ceiling of 100. Cycles require a finite bound. `loop` and `while` use the same
+bounded back-edge mechanism but differ on exhaustion:
 
-All bounded back-edges entering the same destination form one conditional AND
-loop group. Every source must complete in the current generation and every guard
-must hold before the destination is activated once. Members retain independent
-bounds and may mix plain loops with strict `while`; an exhausted strict member
-fails, while an exhausted plain member stops the group normally.
+- `loop`: successful bounded stop, with `context.stoppedBy` identifying the edge;
+- `while`: non-convergence is failure (CLI exit 1).
 
-#### Choosing between `loop` and `while`
+Multiple bounded edges entering the same destination form an **AND loop join**:
+all member sources must complete in the current generation and all conditions
+must hold before one reactivation. Each edge keeps its own bound and strictness.
+Codegen embeds the same frontier logic, not a separate lexical Python loop.
+`context.lastNode` is descriptive and unstable under concurrency;
+`context.stoppedBy` is the authoritative stop reason when present.
 
-They are the same bounded back-edge and differ in exactly one situation — the
-bound is reached with the condition still true:
+## Structured results and context
 
-| | at the bound, condition still true |
-|---|---|
-| `loop` | stops. `success: true`, exit 0, and `context.stoppedBy` names the edge |
-| `while` | raises non-convergence. `success: false`, exit 1, `stoppedBy.reason` is `loop_not_converged` |
+Typed `outputs` determine structured agent results. SDK nodes inject the generic
+Agent `submit_result` tool with `result_schema` and caller-owned `result_sink`;
+success writes `result_sink["result"]`. A single structured port accepts its
+schema's native value; multiple ports split a port-keyed object. External CLI
+nodes use their native structured-output flags. See [agent backends](cli-agent.md).
 
-Pick `while` when *not converging is a failure* — a repair loop that never gets
-the check to pass has not done its job, and a caller that treats it as success
-will act on a half-finished state. Pick `loop` when the bound is a budget rather
-than a contract: "try up to N times, then move on with whatever you have."
+History is not ambient workflow state. Nodes start cold unless they explicitly
+use `inherit`; tools/skills remain selected by the receiving node. Script nodes
+receive typed inputs as keyword arguments and a `RuntimeContext` first argument.
+Filesystem audit/confinement checks are cooperative guards, not an OS sandbox.
 
-The distinction matters most when the loop sits upstream of side effects. If a
-plain `loop` runs out, nothing downstream of the loop head runs — the forward
-edge out of it was never enabled — so any node that would have cleaned up does
-not execute either. `stoppedBy` is what makes that state legible instead of
-looking like a clean finish that happened to produce no output.
+## Composition and dynamic mapping
 
-#### Reading the result
+- [Fan-out](fan-out.md): one static worker node runs once per runtime array item.
+  `list` keeps one result per item; `concat` flattens array results one level.
+  Order is input-index order, not completion order. `fan_max_concurrency` is a
+  dedicated inner limiter, separate from the outer scheduler's cap.
+- [Subflows](subflow.md): an inline child or JSON file reference becomes one
+  opaque node with derived typed ports. Both engines call `xdog.flow.executor`
+  for the child. The child is not expanded into the parent scheduler.
+- Human nodes wait for explicit signals; scheduled hooks can supply
+  `FLOW_SIGNALS`. This is separate from ACP durable input intake in Eyes hosts.
 
-`context.lastNode` is the node that completed last. It is descriptive: under
-concurrency a settled batch has no defined ordering, so which of several peers
-reports last is not stable. `context.stoppedBy` is the authoritative account of
-why the run ended, and is absent when it simply ran out of work.
+Current loader restrictions include nested fan-out, fan workers inside loops,
+nested subflows, subflows inside loops and subflows used as fan workers. Dynamic
+whole-subgraph fan-out is not supported.
 
-Both engines run this through the same frontier transition kernel. Checkpoints
-retain the existing fields and per-edge counters; a partially arrived multi-source
-group is reconstructed best-effort rather than persisted as new join state.
+## Checkpoints and generated dependencies
 
-**`interpret == compile` impact:** LOW by construction: codegen embeds the same
-frontier kernel used by the interpreter.
+Checkpoints commit at coherent frontier-batch boundaries, not after each parallel
+sibling or fan instance. Incomplete fan groups rerun as a whole on explicit
+resume. A subflow has its own namespaced checkpoint when one is supplied. Treat
+resumption/retry of effectful nodes as potentially repeated work, not rollback or
+exactly-once execution. Interpreter/generated checkpoints are not promised to be
+interchangeable.
 
----
+Generated modules inline scheduler/helpers and static graph metadata. They still
+need runtime dependencies: SDK nodes use `xdog.agent`/`xdog.ai`, subflow nodes use
+`xdog.flow`, and custom imports remain custom dependencies. Portable bundles
+vendor selected sources, not a hermetic environment. Inspect requirements and
+verify the actual artifact in its deployment environment.
 
-## Priority matrix
+## Model-free verification
 
-| Gap | What it costs users | Fix effort | `interpret==compile` risk | Rank |
-|-----|--------------------|-----------|--------------------------|------|
-| **G3** interpolation strict/validation | silent wrong prompts | **Low** | None (load-time) | **Do first** |
-| **G2** numeric conditions | can't branch on scores | Low | Low | **Do first** |
-| **G1** dynamic fan-out | *can't* map over runtime lists | **High** | High (tractable) | Design doc, then do |
-| **G5** sub-workflows | no reuse; no per-item sub-flow | Medium | Medium | After G1–G3 |
-| **G4** structured agent data | type-unsafe agent→agent | Medium | Low-Med (rides G3) | After G3 |
-| **G6** while-loops | awkward loop authoring | Low | Low | **Shipped** |
+From the repository root:
 
-**Reading:** the top-left quadrant (G2, G3) is pure upside — small, local, low
-risk, immediately useful, and G3 fixes a *correctness* hazard. G1 is the only
-change that expands what flow can fundamentally *express*, and it's the only one
-that warrants a dedicated design pass because of its checkpoint/trace/reduce
-ramifications.
+```bash
+uv run xdog-flow validate packages/flow/examples/refine_loop.json --json
+uv run xdog-flow test packages/flow/examples/ --allow-script-stub
+```
 
----
-
-## Sequenced plan
-
-**Phase E1 — Correctness & ergonomics (small, ship together)**
-- G3: load-time validation that every `{{key}}` is a declared input port;
-  optional runtime strict flag. *Fixes a silent-failure hazard.*
-- G2: `gt/gte/lt/lte` numeric condition ops, mirrored in codegen.
-- G6: validation warning for `loop_max` without a `when` guard.
-- Each with condition/interpolation unit tests **and** a codegen parity test so
-  `interpret == compile` is enforced by CI.
-
-**Phase E2 — Sub-workflows (independent, medium)**
-- G5: `type:"subflow"` node; nested execute in the interpreter, inlined child in
-  codegen; nested checkpoint namespacing; a cross-engine example. → designed in
-  [`subflow.md`](./subflow.md) as an **opaque node** (child NOT inlined; both
-  engines call the same `execute()`; generated module gains a scoped `flow`
-  dependency that `--portable` vendors). **v1 shipped**: inline child, derived
-  ports, nested `execute()` + codegen `node_X` calling `execute()`, cross-engine
-  parity in `tests/test_subflow.py`.
-
-**Phase E3 — Dynamic fan-out (its own design doc first)**
-- G1: `fan_out` / `fan_in` edges; instance-keyed trace, state, and checkpoint;
-  `gather`-based codegen; a `map-reduce` integration test that both engines must
-  pass. **Do not start before the design doc resolves instance-id and reduce
-  semantics.** → resolved in [`fan-out.md`](./fan-out.md); **v1 shipped
-  (Strategy A)**: `fan_out`/`fan_in` edges, `_run_fan_node` + `_drive_fan`,
-  cross-engine parity for `N ∈ {0,1,3}` in `tests/test_fan_out.py`.
-- G4 rides on G1 + G3: once instances carry structured ports and interpolation
-  can reach nested fields, agent→agent structured data is mostly free.
-
-### Shipped expressiveness polish
-
-- `fan_in: "concat"` flattens each worker instance's array output one level;
-  `"list"` keeps one value per instance. Both preserve runtime instance order.
-- Nested-field interpolation remains shared JSONPath semantics in both engines,
-  including paths such as `{{ $.plan.tasks[0] }}`.
-- A source sub-field may map directly into `$output`, for example
-  `"$.verdict.within_budget": "within_budget"`; missing leaves are omitted.
-
-**Non-goals (unchanged):** distributed execution, multi-tenancy, external
-telemetry export, compensation/rollback. Dynamic fan-out (G1) is *single-machine*
-parallelism — it does **not** reopen the distributed non-goal.
-
----
-
-## Guardrail for every phase
-
-Nothing here is allowed to break `interpret == compile`. Concretely: each new
-model feature lands with (a) interpreter support, (b) codegen support, and (c) a
-test in `test_integration.py` that runs the same workflow both ways and asserts
-identical node outputs. A feature that can't be compiled cleanly to
-`mypy --strict` Python is out of scope by definition — that constraint is the
-product, not an obstacle.
+Tests run the interpreter with stubbed agent boundaries, not generated code.
+Flow's own cross-engine tests guard parity. Scripts/imports still require trust;
+`--dry-run` is not a universal no-effects mode. See [testing](testing.md).

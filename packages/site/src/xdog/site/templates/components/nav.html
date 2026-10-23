@@ -59,7 +59,8 @@
       <ul style="margin:0">
         <input type="checkbox" />
         <li><a href="{{ url_for('main.packages') }}">All Packages</a></li>
-        {% for name in ["ai", "agent", "tui", "coding", "claw", "flow"] %}
+        {% for pkg in site_packages() %}
+        {% set name = pkg.name %}
         <li>
           {{ name }}
           <ul style="margin:0">

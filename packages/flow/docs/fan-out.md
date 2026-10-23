@@ -1,330 +1,97 @@
-# flow — Dynamic Fan-Out (G1) Design Doc
+# Dynamic fan-out and ordered fan-in
 
-Status: **v1 shipped (Strategy A)** · Audience: flow maintainers · Prerequisite:
-read [`expressiveness.md`](./expressiveness.md) §G1 first.
+Fan-out maps **one node** over an array whose length is known only at runtime.
+The fan group remains one frontier activation; it does not create new graph
+nodes or per-instance checkpoint entries. Interpreter and generated Python use
+the same observable mapping/reduction semantics.
 
-`expressiveness.md` flags G1 (dynamic fan-out) as *"the one gap that deserves its
-own design doc before code."* This is that doc. It resolves the two questions the
-gap analysis left open — **instance identity** and **reduce semantics** — and
-picks the implementation strategy with the smallest blast radius against the
-`interpret == compile` invariant. **Strategy A shipped**: `fan_out` / `fan_in`
-edge attributes, an interpreter `_run_fan_node`, a codegen `_drive_fan`, and
-cross-engine parity for `N ∈ {0, 1, 3}`.
+## Authoring
 
-### What shipped (v1, Strategy A)
+On the producer-to-worker edge, `fan_out` names an array output port and `map`
+connects that array to the worker's **single-item** input:
 
-- `EdgeDef.fan_out: str | None` (names the source array port) and
-  `EdgeDef.fan_in: Literal["list", "concat"] | None` (index-ordered reducers).
-  `list` preserves one value per worker instance; `concat` flattens each
-  instance's array-valued output one level into one flat list.
-- **Interpreter** (`executor._run_fan_node`): runs the worker once per array
-  element (parallel `gather`), aggregates each output port into an index-ordered
-  list stored under the single worker node id. One `completed` entry, one trace
-  frame, one checkpoint node — the scheduler is untouched.
-- **Codegen** (`_drive_fan` in the runtime template + `_render_dispatch` routing):
-  emits the same runtime-sized `gather` + aggregation; the worker node function
-  is unchanged (it consumes one element as a normal input).
-- **`fan_in`** selects the collector reducer. `list` reads the worker's already
-  aggregated, index-ordered list unchanged; `concat` flattens that list one level
-  at the collector. Both interpreter and codegen apply the same reducer.
-- **Validation**: array-port + element-type checks; rejects worker-in-a-loop,
-  nested fan-out, and a `fan_in` whose source isn't a worker.
-- **Tests**: `tests/test_fan_out.py` — interpreter behaviour (N=3/1/0, cap=1
-  no-deadlock, agent worker, single frame) and `interpret == compile` parity for
-  N ∈ {0,1,3}, generated module ruff-clean.
-
----
-
-
-## 1. The capability
-
-Map a node over a list whose length is only known at runtime, then gather the
-results:
-
-> The `plan` node produced a list of 7 subtasks. Run the `work` node once per
-> subtask, in parallel, then gather the 7 results into the `merge` node.
-
-`7` is a runtime value, so a bounded graph loop cannot express this mapping:
-`EdgeDef.loop_max` is static and controls graph reactivation, not runtime instance
-width. This is *dynamic task mapping* — Airflow `.expand()`, Prefect `.map()`, or
-Temporal child-workflow fan-out — and requires explicit fan-out semantics.
-
-**Concrete target workflow** (the map-reduce parity fixture):
-
-```
-$in ──topic──► plan ──tasks[]──► work ──res──► merge ──summary──► $output
-                     (fan_out)         (fan_in=list)
+```json
+{
+  "from": "plan", "to": "work",
+  "fan_out": "tasks",
+  "map": {"tasks": "task"}
+}
 ```
 
-- `plan` (agent, structured): emits `{"tasks": ["a", "b", "c"]}` — an **array**
-  output port `tasks`, length runtime-determined.
-- `work` (agent): input port `task` (one array element), output port `res`. Runs
-  **once per element**, in parallel.
-- `merge` (script/agent): input port `results` fed the **ordered list**
-  `[work#0.res, work#1.res, work#2.res]`.
+Declare `plan.tasks` with `{"type": "array", "items": ...}` and `work.task`
+with the matching element schema. Other mapped values on the edge are shared
+across instances. Fan-out directly from `$in` requires an explicit array
+`in_schema`; the runtime seed's shape alone is not the type declaration.
 
----
+The worker-to-collector edge selects a reducer:
 
-## 2. Why it's hard (against the real source)
-
-Everything in the kernel is keyed by **node id**, and the graph is **static** —
-that staticness is *why* `interpret == compile` is cheap to hold (codegen emits
-one fixed function per node and a fixed control-flow skeleton).
-
-The live stores remain node-keyed: outputs, trace frames, checkpoint `completed`,
-and generated node functions all use one static node id. The shared frontier
-kernel adds activation generations and edge identities for control flow, but it
-intentionally does not create runtime node instances.
-
-N runtime instances of `work` need N distinct identities or their outputs, trace
-frames, and checkpoints collide. That is the crux.
-
----
-
-## 3. Two strategies (the decision)
-
-The blast radius **is** the strategy choice.
-
-### Strategy B — instances as first-class scheduler nodes (the gap-doc sketch)
-
-Materialise instance ids `work#0 … work#6` as first-class frontier activations:
-they would need per-instance outputs, completion, checkpoint, trace, reduction,
-and failure semantics throughout the shared execution kernel.
-
-- **Pro:** instance-level resume (a half-finished fan-out resumes only the
-  unfinished instances); naturally extends to fanning out an entire **sub-graph**.
-- **Con:** touches *every* node-id-keyed structure listed in §2 and the
-  checkpoint schema. High risk to `interpret == compile`. This is the doc's
-  5-phase project.
-
-### Strategy A — the fan group is ONE scheduler node (chosen for v1)
-
-**Key insight:** put the N-way parallelism *inside* `_run_node("work")`. From the
-scheduler's viewpoint, `work` is still a single node that completes once. The
-dynamic count is confined to that node's execution and the scheduler never sees
-it.
-
-| Structure | Strategy A change |
-|-----------|-------------------|
-| frontier readiness / joins | **none** (the fan group is one activation) |
-| edge transitions / loop groups | **none** |
-| checkpoint `completed` | **none** (still `{"work"}`) |
-| static-graph property | **preserved** |
-| `outputs` store | gains instance sub-keys `work#i` (additive) |
-
-> **Realization note (as shipped).** The implementation went one step *simpler*
-> than the `work#i` sub-key sketch below: instead of storing per-instance keys and
-> re-collecting them at fan-in, `_run_fan_node` aggregates each output port into an
-> **index-ordered list stored directly under the worker's own port**
-> (`_OUT["work"]["res"] = [res_0, res_1, …]`). So `outputs` gains **no** instance
-> sub-keys at all, and `fan_in` needs **zero** runtime code — the collector edge is
-> a plain mapping that reads the already-aggregated list. The §4.2/§4.4 mechanics
-> below describe the same observable semantics (index order, `N=0 → []`,
-> `N=1 → [x]`); only the storage key differs.
-
-This is the smallest possible blast radius. **v1 ships Strategy A.** Strategy B
-is the documented evolution path if instance-level resume or sub-graph fan-out is
-later required.
-
----
-
-## 4. v1 design (Strategy A)
-
-### 4.1 Model (`models.py`)
-
-Two new optional `EdgeDef` attributes — additive, default `None`, so every
-existing workflow and its serialization are unchanged:
-
-```python
-@dataclass(frozen=True)
-class EdgeDef:
-    src: str
-    dst: str
-    mapping: tuple[tuple[str, str], ...] = ()
-    when: Condition | None = None
-    loop_max: int | None = None
-    fan_out: str | None = None
-    fan_in: Literal["list", "concat"] | None = None
+```json
+{
+  "from": "work", "to": "merge",
+  "fan_in": "list",
+  "map": {"result": "results"}
+}
 ```
 
-- **`fan_out`** on the `plan → work` edge: names the source node's **array**
-  output port whose elements become per-instance inputs. The edge's `mapping`
-  carries `(array_port, worker_input_port)` — element `items[i]` feeds instance
-  `i`'s input port. Non-fan-out mappings on the same edge (if any) are shared
-  verbatim across all instances.
-- **`fan_in`** on the `work → merge` edge selects the reducer. `"list"` passes
-  the N instance outputs as an **index-ordered** list; `"concat"` requires each
-  instance output to be array-like and flattens those arrays one level, preserving
-  instance and intra-array order.
+These are edge fragments, not complete workflows. The collector input must
+accept the resulting array. See `packages/flow/examples/release_readiness.json`
+for a complete workflow and its companion suite for deterministic fan stubs.
 
-### 4.2 Interpreter (`executor.py`)
+## Reducers and ordering
 
-**Fan-out happens inside the driver.** When `_run_node("work")` sees an incoming
-edge with `fan_out` set:
+| Reducer | Instance outputs | Collector value |
+| --- | --- | --- |
+| `list` | `"a"`, `"b"` | `["a", "b"]` |
+| `list` | `[1, 2]`, `[3]` | `[[1, 2], [3]]` |
+| `concat` | `[1, 2]`, `[3]` | `[1, 2, 3]` |
 
+Both preserve **input index order**, regardless of completion order. `concat`
+is supported now, not a future feature; it requires whole array-valued worker
+ports and flattens exactly one level. Use `list` for one value per instance.
+An empty input runs the worker zero times and produces `[]`; one item still
+produces a one-element list with `list`, never a scalar.
+
+The runtime stores each worker output as an index-ordered list under the worker's
+ordinary node/port identity. There are no public `work#i` output keys or separate
+trace frames/checkpoints for each instance. `fan_in` applies the chosen reducer
+when assembling the collector's inputs.
+
+## Concurrency
+
+- `max_concurrency` limits outer frontier work; the whole fan group holds one
+  outer slot.
+- `fan_max_concurrency` limits instances inside a fan group. `0` (default) means
+  unlimited; set a positive bound for large arrays or provider rate limits.
+
+The inner limiter is separate: instances do not reacquire the outer semaphore,
+so an outer cap of one does not self-deadlock. Neither cap creates a distributed
+worker pool or grants tool permission.
+
+## Validation and limitations
+
+The loader checks source array schema, mapped element compatibility, collector
+schema, reducer shape and topology. It rejects nested fan-out, a fan worker
+inside a bounded loop, fan-out on a loop back-edge, `fan_in` from a non-worker,
+and subflow nodes used as fan workers. A worker is a single supported node, not
+an arbitrary subgraph.
+
+Checkpoint granularity is the **whole group**. If a group has not completed at
+the saved frontier boundary, explicit resume can rerun all its instances; there
+is no instance-level resume. For external effects, make operations idempotent or
+reconcile before retrying. A completed model/tool effect is not undone by a failed
+fan group.
+
+## Verify without model calls
+
+From the repository root:
+
+```bash
+uv run xdog-flow validate packages/flow/examples/release_readiness.json
+uv run xdog-flow test packages/flow/examples/release_readiness.json --allow-script-stub
 ```
-fe        = the fan_out in-edge
-items     = outputs[fe.src][fe.fan_out]      # the runtime array
-N         = len(items)
-shared    = _build_inputs("work") minus the fan_out-mapped port
-ins_i     = { worker_port: items[i], **shared }   for i in range(N)
 
-# reuse the pure node fns from the 003f8bf refactor — they already return (dict, tokens)
-results   = await gather( _node_agent(node, f"work#{i}", ins_i) for i in range(N) )
-
-for i, (val_i, tok_i) in enumerate(results):
-    outputs[f"work#{i}"] = _project(node, val_i)   # per-instance storage
-    stack.append(frame for work#i)                 # N trace frames
-fan_counts["work"] = N                             # remember the width for fan-in
-tokens_used += sum(tok_i)
-completed.add("work")                              # ONE node completes
-```
-
-**Fan-in happens in `_build_inputs` (executor.py:250).** When assembling
-`merge`'s inputs, a `fan_in` edge from `work` reads the instance sub-keys:
-
-```python
-if edge.fan_in == "list":
-    n = fan_counts.get(edge.src, 0)
-    for sport, dport in edge.mapping:
-        ins[dport] = [outputs[f"{edge.src}#{i}"][sport] for i in range(n)]
-```
-
-New run-local state: `fan_counts: dict[str, int]` (node id → instance width),
-sitting beside `loop_counters`.
-
-**Concurrency (as shipped).** The N instances run under a **dedicated** limiter
-`WorkflowDef.fan_max_concurrency` (0 = unlimited, the default) — a *separate*
-`asyncio.Semaphore` built inside `_run_fan_node`, **not** the scheduler semaphore.
-Re-acquiring the scheduler semaphore here would self-nest and deadlock at
-`cap == 1`, so the fan node holds its one outer scheduler slot and its instances
-acquire only the dedicated fan semaphore. Both engines apply the identical cap
-(`_run_fan_node` and the template's `_drive_fan(..., fan_cap)`), so
-`interpret == compile` holds. With `fan_max_concurrency = 0` all N instances run
-at once (the original behaviour); set it to bound a large fan-out (e.g. 50 agent
-instances) against a provider's rate limit. This dedicated limiter is also the
-prerequisite for a subflow node becoming a fan-out worker (see `subflow.md`):
-without it, N child `execute()` calls each with their own semaphore would run
-`N × child_cap` LLM calls unbounded.
-
-### 4.3 Codegen (`codegen.py`)
-
-The generated module embeds the same frontier transition kernel as the
-interpreter. The fan worker still occupies one frontier activation; its generated
-`_drive_fan` performs the runtime-sized inner `asyncio.gather`, aggregates each
-output port in argument order, then completes that one activation.
-
-This separation is important:
-
-- the outer frontier scheduler controls static node readiness and workflow-wide
-  concurrency;
-- `_drive_fan` controls dynamic instances and the dedicated fan semaphore;
-- the inner driver never reacquires the outer semaphore, avoiding `cap == 1`
-  self-deadlock;
-- `N == 0` produces `[]`, and `N == 1` produces a one-element list.
-
-### 4.4 `interpret == compile` — the three alignment points
-
-1. **Reduce order = instance index order.** Interpreter iterates `range(N)`;
-   codegen uses `enumerate` + `gather` (which preserves argument order in its
-   result). Both produce `[work#0, work#1, …, work#N-1]`. ✓
-2. **Empty array `N == 0`.** Worker runs zero times; `merge` receives `[]`. Both
-   engines must yield `[]` (not `None`, not a missing port). A parity fixture
-   covers the empty case explicitly.
-3. **Single element `N == 1`.** No accidental scalar-vs-list divergence: the
-   fan-in port is a **one-element list** `[x]` in both engines, never the bare
-   `x`. A parity fixture covers this.
-
-### 4.5 Validation (`loader.py`)
-
-- `fan_out` port must be a declared **array** output port of the edge's source
-  (`{"type": "array", ...}`); the worker's fed input port type must match the
-  array's `items` type.
-- `fan_in` consuming port should be typed as an array on the collector.
-- The existing **"unfed input / ambiguous producer"** checks treat the fan group
-  as a **single** producer of the collected list — the collector's port is
-  "fed" by the `work → merge` fan_in edge, not by N separate producers.
-- **Rejections** (v1 scope guards, emitted as clear `WorkflowValidationError`):
-  - a node that is both a fan-out worker and part of a `loop_max` cycle
-    (instance × loop-count blow-up — out of scope, see §5);
-  - **nested** fan-out (a fan-out worker whose own input is another fan_out);
-  - a `fan_in` edge whose source node is not a fan-out worker.
-
----
-
-## 5. v1 non-goals (deliberate blast-radius control)
-
-- **Worker is a single node, not a sub-graph.** Fanning out a whole sub-flow is
-  Strategy B territory (and rides on G5 sub-workflows).
-- **No fan-out node inside a loop.** The instance × loop-counter interaction is
-  unspecified and the gap doc never covered it. Loader rejects it.
-- **No nested fan-out.**
-- **Reducer is `list` only.** `concat` (flatten array-valued instance outputs)
-  comes later.
-- **Coarse checkpoint.** A run that dies mid-fan-out re-runs **all** N instances
-  on resume (the fan node is one `completed` entry — all-or-nothing). Instance-
-  level resume is Strategy B. This is acceptable because a fan node is one
-  scheduler unit; it is documented, not hidden.
-
----
-
-## 6. Risks
-
-1. **Semaphore self-nesting deadlock** (§4.2). The fan node must not hold an
-   outer slot while its instances acquire slots. Design the driver so `cap == 1`
-   runs instances **sequentially** rather than hanging. *Mitigation:* explicit
-   test at `max_concurrency=1` with a 3-element fan-out.
-2. **Empty / single-element boundaries** (§4.4 points 2–3) must be byte-identical
-   across engines. *Mitigation:* two dedicated parity fixtures (`N=0`, `N=1`) in
-   `test_integration.py`, plus the normal `N=3` case.
-3. **Loader producer/unfed-input rework.** Treating the fan group as one producer
-   is a subtle change to the existing checks and is easy to get wrong on edge
-   cases (e.g. a collector port also fed by a non-fan edge). *Mitigation:*
-   targeted loader tests for each rejection in §4.5 and for the valid map-reduce.
-4. **Trace identity.** N frames under `work#i` keys must not break the existing
-   trace/`--explain` rendering (which groups by node id). *Mitigation:* render
-   `work#i` frames as children of a `work` group; a trace-shape test.
-
----
-
-## 7. Phased delivery (TDD, parity-gated)
-
-Mirrors the E1 discipline: interpreter → codegen → parity gate, each step green
-before the next.
-
-1. **Model + loader.** `fan_out` / `fan_in` on `EdgeDef`; parse + serialize
-   round-trip; validation rules and rejections (§4.5). Unit tests only — no
-   execution yet.
-2. **Interpreter fan-out.** `_run_node` instance loop + `fan_counts` +
-   `_build_inputs` fan-in reducer. Interpreter-only integration test on the
-   `N=3` map-reduce; plus `N=0`, `N=1`, and `cap=1` cases. **Gate.**
-3. **Codegen fan-out.** Emit the runtime-sized `gather` + index-ordered reduce in
-   the waves renderer; worker fn gains `(element, index)`. The generated module
-   stays `ruff` + `mypy --strict` clean.
-4. **Cross-engine parity.** A `map-reduce` fixture in `test_integration.py` runs
-   the same workflow through `execute()` and the generated module and asserts
-   identical `merge` output for `N ∈ {0, 1, 3}`. **This is the `interpret ==
-   compile` gate for G1.**
-5. **Trace + docs.** `work#i` frame grouping; update `expressiveness.md` G1 status
-   and the site reference.
-
----
-
-## 8. Verification (per the repo's flow discipline)
-
-- `export PATH="$HOME/.local/bin:$PATH"` (cwd resets — use absolute paths).
-- `uv run ruff check packages/flow/src` · `uv run mypy --strict packages/flow/src`
-  · `uv run pytest packages/flow/tests -q`.
-- End-to-end: the map-reduce example run via `xdog-flow run` **and** via
-  `generate` + module, diffing the collected `merge` port for `N=0/1/3`.
-- `git checkout -- uv.lock` before commit.
-
----
-
-## 9. Open question deferred to Strategy B (not v1)
-
-- **Instance-level resume** and **sub-graph fan-out** both require instances to
-  be first-class scheduler citizens (instance ids in `completed` / checkpoint).
-  When that need is real, revisit §3 Strategy B — but only then, and with its own
-  checkpoint-schema migration note. v1's coarse all-or-nothing resume is the
-  correct trade for the smallest safe step.
+Tests stub agent turns, including CLI backends. Script stubs require the explicit
+flag; unstubbed scripts/imports still run for real. The repository's
+`packages/flow/tests/test_fan_out.py` checks interpreter/codegen parity for empty,
+single-item and multi-item inputs. Compilation parity does not remove generated
+runtime dependencies; see [subflows](subflow.md) and [agent backends](cli-agent.md).
