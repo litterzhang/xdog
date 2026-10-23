@@ -12,11 +12,12 @@ import threading
 import time
 from collections.abc import Callable, Coroutine, Iterable, Mapping
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any, TypeVar
 from weakref import WeakValueDictionary
 
-from xdog.agent.async_work import wait_owned
+from xdog.agent.async_work import settle_cleanup, wait_owned
 from xdog.agent.core import AgentTool, AgentToolResult
 from xdog.agent.cross_loop import submit_remote
 from xdog.agent.mcp.client_capabilities import advertised, inventory
@@ -899,19 +900,34 @@ class McpRegistry:
         await wait_owned(asyncio.create_task(settle()))
 
     async def _close_clients(self) -> None:
-        await self._schemas.close()
-        self._auth_leases.clear()
-        self._credential_consents.clear()
-        for task in tuple(self._auth_preparing.values()):
-            task.cancel()
-        if self._auth_preparing:
-            await asyncio.gather(*tuple(self._auth_preparing.values()), return_exceptions=True)
-        await asyncio.gather(*(owner.close() for owner in tuple(self._oauth.values())))
-        self._oauth.clear()
-        await asyncio.gather(*(client.close() for client in tuple(self._clients.values())))
-        with self._lock:
-            self._clients.clear()
-            self._tools = ()
+        async def close_auth() -> None:
+            self._auth_leases.clear()
+            self._credential_consents.clear()
+            for task in tuple(self._auth_preparing.values()):
+                task.cancel()
+            if self._auth_preparing:
+                await asyncio.gather(*tuple(self._auth_preparing.values()), return_exceptions=True)
+            tasks = tuple(asyncio.create_task(owner.close()) for owner in tuple(self._oauth.values()))
+            try:
+                await settle_cleanup(*(partial(wait_owned, task) for task in tasks),
+                                     message='MCP authentication cleanup failed')
+            finally:
+                self._oauth.clear()
+
+        async def close_connections() -> None:
+            tasks = tuple(asyncio.create_task(client.close()) for client in tuple(self._clients.values()))
+            try:
+                # Start together, but join every actual close before reporting an
+                # error. gather's first error must not retire a sibling's loop.
+                await settle_cleanup(*(partial(wait_owned, task) for task in tasks),
+                                     message='MCP connection cleanup failed')
+            finally:
+                with self._lock:
+                    self._clients.clear()
+                    self._tools = ()
+
+        await settle_cleanup(self._schemas.close, close_auth, close_connections,
+                             message='MCP registry cleanup failed')
 
     def close(self) -> None:
         with self._start_lock:

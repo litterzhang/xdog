@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,84 @@ async def test_stdio_close_settles_paused_pipes_before_registry_loop_exits(tmp_p
         assert disconnected, 'Owner cleanup returned before every pipe disconnected'
     finally:
         await registry.aclose()
+
+
+async def test_registry_close_error_joins_sibling_client_before_retiring_owner(tmp_path: Path, monkeypatch):
+    peer = Path(__file__).parent / 'fixtures' / 'mcp_server.py'
+    registry = McpRegistry({name: {'command': sys.executable,
+        'args': [str(peer), 'context-only', str(tmp_path / name)]}
+        for name in ('failing', 'delayed')}, tmp_path)
+    entered, release, failure_seen, cancelled = (threading.Event() for _ in range(4))
+    failure = OSError('first client failed after actual process and pipe cleanup')
+    owner_closes, early_returns = [], []
+    closing = None
+    try:
+        for name in ('failing', 'delayed'):
+            await registry.connect(name)
+        failing, delayed = (registry._clients[name] for name in ('failing', 'delayed'))
+        processes = (failing.process, delayed.process)
+        assert all(process is not None and process.returncode is None for process in processes)
+        assert all(set(process._transport._pipes) == {0, 1, 2} for process in processes)
+        actual_failing_close, actual_delayed_close = failing.close, delayed.close
+        actual_registry_close = registry._close_clients
+        loop = registry._loop
+
+        async def observe_registry_close():
+            owner_closes.append(asyncio.current_task())
+            await actual_registry_close()
+
+        def observe_failure():
+            # gather's child-done callback precedes ours. Its owner continuation
+            # therefore runs before this queued checkpoint, without a timing sleep.
+            early_returns.append(owner_closes[0].done())
+            failure_seen.set()
+
+        async def fail_after_actual_close():
+            await actual_failing_close()
+            assert entered.is_set()
+            asyncio.current_task().add_done_callback(lambda done: loop.call_soon(observe_failure))
+            raise failure
+
+        async def delayed_close():
+            entered.set()
+            try:
+                assert await asyncio.to_thread(release.wait, 15), 'Test did not release its sibling close'
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            finally:
+                # RED-path salvage stays on the original owner loop. A broken
+                # registry must fail our assertion, not leak a real subprocess.
+                await actual_delayed_close()
+
+        monkeypatch.setattr(registry, '_close_clients', observe_registry_close)
+        monkeypatch.setattr(failing, 'close', fail_after_actual_close)
+        monkeypatch.setattr(delayed, 'close', delayed_close)
+        closing = asyncio.create_task(registry.aclose())
+        assert await asyncio.to_thread(failure_seen.wait, 10), 'First client close did not settle'
+        assert early_returns == [False], 'Registry close returned before its sibling client settled'
+        assert not cancelled.is_set(), 'Owner shutdown cancelled the unfinished sibling close'
+        assert not closing.done(), 'aclose published the first error before its sibling settled'
+        assert registry._thread.is_alive() and not loop.is_closed()
+        assert failing.process is None
+        assert delayed.process is processes[1] and processes[1].returncode is None
+
+        release.set()
+        with pytest.raises(OSError) as error:
+            await asyncio.wait_for(asyncio.shield(closing), 10)
+        assert error.value is failure
+        assert not cancelled.is_set()
+        assert failing.process is None and delayed.process is None
+        assert not registry._thread.is_alive() and loop.is_closed()
+        for process in processes:
+            assert process.returncode is not None
+            assert process._transport.is_closing()
+            assert all(pipe.disconnected for pipe in process._transport._pipes.values())
+    finally:
+        release.set()
+        if closing is not None:
+            await asyncio.gather(closing, return_exceptions=True)
+        await asyncio.gather(registry.aclose(), return_exceptions=True)
 
 
 async def test_schema_stop_reaps_worker_even_when_unread_output_is_paused():
@@ -113,3 +192,39 @@ async def test_cancelled_schema_stop_retains_process_until_pipe_cleanup_settles(
         await asyncio.gather(stopping, return_exceptions=True)
         await salvage(process)
         await owner.close()
+
+
+async def test_repeated_cancel_during_schema_spawn_cannot_abandon_a_live_process(monkeypatch):
+    owner = SchemaOwner()
+    original = asyncio.create_subprocess_exec
+    entered, release = asyncio.Event(), asyncio.Event()
+    processes = []
+    async def delayed(*args, **kwargs):
+        process = await original(*args, **kwargs)
+        processes.append(process)
+        entered.set()
+        await release.wait()
+        return process
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', delayed)
+    compiling = asyncio.create_task(owner.compile({'type': 'object'}, input_schema=True))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        for _ in range(3):
+            compiling.cancel()
+            await asyncio.sleep(0)
+            assert not compiling.done(), 'Cancellation abandoned the unreturned subprocess handle'
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await compiling
+        assert owner._process is None
+        assert processes[0].returncode is not None
+        assert processes[0]._transport.is_closing()
+        assert all(pipe.disconnected for pipe in processes[0]._transport._pipes.values())
+    finally:
+        release.set()
+        await asyncio.gather(compiling, return_exceptions=True)
+        await owner.close()
+        for process in processes:
+            if process.returncode is None:
+                process.kill()
+            await salvage(process)

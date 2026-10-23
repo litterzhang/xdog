@@ -21,7 +21,7 @@ def facts(events):
 
 class TestChildProtocol:
     async def test_old_true_is_inert_history_and_cannot_admit_new_inherited_work(
-        self, tmp_path, *, runtime_factory, child_store_type, execution_owner
+        self, tmp_path, monkeypatch, *, runtime_factory, child_store_type, execution_owner
     ):
         store = child_store_type(tmp_path)
         store.begin(ChildSpec("0123456789ab", "old task"))
@@ -29,12 +29,25 @@ class TestChildProtocol:
         old["config"]["inherit_context"] = True
         store.save(old)
         restored = runtime_factory(lambda *args: pytest.fail("No historical replay"), records=store.load())
+        metadata_operations = []
+        original_control = restored._control
+
+        async def control_on_owner(action, identifier, *args, **kwargs):
+            result = await original_control(action, identifier, *args, **kwargs)
+            assert asyncio.get_running_loop() is restored._loop
+            execution_owner.assert_running(restored)
+            metadata_operations.append((action, identifier))
+            return result
+
+        monkeypatch.setattr(restored, "_control", control_on_owner)
         try:
             record = await restored.control("inspect", old["id"])
             assert record["config"]["inherit_context"] is True and not restored.active
-            execution_owner.assert_running(restored)  # Metadata owner only; never an Agent/model.
+            assert metadata_operations == [("inspect", old["id"])]
+            # Coding may retire its idle metadata owner now; Claw keeps its borrowed loop.
         finally:
             await restored.aclose()
+        execution_owner.assert_closed(restored)
         owner = runtime_factory(lambda *args: pytest.fail("Invalid admission"))
         try:
             with pytest.raises(ValueError):

@@ -101,8 +101,14 @@ class SchemaOwner:
                     except asyncio.CancelledError:
                         # A canceled creation may still own a spawned child. Join
                         # that exact operation and reap it before releasing the lock.
-                        created = await asyncio.shield(creation)
-                        await self._stop(created)
+                        try:
+                            await wait_owned(creation)
+                        finally:
+                            # wait_owned re-raises repeated caller cancellation
+                            # after settlement; retrieve the actual handle even then.
+                            if (creation.done() and not creation.cancelled()
+                                    and creation.exception() is None):
+                                await self._stop(creation.result())
                         raise
                     process = self._process
                     assert process.stdout is not None

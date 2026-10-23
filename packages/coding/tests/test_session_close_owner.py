@@ -37,6 +37,8 @@ async def test_cleanup_error_cannot_release_writer_before_remaining_real_worker(
     child_close = child_runtime.aclose
     extension_client = extension._manager._clients['contextual']
     mcp_client = session.mcp._clients['fixture']
+    extension_clients = tuple(extension._manager._clients.values())
+    extension_processes = tuple(client.process for client in extension_clients)
     worker = extension._manager._thread if failure_point == 'children' else session.mcp._thread
     entered, release = threading.Event(), threading.Event()
     failures = []
@@ -87,7 +89,10 @@ async def test_cleanup_error_cannot_release_writer_before_remaining_real_worker(
             await closing
         assert error.value is failure
         assert not worker.is_alive() and session._lease is None and not calls
-        assert extension_client.process is None and mcp_client.process is None
+        assert all(client.process is None for client in extension_clients) and mcp_client.process is None
+        for process in extension_processes:
+            assert process.returncode is not None and process._transport.is_closing()
+            assert all(pipe.disconnected for pipe in process._transport._pipes.values())
         for _ in range(2):
             with pytest.raises(OSError) as repeated:
                 await session.aclose()
