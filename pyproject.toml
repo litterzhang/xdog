@@ -112,6 +112,11 @@ testpaths = [
     "packages/skills/tests",
 ]
 asyncio_mode = "auto"
+# Async ownership failures must fail CI, not produce red annotations on a green run.
+filterwarnings = [
+    "error::pytest.PytestUnraisableExceptionWarning",
+    "error::pytest.PytestUnhandledThreadExceptionWarning",
+]
 # Run every retained test; concurrency, not deselection, keeps the feedback loop short.
 # Use `uv run pytest -n 0` when debugging a test in a single process.
 addopts = "--import-mode=importlib -n 6 --dist load --maxschedchunk=4"

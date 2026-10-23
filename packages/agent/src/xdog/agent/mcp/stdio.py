@@ -12,6 +12,7 @@ from typing import Any
 from xdog.agent.mcp.client_capabilities import RootCapability
 from xdog.agent.mcp.config import McpServerConfig
 from xdog.agent.mcp.input_requests import INPUT_METHODS, InputRequests
+from xdog.agent.mcp.process_io import close_process_pipes
 from xdog.agent.mcp.resource_metadata import UNSUPPORTED_WATCH_METHODS, catalog_notice
 
 CURRENT_VERSION = "2026-07-28"
@@ -256,4 +257,6 @@ class StdioClient:
                 task.cancel()
         await asyncio.gather(*(task for task in (self._reader, self._stderr) if task is not None),
                              return_exceptions=True)
+        if process is not None:
+            await close_process_pipes(process)
         self.process = None

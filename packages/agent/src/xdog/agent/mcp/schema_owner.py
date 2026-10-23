@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from xdog.agent.async_work import wait_owned
+from xdog.agent.mcp.process_io import close_process_pipes
 from xdog.agent.mcp.schema import Schema, json_value
 from xdog.agent.mcp.stdio import McpError
 
@@ -149,14 +151,16 @@ class SchemaOwner:
                 self._active = None
 
     async def _stop(self, process: asyncio.subprocess.Process) -> None:
-        if self._process is process:
-            self._process = None
-        if process.returncode is None:
-            try:
-                process.kill()
-            except ProcessLookupError:
-                pass
-        await process.wait()
+        async def stop() -> None:
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+            await close_process_pipes(process)
+            if self._process is process:
+                self._process = None  # Release only after actual pipe/process settlement.
+        await wait_owned(asyncio.create_task(stop()))
 
     async def close(self) -> None:
         self._closed = True
