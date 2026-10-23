@@ -253,6 +253,7 @@ async def observe(
                 await persist()
                 await sleep(0.05)
                 continue
+            watching: list[str] = []
             for source in sources.values():
                 task = scans.get(source.id)
                 if task is not None and task.done():
@@ -270,7 +271,7 @@ async def observe(
                         if source.id not in baselined or source.id in source_errors:
                             baselined.add(source.id)
                             source_errors.discard(source.id)
-                            report("watching", source=source.id)
+                            watching.append(source.id)
                 if not overflowed and source.id not in scans and now >= next_scan[source.id]:
                     scans[source.id] = asyncio.create_task(collect(source))
             if not overflowed:
@@ -298,6 +299,10 @@ async def observe(
             # Cursor, debounced detector state and immutable pending identities
             # commit together BEFORE any handler can observe the delivery.
             await persist()
+            # Readiness acknowledges a recoverable cursor, not just an in-memory
+            # scan. A caller may crash the daemon as soon as start returns.
+            for source_id in watching:
+                report("watching", source=source_id)
             for item in ready:
                 report("delivery_processing", delivery=item.delivery)
                 item.task = asyncio.create_task(send(item.delivery))

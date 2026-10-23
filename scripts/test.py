@@ -18,7 +18,8 @@ def run_path(path: str) -> tuple[str, int, str]:
     # A small worker pool overlaps that I/O without collecting unrelated packages.
     workers = {"agent": 2, "coding": 2, "flow": 2, "claw": 2}.get(label, 0)
     command = [
-        sys.executable, "-m", "pytest", path, "-q", "-n", str(workers),
+        sys.executable, "-m", "pytest", "-c", str(ROOT / "pyproject.toml"),
+        path, "-q", "-n", str(workers),
         "-o", f"cache_dir={ROOT / '.pytest_cache' / 'packages' / label}",
     ]
     result = subprocess.run(

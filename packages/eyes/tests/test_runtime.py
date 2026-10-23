@@ -229,10 +229,12 @@ async def test_runtime_shutdown_settles_a_direct_pending_start(tmp_path,observer
 async def test_crashed_daemon_status_is_readonly_and_explicit_start_restores_original_cursor(
     tmp_path,observer_data,unix_peer,monkeypatch,capsys
 ):
+    import hashlib
     import json
 
     from xdog.eyes import process
     from xdog.eyes.cli import main
+    from xdog.eyes.daemon_store import DaemonStore
     from xdog.eyes.local_control import daemon_location
 
     path,events,gate,writers = unix_peer
@@ -248,6 +250,12 @@ async def test_crashed_daemon_status_is_readonly_and_explicit_start_restores_ori
     child = process._children[str(location.directory)]
     child.kill()
     await asyncio.to_thread(child.wait,timeout=5)
+    # Inspect only after SIGKILL: reading before it could let the initial cursor
+    # commit catch up and hide start acknowledging an in-memory-only baseline.
+    saved, = await DaemonStore(location.directory).rows()
+    assert saved['checkpoint'] is not None, 'start reported ready before persisting its file baseline'
+    baseline = json.loads(saved['checkpoint'])['detectors']['changes']['baseline']
+    assert dict(baseline)['src/a']['digest'] == hashlib.sha256(b'baseline').hexdigest()
     changed.write_text('changed while no observer exists')
     assert await asyncio.to_thread(main,['status'])==0
     capsys.readouterr()

@@ -663,3 +663,51 @@ async def test_slow_saved_receiver_does_not_block_independent_saved_registration
     await restored.wait_ready(fast['registration_id'], timeout=1)
     assert (await restored.status(slow['registration_id']))['state'] == 'baselining'
     await restored.cancel(slow['registration_id'])
+
+
+@pytest.mark.parametrize('commit_fails', [False, True])
+async def test_wait_ready_requires_committed_file_baseline(daemon, tmp_path, observer_data, monkeypatch, commit_fails):
+    _, client, current, _ = daemon
+    (tmp_path / 'task.json').write_text('{"n":1}')
+    store = current().daemon.store
+    original = store.checkpoint
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def hold_baseline(identifier, checkpoint):
+        if checkpoint['detectors']['changes']['baseline'] is not None and not entered.is_set():
+            # Hold the baseline-to-journal boundary, while the real Unix control
+            # socket and SQLite reads stay responsive. No timing assumption can
+            # substitute for this commit when start/wait-ready reports watching.
+            entered.set()
+            await release.wait()
+            if commit_fails:
+                raise OSError('baseline checkpoint commit refused')
+        await original(identifier, checkpoint)
+
+    monkeypatch.setattr(store, 'checkpoint', hold_baseline)
+    value = await client()
+    result = await value.start(definition(tmp_path, observer_data), delivery='events', wait_ready=False)
+    identifier = result['registration_id']
+    waiting = asyncio.create_task(value.wait_ready(identifier, timeout=3))
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        row = await value.status(identifier)
+        assert row['state'] == 'baselining', row
+        assert row['sources']['files'] == 'baselining'
+        assert not waiting.done(), 'readiness cannot acknowledge an uncommitted baseline'
+        saved, = await store.rows()
+        checkpoint = json.loads(saved['checkpoint']) if saved['checkpoint'] else None
+        assert checkpoint is None or checkpoint['detectors']['changes']['baseline'] is None
+        release.set()
+        if commit_fails:
+            with pytest.raises(ValueError, match='baseline checkpoint commit refused'):
+                await waiting
+            assert (await value.status(identifier))['state'] == 'needs-review'
+        else:
+            assert (await waiting)['state'] == 'watching'
+            saved, = await store.rows()
+            assert json.loads(saved['checkpoint'])['detectors']['changes']['baseline'] is not None
+    finally:
+        release.set()
+        waiting.cancel()
+        await asyncio.gather(waiting, return_exceptions=True)
