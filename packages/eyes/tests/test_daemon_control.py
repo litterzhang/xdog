@@ -11,7 +11,7 @@ from xdog.eyes._daemon_control import DaemonControl
 from xdog.eyes.control import request
 from xdog.eyes.loader import definition_data, parse
 from xdog.eyes.local_control import daemon_location
-from xdog.eyes.runtime import ObserverRuntime
+from xdog.eyes.runtime import DaemonRuntime
 
 
 @pytest.fixture
@@ -23,7 +23,7 @@ async def daemon(tmp_path, monkeypatch):
 
         async def boot(**options):
             nonlocal runtime
-            runtime = ObserverRuntime(location, **options)
+            runtime = DaemonRuntime(location, **options)
             task = asyncio.create_task(runtime.serve())
             tasks.append(task)
             async with asyncio.timeout(5):

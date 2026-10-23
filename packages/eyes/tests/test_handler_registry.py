@@ -1,8 +1,10 @@
 """A genuine second handler requires no ACP fields, SDK, or runtime branch."""
 import asyncio
+import json
 from dataclasses import dataclass
 
 import pytest
+from xdog.eyes.loader import definition_data, parse
 
 
 @pytest.fixture
@@ -70,6 +72,22 @@ def recording(tmp_path):
     return registry, instances, parser, factory
 
 
+@pytest.fixture
+async def observers(isolated_daemon_directory, recording, monkeypatch):
+    from xdog.eyes.daemon import DaemonObservers
+    from xdog.eyes.local_control import daemon_location
+
+    registry, _, _, _ = recording
+    monkeypatch.setattr('xdog.eyes.handlers.registry.builtin_handlers', lambda: registry)
+    monkeypatch.setattr('xdog.eyes.daemon.builtin_handlers', lambda: registry)
+    value = DaemonObservers(daemon_location(isolated_daemon_directory))
+    await value.open()
+    try:
+        yield value
+    finally:
+        await value.aclose()
+
+
 def record_data(data):
     data['handlers'] = [{'id': 'recorder', 'type': 'record', 'label': 'audit'}]
     data['routes'][0]['handler'] = 'recorder'
@@ -104,13 +122,13 @@ def test_registry_refuses_unknown_duplicate_and_malformed_definitions(tmp_path, 
         parse(data, base_dir=tmp_path, handler_registry=registry)
 
 
-async def test_runtime_runs_non_acp_handler_and_uses_its_snapshot(tmp_path, observer_data, recording):
-    from xdog.eyes.local_control import runtime_location
+async def test_daemon_runs_non_acp_handler_and_uses_its_snapshot(
+    tmp_path, observer_data, recording, observers, monkeypatch,
+):
     from xdog.eyes.models import FileState
-    from xdog.eyes.runtime import ObserverRuntime
     from xdog.eyes.sources.file import FileSnapshot
 
-    registry, instances, _, _ = recording
+    _, instances, _, _ = recording
     scans = []
 
     async def scan(source):
@@ -120,30 +138,34 @@ async def test_runtime_runs_non_acp_handler_and_uses_its_snapshot(tmp_path, obse
     data = record_data(observer_data)
     data['sources'][0]['poll_interval_ms'] = 10
     data['detectors'][0].update(debounce_ms=10, max_batch_delay_ms=20)
-    runtime = ObserverRuntime(runtime_location(tmp_path), scanner=scan, handler_registry=registry)
-    identifier = (await runtime.start(data))['registration_id']
+    monkeypatch.setattr('xdog.eyes.daemon.scan_async', scan)
+    _, result = await observers.dispatch('register', {
+        'owner': 'test', 'definition': definition_data(parse(data, base_dir=tmp_path)),
+    })
+    identifier = result['registration_id']
     try:
         async with asyncio.timeout(3):
-            while not instances[0].deliveries:
+            while not instances or not instances[0].deliveries:
                 await asyncio.sleep(0.01)
-        status = (await runtime.status(identifier))['registrations'][0]
-        assert status['handlers']['recorder'] == {'state': 'ready', 'label': 'audit', 'count': 1}
+        active = observers.active[identifier]
+        snapshot = active.handlers['recorder'].snapshot()
+        assert snapshot.state == 'ready'
+        assert snapshot.details == {'label': 'audit', 'count': 1}
         item = instances[0].deliveries[0]
         assert item.events[0].evidence[0].path == 'a.py'
-        assert await runtime.resume_entry(identifier)
-        assert instances[0].calls == ['start', 'resume']
+        assert instances[0].calls == ['start']
     finally:
-        await runtime.stop_entry(identifier)
+        await observers.dispatch('cancel', {'owner': 'test', 'registration_id': identifier})
     assert instances[0].calls[-1] == 'close'
 
 
-async def test_runtime_delivers_two_routes_to_distinct_handler_instances(tmp_path, observer_data, recording):
-    from xdog.eyes.local_control import runtime_location
+async def test_daemon_delivers_two_routes_to_distinct_handler_instances(
+    tmp_path, observer_data, recording, observers, monkeypatch,
+):
     from xdog.eyes.models import FileState
-    from xdog.eyes.runtime import ObserverRuntime
     from xdog.eyes.sources.file import FileSnapshot
 
-    registry, instances, _, _ = recording
+    _, instances, _, _ = recording
     scans = []
 
     async def scan(source):
@@ -155,28 +177,31 @@ async def test_runtime_delivers_two_routes_to_distinct_handler_instances(tmp_pat
     data['routes'].append({**data['routes'][0], 'id': 'other-route', 'handler': 'other-recorder'})
     data['sources'][0]['poll_interval_ms'] = 10
     data['detectors'][0].update(debounce_ms=10, max_batch_delay_ms=20)
-    runtime = ObserverRuntime(runtime_location(tmp_path), scanner=scan, handler_registry=registry)
-    identifier = (await runtime.start(data))['registration_id']
+    monkeypatch.setattr('xdog.eyes.daemon.scan_async', scan)
+    _, result = await observers.dispatch('register', {
+        'owner': 'test', 'definition': definition_data(parse(data, base_dir=tmp_path)),
+    })
+    identifier = result['registration_id']
     try:
         async with asyncio.timeout(3):
-            while not all(handler.deliveries for handler in instances):
+            while len(instances) != 2 or not all(handler.deliveries for handler in instances):
                 await asyncio.sleep(0.01)
         left, right = [handler.deliveries[0] for handler in instances]
         assert left.events == right.events and left.id != right.id
         assert (left.route_id, right.route_id) == ('review', 'other-route')
     finally:
-        await runtime.stop_entry(identifier)
+        await observers.dispatch('cancel', {'owner': 'test', 'registration_id': identifier})
     assert all(handler.calls[-1] == 'close' for handler in instances)
 
 
-async def test_handler_owned_validation_stops_oversize_delivery_before_send(tmp_path, observer_data, recording):
+async def test_handler_owned_validation_stops_oversize_delivery_before_send(
+    tmp_path, observer_data, recording, observers, monkeypatch,
+):
     """Removing runtime's validate injection must attempt six paths and fail this test."""
-    from xdog.eyes.local_control import runtime_location
     from xdog.eyes.models import FileState
-    from xdog.eyes.runtime import ObserverRuntime
     from xdog.eyes.sources.file import FileSnapshot
 
-    registry, instances, _, _ = recording
+    _, instances, _, _ = recording
     scans = []
 
     async def scan(source):
@@ -187,44 +212,111 @@ async def test_handler_owned_validation_stops_oversize_delivery_before_send(tmp_
     data = record_data(observer_data)
     data['sources'][0]['poll_interval_ms'] = 10
     data['detectors'][0].update(debounce_ms=10, max_batch_delay_ms=20)
-    runtime = ObserverRuntime(runtime_location(tmp_path), scanner=scan, handler_registry=registry)
-    identifier = (await runtime.start(data))['registration_id']
+    monkeypatch.setattr('xdog.eyes.daemon.scan_async', scan)
+    _, result = await observers.dispatch('register', {
+        'owner': 'test', 'definition': definition_data(parse(data, base_dir=tmp_path)),
+    })
+    identifier = result['registration_id']
     try:
         async with asyncio.timeout(3):
-            while not runtime.entries[identifier].routes['review'].get('paused'):
+            while observers.active[identifier].routes.get('review') != 'paused':
                 await asyncio.sleep(0.01)
         assert instances[0].deliveries == []
-        assert runtime.entries[identifier].routes['review'].get('fatal') is True
+        row, = await observers.store.rows('test')
+        assert json.loads(row['checkpoint'])['overflowed']
+        with pytest.raises(ValueError, match='cannot be resumed'):
+            await observers.dispatch('owner-resume', {'owner': 'test', 'registration_id': identifier})
     finally:
-        await runtime.stop_entry(identifier)
+        await observers.dispatch('cancel', {'owner': 'test', 'registration_id': identifier})
 
 
-async def test_common_health_check_and_resume_need_no_acp_attributes(tmp_path, observer_data, recording):
-    """ACP-specific monitor attribute access incorrectly retires the valid recorder."""
+@pytest.mark.parametrize('recoverable', [False, True])
+async def test_common_health_check_and_resume_need_no_acp_attributes(
+    tmp_path, observer_data, recording, observers, recoverable,
+):
     from xdog.eyes.handlers.contracts import HandlerHealthError
-    from xdog.eyes.local_control import runtime_location
-    from xdog.eyes.runtime import ObserverRuntime
 
-    registry, instances, _, _ = recording
-    runtime = ObserverRuntime(runtime_location(tmp_path), handler_registry=registry)
-    identifier = (await runtime.start(record_data(observer_data)))['registration_id']
-    checked = asyncio.Event()
+    _, instances, _, _ = recording
+    _, result = await observers.dispatch('register', {
+        'owner': 'test', 'definition': definition_data(parse(record_data(observer_data), base_dir=tmp_path)),
+    })
+    identifier = result['registration_id']
+    async with asyncio.timeout(3):
+        while not observers.active[identifier].ready:
+            await asyncio.sleep(.01)
+    original = observers.active[identifier]
 
     async def check():
-        checked.set()
-        raise HandlerHealthError('record storage temporarily unavailable', recoverable=True)
+        raise HandlerHealthError('record storage temporarily unavailable', recoverable=recoverable)
 
     instances[0].check = check
-    monitor = asyncio.create_task(runtime.monitor())
-    try:
-        await asyncio.wait_for(checked.wait(), 3)
-        entry = runtime.entries[identifier]
-        assert not entry.retired and not entry.registration.task.done()
-        assert entry.suspended.is_set()
-        assert entry.health == {'recorder': 'record storage temporarily unavailable'}
-        assert await runtime.resume_entry(identifier)
-        assert not entry.health and not entry.suspended.is_set()
-    finally:
-        runtime.stop.set()
-        await asyncio.wait_for(monitor, 3)
-        await runtime.stop_entry(identifier)
+    await observers.health()
+    _, status = await observers.dispatch('owner-status', {'owner': 'test', 'registration_id': identifier})
+    assert status['state'] == ('paused' if recoverable else 'needs-review')
+    assert status['error'] == 'record storage temporarily unavailable'
+    assert original.task.done() and instances[0].state == 'closed'
+    if recoverable:
+        # Health recovery alone is not authority to restart collection.
+        await observers.health()
+        assert observers.active[identifier] is original
+        await observers.dispatch('owner-resume', {'owner': 'test', 'registration_id': identifier})
+        async with asyncio.timeout(3):
+            while not observers.active[identifier].ready:
+                await asyncio.sleep(.01)
+        assert observers.active[identifier] is not original
+        assert len(instances) == 2 and instances[1].calls == ['start']
+    else:
+        with pytest.raises(ValueError, match='cannot be resumed'):
+            await observers.dispatch('owner-resume', {'owner': 'test', 'registration_id': identifier})
+        assert len(instances) == 1
+
+
+async def test_custom_handler_explicit_resume_retries_the_same_delivery(
+    tmp_path, observer_data, recording, observers, monkeypatch,
+):
+    from xdog.eyes.events import DeliveryResult
+    from xdog.eyes.models import FileState
+    from xdog.eyes.sources.file import FileSnapshot
+
+    _, instances, _, _ = recording
+    changed = asyncio.Event()
+
+    async def scan(source):
+        return FileSnapshot((('a.py', FileState('new', 3)),)) if changed.is_set() else FileSnapshot(())
+
+    monkeypatch.setattr('xdog.eyes.daemon.scan_async', scan)
+    data = record_data(observer_data)
+    data['sources'][0]['poll_interval_ms'] = 10
+    data['detectors'][0].update(debounce_ms=10, max_batch_delay_ms=20)
+    _, result = await observers.dispatch('register', {
+        'owner': 'test', 'definition': definition_data(parse(data, base_dir=tmp_path)),
+    })
+    identifier = result['registration_id']
+    async with asyncio.timeout(3):
+        while observers.active[identifier].sources.get('files') != 'watching':
+            await asyncio.sleep(.01)
+    handler = instances[0]
+    attempts = []
+
+    async def deliver(value):
+        attempts.append(value)
+        return DeliveryResult('paused', 'record storage offline') if len(attempts) == 1 else DeliveryResult('succeeded')
+
+    handler.deliver = deliver
+    changed.set()
+    async with asyncio.timeout(3):
+        while observers.active[identifier].routes.get('review') != 'paused':
+            await asyncio.sleep(.01)
+        # Resume is based on the committed paused delivery, not just telemetry.
+        while True:
+            row, = await observers.store.rows('test')
+            if json.loads(row['checkpoint'])['pending']['review']['paused']:
+                break
+            await asyncio.sleep(.01)
+    await observers.dispatch('owner-resume', {'owner': 'test', 'registration_id': identifier})
+    async with asyncio.timeout(3):
+        while observers.active[identifier].routes.get('review') != 'delivery_succeeded':
+            await asyncio.sleep(.01)
+    assert handler.calls == ['start', 'resume']
+    assert len(instances) == 1 and len(attempts) == 2
+    assert attempts[0] == attempts[1]  # No new identity or reconstructed evidence.

@@ -489,7 +489,7 @@ def _extract_result_text(result: AgentToolResult | None) -> str:
 def _print_tool_ctx(tool_ctx: dict[str, Any], *, verbose: bool) -> None:
     """Print the shared tool context after a turn.
 
-    Tools mutate values inside ``tool_ctx`` (e.g. a ``flow_result_sink`` dict
+    Tools mutate values inside ``tool_ctx`` (e.g. a ``result_sink`` dict
     populated by ``submit_result``).  Since ToolDef passes handlers a shallow
     copy of the context, only mutations to shared *values* are visible here —
     which is exactly the sink-handoff pattern.
@@ -560,7 +560,7 @@ def main() -> None:
         help=(
             "Shared tool context passed to every tool's execute(ctx=...). "
             "A JSON object, or '@path' to read the JSON from a file. "
-            "Example: --tool-ctx '{\"flow_output_schema\": {\"summary\": \"string\"}}'"
+            "Example: --tool-ctx '{\"result_schema\": {\"summary\": \"string\"}, \"result_sink\": {}}'"
         ),
     )
 

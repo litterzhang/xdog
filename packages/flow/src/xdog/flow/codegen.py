@@ -186,8 +186,8 @@ _SDK_RUN_AGENT = '''async def _run_agent(
         tools = tools + (create_submit_result_tool(),)
         _tool_ctx = {
             **(_tool_ctx or {}),
-            "flow_output_schema": output_schema,
-            "flow_result_sink": _sink,
+            "result_schema": output_schema,
+            "result_sink": _sink,
         }
         # Computed by the generator via models.submit_instruction, the same
         # function the interpreter calls -- deriving it here from

@@ -24,105 +24,6 @@ async def wait_for(predicate):
             await asyncio.sleep(0.01)
 
 
-async def test_all_handlers_must_connect_before_any_source_scan(tmp_path,observer_data,unix_peer):
-    from xdog.eyes.local_control import runtime_location
-    from xdog.eyes.runtime import ObserverRuntime
-    from xdog.eyes.sources.file import FileSnapshot
-
-    path,events,gate,writers = unix_peer
-    scans = []
-
-    async def scan(source):
-        scans.append(source.id)
-        return FileSnapshot(())
-
-    data = unix_definition(observer_data,path,tmp_path)
-    data['handlers'].append({**deepcopy(data['handlers'][0]),'id':'bad','session':'missing'})
-    runtime = ObserverRuntime(runtime_location(tmp_path),scanner=scan)
-    with pytest.raises(Exception):
-        await runtime.start(data)
-    assert not scans and not runtime.entries and not runtime.names
-    await wait_for(lambda:not writers)
-    assert not [e for e in events if e[0]=='prompt']
-
-
-async def test_same_definition_is_idempotent_and_changes_require_stop(tmp_path,observer_data,unix_peer):
-    from xdog.eyes.local_control import runtime_location
-    from xdog.eyes.runtime import ObserverRuntime
-
-    path,events,gate,writers = unix_peer
-    (tmp_path/'src').mkdir()
-    runtime = ObserverRuntime(runtime_location(tmp_path))
-    data = unix_definition(observer_data,path,tmp_path)
-    try:
-        first,second = await asyncio.gather(runtime.start(data),runtime.start(deepcopy(data)))
-        assert first['registration_id']==second['registration_id']
-        assert len([e for e in events if e[0]=='initialize'])==1
-        changed = deepcopy(data)
-        changed['handlers'][0]['instruction']='Another instruction'
-        with pytest.raises(ValueError,match='stop'):
-            await runtime.start(changed)
-        assert len(runtime.entries)==1
-    finally:
-        for identifier in tuple(runtime.entries):
-            await runtime.stop_entry(identifier)
-
-
-async def test_one_route_success_does_not_clear_another_route_unknown_pause(tmp_path,observer_data,unix_peer):
-    from xdog.eyes.events import RuntimeEvent
-    from xdog.eyes.local_control import runtime_location
-    from xdog.eyes.runtime import ObserverRuntime
-
-    path,events,gate,writers = unix_peer
-    (tmp_path/'src').mkdir()
-    data = unix_definition(observer_data,path,tmp_path)
-    data['routes'].append({**data['routes'][0],'id':'other'})
-    runtime = ObserverRuntime(runtime_location(tmp_path))
-    identifier = (await runtime.start(data))['registration_id']
-    try:
-        runtime.emit(identifier,RuntimeEvent('delivery_outcome_unknown',identifier,route_id='review',
-                                            delivery_id='uncertain',error='lost response'))
-        runtime.emit(identifier,RuntimeEvent('paused',identifier,route_id='review',delivery_id='uncertain',error='lost'))
-        runtime.emit(identifier,RuntimeEvent('delivery_succeeded',identifier,route_id='other',delivery_id='success'))
-        row = (await runtime.status(identifier))['registrations'][0]
-        assert row['state']=='paused'
-        assert row['routes']['review']['state']=='outcome-unknown'
-        assert row['routes']['other']['state']=='succeeded'
-        assert not await runtime.resume_entry(identifier)
-    finally:
-        await runtime.stop_entry(identifier)
-
-
-async def test_disconnected_prompt_peer_freezes_collection_without_reconnecting(tmp_path,observer_data):
-    from xdog.eyes.local_control import runtime_location
-    from xdog.eyes.runtime import ObserverRuntime
-
-    from packages.eyes.tests.test_acp_handler import definition, rows
-
-    peer = definition(tmp_path/'record',mode='disconnect')
-    (tmp_path/'src').mkdir()
-    data = deepcopy(observer_data)
-    data['sources'][0].update(root=str(tmp_path),include=['src/**'],poll_interval_ms=50)
-    data['detectors'][0].update(debounce_ms=50,max_batch_delay_ms=100)
-    data['handlers'][0].update(connection={'transport':'stdio','command':list(peer.connection.command)},session='target')
-    runtime = ObserverRuntime(runtime_location(tmp_path))
-    identifier = (await runtime.start(data))['registration_id']
-    try:
-        await wait_for(lambda:runtime.entries[identifier].sources.get('files')=='watching')
-        (tmp_path/'src'/'a').write_text('change')
-        async with asyncio.timeout(5):
-            while True:
-                row = (await runtime.status(identifier))['registrations'][0]
-                if row['state']=='paused':
-                    break
-                await asyncio.sleep(0.02)
-        assert row['routes']['review']['state']=='outcome-unknown'
-        assert not await runtime.resume_entry(identifier)
-        assert len([r for r in rows(tmp_path/'record') if r['kind']=='initialize'])==1
-    finally:
-        await runtime.stop_entry(identifier)
-
-
 async def test_cli_uses_unix_acp_without_coding_cli(tmp_path,observer_data,unix_peer,monkeypatch,capsys):
     import json
 
@@ -166,64 +67,64 @@ async def test_cli_uses_unix_acp_without_coding_cli(tmp_path,observer_data,unix_
             await asyncio.to_thread(child.wait,timeout=5)
 
 
-async def test_concurrent_starters_share_runtime_generation_and_registration(tmp_path,observer_data,unix_peer):
+async def test_concurrent_starters_share_daemon_generation_and_registration(tmp_path, observer_data, unix_peer):
+    from xdog.eyes._daemon_control import DaemonControl
+    from xdog.eyes.loader import parse
+
+    path, events, gate, writers = unix_peer
+    (tmp_path / 'src').mkdir()
+    data = parse(unix_definition(observer_data, path, tmp_path), base_dir=tmp_path)
+
+    async def start_one():
+        control = await DaemonControl.open(owner='concurrent')
+        try:
+            result = await control.start(data)
+            return control.location, result
+        finally:
+            await control.aclose()
+
+    results = await asyncio.gather(*(start_one() for _ in range(4)))
+    assert len({item[0].generation for item in results}) == 1
+    identifiers = {item[1]['registration_id'] for item in results}
+    assert len(identifiers) == 1
+    assert len([event for event in events if event[0] == 'initialize']) == 1
+    async with DaemonControl(owner='concurrent') as control:
+        await control.cancel(identifiers.pop())
+        # Last registration cancellation never stops the shared daemon.
+        assert (await control.daemon_status())['state'] == 'running'
+        await control.stop_daemon()
+
+
+async def test_daemon_shutdown_settles_pending_handler_activation(tmp_path, observer_data, unix_peer):
+    from xdog.eyes._daemon_control import DaemonControl
     from xdog.eyes.control import request
-    from xdog.eyes.local_control import object_value, runtime_location
-    from xdog.eyes.process import ensure_runtime, reap_runtime
+    from xdog.eyes.loader import parse
+    from xdog.eyes.local_control import daemon_location
+    from xdog.eyes.runtime import DaemonRuntime
 
-    path,events,gate,writers = unix_peer
-    (tmp_path/'src').mkdir()
-    data = unix_definition(observer_data,path,tmp_path)
-    location = runtime_location(tmp_path)
-
-    def start_one():
-        current = ensure_runtime(location)
-        return current,asyncio.run(request(current,'start',{'definition':object_value(data)}))
-
-    results = await asyncio.gather(*(asyncio.to_thread(start_one) for _ in range(4)))
-    current = results[0][0]
-    identifiers = {row[1]['body']['registration_id'] for row in results}
-    try:
-        assert len(identifiers)==1 and len({row[0].generation for row in results})==1
-        assert len([e for e in events if e[0]=='initialize'])==1
-    finally:
-        for identifier in identifiers:
-            await request(current,'stop',{'registration_id':identifier})
-        assert await asyncio.to_thread(reap_runtime,current,timeout=5)
-
-
-async def test_runtime_shutdown_settles_a_direct_pending_start(tmp_path,observer_data,unix_peer):
-    from xdog.eyes.control import request
-    from xdog.eyes.local_control import runtime_location
-    from xdog.eyes.runtime import ObserverRuntime
-
-    path,events,gate,writers = unix_peer
-    (tmp_path/'src').mkdir()
-    runtime = ObserverRuntime(runtime_location(tmp_path))
+    path, events, gate, writers = unix_peer
+    runtime = DaemonRuntime(daemon_location())
     serving = asyncio.create_task(runtime.serve())
-    starting = None
+    control = DaemonControl(owner='pending-start')
     try:
-        async with asyncio.timeout(3):
-            while True:
-                try:
-                    await request(runtime.location,'hello',{})
-                    break
-                except OSError:
-                    await asyncio.sleep(0.01)
+        await wait_for(runtime.location.socket.exists)
+        await request(runtime.location, 'hello', {})
         gate.clear()
-        starting = asyncio.create_task(runtime.start(unix_definition(observer_data,path,tmp_path)))
-        await wait_for(lambda:any(e[0]=='initialize' for e in events))
+        data = parse(unix_definition(observer_data, path, tmp_path), base_dir=tmp_path)
+        result = await control.start(data, wait_ready=False)
+        identifier = result['registration_id']
+        await wait_for(lambda: any(event[0] == 'initialize' for event in events))
+        active = runtime.daemon.active[identifier]
+        assert active.task is not None and not active.task.done()
         runtime.stop.set()
-        await asyncio.wait_for(serving,3)
-        assert starting.done(), 'startup target connections are owned by the runtime too'
-        assert not runtime.entries
+        await asyncio.wait_for(serving, 3)
+        assert active.task.done() and not runtime.daemon.active
+        await wait_for(lambda: not writers)
     finally:
         gate.set()
         runtime.stop.set()
-        if starting is not None:
-            starting.cancel()
-            await asyncio.gather(starting,return_exceptions=True)
-        await asyncio.gather(serving,return_exceptions=True)
+        await asyncio.gather(serving, return_exceptions=True)
+        await control.aclose()
 
 
 async def test_crashed_daemon_status_is_readonly_and_explicit_start_restores_original_cursor(
@@ -284,9 +185,9 @@ async def test_runtime_canonical_socket_is_absent_until_private_listener_is_read
 
     from xdog.eyes import runtime as module
     from xdog.eyes.control import request
-    from xdog.eyes.local_control import read_location, runtime_location, validate_socket
+    from xdog.eyes.local_control import daemon_location, read_location, validate_socket
 
-    runtime = module.ObserverRuntime(runtime_location(tmp_path))
+    runtime = module.DaemonRuntime(daemon_location())
     entered, release = asyncio.Event(), asyncio.Event()
     original = asyncio.start_unix_server
     staged = []
@@ -337,9 +238,9 @@ async def test_runtime_canonical_socket_is_absent_until_private_listener_is_read
 
 async def test_runtime_socket_publication_refuses_a_new_canonical_occupant(tmp_path, monkeypatch):
     from xdog.eyes import runtime as module
-    from xdog.eyes.local_control import ControlError, runtime_location, validate_socket
+    from xdog.eyes.local_control import ControlError, daemon_location, validate_socket
 
-    runtime = module.ObserverRuntime(runtime_location(tmp_path))
+    runtime = module.DaemonRuntime(daemon_location())
     original = module.publish_location
     identity = []
 
@@ -370,9 +271,9 @@ async def test_runtime_private_socket_setup_failure_never_publishes_or_leaks_sta
     from pathlib import Path
 
     from xdog.eyes import runtime as module
-    from xdog.eyes.local_control import runtime_location
+    from xdog.eyes.local_control import daemon_location
 
-    runtime = module.ObserverRuntime(runtime_location(tmp_path))
+    runtime = module.DaemonRuntime(daemon_location())
     original = module.os.chmod
     attempted = []
 
@@ -396,10 +297,10 @@ async def test_runtime_unsafe_canonical_endpoint_still_fails_closed_without_repl
     import socket
 
     from xdog.eyes.control import request
-    from xdog.eyes.local_control import ControlError, runtime_location
-    from xdog.eyes.runtime import ObserverRuntime
+    from xdog.eyes.local_control import ControlError, daemon_location
+    from xdog.eyes.runtime import DaemonRuntime
 
-    runtime = ObserverRuntime(runtime_location(tmp_path))
+    runtime = DaemonRuntime(daemon_location())
     listener = None
     if kind == 'file':
         runtime.location.socket.write_text('preserve unsafe file')

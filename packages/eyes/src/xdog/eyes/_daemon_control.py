@@ -55,7 +55,7 @@ class DaemonControl:
             self.location = await asyncio.to_thread(daemon_location, self.directory)
         if self._negotiated != self.location.generation or not self._negotiated:
             response = await request(replace(self.location, generation=''), 'hello', {}, timeout=5)
-            require_compatible(response, daemon=True)
+            require_compatible(response)
             self.location = replace(self.location, generation=text(response['generation']))
             self._negotiated = self.location.generation
         if scoped:

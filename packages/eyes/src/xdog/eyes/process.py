@@ -54,7 +54,7 @@ def ensure_runtime(location: RuntimeLocation, *, timeout: float = 8.0) -> Runtim
             try:
                 response = asyncio.run(request(replace(location, generation=''), 'hello', {},
                                                timeout=min(0.25, max(0.01, deadline-time.monotonic()))))
-                require_compatible(response, daemon=location.cwd == location.directory)
+                require_compatible(response)
                 if response['status'] == 'ok':
                     result = replace(location, generation=text(response['generation']))
                     validate_location(result)
@@ -82,9 +82,7 @@ def ensure_runtime(location: RuntimeLocation, *, timeout: float = 8.0) -> Runtim
             try:
                 if os.fstat(log).st_size > 1024 * 1024:
                     os.ftruncate(log, 0)
-                arguments = ([sys.executable, '-m', 'xdog.eyes.runtime', '--directory', str(location.directory)]
-                             if location.cwd == location.directory else
-                             [sys.executable, '-m', 'xdog.eyes.runtime', '--cwd', str(location.cwd)])
+                arguments = [sys.executable, '-m', 'xdog.eyes.runtime', '--directory', str(location.directory)]
                 child = subprocess.Popen(arguments,
                     cwd=location.cwd, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                     close_fds=True, start_new_session=True)

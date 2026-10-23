@@ -11,9 +11,13 @@ ACP is one built-in handler, not the routing abstraction. Eyes never imports a h
 loop; coding never imports a concrete Eyes source.
 
 The supported management surfaces are the **Eyes CLI** and the **installed,
-registered Eyes tool**. Python engine classes such as `ObserverService`, handler
-registries and hosting/control modules are internal implementation details, not a
+registered Eyes tool**. Python engine classes, handler registries and daemon/control modules are internal implementation details, not a
 public embedding SDK or an alternative supported observation-management entry point.
+
+Only the user-local shared daemon is hosted. An explicit `--directory` may isolate
+a daemon, but no project/cwd runtime or embedded `ObserverService` is maintained.
+Control metadata retains a `cwd` wire field for compatibility; it always names the
+daemon directory, never a project, delivery target or filesystem permission.
 
 ## Use an explicit ACP destination
 

@@ -12,7 +12,7 @@ from typing import Any, Protocol
 
 from xdog.agent.async_work import wait_owned
 from xdog.claw.core.inputs.models import InputEnvelope, InputScope
-from xdog.claw.core.inputs.receipt_projection import project
+from xdog.claw.core.inputs.receipt_projection import project, summarize_error
 from xdog.claw.core.inputs.store import InputRecord, InputStore
 
 logger = logging.getLogger(__name__)
@@ -294,7 +294,7 @@ class InputService:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            error = str(exc) or type(exc).__name__
+            error = summarize_error(exc)
             outcome = InputOutcome(error=error)
         current = await self.store.get(record.envelope.scope, record.envelope.message.id)
         if current is None:

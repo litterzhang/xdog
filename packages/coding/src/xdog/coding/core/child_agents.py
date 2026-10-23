@@ -10,6 +10,7 @@ import threading
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from xdog.agent import Agent, AgentConfig, AgentMessage, BeforeToolCallContext, BeforeToolCallResult
@@ -29,6 +30,10 @@ from xdog.agent.skills.manager import SkillManager
 from xdog.agent.skills.tool import _Reader
 from xdog.agent.tool_effects import ToolEffect
 from xdog.agent.tools import ToolRegistry
+from xdog.agent.tools.filesystem_constraints import (
+    capture_filesystem_roots as _filesystem_roots,
+)
+from xdog.agent.tools.filesystem_constraints import decode_filesystem_roots, encode_filesystem_roots
 from xdog.agent.types import AfterToolCallContext, AfterToolCallResult, HandledInput
 from xdog.ai.types import AssistantMessage, Context, StreamOptions, ToolCall, UserMessage
 from xdog.ai.utils.event_stream import EventStream
@@ -41,6 +46,7 @@ if TYPE_CHECKING:
     from xdog.coding.core.agent_session import AgentSession
 
 
+
 @dataclass(frozen=True)
 class _ParentMetadata:
     model: str
@@ -51,6 +57,8 @@ class _ParentMetadata:
     max_prompt_tokens: int
     supports_tool_calls: bool | None
     mcp_tools: tuple[AgentTool, ...]
+    filesystem_roots: tuple[Path, ...] | None
+    filesystem_ceiling: tuple[Path, ...] | None
 
 
 def _argument_fingerprint(params: dict[str, Any]) -> str:
@@ -109,6 +117,10 @@ class CodingChildren:
             parent_valid=lambda identifier: identifier in self.parents and self.parents[identifier].live)
         self._closed = False
         self.snapshots: dict[str, _ParentMetadata] = {}
+        # Original-owner ceiling survives idle-round teardown. A later message
+        # to the same child ID must not capture a newly broadened parent grant.
+        # This authority is never reconstructed from persisted child records.
+        self.filesystem_limits: dict[str, tuple[Path, ...] | None] = {}
         self.parents: dict[str, ParentHandle] = {}
         self.skill_limits: dict[str, ChildSkills] = {}
         self.delegations: dict[str, ChildDelegation] = {}
@@ -250,6 +262,8 @@ class CodingChildren:
             model=original.state.model, stream=original.stream_fn, options=original.options,
             tool_execution=original.tool_execution, context_window=original.context_window,
             max_prompt_tokens=original.max_prompt_tokens, supports_tool_calls=original.supports_tool_calls,
+            filesystem_roots=_filesystem_roots(original.tool_context),
+            filesystem_ceiling=_filesystem_roots(original.tool_context),
             mcp_tools=tuple(tool for tool in (original.mcp_registry.tools()
                             if original.mcp_registry is not None else ())
                             if any(tool is source for source in grant.tools)))
@@ -288,13 +302,27 @@ class CodingChildren:
             current = parent.capture_tools(None).tools
             if any(not any(tool is value for value in current) for tool in selected.tools):
                 raise ValueError("Parent tool delegation changed during scope validation")
+            if _filesystem_roots(original.tool_context) != metadata.filesystem_roots:
+                raise ValueError("Parent filesystem execution constraints changed during child admission")
+            ceiling = metadata.filesystem_roots
+            if "filesystem" in selected.names:
+                historical, data = self.runtime.filesystem_history(spec.id)
+                if spec.id in self.filesystem_limits:
+                    ceiling = self.filesystem_limits[spec.id]
+                elif historical:
+                    # Unknown old records get an explicit deny-all ceiling,
+                    # never the live parent's possibly larger current grant.
+                    ceiling = () if data is None else decode_filesystem_roots(data)
+                if ceiling != () and ceiling != metadata.filesystem_roots:
+                    raise ValueError("Original child filesystem execution constraints changed")
+                self.filesystem_limits[spec.id] = ceiling
             self.parents[spec.id] = parent
             self.skill_limits[spec.id] = skills
             self.scoped_tools[spec.id] = scoped
             self.scoped_owners[spec.id] = scope_owners
             self.delegations[spec.id] = selected
             self.tool_limits[spec.id] = selected.names  # Never None, even without a parent selection.
-            self.snapshots[spec.id] = metadata
+            self.snapshots[spec.id] = replace(metadata, filesystem_ceiling=ceiling)
             self.extensions.reserve(spec.id)
             return replace(spec, tools=selected.names, skills=skills.slugs)
         return admit()
@@ -305,6 +333,10 @@ class CodingChildren:
         parent, grant = self.parents[spec.id], self.delegations[spec.id]
         if not parent.live:
             raise ValueError("Original parent owner retired before child construction")
+        if _filesystem_roots(session.agent.tool_context) != state.filesystem_roots:
+            raise ValueError("Parent filesystem execution constraints changed before child construction")
+        if "filesystem" in grant.names:
+            self.runtime.record_filesystem_history(spec.id, encode_filesystem_roots(state.filesystem_ceiling))
         skills = self.skill_limits[spec.id]
         scoped = self.scoped_tools[spec.id]
         scoped_owners = self.scoped_owners[spec.id]
@@ -332,6 +364,9 @@ class CodingChildren:
         original_agent = session.agent
         last_authority: tuple[int, int, AccessScope, int] | None = None
         def check(ctx: BeforeToolCallContext | AfterToolCallContext) -> None:
+            if ctx.tool_call.name == "filesystem" and (
+                    _filesystem_roots(original_agent.tool_context) != state.filesystem_roots):
+                raise ValueError("Parent filesystem execution constraints changed; child delegation is invalid")
             bound = self.capabilities.permits(spec.id, ctx.tool_call.name, ctx.context.tools or ())
             parent.check_tool(grant, BeforeToolCallContext(ctx.assistant_message, ctx.tool_call, ctx.args, ctx.context),
                               capability_bound=bound)
@@ -436,6 +471,8 @@ class CodingChildren:
                     raise asyncio.CancelledError
                 if tool.execute is None:
                     raise ValueError("Delegated child tool has no executor")
+                if tool.name == "filesystem" and _filesystem_roots(ctx or {}) != state.filesystem_ceiling:
+                    raise ValueError("Child filesystem execution constraints differ from original delegation")
                 admissions[key] = replace(admission, started=True)
                 return await tool.execute(call_id, params, cancel, on_update, ctx=ctx)
             async def execute(call_id: str, params: dict[str, Any], cancel: asyncio.Event | None = None,
@@ -647,7 +684,9 @@ class CodingChildren:
             context_window=selected.context_window, max_prompt_tokens=selected.max_prompt_tokens,
             supports_tool_calls=selected.supports_tool_calls, options=selected.options,
             compaction=selected.compaction(child_stream)), tools=registry.tools, mcp_registry=mcp_registry,
-            tool_ctx={"fs_workspace": str(session.working_dir)}, skills=skills, active_skills=skills.slugs,
+            tool_ctx={"fs_workspace": str(session.working_dir),
+                      **({"fs_confine_to": state.filesystem_ceiling} if state.filesystem_ceiling is not None else {})},
+            skills=skills, active_skills=skills.slugs,
             transform_context=context,
             before_tool_call=before, after_tool_call=after, input_transform=input_transform)
         from xdog.agent.extensions.inspection import capture

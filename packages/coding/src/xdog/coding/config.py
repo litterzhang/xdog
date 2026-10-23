@@ -51,7 +51,7 @@ def validate_max_messages_per_turn(value: object) -> int:
 
 MONOREPO_NAME = "xdog"
 APP_NAME = "coding"
-VERSION = "2.4.8"
+VERSION = "2.4.9"
 PROJECT_DIR_NAME = ".coding"
 ENV_OVERRIDE = "CODING_DIR"
 

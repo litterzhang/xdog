@@ -11,7 +11,17 @@ import pytest
 from xdog.agent import Agent, AgentConfig, AgentTool, AgentToolResult
 from xdog.agent.core import StreamFn
 from xdog.agent.skills import SkillManager
-from xdog.ai.types import AssistantMessage, Context, Model, StreamOptions, TextContent, ToolCall, Usage, UserMessage
+from xdog.ai.types import (
+    AssistantMessage,
+    Context,
+    Model,
+    StreamOptions,
+    TextContent,
+    ToolCall,
+    ToolResultMessage,
+    Usage,
+    UserMessage,
+)
 from xdog.ai.utils.event_stream import EventStream
 from xdog.flow.codegen import generate
 from xdog.flow.executor import execute
@@ -227,13 +237,23 @@ async def test_generated_restore_rejection_closes_without_request_or_session_pub
     assert saved == original and TrackedAgent.created[-1].closed
 
 
+@pytest.mark.parametrize(
+    "schema,payload,invalid",
+    [
+        ({"type": "object", "required": ["answer"], "properties": {"answer": {"type": "string"}}},
+         {"answer": "ok"}, {"answer": 1}),
+        ({"type": "array", "items": {"type": "integer"}}, [1, 2], ["bad"]),
+        ({"type": "integer"}, 3, "bad"),
+    ],
+    ids=["object", "array", "scalar"],
+)
 async def test_generated_structured_tool_sink_context_and_tokens_match_interpreter(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, schema: dict[str, Any], payload: Any, invalid: Any,
 ) -> None:
     monkeypatch.setenv("FLOW_CONFINED", "1")
     saved = await snapshot(tmp_path)
     node = NodeDef(id="child", model="node/new", system_prompt="NODE_BASE", prompt="child question", tools=("probe",),
-                   output_ports=(Port("out", schema={"type": "object"}),), inherit=InheritSpec("ancestor"))
+                   output_ports=(Port("out", schema=schema),), inherit=InheritSpec("ancestor"))
     contexts: list[dict[str, Any]] = []
 
     async def probe(call_id: str, args: Any, cancel: Any, on_update: Any, **kwargs: Any) -> AgentToolResult:
@@ -244,7 +264,9 @@ async def test_generated_structured_tool_sink_context_and_tokens_match_interpret
     responses = (
         AssistantMessage(content=(ToolCall(id="probe", name="probe", arguments={}),), stop_reason="toolUse",
                          usage=Usage(input=4, output=2), timestamp=0),
-        AssistantMessage(content=(ToolCall(id="submit", name="submit_result", arguments={"result": {"answer": "ok"}}),),
+        AssistantMessage(content=(ToolCall(id="invalid", name="submit_result", arguments={"result": invalid}),),
+                         stop_reason="toolUse", timestamp=0),
+        AssistantMessage(content=(ToolCall(id="submit", name="submit_result", arguments={"result": payload}),),
                          stop_reason="toolUse", usage=Usage(input=2, output=3, total_tokens=11), timestamp=0),
         AssistantMessage(content=(TextContent(text="not the output"),), usage=Usage(input=1, output=1), timestamp=0),
     )
@@ -258,18 +280,22 @@ async def test_generated_structured_tool_sink_context_and_tokens_match_interpret
     value, sdk_tokens, sdk_saved = await interpreted(
         node, tmp_path, sdk_adapter, saved, system_prompt="NODE_BASE", registry=registry, confined=True,
     )
-    assert output == {"out": value} == {"out": {"answer": "ok"}} and tokens == sdk_tokens == 19
+    assert output == {"out": value} == {"out": payload} and tokens == sdk_tokens == 19
     assert normalized(module["_SESSIONS"]["child"]) == normalized(sdk_saved)
     assert len(contexts) == 2
     for ctx in contexts:
         assert ctx["fs_workspace"] == str(tmp_path / "runtime")
         assert ctx["fs_confine_to"] == [str(tmp_path / "runtime")]
-        assert ctx["flow_output_schema"] == {"type": "object"}
-        assert ctx["flow_result_sink"] == {"result": {"answer": "ok"}}
+        assert "flow_output_schema" not in ctx and "flow_result_sink" not in ctx
+        assert ctx["result_schema"] == schema
+        assert ctx["result_sink"] == {"result": payload}
     for adapter in (generated_adapter, sdk_adapter):
         assert all({tool.name for tool in context.tools or ()} == {"probe", "submit_result"}
                    for _, context in adapter.calls)
         assert "submit_result" in str(adapter.calls[0][1].system_prompt)
+        rejected = next(message for message in adapter.calls[-1][1].messages
+                        if isinstance(message, ToolResultMessage) and message.tool_call_id == "invalid")
+        assert any(isinstance(part, TextContent) and part.text.startswith("Error:") for part in rejected.content)
         assert not adapter.close_calls
     assert all(agent.closed for agent in TrackedAgent.created)
 

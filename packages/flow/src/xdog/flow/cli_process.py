@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from xdog.agent.async_work import wait_owned
+from xdog.agent.process_io import close_process_pipes
 
 _MAX_OUTPUT = 1024 * 1024  # Per stream. Overflow is explicit, never a success-shaped truncation.
 
@@ -46,7 +47,10 @@ async def _stop(process: asyncio.subprocess.Process) -> None:
     finally:
         # The leader may exit on TERM while a workflow child ignores it.
         _signal(process, signal.SIGKILL)
-    await process.wait()
+        # wait() can return with open pipes, or block forever when unread output
+        # is backpressured. Close transports and join their EOF callbacks on the
+        # original loop, even when cancellation arrived before spawn published.
+        await close_process_pipes(process)
 
 
 async def _spawn(arguments: tuple[str, ...], cwd: Path | None) -> asyncio.subprocess.Process:
@@ -69,12 +73,14 @@ async def _spawn(arguments: tuple[str, ...], cwd: Path | None) -> asyncio.subpro
 
 async def _finish(process: asyncio.subprocess.Process, tasks: tuple[asyncio.Task[Any], ...]) -> None:
     try:
-        await _stop(process)
-    finally:
+        # The shared pipe cleanup owns the final drains. Join our protocol
+        # readers first so no second coroutine can read the same StreamReader.
         for task in tasks:
             if not task.done():
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        await _stop(process)
 
 
 async def run(arguments: tuple[str, ...], cwd: Path | None) -> dict[str, Any]:

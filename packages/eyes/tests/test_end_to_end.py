@@ -5,8 +5,31 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from xdog.eyes._daemon_control import DaemonControl
+from xdog.eyes.loader import definition_data, parse
 
-from packages.eyes.tests.test_runtime import wait_for
+
+async def wait_for(predicate):
+    async with asyncio.timeout(5):
+        while not predicate():
+            await asyncio.sleep(0.01)
+
+
+async def wait_for_state(control, identifier, state):
+    async with asyncio.timeout(5):
+        while (result := await control.status(identifier))['state'] != state:
+            await asyncio.sleep(0.01)
+    return result
+
+
+@pytest.fixture
+async def eyes_control(isolated_daemon_directory):
+    control = await DaemonControl.open(owner='end-to-end', directory=isolated_daemon_directory)
+    try:
+        yield control
+    finally:
+        # Detach only; the isolation fixture owns whole-daemon shutdown.
+        await control.aclose()
 
 
 @pytest.fixture
@@ -39,11 +62,11 @@ def definition(data,address,sid,root,delivery):
     result['sources'][0].update(root=str(root),include=['src/**'],poll_interval_ms=50)
     result['detectors'][0].update(debounce_ms=50,max_batch_delay_ms=100)
     result['handlers'][0].update(connection={'transport':'unix','path':str(address)},session=sid,delivery=delivery)
-    return result
+    return definition_data(parse(result, base_dir=root))
 
 
 async def test_file_to_acp_coding_turn_then_self_edit_is_automatically_consumed(
-    tmp_path, observer_data, coding_session, assert_host_goal_discoverable,
+    tmp_path, observer_data, coding_session, assert_host_goal_discoverable, eyes_control,
 ):
     from xdog.ai.types import AssistantMessage, TextContent
     from xdog.ai.utils.event_stream import EventStream
@@ -51,8 +74,6 @@ async def test_file_to_acp_coding_turn_then_self_edit_is_automatically_consumed(
     from xdog.coding.modes.interactive.components.chat_log import ChatLog
     from xdog.coding.modes.interactive.session_presenter import SessionPresenter, capture_history
     from xdog.coding.modes.interactive.theme import create_default_theme
-    from xdog.eyes.local_control import runtime_location
-    from xdog.eyes.runtime import ObserverRuntime
     from xdog.tui.utils import strip_ansi
 
     (tmp_path/'src').mkdir()
@@ -68,11 +89,11 @@ async def test_file_to_acp_coding_turn_then_self_edit_is_automatically_consumed(
     owner = SessionRuntime(coding_session,bound=True)
     owner.start()
     await owner.open_endpoint()
-    runtime = ObserverRuntime(runtime_location(tmp_path))
-    identifier = (await runtime.start(definition(observer_data,owner.record.address,coding_session.session_id,
+    control = eyes_control
+    identifier = (await control.start(definition(observer_data,owner.record.address,coding_session.session_id,
                                                 tmp_path,'prompt')))['registration_id']
     try:
-        await wait_for(lambda:runtime.entries[identifier].sources.get('files')=='watching')
+        assert (await control.status(identifier))['state']=='watching'
         changed.write_text('human edit')
         await wait_for(lambda:len(turns)==1)
         await wait_for(lambda:len(owner.controller.store.records())==2)
@@ -88,12 +109,12 @@ async def test_file_to_acp_coding_turn_then_self_edit_is_automatically_consumed(
         assert 'Reviewed change' in output and 'succeeded' in output
         assert sum(getattr(m,'type','')=='xdog.session_input.v1' for m in coding_session.messages)==2
     finally:
-        await runtime.stop_entry(identifier)
+        await control.cancel(identifier)
         await asyncio.wrap_future(owner.close())
 
 
 async def test_five_offline_callbacks_automatically_form_one_tui_batch_and_survive_owner_exit(
-    tmp_path, observer_data, host_skill_manager, assert_host_goal_discoverable,
+    tmp_path, observer_data, host_skill_manager, assert_host_goal_discoverable, eyes_control,
 ):
     from xdog.agent import Agent, AgentConfig
     from xdog.ai.types import AssistantMessage, TextContent, UserMessage
@@ -104,8 +125,6 @@ async def test_five_offline_callbacks_automatically_form_one_tui_batch_and_survi
     from xdog.coding.core.sessions.inbox_store import InboxStore
     from xdog.coding.core.settings_manager import SettingsManager
     from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
-    from xdog.eyes.local_control import runtime_location
-    from xdog.eyes.runtime import ObserverRuntime
     from xdog.tui.utils import strip_ansi
 
     (tmp_path/'src').mkdir()
@@ -120,12 +139,12 @@ async def test_five_offline_callbacks_automatically_form_one_tui_batch_and_survi
 
     with tempfile.TemporaryDirectory(prefix='eyes-offline-') as short:
         ingress = await IngressServer.start(IngressConfig(manager._dir,store.root,Path(short)/'acp.sock'))
-        runtime = ObserverRuntime(runtime_location(tmp_path))
-        identifier = (await runtime.start(definition(observer_data,ingress.config.address,data.session_id,
+        control = eyes_control
+        identifier = (await control.start(definition(observer_data,ingress.config.address,data.session_id,
                                                     tmp_path,'enqueue')))['registration_id']
         ui = None
         try:
-            await wait_for(lambda:runtime.entries[identifier].sources.get('files')=='watching')
+            assert (await control.status(identifier))['state']=='watching'
             changed = tmp_path/'src'/'a.py'
             for index in range(5):
                 changed.write_text(f'offline edit {index}')
@@ -164,28 +183,36 @@ async def test_five_offline_callbacks_automatically_form_one_tui_batch_and_survi
             ui._request_exit()
             await asyncio.to_thread(ui._session_events.close)
             ui = None
-            assert ingress.server.is_serving() and not runtime.entries[identifier].registration.task.done()
+            assert ingress.server.is_serving() and (await control.status(identifier))['state']=='watching'
             changed.write_text('after TUI exit')
             await wait_for(lambda:len(store.records(data.session_id,tmp_path))==6)
             assert len(turns)==1
             assert any(row.status=='pending' for row in store.records(data.session_id,tmp_path))
-            await runtime.stop_entry(identifier)
+            assert (await control.cancel(identifier))['state']=='cancelled'
+            # Shared-daemon cancellation retains a tombstone, not a removable
+            # project-runtime entry, and does not withdraw accepted host input.
+            assert (await control.status(identifier))['state']=='cancelled'
+            with pytest.raises(ValueError, match='cannot be resumed or replayed'):
+                await control.resume(identifier)
+            changed.write_text('after observation cancellation')
+            await asyncio.sleep(0.2)
             assert len(store.records(data.session_id,tmp_path))==6 and ingress.server.is_serving()
+            assert len(turns)==1
         finally:
             if ui is not None:
                 ui._request_exit()
                 await asyncio.to_thread(ui._session_events.close)
-            if identifier in runtime.entries:
-                await runtime.stop_entry(identifier)
+            await control.cancel(identifier)
             await ingress.aclose()
 
 
-async def test_receiver_disconnect_pauses_collection_and_requires_explicit_same_store_resume(tmp_path,observer_data):
+@pytest.mark.parametrize('replace_namespace', [False, True], ids=['same-inbox', 'replacement-inbox'])
+async def test_receiver_disconnect_explicit_resume_fences_original_inbox_namespace(
+    tmp_path, observer_data, eyes_control, replace_namespace,
+):
     from xdog.coding.acp.ingress import IngressConfig, IngressServer
     from xdog.coding.core.session_manager import SessionManager
     from xdog.coding.core.sessions.inbox_store import InboxStore
-    from xdog.eyes.local_control import runtime_location
-    from xdog.eyes.runtime import ObserverRuntime
 
     (tmp_path/'src').mkdir()
     manager = SessionManager(tmp_path/'sessions')
@@ -194,29 +221,116 @@ async def test_receiver_disconnect_pauses_collection_and_requires_explicit_same_
     with tempfile.TemporaryDirectory(prefix='eyes-receiver-') as short:
         config = IngressConfig(manager._dir,store.root,Path(short)/'acp.sock')
         ingress = await IngressServer.start(config)
-        runtime = ObserverRuntime(runtime_location(tmp_path))
-        serving = asyncio.create_task(runtime.serve())
-        identifier = (await runtime.start(definition(observer_data,config.address,data.session_id,
+        control = eyes_control
+        identifier = (await control.start(definition(observer_data,config.address,data.session_id,
                                                     tmp_path,'enqueue')))['registration_id']
         try:
-            await wait_for(lambda:runtime.entries[identifier].sources.get('files')=='watching')
+            assert (await control.status(identifier))['state']=='watching'
             await ingress.aclose()
-            await wait_for(lambda:runtime.entries[identifier].suspended.is_set())
-            assert (await runtime.status(identifier))['registrations'][0]['state']=='paused'
+            paused = await wait_for_state(control, identifier, 'paused')
+            assert paused['error']
             (tmp_path/'src'/'a.py').write_text('while receiver offline')
             await asyncio.sleep(0.2)
             assert not store.records(data.session_id,tmp_path)
-            ingress = await IngressServer.start(config)
-            await asyncio.sleep(0.25)
-            assert runtime.entries[identifier].suspended.is_set()  # No automatic reconnect.
-            assert await runtime.resume_entry(identifier)
-            await wait_for(lambda:len(store.records(data.session_id,tmp_path))==1)
+            replacement = InboxStore(manager._dir,tmp_path/'replacement-inbox') if replace_namespace else store
+            ingress = await IngressServer.start(IngressConfig(manager._dir,replacement.root,config.address))
+            await control.resume(identifier)
+            if replace_namespace:
+                # A socket path and session label are not the original inbox.
+                # Resume is admitted asynchronously; status reports quarantine.
+                quarantined = await wait_for_state(control, identifier, 'needs-review')
+                assert 'Original ACP owner/inbox/branch binding changed' in quarantined['error']
+                with pytest.raises(ValueError, match='cannot be resumed or replayed'):
+                    await control.resume(identifier)
+                assert not store.records(data.session_id,tmp_path)
+                assert not replacement.records(data.session_id,tmp_path)
+            else:
+                restored = await control.wait_ready(identifier)
+                assert restored['registration_id']==identifier and restored['state']=='watching'
+                await wait_for(lambda:len(store.records(data.session_id,tmp_path))==1)
+                row, = store.records(data.session_id,tmp_path)
+                assert row.message.session_id==data.session_id and row.status=='pending'
             assert not manager.load_session(data.session_id).messages
         finally:
-            if identifier in runtime.entries:
-                await runtime.stop_entry(identifier)
-            runtime.stop.set()
-            await asyncio.wait_for(serving,3)
+            await control.cancel(identifier)
+            await ingress.aclose()
+
+
+async def test_receiver_disconnect_during_prompt_never_replays_unknown_effects(
+    tmp_path, observer_data, coding_session, assert_host_goal_discoverable, eyes_control,
+):
+    import threading
+
+    from xdog.ai.types import AssistantMessage, DoneEvent, StartEvent, TextContent
+    from xdog.ai.utils.event_stream import EventStream
+    from xdog.coding.acp.ingress import IngressConfig, IngressServer
+    from xdog.coding.core.sessions.inbox_store import InboxStore
+    from xdog.coding.core.sessions.runtime import SessionRuntime
+
+    (tmp_path/'src').mkdir()
+    changed = tmp_path/'src'/'a.py'
+    store = InboxStore(coding_session.session_manager._dir,tmp_path/'inbox')
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+    effects = tmp_path/'model-effects.txt'
+
+    def model(_, context, options):
+        calls.append(context)
+        message = AssistantMessage(content=(TextContent(text='Original accepted work completed'),))
+
+        async def generate():
+            yield StartEvent(partial=AssistantMessage())
+            effects.write_text('effect already happened')
+            entered.set()
+            await asyncio.to_thread(release.wait)
+            yield DoneEvent(message=message)
+
+        result = asyncio.get_running_loop().create_future()
+        result.set_result(message)
+        return EventStream(generate(), result)
+
+    coding_session.agent.set_stream_fn(model)
+    owner = SessionRuntime(coding_session,bound=True,inbox_store=store)
+    owner.start()
+    await owner.open_endpoint()
+    with tempfile.TemporaryDirectory(prefix='eyes-unknown-') as short:
+        config = IngressConfig(store.sessions_dir,store.root,Path(short)/'acp.sock')
+        ingress = await IngressServer.start(config)
+        control = eyes_control
+        spec = definition(observer_data,config.address,coding_session.session_id,tmp_path,'prompt')
+        identifier = None
+        try:
+            identifier = (await control.start(spec))['registration_id']
+            changed.write_text('accepted before disconnect')
+            await wait_for(entered.is_set)
+            await ingress.aclose()
+            unknown = await wait_for_state(control, identifier, 'paused')
+            assert 'never blind retry' in unknown['error']
+            # Coding's standard prompt is cancelled on transport loss, unlike
+            # durable enqueue. Cancellation cannot undo already-started effects,
+            # and Eyes cannot treat a missing response as proof of no effects.
+            await wait_for(lambda:len(store.records(coding_session.session_id,tmp_path))==1
+                and store.records(coding_session.session_id,tmp_path)[0].status=='cancelled')
+            assert effects.read_text()=='effect already happened'
+            release.set()
+            ingress = await IngressServer.start(config)
+            with pytest.raises(ValueError, match='Unknown/terminal delivery cannot be resumed or replayed'):
+                await control.resume(identifier)
+            duplicate = await control.start(spec,wait_ready=False)
+            assert duplicate['duplicate'] and duplicate['registration_id']==identifier
+            assert duplicate['state']=='paused'
+            changed.write_text('must not trigger a replay')
+            await asyncio.sleep(0.25)
+            assert len(calls)==1 and len(store.records(coding_session.session_id,tmp_path))==1
+            assert_host_goal_discoverable(calls[0])
+            row, = store.records(coding_session.session_id,tmp_path)
+            assert row.message.session_id==coding_session.session_id and row.status=='cancelled'
+            assert coding_session.permissions.mode=='ask' and not coding_session.permissions.has_pending_requests
+        finally:
+            release.set()
+            if identifier is not None:
+                await control.cancel(identifier)
+            await asyncio.wrap_future(owner.close())
             await ingress.aclose()
 
 
@@ -229,15 +343,13 @@ def current_inputs(context):
 
 
 async def test_online_file_callbacks_form_next_five_message_batch_and_freeze_selection(
-    tmp_path,observer_data,coding_session,assert_host_goal_discoverable,
+    tmp_path,observer_data,coding_session,assert_host_goal_discoverable,eyes_control,
 ):
     from xdog.ai.types import AssistantMessage, DoneEvent, StartEvent, TextContent, UserMessage
     from xdog.ai.utils.event_stream import EventStream
     from xdog.coding.acp.ingress import IngressConfig, IngressServer
     from xdog.coding.core.sessions.inbox_store import InboxStore
     from xdog.coding.core.sessions.runtime import SessionRuntime
-    from xdog.eyes.local_control import runtime_location
-    from xdog.eyes.runtime import ObserverRuntime
 
     (tmp_path/'src').mkdir()
     changed = tmp_path/'src'/'a.py'
@@ -265,11 +377,11 @@ async def test_online_file_callbacks_form_next_five_message_batch_and_freeze_sel
     owner.start()
     with tempfile.TemporaryDirectory(prefix='eyes-batch-') as short:
         ingress = await IngressServer.start(IngressConfig(store.sessions_dir,store.root,Path(short)/'acp.sock'))
-        runtime = ObserverRuntime(runtime_location(tmp_path))
-        identifier = (await runtime.start(definition(observer_data,ingress.config.address,coding_session.session_id,
+        control = eyes_control
+        identifier = (await control.start(definition(observer_data,ingress.config.address,coding_session.session_id,
                                                     tmp_path,'enqueue')))['registration_id']
         try:
-            await wait_for(lambda:runtime.entries[identifier].sources.get('files')=='watching')
+            assert (await control.status(identifier))['state']=='watching'
             changed.write_text('trigger')
             await asyncio.wait_for(entered[1].wait(),5)
             for index in range(5):
@@ -301,12 +413,14 @@ async def test_online_file_callbacks_form_next_five_message_batch_and_freeze_sel
         finally:
             for event in release.values():
                 event.set()
-            await runtime.stop_entry(identifier)
+            await control.cancel(identifier)
             await asyncio.wrap_future(owner.close())
             await ingress.aclose()
 
 
-async def sdk_file_batch(tmp_path,observer_data,route_count,host_skill_manager,assert_host_goal_discoverable):
+async def sdk_file_batch(
+    tmp_path, observer_data, route_count, host_skill_manager, assert_host_goal_discoverable, eyes_control,
+):
     from copy import deepcopy
 
     from xdog.agent import Agent, AgentConfig
@@ -317,8 +431,6 @@ async def sdk_file_batch(tmp_path,observer_data,route_count,host_skill_manager,a
     from xdog.coding.core.session_manager import SessionManager
     from xdog.coding.core.sessions.inbox_store import InboxStore
     from xdog.coding.core.settings_manager import SettingsManager
-    from xdog.eyes.local_control import runtime_location
-    from xdog.eyes.runtime import ObserverRuntime
 
     (tmp_path/'src').mkdir()
     changed = tmp_path/'src'/'a.py'
@@ -332,14 +444,14 @@ async def sdk_file_batch(tmp_path,observer_data,route_count,host_skill_manager,a
 
     with tempfile.TemporaryDirectory(prefix='eyes-sdk-') as short:
         ingress = await IngressServer.start(IngressConfig(manager._dir,store.root,Path(short)/'acp.sock'))
-        runtime = ObserverRuntime(runtime_location(tmp_path))
+        control = eyes_control
         spec = definition(observer_data,ingress.config.address,data.session_id,tmp_path,'enqueue')
         if route_count==2:
             spec['routes'].append({**deepcopy(spec['routes'][0]),'id':'independent-review'})
-        identifier = (await runtime.start(spec))['registration_id']
+        identifier = (await control.start(spec))['registration_id']
         session = None
         try:
-            await wait_for(lambda:runtime.entries[identifier].sources.get('files')=='watching')
+            assert (await control.status(identifier))['state']=='watching'
             changes = 5 if route_count==1 else 2
             for index in range(changes):
                 changed.write_text(f'offline evidence {index}')
@@ -372,17 +484,17 @@ async def sdk_file_batch(tmp_path,observer_data,route_count,host_skill_manager,a
                 session.dispose()
                 if controller is not None:
                     await asyncio.wrap_future(controller.close())
-            await runtime.stop_entry(identifier)
+            await control.cancel(identifier)
             await ingress.aclose()
 
 
 async def test_sdk_only_owner_consumes_five_file_callbacks_without_message_approval(
-    tmp_path, observer_data, host_skill_manager, assert_host_goal_discoverable,
+    tmp_path, observer_data, host_skill_manager, assert_host_goal_discoverable, eyes_control,
 ):
-    await sdk_file_batch(tmp_path,observer_data,1,host_skill_manager,assert_host_goal_discoverable)
+    await sdk_file_batch(tmp_path,observer_data,1,host_skill_manager,assert_host_goal_discoverable,eyes_control)
 
 
 async def test_two_routes_deliver_independent_callbacks_without_a_shared_wake_budget(
-    tmp_path, observer_data, host_skill_manager, assert_host_goal_discoverable,
+    tmp_path, observer_data, host_skill_manager, assert_host_goal_discoverable, eyes_control,
 ):
-    await sdk_file_batch(tmp_path,observer_data,2,host_skill_manager,assert_host_goal_discoverable)
+    await sdk_file_batch(tmp_path,observer_data,2,host_skill_manager,assert_host_goal_discoverable,eyes_control)

@@ -1,24 +1,20 @@
 """submit_result tool — an agent submits its final structured result.
 
-The agent calls ``submit_result`` with a structured object.  The tool validates
-that object against a JSON schema supplied by the caller through the shared
-``tool_ctx`` dict (key ``flow_output_schema``).  On success it writes the
-validated object into a caller-owned **sink** dict (``tool_ctx`` key
-``flow_result_sink``) under ``"result"``, and returns an acceptance message.
-On failure it returns an ``Error:`` string, which the agent sees as the tool
-result and can act on by fixing and calling again.
+The agent calls ``submit_result`` with a JSON value. The caller supplies an
+optional ``result_schema`` through the shared ``tool_ctx`` dict. On success the
+tool writes the validated value under ``"result"`` in a caller-owned
+``result_sink`` dict and returns an acceptance message. On failure it returns
+an ``Error:`` string so the agent can fix the value and submit again.
 
-Why a sink instead of writing a new ctx key: the :class:`~agent.tool_def.ToolDef`
-dispatch passes the handler a **shallow copy** of ``tool_ctx`` (``dict(ctx or
-{})``), so adding a new key would not reach the caller.  A shallow copy still
-shares references to *values*, so mutating a caller-provided ``flow_result_sink``
-dict is visible to the caller after the agent turn drains.
+Why a sink instead of writing a new ctx key: ToolDef dispatch passes the handler
+a **shallow copy** of ``tool_ctx``. Mutating the shared sink value remains visible
+to the caller after the agent turn drains; adding a context key would not.
 
-The schema is a flat mapping ``{field_name: json_type}`` where ``json_type`` is
-one of ``string``, ``integer``, ``number``, ``boolean``, ``array``, ``object``.
-Validation is intentionally minimal and dependency-free (no ``jsonschema``):
-every declared field must be present with a matching JSON type.  Extra fields
-are allowed.  When no schema is supplied, any object is accepted.
+The schema may be a JSON Schema (validated with fastjsonschema), or a flat
+``{field_name: json_type}`` mapping requiring each declared field with a matching
+type while allowing extra fields. With no schema, any JSON value is accepted.
+The retired Flow-specific context keys are explicitly rejected, not interpreted
+as an unconstrained submission or translated into the generic contract.
 """
 
 from __future__ import annotations
@@ -98,19 +94,8 @@ class SubmitResultTool(ToolDef):
     )
     params = {
         "result": Param(
-            # Deliberately untyped: the real schema arrives at call time via
-            # ``flow_output_schema``, and it is not always an object. flow gives
-            # a node with a single structured output port that port's OWN
-            # schema, so an agent whose one output is an array must submit an
-            # array.
-            #
-            # Declaring "object" here made that impossible. The argument check
-            # runs first and rejected the array with "expected object, got
-            # list" before the real schema was ever consulted, so the tool
-            # errored, the sink stayed empty, and the run failed with "agent did
-            # not submit a result" -- while the model had done exactly what it
-            # was told. It even said so in its reply: "the submission tool
-            # rejected the array (it requires an object)".
+            # The caller's result_schema is the validator. A concrete type here
+            # would reject valid arrays/scalars before that schema is consulted.
             "",
             required=True,
             description=(
@@ -122,11 +107,17 @@ class SubmitResultTool(ToolDef):
 
     async def execute(self, ctx: dict[str, Any] | None, result: Any) -> str:
         ctx = ctx or {}
-        schema = ctx.get("flow_output_schema")
+        for old_key, new_key in (
+            ("flow_output_schema", "result_schema"),
+            ("flow_result_sink", "result_sink"),
+        ):
+            if old_key in ctx:
+                return f"Error: unsupported context key {old_key!r}; use {new_key!r} instead"
+        schema = ctx.get("result_schema")
         error = _validate_against_schema(result, schema)
         if error is not None:
             return f"Error: {error}"
-        sink = ctx.get("flow_result_sink")
+        sink = ctx.get("result_sink")
         if isinstance(sink, dict):
             sink["result"] = result
         return "Result accepted."

@@ -4,13 +4,26 @@ from copy import deepcopy
 
 import pytest
 from xdog.eyes.events import DeliveryResult
-from xdog.eyes.loader import parse
+from xdog.eyes.loader import definition_data, parse
 from xdog.eyes.testing import FakeClock
 
 from packages.eyes.tests.test_acp_unix import unix_peer as sdk_peer
 from packages.eyes.tests.test_scheduler_source import definition, timestamp
 
 unix_peer = sdk_peer
+
+
+@pytest.fixture
+async def observers(isolated_daemon_directory):
+    from xdog.eyes.daemon import DaemonObservers
+    from xdog.eyes.local_control import daemon_location
+
+    value = DaemonObservers(daemon_location(isolated_daemon_directory))
+    await value.open()
+    try:
+        yield value
+    finally:
+        await value.aclose()
 
 
 @pytest.mark.parametrize('schedule,count', [
@@ -105,33 +118,35 @@ async def test_health_pause_skips_ticks_and_preserves_a_due_delivery_identity(tm
     assert len(deliveries) == 1 and deliveries[0].events[0].evidence[0].scheduled_at >= 101
 
 
-async def test_runtime_rejects_past_at_before_connecting_any_handler(tmp_path, observer_data):
-    from xdog.eyes.local_control import runtime_location
-    from xdog.eyes.runtime import ObserverRuntime
-
-    def forbidden_handler(value):
+async def test_daemon_rejects_past_at_before_connecting_any_handler(tmp_path, observer_data, observers, monkeypatch):
+    def forbidden_handler(*args):
         pytest.fail('An expired one-off must be refused before allocating handlers')
 
-    runtime = ObserverRuntime(runtime_location(tmp_path), handler_factory=forbidden_handler)
+    monkeypatch.setattr('xdog.eyes.handlers.registry.HandlerRegistry.create', forbidden_handler)
     with pytest.raises(ValueError, match='future'):
-        await runtime.start(definition(observer_data, {'at': '2000-01-01T00:00:00Z'}))
-    assert not runtime.entries
+        await observers.dispatch('register', {'owner': 'test', 'definition': definition_data(parse(
+            definition(observer_data, {'at': '2000-01-01T00:00:00Z'}), base_dir=tmp_path))})
+    assert not observers.active
+    assert await observers.store.rows() == []
 
 
 @pytest.mark.parametrize('mode', ['at', 'interval', 'cron'])
-async def test_real_runtime_scheduler_routes_through_official_unix_acp(
-        tmp_path, observer_data, unix_peer, mode):
-    from xdog.eyes.local_control import runtime_location
-    from xdog.eyes.runtime import ObserverRuntime
-
+async def test_daemon_scheduler_routes_through_official_unix_acp(
+        tmp_path, observer_data, unix_peer, mode, observers):
     path, events, gate, writers = unix_peer
     wall = [timestamp('2030-01-01T00:00:00Z')]
     schedule = ({'at': '2030-01-01T00:00:01Z'} if mode == 'at' else {'every_seconds': .1}
                 if mode == 'interval' else {'cron': '* * * * *', 'timezone': 'UTC'})
     data = definition(observer_data, schedule)
     data['handlers'][0].update(connection={'transport': 'unix', 'path': str(path)}, session='target')
-    runtime = ObserverRuntime(runtime_location(tmp_path), wall_clock=lambda: wall[0])
-    identifier = (await runtime.start(data))['registration_id']
+    observers.wall_clock = lambda: wall[0]
+    _, accepted = await observers.dispatch('register', {
+        'owner': 'test', 'definition': definition_data(parse(data, base_dir=tmp_path)),
+    })
+    identifier = accepted['registration_id']
+    async with asyncio.timeout(5):
+        while not observers.active[identifier].ready:
+            await asyncio.sleep(.01)
     try:
         wall[0] += 60 if mode == 'cron' else 1
         async with asyncio.timeout(5):
@@ -144,13 +159,16 @@ async def test_real_runtime_scheduler_routes_through_official_unix_acp(
         assert payload['evidence'][0]['schedule_id'] == 'timer'
         assert 'path' not in payload['evidence'][0] and 'root' not in payload['evidence'][0]
         async with asyncio.timeout(5):
-            while runtime.entries[identifier].routes['review']['state'] != 'succeeded':
+            while observers.active[identifier].routes.get('review') != 'delivery_succeeded':
                 await asyncio.sleep(.01)
         if mode == 'at':
-            assert runtime.entries[identifier].sources['timer'] == 'completed'
-            assert (await runtime.start(data))['registration_id'] == identifier  # No rearm after expiry.
+            assert observers.active[identifier].sources['timer'] == 'completed'
+            status, duplicate = await observers.dispatch('register', {
+                'owner': 'test', 'definition': definition_data(parse(data, base_dir=tmp_path)),
+            })
+            assert status == 'duplicate' and duplicate['registration_id'] == identifier  # No rearm after expiry.
     finally:
-        await runtime.stop_entry(identifier)
+        await observers.dispatch('cancel', {'owner': 'test', 'registration_id': identifier})
     async with asyncio.timeout(3):
         while writers:
             await asyncio.sleep(.01)
@@ -202,7 +220,7 @@ def test_scheduler_evidence_is_bounded_without_fabricating_file_paths():
 
 
 async def test_scheduler_enqueue_survives_no_owner_then_uses_existing_sdk_batch(
-    tmp_path, observer_data, host_skill_manager, assert_host_goal_discoverable,
+    tmp_path, observer_data, host_skill_manager, assert_host_goal_discoverable, observers,
 ):
     import tempfile
     from pathlib import Path
@@ -216,8 +234,6 @@ async def test_scheduler_enqueue_survives_no_owner_then_uses_existing_sdk_batch(
     from xdog.coding.core.session_manager import SessionManager
     from xdog.coding.core.sessions.inbox_store import InboxStore
     from xdog.coding.core.settings_manager import SettingsManager
-    from xdog.eyes.local_control import runtime_location
-    from xdog.eyes.runtime import ObserverRuntime
 
     manager = SessionManager(tmp_path / 'sessions')
     session_data = manager.create_session(model='test', working_dir=tmp_path)
@@ -234,11 +250,17 @@ async def test_scheduler_enqueue_survives_no_owner_then_uses_existing_sdk_batch(
         data = definition(observer_data, {'at': '2030-01-01T00:00:01Z'})
         data['handlers'][0].update(connection={'transport': 'unix', 'path': str(ingress.config.address)},
                                   session=session_data.session_id, delivery='enqueue')
-        runtime = ObserverRuntime(runtime_location(tmp_path), wall_clock=lambda: wall[0])
+        observers.wall_clock = lambda: wall[0]
         identifier = None
         session = None
         try:
-            identifier = (await runtime.start(data))['registration_id']
+            _, accepted = await observers.dispatch('register', {
+                'owner': 'test', 'definition': definition_data(parse(data, base_dir=tmp_path)),
+            })
+            identifier = accepted['registration_id']
+            async with asyncio.timeout(5):
+                while not observers.active[identifier].ready:
+                    await asyncio.sleep(.01)
             wall[0] += 2
             async with asyncio.timeout(5):
                 while not store.records(session_data.session_id, tmp_path):
@@ -262,31 +284,34 @@ async def test_scheduler_enqueue_survives_no_owner_then_uses_existing_sdk_batch(
             assert not session.permissions.has_pending_requests
         finally:
             if identifier is not None:
-                await runtime.stop_entry(identifier)
+                await observers.dispatch('cancel', {'owner': 'test', 'registration_id': identifier})
             if session is not None:
                 session.dispose()
             await ingress.aclose()
 
 
-async def test_interval_first_period_begins_after_receivers_are_ready(tmp_path, observer_data, unix_peer):
-    from xdog.eyes.local_control import runtime_location
-    from xdog.eyes.runtime import ObserverRuntime
-
+async def test_interval_first_period_begins_after_receivers_are_ready(tmp_path, observer_data, unix_peer, observers):
     path, events, gate, writers = unix_peer
     gate.clear()
     mono = [0.0]
     data = definition(observer_data, {'every_seconds': 1})
     data['handlers'][0].update(connection={'transport': 'unix', 'path': str(path)}, session='target')
-    runtime = ObserverRuntime(runtime_location(tmp_path), clock=lambda: mono[0])
-    start = asyncio.create_task(runtime.start(data))
-    identifier = None
+    observers.clock = lambda: mono[0]
+    observers.wall_clock = lambda: 100.0
+    _, accepted = await observers.dispatch('register', {
+        'owner': 'test', 'definition': definition_data(parse(data, base_dir=tmp_path)),
+    })
+    identifier = accepted['registration_id']
     try:
         async with asyncio.timeout(3):
             while not any(item[0] == 'initialize' for item in events):
                 await asyncio.sleep(.01)
+        assert not observers.active[identifier].ready
         mono[0] = 10  # Receiver negotiation took ten virtual seconds.
         gate.set()
-        identifier = (await start)['registration_id']
+        async with asyncio.timeout(3):
+            while not observers.active[identifier].ready:
+                await asyncio.sleep(.01)
         await asyncio.sleep(.12)
         assert not any(item[0] == 'prompt' for item in events), 'No immediate interval catch-up at activation'
         mono[0] = 11
@@ -295,14 +320,10 @@ async def test_interval_first_period_begins_after_receivers_are_ready(tmp_path, 
                 await asyncio.sleep(.01)
     finally:
         gate.set()
-        if identifier is None:
-            start.cancel()
-            await asyncio.gather(start, return_exceptions=True)
-        else:
-            await runtime.stop_entry(identifier)
+        await observers.dispatch('cancel', {'owner': 'test', 'registration_id': identifier})
 
 
-async def test_scheduler_enqueue_reaches_existing_claw_group_without_tui(tmp_path, observer_data):
+async def test_scheduler_enqueue_reaches_existing_claw_group_without_tui(tmp_path, observer_data, observers):
     import tempfile
     from pathlib import Path
 
@@ -313,8 +334,6 @@ async def test_scheduler_enqueue_reaches_existing_claw_group_without_tui(tmp_pat
     from xdog.claw.core.inputs.models import InputScope
     from xdog.claw.core.runtime.orchestrator import Orchestrator
     from xdog.claw.core.types import Group, GroupConfig
-    from xdog.eyes.local_control import runtime_location
-    from xdog.eyes.runtime import ObserverRuntime
 
     calls = []
 
@@ -331,10 +350,16 @@ async def test_scheduler_enqueue_reaches_existing_claw_group_without_tui(tmp_pat
         data = definition(observer_data, {'at': '2030-01-01T00:00:01Z'})
         data['handlers'][0].update(connection={'transport': 'unix', 'path': str(server.path)},
                                   session='group:main', delivery='enqueue')
-        runtime = ObserverRuntime(runtime_location(tmp_path), wall_clock=lambda: wall[0])
+        observers.wall_clock = lambda: wall[0]
         identifier = None
         try:
-            identifier = (await runtime.start(data))['registration_id']
+            _, accepted = await observers.dispatch('register', {
+                'owner': 'test', 'definition': definition_data(parse(data, base_dir=tmp_path)),
+            })
+            identifier = accepted['registration_id']
+            async with asyncio.timeout(5):
+                while not observers.active[identifier].ready:
+                    await asyncio.sleep(.01)
             wall[0] += 2
             async with asyncio.timeout(5):
                 while True:
@@ -347,6 +372,37 @@ async def test_scheduler_enqueue_reaches_existing_claw_group_without_tui(tmp_pat
             assert rows[0].session_id == orch.get_new_session_id('main')
         finally:
             if identifier is not None:
-                await runtime.stop_entry(identifier)
+                await observers.dispatch('cancel', {'owner': 'test', 'registration_id': identifier})
             await server.close()
             await orch.stop()
+
+
+async def test_suspended_one_off_is_completed_without_delivery_or_rearm(tmp_path, observer_data):
+    from xdog.eyes.executor import observe
+
+    clock = FakeClock(limit=5)
+    cancel, suspended = asyncio.Event(), asyncio.Event()
+    suspended.set()
+    deliveries, statuses = [], []
+
+    async def sleep(seconds):
+        await clock.sleep(seconds)
+        if clock.now() >= 2:
+            suspended.clear()
+        if clock.now() >= 3:
+            cancel.set()
+
+    async def forbidden_scan(source):
+        pytest.fail('Scheduler-only observer must never scan files')
+
+    async def deliver(value):
+        deliveries.append(value)
+        return DeliveryResult('succeeded')
+
+    await observe(parse(definition(observer_data, {'at': '2030-01-01T00:00:01Z'}), base_dir=tmp_path),
+                  registration_id='paused-once', scanner=forbidden_scan, deliver=deliver,
+                  emit=statuses.append, clock=clock.now,
+                  wall_clock=lambda: timestamp('2030-01-01T00:00:00Z') + clock.now(),
+                  sleep=sleep, cancel=cancel, suspended=suspended)
+    assert not deliveries
+    assert sum(event.kind == 'source_completed' for event in statuses) == 1

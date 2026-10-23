@@ -354,6 +354,9 @@ Registrations, source cursors and pending deliveries persist in its own journal;
 no host journal, ManagedObservers or public EyesClient is used. Application
 capability registration ensures daemon availability without creating observations.
 Consumers use the public CLI or registered tool, not private Python control APIs.
+There is only a daemon process host: the old project/cwd runtime and embedded
+ObserverService are removed. Explicit directory overrides isolate the same daemon
+implementation; the retained control-wire cwd is strictly its daemon directory.
 The control plane becomes ready independently of slow target recovery. Protocol
 compatibility and journal format checks are separate; incompatible old state is
 reported, not migrated, erased, or replayed. Ordinary cancellation stops the

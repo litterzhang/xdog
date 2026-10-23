@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import Any, cast
 
 from xdog.agent.async_work import wait_owned
-from xdog.agent.mcp.process_io import close_process_pipes
 from xdog.agent.mcp.schema import Schema, json_value
 from xdog.agent.mcp.stdio import McpError
+from xdog.agent.process_io import close_process_pipes
 
 MAX_FRAME = 2 * 1024 * 1024
 _BOOTSTRAP = ("import runpy,sys;sys.path.insert(0,sys.argv[1]);"

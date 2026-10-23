@@ -36,7 +36,7 @@ from xdog.agent import (
     ToolExecutionUpdateEvent,
 )
 from xdog.agent.access import AccessScope, read_only_call
-from xdog.agent.async_work import run_owned
+from xdog.agent.async_work import run_owned, settle_cleanup
 from xdog.agent.context_messages import ContextMessages
 from xdog.agent.extensions.dialogs import DialogBroker
 from xdog.agent.extensions.runtime import ExtensionRuntime
@@ -895,18 +895,25 @@ class AgentSession:
             )
 
         except asyncio.CancelledError:
-            # The channel worker can be cancelled during gateway shutdown.
-            # Cancelling the event consumer alone leaves the Agent's producer
-            # running (and potentially executing tools) in the background.
-            if self._agent.state.is_streaming:
+            # The consumer and producer are separate tasks. Keep the original
+            # execution owner until model/tool cancellation and persistence settle,
+            # including a second cancellation while cleanup is awaiting IO.
+            async def stop_cancelled() -> None:
                 self._agent.abort()
                 await self._agent.wait_for_idle()
-            await self._persist_history()
+            await settle_cleanup(stop_cancelled, self._persist_history,
+                                 message='Cancelled Claw turn cleanup failed')
             raise
-        except Exception as e:
-            logger.error("Agent turn failed for group %s: %s", self._group_id, e)
-            await self._persist_history()
-            return TurnResult(error=str(e))
+        except Exception as error:
+            logger.error("Agent turn failed for group %s: %s", self._group_id, error)
+            try:
+                await settle_cleanup(self._agent.cancel_and_wait, self._persist_history,
+                                     message='Failed Claw turn cleanup failed')
+            except asyncio.CancelledError:
+                raise  # The original application cancellation owns its interrupted receipt.
+            except Exception as cleanup:
+                raise ExceptionGroup('Claw turn and cleanup failed', [error, cleanup]) from None
+            return TurnResult(error=str(error))
         finally:
             self._user_operation_authorized = False
             self._authorized_messages.clear()

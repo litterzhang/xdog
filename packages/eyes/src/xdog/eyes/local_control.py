@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import os
@@ -26,7 +25,7 @@ class RuntimeLocation:
     directory: Path
     socket: Path
     generation: str
-    cwd: Path
+    cwd: Path  # Wire namespace retained for compatibility; always the daemon directory, never a project.
 
 
 def private_directory(path: Path) -> Path:
@@ -55,16 +54,6 @@ def private_open(path: Path, flags: int) -> int:
         raise
 
 
-def runtime_location(cwd: Path | None = None) -> RuntimeLocation:
-    project = (cwd or Path.cwd()).resolve()
-    if not project.is_dir():
-        raise ControlError('Eyes project must be an existing directory')
-    root = private_directory(Path(tempfile.gettempdir()) / f'xdog-eyes-{os.getuid()}')
-    key = hashlib.sha256(str(project).encode()).hexdigest()[:16]
-    directory = private_directory(root / key)
-    return RuntimeLocation(directory, directory / 'eyes.sock', '', project)
-
-
 def daemon_location(directory: Path | None = None) -> RuntimeLocation:
     """One explicitly opened daemon per UID, or an explicit private isolation root."""
     if directory is None and os.environ.get('XDOG_EYES_RUNTIME_DIR'):
@@ -75,10 +64,10 @@ def daemon_location(directory: Path | None = None) -> RuntimeLocation:
 
 
 def validate_location(location: RuntimeLocation) -> None:
-    expected = (daemon_location(location.directory) if location.cwd == location.directory
-                else runtime_location(location.cwd))
-    if location.directory != expected.directory or location.socket != expected.socket:
-        raise ControlError('Eyes control address must match its project directory')
+    expected = daemon_location(location.directory)
+    if (location.directory != expected.directory or location.socket != expected.socket
+            or location.cwd != location.directory):
+        raise ControlError('Eyes control address and namespace must match its daemon directory')
     if location.generation and not re.fullmatch('[0-9a-f]{32}', location.generation):
         raise ControlError('Invalid Eyes runtime generation')
 

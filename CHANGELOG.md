@@ -12,6 +12,41 @@ Nothing yet.
 
 ---
 
+## [2.4.9] — 2026-10-23
+
+### Fixed
+
+- Claw settles the original model/tool producer before failing an input and
+  releasing its group after output/history errors. Bounded durable diagnostics
+  retain both the original failure and cleanup failures.
+- Native message delivery records transport errors as unknown rather than
+  delivered, without automatically replaying uncertain effects.
+- Coding and Claw child agents retain the parent's filesystem ceiling and
+  revalidate it at execution. Versioned historical ceilings survive explicit
+  cross-process continuation without granting authority or replaying old tools;
+  unknown legacy ceilings are deny-all, never silently unconfined.
+- Filesystem edit transactions use thread-safe per-path coordination off the
+  event loop, preserving same-file serialization and actual cancellation settlement.
+- Flow CLI normal, overflow and cancellation paths settle processes and all
+  owned pipes before their owner loop can retire.
+- MCP/extension shutdown settles every sibling worker before returning errors.
+  Repeated schema-helper spawn cancellation cannot abandon the process handle.
+- Eyes reports a file baseline ready only after its checkpoint is durable.
+  The package test runner enforces the root pytest ownership-warning policy.
+
+### Changed
+
+- Eyes maintains only its shared daemon implementation (with explicit directory
+  isolation); the project/cwd runtime and embedded ObserverService are removed.
+  Existing daemon protocol and journals remain unchanged, with no automatic
+  migration, replacement or replay of legacy data.
+- The SDK's optional submit_result uses generic result_schema/result_sink keys;
+  Flow interpreter, generated code and CLI examples use the same protocol.
+  Old Flow-specific keys fail explicitly; regenerate older workflow artifacts.
+- Flow's preview behavior is intentionally unchanged.
+
+---
+
 ## [2.4.7] — 2026-10-21
 
 ### Fixed
@@ -809,6 +844,7 @@ Also in 1.0:
   **model cannot unload one**, since a skill is often a constraint and the
   constrained party should not hold the release.
 
-[Unreleased]: https://github.com/litterzhang/xdog/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/litterzhang/xdog/compare/v2.4.9...HEAD
+[2.4.9]: https://github.com/litterzhang/xdog/compare/v2.4.8...v2.4.9
 [1.1.0]: https://github.com/litterzhang/xdog/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/litterzhang/xdog/releases/tag/v1.0.0

@@ -7,6 +7,7 @@ import inspect
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from xdog.agent import Agent, AgentConfig, AgentMessage, BeforeToolCallContext, BeforeToolCallResult
@@ -23,6 +24,10 @@ from xdog.agent.cross_loop import settle_on
 from xdog.agent.mcp import McpRegistry
 from xdog.agent.tool_effects import ToolEffect
 from xdog.agent.tools import ToolRegistry
+from xdog.agent.tools.filesystem_constraints import (
+    capture_filesystem_roots as _filesystem_roots,
+)
+from xdog.agent.tools.filesystem_constraints import decode_filesystem_roots, encode_filesystem_roots
 from xdog.agent.types import AfterToolCallContext, AfterToolCallResult, HandledInput
 from xdog.ai.types import AssistantMessage, Context, StreamOptions, ToolCall, UserMessage
 from xdog.ai.utils.event_stream import EventStream
@@ -33,6 +38,7 @@ from xdog.claw.core.runtime.child_store import ChildStore
 if TYPE_CHECKING:
     from xdog.claw.core.persistence.session_preparation import PreparedChildren
     from xdog.claw.core.runtime.session import AgentSession
+
 
 
 @dataclass(frozen=True)
@@ -49,6 +55,8 @@ class _ParentSnapshot:
     supports_tool_calls: bool | None
     mcp_registry: McpRegistry
     mcp_tools: tuple[AgentTool, ...]
+    filesystem_roots: tuple[Path, ...] | None
+    filesystem_ceiling: tuple[Path, ...] | None
 
 
 @dataclass(frozen=True)
@@ -80,6 +88,10 @@ class ClawChildren:
                      *session._runtime.capability_assembly.tools),
             parent_valid=lambda identifier: identifier in self.grants and self.parent.live)
         self.snapshots: dict[str, _ParentSnapshot] = {}
+        # Original-owner ceiling survives idle-round teardown. A later message
+        # to the same child ID must not capture a newly broadened parent grant.
+        # This authority is never reconstructed from persisted child records.
+        self.filesystem_limits: dict[str, tuple[Path, ...] | None] = {}
         self.grants: dict[str, ChildDelegation] = {}
         self.scoped_tools: dict[str, dict[str, AgentTool]] = {}
         self.scope_owners: dict[str, CapabilitySet] = {}
@@ -120,6 +132,8 @@ class ClawChildren:
         source = agent.tool_context
         context = {key: source[key] for key in ('group_id', 'workspace_dir', 'fs_workspace', 'data_dir')
                    if key in source}
+        if (roots := _filesystem_roots(source)) is not None:
+            context["fs_confine_to"] = roots
         for tool, keys in (('message', ('_message_port',)), ('memory', ('_memory_search', '_memory_manager'))):
             if tool in names:
                 context.update({key: source[key] for key in keys if key in source})
@@ -129,7 +143,7 @@ class ClawChildren:
             context, agent.tool_execution, agent.context_window, agent.max_prompt_tokens, agent.supports_tool_calls,
             self.session._runtime.mcp,
             tuple(tool for tool in original.tools
-                  if self.session._runtime.mcp.owns_tool(tool)))
+                  if self.session._runtime.mcp.owns_tool(tool)), _filesystem_roots(source), _filesystem_roots(source))
         skills = await run_owned(self.parent.capture_skills, spec.skills)
         # The owner may have closed, narrowed tools or replaced its skill source
         # while owned filesystem validation was settling. Never publish that work.
@@ -159,23 +173,40 @@ class ClawChildren:
             raise ValueError("Parent tool delegation changed during scope validation")
         if scoped and self.session._runtime.capabilities is not owner:
             raise ValueError("Original scoped capability owner retired during delegation")
+        if _filesystem_roots(agent.tool_context) != state.filesystem_roots:
+            raise ValueError("Parent filesystem execution constraints changed during child admission")
+        ceiling = state.filesystem_roots
+        if "filesystem" in grant.names:
+            historical, data = self.runtime.filesystem_history(spec.id)
+            if spec.id in self.filesystem_limits:
+                ceiling = self.filesystem_limits[spec.id]
+            elif historical:
+                # Missing old metadata is explicitly deny-all, not unconfined.
+                ceiling = () if data is None else decode_filesystem_roots(data)
+            if ceiling != () and ceiling != state.filesystem_roots:
+                raise ValueError("Original child filesystem execution constraints changed")
+            self.filesystem_limits[spec.id] = ceiling
         self.scoped_tools[spec.id] = scoped
         self.scope_owners[spec.id] = owner
         self.grants[spec.id] = grant
         self.skill_grants[spec.id] = skills
         context = dict(state.context)
+        if "filesystem" in grant.names and ceiling is not None:
+            context["fs_confine_to"] = ceiling
         if 'message' not in grant.names:
             context.pop('_message_port', None)
         if 'memory' not in grant.names:
             context.pop('_memory_search', None)
             context.pop('_memory_manager', None)
-        self.snapshots[spec.id] = replace(state, tools=grant.tools, context=context)
+        self.snapshots[spec.id] = replace(state, tools=grant.tools, context=context, filesystem_ceiling=ceiling)
         self.extensions.reserve(spec.id)
         return replace(spec, tools=grant.names, skills=skills.slugs)
 
     async def create(self, spec: ChildSpec, publish: Callable[[dict[str, Any]], None]) -> Agent:
         session, runtime = self.session, self.session._runtime
         state = self.snapshots[spec.id]
+        if _filesystem_roots(session.agent.tool_context) != state.filesystem_roots:
+            raise ValueError("Parent filesystem execution constraints changed before child construction")
         allowed_tools = self.grants[spec.id].names
         role_tools = await self.capabilities.tools(spec)
         if role_tools:
@@ -183,6 +214,8 @@ class ClawChildren:
         # Child hooks see the admission-time ceiling, never a later parent grant.
         extension_spec = replace(spec, tools=allowed_tools)
         grant = self.grants[spec.id]
+        if "filesystem" in grant.names:
+            self.runtime.record_filesystem_history(spec.id, encode_filesystem_roots(state.filesystem_ceiling))
         scoped = self.scoped_tools[spec.id]
         scope_owner = self.scope_owners[spec.id]
         skills = self.skill_grants[spec.id]
@@ -221,6 +254,9 @@ class ClawChildren:
             return effect.access == "read"
 
         def check_policy(ctx: BeforeToolCallContext) -> None:
+            if ctx.tool_call.name == "filesystem" and (
+                    _filesystem_roots(parent_agent.tool_context) != state.filesystem_roots):
+                raise ValueError("Parent filesystem execution constraints changed; child delegation is invalid")
             self.parent.check_tool(grant, ctx, capability_bound=bound_call(ctx))
             self.extensions.check_parent()
             if (session.access is not parent_access or session.agent is not parent_agent):
@@ -310,6 +346,8 @@ class ClawChildren:
                         raise asyncio.CancelledError
                     if tool.execute is None:
                         raise ValueError('Delegated child tool has no executor')
+                    if tool.name == "filesystem" and _filesystem_roots(ctx or {}) != state.filesystem_ceiling:
+                        raise ValueError("Child filesystem execution constraints differ from original delegation")
                     return await tool.execute(call_id, params, cancel, on_update, ctx=ctx)
                 finally:
                     executing.discard(admitted.token)

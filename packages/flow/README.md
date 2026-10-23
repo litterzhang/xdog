@@ -500,8 +500,18 @@ If an input port is fed by no edge mapping, `xdog-flow validate` raises a
 ## Structured output (`output_schema`)
 
 When a node declares `"output_schema"`, the agent **must** call the built-in `submit_result`
-tool before finishing.  The executor validates the call and stores the result as a JSON string
-in the node's (single) output port.
+tool before finishing. The tool validates the submitted value and the executor stores it as a
+native structured value in the node's output port(s), not as prose or a JSON string.
+
+The SDK runner and generated code both pass the generic Agent tool context keys
+`result_schema` (the node's derived schema) and `result_sink` (a caller-owned dict).
+A successful submission writes `result_sink["result"]`; a validation error leaves the
+sink unchanged so the agent can correct and resubmit. A single structured port uses
+its own schema and can accept an array or scalar; multiple ports receive the fields
+of a validated object. This internal context contract does not rename Flow's
+workflow-level `output_schema` configuration. The retired runtime keys
+`flow_output_schema` / `flow_result_sink` are explicitly rejected by `submit_result`,
+even if empty or mixed with the new keys; they are not compatibility aliases.
 
 ```jsonc
 {
@@ -519,9 +529,7 @@ in the node's (single) output port.
 Reading the result downstream:
 
 ```python
-import json
-
-enriched = json.loads(result.outputs["enrich"]["enriched"])
+enriched = result.runtime["state"]["enrich"]["enriched"]
 print(enriched["category"])   # "IoT / Wireless Infrastructure"
 ```
 

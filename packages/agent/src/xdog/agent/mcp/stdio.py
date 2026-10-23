@@ -12,8 +12,8 @@ from typing import Any
 from xdog.agent.mcp.client_capabilities import RootCapability
 from xdog.agent.mcp.config import McpServerConfig
 from xdog.agent.mcp.input_requests import INPUT_METHODS, InputRequests
-from xdog.agent.mcp.process_io import close_process_pipes
 from xdog.agent.mcp.resource_metadata import UNSUPPORTED_WATCH_METHODS, catalog_notice
+from xdog.agent.process_io import close_process_pipes
 
 CURRENT_VERSION = "2026-07-28"
 LEGACY_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
@@ -76,7 +76,7 @@ class StdioClient:
                 response = await self.request("initialize", {
                     "protocolVersion": LEGACY_VERSIONS[0],
                     "capabilities": self.root_capability.advertised(),
-                    "clientInfo": {"name": "xdog", "version": "2.4.8"},
+                    "clientInfo": {"name": "xdog", "version": "2.4.9"},
                 })
                 chosen = response.get("protocolVersion")
                 if chosen not in LEGACY_VERSIONS:
@@ -140,7 +140,7 @@ class StdioClient:
         if self.modern or version:
             payload["_meta"] = {**payload.get("_meta", {}),
                                 "io.modelcontextprotocol/protocolVersion": version or self.version,
-                                "io.modelcontextprotocol/clientInfo": {"name": "xdog", "version": "2.4.8"},
+                                "io.modelcontextprotocol/clientInfo": {"name": "xdog", "version": "2.4.9"},
                                 "io.modelcontextprotocol/clientCapabilities": self.inputs.advertised()}
         future = asyncio.get_running_loop().create_future()
         self._pending[identifier] = future

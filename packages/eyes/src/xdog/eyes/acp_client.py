@@ -81,7 +81,7 @@ class AcpClient:
                     raise ValueError("Unsupported ACP connection")
                 assert self.conn is not None
                 response = await self.conn.initialize(
-                    protocol_version=PROTOCOL_VERSION, client_info=Implementation(name="xdog-eyes", version="2.4.8")
+                    protocol_version=PROTOCOL_VERSION, client_info=Implementation(name="xdog-eyes", version="2.4.9")
                 )
                 if response.protocol_version != PROTOCOL_VERSION:
                     raise ValueError("Unsupported ACP protocol version")

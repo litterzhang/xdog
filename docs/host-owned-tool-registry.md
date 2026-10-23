@@ -68,3 +68,13 @@ Agent 的 `set_tools` 只更新普通工具；`set_mcp_registry` 绑定 MCP；`s
 在原 owner 上同步可见清单（无 IO），每次模型请求也会同步。宿主的连接/认证命令不再
 提取代理塞进普通 registry。Agent 关闭不关闭借用的宿主 MCP registry；宿主负责最后关闭。
 子 Agent 只绑定父 Agent 明确授予的代理清单，不复制连接、凭据或整个父 registry。
+
+## 通用结构化结果
+
+SDK 的可选 `submit_result` 使用宿主注入的 `result_schema` 和 `result_sink`，
+不解释 Flow 节点、端口或工作流生命周期。Flow 解释器和 codegen 各自在 Flow
+边界内把节点输出 schema 与本次执行的 sink 接入该协议。旧 Flow 专用 context
+键被显式拒绝，不会被忽略后返回无校验的成功。
+
+Filesystem 的 edit 事务在 worker 内执行，以跨线程路径锁协调不同 owner，
+不共享 asyncio 锁或阻塞 owner event loop。取消等待实际事务收尾，不重放写入。

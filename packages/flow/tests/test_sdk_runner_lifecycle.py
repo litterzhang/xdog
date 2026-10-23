@@ -246,8 +246,9 @@ async def test_inherited_structured_run_preserves_sink_tool_inventory_context_an
     assert len(seen_ctx) == 1
     assert seen_ctx[0][WORKSPACE_CTX_KEY] == str(tmp_path)
     assert seen_ctx[0][CONFINE_CTX_KEY] == [str(tmp_path)]
-    assert seen_ctx[0]["flow_output_schema"] == {"type": "object"}
-    assert seen_ctx[0]["flow_result_sink"]["result"] == {"answer": "ok"}
+    assert "flow_output_schema" not in seen_ctx[0] and "flow_result_sink" not in seen_ctx[0]
+    assert seen_ctx[0]["result_schema"] == {"type": "object"}
+    assert seen_ctx[0]["result_sink"]["result"] == {"answer": "ok"}
     assert all({tool.name for tool in context.tools or ()} == {"probe", "submit_result"}
                for _, context, _ in adapter.calls)
     assert "submit_result" in str(adapter.calls[0][1].system_prompt)

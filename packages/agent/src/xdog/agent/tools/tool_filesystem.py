@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from collections import defaultdict
+from _thread import LockType
 from pathlib import Path
+from threading import Lock
 from typing import Any
+from weakref import WeakValueDictionary
 
+from xdog.agent.async_work import run_owned
 from xdog.agent.core import AgentToolResult
 from xdog.agent.tool_def import Param, ToolDef, action
 from xdog.agent.tools._edit_utils import (
@@ -35,8 +38,32 @@ from xdog.agent.tools._utils import (
 )
 from xdog.ai.types import ImageContent, TextContent
 
-# Per-file lock to serialize concurrent edits
-_file_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+# Shared across owners/threads, but never bound to an event loop. The short
+# guard only protects lock lookup/creation; all waits and filesystem IO run in
+# the transaction worker. Hold a strong reference while acquiring/using a lock
+# so the weak cache cannot replace it while another transaction is waiting.
+_file_locks: WeakValueDictionary[str, LockType] = WeakValueDictionary()
+_file_locks_guard = Lock()
+
+
+def _edit_lock(path: Path) -> LockType:
+    key = str(path.resolve())
+    with _file_locks_guard:
+        lock = _file_locks.get(key)
+        if lock is None:
+            lock = Lock()
+            _file_locks[key] = lock
+        return lock
+
+
+def _edit_transaction(path: str, ctx: dict[str, Any], args: dict[str, Any]) -> str | AgentToolResult:
+    path = _resolve(path, ctx)
+    error = validate_path(path, confine_to=_confinement(ctx))
+    if error:
+        return error
+    target = Path(path)
+    with _edit_lock(target):
+        return _fs_edit(target, args)
 
 
 #: Key a caller puts in ``tool_ctx`` to confine this tool to a set of roots.
@@ -131,15 +158,12 @@ class FilesystemTool(ToolDef):
             replace_all=Param("boolean", description="Replace all occurrences"))
     async def edit(self, ctx: dict[str, Any], path: str, old_string: str = "", new_string: str = "",
                    edits: list[Any] | None = None, replace_all: bool = False) -> str | AgentToolResult:
-        path = _resolve(path, ctx)
-        error = validate_path(path, confine_to=_confinement(ctx))
-        if error:
-            return error
-        async with _file_locks[path]:
-            return _fs_edit(Path(path), {
-                "old_string": old_string, "new_string": new_string,
-                "edits": edits, "replace_all": replace_all,
-            })
+        # Once dispatched, settle the actual transaction even on repeated caller
+        # cancellation. Never publish its late result or replay a possible write.
+        return await run_owned(_edit_transaction, path, ctx, {
+            "old_string": old_string, "new_string": new_string,
+            "edits": edits, "replace_all": replace_all,
+        })
 
     @action("ls", description="List directory contents",
             path=Param("string", required=True, description="Absolute directory path"),

@@ -75,12 +75,12 @@ def test_hub_distribution_and_optional_host_extras_are_common_not_goal_specific(
     assert config_path.is_file(), 'The common skills hub must be its own workspace distribution'
     config = tomllib.loads(config_path.read_text())
     assert config['project']['name'] == 'xdog-skills'
-    assert config['project']['dependencies'] == ['xdog-agent>=2.4.8']
+    assert config['project']['dependencies'] == ['xdog-agent>=2.4.9']
     for host in ('claw', 'coding'):
         config = tomllib.loads((repository / 'packages' / host / 'pyproject.toml').read_text())
-        assert 'xdog-skills>=2.4.8' in config['project']['dependencies']
+        assert 'xdog-skills>=2.4.9' in config['project']['dependencies']
         extras = config['project']['optional-dependencies']
-        assert extras['skills'] == ['xdog-skills>=2.4.8'] and 'goals' not in extras
+        assert extras['skills'] == ['xdog-skills>=2.4.9'] and 'goals' not in extras
 
 
 def test_private_goal_workspace_cannot_enter_umbrella_or_skills_artifacts():

@@ -488,8 +488,13 @@ class GatewayServer:
 
 
 
+        async def deliver_notice(data: dict[str, Any]) -> None:
+            # Durable application output must observe transport errors. The
+            # best-effort display writer cannot certify successful delivery.
+            await write(data, strict=True)
+
         assert self._orchestrator is not None
-        notice_channel = NativeNoticeChannel(write)
+        notice_channel = NativeNoticeChannel(deliver_notice)
         notice_binding = self._orchestrator.register_reply_channel(notice_channel)
 
         def start_operation(lease: GroupReservation | None, coroutine: Coroutine[Any, Any, None]

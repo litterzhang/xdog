@@ -1935,7 +1935,7 @@ wheels = [
 
 [[package]]
 name = "xdog"
-version = "2.4.8"
+version = "2.4.9"
 source = { editable = "." }
 dependencies = [
     { name = "xdog-agent" },
@@ -1986,7 +1986,7 @@ dev = [
 
 [[package]]
 name = "xdog-agent"
-version = "2.4.8"
+version = "2.4.9"
 source = { editable = "packages/agent" }
 dependencies = [
     { name = "fastjsonschema" },
@@ -2016,7 +2016,7 @@ provides-extras = ["acp"]
 
 [[package]]
 name = "xdog-ai"
-version = "2.4.8"
+version = "2.4.9"
 source = { editable = "packages/ai" }
 dependencies = [
     { name = "httpx", extra = ["socks"] },
@@ -2046,7 +2046,7 @@ provides-extras = ["openai", "all"]
 
 [[package]]
 name = "xdog-claw"
-version = "2.4.8"
+version = "2.4.9"
 source = { editable = "packages/claw" }
 dependencies = [
     { name = "agent-client-protocol", marker = "python_full_version < '3.15'" },
@@ -2114,7 +2114,7 @@ provides-extras = ["skills", "eyes", "acp", "search", "all"]
 
 [[package]]
 name = "xdog-coding"
-version = "2.4.8"
+version = "2.4.9"
 source = { editable = "packages/coding" }
 dependencies = [
     { name = "agent-client-protocol", marker = "python_full_version < '3.15'" },
@@ -2148,7 +2148,7 @@ provides-extras = ["skills"]
 
 [[package]]
 name = "xdog-eyes"
-version = "2.4.8"
+version = "2.4.9"
 source = { editable = "packages/eyes" }
 dependencies = [
     { name = "agent-client-protocol", marker = "python_full_version < '3.15'" },
@@ -2163,7 +2163,7 @@ requires-dist = [
 
 [[package]]
 name = "xdog-flow"
-version = "2.4.8"
+version = "2.4.9"
 source = { editable = "packages/flow" }
 dependencies = [
     { name = "fastjsonschema" },
@@ -2186,7 +2186,7 @@ requires-dist = [
 
 [[package]]
 name = "xdog-site"
-version = "2.4.8"
+version = "2.4.9"
 source = { editable = "packages/site" }
 dependencies = [
     { name = "flask" },
@@ -2207,7 +2207,7 @@ requires-dist = [
 
 [[package]]
 name = "xdog-skills"
-version = "2.4.8"
+version = "2.4.9"
 source = { editable = "packages/skills" }
 dependencies = [
     { name = "xdog-agent" },
@@ -2218,7 +2218,7 @@ requires-dist = [{ name = "xdog-agent", editable = "packages/agent" }]
 
 [[package]]
 name = "xdog-tui"
-version = "2.4.8"
+version = "2.4.9"
 source = { editable = "packages/tui" }
 dependencies = [
     { name = "wcwidth" },

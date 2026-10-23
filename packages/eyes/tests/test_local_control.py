@@ -17,15 +17,16 @@ def test_control_frames_reject_ambiguous_or_unframed_json(value):
         decode_frame(value)
 
 
-def test_location_is_owned_by_cwd_not_definition_name_and_has_no_harness_token(tmp_path):
-    from xdog.eyes.local_control import runtime_location
+def test_daemon_location_is_independent_of_project_and_has_no_harness_token(tmp_path, monkeypatch):
+    from xdog.eyes.local_control import daemon_location
 
-    first = runtime_location(tmp_path)
-    assert first==runtime_location(tmp_path)
-    assert first.cwd==tmp_path.resolve() and first.generation==''
-    assert first.directory.stat().st_mode & 0o777==0o700
-    assert first!=runtime_location(tmp_path.parent)
-    assert not hasattr(first,'token') and not hasattr(first,'descriptor')
+    first = daemon_location()
+    monkeypatch.chdir(tmp_path)
+    assert first == daemon_location()
+    assert first.cwd == first.directory and first.generation == ''
+    assert first.directory.stat().st_mode & 0o777 == 0o700
+    assert not hasattr(first, 'token') and not hasattr(first, 'descriptor')
+    assert first != daemon_location(tmp_path / 'isolated')
 
 
 def test_runtime_file_validation_precedes_truncation(tmp_path):
@@ -40,10 +41,10 @@ def test_runtime_file_validation_precedes_truncation(tmp_path):
 
 
 def test_live_owner_lease_without_record_never_starts_another_process(tmp_path,monkeypatch):
-    from xdog.eyes.local_control import private_open, runtime_location
+    from xdog.eyes.local_control import daemon_location, private_open
     from xdog.eyes.process import ensure_runtime
 
-    location = runtime_location(tmp_path)
+    location = daemon_location()
     lock = private_open(location.directory/'owner.lock',os.O_CREAT|os.O_RDWR)
     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
 
@@ -59,10 +60,10 @@ def test_live_owner_lease_without_record_never_starts_another_process(tmp_path,m
 
 
 async def test_live_unresponsive_socket_is_not_replaced_or_restarted(tmp_path,monkeypatch):
-    from xdog.eyes.local_control import runtime_location
+    from xdog.eyes.local_control import daemon_location
     from xdog.eyes.process import ensure_runtime
 
-    location = runtime_location(tmp_path)
+    location = daemon_location()
     writers = []
 
     def accept(reader,writer):
@@ -90,10 +91,10 @@ async def test_live_unresponsive_socket_is_not_replaced_or_restarted(tmp_path,mo
 
 async def test_old_generation_cannot_stop_another_runtime(tmp_path):
     from xdog.eyes.control import request
-    from xdog.eyes.local_control import runtime_location
-    from xdog.eyes.runtime import ObserverRuntime
+    from xdog.eyes.local_control import daemon_location
+    from xdog.eyes.runtime import DaemonRuntime
 
-    runtime = ObserverRuntime(runtime_location(tmp_path))
+    runtime = DaemonRuntime(daemon_location())
     task = asyncio.create_task(runtime.serve())
     try:
         async with asyncio.timeout(3):
@@ -118,7 +119,7 @@ async def test_cancelled_publication_settles_before_releasing_control_lease(tmp_
     import threading
 
     from xdog.eyes import runtime as module
-    from xdog.eyes.local_control import runtime_location
+    from xdog.eyes.local_control import daemon_location
 
     entered,release = threading.Event(),threading.Event()
     original = module.publish_location
@@ -129,7 +130,7 @@ async def test_cancelled_publication_settles_before_releasing_control_lease(tmp_
         return original(location)
 
     monkeypatch.setattr(module,'publish_location',delayed)
-    runtime = module.ObserverRuntime(runtime_location(tmp_path))
+    runtime = module.DaemonRuntime(daemon_location())
     task = asyncio.create_task(runtime.serve())
     try:
         assert await asyncio.to_thread(entered.wait,3)
@@ -145,15 +146,15 @@ async def test_cancelled_publication_settles_before_releasing_control_lease(tmp_
 
 async def test_control_response_schema_errors_are_reported_as_control_errors(tmp_path):
     from xdog.eyes.control import request
-    from xdog.eyes.local_control import ControlError, encode_frame, runtime_location
+    from xdog.eyes.local_control import ControlError, daemon_location, encode_frame
 
-    location = runtime_location(tmp_path)
+    location = daemon_location()
     tasks = set()
 
     async def answer(reader,writer):
         try:
             await reader.readline()
-            writer.write(encode_frame({'version':1,'generation':'1'*32,'cwd':str(tmp_path),
+            writer.write(encode_frame({'version':1,'generation':'1'*32,'cwd':str(location.directory),
                                        'status':[],'body':{}}))
             await writer.drain()
         finally:
@@ -176,3 +177,27 @@ async def test_control_response_schema_errors_are_reported_as_control_errors(tmp
         if tasks:
             await asyncio.gather(*tasks)
         location.socket.unlink(missing_ok=True)
+
+
+def test_project_runtime_and_embedding_service_are_not_available(tmp_path, monkeypatch):
+    import importlib.util
+    import sys
+
+    from xdog.eyes import local_control, runtime
+
+    assert not hasattr(local_control, 'runtime_location')
+    assert not hasattr(runtime, 'ObserverRuntime')
+    assert importlib.util.find_spec('xdog.eyes.service') is None
+    monkeypatch.setattr(sys, 'argv', ['xdog.eyes.runtime', '--cwd', str(tmp_path)])
+    with pytest.raises(SystemExit) as error:
+        runtime.main()
+    assert error.value.code == 2
+    assert not local_control.daemon_location().socket.exists()
+
+
+def test_daemon_location_cannot_be_rebound_to_a_project(tmp_path):
+    from xdog.eyes.local_control import ControlError, daemon_location, validate_location
+
+    location = daemon_location()
+    with pytest.raises(ControlError, match='daemon directory'):
+        validate_location(replace(location, cwd=tmp_path))

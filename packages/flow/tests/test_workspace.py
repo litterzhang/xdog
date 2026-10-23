@@ -157,7 +157,7 @@ async def test_confinement_survives_a_structured_node(
         pass  # the stub agent submits nothing; we only care about the ctx
 
     assert _CapturingAgent.seen[CONFINE_CTX_KEY] == [str(workspace)]
-    assert "flow_result_sink" in _CapturingAgent.seen, "and the sink is still there"
+    assert "result_sink" in _CapturingAgent.seen, "and the sink is still there"
 
 
 # -- What --confined refuses, and why it must -------------------------------

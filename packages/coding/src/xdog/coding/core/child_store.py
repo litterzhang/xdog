@@ -376,6 +376,9 @@ class ChildStore:
                         or record['initial_state'] not in {
                         'pending', 'uncertain', 'admitted', 'handled', 'discarded'})):
                     raise ValueError('Invalid initial task admission state')
+                if "filesystem_constraints" in record:
+                    from xdog.agent.tools.filesystem_constraints import decode_filesystem_roots
+                    decode_filesystem_roots(record["filesystem_constraints"])
                 record["config"] = ChildConfig.from_record(record.get("config", {})).to_dict()
                 effective = record.get("effective", {})
                 if not isinstance(effective, dict) or set(effective) - {

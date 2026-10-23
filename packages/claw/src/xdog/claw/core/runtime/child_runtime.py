@@ -116,6 +116,7 @@ class _Child:
     initial_message_observed: bool = False
     session_state: dict[str, Any] | None = None
     tool_schemas: dict[str, dict[str, Any]] = field(default_factory=dict)
+    filesystem_constraints: dict[str, Any] | None = None
     continuation_note: str = ""
 
 
@@ -197,6 +198,7 @@ class ClawChildRuntime:
                                         or not record.get('messages') else 'admitted'),
                 session_state=copy.deepcopy(record.get("session_state")),
                 tool_schemas=copy.deepcopy(record.get("tool_schemas", {})),
+                filesystem_constraints=copy.deepcopy(record.get("filesystem_constraints")),
                 continuation_note=record.get("continuation_note", ""),
             )
 
@@ -289,6 +291,8 @@ class ClawChildRuntime:
             if child.continuation_note:
                 record["continuation_note"] = child.continuation_note
             if transcript:
+                if child.filesystem_constraints is not None:
+                    record["filesystem_constraints"] = copy.deepcopy(child.filesystem_constraints)
                 record['initial_state'] = child.initial_state
                 if child.session_state is not None:
                     record["session_state"] = copy.deepcopy(child.session_state)
@@ -404,6 +408,23 @@ class ClawChildRuntime:
         with self._lock:
             child = self._children.get(identifier)
             return copy.deepcopy(child.tool_schemas) if child is not None else {}
+
+    def filesystem_history(self, identifier: str) -> tuple[bool, dict[str, Any] | None]:
+        """Historical ceiling data only; absence on an existing record is unknown."""
+        with self._lock:
+            child = self._children.get(identifier)
+            return child is not None, copy.deepcopy(child.filesystem_constraints) if child is not None else None
+
+    def record_filesystem_history(self, identifier: str, value: dict[str, Any]) -> None:
+        from xdog.agent.tools.filesystem_constraints import decode_filesystem_roots
+        decode_filesystem_roots(value)
+        with self._lock:
+            child = self._children.get(identifier)
+            if child is None:
+                return  # This data setter cannot create an execution/admission record.
+            if child.filesystem_constraints is not None and child.filesystem_constraints != value:
+                raise ValueError("Original historical filesystem ceiling cannot be replaced")
+            child.filesystem_constraints = copy.deepcopy(value)
 
     def admission_receipt(self, identifier: str) -> dict[str, Any]:
         with self._lock:

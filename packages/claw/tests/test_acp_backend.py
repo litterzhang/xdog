@@ -352,13 +352,12 @@ async def test_restart_consumes_pending_but_not_interrupted_or_duplicate(tmp_pat
         await orch.stop()
 
 
-async def test_real_file_change_routes_through_unmodified_eyes_into_claw(tmp_path):
+async def test_real_file_change_routes_through_unmodified_eyes_into_claw(tmp_path, isolated_eyes_daemon):
     import json
+    import sys
     from importlib.resources import files
 
     from xdog.claw.acp.server import ClawAcpServer
-    from xdog.eyes.local_control import runtime_location
-    from xdog.eyes.runtime import ObserverRuntime
 
     model = ScriptedModel()
     orch = Orchestrator(ClawConfig(data_dir=str(tmp_path / "data")), model="test/dummy", stream_fn=model)
@@ -377,13 +376,32 @@ async def test_real_file_change_routes_through_unmodified_eyes_into_claw(tmp_pat
                        )
         definition["handlers"][0].update(connection={"transport": "unix", "path": str(server.path)},
                                           session="group:main", delivery="enqueue")
-        runtime = ObserverRuntime(runtime_location(tmp_path))
+        # Exercise the same public CLI as the installed tool, on the fixture's
+        # private daemon only. Each CLI exit detaches, not cancels the observer.
+        async def eyes(*arguments):
+            process = await asyncio.create_subprocess_exec(
+                sys.executable, "-m", "xdog.eyes", "--directory", str(isolated_eyes_daemon),
+                "--owner", "claw-file-test", *arguments,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                async with asyncio.timeout(35):
+                    output, error = await process.communicate()
+            finally:
+                if process.returncode is None:
+                    process.kill()
+                    await process.wait()
+            assert process.returncode == 0, (output, error)
+            return json.loads(output)
+
+        definition_path = tmp_path / "review.json"
+        definition_path.write_text(json.dumps(definition))
         identifier = None
         try:
-            identifier = (await runtime.start(definition))["registration_id"]
-            async with asyncio.timeout(5):
-                while runtime.entries[identifier].sources.get("files") != "watching":
-                    await asyncio.sleep(0.01)
+            started = await eyes("start", str(definition_path))
+            identifier = started["registration_id"]
+            assert started["state"] == "watching"
+            assert (await eyes("status", identifier))["state"] == "watching"
             changed.write_text("after")
 
             async def finished():
@@ -397,7 +415,7 @@ async def test_real_file_change_routes_through_unmodified_eyes_into_claw(tmp_pat
             assert row.session_id == orch.get_new_session_id("main")
         finally:
             if identifier is not None:
-                await runtime.stop_entry(identifier)
+                assert (await eyes("cancel", identifier))["state"] == "cancelled"
             await server.close()
             await orch.stop()
 

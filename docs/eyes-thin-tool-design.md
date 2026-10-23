@@ -103,3 +103,12 @@ live daemon is negotiated separately from its persistent journal format; mismatc
 are explicit and do not trigger automatic process replacement or migration.
 Tool cancellation/closure joins its owned CLI wait, never silently retries a
 mutating request or cancels an observation already durably accepted by the daemon.
+
+## Single daemon host
+
+The retired project/cwd observer runtime and embedded ObserverService are removed.
+The internal DaemonRuntime hosts only the durable DaemonObservers registry;
+`--directory` isolates this same implementation rather than selecting another lifecycle.
+The existing control-wire `cwd` remains for live protocol/storage compatibility
+and must equal the daemon directory. It is not a project, source base, delivery
+destination or permission grant. Source/handler paths still belong to normalized JSON.

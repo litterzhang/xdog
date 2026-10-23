@@ -274,8 +274,8 @@ class SdkRunner:
             resolved_tools = resolved_tools + (create_submit_result_tool(),)
             tool_ctx = {
                 **(tool_ctx or {}),
-                "flow_output_schema": agent_output_schema(node),
-                "flow_result_sink": sink,
+                "result_schema": agent_output_schema(node),
+                "result_sink": sink,
             }
             # `final_sys_prompt`, not `system_prompt`: restarting from the raw
             # prompt here dropped the workspace briefing for exactly the nodes

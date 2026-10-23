@@ -218,3 +218,19 @@ child 执行上下文维护该句柄；模型、快照、role 标签和路径都
 
 SA-01～SA-10 共 10 项，准确状态以需求清单为准；本文历史审计及部分旧测试通过不计作需求完成。
 本轮不 commit/push/tag、不重启用户服务，不改动用户 docs/agent-ui-features.md 和 workflows/。
+
+## Filesystem execution ceiling
+
+Tool identity/action selection alone is not the complete delegated authority.
+Both hosts capture the parent's explicit `fs_confine_to` ceiling, preserving the
+semantic difference between missing/None (unconfined) and empty (deny all).
+Only this inert constraint is copied; private parent tool context is not inherited.
+Parent context changes invalidate the original admission at hooks and executor
+entry rather than lending a child a later, broader parent grant.
+
+The host child record retains a versioned `filesystem_constraints` data ceiling
+alongside its safe continuation data. This is not a tool grant, callable, service
+handle or restored runtime. A new host still reauthorizes the actual parent and
+its tools before explicit follow-up. Unknown legacy constraint data is never
+interpreted as unconfined; it receives a deny-all filesystem ceiling. No stored
+work or interrupted effects are automatically replayed.
