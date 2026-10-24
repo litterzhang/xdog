@@ -33,7 +33,7 @@ def make(tmp_path, kind, monkeypatch):
         session = AgentSession(agent=Agent(stream, config=AgentConfig(model='offline/model')),
             session_data=store.create_session(model='offline/model', working_dir=tmp_path), session_manager=store,
             settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-            tool_registry=None, bash=None, permissions=PermissionManager('deny'))
+            tool_repo=None, bash=None, permissions=PermissionManager('deny'))
         ui = InteractiveMode(session)
     else:
         tmp_path.chmod(0o700)

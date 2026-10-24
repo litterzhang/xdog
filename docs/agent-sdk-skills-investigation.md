@@ -8,13 +8,22 @@
 
 
 > 后续状态（2026-10-12）：服务运行时goal已完成当前Linux验收，包括跨进程skill恢复与关闭。本文保留此前调查及F1子任务记录；最终范围、结果与限制见 [运行时验收](agent-sdk-service-runtime-plan.md#10-最终验收2026-10-12)。
-Updated **October 12, 2026**. The initial investigation is historical; **the current
-checkout implements an opt-in read-only loader and request-local turn skills**.
+Updated **October 12, 2026**. The initial investigation is historical; **that checkout
+implemented an opt-in read-only loader and request-local turn skills**.
 This follow-up finishes scoped examples/docs/tests against that implementation.
 It does **not** complete F1's cross-process restore requirement or the broader
 snapshot/lifecycle gates in [the service-runtime plan](agent-sdk-service-runtime-plan.md).
 Agent lifecycle integration, shutdown, snapshots, and product adaptation are owned
 by the parent task, not this change set.
+
+## Current syntax note (2026-10-24)
+
+The illustrative Python blocks below use current SkillRepo registration syntax;
+historical counts/hashes remain evidence of the earlier checkout, not verification
+of the new API. Default discovery does not inject bodies. Read instructions through
+the read-only skill list/load entry; explicit host activation is separate.
+See [the current SDK guide](sdk-capability-assembly.md) for additive repository
+composition and select-before-open capability lifetime.
 
 ## Two distinct SDK operations
 
@@ -23,22 +32,22 @@ by the parent task, not this change set.
 ```python
 from pathlib import Path
 from xdog.agent import Agent, AgentConfig
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 
-manager = SkillManager(shared_dir=Path("./skills"))
+skills = SkillRepo().register(directory=Path("./skills"), name="host")
 agent = Agent(
     stream_fn,  # host-configured adapter, or the example's offline adapter
     config=AgentConfig(model="your-provider/model", system_prompt="Base instructions"),
-    skills=manager,
-    active_skills=["flow-workflows"],
+    skills=skills,
+    active_skills=["flow"],
     tools=[],  # activation grants NO execution capabilities
 )
 ```
 
 The host supplies trusted roots and selected slugs. `skills=None` means no SDK
 skill discovery/activation. Supplying `active_skills` alone does not install a
-package. Validate required slugs before constructing the agent: current placement
-remains best-effort and skips missing skills rather than guaranteeing a hard error.
+package. Current explicit activation validates slugs and rejects missing/empty
+bodies instead of claiming they are active.
 `set_active_skills()` replaces the idle selection; it does not start a request.
 
 ### Model-requested optional list/load
@@ -47,8 +56,8 @@ remains best-effort and skips missing skills rather than guaranteeing a hard err
 from xdog.agent.skills import create_skill_tool
 
 reader = create_skill_tool(
-    manager,
-    allowed_slugs=["flow-workflows"],
+    skills,
+    allowed_slugs=["flow"],
     max_skill_bytes=256 * 1024,
     max_listed_skills=1,
 )
@@ -76,7 +85,7 @@ install packages, configure loader roots, or expand permissions; those remain
 explicit trusted host configuration. This follow-up adds no snapshot loading code.
 
 **Allowlist visibility:** `allowed_slugs` filters this tool only. Passing
-`skills=manager` to Agent also builds the manager's independent, unfiltered index.
+`skills=skills` to Agent also builds the repo's independent discovery index.
 The model-loading example deliberately omits that argument so the bounded tool
 catalog is the sole skill-discovery surface. To use both, the host must deliberately
 select the desired index and roots; do not mistake a loader allowlist for index
@@ -102,8 +111,9 @@ UV_OFFLINE=1 uv run --no-sync python packages/agent/examples/load_skills.py --mo
 UV_OFFLINE=1 uv run --no-sync python packages/agent/examples/load_skills.py --demo-turn --mode model-load
 ```
 
-The default modes require `xdog-flow` **already installed**. The canonical slug is
-**`flow-workflows`**, not `xdog-flow` (distribution/CLI). The demo fixture only writes
+The current default modes require `xdog-flow` **already installed**. The canonical
+slug is **`flow`**, not `xdog-flow` (distribution/CLI). Historical artifact records
+used the retired `flow-workflows` slug. The demo fixture only writes
 inside its temporary directory. Neither mode executes the commands taught by the
 flow skill; successful context assembly does not demonstrate LLM quality or actual
 workflow execution.
@@ -142,7 +152,7 @@ and, if wanted, flow installation; this task performs no installs or builds.
 - Available metadata comes first in the system prompt, followed by active session
   bodies and the base instructions. Explicit `SystemPromptBlock` cache flags are
   preserved. Session bodies stay active until host replacement/unload.
-- The index no longer promises an unregistered `skill` tool. A manager alone adds
+- The index no longer promises an unregistered `skill` tool. A SkillRepo alone adds
   no tool to the agent. Both public `create_skill_tool` import paths already exist
   in the WIP; this follow-up does not edit exports.
 - Constructor and idle `set_active_skills()` activation capture turn-skill content.
@@ -197,8 +207,8 @@ roots; same-name unsafe higher tiers must not silently read lower-tier content.
   portable fallback uses path/link/identity checks; native Windows/macOS and hostile
   ancestor-directory replacement races are not validated here.
 
-The bounds above belong to the **model-facing tool**, not every `SkillManager`
-API. Host discovery/activation still uses the manager's ordinary synchronous reads;
+The bounds above belong to the **model-facing tool**, not every `SkillRepo`
+API. Host discovery/activation still uses the repo's ordinary synchronous reads;
 listing parses bodies internally and then omits them from returned metadata. Do not
 use these trusted-host APIs as a bounded arbitrary-path interface for model input.
 No new runtime dependency, package discovery scheme or command executor was added.
@@ -207,20 +217,23 @@ No new runtime dependency, package discovery scheme or command executor was adde
 
 `packaged_skills()` enumerates installed `xdog.*` namespace packages and looks for
 `skills/<slug>/SKILL.md`; it is not a general third-party entry-point scheme.
-`SkillManager(shared_dir, group_dir=None, packaged=None)` discovers packages when
-`packaged` is omitted. An explicit mapping selects packages; `{}` opts out.
-Read-time construction does not create shared/group directories. Packaged files
-remain read-only through manager mutation APIs; local overrides may shadow them.
-For an exact package copy, use `load_packaged_skill()` or an explicit mapping plus
-empty local roots.
+Current API: `SkillRepo(builtin=True, packaged=None)` discovers installed packaged
+skills by default. `SkillRepo(builtin=False)` disables default discovery; an
+explicit mapping pins packaged sources. Register local roots with
+`.register(directory=path, name="host")`. Directory-name and different same-slug
+definition conflicts fail; there is no implicit override priority. Read-time
+construction does not create directories. `from_packaged`, `select` and `merge`
+are SDK operations. The historical artifact evidence below predates this API.
 
 `save_skill(scope="shared"|"group")` chooses a storage directory, not prompt
 lifetime. Lifetime is the SKILL.md `metadata.scope`. Parsing uses the existing
 PyYAML dependency, not only the standard library. Rendering states the skill root
 and expands `${SKILL_DIR}`/`${CLAUDE_SKILL_DIR}` without reading references.
 
-The real flow resource is `packages/flow/src/xdog/flow/skills/flow-workflows/`, with
-SKILL.md and 12 example JSON files. Keep dependency direction **flow → agent**;
+The historical measured flow resource was
+`packages/flow/src/xdog/flow/skills/flow-workflows/`, with SKILL.md and 12 examples.
+The current canonical skill slug and directory are `flow`; the measured hashes
+below are not a current artifact certification. Keep dependency direction **flow → agent**;
 agent does not need flow installed to load local skills. Normal unpacked wheels
 work; ZIP/non-filesystem resource layouts remain unverified.
 

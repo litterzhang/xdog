@@ -13,6 +13,27 @@ Goal enable switch. **The skill body is not active by default**: load it through
 the host's existing skill mechanism when needed. Discovery/installation/ordinary
 chat creates no Goal, model, worker or observation; availability is not delegation.
 
+## Skill repository
+
+SDK consumers discover packaged instructions through `xdog.agent.SkillRepo`:
+
+```python
+from xdog.agent import SkillRepo
+
+skills = SkillRepo.from_packaged(("goal", "plan"))
+```
+
+`SkillRepo()` discovers installed packaged skills; `SkillRepo(builtin=False)`
+starts without that catalog. Hosts add local sources explicitly with
+`skills.register(directory=path, name="shared")` or `name="group"` (chainable).
+Listing, selecting or merging repositories does not activate skill bodies,
+create Goal records or grant tools. Native `Agent` still takes `skills=skills`
+and explicit `active_skills`. `CapabilityAssembly.create_agent` instead accepts
+an additive `skill_repo=skills` (and `tool_repo` for actual tools): selecting an
+empty supplemental repo cannot remove the capability's own contributions.
+Owner-bound Goal tools, lifecycle and permissions stay with the original host;
+repositories contain instructions, not restored runtime authority.
+
 ## Goal: records and reminders, not an agent runner
 
 The current main Agent knows the conversation and owns planning, optional child

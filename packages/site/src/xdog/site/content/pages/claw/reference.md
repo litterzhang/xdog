@@ -12,7 +12,7 @@ documented private protocols. The root `xdog.claw` package re-exports no runtime
 classes. Internal `Orchestrator`/`GroupRuntime`/`AgentSession` adapters remain
 importable for application composition/tests, not as a supported public embedding API.
 
-Reusable interfaces are in **`xdog.agent`**: Agent, host-owned `ToolRegistry`,
+Reusable interfaces are in **`xdog.agent`**: Agent, host-owned `ToolRepo`,
 `xdog.agent.mcp.McpRegistry` and extension APIs. `xdog.agent.children` supplies inert
 `ChildClient`/`ChildHandle` contracts/shared data, not child supervision/execution.
 Claw owns `ClawChildRuntime`/storage/extension workers on the gateway's original
@@ -51,7 +51,7 @@ Default config is `~/.config/xdog/claw/config.yaml`, honoring XDG paths or `CLAW
 | Configuration | Role |
 |---|---|
 | `model · image_model` | Explicit configured chat and image models; image generation is independently opt-in. |
-| `enabled_tools` | Host tool selection; `[]` disables tools, absent/null uses defaults. Selection grants no permission. |
+| `enabled_tools` | Claw application configuration only: host tool selection (`[]` disables tools; absent/null uses defaults). Not a CapabilityAssembly argument; selection grants no permission. |
 | `groups` | Operator-defined group identity/workspace and model/reasoning options. |
 | `gateway.max_concurrent_agents` | Background group-turn admission (default 3), not child concurrency. |
 | `gateway.daily_reset_hour · gateway.idle_reset_seconds` | Current-context rotation settings; default daily reset is 04:00 UTC. |

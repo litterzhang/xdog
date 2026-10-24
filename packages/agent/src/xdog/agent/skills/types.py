@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from xdog.agent.skills.manager import SkillManager
+    from xdog.agent.skills.repo import SkillRepo
 
 
 @dataclass(frozen=True)
@@ -52,7 +52,7 @@ class Skill:
 
 def validate_active_skill(slug: str, skill: Skill | None) -> None:
     """Explicit activation must bind the exact slug and nonempty instructions."""
-    from xdog.agent.skills.manager import is_valid_skill_name
+    from xdog.agent.skills.repo import is_valid_skill_name
 
     if not isinstance(slug, str) or not is_valid_skill_name(slug):
         raise ValueError(f"Invalid active skill slug: {slug!r}")
@@ -72,7 +72,7 @@ class SkillPlacement:
     resolved: tuple[Skill, ...]
 
     @classmethod
-    def read(cls, manager: SkillManager | None, selected: Sequence[str]) -> SkillPlacement:
+    def read(cls, manager: SkillRepo | None, selected: Sequence[str]) -> SkillPlacement:
         # Same placement engine as ordinary Agent construction/selection, not a
         # host-specific skill resolver or a second cache/persistence authority.
         from xdog.agent.agent import _place_skills

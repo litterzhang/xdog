@@ -17,9 +17,9 @@ import json
 import shlex
 import sys
 
-from xdog.agent.tools import create_bash_tool, create_filesystem_tool
+from xdog.agent import ToolRepo
 from xdog.flow.runtime import RuntimeContext
-from xdog.flow.tools import ToolRegistry, default_registry
+from xdog.flow.tools import default_repo
 
 # Cap each verification subprocess so a runaway check can't hang the workflow.
 _CHECK_TIMEOUT_S = 120.0
@@ -157,15 +157,12 @@ async def autofix_module(ctx: RuntimeContext, module_file: str, test_file: str =
     return f"autofixed {', '.join(files)}"
 
 
-def registry_with_filesystem() -> ToolRegistry:
+def registry_with_filesystem() -> ToolRepo:
     """Return a registry with the built-in demo tools plus real agent tools.
 
     Adds the ``filesystem`` tool (so an agent node can write files) and the
     ``bash`` tool (so a setup node can create a git worktree for isolation).
-    Pass this to :func:`flow.executor.execute` as ``tool_registry=`` so agent
+    Pass this to :func:`flow.executor.execute` as ``tool_repo=`` so agent
     nodes declaring ``"tools": ["filesystem"]`` or ``["bash"]`` resolve.
     """
-    registry = default_registry()
-    registry.register(create_filesystem_tool())
-    registry.register(create_bash_tool())
-    return registry
+    return default_repo()

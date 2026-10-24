@@ -1,5 +1,11 @@
 # Core Directory Organization
 
+> **Historical / superseded SDK interface — 2026-10-24:** Historical implementation plan: global factory registration and lazy create_tools below are retired, not current architecture.
+> Current integration uses ToolRepo / SkillRepo, explicit registration and provider
+> selection before open; see [SDK capability assembly](../sdk-capability-assembly.md).
+> Old names and result counts are retained as evidence, not compatibility aliases.
+
+
 **Status**: Implemented | **Tests**: 523 passing
 
 ## Final layout
@@ -49,7 +55,7 @@ core/
 
 Each domain package registers its own tool on import:
 
-```python
+```text
 # goal/__init__.py
 from claw.core.tools.registry import register
 from claw.core.tools.tool_goal import create_goal_tool
@@ -68,7 +74,7 @@ register("memory", create_memory_tool)
 
 The registry triggers domain imports lazily on first `create_tools()`:
 
-```python
+```text
 def _register_builtins() -> None:
     # Agent built-in tools (no domain)
     register("current_time", create_current_time_tool)

@@ -120,7 +120,7 @@ def test_onboard_rejects_image_tool_without_supported_models(runtime, tmp_path):
 
 
 def test_onboard_default_tool_selection_does_not_enable_images(runtime, tmp_path):
-    from xdog.claw.core.tools import new_tool_registry
+    from xdog.claw.core.tools import DEFAULT_TOOL_NAMES
 
     runtime.sync_models.return_value = (_model("chat"),)
     result = CliRunner().invoke(cli, ["onboard"], input="n\n1\n\nClaw\n")
@@ -129,7 +129,7 @@ def test_onboard_default_tool_selection_does_not_enable_images(runtime, tmp_path
     from xdog.agent.capabilities import CapabilitySet
 
     capabilities = CapabilitySet("group").declared_tools | CapabilitySet("application").declared_tools
-    assert config.enabled_tools == tuple(sorted(set(new_tool_registry().default_names()) | capabilities))
+    assert config.enabled_tools == tuple(sorted(set(DEFAULT_TOOL_NAMES) | capabilities))
     assert "generate_image" not in config.enabled_tools
     assert config.image_model == ""
 
@@ -145,7 +145,7 @@ def test_onboard_reprompts_for_invalid_tools_and_image_choice(runtime, tmp_path)
 
 
 def test_onboard_all_tools_and_numeric_selection(runtime, tmp_path):
-    from xdog.claw.core.tools import new_tool_registry
+    from xdog.claw.core.tools import AVAILABLE_TOOL_NAMES
 
     runtime.sync_models.return_value = (_model("chat"), replace(_model("image"), output=("image",)))
     result = CliRunner().invoke(cli, ["onboard"], input="n\n1\nall\n1\nClaw\n")
@@ -153,7 +153,7 @@ def test_onboard_all_tools_and_numeric_selection(runtime, tmp_path):
     from xdog.agent.capabilities import CapabilitySet
 
     capabilities = CapabilitySet("group").declared_tools | CapabilitySet("application").declared_tools
-    names = sorted(new_tool_registry().registered_names() | capabilities)
+    names = sorted(AVAILABLE_TOOL_NAMES | capabilities)
     assert set(load_config(tmp_path / "config.yaml").enabled_tools) == set(names)
     selected = names.index("filesystem") + 1
     result = CliRunner().invoke(cli, ["onboard"], input=f"n\n1\n{selected}\nClaw\n")
@@ -232,3 +232,15 @@ def test_onboard_installed_capabilities_preserve_explicit_allowlist(runtime, tmp
     assert result.exit_code == 0, result.output
     assert load_config(path).enabled_tools == ("filesystem",)
     assert "[ ] custom_watch" in result.output
+
+
+def test_onboard_tool_metadata_does_not_construct_a_runtime_repo(runtime, tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    construct = Mock(side_effect=AssertionError('onboarding must only inspect metadata'))
+    monkeypatch.setattr('xdog.claw.core.tools.ToolRepo', construct)
+    runtime.sync_models.return_value = (_model('chat'),)
+    result = CliRunner().invoke(cli, ['onboard'], input='n\n1\n\nClaw\n')
+    assert result.exit_code == 0, result.output
+    assert load_config(tmp_path / 'config.yaml').enabled_tools
+    construct.assert_not_called()

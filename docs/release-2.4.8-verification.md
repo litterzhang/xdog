@@ -1,6 +1,12 @@
 # 2.4.8 implementation and release verification
 
-## Current boundary
+> **Historical / superseded SDK interface — 2026-10-24:** Historical release evidence: the ToolRegistry name and contracts below predate ToolRepo.
+> Current integration uses ToolRepo / SkillRepo, explicit registration and provider
+> selection before open; see [SDK capability assembly](sdk-capability-assembly.md).
+> Old names and result counts are retained as evidence, not compatibility aliases.
+
+
+## Historical boundary at release
 
 - Agent supplies the `ToolRegistry` SDK; every host owns its instances and lifetime.
   Defaults are bash/filesystem/current_time; submit_result remains opt-in.

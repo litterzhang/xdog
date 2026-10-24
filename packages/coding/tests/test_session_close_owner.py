@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 from xdog.agent.mcp import McpRegistry
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.coding.core.sessions.ownership import SessionLease, lease_directory
 
 from packages.coding.tests.extension_session_helpers import session as extension_session
@@ -172,7 +172,7 @@ async def test_goal_display_cleanup_error_still_closes_actual_domain_store(tmp_p
 
     from packages.coding.tests.test_child_agents import create
 
-    session, _ = create(tmp_path, skills=SkillManager(tmp_path / 'skills'))
+    session, _ = create(tmp_path, skills=SkillRepo().register(directory=tmp_path / 'skills', name="shared"))
     await session.send_message('initialize installed capability')
     controller = session._sdk_controller
     host = session.capabilities.get("goal")

@@ -5,6 +5,7 @@ The caller supplies dependencies without XDOG packages/metadata or .pth files.
 Only explicit package roots are added to sys.path. This is an offline artifact
 probe, not an ordinary pytest test or a fresh dependency-resolution test.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -36,7 +37,7 @@ def main() -> None:
     import xdog.agent
     import xdog.agent.skills
     import xdog.ai
-    from xdog.agent.skills import SkillManager, packaged_skills
+    from xdog.agent.skills import SkillRepo, packaged_skills
 
     for module in (xdog.agent, xdog.ai):
         assert module.__file__ and Path(module.__file__).resolve().is_relative_to(target)
@@ -46,8 +47,11 @@ def main() -> None:
     assert not any(item.startswith("xdog-flow") for item in requires)
     discovered = packaged_skills()
     skill_hashes = {
-        slug: {str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
-               for path in sorted(root.rglob("*")) if path.is_file()}
+        slug: {
+            str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(root.rglob("*"))
+            if path.is_file()
+        }
         for slug, root in discovered.items()
     }
     example = runpy.run_path(str(args.example.resolve()))
@@ -55,13 +59,18 @@ def main() -> None:
         root = Path(directory)
         if args.expect_flow:
             import xdog.flow
+
             assert xdog.flow.__file__ and Path(xdog.flow.__file__).resolve().is_relative_to(target)
             assert Path(str(metadata.distribution("xdog-flow").locate_file(""))).resolve() == target
             assert set(discovered) == {"flow"}, discovered
             skill_dir = discovered["flow"]
             assert skill_dir.resolve().is_relative_to(target)
             assert len(list((skill_dir / "examples").glob("*.json"))) == 12
-            result = asyncio.run(example["demonstrate"](SkillManager(root / "unused"), "flow"))
+            result = asyncio.run(
+                example["demonstrate"](
+                    SkillRepo(builtin=True).register(directory=root / "unused", name="shared"), "flow"
+                )
+            )
             assert result["packaged"] is True
             assert not (root / "unused").exists()
         else:
@@ -73,17 +82,30 @@ def main() -> None:
                 "---\nname: procedure\ndescription: Local example\n---\nDISTINCT_LOCAL_SKILL_BODY\n",
                 encoding="utf-8",
             )
-            result = asyncio.run(example["demonstrate"](SkillManager(custom.parent), "procedure"))
+            result = asyncio.run(
+                example["demonstrate"](
+                    SkillRepo(builtin=True).register(directory=custom.parent, name="shared"), "procedure"
+                )
+            )
             assert result["packaged"] is False
-    print(json.dumps({
-        "target": str(target), "flow_expected": args.expect_flow, "discovered": sorted(discovered),
-        "imports_from_wheel_target": True, "editable_fallback_disabled": True,
-        "agent_requires_flow": False, "example": result,
-        "verification_scope": "installed baseline session activation and packaged assets only",
-        "readonly_loader_present": hasattr(xdog.agent.skills, "create_skill_tool"),
-        "f1_lifecycle_or_snapshot_gate_complete": False,
-        "skill_hashes": skill_hashes,
-    }, indent=2))
+    print(
+        json.dumps(
+            {
+                "target": str(target),
+                "flow_expected": args.expect_flow,
+                "discovered": sorted(discovered),
+                "imports_from_wheel_target": True,
+                "editable_fallback_disabled": True,
+                "agent_requires_flow": False,
+                "example": result,
+                "verification_scope": "installed baseline session activation and packaged assets only",
+                "readonly_loader_present": hasattr(xdog.agent.skills, "create_skill_tool"),
+                "f1_lifecycle_or_snapshot_gate_complete": False,
+                "skill_hashes": skill_hashes,
+            },
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

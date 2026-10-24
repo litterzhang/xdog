@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from xdog.agent import ToolRepo
 from xdog.agent.core import StreamFn, WebSearchFn
 from xdog.agent.workspace import script_bound
 from xdog.flow.checkpoint import CheckpointInterceptor, CheckpointStore
@@ -48,7 +49,6 @@ from xdog.flow.models import (
 from xdog.flow.preview import preview_ports
 from xdog.flow.runners import AgentRunner, CliRunner, NodeStubs, SdkRunner, StubRunner, cli_adapter_for
 from xdog.flow.runtime import RuntimeContext
-from xdog.flow.tools import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +217,7 @@ async def execute(
     *,
     stream_fn_factory: Callable[[str], StreamFn] | None = None,
     timeout: float = 120.0,
-    tool_registry: ToolRegistry | None = None,
+    tool_repo: ToolRepo | None = None,
     script_resolver: ScriptResolver | None = None,
     base_dir: Path | None = None,
     inputs: Mapping[str, object] | None = None,
@@ -251,9 +251,9 @@ async def execute(
         in tests.
     timeout:
         Per-node wall-clock timeout in seconds.
-    tool_registry:
+    tool_repo:
         Registry of :class:`~agent.core.AgentTool` objects available to agent nodes.
-        Defaults to :func:`~flow.tools.default_registry`.
+        Defaults to :func:`~flow.tools.default_repo`.
     script_resolver:
         Optional override mapping a script node's ``'module:func'`` run-ref to its
         callable. When omitted, script nodes resolve via the built-in
@@ -275,13 +275,13 @@ async def execute(
         answered by the stubs and no provider or CLI is constructed; subflow and
         script nodes may be stubbed too, and anything not stubbed runs for real.
     """
-    from xdog.flow.tools import default_registry as _default_registry
+    from xdog.flow.tools import default_repo as _default_repo
     from xdog.flow.tools import register_workflow_tools
 
-    if tool_registry is None:
-        tool_registry = _default_registry()
+    if tool_repo is None:
+        tool_repo = _default_repo()
     if wf.tool_refs:
-        register_workflow_tools(wf, tool_registry, base_dir)
+        register_workflow_tools(wf, tool_repo, base_dir)
     # Build SDK wiring only when the workflow actually has an SDK agent node — a
     # pure-CLI (or script-only) workflow needs no provider and must not touch ai.
     # Test mode never builds it: the stub runner answers every agent node.
@@ -722,7 +722,7 @@ async def execute(
             node.child,
             stream_fn_factory=stream_fn_factory,
             timeout=timeout,
-            tool_registry=tool_registry,
+            tool_repo=tool_repo,
             script_resolver=script_resolver,
             base_dir=base_dir,
             inputs=child_inputs,
@@ -981,11 +981,11 @@ async def execute(
             return runner
         if not _sdk_runner_cache:
             assert stream_fn_factory is not None
-            assert tool_registry is not None
+            assert tool_repo is not None
             _sdk_runner_cache.append(
                 SdkRunner(
                     stream_fn_factory=stream_fn_factory,
-                    tool_registry=tool_registry,
+                    tool_repo=tool_repo,
                     web_search_fn_factory=web_search_fn_factory,
                     workspace=_workspace,
                     allow_paths=tuple(allow_paths or ()),

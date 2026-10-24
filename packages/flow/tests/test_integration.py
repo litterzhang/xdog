@@ -97,9 +97,9 @@ async def test_agent_calculator_dryrun() -> None:
     """
     wf = load_workflow(_CALC)
 
-    from xdog.flow.tools import default_registry
+    from xdog.flow.tools import default_repo
 
-    result = await execute(wf, stream_fn_factory=_dryrun_factory, tool_registry=default_registry())
+    result = await execute(wf, stream_fn_factory=_dryrun_factory, tool_repo=default_repo())
 
     # script node built the arithmetic problem from typed integer inputs
     assert result.runtime["state"]["make_problem"].get("problem") == "347 + 895"
@@ -115,7 +115,7 @@ async def test_generate_parity() -> None:
     - generated module compiles and is ruff-clean
     - one async node function per workflow node, plus async main()
     - the inline script node emits a self-contained ctx-first function + wrapper,
-      and the agent node resolves its tools via _REGISTRY.resolve
+      and the agent node resolves its tools via _REGISTRY.select
     - running the generated module yields the same nested outputs as the
       interpreter (parity), using a stub so no real LLM is called
     """
@@ -145,7 +145,7 @@ async def test_generate_parity() -> None:
     assert "async def main()" in src
     assert "def _script_make_problem(ctx" in src, "inline script must be a top-level _script_make_problem"
     assert "RuntimeContext(" in src, "script wrapper must build a RuntimeContext"
-    assert "_REGISTRY.resolve(" in src, "agent node must resolve its tools via _REGISTRY.resolve("
+    assert "_REGISTRY.select(" in src, "agent node must resolve its tools via _REGISTRY.select("
 
     # --- parity: generated module output == interpreter output ---
     model = wf.default_model

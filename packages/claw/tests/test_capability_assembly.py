@@ -62,7 +62,7 @@ async def host(tmp_path, monkeypatch):
     app.register_group(Group(id='main', workspace=str(tmp_path / 'work')))
     # Declared defaults must have real loadable instruction bodies.
     for slug in ('application-skill', 'group-skill'):
-        app._runtimes['main'].skill_manager.save_skill(slug, f'Instructions for {slug}.')
+        app._runtimes['main'].skill_repo.save_skill(slug, f'Instructions for {slug}.')
     try:
         await app.start()
         runtime = app._runtimes['main']
@@ -82,11 +82,11 @@ async def test_shared_set_and_identity_only_publication_preserve_selection(host,
     publish = Mock(wraps=agent.set_tools)
     monkeypatch.setattr(agent, 'set_tools', publish)
     revision = agent.tool_selection_revision
-    assert tuple(runtime.tool_registry.tools) == tuple(agent.state.tools)
+    assert tuple(runtime.tool_repo.tools) == tuple(agent.state.tools)
     await app.refresh_application_capabilities()
     runtime._attach_capabilities(host.session)
     publish.assert_not_called()
-    assert tuple(runtime.tool_registry.tools) == tuple(agent.state.tools)
+    assert tuple(runtime.tool_repo.tools) == tuple(agent.state.tools)
     assert agent.tool_selection_revision == revision
     assert set(agent.active_tool_selection) == {'filesystem', 'application_feature'}
 
@@ -95,7 +95,7 @@ async def test_shared_set_and_identity_only_publication_preserve_selection(host,
     host.application.tools = (replacement,)
     await app.refresh_application_capabilities()
     publish.assert_called_once()
-    assert tuple(runtime.tool_registry.tools) == tuple(agent.state.tools)
+    assert tuple(runtime.tool_repo.tools) == tuple(agent.state.tools)
     assert any(tool is replacement for tool in agent.state.tools)
     assert not any(tool is old for tool in agent.state.tools)
     assert set(agent.active_tool_selection) == {'filesystem', 'application_feature'}
@@ -111,12 +111,12 @@ async def test_shared_set_and_identity_only_publication_preserve_selection(host,
 @pytest.mark.parametrize('collision', ['filesystem', 'group_feature'])
 async def test_collisions_fail_closed_without_overwriting_base_or_other_capability(host, collision):
     before = host.session.agent.state.tools
-    registered = host.runtime.tool_registry.tools
+    registered = host.runtime.tool_repo.tools
     host.application.tools = (AgentTool(collision),)
     with pytest.raises(ValueError):
         await host.app.refresh_application_capabilities()
     assert host.session.agent.state.tools is before
-    assert tuple(map(id, host.runtime.tool_registry.tools)) == tuple(map(id, registered))
+    assert tuple(map(id, host.runtime.tool_repo.tools)) == tuple(map(id, registered))
     with pytest.raises(ValueError):
         _ = host.runtime.tools
 

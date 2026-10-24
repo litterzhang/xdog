@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from xdog.agent.child_policy import ParentHandle
     from xdog.agent.mcp import McpRegistry
-    from xdog.agent.skills.manager import SkillManager
+    from xdog.agent.skills.repo import SkillRepo
     from xdog.agent.skills.types import Skill, SkillPlacement
 from dataclasses import replace
 from typing import Any, Callable, TypeVar
@@ -137,7 +137,7 @@ EventListener = Callable[[AgentEvent], None]
 # ---------------------------------------------------------------------------
 
 def _place_skills(
-    manager: "SkillManager | None", active: "Sequence[str]"
+    manager: "SkillRepo | None", active: "Sequence[str]"
 ) -> "tuple[str, str, list[Skill], dict[str, Skill]]":
     """Decide where each part of the skill story goes. The one place that does.
 
@@ -153,13 +153,13 @@ def _place_skills(
       to place as messages. They are going to be removed again, and adding then
       removing them from the prefix costs a full uncached re-send twice.
 
-    Everything about *which* skills exist stays with the SkillManager the caller
+    Everything about *which* skills exist stays with the SkillRepo the caller
     built, because only the caller knows where to look — flow beside its
     workflow, coding and claw in their group and shared directories.
     """
     if manager is None:
         if active:
-            raise ValueError("Active skills require a SkillManager or validated prepared placement")
+            raise ValueError("Active skills require a SkillRepo or validated prepared placement")
         return "", "", [], {}
     index = ""
     try:
@@ -167,7 +167,7 @@ def _place_skills(
         index = summary + "\n\n" if summary else ""
     except Exception:
         logger.warning("could not build the optional skill index", exc_info=True)
-    from xdog.agent.skills.manager import is_valid_skill_name
+    from xdog.agent.skills.repo import is_valid_skill_name
     from xdog.agent.skills.types import validate_active_skill
 
     resolved: list[Skill] = []
@@ -257,7 +257,7 @@ class Agent:
         config: AgentConfig | None = None,
         tools: tuple[AgentTool, ...] | list[AgentTool] | None = None,
         tool_ctx: dict[str, Any] | None = None,
-        skills: "SkillManager | None" = None,
+        skills: "SkillRepo | None" = None,
         active_skills: "Sequence[str]" = (),
         prepared_skills: "SkillPlacement | None" = None,
         embed_fn: EmbedFn | None = None,

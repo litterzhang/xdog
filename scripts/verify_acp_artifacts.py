@@ -128,7 +128,7 @@ import asyncio,json,sys
 from pathlib import Path
 from dataclasses import replace
 from xdog.agent import Agent,AgentConfig
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.agent.session_input import TYPE,decode_input
 from xdog.ai.types import AssistantMessage,TextContent,UserMessage
 from xdog.ai.utils.event_stream import EventStream
@@ -154,9 +154,9 @@ async def maximum_input(manager,root):
  def model(*args):
   calls.append(args)
   return EventStream.empty(AssistantMessage(content=(TextContent(text='maximum handled'),)))
- session=AgentSession(agent=Agent(model,config=AgentConfig(model='test'),skills=SkillManager(root/'skills')),
+ session=AgentSession(agent=Agent(model,config=AgentConfig(model='test'),skills=SkillRepo().register(directory=root/'skills')),
   session_data=manager.load_session(data.session_id),session_manager=manager,
-  settings=SettingsManager(global_path=root/'settings.json'),working_dir=root,tool_registry=None,bash=None)
+  settings=SettingsManager(global_path=root/'settings.json'),working_dir=root,tool_repo=None,bash=None)
  runtime=SessionRuntime(session,bound=True,inbox_store=store)
  runtime.start(setup_pending=True)
  try:
@@ -184,9 +184,9 @@ async def main():
  def model(_,context,options):
   calls.append(context)
   return EventStream.empty(AssistantMessage(content=(TextContent(text='wheel batch answer'),)))
- session=AgentSession(agent=Agent(model,config=AgentConfig(model='test'),skills=SkillManager(root/'skills')),
+ session=AgentSession(agent=Agent(model,config=AgentConfig(model='test'),skills=SkillRepo().register(directory=root/'skills')),
   session_data=manager.load_session(data.session_id),session_manager=manager,
-  settings=SettingsManager(global_path=root/'settings.json'),working_dir=root,tool_registry=None,bash=None)
+  settings=SettingsManager(global_path=root/'settings.json'),working_dir=root,tool_repo=None,bash=None)
  try:
   response=await session.send_message('Process all retained evidence')
   assert response.content==(TextContent(text='wheel batch answer'),)

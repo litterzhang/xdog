@@ -390,7 +390,7 @@ async def test_automatic_owner_crash_becomes_interrupted_and_retry_remains_expli
 import asyncio,os,sys
 from pathlib import Path
 from xdog.agent import Agent,AgentConfig
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.ai.types import AssistantMessage
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core.agent_session import AgentSession
@@ -402,9 +402,10 @@ async def main():
  def stream(*args):
   (root/'attempts').write_text('first\n')
   os._exit(19)
- session=AgentSession(agent=Agent(stream,config=AgentConfig(model='test'),skills=SkillManager(root/'skills')),
+ skills = SkillRepo().register(directory=root / 'skills', name='shared')
+ session=AgentSession(agent=Agent(stream,config=AgentConfig(model='test'),skills=skills),
   session_data=manager.load_session(sys.argv[2]),session_manager=manager,
-  settings=SettingsManager(global_path=root/'settings.json'),working_dir=root,tool_registry=None,bash=None)
+  settings=SettingsManager(global_path=root/'settings.json'),working_dir=root,tool_repo=None,bash=None)
  runtime=SessionRuntime(session,bound=True);runtime.start()
  await asyncio.Event().wait()
 asyncio.run(main())

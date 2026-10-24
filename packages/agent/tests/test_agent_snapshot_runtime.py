@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 from xdog.agent import Agent, AgentConfig, AgentTool, AgentToolResult
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.ai.types import AssistantMessage, TextContent, ToolCall, UserMessage
 from xdog.ai.utils.event_stream import EventStream
 
@@ -81,7 +81,7 @@ def test_skill_restore_recomposes_prefix_once_and_rejects_changed_body(tmp_path)
     directory.mkdir()
     skill_file = directory / "SKILL.md"
     skill_file.write_text("---\nname: guard\ndescription: test\n---\nGUARD_BODY")
-    manager = SkillManager(tmp_path, packaged={})
+    manager = SkillRepo(builtin=False, packaged={}).register(directory=tmp_path, name="shared")
     source = plain_agent(skills=manager, active_skills=["guard"])
     source.set_system_prompt("RAW_BASE")
     saved = source.dump()
@@ -105,7 +105,7 @@ _PROCESS = r"""
 import asyncio, json, sys
 from pathlib import Path
 from xdog.agent import Agent, AgentConfig, AgentTool, AgentToolResult, CompactionConfig
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.ai.types import AssistantMessage, TextContent, ToolCall
 from xdog.ai.utils.event_stream import EventStream
 
@@ -127,7 +127,7 @@ async def main():
             return EventStream.empty(AssistantMessage(content=(ToolCall(id=phase, name='record', arguments={}),),
                                                      stop_reason='toolUse'))
         return EventStream.empty(AssistantMessage(content=(TextContent(text='phase complete'),)))
-    manager = SkillManager(root / 'skills')
+    manager = SkillRepo().register(directory=root / 'skills')
     agent = Agent(stream, config=AgentConfig(model='offline/process', system_prompt='FLOW_HOST_BASE',
                   compaction=CompactionConfig(context_window=30000, output_reserve=256)),
                   tools=[AgentTool(name='record', parameters={'type':'object'}, execute=execute)],
@@ -186,7 +186,7 @@ async def test_safe_batch_snapshot_restores_active_turn_only_for_explicit_contin
     (directory / "SKILL.md").write_text(
         "---\nname: once\ndescription: test\nmetadata:\n  scope: turn\n---\nACTIVE_TURN_RULE"
     )
-    manager = SkillManager(tmp_path, packaged={})
+    manager = SkillRepo(builtin=False, packaged={}).register(directory=tmp_path, name="shared")
     calls = []
 
     async def execute(*args, **kwargs):

@@ -16,7 +16,7 @@ _SCRIPT = textwrap.dedent('''
     from pathlib import Path
 
     from xdog.agent import Agent, AgentConfig
-    from xdog.agent.skills import SkillManager
+    from xdog.agent.skills import SkillRepo
     from xdog.ai.types import AssistantMessage, Model, TextContent, ToolCall
     from xdog.ai.utils.event_stream import EventStream
 
@@ -60,10 +60,10 @@ _SCRIPT = textwrap.dedent('''
                     manager.create_session(model='test/model', working_dir=root))
             session = AgentSession(agent=Agent(Adapter(), config=AgentConfig(model='test/model'),
                 tools=get_default_tools(root), tool_ctx={'fs_workspace': str(root)},
-                skills=SkillManager(root / 'skills')),
+                skills=SkillRepo().register(directory=root / 'skills', name="shared")),
                 session_data=data, session_manager=manager,
                 settings=SettingsManager(global_path=root / 'settings.json'),
-                tool_registry=None, bash=None, working_dir=root, permissions=PermissionManager('allow-all'))
+                tool_repo=None, bash=None, working_dir=root, permissions=PermissionManager('allow-all'))
             sid = session.session_id
             async def close():
                 await session.aclose()

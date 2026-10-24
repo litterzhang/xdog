@@ -13,6 +13,7 @@ No provider/auth/network. Activation grants no tools. Model loading explicitly
 registers only the bounded read-only skill tool, with an allowlist and host hook;
 it neither activates skills nor executes their commands or reads their references.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -23,7 +24,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from xdog.agent import Agent, AgentConfig
-from xdog.agent.skills import Skill, SkillManager, render_skill_body
+from xdog.agent.skills import Skill, SkillRepo, render_skill_body
 from xdog.ai.types import AssistantMessage, Context, StreamOptions, SystemPromptBlock, TextContent
 from xdog.ai.utils.event_stream import EventStream
 
@@ -41,7 +42,7 @@ class SkillDemoResult(TypedDict):
     base_prompt_preserved: bool
 
 
-def require_skill(manager: SkillManager, slug: str) -> Skill:
+def require_skill(manager: SkillRepo, slug: str) -> Skill:
     """Validate host-selected configuration; this is not a model-facing path API."""
     available = {item.slug for item in manager.list_skills()}
     if slug not in available:
@@ -54,7 +55,7 @@ def require_skill(manager: SkillManager, slug: str) -> Skill:
     return skill
 
 
-async def demonstrate(manager: SkillManager, slug: str) -> SkillDemoResult:
+async def demonstrate(manager: SkillRepo, slug: str) -> SkillDemoResult:
     """Session: explicitly unload. Turn: auto-retire after one admitted prompt run."""
     skill = require_skill(manager, slug)
     requests: list[Context] = []
@@ -121,7 +122,7 @@ class SkillToolDemoResult(TypedDict):
     base_prompt_preserved: bool
 
 
-async def demonstrate_loading(manager: SkillManager, slug: str) -> SkillToolDemoResult:
+async def demonstrate_loading(manager: SkillRepo, slug: str) -> SkillToolDemoResult:
     """Offline model asks list → load → replies; returned prose stays tool history.
 
     No manager is passed to Agent: the tool's bounded allowlist is the entire model
@@ -144,7 +145,8 @@ async def demonstrate_loading(manager: SkillManager, slug: str) -> SkillToolDemo
             AssistantMessage(
                 content=(ToolCall(id=f"skill-{len(requests)}", name="skill", arguments=args),), stop_reason="toolUse"
             )
-            if len(requests) <= 2 else AssistantMessage(content=(TextContent(text="Read, not executed."),))
+            if len(requests) <= 2
+            else AssistantMessage(content=(TextContent(text="Read, not executed."),))
         )
         return EventStream.empty(message)
 
@@ -172,9 +174,14 @@ async def demonstrate_loading(manager: SkillManager, slug: str) -> SkillToolDemo
     assert agent.active_skills == () and all(c.system_prompt == base for c in requests)
     assert checked == ["skill", "skill"]
     return {
-        "slug": slug, "packaged": skill.packaged, "model_requests": len(requests),
-        "tool_names": [tool.name for tool in agent.state.tools], "permission_checks": checked,
-        "listed_without_body": True, "loaded_at_model_entry": True, "active_skills": [],
+        "slug": slug,
+        "packaged": skill.packaged,
+        "model_requests": len(requests),
+        "tool_names": [tool.name for tool in agent.state.tools],
+        "permission_checks": checked,
+        "listed_without_body": True,
+        "loaded_at_model_entry": True,
+        "active_skills": [],
         "base_prompt_preserved": True,
     }
 
@@ -195,10 +202,13 @@ def main() -> None:
             skill_dir.mkdir(parents=True)
             (skill_dir / "SKILL.md").write_text(
                 "---\nname: one-request\ndescription: Offline turn demo\nmetadata:\n  scope: turn\n---\n"
-                "ONE_REQUEST_ONLY: Explain the plan before acting.\n", encoding="utf-8",
+                "ONE_REQUEST_ONLY: Explain the plan before acting.\n",
+                encoding="utf-8",
             )
             args.skill = "one-request"
-        manager = SkillManager(shared_dir=shared, packaged={} if args.no_packaged or args.demo_turn else None)
+        manager = SkillRepo(builtin=False, packaged={} if args.no_packaged or args.demo_turn else None).register(
+            directory=shared, name="shared"
+        )
         try:
             demo = demonstrate if args.mode == "activate" else demonstrate_loading
             result = asyncio.run(demo(manager, args.skill))

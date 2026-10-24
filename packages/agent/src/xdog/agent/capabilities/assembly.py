@@ -11,12 +11,12 @@ from typing import TYPE_CHECKING, Any
 from xdog.agent.capabilities.runtime import CapabilitySet
 from xdog.agent.core import AgentTool
 from xdog.agent.tool_effects import ToolEffect
-from xdog.agent.tools.registry import ToolRegistry
+from xdog.agent.tools.repo import ToolRepo
 
 if TYPE_CHECKING:
     from xdog.agent.agent import Agent
     from xdog.agent.core import AgentConfig, AgentMessage, StreamFn
-    from xdog.agent.skills import SkillManager
+    from xdog.agent.skills import SkillRepo
 
 
 class CapabilityAssembly:
@@ -31,6 +31,9 @@ class CapabilityAssembly:
         if any(not isinstance(value, CapabilitySet) for value in sets):
             raise TypeError('CapabilityAssembly requires CapabilitySet instances')
         self.sets = tuple(dict.fromkeys(sets))
+        self._tool_repo = ToolRepo(builtin=False)
+        self._contributed: tuple[AgentTool, ...] = ()
+        self._skill_repo: SkillRepo | None = None
 
     @property
     def declared_tools(self) -> frozenset[str]:
@@ -59,34 +62,45 @@ class CapabilityAssembly:
         """Select instructions only, never grant tools or change approvals."""
         return frozenset(selected) | self.default_skills
 
-    def compose_tools(self, existing: Iterable[AgentTool] = (), *,
-                      enabled_tools: Iterable[str] | None = None) -> tuple[AgentTool, ...]:
-        """Replace only our owned handles; never shadow another tool.
+    @property
+    def tool_repo(self) -> ToolRepo:
+        incoming = ToolRepo(builtin=False)
+        for source in self.sets:
+            incoming = incoming.merge(source.tool_repo)
+        incoming = incoming.merge(ToolRepo(*self.tools, builtin=False))
+        previous = {id(tool) for tool in self._contributed}
+        local = ToolRepo(*(tool for tool in self._tool_repo if id(tool) not in previous), builtin=False)
+        updated = local.merge(incoming)  # Validate before changing the live collection.
+        # Retire only changed capability contributions. Local registration
+        # tokens stay valid across unrelated capability inventory refreshes.
+        for tool in self._contributed:
+            if (tool.name in self._tool_repo.names() and self._tool_repo.get(tool.name) is tool
+                    and (tool.name not in incoming.names() or incoming.get(tool.name) is not tool)):
+                self._tool_repo.unregister(tool.name)
+        for tool in updated:
+            if tool.name not in self._tool_repo.names():
+                self._tool_repo.register(tool)
+        self._contributed = incoming.tools
+        return self._tool_repo
 
-        enabled_tools selects capability tools, not supplied base tools. Empty
-        grants none; None selects all. Ambiguous names fail even when filtered.
-        """
-        published = self.tools
-        allowed = None if enabled_tools is None else frozenset(enabled_tools)
-        base = tuple(tool for tool in existing if not self.owns_tool(tool))
-        additions = tuple(tool for tool in published if allowed is None or tool.name in allowed)
-        result = (*base, *additions)
-        if len({tool.name for tool in result}) != len(result):
-            raise ValueError('Capability tool name already owned; refusing replacement')
-        registry = ToolRegistry(builtins=False)
-        registry.replace_source('inventory', result)
-        return registry.tools
+    @property
+    def skill_repo(self) -> SkillRepo:
+        from xdog.agent.skills import SkillRepo
 
-    def publish_tools(self, agent: Agent, *, enabled_tools: Iterable[str] | None = None) -> None:
-        """Publish on the existing Agent; retain explicit active-tool selection.
+        if self._skill_repo is None:
+            self._skill_repo = SkillRepo(builtin=False).merge(*(source.skill_repo for source in self.sets))
+        return self._skill_repo
 
-        Hosts first fence their actual owner and ensure publication is legal.
-        Equivalent inventory does not rewrite selection or tool revisions.
-        """
+    def compose_tools(self, existing: Iterable[AgentTool] = ()) -> tuple[AgentTool, ...]:
+        """Retire only our original handles; all selected capability tools remain."""
+        base = ToolRepo(*(tool for tool in existing if not self.owns_tool(tool)), builtin=False)
+        return base.merge(self.tool_repo).tools
+
+    def publish_tools(self, agent: Agent) -> None:
+        """Publish an idle owner's inventory without broadening active selection."""
         original = agent.local_tools
-        replacement = self.compose_tools(original, enabled_tools=enabled_tools)
-        if (len(original) != len(replacement)
-                or {id(tool) for tool in original} != {id(tool) for tool in replacement}):
+        replacement = self.compose_tools(original)
+        if tuple(map(id, original)) != tuple(map(id, replacement)):
             agent.set_tools(replacement)
 
     def tool_effect(self, tool: AgentTool, args: dict[str, Any]) -> ToolEffect | None:
@@ -98,21 +112,36 @@ class CapabilityAssembly:
                 return effect
         return None
 
-    def create_agent(self, stream_fn: StreamFn, *, skills: SkillManager,
-                     config: AgentConfig | None = None, tools: Iterable[AgentTool] = (),
-                     active_skills: Iterable[str] = (), enabled_tools: Iterable[str] | None = None,
+    def create_agent(self, stream_fn: StreamFn, *, tool_repo: ToolRepo | None = None,
+                     skill_repo: SkillRepo | None = None, config: AgentConfig | None = None,
                      **kwargs: Any) -> Agent:
-        """Build a native Agent using the same assembly as product hosts.
+        """Create a native Agent; supplied repos ADD to the selected capabilities.
 
-        Sets must already be opened by the calling application. This factory
-        does not own them, create an ACP endpoint, install permissions, or grant
-        capabilities to child agents. Other kwargs go to Agent unchanged.
+        No second enable list, no local override of capability contributions.
+        Native Agent options (including explicit body activation) pass through;
+        resource lifetime, permission hooks and actual executors stay host-owned.
         """
         from xdog.agent.agent import Agent
+        from xdog.agent.skills import create_skill_tool
 
         self._require_started()
-        return Agent(stream_fn, config=config, tools=self.compose_tools(tools, enabled_tools=enabled_tools),
-                     skills=skills, active_skills=tuple(sorted(self.active_skills(active_skills))), **kwargs)
+        if 'tools' in kwargs or 'skills' in kwargs or 'enabled_tools' in kwargs or 'enabled_skills' in kwargs:
+            raise TypeError('Capability assembly accepts additive tool_repo and skill_repo, not enable lists')
+        tools = self.tool_repo.merge()  # Per-Agent readers must never pollute the shared repo.
+        if tool_repo is not None:
+            tools = tools.merge(tool_repo)
+        skills = self.skill_repo
+        if skill_repo is not None:
+            skills = skills.merge(skill_repo)
+        missing = sorted(slug for slug in self.declared_skills if skills.load_skill(slug) is None)
+        if missing:
+            from xdog.agent.skills import SkillRepo
+            skills = skills.merge(SkillRepo.from_packaged(missing))
+        selected = self.active_skills(kwargs.pop('active_skills', ()))
+        if skills.list_skills() and 'skill' not in tools.names():
+            tools.register(create_skill_tool(skills))
+        return Agent(stream_fn, config=config, tools=tools.tools, skills=skills,
+                     active_skills=tuple(sorted(selected)), **kwargs)
 
     def _require_started(self) -> None:
         if any(not source.started for source in self.sets):

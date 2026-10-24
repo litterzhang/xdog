@@ -19,6 +19,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from typing import Any, TypeVar, cast
 
+from xdog.agent import ToolRepo
 from xdog.agent.agent import Agent
 from xdog.agent.child_compaction import ArchivedSummaryStream, preserve_model_metadata
 from xdog.agent.child_config import ChildConfig, ChildPresets
@@ -65,7 +66,6 @@ from xdog.agent.input_queue import Delivery, QueuedInput
 from xdog.agent.mcp import McpRegistry
 from xdog.agent.messages import dicts_to_messages, messages_to_dicts
 from xdog.agent.snapshots import decode_snapshot_messages, decode_snapshot_parts, encode_snapshot_messages
-from xdog.agent.tools import ToolRegistry
 from xdog.ai.types import (
     AssistantMessage,
     Context,
@@ -311,7 +311,7 @@ class CodingChildRuntime:
         self.publish: Callable[[dict[str, Any]], None] = lambda event: None
         self._listeners: dict[object, Callable[[dict[str, Any]], None]] = {}
         self._children: dict[str, _Child] = {}
-        self.tool_registries: dict[str, ToolRegistry] = {}
+        self.tool_repos: dict[str, ToolRepo] = {}
         self.mcp_registries: dict[str, McpRegistry] = {}
         self.tool_selections: dict[str, frozenset[str]] = {}
         self._lock = threading.RLock()
@@ -919,15 +919,18 @@ class CodingChildRuntime:
                 available = {tool.name for tool in agent.state.tools}
                 if allowed - available:
                     raise ValueError("Child tool selection is unavailable: " + ", ".join(sorted(allowed - available)))
-                registry = self.tool_registries.get(child.spec.id)
-                if registry is None:
-                    registry = ToolRegistry(builtins=False)
-                    self.tool_registries[child.spec.id] = registry
-                registry.replace_source("inventory", tuple(tool for tool in agent.local_tools if tool.name in allowed))
+                registry = ToolRepo(*(tool for tool in agent.local_tools if tool.name in allowed), builtin=False)
                 mcp = self.mcp_registries.get(child.spec.id)
+                previous_mcp = tuple(mcp.tools()) if mcp is not None else ()
                 if mcp is not None:
-                    mcp.replace_delegated_tools(tuple(tool for tool in mcp.tools() if tool.name in allowed))
-                registry.publish(agent)
+                    mcp.replace_delegated_tools(tuple(tool for tool in previous_mcp if tool.name in allowed))
+                try:
+                    registry.publish(agent)
+                except BaseException:
+                    if mcp is not None:
+                        mcp.replace_delegated_tools(previous_mcp)
+                    raise
+                self.tool_repos[child.spec.id] = registry
                 agent.sync_mcp_tools()
                 # The factory's later hooks/provider preparation must retain this
                 # runtime ceiling; replacing inventory cannot implicitly widen it.
@@ -1121,7 +1124,7 @@ class CodingChildRuntime:
                 await self.finalize(child.spec)
             except Exception as exc:
                 status, error = "failed", "Child resource cleanup failed: " + type(exc).__name__
-        self.tool_registries.pop(child.spec.id, None)
+        self.tool_repos.pop(child.spec.id, None)
         self.mcp_registries.pop(child.spec.id, None)
         self.tool_selections.pop(child.spec.id, None)
         with self._lock:

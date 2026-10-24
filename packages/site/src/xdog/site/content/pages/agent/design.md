@@ -22,21 +22,22 @@ let hosts observe/control execution without taking ownership from the Agent.
 ## Tool definitions, bindings and MCP are distinct
 
 `AgentTool` supplies an async executor. `ToolDef`, `Param` and `@action` offer a
-declarative multi-action layer. A host constructs its own `ToolRegistry`:
-`register_factory()` defines factories, `create_tools()` creates fresh tools,
-`replace_source()` binds actual tools and `publish(agent)` updates ordinary
-inventory on the original idle owner. Importing modules does not mutate a global
-registry or authorize tool use.
+declarative multi-action layer. A host constructs its own `ToolRepo`, which
+creates actual bash/filesystem/current_time tools by default; `builtin=False`
+starts empty. `register(*tools)` atomically registers actual tools and returns a
+close receipt; explicit `unregister(name)` is required before replacement.
+`select(names)` preserves actual identity in a new subset. `publish(agent)`
+updates ordinary inventory only at the original idle owner. Imports do not mutate
+a global registry or authorize tool use.
 
-Default factory selection is bash/filesystem/current_time; submit_result is
-opt-in. Bare Agent construction supplies none of those tools. Injected
-`web_search_fn`/`embed_fn` add their respective tools. The host's pre-tool policy
-must authorize the actual call after transformations; generic tools are not a
-security boundary.
+`submit_result` is opt-in through its concrete tool constructor. Bare Agent
+supplies no default shell/filesystem tools. Injected `web_search_fn`/`embed_fn`
+add their respective tools. The host's pre-tool policy must authorize the actual
+call after transformations; generic tools are not a security boundary.
 
 `McpRegistry` separately owns configured MCP connections and fenced proxies.
 Agent consumes it via `mcp_registry=...`, merging visible tools for the same
-model/tool loop and hooks. MCP proxies do not enter ordinary `ToolRegistry`.
+model/tool loop and hooks. MCP proxies do not enter ordinary `ToolRepo`.
 Declaring a server is inert; connection is explicit. Duplicate names fail rather
 than overriding another source. `set_tools()` replaces only ordinary inventory;
 publication never widens an explicit active-tool selection. Agent does not close
@@ -46,25 +47,34 @@ a borrowed MCP registry, load its credentials from snapshots or replay calls.
 
 Trusted installed `xdog.capabilities` entry points declare optional tools,
 skills, resources and extension hooks on actual application/session/group owners.
-Discovery is inert; explicitly starting a `CapabilitySet` may open resources.
-`CapabilityAssembly` projects already-started Sets into a native Agent; it owns
-no lifecycle, permission gate, child scheduler or extra event loop. Close Agents
-before shared Sets. Extensions keep hooks, commands, basic UI and providers,
-not model-tool registration.
+Discovery is inert. Configure `CapabilitySet(scope, tool_repo=..., skill_repo=...)`
+then `.select(names).open(host)` before startup: only selected providers open.
+Application scope may omit host; session/group need actual owner ports.
+`CapabilityAssembly.create_agent(tool_repo=..., skill_repo=...)` adds repos by
+union to capability and Set contributions; supplemental empty selections cannot
+remove those contributions. Conflicts fail; there are no separate enable lists.
+Native Agent keeps `tools` / `skills`. Close Agents before their Sets; assembly
+owns no extra runtime, permission gate, child scheduler or event loop.
 
-`SkillManager` discovers packaged, shared and group skills. The index is not an
-active body. Activate valid bodies explicitly with `active_skills` or
-`set_active_skills()`; session bodies stay in the cacheable prefix, turn bodies
-are messages with pending/consumed lifetimes. Flow/Eyes/Goal declarations do not
-activate their bodies by default. Tools and native commands are independent of
-skill-body activation. The optional read-only skill tool returns instructions
-without activating them or granting permissions.
+`SkillRepo(builtin=True, packaged=None)` discovers packaged skills by default;
+`.register(directory=path, name="host")` adds local sources and is chainable.
+Different same-slug definitions and directory-name conflicts fail, rather than
+silently overriding another source. `from_packaged` / `select` / `merge` are SDK
+operations, not custom host loaders. The read-only `skill` entry returns metadata
+and instructions on demand without activating them or granting permissions.
+Flow/Eyes/Goal bodies are not activated by default. Explicit `active_skills` /
+`set_active_skills()` still control session/turn lifetimes independently of tools.
+Extensions retain hooks, commands, basic UI and providers, not model tools.
+
+Opening selected Eyes ensures its independent daemon; closing detaches, not daemon
+stop. Flow CLI execution does not inherit host sandbox, approval hooks or tool
+allowlists; workflow execution is trusted code, not OS isolation.
 
 ## Snapshots and opt-in compaction
 
 `dump()` exports versioned JSON at a settled checkpoint; `restore()` validates
 before atomic adoption without starting a model/tool. Hosts reinject adapters,
-tools, managers, hooks, parent handles, MCP registries and compaction policy.
+tools, skill repos, hooks, parent handles, MCP registries and compaction policy.
 Snapshot data does not import code or restore authority. For long histories,
 `dump_metadata()`/`restore_parts()` separate metadata from bounded message parts
 while retaining complete tool pairing. Recovery dumps are diagnostic, not replay

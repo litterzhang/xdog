@@ -1,7 +1,7 @@
 """Tests for the submit_result built-in tool (schema validation + ctx handoff)."""
 
 import pytest
-from xdog.agent.tools import ToolRegistry, create_submit_result_tool
+from xdog.agent.tools import ToolRepo, create_submit_result_tool
 from xdog.ai.types import TextContent
 
 
@@ -86,7 +86,9 @@ async def test_none_ctx_does_not_crash():
 
 
 def test_submit_result_is_registered():
-    assert "submit_result" in ToolRegistry().registered_names()
+    repo = ToolRepo(builtin=False)
+    repo.register(create_submit_result_tool())
+    assert repo.get("submit_result").execute is not None
 
 
 def test_tool_schema_leaves_result_untyped():
@@ -188,7 +190,7 @@ async def test_neutral_sdk_agent_validates_corrects_and_hands_off_to_caller_sink
         return EventStream.empty(next(responses))
 
     agent = Agent(stream, config=AgentConfig(model="offline"),
-                  tools=tuple(ToolRegistry().create_tools(["submit_result"])), tool_ctx=ctx)
+                  tools=(create_submit_result_tool(),), tool_ctx=ctx)
     try:
         async for _ in await agent.prompt("Return two integers using submit_result."):
             pass

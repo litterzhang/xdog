@@ -40,7 +40,7 @@ async def test_actual_tools_browser_full_schema_query_refresh_no_model_and_nativ
             config=AgentConfig(model='test/model', supports_tool_calls=capability),
             tools=tools), session_data=store.create_session(working_dir=tmp_path), session_manager=store,
             settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-            tool_registry=None, bash=None, permissions=PermissionManager('deny'))
+            tool_repo=None, bash=None, permissions=PermissionManager('deny'))
         ui = InteractiveMode(session)
     else:
         class Adapter:
@@ -239,7 +239,7 @@ async def test_headless_tools_command_is_complete_read_only_and_query_filtered(t
         tools=tuple(AgentTool(name='native_' + str(index), parameters={'type': 'object'}, execute=execute)
                     for index in range(80))), session_data=store.create_session(working_dir=tmp_path),
         session_manager=store, settings=SettingsManager(global_path=tmp_path / 'settings.json'),
-        working_dir=tmp_path, tool_registry=None, bash=None, permissions=PermissionManager('deny'))
+        working_dir=tmp_path, tool_repo=None, bash=None, permissions=PermissionManager('deny'))
     try:
         result = json.loads((await execute_command('tools', '', session)).output)
         assert len([tool for tool in result['tools'] if tool['name'].startswith('native_')]) == 80
@@ -301,7 +301,7 @@ async def test_inventory_empty_valid_snapshot_differs_from_failed_refresh_and_bl
     session = AgentSession(agent=Agent(lambda *args: pytest.fail('No model'), config=AgentConfig(model='model')),
         session_data=store.create_session(working_dir=tmp_path), session_manager=store,
         settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-        tool_registry=None, bash=None, permissions=PermissionManager('deny'))
+        tool_repo=None, bash=None, permissions=PermissionManager('deny'))
     ui = InteractiveMode(session)
     panel = ToolInventoryPanel(lambda: (), lambda: None, lambda: None)
     ui._transcript_panel = panel

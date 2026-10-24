@@ -70,13 +70,22 @@ Keep provider/authentication, model routing, and wire-protocol adaptation separa
 
 `packages/agent/src/xdog/agent/agent.py` owns stateful conversations, lifecycle events, cancellation, steering/follow-ups, skills, and persistence snapshots. `agent_loop.py` converts history to an `xdog.ai` context, streams a response, validates and executes tool calls, appends results, and repeats until the turn ends.
 
-Coding, claw, and SDK-backed flow agent nodes reuse this runtime. Flow's external CLI backends intentionally use `CliRunner`; do not introduce a second in-process tool loop for SDK-backed nodes. Tool calls execute in parallel by default, while preparation/finalization hooks are serial. Callers enforce tool permissions through hooks—the generic tools themselves are not a security boundary. Agent provides a host-owned `ToolRegistry` SDK, not a global runtime registry.
-Each host creates its own registry. The SDK supplies default factories for `bash`,
-`filesystem`, `current_time`, plus opt-in `submit_result`; imports do not register
-mutable process-global state. Capability/host tools use owner-local ToolRegistry bindings. MCP uses its own
-`McpRegistry`, consumed directly by Agent, never registered into ToolRegistry.
-Agent merges visible inventories for the same model/tool loop and host permission
-hooks; registry/config/connection handles are never restored from snapshots.
+Coding, claw, and SDK-backed flow agent nodes reuse this runtime. Flow's external CLI backends intentionally use `CliRunner`; do not introduce a second in-process tool loop for SDK-backed nodes. Tool calls execute in parallel by default, while preparation/finalization hooks are serial. Callers enforce tool permissions through hooks—the generic tools themselves are not a security boundary. Agent provides a host-owned `ToolRepo` SDK, not a global runtime registry.
+Each host creates its own `ToolRepo(*actual_tools, builtin=True, cwd=None)`;
+construction creates real bash/filesystem/current_time tools, while builtin=False
+starts empty. `register(*tools)` is atomic and returns a close receipt; replacement
+requires explicit `unregister(name)` then register. `names()` returns a frozenset,
+`get(name)` raises ValueError when absent, and `select(names)` retains actual tool
+identity in a new repo. Publish only at the existing owner's idle boundary.
+MCP uses its own `McpRegistry`, consumed directly by Agent, never registered into
+ToolRepo. Agent merges inventories for the same model/tool loop and permission
+hooks; repo/config/connection handles are never restored from snapshots.
+`SkillRepo(builtin=True, packaged=None)` discovers installed packaged skills;
+`.register(directory=path, name="host")` is chainable and does not activate bodies.
+Directory-name and different same-slug definition conflicts fail, never silently
+shadow. SkillRepo supplies from_packaged/select/merge; do not build a second loader.
+The read-only skill entry exposes list/load without activation or permissions.
+Native Agent keeps `tools`/`skills` parameters.
 Extension workers no longer provide model tools; they retain hooks, commands, UI
 and providers. See `docs/host-owned-tool-registry.md`.
 
@@ -99,8 +108,15 @@ provider belongs to `xdog.skills.goal.runtime`; Eyes and Flow providers belong t
 `xdog.eyes.capability` and `xdog.flow.capability`. Clients import none of these
 business implementations directly. A capability can contribute skills, tools,
 owned runtime resources and extension hooks; none is mandatory. Skill discovery
-does not activate its body or grant tools. Flow/Eyes bodies are explicitly activated.
+does not activate its body or grant tools. Flow/Eyes bodies remain discoverable and are not activated by default.
 `CapabilityAssembly` is the shared SDK tool/skill composition API, not a new runtime.
+`CapabilitySet(scope, tool_repo=..., skill_repo=...).select(names).open(host)`
+opens only the selected providers; select before startup. application may omit
+host; session/group must provide real owner ports. Assembly create_agent accepts
+additive tool_repo/skill_repo union inputs, not tools/skills or enable lists.
+An empty selected supplemental repo cannot remove a capability contribution.
+Flow CLI subprocess execution does not inherit the host Agent sandbox, tool
+allowlist or approval hooks; treating a workflow as trusted code remains required.
 Public parent/child handles, immutable receipt snapshots, opaque reply strings and
 injected schema-neutral IO are the boundary, not raw client session/runtime objects.
 Role/receipt labels grant no authority. Actual tool identity, permissions, owner
@@ -226,9 +242,9 @@ Eyes callbacks use thin ACP intake into the application-owned Core Inbox as cano
 
 Prompt construction intentionally separates a cacheable static prefix from mutable workspace, memory and environment content. Goal facts are queried through the optional capability, never a hardcoded per-turn summary. Compaction flushes durable memory, summarizes through the LLM, archives the transcript, then replaces older history. Memory uses vector+BM25 search when optional dependencies initialize and falls back to keyword search otherwise.
 
-Claw explicitly creates its own Agent `ToolRegistry` and registers Claw-specific
-factories there. Domain imports must not mutate a process-global tool registry;
-Agent builtin tools are supplied by the SDK, not registered again by Claw.
+Claw explicitly creates its own Agent `ToolRepo` and registers actual Claw-specific
+tools there. Domain imports must not mutate a process-global tool registry;
+Agent builtin tool instances are supplied by the SDK, not registered again by Claw.
 
 Claw starts a private Unix ACP endpoint by default. `acp_socket_path` or
 `gateway start --acp-socket` overrides its path. `acp/backend.py` implements the shared Agent ACP

@@ -12,10 +12,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from xdog.agent import ToolRepo
 from xdog.agent.tools.tool_filesystem import CONFINE_CTX_KEY, WORKSPACE_CTX_KEY
 from xdog.flow.models import NodeDef
 from xdog.flow.runners import SdkRunner
-from xdog.flow.tools import ToolRegistry
 
 
 class _CapturingAgent:
@@ -62,7 +62,7 @@ async def _tool_ctx_for(
 ) -> dict[str, Any]:
     """Run one agent turn and return the tool_ctx the Agent was constructed with."""
     import xdog.agent.agent as agent_module
-    from xdog.flow.tools import default_registry
+    from xdog.flow.tools import default_repo
 
     monkeypatch.setattr(agent_module, "Agent", _CapturingAgent)
     _CapturingAgent.seen = {}
@@ -70,7 +70,7 @@ async def _tool_ctx_for(
 
     runner = SdkRunner(
         stream_fn_factory=lambda _m: object(),  # type: ignore[arg-type,return-value]
-        tool_registry=default_registry() if node_tools else ToolRegistry(),
+        tool_repo=default_repo() if node_tools else ToolRepo(builtin=False),
         web_search_fn_factory=None,
         **runner_kwargs,
     )
@@ -131,7 +131,7 @@ async def test_confinement_survives_a_structured_node(
 
     runner = SdkRunner(
         stream_fn_factory=lambda _m: object(),  # type: ignore[arg-type,return-value]
-        tool_registry=ToolRegistry(),
+        tool_repo=ToolRepo(builtin=False),
         web_search_fn_factory=None,
         confine_to=[workspace],
     )
@@ -759,7 +759,7 @@ async def test_a_structured_node_keeps_its_briefing(monkeypatch: Any, tmp_path: 
     _CapturingAgent.prompt_seen = ""
     runner = SdkRunner(
         stream_fn_factory=lambda _m: object(),  # type: ignore[arg-type,return-value]
-        tool_registry=ToolRegistry(),
+        tool_repo=ToolRepo(builtin=False),
         web_search_fn_factory=None,
         workspace=workspace,
     )
@@ -863,7 +863,7 @@ def test_a_node_can_name_a_skill_and_both_engines_render_it(monkeypatch: Any, tm
     assert wf.nodes[0].skills == ("flow",)
 
     source = generate(wf)
-    assert "skills=_skill_manager()" in source and "active_skills=skills" in source, (
+    assert "skills=_skill_repo()" in source and "active_skills=skills" in source, (
         "the compiled engine hands a manager and slugs to the Agent, and places nothing"
     )
     assert "skills=('flow',)" in source, "with this node's skills"

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from xdog.agent import Agent, AgentConfig
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.ai.types import AssistantMessage, DoneEvent, ImageContent, Model, TextContent, UserMessage
 from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.channels.tui.tui_app import ChatApp
@@ -38,12 +38,12 @@ def test_coding_sends_and_persists_real_typed_images_not_path_placeholders(tmp_p
         return EventStream.from_async_generator(generate(), result_future=future)
 
     agent = Agent(stream_fn,
-                  skills=SkillManager(tmp_path / "skills"),
+                  skills=SkillRepo().register(directory=tmp_path / 'skills', name="shared"),
                   config=AgentConfig(model="test/vision"))
     manager = SessionManager(tmp_path / "sessions")
     session = AgentSession(agent=agent, session_data=manager.create_session(model="test/vision", working_dir=tmp_path),
                            session_manager=manager, settings=SettingsManager(global_path=tmp_path / "none"),
-                           tool_registry=None, bash=None, working_dir=tmp_path,
+                           tool_repo=None, bash=None, working_dir=tmp_path,
                            model_info=Model(id="test/vision", input=("text", "image")))
     session._maybe_compact = AsyncMock()
     ui = InteractiveMode(session)
@@ -219,12 +219,12 @@ def test_cli_initial_image_is_typed_and_print_mode_rejects_unknown_capability(tm
     assert build_initial_message(files=(path,), images=images) is None
     assert len(images) == 1 and base64.b64decode(images[0].data) == PNG
     agent = Agent(lambda *args: pytest.fail("Rejected input must not invoke the provider"),
-                  skills=SkillManager(tmp_path / "skills"),
+                  skills=SkillRepo().register(directory=tmp_path / 'skills', name="shared"),
                   config=AgentConfig(model="test/text"))
     manager = SessionManager(tmp_path / "sessions")
     session = AgentSession(agent=agent, session_data=manager.create_session(model="test/text", working_dir=tmp_path),
                            session_manager=manager, settings=SettingsManager(global_path=tmp_path / "none"),
-                           tool_registry=None, bash=None, working_dir=tmp_path)
+                           tool_repo=None, bash=None, working_dir=tmp_path)
     assert asyncio.run(run_print_mode(session, "", images=tuple(images))) == 1
     assert "image" in capsys.readouterr().err.lower()
 

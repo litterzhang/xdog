@@ -8,49 +8,18 @@ import contextlib
 import importlib
 import inspect
 import sys
-from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from xdog.agent import ToolRepo
 from xdog.agent.core import AgentTool, AgentToolResult
+from xdog.agent.tools import create_submit_result_tool
 from xdog.ai.types import TextContent
 from xdog.flow.errors import WorkflowValidationError
 
 if TYPE_CHECKING:
     from xdog.flow.models import WorkflowDef
-
-
-class ToolRegistry:
-    """Registry mapping tool names to :class:`~agent.core.AgentTool` objects."""
-
-    def __init__(self) -> None:
-        from xdog.agent.tools import ToolRegistry as AgentToolRegistry
-
-        self._registry = AgentToolRegistry(builtins=False)
-
-    def register(self, tool: AgentTool) -> None:
-        """Register *tool* by its name (replaces any existing entry)."""
-        self._registry.replace_source(tool.name, (tool,))
-
-    def get(self, name: str) -> AgentTool:
-        """Return the tool registered under *name*.
-
-        Raises :class:`~flow.errors.WorkflowValidationError` if unknown.
-        """
-        try:
-            return next(tool for tool in self._registry.tools if tool.name == name)
-        except StopIteration:
-            known = ", ".join(sorted(tool.name for tool in self._registry.tools)) or "<none>"
-            raise WorkflowValidationError(f"Unknown tool {name!r}. Known tools: {known}") from None
-
-    def names(self) -> frozenset[str]:
-        """Return the set of registered tool names."""
-        return frozenset(tool.name for tool in self._registry.tools)
-
-    def resolve(self, names: Iterable[str]) -> tuple[AgentTool, ...]:
-        """Resolve an iterable of tool names to a tuple of tools."""
-        return tuple(self.get(n) for n in names)
 
 
 # ---------------------------------------------------------------------------
@@ -84,33 +53,13 @@ _ECHO_TOOL = AgentTool(
 )
 
 
-def default_registry() -> ToolRegistry:
-    """Return a fresh :class:`ToolRegistry` pre-loaded with built-in tools.
+def default_repo() -> ToolRepo:
+    """Return SDK defaults plus Flow's echo and structured-result tools.
 
-    Includes the demo ``echo`` tool plus the SDK default tools and the
-    explicitly selected ``submit_result`` factory.  This means a workflow node can declare
-    ``"tools": ["filesystem"]`` and have it resolve out of the box — including
-    from the ``xdog-flow run`` CLI, which uses this registry by default.
+    Every execution owns fresh actual SDK tools. Packaged skills remain
+    discoverable without activating their bodies.
     """
-    registry = ToolRegistry()
-    registry.register(_ECHO_TOOL)
-    for tool in _agent_builtin_tools():
-        registry.register(tool)
-    return registry
-
-
-def _agent_builtin_tools() -> tuple[AgentTool, ...]:
-    """Create independent SDK default tools plus Flow's structured result tool.
-
-    Imported lazily; the execution owner creates its own SDK registry. No
-    import-order registration or process-global runtime is consulted.
-    """
-    try:
-        from xdog.agent.tools import ToolRegistry as AgentToolRegistry
-    except ImportError:  # pragma: no cover - agent always present in the workspace
-        return ()
-    registry = AgentToolRegistry()
-    return tuple(registry.create_tools(names=(*registry.default_names(), "submit_result")))
+    return ToolRepo(_ECHO_TOOL, create_submit_result_tool())
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +109,7 @@ def load_tool_ref(ref: str, base_dir: Path | None = None) -> AgentTool:
     return coerce_tool(getattr(module, attr))
 
 
-def register_workflow_tools(wf: WorkflowDef, registry: ToolRegistry, base_dir: Path | None = None) -> None:
+def register_workflow_tools(wf: WorkflowDef, registry: ToolRepo, base_dir: Path | None = None) -> None:
     """Load every tool in *wf*'s manifest and register it into *registry*.
 
     Each ``(name, ref)`` pair is loaded via :func:`load_tool_ref` and registered
@@ -169,7 +118,10 @@ def register_workflow_tools(wf: WorkflowDef, registry: ToolRegistry, base_dir: P
     """
     for name, ref in wf.tool_refs:
         tool = load_tool_ref(ref, base_dir)
-        registry.register(replace(tool, name=name))
+        renamed = replace(tool, name=name)
+        if name in registry.names():
+            registry.unregister(name)
+        registry.register(renamed)
 
 
 def bind_tool(obj: object, name: str) -> AgentTool:
@@ -256,7 +208,7 @@ def _child_dirs(base_dir: Path) -> list[Path]:
 class ToolInfo:
     """A descriptive snapshot of a tool for read-only display.
 
-    ``origin`` is ``"builtin"`` for tools from :func:`default_registry` or
+    ``origin`` is ``"builtin"`` for tools from :func:`default_repo` or
     ``"custom"`` for tools declared in a workflow's ``tool_refs`` manifest.
     ``source`` is the ``execute`` callable's source when retrievable, else
     ``None``.
@@ -283,14 +235,14 @@ def _tool_source(tool: AgentTool) -> str | None:
 def describe_tools(wf: WorkflowDef, base_dir: Path | None = None) -> tuple[ToolInfo, ...]:
     """Return :class:`ToolInfo` for every built-in and manifest tool of *wf*.
 
-    Built-ins come from :func:`default_registry`; custom tools are loaded from
+    Built-ins come from :func:`default_repo`; custom tools are loaded from
     the workflow's ``tool_refs`` (via :func:`load_tool_ref`, *base_dir*-aware).
     A custom tool that fails to load is skipped rather than raising, so the
     builder's read-only view degrades gracefully.
     """
     infos: list[ToolInfo] = []
-    for name in sorted(default_registry().names()):
-        tool = default_registry().get(name)
+    for name in sorted(default_repo().names()):
+        tool = default_repo().get(name)
         infos.append(
             ToolInfo(
                 name=name,

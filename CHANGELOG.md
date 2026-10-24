@@ -8,7 +8,26 @@ project follows [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Nothing yet.
+---
+
+## [2.5.0] — 2026-10-25
+
+### Changed
+
+- **Breaking SDK change:** replace ToolRegistry/SkillManager with host-owned
+  ToolRepo/SkillRepo. Register actual tool instances and explicit skill directories;
+  select independent subsets without cloning executors or granting authority.
+  SkillRepo discovers packaged skills by default; bodies remain opt-in.
+- Select installed capabilities before opening resources. CapabilitySet accepts
+  repositories, supports select/open, and assembles native Agents with additive
+  tool_repo/skill_repo contributions, without tool/skill enable lists. Automatic
+  read-only skill readers remain per-Agent and preserve host permission hooks.
+- Migrate Coding, Claw, Flow, Eyes, Goal, code generation, examples and artifact
+  checks to the shared repos. Remove retired SDK modules, factories and implicit
+  source replacement; MCP retains its separate registry and execution boundary.
+- Refresh package documentation and the Agent SDK quick start. Reorganize the
+  site homepage around use cases, getting started, workflow and SDK examples,
+  while retaining the existing hack.css theme and shared layout.
 
 ---
 
@@ -844,7 +863,8 @@ Also in 1.0:
   **model cannot unload one**, since a skill is often a constraint and the
   constrained party should not hold the release.
 
-[Unreleased]: https://github.com/litterzhang/xdog/compare/v2.4.9...HEAD
+[Unreleased]: https://github.com/litterzhang/xdog/compare/v2.5.0...HEAD
+[2.5.0]: https://github.com/litterzhang/xdog/compare/v2.4.9...v2.5.0
 [2.4.9]: https://github.com/litterzhang/xdog/compare/v2.4.8...v2.4.9
 [1.1.0]: https://github.com/litterzhang/xdog/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/litterzhang/xdog/releases/tag/v1.0.0

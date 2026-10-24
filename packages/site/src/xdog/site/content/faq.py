@@ -46,7 +46,7 @@ FAQS: list[dict[str, str]] = [
     {
         "q": "How do tools, MCP, capabilities and extensions differ?",
         "a": (
-            "Each host owns a ToolRegistry for ordinary/capability tools and a separate McpRegistry for MCP "
+            "Each host owns a ToolRepo for ordinary/capability tools and a separate McpRegistry for MCP "
             "connections. Agent merges the visible inventories in one permission-checked loop. Installed "
             "capabilities may contribute skills, tools, runtime resources and extension hooks. Extension "
             "workers retain hooks, commands, UI and providers; they no longer register model tools."

@@ -95,7 +95,7 @@ async def test_disabled_session_tool_is_not_advertised_or_implicitly_reenabled(c
     session = coding_session
     try:
         session.agent.set_active_tools([], expected_revision=session.agent.tool_selection_revision)
-        session.tool_registry.publish(session.agent)
+        session.tool_repo.publish(session.agent)
         session._rebuild_system_prompt()
         assert not session.agent.active_tools
         prompt = session.agent.state.system_prompt

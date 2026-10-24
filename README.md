@@ -67,6 +67,13 @@ uv run xdog-flow --help
 uv run xdog-eyes --help
 ```
 
+## Agent SDK · 嵌入自己的应用
+
+新 SDK 使用宿主自有的 `ToolRepo` / `SkillRepo`，支持注册、子集选择，以及先选择再打开
+Capability。传给 Agent 的 Repo 是附加合并；技能正文不默认激活。
+完整、无需凭据的运行示例见 [Agent Capability SDK quick start](packages/agent/README.md#capability-sdk-quick-start)。
+这些示例描述当前源码接口，使用已发布版本时请核对对应版本的文档。
+
 ## Coding and Claw · 两个应用
 
 ### Coding: interactive repository work
@@ -182,9 +189,21 @@ unknown effects are never automatically replayed. See the [Eyes guide](packages/
   ACP reminders; it is not another planner, reviewer, scheduler or Agent loop.
   Completed Goals remain current until explicit clear or a new Goal. Pause stops proactive
   reminders and the owned observation; task waits may continue on relevant changes.
-- Each host owns its `ToolRegistry`, a separate `McpRegistry`, approvals and child
+- Each host owns its `ToolRepo`, a separate `McpRegistry`, approvals and child
   runtime. Extension workers provide hooks, commands, UI and providers—not model
   tools. Child tools/skills and filesystem ceilings cannot exceed the actual parent.
+- SDK `ToolRepo()` creates actual bash/filesystem/current_time tools; `builtin=False`
+  starts empty. Register actual tools, select identity-preserving subsets, and
+  explicitly unregister before replacement. `SkillRepo()` discovers packaged
+  skills; `.register(directory=path, name="host")` adds a source without activating
+  bodies. Conflicting names fail rather than silently overriding another source.
+- SDK hosts use `CapabilitySet("application", tool_repo=..., skill_repo=...)`
+  `.select(("flow",)).open()` to open only selected providers. Assembly
+  `create_agent(tool_repo=..., skill_repo=...)` adds repositories by union; an
+  empty supplemental selection cannot remove capability contributions. The
+  read-only `skill` tool exposes instructions on demand; native Agent still
+  accepts `tools`/`skills`. Flow CLI execution does not inherit host sandbox or
+  approval hooks. See the [offline SDK example](docs/sdk-capability-assembly.md).
 - SDK snapshots keep structured history and serializable state, not clients,
   credentials, callables, connections or host authority. Restore needs explicit
   live bindings, starts no model call and does not replay uncertain tool effects.

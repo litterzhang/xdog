@@ -271,7 +271,7 @@ def test_generate_with_tools() -> None:
         default_model="claude-3-haiku",
     )
     src = generate(wf)
-    assert "_REGISTRY.resolve(" in src
+    assert "_REGISTRY.select(" in src
     assert '"echo"' in src
     ok, msg = _ruff_clean(src)
     assert ok, f"ruff failed:\n{msg}"
@@ -835,11 +835,13 @@ def _make_tool_manifest_wf() -> WorkflowDef:
 def test_generate_tool_manifest_registers_and_imports() -> None:
     src = generate(_make_tool_manifest_wf())
     assert "from mytools import make_reverse as _tool_0" in src
-    # default_registry / bind_tool are inlined into the module, not imported from flow.
-    assert "def default_registry" in src and "def bind_tool" in src
+    # default_repo / bind_tool are inlined into the module, not imported from flow.
+    assert "def default_repo" in src and "def bind_tool" in src
     assert "from flow.tools import" not in src
-    assert "_REGISTRY.register(bind_tool(_tool_0, 'reverse'))" in src
-    assert '_REGISTRY.resolve(("reverse", "filesystem",))' in src
+    assert "_manifest_tool_0 = bind_tool(_tool_0, 'reverse')" in src
+    assert "_REGISTRY.unregister('reverse')" in src
+    assert "_REGISTRY.register(_manifest_tool_0)" in src
+    assert '_REGISTRY.select(("reverse", "filesystem",)).tools' in src
 
 
 def test_generate_tool_manifest_ruff_clean() -> None:
@@ -850,7 +852,7 @@ def test_generate_tool_manifest_ruff_clean() -> None:
 def test_generate_no_manifest_unchanged_registry_line() -> None:
     """Workflows without a manifest keep the bare registry line (no extra imports)."""
     src = generate(_make_linear_wf())
-    assert "_REGISTRY = default_registry()\n" in src
+    assert "_REGISTRY = default_repo()\n" in src
     # No custom-tool registration is emitted without a manifest.
     assert "bind_tool(_tool_" not in src
     assert "from flow.tools import" not in src
@@ -1146,9 +1148,9 @@ async def test_generate_output_schema_parity_with_interpreter() -> None:
 async def test_generated_module_does_not_import_flow_internal() -> None:
     """The generated module never imports the flow package at all.
 
-    errors / coerce / runtime AND the tool registry (default_registry / bind_tool /
-    ToolRegistry) are inlined into the module source, so a generated workflow is
-    self-contained with respect to the flow package.
+    Flow-owned errors / coerce / runtime and tool helpers (default_repo /
+    bind_tool) are inlined. SDK ToolRepo is imported, never copied, so a
+    generated workflow is self-contained with respect to the flow package.
     """
     import types
 
@@ -1181,7 +1183,7 @@ async def test_generated_module_does_not_import_flow_internal() -> None:
     assert "class RuntimeContext" in src
     # This is a SCRIPT-ONLY workflow, so the SDK tool registry + agent/ai imports
     # are omitted (only an SDK agent node needs them); see docs/cli-agent.md.
-    assert "def default_registry" not in src and "class ToolRegistry" not in src
+    assert "def default_repo" not in src and "class ToolRepo" not in src
     assert "import ai" not in src and "from agent" not in src
 
     # And the inlined coercion actually works end to end (41 -> "42").
@@ -1980,3 +1982,36 @@ def _plain_text_stream_fn(text: str) -> object:
         return stream
 
     return _fn
+
+
+async def test_manifest_builtin_override_uses_sdk_repo_in_both_engines() -> None:
+    """Generated output copies Flow helpers, never the SDK registry implementation."""
+    from xdog.agent import ToolRepo
+    from xdog.flow.tools import default_repo, register_workflow_tools
+
+    wf = WorkflowDef(
+        name="manifest-override", provider="offline", entry="n",
+        nodes=(NodeDef(id="n", model="offline", tools=("echo", "filesystem")),), edges=(),
+        tool_refs=(("echo", "mytools:make_reverse"),),
+    )
+    fixtures = Path(__file__).parent / "fixtures"
+    interpreted = default_repo()
+    register_workflow_tools(wf, interpreted, fixtures)
+    module = types.ModuleType("manifest_override_generated")
+    sys.path.insert(0, str(fixtures))
+    try:
+        source = generate(wf)
+        exec(compile(source, "<manifest-override>", "exec"), module.__dict__)  # noqa: S102
+    finally:
+        sys.path.remove(str(fixtures))
+    generated = module.__dict__["_REGISTRY"]
+    assert type(interpreted) is type(generated) is ToolRepo
+    assert "class ToolRepo" not in source
+    assert generated.names() == interpreted.names()
+    for repo in (interpreted, generated):
+        tool = repo.get("echo")
+        assert repo.select(("echo",)).tools[0] is tool
+        assert tool.description == "Reverse the given text."
+        assert tool.execute is not None
+        result = await tool.execute("manifest", {"text": "abc"})
+        assert result.content[0].text == "cba"

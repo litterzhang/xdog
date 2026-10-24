@@ -18,7 +18,7 @@ from xdog.claw.core.runtime.child_store import ChildStore
 from xdog.claw.core.types import SessionMeta
 
 if TYPE_CHECKING:
-    from xdog.agent.skills.manager import SkillManager
+    from xdog.agent.skills import SkillRepo
 
 
 @dataclass(frozen=True)
@@ -99,7 +99,7 @@ def history(store: TranscriptStore, identifier: str) -> PreparedHistory:
 
 
 def read(store: TranscriptStore, meta: SessionMeta, workspace: Path, configured_model: str,
-         *, include_history: bool = True, skills: SkillManager | None = None,
+         *, include_history: bool = True, skills: SkillRepo | None = None,
          extension_root: Path, stream_fn: StreamFn) -> PreparedSession:
     with store._lock:
         model = store.get_model(meta.session_id)
@@ -134,7 +134,7 @@ def check(store: TranscriptStore, group: str, daily_hour: int, idle_seconds: int
 
 
 def prepare(store: TranscriptStore, group: str, workspace: Path, configured_model: str,
-            expected: SessionMeta | None, *, reset: bool, skills: SkillManager | None = None,
+            expected: SessionMeta | None, *, reset: bool, skills: SkillRepo | None = None,
             extension_root: Path, stream_fn: StreamFn) -> PreparedSession:
     with store._lock:
         if store.get_active_session(group) != expected:

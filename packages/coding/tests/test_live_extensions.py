@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 
 from xdog.agent import Agent, AgentConfig
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.ai.types import AssistantMessage, DoneEvent, TextContent, ToolCall
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core.agent_session import AgentSession
@@ -47,12 +47,12 @@ def create(tmp_path, mode="ask", project_only=False):
         return EventStream.from_async_generator(generate(), result_future=future)
     store = SessionManager(tmp_path / "sessions")
     session = AgentSession(agent=Agent(stream,
-                                       skills=SkillManager(tmp_path / "skills"),
+                                       skills=SkillRepo().register(directory=tmp_path / 'skills', name="shared"),
                                        config=AgentConfig(model="test/model"),
                                        tools=get_default_tools(tmp_path), tool_ctx={"fs_workspace": str(tmp_path)}),
                            session_data=store.create_session(model="test/model", working_dir=tmp_path),
                            session_manager=store, settings=SettingsManager(global_path=settings, project_dir=tmp_path),
-                           working_dir=tmp_path, tool_registry=None, bash=None, permissions=PermissionManager(mode))
+                           working_dir=tmp_path, tool_repo=None, bash=None, permissions=PermissionManager(mode))
     return session, calls, marker
 
 

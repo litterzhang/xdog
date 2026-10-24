@@ -20,7 +20,7 @@ async def test_multiple_compactions_retain_full_history_links_and_return_heads(t
     session = AgentSession(agent=Agent(stream, config=AgentConfig(model='offline/model', context_window=4000)),
         session_data=manager.create_session(working_dir=tmp_path), session_manager=manager,
         settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-        tool_registry=None, bash=None)
+        tool_repo=None, bash=None)
     original = []
     for index in range(6):
         original.extend([UserMessage(content=f'original user {index} ' + 'x' * 2000),
@@ -62,7 +62,7 @@ async def test_unsafe_recovery_tail_retained_but_not_automatically_resumed(tmp_p
     session = AgentSession(agent=Agent(stream, config=AgentConfig(model='offline/model', context_window=4000)),
         session_data=manager.create_session(working_dir=tmp_path), session_manager=manager,
         settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-        tool_registry=None, bash=None)
+        tool_repo=None, bash=None)
     original = [UserMessage(content='old ' + 'x' * 6000), AssistantMessage(content=(TextContent(text='old answer'),)),
                 UserMessage(content='latest'), AssistantMessage(content=(ToolCall(id='pending', name='read'),),
                                                                stop_reason='aborted')]

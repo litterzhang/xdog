@@ -24,7 +24,7 @@ def app(tmp_path: Path):
     session = AgentSession(agent=Agent(stream, config=AgentConfig(model='offline/model')),
         session_data=manager.create_session(working_dir=tmp_path), session_manager=manager,
         settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-        tool_registry=None, bash=None, permissions=PermissionManager('deny'))
+        tool_repo=None, bash=None, permissions=PermissionManager('deny'))
     session.agent.replace_messages([UserMessage(content='ORIGINAL-QUESTION'),
         AssistantMessage(content=(TextContent(text='ORIGINAL-ANSWER'),))])
     session._persist()

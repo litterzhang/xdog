@@ -1354,7 +1354,7 @@ def _validate_workflow_into(
 
     # Validate the custom-tool manifest and build the set of resolvable tool
     # names (built-ins + manifest keys) so unknown node tool names fail fast.
-    from xdog.flow.tools import default_registry
+    from xdog.flow.tools import default_repo
 
     manifest_names: set[str] = set()
     for tname, ref in wf.tool_refs:
@@ -1367,7 +1367,7 @@ def _validate_workflow_into(
                 hint="Left of ':' is an importable module, right of it a callable in that module.",
             )
         manifest_names.add(tname)
-    known_tools = default_registry().names() | manifest_names
+    known_tools = default_repo().names() | manifest_names
 
     for node in wf.nodes:
         with collector.item(node=node.id):

@@ -1,5 +1,11 @@
 # Common medium-level skills hub
 
+> **Historical / superseded SDK interface — 2026-10-24:** Historical package-layout proposal: old SkillManager naming below predates SkillRepo; this is not the current SDK API.
+> Current integration uses ToolRepo / SkillRepo, explicit registration and provider
+> selection before open; see [SDK capability assembly](../../sdk-capability-assembly.md).
+> Old names and result counts are retained as evidence, not compatibility aliases.
+
+
 ## Intent and boundaries
 
 User requests: ignore/delete local .claude state, verify Eyes has Flow-equivalent

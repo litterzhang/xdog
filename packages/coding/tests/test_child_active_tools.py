@@ -32,7 +32,7 @@ async def test_child_model_and_executor_never_regain_parent_unselected_tools(tmp
         assert parent.agent.active_tool_selection == tuple(selection)
         assert not parent.children.snapshots
         if host == 'coding':
-            assert not parent.children.tool_limits and not parent.children.runtime.tool_registries
+            assert not parent.children.tool_limits and not parent.children.runtime.tool_repos
         else:
             assert not parent.children.grants and not parent.children.scoped_tools
             assert not parent.children.scope_owners and not parent.children.skill_grants
@@ -62,7 +62,7 @@ async def test_child_capture_rejects_profile_outside_parent_selection_before_wor
                 await admission
         assert not parent.children.snapshots
         if host == 'coding':
-            assert not parent.children.tool_limits and not parent.children.runtime.tool_registries
+            assert not parent.children.tool_limits and not parent.children.runtime.tool_repos
         else:
             assert not parent.children.grants and not parent.children.scoped_tools
             assert not parent.children.scope_owners and not parent.children.skill_grants

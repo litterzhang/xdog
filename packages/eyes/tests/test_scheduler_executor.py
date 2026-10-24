@@ -220,7 +220,7 @@ def test_scheduler_evidence_is_bounded_without_fabricating_file_paths():
 
 
 async def test_scheduler_enqueue_survives_no_owner_then_uses_existing_sdk_batch(
-    tmp_path, observer_data, host_skill_manager, assert_host_goal_discoverable, observers,
+    tmp_path, observer_data, host_skill_repo, assert_host_goal_discoverable, observers,
 ):
     import tempfile
     from pathlib import Path
@@ -269,10 +269,10 @@ async def test_scheduler_enqueue_survives_no_owner_then_uses_existing_sdk_batch(
             assert row.status == 'pending' and not calls
             assert row.message.evidence[0]['type'] == 'scheduler.due'
             assert not manager.load_session(session_data.session_id).messages
-            session = AgentSession(agent=Agent(model, config=AgentConfig(model='test'), skills=host_skill_manager),
+            session = AgentSession(agent=Agent(model, config=AgentConfig(model='test'), skills=host_skill_repo),
                 session_data=manager.load_session(session_data.session_id), session_manager=manager,
                 settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-                bash=None, tool_registry=None)
+                bash=None, tool_repo=None)
             response = await session.send_message('Process the retained scheduled observation')
             assert response.content == (TextContent(text='Timed review complete'),)
             assert len(calls) == 1 and len(calls[0][1].messages) == 2

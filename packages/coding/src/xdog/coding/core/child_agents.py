@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from xdog.agent import Agent, AgentConfig, AgentMessage, BeforeToolCallContext, BeforeToolCallResult
+from xdog.agent import Agent, AgentConfig, AgentMessage, BeforeToolCallContext, BeforeToolCallResult, ToolRepo
 from xdog.agent.access import AccessScope, read_only_call
 from xdog.agent.async_work import run_owned
 from xdog.agent.capabilities.children import ChildPort
@@ -26,10 +26,9 @@ from xdog.agent.children import RESERVED_TOOLS, ChildSpec, child_prompt
 from xdog.agent.core import AgentTool, AgentToolResult, StreamFn, ToolExecutionMode
 from xdog.agent.cross_loop import settle_on
 from xdog.agent.mcp import McpRegistry
-from xdog.agent.skills.manager import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.agent.skills.tool import _Reader
 from xdog.agent.tool_effects import ToolEffect
-from xdog.agent.tools import ToolRegistry
 from xdog.agent.tools.filesystem_constraints import (
     capture_filesystem_roots as _filesystem_roots,
 )
@@ -148,7 +147,7 @@ class CodingChildren:
             persist_admission=self.store.save_admission, archive_compaction=self.store.archive_compaction,
                                           forget=self.store.forget, finalize=self.finish,
             on_event=self.extensions.event, records=records, presets=presets)
-        self.tool_registries = self.runtime.tool_registries
+        self.tool_repos = self.runtime.tool_repos
         self.mcp_registries = self.runtime.mcp_registries
         self.capabilities.runtime = self.runtime
         self.runtime.diagnostic = diagnostic
@@ -210,7 +209,7 @@ class CodingChildren:
                     and original._skills is manager and not session.extensions._closed)
         if not live():
             raise ValueError("Original Coding parent skill owner is unavailable")
-        if type(manager) is SkillManager and "list_skills" not in vars(manager):
+        if type(manager) is SkillRepo and "list_skills" not in vars(manager):
             listed = _Reader(manager, None, 262144, 512).listing(threading.Event())
             if listed["unavailable"] or listed["truncated"]:
                 raise ValueError("Parent skill catalog is unsafe/unavailable or exceeds selection capacity")
@@ -510,8 +509,8 @@ class CodingChildren:
                             if any(source is actual for actual in state.mcp_tools))
         local_proxies = tuple(proxy for proxy in delegated_tools
                               if not any(proxy is actual for actual in mcp_proxies))
-        registry = ToolRegistry(builtins=False)
-        self.tool_registries[spec.id] = registry
+        registry = ToolRepo(*local_proxies, *role_tools, builtin=False)
+        self.tool_repos[spec.id] = registry
         mcp_registry = McpRegistry.from_tools(mcp_proxies)
         self.mcp_registries[spec.id] = mcp_registry
 
@@ -527,14 +526,19 @@ class CodingChildren:
             ceiling = self.runtime.tool_selections.get(spec.id)
             if ceiling is not None:
                 selected = tuple(tool for tool in selected if tool.name in ceiling)
+            replacement = ToolRepo(*(tool for tool in selected
+                if not any(tool is proxy for proxy in mcp_proxies)), builtin=False)
+            previous_mcp = tuple(mcp_registry.tools())
             mcp_registry.replace_delegated_tools(tuple(tool for tool in selected
                 if any(tool is proxy for proxy in mcp_proxies)))
-            registry.replace_source("inventory", tuple(tool for tool in selected
-                if not any(tool is proxy for proxy in mcp_proxies)))
-            registry.publish(agent)
+            try:
+                replacement.publish(agent)
+            except BaseException:
+                mcp_registry.replace_delegated_tools(previous_mcp)
+                raise
+            self.tool_repos[spec.id] = replacement
             agent.sync_mcp_tools()
 
-        registry.replace_source("inventory", (*local_proxies, *role_tools))
         async def before(ctx: BeforeToolCallContext, cancel: asyncio.Event | None = None
                          ) -> BeforeToolCallResult | None:
             nonlocal last_authority
@@ -634,10 +638,10 @@ class CodingChildren:
                 try:
                     publish_tools()
                 except (ValueError, RuntimeError):
-                    mcp_registry.replace_delegated_tools(())
-                    registry.replace_source("inventory", ())
-                    registry.publish(agent)
-                    agent.sync_mcp_tools()  # Preserve the already completed effect result.
+                    # Keep the last valid inventory/selection and the completed
+                    # effect result. Original parent admission still fences every
+                    # later execution; failed publication is not a new grant.
+                    pass
 
         agent: Agent
         async def context(messages: list[AgentMessage]) -> list[AgentMessage]:
@@ -713,7 +717,7 @@ class CodingChildren:
         return agent
 
     async def finish(self, spec: ChildSpec) -> None:
-        self.tool_registries.pop(spec.id, None)
+        self.tool_repos.pop(spec.id, None)
         mcp = self.mcp_registries.pop(spec.id, None)
         self.snapshots.pop(spec.id, None)
         self.parents.pop(spec.id, None)

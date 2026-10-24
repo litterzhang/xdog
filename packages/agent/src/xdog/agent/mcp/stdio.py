@@ -76,7 +76,7 @@ class StdioClient:
                 response = await self.request("initialize", {
                     "protocolVersion": LEGACY_VERSIONS[0],
                     "capabilities": self.root_capability.advertised(),
-                    "clientInfo": {"name": "xdog", "version": "2.4.9"},
+                    "clientInfo": {"name": "xdog", "version": "2.5.0"},
                 })
                 chosen = response.get("protocolVersion")
                 if chosen not in LEGACY_VERSIONS:
@@ -140,7 +140,7 @@ class StdioClient:
         if self.modern or version:
             payload["_meta"] = {**payload.get("_meta", {}),
                                 "io.modelcontextprotocol/protocolVersion": version or self.version,
-                                "io.modelcontextprotocol/clientInfo": {"name": "xdog", "version": "2.4.9"},
+                                "io.modelcontextprotocol/clientInfo": {"name": "xdog", "version": "2.5.0"},
                                 "io.modelcontextprotocol/clientCapabilities": self.inputs.advertised()}
         future = asyncio.get_running_loop().create_future()
         self._pending[identifier] = future

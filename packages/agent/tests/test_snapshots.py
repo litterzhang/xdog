@@ -484,9 +484,9 @@ def test_capture_current_agent_skill_selection_without_rereading_files() -> None
 
 
 def test_explicit_trusted_manager_rebinding_and_drift(tmp_path: Path) -> None:
-    from xdog.agent.skills.manager import SkillManager
+    from xdog.agent.skills.repo import SkillRepo
 
-    manager = SkillManager(tmp_path, packaged={})
+    manager = SkillRepo(builtin=False, packaged={}).register(directory=tmp_path, name="shared")
     manager.save_skill("guard", "Original session instructions", name="guard")
     initial = manager.load_skill("guard")
     assert initial is not None

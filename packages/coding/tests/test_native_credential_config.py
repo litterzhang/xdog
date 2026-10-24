@@ -24,7 +24,7 @@ def session(tmp_path, backend):
                                     config=AgentConfig(model='offline/model')),
         session_data=manager.create_session(model='offline/model', working_dir=tmp_path), session_manager=manager,
         settings=SettingsManager(global_path=settings, project_dir=tmp_path), working_dir=tmp_path,
-        tool_registry=None, bash=None)
+        tool_repo=None, bash=None)
 
 
 async def test_global_native_selection_survives_project_override_and_real_session_staged_restore(tmp_path, monkeypatch):

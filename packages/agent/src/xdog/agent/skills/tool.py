@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from xdog.agent.core import AgentTool, AgentToolResult
-from xdog.agent.skills.manager import SkillManager, _skill_from_text, is_valid_skill_name
 from xdog.agent.skills.render import render_skill_body
+from xdog.agent.skills.repo import SkillRepo, _skill_from_text, is_valid_skill_name
 from xdog.agent.skills.types import Skill
 from xdog.ai.types import TextContent
 
@@ -57,12 +57,15 @@ async def _read_owned(read: Callable[[threading.Event], T], cancel: asyncio.Even
 
 
 class _Reader:
-    def __init__(self, manager: SkillManager, allowed: frozenset[str] | None, maximum: int, count: int) -> None:
+    def __init__(self, manager: SkillRepo, allowed: frozenset[str] | None, maximum: int, count: int) -> None:
         # Capture application-selected roots, not model-supplied paths. These private
         # manager fields are shared implementation, not a new public configuration API.
-        self.roots = tuple(root.resolve() for root in (manager._group_dir, manager._shared_dir) if root is not None)
+        self.roots = tuple(root.resolve() for root in manager._directories.values())
         self.packaged = {slug: root.resolve() for slug, root in manager._packaged.items()}
-        self.allowed = allowed
+        self.fixed = dict(manager._fixed)
+        self.references = dict(manager._references)
+        selected = manager._selection
+        self.allowed = (allowed if selected is None else selected if allowed is None else allowed & selected)
         self.maximum = maximum
         self.count = count
 
@@ -72,9 +75,15 @@ class _Reader:
     def load(self, slug: str, stopped: threading.Event) -> Skill:
         if not self.permitted(slug):
             raise ValueError("Skill slug is invalid or not allowed")
+        if slug in self.fixed:
+            return self.fixed[slug]
         candidates: list[tuple[Path, str | None, bool]] = [(root, slug, False) for root in self.roots]
         if slug in self.packaged:
             candidates.append((self.packaged[slug], None, True))
+        if slug in self.references:
+            directory, packaged = self.references[slug]
+            candidates.append((directory, None, packaged))
+        loaded: Skill | None = None
         for root, child, packaged in candidates:
             if stopped.is_set():
                 raise InterruptedError("Skill read cancelled")
@@ -111,13 +120,18 @@ class _Reader:
                     data = stream.read(self.maximum + 1)
                     if len(data) > self.maximum:
                         raise ValueError("Skill exceeds the configured byte limit")
-                    return _skill_from_text(directory, data.decode("utf-8"), slug=slug, packaged=packaged)
+                    current = _skill_from_text(directory, data.decode("utf-8"), slug=slug, packaged=packaged)
+                    if loaded is not None and loaded != current:
+                        raise ValueError(f'Duplicate skill: {slug}')
+                    loaded = current
             except FileNotFoundError:
                 continue  # A missing tier may resolve below; an unsafe tier may not.
+        if loaded is not None:
+            return loaded
         raise ValueError("Skill is not available in the configured catalog")
 
     def listing(self, stopped: threading.Event) -> dict[str, Any]:
-        slugs = set(self.packaged)
+        slugs = set(self.packaged) | set(self.fixed) | set(self.references)
         scanned = 0
         for root in self.roots:
             try:
@@ -155,7 +169,7 @@ class _Reader:
 
 
 def create_skill_tool(
-    manager: SkillManager,
+    manager: SkillRepo,
     *,
     allowed_slugs: Sequence[str] | None = None,
     max_skill_bytes: int = 256 * 1024,
@@ -164,8 +178,8 @@ def create_skill_tool(
     """Create an opt-in ``skill`` tool with list/load only.
 
     ``load`` returns instructions as a normal tool result; it does not activate,
-    unload, execute, or change permission policy. User/group/package precedence is
-    retained. Applications can restrict names with ``allowed_slugs`` (empty denies
+    unload, execute, or change permission policy. Source conflicts fail closed.
+    Applications can restrict names with ``allowed_slugs`` (empty denies
     all). Roots are captured at construction; create a new tool to reconfigure them.
     File bytes, catalog scan/count and rendered output are bounded. The host must
     trust the configured roots and skill text: this is not a hostile-code sandbox.

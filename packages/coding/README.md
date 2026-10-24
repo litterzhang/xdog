@@ -1179,20 +1179,27 @@ version upgrades.
 
 ### Host-owned SDK tools
 
-Coding sessions own an `xdog.agent.tools.ToolRegistry`; there is no mutable global
-registry or Coding-maintained list of default factory names. The same owner registry
-creates SDK defaults with `ToolContext(cwd=working_dir)` and assembles local/SDK
-injections, session inspection, child controls and installed Capability tools.
+Coding sessions own an `xdog.agent.ToolRepo`; there is no mutable global
+registry, factory API or Coding-maintained list of default tool names.
+`ToolRepo(cwd=working_dir)` creates real SDK default tools. Local/SDK injections,
+session inspection, child controls and installed Capability tools are validated in
+fresh `ToolRepo(*tools, builtin=False)` inventories before publication. Only a
+successful publication replaces the session's repository; failures retain the old
+inventory and explicit tool selection.
 MCP tools instead belong to an independent owner-held `McpRegistry`, bound through
 `Agent.set_mcp_registry`. Connection/schema/auth retirement uses `sync_mcp_tools`,
-not ordinary ToolRegistry sources. CapabilityAssembly still supplies live capabilities and effect metadata;
-publication goes through the session registry and preserves explicit tool selection.
-Empty selections stay empty, repeated identical publication is a no-op, and duplicate
-tool names fail before inventory replacement. Children have separate Coding-owned
-ToolRegistry instances for local proxies and capability tools, plus independent
-`McpRegistry.from_tools` bindings for delegated MCP proxies. MCP classification uses
-captured original parent tool identities, never a name prefix. Runtime ceilings
-narrow both inventories and later publication cannot restore excluded tools.
+not ordinary ToolRepo registration. CapabilityAssembly still supplies live capabilities
+and effect metadata. Empty selections stay empty, repeated identical publication is
+a no-op, and conflicting tool names fail before inventory replacement.
+Children have separate Coding-owned ToolRepo inventories for local proxies and
+capability tools, plus independent `McpRegistry.from_tools` bindings for delegated
+MCP proxies. MCP classification uses captured original parent tool identities, never
+a name prefix. Runtime ceilings narrow both inventories and later publication cannot
+restore excluded tools.
+
+Skills use `xdog.agent.skills.SkillRepo`. The host's shared directory is explicitly
+registered with `SkillRepo().register(directory=path, name="shared")`; installed
+packaged skills remain discoverable without creating execution or granting tools.
 
 `agent.local_tools` is the local assembly surface; `state.tools`/`active_tools`
 remain the merged local-plus-MCP view for model context, permissions, UI and child

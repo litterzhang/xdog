@@ -6,7 +6,7 @@ import threading
 
 import pytest
 from xdog.agent import Agent, AgentConfig, AgentContext, BeforeToolCallContext
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.ai.types import AssistantMessage, TextContent, ToolCall
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core.agent_session import AgentSession
@@ -29,12 +29,12 @@ def make_session(tmp_path, *, mode="ask", stream=None):
     store = SessionManager(tmp_path / "sessions")
     return AgentSession(
         agent=Agent(stream or default_stream,
-                    skills=SkillManager(tmp_path / "skills"),
+                    skills=SkillRepo().register(directory=tmp_path / 'skills', name="shared"),
                     config=AgentConfig(model="test/model"),
                     tools=get_default_tools(tmp_path), tool_ctx={"fs_workspace": str(tmp_path)}),
         session_data=store.create_session(model="test/model", working_dir=tmp_path), session_manager=store,
         settings=SettingsManager(global_path=tmp_path / "settings.json", project_dir=tmp_path),
-        tool_registry=None, bash=None, working_dir=tmp_path, permissions=PermissionManager(mode))
+        tool_repo=None, bash=None, working_dir=tmp_path, permissions=PermissionManager(mode))
 
 
 @pytest.fixture

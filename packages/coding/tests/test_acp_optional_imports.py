@@ -19,7 +19,7 @@ class Block(MetaPathFinder):
    raise ImportError('ACP deliberately absent')
 sys.meta_path.insert(0,Block())
 from xdog.agent import Agent,AgentConfig
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.ai.types import AssistantMessage
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core.agent_session import AgentSession
@@ -32,9 +32,9 @@ if sys.argv[2]=='True':
 root=Path(sys.argv[1]);manager=SessionManager(root/'sessions')
 def make():
  return AgentSession(agent=Agent(lambda *_:EventStream.empty(AssistantMessage()),
-  config=AgentConfig(model='test'),skills=SkillManager(root/'skills')),
+  config=AgentConfig(model='test'),skills=SkillRepo().register(directory=root / 'skills', name="shared")),
   session_data=manager.create_session(model='test',working_dir=root),session_manager=manager,
-  settings=SettingsManager(),tool_registry=None,bash=None,working_dir=root)
+  settings=SettingsManager(),tool_repo=None,bash=None,working_dir=root)
 session=make();session._resolve_selected_model=lambda _:None
 ui=InteractiveMode(session);ui._session_events.start()
 async def navigate():

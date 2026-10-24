@@ -28,7 +28,7 @@ or provider to configure.
 
 Install `xdog-flow` in the same Python environment as the host. It registers an
 `xdog.capabilities` entry point with **application** scope. Hosts discover the
-tool through capabilities and the packaged skill through SkillManager; there is
+tool through capabilities and the packaged skill through SkillRepo; there is
 no host-specific adapter. The skill body is activated explicitly, not injected
 by default. Registration and skill loading do not
 start a process or execute a workflow.

@@ -60,7 +60,7 @@ Installing `xdog-flow` registers its provider through `xdog.capabilities` with
 it through the generic installed-capability mechanism, without a Flow-specific
 adapter. The package declares `skill_names=("flow",)` and supplies the packaged skill
 and a single `flow` tool. A skill declaration advertises availability, not activation.
-The packaged skill is discoverable through SkillManager; its full body is loaded
+The packaged skill is discoverable through SkillRepo; its full body is loaded
 only when explicitly activated, not by capability registration. Registration,
 discovery and skill loading do not start processes or execute workflows. Flow has **no daemon**.
 
@@ -797,31 +797,32 @@ change — see [`docs/workspace-confinement.md`](../../docs/workspace-confinemen
 ## Per-node tools
 
 Agent nodes can declare a `"tools"` list.  Each name is resolved from the
-`ToolRegistry` at execution time:
+`ToolRepo` at execution time:
 
 ```jsonc
 {
   "id": "analyze",
   "type": "agent",
-  "tools": ["echo"],                 // resolved via ToolRegistry
+  "tools": ["echo"],                 // resolved via ToolRepo
   "system_prompt": "You are an analyst.",
   "prompt": "Analyse: {{prepped}}",
   "outputs": ["analysis"]
 }
 ```
 
-### ToolRegistry
+### ToolRepo
 
-Each executor creates a fresh Flow registry: the demo `echo` tool, the Agent
-SDK default factories (`bash`, `filesystem`, `current_time`), and the opt-in
-`submit_result` factory. A node's `tools` list selects its ordinary tools; the SDK
-runner injects structured submission when needed. Imports do not register a
+Each executor creates a fresh SDK `xdog.agent.ToolRepo`: actual default tools
+(`bash`, `filesystem`, `current_time`) plus Flow's demo `echo` and explicit
+`submit_result` tools. There is no separate Flow registry class. A node's `tools`
+list selects its ordinary tools; the SDK runner injects structured submission
+when needed. Imports do not register a
 mutable process-global inventory:
 
 ```python
-from xdog.flow.tools import default_registry
+from xdog.flow.tools import default_repo
 
-registry = default_registry()
+registry = default_repo()
 ```
 
 Register custom tools before calling `execute()`:
@@ -831,14 +832,30 @@ from xdog.agent.core import AgentTool
 from xdog.flow.executor import execute
 
 my_tool = AgentTool(name="my_tool", ...)
-registry = default_registry()
+registry = default_repo()
 registry.register(my_tool)
 
-result = await execute(wf, tool_registry=registry)
+result = await execute(wf, tool_repo=registry)
 ```
 
-The generated module calls `_REGISTRY.resolve(("tool_name",))` at runtime,
-so the same registry API applies to compiled workflows too.
+`ToolRepo(builtin=False)` starts empty. `register(*tools)` accepts actual tools
+and rejects different objects with the same name; replacement is explicit:
+
+```python
+registry.unregister("my_tool")
+registry.register(replacement_tool)
+```
+
+Workflow manifest keys remain authoritative: the interpreter and generated
+module both rename each manifest tool, then explicitly unregister any existing
+same-name tool before registering its replacement. Node tool lists use
+`registry.select(names).tools`, preserving actual executor identity.
+
+Generated SDK modules import the same SDK `ToolRepo`; they do not copy its
+implementation or import Flow for tool resolution. Only Flow-owned helpers
+such as `default_repo` and `bind_tool` are copied under the repository's
+`LICENSE-EXCEPTION.md` Generated Output Exception. SDK imports and portable
+vendored distributions retain their own licensing terms.
 
 ---
 

@@ -721,9 +721,8 @@ class ClawChildRuntime:
                 available = {tool.name for tool in agent.state.tools}
                 if allowed - available:
                     raise ValueError("Child tool selection is unavailable: " + ", ".join(sorted(allowed - available)))
-                from xdog.agent.tools import ToolRegistry
-                selection = ToolRegistry()
-                selection.replace_source("child", (tool for tool in agent.local_tools if tool.name in allowed))
+                from xdog.agent.tools import ToolRepo
+                selection = ToolRepo(*(tool for tool in agent.local_tools if tool.name in allowed), builtin=False)
                 if agent.mcp_registry is not None:
                     agent.mcp_registry.replace_delegated_tools(
                         tool for tool in agent.mcp_registry.tools() if tool.name in allowed)

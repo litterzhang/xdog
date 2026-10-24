@@ -1,5 +1,11 @@
 # 子 Agent：现状审计与宿主运行时边界设计
 
+> **Historical / superseded SDK interface — 2026-10-24:** Historical pre-implementation audit: the _skill_manager field and supervision modules below are retired; they are not current child APIs.
+> Current integration uses ToolRepo / SkillRepo, explicit registration and provider
+> selection before open; see [SDK capability assembly](sdk-capability-assembly.md).
+> Old names and result counts are retained as evidence, not compatibility aliases.
+
+
 日期：2026-10-21。审计基线：`ff653e44abb8279a456fbc60389186cdad0597fa`。
 本文保留实施前审计与设计依据，不代替实现验收。最终实现与验证见 `child-delegation-verification.md`；历史审计须与 HEAD 和当前实现区分。
 需求唯一计数源：`docs/child-delegation-requirements.json`（SA-01～SA-10）。

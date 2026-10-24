@@ -2,7 +2,7 @@
 
 import pytest
 from xdog.agent import Agent, AgentConfig
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.ai.types import AssistantMessage
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core.agent_session import AgentSession
@@ -16,11 +16,11 @@ def coding_session(tmp_path):
     data = manager.create_session(model="test", working_dir=tmp_path)
     value = AgentSession(
         agent=Agent(lambda *_: EventStream.empty(AssistantMessage(content=())), config=AgentConfig(model="test"),
-                    skills=SkillManager(tmp_path / "skills")),
+                    skills=SkillRepo().register(directory=tmp_path / 'skills', name="shared")),
         session_data=data,
         session_manager=manager,
         settings=SettingsManager(),
-        tool_registry=None,
+        tool_repo=None,
         bash=None,
         working_dir=tmp_path,
     )

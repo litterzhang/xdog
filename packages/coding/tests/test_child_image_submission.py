@@ -115,7 +115,7 @@ async def test_actual_app_recovery_rejects_old_context_and_reopens_only_current_
         session = AgentSession(agent=Agent(adapter, config=AgentConfig(model='offline/vision')),
             session_data=store.create_session(model='offline/vision', working_dir=tmp_path), session_manager=store,
             settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-            tool_registry=None, bash=None, permissions=PermissionManager('deny'))
+            tool_repo=None, bash=None, permissions=PermissionManager('deny'))
         ui = InteractiveMode(session)
     else:
         import xdog.claw.channels.tui.tui_app as module
@@ -189,7 +189,7 @@ async def test_initial_factory_failure_is_inspection_only_and_backend_backup_rem
         session = AgentSession(agent=Agent(adapter, config=AgentConfig(model='offline/vision')),
             session_data=store.create_session(model='offline/vision', working_dir=tmp_path), session_manager=store,
             settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-            tool_registry=None, bash=None, permissions=PermissionManager('deny'))
+            tool_repo=None, bash=None, permissions=PermissionManager('deny'))
         ui = InteractiveMode(session)
     else:
         config = ClawConfig(model='offline/vision', data_dir=str(tmp_path / 'data'),

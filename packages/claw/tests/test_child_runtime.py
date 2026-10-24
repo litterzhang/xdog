@@ -166,7 +166,7 @@ async def test_skills_are_selected_readonly_no_parent_manager_in_executor_contex
     app = application(tmp_path, stream)
     try:
         session = await prepared(app)
-        manager = session._runtime.skill_manager
+        manager = session._runtime.skill_repo
         await run_owned(lambda: manager.save_skill(
             'selected', 'SELECTED BODY', name='selected', description='Selected'))
         await run_owned(lambda: manager.save_skill('other', 'OTHER PRIVATE BODY', name='other', description='Other'))
@@ -185,7 +185,7 @@ async def test_skills_are_selected_readonly_no_parent_manager_in_executor_contex
             record = await session.children.runtime.control('wait', identifier)
         assert record['status'] == 'completed' and calls
         child = children[0]
-        delegated = child.tool_context['_skill_manager']
+        delegated = child.tool_context['_skill_repo']
         assert isinstance(delegated, ChildSkills) and delegated is not manager
         assert all(value is not manager for value in child.tool_context.values())
         assert delegated.slugs == ('selected',) and delegated.load_skill('other') is None
@@ -209,7 +209,7 @@ async def test_skill_revocation_before_first_provider_request_is_not_silent_fall
     app = application(tmp_path, stream)
     try:
         session = await prepared(app)
-        manager = session._runtime.skill_manager
+        manager = session._runtime.skill_repo
         await run_owned(lambda: manager.save_skill('selected', 'ORIGINAL', name='selected', description='Selected'))
         original = session.children.runtime.factory
         async def revoke(spec, publish):
@@ -294,7 +294,7 @@ async def test_closing_during_owned_skill_admission_waits_for_io_without_registr
     work = closing = None
     try:
         session = await prepared(app)
-        manager = session._runtime.skill_manager
+        manager = session._runtime.skill_repo
         await run_owned(lambda: manager.save_skill('selected', 'BODY', name='selected', description='Selected'))
         original_load = _Reader.load
         def blocked(reader, slug, stopped):
@@ -354,7 +354,7 @@ async def test_unpublished_or_replaced_parent_rejects_admission_and_context_is_e
         identifier = await session.children.runtime.start('explicit context only', config={'tools': []})
         assert (await session.children.runtime.control('wait', identifier))['status'] == 'completed'
         context = children[0].tool_context
-        assert set(context) == {'group_id', 'workspace_dir', 'fs_workspace', 'data_dir', '_skill_manager'}
+        assert set(context) == {'group_id', 'workspace_dir', 'fs_workspace', 'data_dir', '_skill_repo'}
         assert all(value is not secret for value in context.values())
         assert '_message_port' not in context and '_memory_manager' not in context and '_memory_search' not in context
     finally:

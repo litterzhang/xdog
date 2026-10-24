@@ -8,9 +8,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from xdog.agent import Agent, AgentConfig, AgentTool, AgentToolResult
+from xdog.agent import Agent, AgentConfig, AgentTool, AgentToolResult, ToolRepo
 from xdog.agent.core import StreamFn
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.agent.tools.tool_filesystem import CONFINE_CTX_KEY, WORKSPACE_CTX_KEY
 from xdog.ai.types import (
     AssistantMessage,
@@ -27,7 +27,6 @@ from xdog.ai.utils.event_stream import EventStream
 from xdog.flow.errors import WorkflowExecutionError
 from xdog.flow.models import NodeDef, Port
 from xdog.flow.runners import SdkRunner
-from xdog.flow.tools import ToolRegistry
 
 
 class OfflineAdapter:
@@ -102,7 +101,7 @@ async def seed_snapshot(tmp_path: Path, *, skills: bool = False) -> dict[str, An
     source = Agent(
         OfflineAdapter(models=("ancestor/old",)),
         config=AgentConfig(model="ancestor/old", system_prompt="ANCESTOR_BASE"),
-        skills=SkillManager(root, packaged={}), active_skills=selected,
+        skills=SkillRepo(builtin=False).register(directory=root, name="shared"), active_skills=selected,
     )
     # An idle history plus a pending turn skill is a legitimate host snapshot.
     source.append_message(UserMessage(content="ancestor question"))
@@ -115,9 +114,9 @@ async def seed_snapshot(tmp_path: Path, *, skills: bool = False) -> dict[str, An
         await source.aclose()
 
 
-def runner_for(adapter: StreamFn, *, registry: ToolRegistry | None = None, **kwargs: Any) -> SdkRunner:
+def runner_for(adapter: StreamFn, *, registry: ToolRepo | None = None, **kwargs: Any) -> SdkRunner:
     return SdkRunner(
-        stream_fn_factory=lambda model: adapter, tool_registry=registry or ToolRegistry(),
+        stream_fn_factory=lambda model: adapter, tool_repo=registry or ToolRepo(builtin=False),
         web_search_fn_factory=None, **kwargs,
     )
 
@@ -235,7 +234,7 @@ async def test_inherited_structured_run_preserves_sink_tool_inventory_context_an
     async def denied(*args: Any, **kwargs: Any) -> AgentToolResult:
         pytest.fail("A registered but unselected tool must not run")
 
-    registry = ToolRegistry()
+    registry = ToolRepo(builtin=False)
     registry.register(AgentTool(name="probe", parameters={"type": "object"}, execute=execute))
     registry.register(AgentTool(name="not_granted", parameters={"type": "object"}, execute=denied))
     runner = runner_for(adapter, registry=registry, workspace=tmp_path, confine_to=[tmp_path])
@@ -309,7 +308,7 @@ async def test_node_cancellation_settles_parallel_tools_before_return_without_cl
             settled.append(call_id)
         return AgentToolResult(content=())
 
-    registry = ToolRegistry()
+    registry = ToolRepo(builtin=False)
     registry.register(AgentTool(name="hold", parameters={"type": "object"}, execute=hold))
     adapter = OfflineAdapter(AssistantMessage(
         content=tuple(ToolCall(id=str(i), name="hold", arguments={}) for i in range(2)), stop_reason="toolUse",

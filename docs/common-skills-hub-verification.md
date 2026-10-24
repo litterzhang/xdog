@@ -1,5 +1,11 @@
 # Common medium-level Skills hub — current verification
 
+> **Historical / superseded SDK interface — 2026-10-24:** Historical artifact verification: old SkillManager references below name the measured baseline, not the current SDK API.
+> Current integration uses ToolRepo / SkillRepo, explicit registration and provider
+> selection before open; see [SDK capability assembly](sdk-capability-assembly.md).
+> Old names and result counts are retained as evidence, not compatibility aliases.
+
+
 > **Historical / superseded:** this record predates the current capability SDK.
 > Old skill slugs, hosting APIs and activation examples below are not current
 > integration instructions. Use `sdk-capability-assembly.md`, package READMEs and

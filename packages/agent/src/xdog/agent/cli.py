@@ -132,7 +132,7 @@ async def _cmd_chat(
     import xdog.ai as ai
     from xdog.agent._cli_host import application_agents
     from xdog.agent.helpers import stream_fn_from_provider, web_search_fn_from_provider
-    from xdog.agent.tools import ToolContext, ToolRegistry
+    from xdog.agent.tools import ToolRepo
 
     parsed_tool_ctx = _parse_tool_ctx(tool_ctx)
 
@@ -160,13 +160,12 @@ async def _cmd_chat(
         options=opts,
     )
 
-    registry = ToolRegistry()
-    builtin_tools = registry.create_tools(context=ToolContext(cwd=Path.cwd())) if not no_tools else []
+    tool_repo = ToolRepo(builtin=not no_tools, cwd=Path.cwd())
 
     async with application_agents(stream_fn, no_tools=no_tools) as create:
         agent = await create(
             Path.cwd(), config=config, web_search_fn=search_fn,
-            tools=builtin_tools, tool_ctx=parsed_tool_ctx,
+            tool_repo=tool_repo, tool_ctx=parsed_tool_ctx,
         )
 
         # Session state for slash commands

@@ -9,7 +9,7 @@ import threading
 
 import pytest
 from xdog.agent import Agent, AgentConfig, BeforeToolCallResult, create_skill_tool
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage
 from xdog.ai.utils.event_stream import EventStream
 
@@ -25,7 +25,7 @@ def write_skill(root, slug="procedure", body="SECRET_PROCEDURE_BODY"):
 def skills(tmp_path):
     root = tmp_path / "skills"
     write_skill(root)
-    return SkillManager(root, packaged={})
+    return SkillRepo(builtin=False, packaged={}).register(directory=root, name="shared")
 
 
 async def call(tool, **args):
@@ -42,7 +42,7 @@ async def test_readonly_list_and_load_do_not_activate_or_write(skills):
     assert "SECRET_PROCEDURE_BODY" not in listed.content[0].text
     loaded = await call(tool, action="load", slug="procedure")
     assert not loaded.is_error and "SECRET_PROCEDURE_BODY" in loaded.content[0].text
-    assert str(skills._shared_dir) in loaded.content[0].text
+    assert str(skills._directories["shared"]) in loaded.content[0].text
     assert loaded.details["activation"] == "tool-result-only"
 
 
@@ -63,10 +63,10 @@ async def test_readonly_list_and_load_do_not_activate_or_write(skills):
     ],
 )
 async def test_rejects_unknown_unsafe_or_mutating_requests(skills, args):
-    before = (skills._shared_dir / "procedure/SKILL.md").read_bytes()
+    before = (skills._directories["shared"] / "procedure/SKILL.md").read_bytes()
     result = await create_skill_tool(skills).execute("call", args)
     assert result.is_error and "SECRET_PROCEDURE_BODY" not in str(result.content)
-    assert (skills._shared_dir / "procedure/SKILL.md").read_bytes() == before
+    assert (skills._directories["shared"] / "procedure/SKILL.md").read_bytes() == before
 
 
 async def test_allowlist_and_limits(skills):
@@ -74,7 +74,7 @@ async def test_allowlist_and_limits(skills):
     assert json.loads((await call(tool, action="list")).content[0].text)["skills"] == []
     assert (await call(tool, action="load", slug="procedure")).is_error
     assert (await call(create_skill_tool(skills, max_skill_bytes=10), action="load", slug="procedure")).is_error
-    write_skill(skills._shared_dir, "other", "SECOND_BODY")
+    write_skill(skills._directories["shared"], "other", "SECOND_BODY")
     limited = await call(create_skill_tool(skills, max_listed_skills=1), action="list")
     assert json.loads(limited.content[0].text)["truncated"] is True
 
@@ -96,7 +96,7 @@ async def test_no_follow_or_blocking_special_files(tmp_path, kind):
             os.link(outside / "SKILL.md", path)
         else:
             os.mkfifo(path)
-    tool = create_skill_tool(SkillManager(root, packaged={}))
+    tool = create_skill_tool(SkillRepo(builtin=False, packaged={}).register(directory=root, name="shared"))
     async with asyncio.timeout(2):
         result = await call(tool, action="load", slug="procedure")
     assert result.is_error and "PRIVATE_OUTSIDE" not in str(result.content)
@@ -107,8 +107,9 @@ async def test_unsafe_shadow_does_not_fall_back_to_lower_tier(tmp_path):
     write_skill(shared, body="LOWER_BODY")
     group = tmp_path / "group"
     group.mkdir()
+    repo = SkillRepo(builtin=False).register(directory=shared).register(directory=group)
     (group / "procedure").symlink_to(shared / "procedure", target_is_directory=True)
-    result = await call(create_skill_tool(SkillManager(shared, group, packaged={})), action="load", slug="procedure")
+    result = await call(create_skill_tool(repo), action="load", slug="procedure")
     assert result.is_error and "LOWER_BODY" not in str(result.content)
 
 
@@ -263,9 +264,11 @@ async def test_repeated_cancellation_settles_worker_before_return(skills, monkey
 async def test_bad_shadow_not_read_from_lower_tier_and_list_reports_unavailable(tmp_path, invalid):
     shared, group = tmp_path / "shared", tmp_path / "group"
     write_skill(shared, body="LOWER_BODY")
+    group.mkdir()
+    repo = SkillRepo(builtin=False).register(directory=shared).register(directory=group)
     directory = write_skill(group)
     (directory / "SKILL.md").write_bytes(b"\xff" if invalid == "utf8" else b"X" * 1025)
-    tool = create_skill_tool(SkillManager(shared, group, packaged={}), max_skill_bytes=1024)
+    tool = create_skill_tool(repo, max_skill_bytes=1024)
     loaded = await call(tool, action="load", slug="procedure")
     listed = json.loads((await call(tool, action="list")).content[0].text)
     assert loaded.is_error and "LOWER_BODY" not in str(loaded.content)
@@ -275,7 +278,11 @@ async def test_bad_shadow_not_read_from_lower_tier_and_list_reports_unavailable(
 async def test_missing_tier_falls_back_to_packaged_without_creating_roots(tmp_path):
     directory = write_skill(tmp_path / "package", body="PACKAGED_BODY")
     shared, group = tmp_path / "shared", tmp_path / "group"
-    manager = SkillManager(shared, group, packaged={"procedure": directory})
+    manager = (
+        SkillRepo(builtin=False, packaged={"procedure": directory})
+        .register(directory=shared, name="shared")
+        .register(directory=group, name="group")
+    )
     result = await call(create_skill_tool(manager), action="load", slug="procedure")
     assert not result.is_error and result.details["packaged"]
     assert "PACKAGED_BODY" in str(result.content)
@@ -290,7 +297,11 @@ async def test_loading_prose_never_executes_commands_or_reads_references(tmp_pat
     script = directory / "run.sh"
     script.write_text(f"touch {marker}\n")
     before = {p.name: p.read_bytes() for p in directory.iterdir()}
-    result = await call(create_skill_tool(SkillManager(directory.parent, packaged={})), action="load", slug="procedure")
+    result = await call(
+        create_skill_tool(SkillRepo(builtin=False, packaged={}).register(directory=directory.parent, name="shared")),
+        action="load",
+        slug="procedure",
+    )
     assert not result.is_error and "touch" in str(result.content)
     assert "REFERENCE_MUST_NOT_BE_LOADED" not in str(result.content)
     assert not marker.exists()
@@ -298,7 +309,7 @@ async def test_loading_prose_never_executes_commands_or_reads_references(tmp_pat
 
 
 async def test_output_expansion_is_bounded(skills):
-    (skills._shared_dir / "procedure/SKILL.md").write_text("${SKILL_DIR}" * 12000)
+    (skills._directories["shared"] / "procedure/SKILL.md").write_text("${SKILL_DIR}" * 12000)
     result = await call(create_skill_tool(skills), action="load", slug="procedure")
     assert result.is_error and "output limit" in result.content[0].text
 

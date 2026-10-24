@@ -11,14 +11,15 @@ import math
 import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any, cast
 
 from jsonschema.validators import validator_for
 from referencing import Registry
 from referencing.exceptions import NoSuchResource
 from xdog.agent.core import AgentTool, AgentToolResult
-from xdog.agent.skills.manager import SkillManager, is_valid_skill_name
 from xdog.agent.skills.render import render_skill_body
+from xdog.agent.skills.repo import SkillRepo, is_valid_skill_name
 from xdog.agent.skills.tool import _Reader
 from xdog.agent.skills.types import Skill
 from xdog.agent.types import BeforeToolCallContext
@@ -148,11 +149,11 @@ def _validate_action_selection(tool: AgentTool, selected: tuple[str, ...]) -> No
             "Parent tool/approval/read-only restrictions still apply.") from exc
 
 
-def _native_catalog(manager: SkillManager) -> bool:
+def _native_catalog(manager: SkillRepo) -> bool:
     # Custom/host-restricted catalogs remain authoritative, including an
     # instance-provided catalog callback. Only the exact built-in manager can
     # use its bounded filesystem reader directly.
-    return type(manager) is SkillManager and 'list_skills' not in vars(manager)
+    return type(manager) is SkillRepo and 'list_skills' not in vars(manager)
 
 
 @dataclass(frozen=True)
@@ -276,9 +277,10 @@ class ChildDelegation:
             raise ValueError('Child tool action is outside delegated permissions')
 
 
-class ChildSkills(SkillManager):
+class ChildSkills(SkillRepo):
     """Detached selected instruction bodies, never the parent's writable skill manager."""
-    def __init__(self, parent: SkillManager | None, selected: tuple[str, ...]) -> None:
+    def __init__(self, parent: SkillRepo | None, selected: tuple[str, ...]) -> None:
+        super().__init__(builtin=False)
         if len(selected) != len(set(selected)) or any(not is_valid_skill_name(slug) for slug in selected):
             raise ValueError("Invalid delegated skill selection")
         self._parent = parent
@@ -297,32 +299,40 @@ class ChildSkills(SkillManager):
             self._rows = {slug: reader.load(slug, threading.Event()) for slug in selected}
         except (ValueError, OSError, UnicodeError) as exc:
             raise ValueError("Child skills exceed parent available catalog or are unsafe/unavailable") from exc
+        self._fixed = self._rows
         if sum(len(row.content.encode()) for row in self._rows.values()) > 1024 * 1024:
             raise ValueError('Delegated skill bodies exceed instruction capacity')
 
     @property
     def slugs(self) -> tuple[str, ...]:
-        return self._selected
+        return tuple(slug for slug in self._selected if self._selection is None or slug in self._selection)
 
-    def check_live(self, parent: SkillManager | None) -> None:
-        if not self._selected:
+    def check_live(self, parent: SkillRepo | None) -> None:
+        if not self.slugs:
             return
         if parent is not self._parent:
             raise ValueError('Parent skill catalog changed; delegate again')
         if parent is not None:
             if (not _native_catalog(parent)
-                    and not set(self._selected) <= {row.slug for row in parent.list_skills()}):
+                    and not set(self.slugs) <= {row.slug for row in parent.list_skills()}):
                 raise ValueError("Delegated skill revoked from parent catalog")
-            reader = _Reader(parent, frozenset(self._selected), 262144, 512)
-            for slug, saved in self._rows.items():
-                if reader.load(slug, threading.Event()) != saved:
+            reader = _Reader(parent, frozenset(self.slugs), 262144, 512)
+            for slug in self.slugs:
+                if reader.load(slug, threading.Event()) != self._rows[slug]:
                     raise ValueError('Delegated skill changed or was revoked; delegate again')
 
     def list_skills(self) -> list[Skill]:
-        return [replace(row, content='') for row in self._rows.values()]
+        return [replace(self._rows[slug], content='') for slug in self.slugs]
 
     def load_skill(self, slug: str) -> Skill | None:
-        return self._rows.get(slug)
+        return self._rows.get(slug) if slug in self.slugs else None
+
+    def register(self, skill: Skill | None = None, *, directory: Path | None = None,
+                 name: str | None = None) -> SkillRepo:
+        raise PermissionError('Delegated skill catalog is read-only')
+
+    def unregister(self, name: str) -> None:
+        raise PermissionError('Delegated skill catalog is read-only')
 
     def save_skill(self, slug: str, content: str, *, name: str = '', description: str = '',
                    scope: str = 'shared') -> Skill:
@@ -371,10 +381,10 @@ class ParentHandle:
 
     _alive: Callable[[], bool] = field(repr=False, compare=False)
     _tools: Callable[[], Sequence[AgentTool]] = field(repr=False, compare=False)
-    _skills: Callable[[], SkillManager | None] = field(repr=False, compare=False)
+    _skills: Callable[[], SkillRepo | None] = field(repr=False, compare=False)
 
     def __init__(self, *, alive: Callable[[], bool], tools: Callable[[], Sequence[AgentTool]],
-                 skills: Callable[[], SkillManager | None]) -> None:
+                 skills: Callable[[], SkillRepo | None]) -> None:
         object.__setattr__(self, '_alive', alive)
         object.__setattr__(self, '_tools', tools)
         object.__setattr__(self, '_skills', skills)

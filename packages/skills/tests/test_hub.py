@@ -28,7 +28,7 @@ def test_hub_import_does_not_import_goal_or_start_business_runtime(tmp_path):
 
 
 def test_generic_discovery_finds_hub_skill_and_existing_flow_eyes_without_copying(tmp_path):
-    from xdog.agent.skills import SkillManager, packaged_skills
+    from xdog.agent.skills import SkillRepo, packaged_skills
 
     root = hub()
     assert not (root / 'skills' / 'eyes').exists()
@@ -37,7 +37,7 @@ def test_generic_discovery_finds_hub_skill_and_existing_flow_eyes_without_copyin
     assert paths['goal'] == root / 'skills' / 'goal'
     assert paths['plan'] == root / 'skills' / 'plan'
     assert not {'goals', 'eyes-observers', 'flow-workflows', 'xdog-planning'}.intersection(paths)
-    manager = SkillManager(tmp_path / 'not-created')
+    manager = SkillRepo().register(directory=tmp_path / 'not-created', name='shared')
     available = {item.slug: item for item in manager.list_skills()}
     for slug in ('goal', 'plan', 'eyes', 'flow'):
         assert available[slug].packaged and not available[slug].content
@@ -75,12 +75,12 @@ def test_hub_distribution_and_optional_host_extras_are_common_not_goal_specific(
     assert config_path.is_file(), 'The common skills hub must be its own workspace distribution'
     config = tomllib.loads(config_path.read_text())
     assert config['project']['name'] == 'xdog-skills'
-    assert config['project']['dependencies'] == ['xdog-agent>=2.4.9']
+    assert config['project']['dependencies'] == ['xdog-agent>=2.5.0']
     for host in ('claw', 'coding'):
         config = tomllib.loads((repository / 'packages' / host / 'pyproject.toml').read_text())
-        assert 'xdog-skills>=2.4.9' in config['project']['dependencies']
+        assert 'xdog-skills>=2.5.0' in config['project']['dependencies']
         extras = config['project']['optional-dependencies']
-        assert extras['skills'] == ['xdog-skills>=2.4.9'] and 'goals' not in extras
+        assert extras['skills'] == ['xdog-skills>=2.5.0'] and 'goals' not in extras
 
 
 def test_private_goal_workspace_cannot_enter_umbrella_or_skills_artifacts():

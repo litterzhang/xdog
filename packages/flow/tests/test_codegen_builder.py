@@ -108,7 +108,7 @@ async def test_autofix_module_no_target_is_safe() -> None:
 
 def test_registry_resolves_filesystem_and_bash() -> None:
     reg = registry_with_filesystem()
-    tools = reg.resolve(["filesystem", "bash"])
+    tools = reg.select(["filesystem", "bash"]).tools
     names = {t.name for t in tools}
     assert "filesystem" in names
     assert "bash" in names

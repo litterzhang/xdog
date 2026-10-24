@@ -193,11 +193,11 @@ async def test_messages_use_existing_child_without_granting_execution_approval(t
 
 
 async def test_parent_model_wait_uses_real_agent_hook_without_approval(tmp_path):
-    from xdog.agent.skills import SkillManager
+    from xdog.agent.skills import SkillRepo
     from xdog.ai.types import TextContent
     from xdog.ai.utils.event_stream import EventStream
 
-    session, _ = create(tmp_path, "ask", skills=SkillManager(tmp_path / "skills"))
+    session, _ = create(tmp_path, "ask", skills=SkillRepo().register(directory=tmp_path / 'skills', name="shared"))
     requests = []
     session.permissions.set_request_handler(requests.append)
     try:

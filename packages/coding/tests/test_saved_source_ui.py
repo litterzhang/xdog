@@ -26,7 +26,7 @@ def test_unavailable_or_loading_saved_view_cannot_export_or_use_live_source(tmp_
         session = AgentSession(agent=Agent(lambda *args: EventStream.empty(AssistantMessage())),
             session_data=manager.create_session(working_dir=tmp_path), session_manager=manager,
             settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-            tool_registry=None, bash=None)
+            tool_repo=None, bash=None)
         ui = InteractiveMode(session)
     try:
         ui._chat_log.add_user('MUST-NOT-BECOME-ARCHIVE')
@@ -51,7 +51,7 @@ def test_coding_saved_receipt_never_replaces_current_or_closed_view(tmp_path, sc
     session = AgentSession(agent=Agent(lambda *args: EventStream.empty(AssistantMessage())),
         session_data=manager.create_session(working_dir=tmp_path), session_manager=manager,
         settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-        tool_registry=None, bash=None)
+        tool_repo=None, bash=None)
     ui = InteractiveMode(session)
     try:
         ui._open_transcript(saved=('missing', 'archive'))

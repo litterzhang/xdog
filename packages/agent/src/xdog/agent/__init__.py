@@ -81,6 +81,7 @@ from xdog.agent.helpers import (
 )
 from xdog.agent.history import HistoryPoint, history_points, validate_checkpoint
 from xdog.agent.input_queue import Delivery, QueuedInput
+from xdog.agent.skills import SkillRepo
 
 # -- ToolDef framework -----------------------------------------------------
 from xdog.agent.tool_def import Param, ToolDef, action
@@ -96,7 +97,7 @@ from xdog.agent.tools import (
 )
 
 # -- Tool SPI ---------------------------------------------------------------
-from xdog.agent.tools.registry import ToolContext, ToolFactory, ToolRegistration, ToolRegistry
+from xdog.agent.tools.repo import ToolRegistration, ToolRepo
 
 # -- Types (hooks, callbacks, loop config) ----------------------------------
 from xdog.agent.types import (
@@ -201,10 +202,9 @@ __all__ = [
     "create_skill_tool",
     "create_web_search_tool_from_fn",
     # Tool SPI
-    "ToolContext",
-    "ToolFactory",
     "ToolRegistration",
-    "ToolRegistry",
+    "ToolRepo",
+    "SkillRepo",
 ]
 
 # -- Host-backed child SDK (no child execution owner) -------------------------

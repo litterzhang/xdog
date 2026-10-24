@@ -500,7 +500,7 @@ class TestInteractiveMessageHandling:
         session = AgentSession(agent=Agent(unexpected, config=AgentConfig(model='offline/model')),
             session_data=manager.create_session(working_dir=tmp_path), session_manager=manager,
             settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-            tool_registry=None, bash=None, permissions=PermissionManager('deny'))
+            tool_repo=None, bash=None, permissions=PermissionManager('deny'))
         mode = InteractiveMode(session)
         try:
             mode._format_elapsed = Mock(return_value='0s')

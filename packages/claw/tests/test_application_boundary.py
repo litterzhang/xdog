@@ -166,13 +166,13 @@ def test_core_import_is_inert_and_explicit_inventory_contains_domain_tools(tmp_p
         assert 'xdog.claw.core.runtime' not in sys.modules
         assert 'xdog.claw.core.memory' not in sys.modules
         assert 'xdog.claw.core.skills' not in sys.modules
-        from xdog.claw.core.tools import new_tool_registry
+        from xdog.claw.core.tools import new_tool_repo
 
         # Representative built-in and domain registrations; new tools may be added freely.
         required = {'filesystem', 'message', 'memory', 'skill'}
-        assert required <= new_tool_registry().registered_names(), required - new_tool_registry().registered_names()
-        assert 'group_message' not in new_tool_registry().registered_names()
-        assert not {'eyes', 'goal'} & new_tool_registry().registered_names()
+        assert required <= new_tool_repo().names(), required - new_tool_repo().names()
+        assert 'group_message' not in new_tool_repo().names()
+        assert not {'eyes', 'goal'} & new_tool_repo().names()
         assert 'xdog.eyes.hosting.manager' not in sys.modules
         assert 'xdog.skills.goal' not in sys.modules
         from xdog.agent.capabilities import CapabilitySet
@@ -180,12 +180,12 @@ def test_core_import_is_inert_and_explicit_inventory_contains_domain_tools(tmp_p
         assert 'eyes' in application.declared_tools
         assert application.tools == ()  # Discovery is not a live service binding.
         try:
-            new_tool_registry().create_tools(names=('group_message',))
+            new_tool_repo(('group_message',))
         except ValueError as exc:
             assert 'Unknown tools' in str(exc)
         else:
             raise AssertionError('Legacy tool name is still accepted')
-        tools = new_tool_registry().create_tools(names=tuple(sorted(required)))
+        tools = new_tool_repo(tuple(sorted(required))).tools
         assert {tool.name for tool in tools} == required
         message = next(tool for tool in tools if tool.name == 'message')
         assert message.parameters['properties']['action']['enum'] == ['channels', 'send']

@@ -357,7 +357,7 @@ shared skill contains no application-specific naming or routing policy.
 ### Capability contributions and readiness
 
 `skill_names=("eyes",)` advertises a packaged skill, not a default body or tool
-permission. SkillManager discovers it and explicit activation loads its body;
+permission. SkillRepo discovers it and explicit activation loads its body;
 Flow follows the same policy. Capabilities can contribute skills, tools, runtime
 resources or extension hooks without supplying all four. Startup and close belong
 to their real scope owner; no capability creates a second Agent execution loop.

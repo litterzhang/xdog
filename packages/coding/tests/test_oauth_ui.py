@@ -79,7 +79,7 @@ def create(tmp_path, module):
         return EventStream.empty(AssistantMessage())
     session = AgentSession(agent=Agent(stream, config=AgentConfig(model="test/model")),
         session_data=store.create_session(working_dir=tmp_path), session_manager=store,
-        settings=SettingsManager(global_path=settings), working_dir=tmp_path, tool_registry=None, bash=None)
+        settings=SettingsManager(global_path=settings), working_dir=tmp_path, tool_repo=None, bash=None)
     return InteractiveMode(session), session, calls
 
 

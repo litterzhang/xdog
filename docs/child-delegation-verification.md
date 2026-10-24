@@ -37,7 +37,7 @@ Agent 中的旧 ChildSupervisor 及 supervision_store/extensions/return 域运�
 5. Coding 的 child 审批与父、兄弟独立；无审批入口拒绝。Claw 保留 readonly/MCP/extension 当前策略。
 6. Child 无父 history/system/input/context transform；独立 system prompt，任务与材料通过首条 user 输入交接。
 7. skills 仅注入选定目录和内容，只读 list/load，不提供父完整可写 manager。
-   默认 SkillManager 使用 bounded/no-follow reader；FIFO/symlink 不会变成无限读取。
+   默认 SkillRepo 的只读 skill 入口使用 bounded/no-follow reader；FIFO/symlink 不会变成无限读取。
 8. Coding 主聊天展示真实双向消息：稳定 ID、原 owner/lease、去重、方向与可查完整正文；工具前正文标记 received，不伪装 child 完成。
 9. 独立 model/thinking 使用实际 adapter metadata；工具/图片/容量检查和归档保留。模型不可用/撤回不静默 fallback；不剥离 child 自己的有效签名。
 10. 保留完整 paired history、分片存储、write-before-ACK、图片两阶段返还、压缩前归档、取消等待与 crash interrupted 不重放。

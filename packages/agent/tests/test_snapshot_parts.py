@@ -10,7 +10,7 @@ import pytest
 from xdog.agent import Agent, AgentConfig, AgentTool
 from xdog.agent.compaction import SUMMARY_TEMPLATE
 from xdog.agent.core import AgentMessage, CustomAgentMessage
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.agent.snapshots import (
     MAX_SNAPSHOT_BYTES,
     CompactionSnapshot,
@@ -211,7 +211,7 @@ def test_skill_bindings_and_compaction_summary_share_restore_validation(tmp_path
     directory.mkdir()
     path = directory / "SKILL.md"
     path.write_text("---\nname: guard\ndescription: guard\n---\nORIGINAL_BODY")
-    manager = SkillManager(tmp_path, packaged={})
+    manager = SkillRepo(builtin=False, packaged={}).register(directory=tmp_path, name="shared")
 
     def never(*args):
         raise AssertionError("No model execution")

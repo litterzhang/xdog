@@ -32,7 +32,7 @@ def make_ui(tmp_path, *, peer=FIXTURE, mode="modern"):
     session = AgentSession(agent=Agent(stream, config=AgentConfig(model="test/model")),
                            session_data=manager.create_session(model="test/model", working_dir=tmp_path),
                            session_manager=manager, settings=SettingsManager(global_path=settings),
-                           working_dir=tmp_path, tool_registry=None, bash=None)
+                           working_dir=tmp_path, tool_repo=None, bash=None)
     ui = InteractiveMode(session)
     return ui, session, provider_calls, log
 

@@ -44,7 +44,7 @@ async def test_actual_turn_start_provider_withdrawal_refuses_image_before_model_
         manager = SessionManager(tmp_path / 'sessions')
         owner = AgentSession(agent=Agent(base, config=AgentConfig(model='offline/model')),
             session_data=manager.create_session(model='offline/model', working_dir=tmp_path), session_manager=manager,
-            settings=SettingsManager(global_path=settings), working_dir=tmp_path, tool_registry=None, bash=None,
+            settings=SettingsManager(global_path=settings), working_dir=tmp_path, tool_repo=None, bash=None,
             permissions=PermissionManager('deny'))
         await owner.initialize_extensions()
         owner.set_model(ALIAS)

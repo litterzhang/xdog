@@ -3,61 +3,62 @@ from __future__ import annotations
 
 import pytest
 from xdog.agent import AgentTool
-from xdog.agent.tools import ToolContext, ToolRegistry
+from xdog.agent.tools import ToolRepo
 from xdog.ai.types import AssistantMessage
 from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.config import ClawConfig, GroupDef
 from xdog.claw.core.runtime.gateway import _build_model_and_options, _groups_from_config
 from xdog.claw.core.runtime.group import GroupRuntime
 from xdog.claw.core.runtime.orchestrator import Orchestrator
-from xdog.claw.core.tools import new_tool_registry
+from xdog.claw.core.tools import AVAILABLE_TOOL_NAMES, DEFAULT_TOOL_NAMES, new_tool_repo
 from xdog.claw.core.types import Group
 
 
-def test_registry_distinguishes_defaults_from_no_tools():
-    registry = new_tool_registry()
-    assert isinstance(registry, ToolRegistry)
-    assert registry.registered_names() == {
-        'bash', 'filesystem', 'current_time', 'submit_result',
-        'memory', 'message', 'skill', 'todo', 'generate_image',
-    }
-    assert {'generate_image', 'submit_result'}.isdisjoint(registry.default_names())
-    assert {tool.name for tool in registry.create_tools()} == set(registry.default_names())
-    tools = registry.create_tools(context=ToolContext(image_model="antigravity/image"))
-    assert "generate_image" not in {tool.name for tool in tools}
-    assert registry.create_tools(names=()) == []
-    assert registry.create_tools(names=[]) == []
-    assert [tool.name for tool in registry.create_tools(names=("filesystem",))] == ["filesystem"]
-    assert [tool.name for tool in registry.create_tools(names=("submit_result",))] == ["submit_result"]
-    assert registry.tools == ()  # Inventory discovery/creation never publishes by itself.
+def test_repo_contains_only_actual_selected_tools():
+    repo = new_tool_repo()
+    assert isinstance(repo, ToolRepo)
+    assert repo.names() == frozenset(DEFAULT_TOOL_NAMES)
+    assert {'generate_image', 'submit_result'}.isdisjoint(repo.names())
+    assert new_tool_repo(image_model="antigravity/image").names() == repo.names()
+    assert new_tool_repo(()).tools == ()
+    assert new_tool_repo([]).tools == ()
+    assert new_tool_repo(("filesystem",)).names() == {'filesystem'}
+    assert new_tool_repo(("submit_result",)).names() == {'submit_result'}
+    assert AVAILABLE_TOOL_NAMES == repo.names() | {'generate_image', 'submit_result'}
 
 
-def test_groups_own_isolated_sdk_registries_and_factory_context(tmp_path):
+def test_groups_own_isolated_actual_tool_repositories(tmp_path):
     first = GroupRuntime(group=Group(id='one', enabled_tools=()), data_dir=tmp_path)
     second = GroupRuntime(group=Group(id='two', enabled_tools=()), data_dir=tmp_path)
-    seen = []
-    def factory(context: ToolContext) -> AgentTool:
-        seen.append(context)
-        return AgentTool('custom')
-    first.tool_registry.register_factory('custom', factory)
+    actual = AgentTool('custom')
+    first._tools = [actual]
     first._enabled_tools = ('custom',)
-    assert [tool.name for tool in first.tools] == ['custom']
-    assert seen == [ToolContext(cwd=first.workspace_dir)]
+    assert first.tools == [actual]
     assert not second.tools
-    assert 'custom' not in second.tool_registry.registered_names()
-    assert 'custom' not in new_tool_registry().registered_names()
+    assert 'custom' not in second.tool_repo.names()
+    assert 'custom' not in new_tool_repo().names()
 
 
-def test_registry_requires_image_model_and_rejects_unknown_tools():
+def test_repo_requires_image_model_and_rejects_unknown_tools():
     with pytest.raises(ValueError, match="image_model configuration"):
-        new_tool_registry().create_tools(names=("generate_image",))
+        new_tool_repo(("generate_image",))
     with pytest.raises(ValueError, match="Unknown tools"):
-        new_tool_registry().create_tools(names=("typo",))
-    tool = new_tool_registry().create_tools(
-        names=("generate_image",), context=ToolContext(image_model="antigravity/image"))[0]
-    assert tool.name == "generate_image"
+        new_tool_repo(("typo",))
+    tool = new_tool_repo(("generate_image",), image_model="antigravity/image").get('generate_image')
     assert "antigravity/image" in tool.description
     assert "model" not in tool.parameters["properties"]
+
+
+def test_unselected_optional_tools_are_not_constructed(monkeypatch):
+    from unittest.mock import Mock
+
+    image = Mock(side_effect=AssertionError('unselected image tool'))
+    memory = Mock(side_effect=AssertionError('unselected memory tool'))
+    monkeypatch.setattr('xdog.claw.core.tools.create_generate_image_tool', image)
+    monkeypatch.setattr('xdog.claw.core.tools.create_memory_tool', memory)
+    assert new_tool_repo(('filesystem',)).names() == {'filesystem'}
+    image.assert_not_called()
+    memory.assert_not_called()
 
 
 @pytest.mark.parametrize("groups", [
@@ -126,23 +127,79 @@ def test_gateway_cli_reports_missing_model_before_starting_daemon(tmp_path, monk
     start.assert_not_called()
 
 
-async def test_session_retirement_disposes_only_its_original_registry_binding(tmp_path, monkeypatch):
+async def test_session_retirement_disposes_only_its_original_repo(tmp_path, monkeypatch):
     monkeypatch.setattr('xdog.agent.capabilities.runtime.discover', lambda scope: ())
     runtime = GroupRuntime(group=Group(id='main', enabled_tools=()), data_dir=tmp_path,
                            stream_fn=lambda *_: EventStream.empty(AssistantMessage()))
     try:
         first = await runtime.prepare_session(allow_reset=False)
-        old_registration = first._tool_registration
-        assert runtime.tool_registry.tools == first._child_tools
+        old_repo = first._tool_repo
+        assert runtime.tool_repo.tools == first._child_tools
         runtime.reset_session()
-        assert runtime.tool_registry.tools == ()
+        assert runtime.tool_repo.tools == ()
         second = await runtime.prepare_session(allow_reset=False)
-        assert runtime.tool_registry.tools == second._child_tools
+        assert runtime.tool_repo.tools == second._child_tools
         assert second._child_tools[0] is not first._child_tools[0]
-        old_registration.close()
+        for name in old_repo.names():
+            old_repo.unregister(name)
         first.dispose()
-        assert runtime.tool_registry.tools == second._child_tools
-        assert tuple(second.agent.state.tools) == runtime.tool_registry.tools
+        assert runtime.tool_repo.tools == second._child_tools
+        assert tuple(second.agent.state.tools) == runtime.tool_repo.tools
     finally:
         await runtime.aclose()
-    assert runtime.tool_registry.tools == ()
+    assert runtime.tool_repo.tools == ()
+
+
+@pytest.mark.parametrize('failure', ['duplicate', 'publish'])
+async def test_failed_inventory_replacement_keeps_original_repo_and_permissions(tmp_path, monkeypatch, failure):
+    monkeypatch.setattr('xdog.agent.capabilities.runtime.discover', lambda scope: ())
+    runtime = GroupRuntime(group=Group(id='main', enabled_tools=('current_time',)), data_dir=tmp_path,
+                           stream_fn=lambda *_: EventStream.empty(AssistantMessage()))
+    try:
+        session = await runtime.prepare_session(allow_reset=False)
+        agent = session.agent
+        agent.set_active_tools(['current_time'], expected_revision=agent.tool_selection_revision)
+        repo, tools, revision = runtime.tool_repo, agent.state.tools, agent.tool_selection_revision
+        if failure == 'duplicate':
+            runtime._tools = [AgentTool('current_time'), AgentTool('current_time')]
+        else:
+            runtime._tools = [AgentTool('replacement')]
+            def refuse(_tools):
+                raise ValueError('publication refused')
+            monkeypatch.setattr(agent, 'set_tools', refuse)
+        with pytest.raises(ValueError):
+            runtime.publish_tools(session)
+        assert runtime.tool_repo is session._tool_repo is repo
+        assert agent.state.tools is tools
+        assert repo.tools == agent.local_tools
+        assert agent.tool_selection_revision == revision
+        assert agent.active_tool_selection == ('current_time',)
+    finally:
+        await runtime.aclose()
+
+
+def test_selected_image_tool_does_not_bypass_existing_validation(monkeypatch):
+    from unittest.mock import Mock
+
+    invalid = Mock(side_effect=ValueError('configured model rejected'))
+    monkeypatch.setattr('xdog.claw.core.tools.create_generate_image_tool', invalid)
+    with pytest.raises(ValueError, match='configured model rejected'):
+        new_tool_repo(('generate_image',), image_model='configured/image')
+    invalid.assert_called_once_with(model='configured/image')
+
+
+def test_group_skill_repo_registers_explicit_shared_and_group_sources(tmp_path):
+    from xdog.agent.skills import SkillRepo
+
+    workspace = tmp_path / 'custom-workspace'
+    runtime = GroupRuntime(group=Group(id='main', workspace=str(workspace)), data_dir=tmp_path / 'data')
+    shared = runtime.skill_repo.save_skill('shared-example', 'shared body')
+    local = runtime.skill_repo.save_skill('local-example', 'local body', scope='group')
+    assert shared.path == tmp_path / 'data' / 'skills' / 'shared-example' / 'SKILL.md'
+    assert local.path == workspace / 'skills' / 'local-example' / 'SKILL.md'
+    isolated = SkillRepo(builtin=False)
+    other = GroupRuntime(group=Group(id='isolated'), data_dir=tmp_path / 'data', skill_repo=isolated)
+    assert other.skill_repo is isolated
+    assert other.skill_repo.load_skill('shared-example') is None
+    with pytest.raises(ValueError, match='Duplicate skill'):
+        runtime.skill_repo.save_skill('shared-example', 'conflicting body', scope='group')

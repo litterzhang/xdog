@@ -13,7 +13,7 @@ import pytest
 from xdog.agent import Agent, AgentConfig, AgentTool, AgentToolResult, CompactionConfig
 from xdog.agent.compaction import safe_cut_indices
 from xdog.agent.events import CompactionEndEvent, CompactionFailedEvent, SnapshotEvent, UsageEvent
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.ai.types import AssistantMessage, DoneEvent, StartEvent, TextContent, ToolCall, Usage, UserMessage
 from xdog.ai.utils.event_stream import EventStream
 
@@ -214,7 +214,7 @@ async def test_active_turn_skill_survives_compacted_snapshot_but_not_a_new_task(
         directory.mkdir()
         (directory / "SKILL.md").write_text(
             f"---\nname: {slug}\ndescription: guard\nmetadata:\n  scope: {scope}\n---\n{body}")
-    manager = SkillManager(tmp_path, packaged={})
+    manager = SkillRepo(builtin=False, packaged={}).register(directory=tmp_path, name="shared")
     main_calls, summaries, receipts = [], [], []
     post_summary_calls = 0
 

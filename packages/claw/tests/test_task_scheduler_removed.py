@@ -17,7 +17,7 @@ from xdog.claw.config import ClawConfig, GroupDef, load_config, save_config
 from xdog.claw.core import planning, types
 from xdog.claw.core.runtime.gateway import GatewayServer
 from xdog.claw.core.runtime.orchestrator import Orchestrator
-from xdog.claw.core.tools import new_tool_registry
+from xdog.claw.core.tools import new_tool_repo
 
 
 def test_retired_modules_types_and_tool_are_absent():
@@ -31,14 +31,14 @@ def test_retired_modules_types_and_tool_are_absent():
     assert not hasattr(planning, 'TaskScheduler')
     for name in ('TaskSchedule', 'ScheduledTask'):
         assert not hasattr(types, name), name
-    assert 'task' not in new_tool_registry().registered_names()
+    assert 'task' not in new_tool_repo().names()
     with pytest.raises(ValueError, match='Unknown tools'):
-        new_tool_registry().create_tools(('task',))
-    assert 'eyes' not in new_tool_registry().registered_names() and 'goal' not in new_tool_registry().registered_names()
+        new_tool_repo(('task',))
+    assert 'eyes' not in new_tool_repo().names() and 'goal' not in new_tool_repo().names()
     with pytest.raises(ValueError, match='Unknown tools'):
-        new_tool_registry().create_tools(('eyes',))
+        new_tool_repo(('eyes',))
     with pytest.raises(ValueError, match='Unknown tools'):
-        new_tool_registry().create_tools(('goal',))
+        new_tool_repo(('goal',))
 
 
 def test_no_legacy_configuration_or_management_api(tmp_path):

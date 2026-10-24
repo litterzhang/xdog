@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 
 from xdog.agent import Agent, AgentConfig
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.ai.types import AssistantMessage, TextContent, UserMessage
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core.agent_session import AgentSession
@@ -30,9 +30,9 @@ def session(tmp_path, *, extra=()):
         calls.append(args)
         return EventStream.empty(AssistantMessage())
     owner = AgentSession(agent=Agent(stream, config=AgentConfig(model='offline/model'),
-                                   skills=SkillManager(tmp_path / 'skills')),
+                                   skills=SkillRepo().register(directory=tmp_path / 'skills', name="shared")),
         session_data=manager.create_session(working_dir=tmp_path), session_manager=manager,
-        settings=SettingsManager(global_path=settings), working_dir=tmp_path, tool_registry=None, bash=None,
+        settings=SettingsManager(global_path=settings), working_dir=tmp_path, tool_repo=None, bash=None,
         permissions=PermissionManager('deny'))
     return owner, calls
 

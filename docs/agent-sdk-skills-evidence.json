@@ -1,4 +1,5 @@
 {
+  "historical_api_notice": "Archived 2026-10-12 evidence, not current SDK instructions. Old SkillManager/API names below are historical; current SDK uses ToolRepo/SkillRepo, explicit register/select and CapabilitySet.select.open. See docs/sdk-capability-assembly.md.",
   "date": "2026-10-12",
   "purpose": "Approved F1 scoped WIP follow-up: skill tooling, offline examples/docs/tests; not full F1 acceptance",
   "historical_investigation": {

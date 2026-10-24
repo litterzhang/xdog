@@ -43,6 +43,6 @@ def setup(api):
         record = await session.children.runtime.control('wait', identifier)
         assert record['status'] == 'completed', record
         assert tuple(session.agent.state.tools) == before
-        assert tuple(session._runtime.tool_registry.tools) == before
+        assert tuple(session._runtime.tool_repo.tools) == before
     finally:
         await app.stop()

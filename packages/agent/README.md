@@ -73,34 +73,115 @@ or the terminal `AgentEndEvent.messages`, not the stream result value.
 listener callbacks and optional `SnapshotEvent`s are not durable commit ACKs.
 Always settle/close the Agent on its owning loop before disposing host resources.
 
+## Capability SDK quick start
+
+Use the repos and capability API when building a host that needs installed
+abilities such as Flow. Install `xdog-agent` and `xdog-flow` from the same matching
+release; for the current source checkout, run `uv sync` at the workspace root.
+
+This complete example uses an **offline model adapter**. It opens only Flow,
+never runs a workflow or starts Eyes, and needs no provider credentials:
+
+```python
+import asyncio
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from xdog.agent import AgentConfig, BeforeToolCallResult, SkillRepo, ToolRepo
+from xdog.agent.capabilities import CapabilitySet
+from xdog.ai.types import AssistantMessage, TextContent
+from xdog.ai.utils.event_stream import EventStream
+
+
+def offline_stream(model, context, options):
+    return EventStream.empty(
+        AssistantMessage(content=(TextContent(text="Offline SDK example"),))
+    )
+
+
+async def deny_tools(context, cancel):
+    return BeforeToolCallResult(block=True, reason="This example does not execute tools")
+
+
+async def main():
+    with TemporaryDirectory(prefix="xdog-sdk-example-") as directory:
+        workspace = Path(directory)
+        # Built-in instances can be narrowed; no custom Registry or Manager.
+        host_tools = ToolRepo(cwd=workspace).select(["current_time"])
+        # Packaged skills are discovered by default. The optional host directory
+        # is registered without being created or executing its contents.
+        host_skills = SkillRepo().register(directory=workspace / "skills")
+        catalog = CapabilitySet("application")
+
+        async with catalog.select(["flow"]).open() as capabilities:
+            async with capabilities.create_agent(
+                offline_stream,
+                config=AgentConfig(model="offline"),
+                tool_repo=host_tools,
+                skill_repo=host_skills,
+                before_tool_call=deny_tools,
+            ) as agent:
+                assert {tool.name for tool in agent.local_tools} == {
+                    "flow", "skill", "current_time",
+                }
+                assert agent.active_skills == ()
+                stream = await agent.prompt("Describe the available capabilities.")
+                async for _event in stream:
+                    pass
+                await stream.result()
+                print("SDK capabilities:", sorted(tool.name for tool in agent.local_tools))
+        # Agent closes before the selected capability resources.
+
+
+asyncio.run(main())
+```
+
+The passed repos are **additive**: omitting Flow from either host repo does not
+remove Flow's own contributions. Use `register(actual_tool)` for extra host
+instances and `register(directory=path)` for host skills; no tool/skill enable
+lists or custom skill-manager subclass are needed. Different same-name tool or
+skill definitions fail rather than silently overriding each other.
+
+Skills are discoverable, but their bodies are **not injected by default**. The
+read-only `skill` tool loads instructions on demand. Repo selection and skill
+text never grant execution permission. For a live model, replace `offline_stream`
+with the configured adapter from the preceding example and supply the host's real
+permission policy. **The Flow CLI does not inherit an Agent host's sandbox or
+approval hooks**; do not grant general workflow execution to an isolated author
+without an appropriate execution boundary.
+
+See the [capability lifecycle and restoration guide](https://github.com/litterzhang/xdog/blob/main/docs/sdk-capability-assembly.md)
+for multi-owner composition, shutdown and snapshot restore.
+
 ## Host-owned tool inventories
 
 ```python
 from pathlib import Path
-from xdog.agent.tools import ToolContext, ToolRegistry
+from xdog.agent import ToolRepo
+from xdog.agent.tools import create_submit_result_tool
 
-registry = ToolRegistry()  # Fresh catalog, no global registration side effects.
-tools = registry.create_tools(["current_time"], context=ToolContext(cwd=Path.cwd()))
-binding = registry.replace_source("host", tools)
+repo = ToolRepo(cwd=Path.cwd())  # Real bash/filesystem/current_time instances.
+selected = repo.select(("current_time",))  # Same actual executor, new subset.
+receipt = selected.register(create_submit_result_tool())
 # agent is an existing idle Agent on the host's execution owner.
-registry.publish(agent)
-# Later: remove this revision and explicitly publish the resulting inventory.
-binding.close()
-registry.publish(agent)
+selected.publish(agent)
+receipt.close()  # Withdraw only this registration, not a later replacement.
+selected.publish(agent)
 ```
 
 | Operation | Contract |
 | --- | --- |
-| `ToolRegistry(builtins=True)` | Factory catalog: bash, filesystem, current_time by default; submit_result is opt-in. `builtins=False` starts empty. |
-| `register_factory(name, factory, default=False)` | Register a fresh-tool factory; duplicate names fail. |
-| `create_tools(names=None, context=...)` | Create only; `None` selects defaults, `[]` selects none. No publication or permission grant. |
-| `replace_source(source, tools)` | Atomically bind actual tools. Duplicate names across sources fail; its `ToolRegistration.close()` removes only that revision. |
-| `tools` / `publish(agent)` | Read/publish the ordinary inventory. Publication uses `agent.set_tools()` and does not broaden explicit active selection. |
+| `ToolRepo(*tools, builtin=True, cwd=None)` | Actual tools plus fresh bash/filesystem/current_time defaults. `builtin=False` starts empty. |
+| `register(*tools)` | Atomically register actual `AgentTool` objects; same-name conflicts fail. Returns a close receipt. |
+| `unregister(name)` | Explicitly remove a name before registering its replacement; an old receipt cannot remove the replacement. |
+| `names()` / `get(name)` | A frozenset of names / the actual tool; missing `get` raises `ValueError`. |
+| `select(names)` / `merge(other)` | New subset / union preserving actual identity; conflicting objects fail, never silently replace. |
+| `tools` / `publish(agent)` | Tuple inventory / explicit publication using `agent.set_tools()`, without broadening active selection. |
 
 The host owns resources and publication timing; removing a binding does not close
 a tool's resources or undo its effects. Capability tools join this ordinary
 inventory through the same SDK. **MCP stays separate**: pass a host-owned
-`McpRegistry` directly to Agent; do not bind its proxies into `ToolRegistry`.
+`McpRegistry` directly to Agent; do not bind its proxies into `ToolRepo`.
 `local_tools` is the ordinary inventory; `state.tools` is the combined inventory,
 and `active_tools` is its effective selection. Use
 `set_active_tools(names, expected_revision=agent.tool_selection_revision)` for
@@ -113,13 +194,13 @@ See [registry reference](../../docs/host-owned-tool-registry.md) and
 
 `submit_result` is an optional Agent tool, not a Flow-specific parser or an
 Agent constructor option. Opt in with
-`ToolRegistry().create_tools(["submit_result"])` or
-`from xdog.agent.tools import create_submit_result_tool`. Inject **`result_schema`
+`from xdog.agent.tools import create_submit_result_tool`, then register an actual
+instance or pass it directly to Agent. Inject **`result_schema`
 and `result_sink` through `tool_ctx`**:
 
 ```python
 from xdog.agent import Agent, AgentConfig
-from xdog.agent.tools import ToolRegistry
+from xdog.agent.tools import create_submit_result_tool
 
 async def collect_result(stream_fn):
     sink = {}  # A new caller-owned sink for this collection.
@@ -132,7 +213,7 @@ async def collect_result(stream_fn):
     async with Agent(
         stream_fn,
         config=AgentConfig(model="copilot/claude-sonnet-4.5"),
-        tools=ToolRegistry().create_tools(["submit_result"]),
+        tools=[create_submit_result_tool()],
         tool_ctx={"result_schema": schema, "result_sink": sink},
     ) as agent:
         stream = await agent.prompt("Summarize the task and call submit_result with {summary: ...}.")
@@ -160,46 +241,67 @@ Hosts decide when to accept/persist a result and whether the overall run succeed
 
 ## Skills and Capability SDK
 
-`SkillManager(shared_dir, group_dir)` discovers packaged skills, then shared and
-group overrides. Discovery exposes an index, **not active bodies or permissions**.
-Pass `skills=manager, active_skills=("plan",)` to Agent (when that skill is
-installed/loadable), or explicitly call `set_active_skills()` while idle.
-Session-scoped bodies stay in the cacheable prefix; turn-scoped bodies are
-messages with a consumed/pending lifecycle. Invalid explicit activation fails
-rather than silently claiming a missing skill is active. A host may prepare
-`SkillPlacement.read(manager, slugs)` off-loop and pass `prepared_skills` to avoid
-filesystem IO during construction. The optional read-only skill tool must also
-be injected, for example
-`create_skill_tool(manager, allowed_slugs=("plan",))` from `xdog.agent.skills`.
-Its `list`/`load` actions return metadata/instructions as tool results; they do
-not activate a session/turn body or mutate permissions. Its availability and
-`allowed_slugs` filter are independent of the Agent’s discovery index.
+`SkillRepo(builtin=True, packaged=None)` discovers installed packaged skills by
+default. `SkillRepo(builtin=False)` starts without that catalog; an explicit
+`packaged` mapping pins chosen packaged sources. Add host directories with
+`skills.register(directory=path, name="host")` (chainable). Reusing a directory
+name with a different path or adding a different same-slug definition fails;
+there is no implicit shared/group override priority. `from_packaged`, `select`
+and `merge` are provided by the SDK, not a host-specific Manager.
+
+Discovery exposes an index, **not active bodies or permissions**. Native Agent
+still accepts `skills=skills` and `tools=repo.tools`. Prefer the explicit read-only
+`create_skill_tool(skills, allowed_slugs=("plan",))` entry for on-demand `list` /
+`load`: it returns metadata/instructions as tool results, without executing them,
+activating bodies or changing permissions. Its allowlist filters that tool, not
+an independently supplied Agent skill index.
+
+Explicit host `active_skills` / `set_active_skills` still control session/turn
+body placement. Invalid activation fails; session bodies stay in the cacheable
+prefix and turn bodies retain their pending/consumed lifecycle. Hosts may prepare
+`SkillPlacement.read(skills, slugs)` on owned IO workers and pass `prepared_skills`.
+Flow, Eyes and Goal packaged bodies are **not activated by default**.
 
 `xdog.agent.capabilities` exports `ApplicationPort`, `CapabilitySet`,
-`CapabilityAssembly` and `discover`. Installed trusted `xdog.capabilities` entry
-points supply optional tools, skills, resources and extension hooks on actual
-session/group/application owners. Discovery/metadata are inert; **starting a Set
-can open provider resources**. `CapabilityAssembly` only composes already-opened
-Sets; it is not a runtime, permission layer or another model loop.
+`CapabilityAssembly` and `discover`. Configure repositories and select providers
+before opening:
 
-A host explicitly calls `await capabilities.start(ApplicationPort())`, constructs
-`assembly = CapabilityAssembly(capabilities)`, then calls
-`assembly.create_agent(stream_fn, skills=manager, config=..., tools=...,
-enabled_tools=..., active_skills=...)`. `enabled_tools=None` includes all capability
-tools, `[]` includes none; it does not filter supplied base tools. Tool-name
-collisions fail instead of shadowing another owner. `declared_skills` and
-`declared_tools` are metadata; `default_skills` are live defaults, not an implied
-activation of every declared skill. Flow, Eyes **and Goal** declare packaged
-skills but do not activate their bodies by default. Explicit skill activation
-never grants tool permission or child access.
+```python
+from xdog.agent import SkillRepo, ToolRepo
+from xdog.agent.capabilities import CapabilitySet
 
-Close all Agents before their shared Sets, including on failure. Closing an Eyes
-binding detaches from the daemon; it does not stop it or cancel registrations.
-Reinject current adapters, tools, managers and permission hooks before restoring;
-`assembly.restore_agent()` / `restore_agent_parts()` validate saved bindings and
-merge current default session skills without rearming consumed turn skills.
-See [complete capability SDK example](../../docs/sdk-capability-assembly.md) and
-[installed capability details](#installed-host-capabilities).
+selected = CapabilitySet(
+    "application", tool_repo=ToolRepo(), skill_repo=SkillRepo()
+).select(("flow",))
+async with selected.open() as assembly:
+    async with assembly.create_agent(stream_fn, config=config) as agent:
+        async for event in await agent.prompt("Describe the available tools"):
+            consume(event)
+```
+
+Here `stream_fn`, `config` and `consume` are supplied by the host; see the
+[complete offline example](../../docs/sdk-capability-assembly.md) for a standalone
+program. Discovery is inert; `.open()` starts **only selected providers**. It
+supplies an `ApplicationPort` by default for application scope; session/group
+scope requires the actual owner port. Advanced hosts may still explicitly
+`start(host)` / `aclose()` and combine Sets via `CapabilityAssembly(*sets)`.
+
+`assembly.create_agent(stream_fn, tool_repo=..., skill_repo=..., config=...)`
+returns a native Agent. The repo arguments are **additive union**, not replacement
+or filtering of selected capability contributions. Empty supplemental selections
+cannot remove those contributions. Conflicting names fail. Assembly does not
+accept `tools` / `skills` or separate enable lists; the underlying Agent retains
+its original `tools` / `skills` parameters. `compose_tools(existing)` and
+`publish_tools(agent)` likewise have no second filter argument. A read-only
+`skill` entry is supplied for visible skills unless the host already supplied one.
+
+Assembly is not a runtime, permission layer or another model loop. Hooks,
+active-tool selection, parent authority and resource ownership remain host-owned.
+Close Agents before their shared Sets. Eyes binding close detaches without
+stopping the daemon or cancelling registrations. Flow CLI execution **does not
+inherit host sandbox, approval hooks or tool allowlists**; a workflow remains
+trusted code. Reinject current adapters, repos and permissions before restoring;
+`restore_agent` / `restore_agent_parts` retain saved skill lifecycle semantics.
 
 ## Snapshots, compaction and cancellation
 
@@ -270,7 +372,7 @@ servers does **not** launch commands. `connect`, `refresh`, `disconnect`, `statu
 requests owned cleanup without blocking terminal restoration. Hosts own command
 trust, idle tool-set changes and permission hooks.
 
-MCP proxies do **not** enter `ToolRegistry`. Bind the host-owned MCP registry to
+MCP proxies do **not** enter `ToolRepo`. Bind the host-owned MCP registry to
 `Agent(mcp_registry=registry)` or `agent.set_mcp_registry(registry)`. `local_tools`
 is the ordinary inventory; `state.tools` and `active_tools` are the complete visible
 inventory used for UI, permissions and execution. `set_tools()` replaces only ordinary
@@ -278,12 +380,10 @@ tools. Registry connections remain explicitly host-owned, and closing an Agent d
 not close a borrowed registry (for example a Claw group's original MCP owner).
 
 ```python
-from xdog.agent import Agent
+from xdog.agent import Agent, ToolRepo
 from xdog.agent.mcp import McpRegistry
-from xdog.agent.tools import ToolContext, ToolRegistry
 
-ordinary = ToolRegistry()
-ordinary.replace_source("host", ordinary.create_tools(context=ToolContext(cwd=workspace)))
+ordinary = ToolRepo(cwd=workspace)
 mcp = McpRegistry(cwd=workspace)
 mcp.register("service", {"command": "/trusted/path/server", "args": []})
 agent = Agent(stream_fn, tools=ordinary.tools, mcp_registry=mcp)
@@ -491,7 +591,7 @@ signature; the retired module import path is not retained.
 `xdog.agent.extensions.ExtensionAPI` exposes the trusted Python registration API;
 `xdog.agent.extensions.runtime.ExtensionRuntime` owns activation, command proxies, events, hook transforms, declarative UI and disposal.
 Extensions no longer register model tools; installed tool contributions belong to
-Capabilities and the host-owned Agent ToolRegistry SDK. It reuses
+Capabilities and the host-owned Agent ToolRepo SDK. It reuses
 MCP's bounded owned stdio process and manager loop primitives, with private extension
 methods; it is not a hosted control plane, new agent loop, or OS sandbox. Worker
 startup uses a trusted absolute bootstrap with safe-path mode, relative extension
@@ -1893,9 +1993,9 @@ permission/session/editor mutation.
 
 ### Host-owned model tool registration
 
-`ToolRegistry` is an SDK instance owned by the host, not a process-global runtime.
-It supplies builtin factories and owner-local actual tool bindings. Capability tools enter the ordinary host inventory through this SDK; MCP uses
-its separate `McpRegistry`, consumed directly by Agent. Registration does not
+`ToolRepo` is an SDK instance owned by the host, not a process-global runtime.
+It creates actual builtin tools and keeps owner-local tool bindings. Capability
+tools enter the ordinary host inventory through this SDK; MCP uses its separate `McpRegistry`, consumed directly by Agent. Registration does not
 activate a tool, grant permissions, create a worker or start a model.
 
 Extension model-tool registration (`api.tool`, `ExtensionRuntime.tools/sync_tools`,
@@ -2163,30 +2263,31 @@ second Agent loop. See `docs/capability-boundary-design.md` in the repository.
 
 ### SDK capability assembly
 
-`xdog.agent.capabilities.CapabilityAssembly(*capability_sets)` explicitly combines
-already host-owned Sets. It aggregates `tools`, `default_skills`, `declared_tools`,
-`active_skills`, `compose_tools`, `publish_tools` and `tool_effect`.
-`create_agent(stream_fn, *, skills, config=None, tools=(), active_skills=(),
-enabled_tools=None, **Agentkwargs)` applies the same tool/default-skill merge and
-returns a native `Agent`, not a wrapper. Ordinary `Agent(...)` does not discover
-capabilities automatically.
+`CapabilitySet(scope, tool_repo=..., skill_repo=...).select(names).open(host)`
+opens only the selected provider subset and yields `CapabilityAssembly`.
+Application scope may omit host; session/group require real owner ports. Explicit
+`start` / `aclose` remains available for advanced multi-scope hosts. Discovery
+and selection do not start resources or construct an Agent.
 
-The caller supplies `SkillManager` directories, explicitly starts an application
-`CapabilitySet` with `ApplicationPort`, and can share that Set across Agents with
-different tool selections and host-injected approval hooks. Assembly starts no
-provider or event loop and owns no lifecycle. Flow uses CLI execution without a
-daemon. Eyes starts/reuses its shared daemon on explicit Set startup. Both
-packaged skills are discoverable, but neither body is activated by default;
-request `active_skills=("flow",)` or `active_skills=("eyes",)` when needed. Selecting tools without
-explicitly activating their skills is supported; skills never grant permission.
+`assembly.create_agent(stream_fn, tool_repo=None, skill_repo=None, config=None,
+**Agentkwargs)` adds repositories by union to capability/Set contributions and
+returns a native Agent. Supplemental `.select(())` cannot remove capabilities.
+Different same-name tools or skill definitions fail instead of shadowing another
+owner. There is no second enable list. Native Agent still uses `tools` / `skills`.
 
-Close all caller-owned Agents before closing their shared Set, including on
-startup/run failure. Closing the Eyes binding detaches; it does not stop the daemon
-or cancel registrations. Child Agents do not inherit the whole application Set;
-restoration requires host reinjection of non-serializable runtime objects and
-current grants. See [SDK capability assembly](../../docs/sdk-capability-assembly.md)
-for the API contract and a complete example with an injected `stream_fn` and
-failure-safe cleanup.
+`SkillRepo().register(directory=path, name="host")` adds a local source to default
+packaged discovery; `builtin=False` disables that default catalog. Skill bodies
+are not activated by discovery. The read-only `skill` list/load entry retrieves
+instructions on demand; explicit host activation remains independent of tools.
+Flow, Eyes and Goal do not activate packaged bodies by default.
+
+Flow starts no daemon, and its actual CLI execution does not inherit the host
+Agent sandbox or approval policy. Selecting Eyes then opening the Set ensures
+its independent shared daemon; closing the binding only detaches. Close Agents
+before Sets. Child delegation and restore must retain current real owner grants;
+no snapshot restores repo objects, credentials, connections or permissions.
+See [SDK capability assembly](../../docs/sdk-capability-assembly.md) for a runnable
+offline example and [tool repositories](../../docs/host-owned-tool-registry.md).
 
 
 Capability contributions are optional: `skill_names` advertises packaged skills,

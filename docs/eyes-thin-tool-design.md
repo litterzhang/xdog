@@ -93,9 +93,20 @@ overrides remain supported. Old state directories are not migrated or replayed.
 A trusted installed capability is a composition unit: it may provide skill names,
 tools, owned runtime resources and extension hooks. The SDK need not understand
 the domain and a provider need not supply every contribution. Its real scope and
-host own startup/close and authority. SkillManager discovers packaged Flow/Eyes
+host own startup/close and authority. SkillRepo discovers packaged Flow/Eyes
 skills; neither body is injected by default. Explicit selected skills must resolve
 successfully rather than being reported active without instructions.
+
+SDK callers configure `CapabilitySet(scope, tool_repo=..., skill_repo=...)`, then
+select provider names before `.open(host)`. Only the selected providers start;
+selecting only Flow does not start Eyes. Assembly `create_agent` takes additive
+`tool_repo` / `skill_repo` union inputs, not native Agent `tools` / `skills` or a
+second enable list. An empty supplemental repo cannot remove capability-owned
+contributions. `SkillRepo().register(directory=path, name="host")` adds sources;
+directory-name or different same-slug definitions conflict, never shadow.
+Instructions are available through the read-only `skill` list/load entry, not
+default body injection. Flow CLI execution does not inherit host sandbox,
+approval hooks or tool allowlists.
 
 The Eyes control socket is made available independently of target recovery. A
 slow target cannot consume the host daemon-bootstrap deadline. Compatibility of a

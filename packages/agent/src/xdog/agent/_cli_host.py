@@ -10,8 +10,7 @@ from xdog.agent.agent import Agent
 from xdog.agent.async_work import run_owned, settle_cleanup
 from xdog.agent.capabilities import ApplicationPort, CapabilityAssembly, CapabilitySet
 from xdog.agent.core import StreamFn
-from xdog.agent.skills import SkillManager, SkillPlacement
-from xdog.agent.tools import ToolRegistry
+from xdog.agent.skills import SkillPlacement, SkillRepo
 
 
 @asynccontextmanager
@@ -25,22 +24,24 @@ async def application_agents(
     """
     application = None if no_tools else CapabilitySet('application')
     assembly = CapabilityAssembly() if application is None else CapabilityAssembly(application)
-    agents: list[tuple[Agent, ToolRegistry]] = []
+    agents: list[Agent] = []
 
     async def create(cwd: Path, **kwargs: Any) -> Agent:
-        manager = await run_owned(SkillManager, Path.home() / '.xdog' / 'skills', cwd / 'skills')
+        manager = await run_owned(_skill_repo, Path.home() / '.xdog' / 'skills', cwd / 'skills')
         selected = tuple(sorted(assembly.active_skills(kwargs.pop('active_skills', ()))))
         placement = await run_owned(SkillPlacement.read, manager, selected)
-        agent = assembly.create_agent(stream_fn, skills=manager, active_skills=selected,
-                                      prepared_skills=placement, **kwargs)
-        registry = ToolRegistry(builtins=False)
-        registry.replace_source('inventory', agent.local_tools)
-        registry.publish(agent)
-        agents.append((agent, registry))
+        repo = kwargs.pop('tool_repo', None)
+        if no_tools:
+            agent = Agent(stream_fn, skills=manager, tools=(), active_skills=selected,
+                          prepared_skills=placement, **kwargs)
+        else:
+            agent = assembly.create_agent(stream_fn, skill_repo=manager, tool_repo=repo,
+                                          active_skills=selected, prepared_skills=placement, **kwargs)
+        agents.append(agent)
         return agent
 
     async def close() -> None:
-        steps = [agent.aclose for agent, _registry in reversed(agents)]
+        steps = [agent.aclose for agent in reversed(agents)]
         if application is not None:
             steps.append(application.aclose)
         await settle_cleanup(*steps, message='CLI application cleanup failed')
@@ -57,3 +58,7 @@ async def application_agents(
         raise
     else:
         await close()
+
+
+def _skill_repo(shared: Path, project: Path) -> SkillRepo:
+    return SkillRepo().register(directory=shared, name='shared').register(directory=project, name='group')

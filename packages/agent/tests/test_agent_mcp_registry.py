@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 from xdog.agent import Agent, AgentConfig, AgentTool, AgentToolResult
 from xdog.agent.mcp import McpRegistry
-from xdog.agent.tools import ToolRegistry
+from xdog.agent.tools import ToolRepo
 from xdog.agent.types import BeforeToolCallResult
 from xdog.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage
 from xdog.ai.utils.event_stream import EventStream
@@ -36,8 +36,8 @@ async def test_mcp_uses_same_loop_and_hooks_but_not_ordinary_registry():
     calls, contexts, approvals = [], [], []
     remote = tool('remote', calls)
     mcp = McpRegistry.from_tools((remote,))
-    local = ToolRegistry(builtins=False)
-    local.replace_source('host', (tool('local'),))
+    local = ToolRepo(builtin=False)
+    local.register(tool('local'))
     async def before(ctx, cancel=None):
         approvals.append(ctx.tool_call.name)
     agent = Agent(model_for('remote', contexts), config=AgentConfig(model='offline'),
@@ -78,8 +78,8 @@ async def test_mcp_calls_still_obey_permission_denial():
 
 async def test_local_publication_does_not_drop_remote_selection_or_rewrite_revision():
     registry = McpRegistry.from_tools((tool('remote'),))
-    local = ToolRegistry(builtins=False)
-    local.replace_source('host', (tool('local'),))
+    local = ToolRepo(builtin=False)
+    local.register(tool('local'))
     agent = Agent(lambda *_: EventStream.empty(AssistantMessage()), config=AgentConfig(model='offline'),
                   tools=local.tools, mcp_registry=registry)
     try:

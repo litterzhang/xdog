@@ -6,7 +6,7 @@ from dataclasses import replace
 
 import pytest
 from xdog.agent import Agent, AgentConfig
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.ai.types import AssistantMessage, TextContent, ThinkingContent
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core.agent_session import AgentSession
@@ -262,10 +262,10 @@ def test_child_and_direction_identity_deduplicate_independently_with_stable_expo
 def session_for(tmp_path, stream):
     store = SessionManager(tmp_path / 'sessions')
     return AgentSession(agent=Agent(stream, config=AgentConfig(model='offline/test'),
-                                    skills=SkillManager(tmp_path / 'skills')),
+                                    skills=SkillRepo().register(directory=tmp_path / 'skills', name="shared")),
         session_data=store.create_session(model='offline/test', working_dir=tmp_path), session_manager=store,
         settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-        tool_registry=None, bash=None)
+        tool_repo=None, bash=None)
 
 
 async def poll_until(ui, predicate):

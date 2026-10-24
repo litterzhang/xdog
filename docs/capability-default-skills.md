@@ -1,13 +1,27 @@
 # 已安装 capability 的默认技能说明（2026-10-21）
 
-## 现场问题
+> **Historical / superseded SDK interface — 2026-10-24:** Historical default-body proposal, now superseded: Goal, Flow and Eyes do NOT activate packaged skill bodies by default.
+> Current integration uses ToolRepo / SkillRepo, explicit registration and provider
+> selection before open; see [SDK capability assembly](sdk-capability-assembly.md).
+> Old names and result counts are retained as evidence, not compatibility aliases.
+
+
+## 当前策略
+
+本文记录的 Goal 默认正文方案已撤销。Goal、Flow、Eyes 只提供可发现的 packaged
+技能，正文不默认注入；通过只读 `skill` list/load 按需读取，或由宿主显式激活。
+SDK 使用 `SkillRepo().register(directory=path, name="host")`，不同定义同名冲突报错。
+`CapabilitySet(...).select(names).open(host)` 只启动所选 provider；Assembly 的
+`tool_repo` / `skill_repo` 参数是附加 union，不是 enable 名单或正文激活策略。
+
+## 历史现场问题
 
 技能发现、技能索引、技能正文放置是三个不同步骤。Coding 原先能自动发现安装的
 `goal` skill，也能通过 capability 提供真实 Goal 工具；但宿主的显式技能选择默认为空，
 所以模型只收到可用技能简介，没有 Goal 的完整使用流程。索引不包含直接读取路径，
 模型可能不得不用 filesystem 搜索仓库。工具出现不等于它的配套说明已经加载。
 
-## 机制与边界
+## 历史机制与边界（默认正文方案已废弃）
 
 - 可信已安装 provider 可声明 `default_skills: tuple[str, ...]`；旧 provider 缺省为空。
 - Agent capability discovery 校验名称和重复项，不知道任何 Goal schema 或业务规则。
@@ -26,7 +40,7 @@
 - 子 Agent 的工具、skill 子集仍由各宿主现有父权限/配置捕获；本机制不自动把
   主 Agent 的 capability 默认说明复制给子 Agent。
 
-## 验证
+## 历史验证（不代表当前默认正文策略）
 
 真实 Coding/Claw 宿主测试捕获第一次模型请求，确认已含
 `# Goal: main-Agent-owned work` 正文，不依赖模型先调用 filesystem。

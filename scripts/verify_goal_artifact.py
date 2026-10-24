@@ -17,7 +17,7 @@ from types import SimpleNamespace
 from xdog.agent import Agent
 from xdog.agent.capabilities.runtime import ParentPort
 from xdog.agent.extensions.runtime import ExtensionRuntime
-from xdog.agent.skills import SkillManager,packaged_skills
+from xdog.agent.skills import SkillRepo,packaged_skills
 from xdog.skills.goal.host import OperationContext
 from xdog.skills.goal.models import Goal,Owner
 from xdog.skills.goal import store as installed
@@ -29,7 +29,7 @@ assert 'xdog-skills' in names and 'xdog-goal' not in names
 blocked=('xdog.claw','xdog.coding','xdog.eyes','xdog.flow','xdog.tui','xdog.site')
 assert not names.intersection({'xdog-claw','xdog-coding','xdog-eyes','xdog-flow','xdog-tui','xdog-site'})
 async def main():
- root=Path.cwd(); manager=SkillManager(root/'not-created-shared-skills')
+ root=Path.cwd(); manager=SkillRepo().register(directory=root/'not-created-shared-skills')
  for slug in ('goal','plan'):
   item=manager.load_skill(slug)
   assert item is not None and item.packaged and item.content

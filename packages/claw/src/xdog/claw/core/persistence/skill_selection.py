@@ -7,7 +7,7 @@ import re
 import tempfile
 from pathlib import Path
 
-from xdog.agent.skills.manager import is_valid_skill_name
+from xdog.agent.skills.repo import is_valid_skill_name
 
 
 def validate(value: object) -> tuple[str, ...]:

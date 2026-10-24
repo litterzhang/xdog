@@ -60,9 +60,9 @@ def test_explicit_missing_skill_fails_constructor_read_and_atomic_selection(mana
 def test_active_selection_requires_manager_or_complete_prepared_placement():
     from xdog.agent import Agent
 
-    with pytest.raises(ValueError, match='SkillManager'):
+    with pytest.raises(ValueError, match='SkillRepo'):
         Agent(lambda *_: None, active_skills=('absent',))
-    with pytest.raises(ValueError, match='SkillManager'):
+    with pytest.raises(ValueError, match='SkillRepo'):
         SkillPlacement.read(None, ('absent',))
 
 

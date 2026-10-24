@@ -3,6 +3,7 @@
 Only fake installed metadata/providers are used: no optional business package,
 model, observer, or application runtime is needed for these lifecycle tests.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -371,11 +372,16 @@ async def test_failed_close_settles_other_bindings_and_retires_all_tools(install
 
     assert capabilities.default_skills == frozenset()
 
+
 async def test_parent_port_is_frozen_and_forwarded_without_private_host_objects(installed):
     provider = Provider("sample")
     runtime, _ = installed(provider)
     parent = runtime.ParentPort(
-        agent=object(), extensions=object(), children=object(), valid=lambda: True, user_authorized=lambda: False,
+        agent=object(),
+        extensions=object(),
+        children=object(),
+        valid=lambda: True,
+        user_authorized=lambda: False,
     )
     with pytest.raises(FrozenInstanceError):
         parent.children = object()
@@ -401,6 +407,7 @@ async def test_descriptor_tools_bind_their_own_execute_and_preserve_arguments(in
         async def execute(*args, **kwargs):
             calls.append((name, args, kwargs))
             return name
+
         return SimpleNamespace(name=name, description=f"Tool {name}", parameters={"type": "object"}, execute=execute)
 
     first, second = descriptor("first"), descriptor("second")
@@ -435,8 +442,7 @@ async def test_actual_agent_tool_and_structured_result_keep_identity(installed):
 
     native = AgentTool(name="native", execute=execute)
     descriptor = SimpleNamespace(name="descriptor", description="", parameters={}, execute=execute)
-    runtime, _ = installed(Provider("sample", Binding(tools=(native, descriptor)),
-                                    tool_names=("native", "descriptor")))
+    runtime, _ = installed(Provider("sample", Binding(tools=(native, descriptor)), tool_names=("native", "descriptor")))
     capabilities = runtime.CapabilitySet("session")
     try:
         await capabilities.start(object())
@@ -479,10 +485,14 @@ async def test_saved_data_never_selects_code_or_additional_providers(installed, 
     provider = Provider("installed")
     runtime, entries = installed(provider)
     monkeypatch.setattr(builtins, "__import__", guarded_import)
-    host = SimpleNamespace(state={
-        "provider": "untrusted_capability:provider", "module": "untrusted_capability",
-        "entry_points": {"xdog.capabilities": "untrusted_capability:provider"}, "code": str(payload),
-    })
+    host = SimpleNamespace(
+        state={
+            "provider": "untrusted_capability:provider",
+            "module": "untrusted_capability",
+            "entry_points": {"xdog.capabilities": "untrusted_capability:provider"},
+            "code": str(payload),
+        }
+    )
     capabilities = runtime.CapabilitySet("session")
     try:
         await capabilities.start(host)
@@ -568,7 +578,11 @@ async def test_stale_parent_is_rejected_before_any_binding_is_attached(installed
     runtime, _ = installed(provider)
     capabilities = runtime.CapabilitySet("session")
     parent = runtime.ParentPort(
-        agent=object(), extensions=object(), children=object(), valid=lambda: False, user_authorized=lambda: True,
+        agent=object(),
+        extensions=object(),
+        children=object(),
+        valid=lambda: False,
+        user_authorized=lambda: True,
     )
     try:
         await capabilities.start(object())
@@ -589,32 +603,48 @@ def test_duplicate_declared_tool_names_are_rejected_before_open(installed):
 
 
 def test_optional_integrations_are_metadata_not_an_execution_or_storage_start(installed):
-    provider = Provider('metadata_only', scopes=('group',))
-    provider.optional_requirements = ('acp',)
+    provider = Provider("metadata_only", scopes=("group",))
+    provider.optional_requirements = ("acp",)
     runtime, _ = installed(provider)
-    capabilities = runtime.CapabilitySet('group')
+    capabilities = runtime.CapabilitySet("group")
     assert capabilities.requirements == frozenset()
-    assert capabilities.optional_requirements == frozenset({'acp'})
+    assert capabilities.optional_requirements == frozenset({"acp"})
     assert not provider.hosts and not capabilities.tools
-    provider.optional_requirements = ('acp', None)
-    with pytest.raises(ValueError, match='metadata'):
-        runtime.CapabilitySet('group')
+    provider.optional_requirements = ("acp", None)
+    with pytest.raises(ValueError, match="metadata"):
+        runtime.CapabilitySet("group")
 
 
 def test_declared_native_commands_are_inert_and_do_not_claim_builtin_controls(installed):
-    provider = Provider('contribution', scopes=('session',))
-    provider.command_names = ('native-command',)
+    provider = Provider("contribution", scopes=("session",))
+    provider.command_names = ("native-command",)
     runtime, _ = installed(provider)
-    capabilities = runtime.CapabilitySet('session')
-    assert capabilities.declared_commands == frozenset({'native-command'})
+    capabilities = runtime.CapabilitySet("session")
+    assert capabilities.declared_commands == frozenset({"native-command"})
     assert not provider.hosts and not capabilities.tools
 
 
-@pytest.mark.parametrize("value", [
-    None, "sample", 1, {"sample"}, {"sample": True}, (None,), (1,), ("",),
-    ("two words",), ("../sample",), ("sample.md",), ("-sample",), ("1sample",),
-    ("a" * 65,), ("sample", "sample"), ["sample", "sample"],
-])
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        "sample",
+        1,
+        {"sample"},
+        {"sample": True},
+        (None,),
+        (1,),
+        ("",),
+        ("two words",),
+        ("../sample",),
+        ("sample.md",),
+        ("-sample",),
+        ("1sample",),
+        ("a" * 65,),
+        ("sample", "sample"),
+        ["sample", "sample"],
+    ],
+)
 def test_invalid_default_skills_are_rejected_during_discovery(installed, value):
     provider = Provider("sample")
     provider.default_skills = value
@@ -782,26 +812,32 @@ async def test_default_skills_do_not_leak_during_or_after_failed_start(installed
 
 async def test_skill_only_provider_metadata_and_binding_need_no_tools_or_model(installed, tmp_path):
     from xdog.agent.capabilities import CapabilityAssembly
-    from xdog.agent.skills import SkillManager
+    from xdog.agent.skills import SkillRepo
 
-    provider = Provider('instructions', scopes=('application',), tool_names=())
-    provider.skill_names = ('guard',)
-    provider.default_skills = ('guard',)
+    provider = Provider("instructions", scopes=("application",), tool_names=())
+    provider.skill_names = ("guard",)
+    provider.default_skills = ("guard",)
     runtime, _ = installed(provider)
-    capabilities = runtime.CapabilitySet('application')
+    capabilities = runtime.CapabilitySet("application")
     assembly = CapabilityAssembly(capabilities)
-    assert capabilities.declared_skills == assembly.declared_skills == {'guard'}
+    assert capabilities.declared_skills == assembly.declared_skills == {"guard"}
     assert not capabilities.tools and not capabilities.default_skills and not provider.hosts
-    path = tmp_path / 'guard'
+    path = tmp_path / "guard"
     path.mkdir()
-    (path / 'SKILL.md').write_text('---\nname: guard\ndescription: instructions only\n---\nSKILL_ONLY_BODY')
+    (path / "SKILL.md").write_text("---\nname: guard\ndescription: instructions only\n---\nSKILL_ONLY_BODY")
     owner = runtime.ApplicationPort()
     await capabilities.start(owner)
-    agent = assembly.create_agent(lambda *_: pytest.fail('Metadata/assembly cannot call a model'),
-                                   skills=SkillManager(tmp_path, packaged={}))
+    agent = assembly.create_agent(
+        lambda *_: pytest.fail("Metadata/assembly cannot call a model"),
+        skill_repo=SkillRepo(builtin=False, packaged={}).register(directory=tmp_path, name="shared"),
+    )
     try:
-        assert provider.binding.tools == () and capabilities.tools == () and agent.state.tools == ()
-        assert agent.active_skills == ('guard',) and 'SKILL_ONLY_BODY' in str(agent.state.system_prompt)
+        assert (
+            provider.binding.tools == ()
+            and capabilities.tools == ()
+            and [t.name for t in agent.local_tools] == ["skill"]
+        )
+        assert agent.active_skills == ("guard",) and "SKILL_ONLY_BODY" in str(agent.state.system_prompt)
         assert capabilities.owner_loop is asyncio.get_running_loop()
         assert provider.hosts == [owner]
     finally:
@@ -813,15 +849,15 @@ async def test_skill_only_provider_metadata_and_binding_need_no_tools_or_model(i
 async def test_runtime_extension_only_provider_needs_no_skill_or_tool(installed):
     from xdog.agent.capabilities import CapabilityAssembly
 
-    provider = Provider('runtime-extension', scopes=('application',), tool_names=())
+    provider = Provider("runtime-extension", scopes=("application",), tool_names=())
     runtime, _ = installed(provider)
-    capabilities = runtime.CapabilitySet('application')
+    capabilities = runtime.CapabilitySet("application")
     before = asyncio.all_tasks()
     await capabilities.start(runtime.ApplicationPort())
     try:
         assembly = CapabilityAssembly(capabilities)
         assert not assembly.tools and not assembly.declared_skills and not assembly.default_skills
-        assert not hasattr(provider, 'skill_names') and not hasattr(provider, 'default_skills')
+        assert not hasattr(provider, "skill_names") and not hasattr(provider, "default_skills")
         marker = SimpleNamespace(valid=lambda: True)
         capabilities.attach(marker)
         assert provider.binding.parents == [marker]
@@ -835,11 +871,11 @@ async def test_runtime_extension_only_provider_needs_no_skill_or_tool(installed)
     assert provider.binding.closes == 1
 
 
-@pytest.mark.parametrize('metadata', [('duplicate', 'duplicate'), ('bad/name',), 'not-a-tuple'])
+@pytest.mark.parametrize("metadata", [("duplicate", "duplicate"), ("bad/name",), "not-a-tuple"])
 def test_optional_discoverable_skill_metadata_is_validated_without_activation(installed, metadata):
-    provider = Provider('metadata')
+    provider = Provider("metadata")
     provider.skill_names = metadata
     runtime, _ = installed(provider)
-    with pytest.raises(ValueError, match='metadata'):
-        runtime.discover('session')
+    with pytest.raises(ValueError, match="metadata"):
+        runtime.discover("session")
     assert not provider.hosts

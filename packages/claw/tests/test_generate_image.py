@@ -11,7 +11,6 @@ from unittest.mock import AsyncMock, Mock
 import httpx
 import pytest
 from click.testing import CliRunner
-from xdog.agent.tools import ToolContext
 from xdog.ai.providers.antigravity import AntigravityProvider
 from xdog.ai.providers.runtime import Runtime
 from xdog.ai.types import GeneratedImage, ImageContent, ImageGenerationRequest, ImageGenerationResponse, Model
@@ -20,7 +19,7 @@ from xdog.ai.vendors.antigravity import AntigravityVendor
 from xdog.ai.vendors.antigravity._auth import Credentials
 from xdog.claw.cli.cli import cli
 from xdog.claw.config import ClawConfig, save_config
-from xdog.claw.core.tools import new_tool_registry
+from xdog.claw.core.tools import new_tool_repo
 from xdog.claw.core.tools import tool_generate_image as images
 
 PNG = base64.b64decode(
@@ -244,8 +243,8 @@ async def test_total_deadline(tmp_path, runtime, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_tool_is_registered_and_returns_paths(tmp_path, runtime):
-    assert "generate_image" in new_tool_registry().registered_names()
-    tool = new_tool_registry().create_tools(names=("generate_image",), context=ToolContext(image_model=IMAGE_MODEL))[0]
+    assert "generate_image" not in new_tool_repo().names()
+    tool = new_tool_repo(("generate_image",), image_model=IMAGE_MODEL).get("generate_image")
     result = await tool.execute(
         "id", {"prompt": "test", "model": "antigravity/another-image"}, ctx={"workspace_dir": str(tmp_path)},
     )

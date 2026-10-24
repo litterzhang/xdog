@@ -61,7 +61,7 @@ PACKAGES: tuple[Package, ...] = (
         summary=(
             "One tool-calling loop with structured history, steering, follow-ups, cancellation and "
             "versioned snapshots.",
-            "Hosts own ToolRegistry, separate McpRegistry, capability bindings, permissions and child runtimes. "
+            "Hosts own ToolRepo, separate McpRegistry, capability bindings, permissions and child runtimes. "
             "The SDK supplies reusable contracts rather than a global execution service.",
         ),
         highlights=(

@@ -59,14 +59,14 @@ async def test_preconnected_mcp_binds_separately_and_management_never_publishes_
     session = await runtime.prepare_session(allow_reset=False)
     agent = session.agent
     assert isinstance(runtime.mcp, McpRegistry) and agent.mcp_registry is runtime.mcp
-    assert tuple(runtime.tool_registry.tools) == agent.local_tools
+    assert tuple(runtime.tool_repo.tools) == agent.local_tools
     assert tuple(agent.state.tools) == (*agent.local_tools, *remote)
     assert not {tool.name for tool in remote} & {tool.name for tool in runtime.tools}
     assert not hasattr(runtime, '_mcp_tools')
     publish = Mock(wraps=agent.set_tools)
-    register = Mock(wraps=runtime.tool_registry.replace_source)
+    register = Mock(wraps=runtime.publish_tools)
     monkeypatch.setattr(agent, 'set_tools', publish)
-    monkeypatch.setattr(runtime.tool_registry, 'replace_source', register)
+    monkeypatch.setattr(runtime, 'publish_tools', register)
     agent.set_active_tools(['current_time', remote[0].name], expected_revision=agent.tool_selection_revision)
     await runtime.manage_mcp('refresh', 'fixture')
     assert agent.active_tool_selection == ('current_time', remote[0].name)
@@ -75,7 +75,7 @@ async def test_preconnected_mcp_binds_separately_and_management_never_publishes_
     assert tuple(agent.state.tools) == agent.local_tools
     await runtime.manage_mcp('connect', 'fixture')
     assert agent.active_tool_selection == ('current_time',)  # Reconnection cannot restore a retired selection.
-    assert tuple(runtime.tool_registry.tools) == agent.local_tools
+    assert tuple(runtime.tool_repo.tools) == agent.local_tools
     publish.assert_not_called()
     register.assert_not_called()
     assert not host.calls and not remote_effects(host)
@@ -116,7 +116,7 @@ async def test_child_mcp_manifest_preserves_host_permissions_and_never_closes_pa
     assert runtime.mcp.is_current_tool(remote)
     assert runtime.mcp.status()[0]['state'] == 'connected'
     assert session.agent.mcp_registry is runtime.mcp
-    assert remote.name not in {tool.name for tool in runtime.tool_registry.tools}
+    assert remote.name not in {tool.name for tool in runtime.tool_repo.tools}
 
 
 @pytest.mark.parametrize('revocation', ['allow-tools', 'refresh', 'selection'])
@@ -213,4 +213,4 @@ async def test_full_mcp_prompt_and_ui_inventory_survive_disabled_native_tools(ho
     assert len(remote_effects(host)) == int(native)
     assert any(tool is remote for tool in agent.state.tools)
     assert not any(tool is remote for tool in agent.local_tools)
-    assert tuple(runtime.tool_registry.tools) == agent.local_tools
+    assert tuple(runtime.tool_repo.tools) == agent.local_tools

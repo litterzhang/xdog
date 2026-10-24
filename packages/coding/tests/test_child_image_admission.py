@@ -47,7 +47,7 @@ async def test_actual_host_child_checkpoint_is_durable_before_provider_and_cance
         session = AgentSession(agent=Agent(adapter, config=AgentConfig(model='offline/child')),
             session_data=store.create_session(model='offline/child', working_dir=tmp_path), session_manager=store,
             settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-            tool_registry=None, bash=None, permissions=PermissionManager('deny'))
+            tool_repo=None, bash=None, permissions=PermissionManager('deny'))
     else:
         config = ClawConfig(model='offline/child', data_dir=str(tmp_path / 'data'),
             socket_path=str(tmp_path / 'gateway.sock'), pid_file=str(tmp_path / 'gateway.pid'),

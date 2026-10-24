@@ -109,7 +109,7 @@ async def lifecycle(root):
                              + resource.joinpath('main.py').read_bytes()).hexdigest()
     runtime.workspace_dir.joinpath('result.txt').write_text('actual installed result')
     try:
-        assert runtime.skill_manager.load_skill('goal').packaged
+        assert runtime.skill_repo.load_skill('goal').packaged
         await app.start()
         host = runtime.capabilities.get('goal')
         assert runtime._active_session is None and not model.calls

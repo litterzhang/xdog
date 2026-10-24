@@ -9,7 +9,7 @@ to instantiate tools::
 """
 
 from xdog.agent.skills.tool import create_skill_tool
-from xdog.agent.tools.registry import ToolContext, ToolFactory, ToolRegistration, ToolRegistry
+from xdog.agent.tools.repo import ToolRegistration, ToolRepo
 from xdog.agent.tools.tool_bash import create_bash_tool
 from xdog.agent.tools.tool_current_time import create_current_time_tool
 from xdog.agent.tools.tool_embed import create_embed_tool_from_fn
@@ -25,8 +25,6 @@ __all__ = [
     "create_web_search_tool_from_fn",
     "create_embed_tool_from_fn",
     "create_submit_result_tool",
-    "ToolContext",
-    "ToolFactory",
     "ToolRegistration",
-    "ToolRegistry",
+    "ToolRepo",
 ]

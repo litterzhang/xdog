@@ -8,11 +8,13 @@ controller per active session, durable context and host-owned execution policy.
 ## Application composition
 
 `core/sdk.py` resolves layered configuration and the actual model adapter, creates
-a host-owned `ToolRegistry`, and builds `xdog.agent.Agent` inside an `AgentSession`.
-The SDK supplies default factories for filesystem/bash/current-time tools. Installed
+a host-owned `ToolRepo`, and builds `xdog.agent.Agent` inside an `AgentSession`.
+The SDK constructs actual filesystem/bash/current_time tools by default;
+`builtin=False` starts empty. Register actual tools, select identity-preserving
+subsets, and explicitly unregister before replacing a name. Installed
 capabilities and caller-provided tools join that host's inventory; imports do not
 register mutable process-global tools. MCP uses `xdog.agent.mcp.McpRegistry`, not
-`ToolRegistry`, while Agent merges both visible inventories for the same model loop.
+`ToolRepo`, while Agent merges both visible inventories for the same model loop.
 
 Interactive TUI and one-shot print mode adapt that same session core. The TUI renders
 Agent events and manages local drafts/approvals, not another execution engine.
@@ -99,8 +101,10 @@ metadata and durable original-history archives. Trusted code is not OS-isolated.
 
 ## Skills, Goal and installed capabilities
 
-Skills are discovered through Agent's generic `SkillManager` and `SKILL.md` files,
-not retired Coding-specific skill/extension loaders. Session bodies belong in the
+Skills are discovered through Agent's `SkillRepo()` packaged catalog and explicit
+`.register(directory=path, name="host")` sources, not retired Coding loaders.
+Different same-slug definitions and directory-name conflicts fail. Discovery does
+not inject bodies; the read-only `skill` list/load entry retrieves instructions. Session bodies belong in the
 cacheable prompt prefix; turn-scoped bodies are request messages. Trusted extensions
 retain hooks, commands, basic input/select/confirm dialogs and providers, not model
 tools, custom renderers, forms or terminal interception.

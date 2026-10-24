@@ -1,5 +1,11 @@
 # ACP Session Routing Implementation Plan
 
+> **Historical / superseded SDK interface — 2026-10-24:** Historical ACP routing plan: code and fixture signatures below are a design baseline, not current SDK integration instructions.
+> Current integration uses ToolRepo / SkillRepo, explicit registration and provider
+> selection before open; see [SDK capability assembly](../../sdk-capability-assembly.md).
+> Old names and result counts are retained as evidence, not compatibility aliases.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 让 Eyes 通过 ACP 将任务送到指定 coding session，复用单一执行 owner，并在 TUI 实时和历史中展示；彻底移除上一版 Eyes 专用 event host。

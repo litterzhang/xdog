@@ -16,7 +16,7 @@ from xdog.ai.types import AssistantMessage, DoneEvent, TextContent, ToolCall
 from xdog.ai.utils.event_stream import EventStream
 
 from packages.coding.tests.test_child_agents import create
-from packages.coding.tests.test_tool_registry import assert_inventory
+from packages.coding.tests.test_tool_repo import assert_inventory
 
 
 def bind_remote(session, tools):
@@ -44,7 +44,7 @@ async def test_local_republication_never_adopts_mcp_or_reenables_explicit_select
             assert any(tool is remote for tool in session.agent.state.tools)
             assert not session.agent.active_tools
         revision = session.agent.tool_selection_revision
-        session.tool_registry.publish(session.agent)
+        session.tool_repo.publish(session.agent)
         assert session.agent.tool_selection_revision == revision
         await session.initialize_capabilities()
         assert session.agent.mcp_registry is mcp
@@ -109,7 +109,7 @@ async def test_real_mcp_tool_uses_merged_agent_inventory_and_original_permission
         await session.manage_mcp('connect', 'fixture')
         remote = next(tool for tool in session.mcp.tools() if 'value' in tool.parameters.get('properties', {}))
         assert_inventory(session)
-        assert all(tool is not remote for tool in session.tool_registry.tools)
+        assert all(tool is not remote for tool in session.tool_repo.tools)
         if readonly:
             session.access_control(True)
         def stream(model, context, options):
@@ -158,7 +158,7 @@ async def test_child_mcp_proxies_are_identity_split_and_parent_revocation_stays_
     original_factory = session.children.create
     async def factory(spec, publish):
         child = await original_factory(spec, publish)
-        registry = session.children.tool_registries[spec.id]
+        registry = session.children.tool_repos[spec.id]
         child_mcp = session.children.mcp_registries[spec.id]
         assert child_mcp is child.mcp_registry and child_mcp is not mcp
         assert child_mcp is session.children.runtime.mcp_registries[spec.id]
@@ -257,7 +257,7 @@ async def test_auth_forget_persists_narrowing_and_mcp_reregistration_does_not_re
         assert session.session_manager.load_session(session.session_id).active_tools == ('filesystem',)
         mcp.replace_delegated_tools((remote,))
         session.agent.sync_mcp_tools()
-        session.tool_registry.publish(session.agent)
+        session.tool_repo.publish(session.agent)
         assert session.agent.active_tool_selection == ('filesystem',)
         assert any(tool is remote for tool in session.agent.state.tools)
         assert all(tool is not remote for tool in session.agent.local_tools)

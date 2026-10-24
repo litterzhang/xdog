@@ -8,7 +8,7 @@ caller. These tests pin the contract on this side of it.
 from pathlib import Path
 
 import pytest
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.claw.core.tools.tool_skill import SkillTool
 
 
@@ -22,13 +22,13 @@ def ctx(tmp_path: Path) -> dict:
         "Read `references/CHECKLIST.md`, then run ${SKILL_DIR}/scripts/go.sh",
         encoding="utf-8",
     )
-    return {"_skill_manager": SkillManager(shared_dir=shared, packaged={})}
+    return {"_skill_repo": SkillRepo(builtin=False).register(directory=shared, name="shared")}
 
 
 async def test_loading_a_skill_tells_the_agent_where_its_files_are(ctx: dict) -> None:
     out = await SkillTool().load(ctx, slug="deploy")
 
-    skill_dir = str(ctx["_skill_manager"].load_skill("deploy").directory)
+    skill_dir = str(ctx["_skill_repo"].load_skill("deploy").directory)
     assert skill_dir in out, "a relative path is unusable without the directory"
     assert "${SKILL_DIR}" not in out, "the variable must be substituted"
     assert f"{skill_dir}/scripts/go.sh" in out

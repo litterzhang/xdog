@@ -8,9 +8,9 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from xdog.agent import Agent, AgentConfig, AgentTool, AgentToolResult
+from xdog.agent import Agent, AgentConfig, AgentTool, AgentToolResult, ToolRepo
 from xdog.agent.core import StreamFn
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.ai.types import (
     AssistantMessage,
     Context,
@@ -27,7 +27,6 @@ from xdog.flow.codegen import generate
 from xdog.flow.executor import execute
 from xdog.flow.models import OUT_NODE_ID, EdgeDef, InheritSpec, NodeDef, Port, WorkflowDef
 from xdog.flow.runners import SdkRunner
-from xdog.flow.tools import ToolRegistry
 
 
 class Adapter:
@@ -122,7 +121,8 @@ async def snapshot(root: Path) -> dict[str, Any]:
     write_skill(root / "ancestor-skills", "old-once", "turn", "ANCESTOR_TURN_BODY")
     source = Agent(
         Adapter(("ancestor/old",)), config=AgentConfig(model="ancestor/old", system_prompt="ANCESTOR_BASE"),
-        skills=SkillManager(root / "ancestor-skills", packaged={}), active_skills=("old-guard", "old-once"),
+        skills=SkillRepo(builtin=False).register(directory=root / "ancestor-skills", name="shared"),
+        active_skills=("old-guard", "old-once"),
     )
     source.append_message(UserMessage(content="ancestor question", timestamp=0))
     source.append_message(AssistantMessage(content=(TextContent(text="ancestor answer"),), timestamp=0))
@@ -143,10 +143,11 @@ def normalized(value: Any) -> Any:
 
 async def interpreted(
     node: NodeDef, root: Path, adapter: StreamFn, saved: dict[str, Any], *, system_prompt: str,
-    registry: ToolRegistry | None = None, confined: bool = False,
+    registry: ToolRepo | None = None, confined: bool = False,
 ) -> tuple[object, int, dict[str, Any]]:
     runner = SdkRunner(
-        stream_fn_factory=lambda model: adapter, tool_registry=registry or ToolRegistry(), web_search_fn_factory=None,
+        stream_fn_factory=lambda model: adapter, tool_repo=registry or ToolRepo(builtin=False),
+        web_search_fn_factory=None,
         skill_dirs=[root / "skills"], workspace=root / "runtime",
         confine_to=[root / "runtime"] if confined else None,
     )
@@ -275,7 +276,7 @@ async def test_generated_structured_tool_sink_context_and_tokens_match_interpret
     module["_SESSIONS"]["ancestor"] = saved
     module["_REGISTRY"].register(tool)
     output, tokens = await module["node_child"](generated_adapter, module["RuntimeContext"](1, "child", "test"))
-    registry = ToolRegistry()
+    registry = ToolRepo(builtin=False)
     registry.register(tool)
     value, sdk_tokens, sdk_saved = await interpreted(
         node, tmp_path, sdk_adapter, saved, system_prompt="NODE_BASE", registry=registry, confined=True,

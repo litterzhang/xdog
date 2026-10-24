@@ -23,7 +23,7 @@ def session(tmp_path):
     agent.replace_messages([UserMessage(content="original"), AssistantMessage(content=(TextContent(text="answer"),))])
     result = AgentSession(agent=agent, session_data=data, session_manager=manager,
                           settings=SettingsManager(global_path=tmp_path / "global.json", project_dir=workspace),
-                          tool_registry=None, bash=None, working_dir=workspace)
+                          tool_repo=None, bash=None, working_dir=workspace)
     result._persist()
     return result
 

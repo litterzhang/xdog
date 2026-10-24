@@ -463,7 +463,7 @@ def test_pure_cli_module_imports_no_agent_ai() -> None:
     src = generate(parse_workflow(_cli_wf()))
     assert "import ai" not in src
     assert "from agent" not in src
-    assert "class ToolRegistry" not in src
+    assert "class ToolRepo" not in src
     assert "async def _run_agent" not in src
 
 
@@ -497,7 +497,8 @@ def test_sdk_module_still_imports_agent_ai() -> None:
     }
     src = generate(parse_workflow(d))
     assert "from xdog import ai" in src and "from xdog.agent import Agent" in src
-    assert "class ToolRegistry" in src
+    assert "from xdog.agent import Agent, ToolRepo" in src
+    assert "class ToolRepo" not in src
 
 
 def test_pure_cli_bundle_drops_ai_agent(tmp_path: pathlib.Path) -> None:

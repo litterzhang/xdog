@@ -41,7 +41,7 @@ from xdog.agent.context_messages import ContextMessages
 from xdog.agent.extensions.dialogs import DialogBroker
 from xdog.agent.extensions.runtime import ExtensionRuntime
 from xdog.agent.extensions.state import ExtensionEntries
-from xdog.agent.tools import ToolRegistration
+from xdog.agent.tools import ToolRepo
 from xdog.agent.types import HandledInput
 from xdog.ai.types import (
     AssistantMessage,
@@ -135,7 +135,7 @@ class AgentSession:
         if effective_stream_fn is None:
             raise ValueError("Model adapter must be prepared before Agent construction")
         data = prepared or read(runtime.transcript_store, session_meta, runtime.workspace_dir,
-                                runtime.model, include_history=False, skills=runtime.skill_manager,
+                                runtime.model, include_history=False, skills=runtime.skill_repo,
                                 extension_root=runtime.extension_root, stream_fn=effective_stream_fn)
         if (data.meta != session_meta or data.workspace != runtime.workspace_dir
                 or data.store_root != runtime.transcript_store._sessions_dir
@@ -212,7 +212,7 @@ class AgentSession:
             # The index goes in the system prompt and a loaded body goes after
             # it; the Agent decides both, so the group's prompt builder no
             # longer carries a skills summary of its own.
-            skills=getattr(runtime, "skill_manager", None),
+            skills=getattr(runtime, "skill_repo", None),
             active_skills=tuple(sorted(self._active_skills)),
             prepared_skills=data.skills,
             tool_ctx={
@@ -225,7 +225,7 @@ class AgentSession:
                 "data_dir": str(runtime.data_dir),
                 "_memory_search": runtime.memory.search if runtime.memory else None,
                 "_memory_manager": runtime.memory,
-                "_skill_manager": runtime.skill_manager,
+                "_skill_repo": runtime.skill_repo,
             },
             transform_context=self._extension_context,
             before_tool_call=self._before_tool_call,
@@ -236,7 +236,7 @@ class AgentSession:
         self._human_input_unsubscribe = self._agent.subscribe(self._observe_human_input)
         self.children = ClawChildren(self, data.children)
         self._child_tools = self.children.runtime.tools()
-        self._tool_registration: ToolRegistration
+        self._tool_repo: ToolRepo
         runtime.publish_tools(self)
         if self._tool_selection_restore_pending:
             self._agent.set_active_tools([], expected_revision=self._agent.tool_selection_revision)
@@ -296,7 +296,10 @@ class AgentSession:
         self._source_call_ids.clear()
 
     def dispose(self) -> None:
-        self._tool_registration.close()  # A stale session cannot revoke a newer source binding.
+        # Clear only the inventory this session actually published. A retired
+        # session cannot revoke another session's replacement repository.
+        for name in self._tool_repo.names():
+            self._tool_repo.unregister(name)
         self._human_input_unsubscribe()
         self._human_inputs.clear()
         self.children.runtime.close()
@@ -468,7 +471,7 @@ class AgentSession:
             if self.extensions.enabled or self.extensions.commands():
                 from xdog.claw.core.command_names import SLASH_COMMANDS
                 skill_names = await run_owned(
-                    lambda: {skill.slug for skill in self._runtime.skill_manager.list_skills()})
+                    lambda: {skill.slug for skill in self._runtime.skill_repo.list_skills()})
                 self.extensions.reserve_commands(frozenset(SLASH_COMMANDS), skill_commands=frozenset(skill_names))
                 await self.extensions.initialize()
             if self._agent.state.model.startswith("ext-"):
@@ -668,12 +671,12 @@ class AgentSession:
 
     async def skills_control(self, action: str, slug: str = '',
                              alive: Callable[[], bool] = lambda: True) -> dict[str, Any]:
-        from xdog.agent.skills.manager import is_valid_skill_name
+        from xdog.agent.skills.repo import is_valid_skill_name
         if (not isinstance(action, str) or not isinstance(slug, str)
                 or action not in {'list', 'load', 'unload'}
                 or action != 'list' and slug != 'all' and not is_valid_skill_name(slug)):
             raise ValueError('Use /skills [load SLUG|unload SLUG|unload all]')
-        manager = self._runtime.skill_manager
+        manager = self._runtime.skill_repo
         if action != 'list':
             self._children_idle()
             if self._agent.is_streaming:
@@ -706,7 +709,7 @@ class AgentSession:
         async def commit() -> None:
             from xdog.agent.skills.types import SkillPlacement
             effective = tuple(sorted(self._runtime.capability_assembly.active_skills(chosen)))
-            placement = await run_owned(SkillPlacement.read, self._runtime.skill_manager, effective)
+            placement = await run_owned(SkillPlacement.read, self._runtime.skill_repo, effective)
             await run_owned(self._store.save_active_skills, self._meta.session_id, chosen)
             self._active_skills = frozenset(chosen)
             if update_agent:
@@ -960,7 +963,7 @@ class AgentSession:
         if self._agent.active_skills != active:
             from xdog.agent.skills.types import SkillPlacement
             agent = self._agent
-            placement = await run_owned(SkillPlacement.read, self._runtime.skill_manager, active)
+            placement = await run_owned(SkillPlacement.read, self._runtime.skill_repo, active)
             if self._agent is not agent or self.extensions._closed:
                 raise RuntimeError('Skill prompt owner retired during preparation')
             agent.set_active_skills(active, prepared_skills=placement)

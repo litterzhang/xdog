@@ -33,7 +33,7 @@ async def eyes_control(isolated_daemon_directory):
 
 
 @pytest.fixture
-def coding_session(tmp_path, host_skill_manager):
+def coding_session(tmp_path, host_skill_repo):
     """Eyes-owned host fixture: real SDK skills, no changes to Coding's fixture."""
     from xdog.agent import Agent, AgentConfig
     from xdog.ai.types import AssistantMessage
@@ -46,10 +46,10 @@ def coding_session(tmp_path, host_skill_manager):
     data = manager.create_session(model='test', working_dir=tmp_path)
     session = AgentSession(
         agent=Agent(lambda *_: EventStream.empty(AssistantMessage(content=())),
-                    config=AgentConfig(model='test'), skills=host_skill_manager),
+                    config=AgentConfig(model='test'), skills=host_skill_repo),
         session_data=data, session_manager=manager,
         settings=SettingsManager(global_path=tmp_path / 'settings.json'),
-        tool_registry=None, bash=None, working_dir=tmp_path,
+        tool_repo=None, bash=None, working_dir=tmp_path,
     )
     yield session
     session.dispose()
@@ -114,7 +114,7 @@ async def test_file_to_acp_coding_turn_then_self_edit_is_automatically_consumed(
 
 
 async def test_five_offline_callbacks_automatically_form_one_tui_batch_and_survive_owner_exit(
-    tmp_path, observer_data, host_skill_manager, assert_host_goal_discoverable, eyes_control,
+    tmp_path, observer_data, host_skill_repo, assert_host_goal_discoverable, eyes_control,
 ):
     from xdog.agent import Agent, AgentConfig
     from xdog.ai.types import AssistantMessage, TextContent, UserMessage
@@ -151,10 +151,10 @@ async def test_five_offline_callbacks_automatically_form_one_tui_batch_and_survi
                 await wait_for(lambda:len(store.records(data.session_id,tmp_path))==index+1)
             assert {row.status for row in store.records(data.session_id,tmp_path)}=={'pending'}
             assert not turns and not manager.load_session(data.session_id).messages
-            session = AgentSession(agent=Agent(model,config=AgentConfig(model='test'), skills=host_skill_manager),
+            session = AgentSession(agent=Agent(model,config=AgentConfig(model='test'), skills=host_skill_repo),
                 session_data=manager.load_session(data.session_id),session_manager=manager,
                 settings=SettingsManager(global_path=tmp_path/'settings.json'),
-                working_dir=tmp_path,bash=None,tool_registry=None)
+                working_dir=tmp_path,bash=None,tool_repo=None)
             ui = InteractiveMode(session)
             await asyncio.to_thread(ui._session_events.start)
             ui._replay_history()
@@ -419,7 +419,7 @@ async def test_online_file_callbacks_form_next_five_message_batch_and_freeze_sel
 
 
 async def sdk_file_batch(
-    tmp_path, observer_data, route_count, host_skill_manager, assert_host_goal_discoverable, eyes_control,
+    tmp_path, observer_data, route_count, host_skill_repo, assert_host_goal_discoverable, eyes_control,
 ):
     from copy import deepcopy
 
@@ -458,10 +458,10 @@ async def sdk_file_batch(
                 await wait_for(lambda:len(store.records(data.session_id,tmp_path))==(index+1)*route_count)
             expected = changes*route_count
             assert not calls and {row.status for row in store.records(data.session_id,tmp_path)}=={'pending'}
-            session = AgentSession(agent=Agent(model,config=AgentConfig(model='test'), skills=host_skill_manager),
+            session = AgentSession(agent=Agent(model,config=AgentConfig(model='test'), skills=host_skill_repo),
                 session_data=manager.load_session(data.session_id),session_manager=manager,
                 settings=SettingsManager(global_path=tmp_path/'settings.json'),
-                working_dir=tmp_path,bash=None,tool_registry=None)
+                working_dir=tmp_path,bash=None,tool_repo=None)
             assert await session.send_message('Process all pending evidence') is not None
             assert len(calls)==1 and len(current_inputs(calls[0]))==expected+1
             assert_host_goal_discoverable(calls[0])
@@ -489,12 +489,12 @@ async def sdk_file_batch(
 
 
 async def test_sdk_only_owner_consumes_five_file_callbacks_without_message_approval(
-    tmp_path, observer_data, host_skill_manager, assert_host_goal_discoverable, eyes_control,
+    tmp_path, observer_data, host_skill_repo, assert_host_goal_discoverable, eyes_control,
 ):
-    await sdk_file_batch(tmp_path,observer_data,1,host_skill_manager,assert_host_goal_discoverable,eyes_control)
+    await sdk_file_batch(tmp_path,observer_data,1,host_skill_repo,assert_host_goal_discoverable,eyes_control)
 
 
 async def test_two_routes_deliver_independent_callbacks_without_a_shared_wake_budget(
-    tmp_path, observer_data, host_skill_manager, assert_host_goal_discoverable, eyes_control,
+    tmp_path, observer_data, host_skill_repo, assert_host_goal_discoverable, eyes_control,
 ):
-    await sdk_file_batch(tmp_path,observer_data,2,host_skill_manager,assert_host_goal_discoverable,eyes_control)
+    await sdk_file_batch(tmp_path,observer_data,2,host_skill_repo,assert_host_goal_discoverable,eyes_control)

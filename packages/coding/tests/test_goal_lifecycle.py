@@ -8,7 +8,7 @@ import sys
 import threading
 
 import pytest
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.coding.core.slash_commands import execute_command
 from xdog.skills.goal.host import OperationContext
 
@@ -146,11 +146,11 @@ async def test_shutdown_releases_registry_and_reopen_retains_main_tasks_without_
         assert host.loop.is_closed() and session._lease is None
         manager, calls = SessionManager(tmp_path / 'sessions'), []
         successor = AgentSession(agent=Agent(scripted(calls),
-                                             skills=SkillManager(tmp_path / "skills"),
+                                             skills=SkillRepo().register(directory=tmp_path / 'skills', name="shared"),
                                              config=AgentConfig(model='test/model'),
             tools=get_default_tools(tmp_path), tool_ctx={'fs_workspace': str(tmp_path)}),
             session_data=manager.load_session(identifier), session_manager=manager,
-            settings=SettingsManager(global_path=tmp_path / 'settings.json'), tool_registry=None, bash=None,
+            settings=SettingsManager(global_path=tmp_path / 'settings.json'), tool_repo=None, bash=None,
             working_dir=tmp_path, permissions=PermissionManager('ask'))
         await successor.send_message('Read current state')
         next_host = successor.capabilities.get('goal')
@@ -209,7 +209,7 @@ async def test_goal_tool_and_commands_are_available_without_default_skill_activa
 
     session, contexts = enabled(tmp_path)
     # Discovery and tool registration must not implicitly activate skill bodies.
-    assert isinstance(session.agent._skills, SkillManager)
+    assert isinstance(session.agent._skills, SkillRepo)
     skill = session.agent._skills.load_skill('goal')
     assert skill is not None and skill.content.strip()
     try:

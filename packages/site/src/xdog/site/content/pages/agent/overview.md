@@ -16,7 +16,7 @@ capabilities automatically. Hosts supply tools, permission hooks and resources.
 ## Highlights
 
 - One model/tool loop with events, identified inputs and owned cancellation
-- Host-owned `ToolRegistry`; separate `McpRegistry` consumed directly by Agent
+- Host-owned `ToolRepo`; separate `McpRegistry` consumed directly by Agent
 - Versioned snapshots with live runtime/permission reinjection, not automatic replay
 - Built-in compaction with automatic mode **off by default**
 - Capability SDK composition and skill discovery separate from body activation

@@ -9,7 +9,7 @@ import threading
 import pytest
 from xdog.agent import Agent, AgentConfig, AgentContext, AgentTool, BeforeToolCallContext, ParentHandle
 from xdog.agent.children import ChildClient, ChildConfig
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.ai.types import AssistantMessage, ToolCall
 
 
@@ -61,7 +61,7 @@ def write_skill(root, slug, text):
 async def test_skills_are_selected_detached_readonly_and_rechecked(tmp_path):
     write_skill(tmp_path, 'allowed', 'ALLOW BODY')
     write_skill(tmp_path, 'private', 'PRIVATE BODY')
-    manager = SkillManager(tmp_path, packaged={})
+    manager = SkillRepo(builtin=False, packaged={}).register(directory=tmp_path, name="shared")
     parent = ParentHandle(alive=lambda: True, tools=lambda: [], skills=lambda: manager)
     child = parent.capture_skills(('allowed',))
     assert [s.slug for s in child.list_skills()] == ['allowed']
@@ -197,7 +197,7 @@ def test_default_parent_skill_catalog_never_follows_fifo_or_symlink(tmp_path):
     directory = root / 'unsafe'
     directory.mkdir(parents=True)
     os.mkfifo(directory / 'SKILL.md')
-    manager = SkillManager(root, packaged={})
+    manager = SkillRepo(builtin=False, packaged={}).register(directory=root, name="shared")
     handle = ParentHandle(alive=lambda: True, tools=lambda: [], skills=lambda: manager)
     with pytest.raises(ValueError, match='unsafe|unavailable'):
         handle.capture_skills(('unsafe',))
@@ -214,7 +214,7 @@ def test_default_parent_skill_catalog_never_follows_fifo_or_symlink(tmp_path):
 def test_host_restricted_parent_catalog_is_authority_not_all_files_on_disk(tmp_path):
     write_skill(tmp_path, 'allowed', 'OK')
     write_skill(tmp_path, 'private', 'PRIVATE')
-    manager = SkillManager(tmp_path, packaged={})
+    manager = SkillRepo(builtin=False, packaged={}).register(directory=tmp_path, name="shared")
     allowed = manager.load_skill('allowed')
     manager.list_skills = lambda: [allowed]
     parent = ParentHandle(alive=lambda: True, tools=lambda: [], skills=lambda: manager)

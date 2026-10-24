@@ -41,26 +41,31 @@ async with Agent(stream_fn, config=AgentConfig(model=model_id),
 
 ## 2. Skill加载
 
-```python
-from xdog.agent.skills import SkillManager, create_skill_tool
+本节示例已迁移到当前 `SkillRepo` 语法，历史 2.4.0 测试结果不因此成为新接口验收。
+不同目录名绑定/技能定义冲突报错，不再按 shared/group 自动覆盖。默认仅索引发现；
+只读 skill 的 list/load 不注入正文。下例 `active_skills` 是宿主的显式选择，不是默认值。
 
-manager = SkillManager(shared_dir=trusted_skill_root)
+
+```python
+from xdog.agent.skills import SkillRepo, create_skill_tool
+
+skills = SkillRepo().register(directory=trusted_skill_root, name="host")
 agent = Agent(
     stream_fn, config=AgentConfig(model=model_id),
-    skills=manager, active_skills=["flow-workflows"],
-    tools=[create_skill_tool(manager, allowed_slugs=["flow-workflows"])],
+    skills=skills, active_skills=["flow"],
+    tools=[create_skill_tool(skills, allowed_slugs=["flow"])],
 )
 ```
 
-- `flow-workflows`由已安装的`xdog-flow`提供；agent不依赖flow才能运行。
-- `skills=manager`配置索引及宿主激活；`create_skill_tool()`是另一项显式注册的只读能力。
+- `flow`由已安装的`xdog-flow`提供；agent不依赖flow才能运行。
+- `skills=skills`配置索引及宿主激活；`create_skill_tool()`是另一项显式注册的只读能力。
 - 工具只提供`list`/`load`，不执行指令、不激活skill、不授予工具权限。
-- 工具allowlist不同时过滤`skills=manager`产生的宿主索引。只想暴露受限工具目录时，
-  不必再把整个manager传给Agent。
+- 工具allowlist不同时过滤`skills=skills`产生的宿主索引。只想暴露受限工具目录时，
+  不必再把整个 repo传给Agent。
 - session skill保持在稳定system prefix；turn skill作为本次运行的请求上下文投影，
   不伪装成普通历史消息。未实际进入模型的拒绝/准备失败不消耗pending skill。
 - 一次运行包括连续工具轮次；已经使用的turn skill在运行结束后退休。
-- 快照保留skill身份摘要和生命周期；恢复通过当前宿主manager重绑，同名内容变化明确拒绝。
+- 快照保留skill身份摘要和生命周期；恢复通过当前宿主 SkillRepo重绑，同名内容变化明确拒绝。
 
 可运行的离线示例：`packages/agent/examples/load_skills.py`。支持默认session加载、
 `--demo-turn`以及`--mode model-load`。
@@ -75,7 +80,7 @@ await agent.aclose()
 
 # 进程B：新的adapter、工具callable、服务对象和权限hook
 agent = Agent(new_stream_fn, config=AgentConfig(model=model_id),
-              tools=new_tools, skills=trusted_manager)
+              tools=new_tools, skills=trusted_skills)
 agent.restore(saved, allowed_models=[model_id])
 # 此时没有模型调用、工具执行或自动压缩。
 async for event in await agent.prompt("Next task"):

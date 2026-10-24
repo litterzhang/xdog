@@ -1,26 +1,16 @@
-"""Skill manager — load, save, list, patch, remove skills.
+"""Host-owned skill sources, independent subsets and progressive disclosure.
 
-Skills come from three tiers, each overriding the one before it:
-
-- **Packaged** — ``<installed package>/skills/<slug>/`` — discovered, read-only
-- **Shared** — ``{data_dir}/skills/`` — available to all groups
-- **Group** — ``{workspace}/skills/`` — specific to one group
-
-Packaged skills arrive with the distributions the user installed, so
-``pip install xdog-flow`` is all it takes for an agent to know how to write a
-flow workflow. They are read-only: they live in site-packages, and a user who
-wants to change one shadows it by saving a skill with the same slug, which
-lands in the shared tier and wins.
-
-New skills are saved to the shared directory by default (so other groups
-benefit). Use ``scope="group"`` to save a group-specific skill.
+Packaged skills are discovered by default. Host directories are explicitly
+registered; conflicting definitions never silently shadow one another. Listing
+returns metadata, body activation belongs to Agent, and reading grants no tools.
 """
 from __future__ import annotations
 
+import copy
 import logging
 import re
 import shutil
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import date
 from pathlib import Path
 
@@ -197,62 +187,171 @@ def _skill_from_text(skill_dir: Path, text: str, *, slug: str = "", packaged: bo
     )
 
 
-class SkillManager:
-    """Manages reusable skills across three tiers, later overriding earlier.
+class SkillRepo:
+    """Packaged instructions plus explicitly registered host sources.
 
-    - ``packaged``: shipped inside installed packages, read-only
-    - ``shared_dir``: skills available to all groups
-    - ``group_dir``: skills specific to one group
+    Discovery is read-only and does not activate bodies or grant tools. Copies
+    and selections borrow sources; they never own a host directory's lifetime.
     """
 
-    def __init__(
-        self,
-        shared_dir: Path,
-        group_dir: Path | None = None,
-        packaged: Mapping[str, Path] | None = None,
-    ) -> None:
-        # Directories are created when a skill is saved, not when one is read.
-        # Constructing a manager to *look at* skills used to create the
-        # directory it looked in — which meant running a flow workflow left an
-        # empty `skills/` beside it, and reading was not read-only.
-        self._shared_dir = shared_dir
-        self._group_dir = group_dir
-        # None means "discover what is installed"; pass {} to opt out, which is
-        # what tests want so an installed package cannot change their fixtures.
-        self._packaged = dict(packaged_skills() if packaged is None else packaged)
+    def __init__(self, *, builtin: bool = True, packaged: Mapping[str, Path] | None = None) -> None:
+        if type(builtin) is not bool:
+            raise TypeError('builtin must be a bool')
+        self._packaged = dict(packaged_skills() if builtin and packaged is None else packaged or {})
+        self._directories: dict[str, Path] = {}
+        self._fixed: dict[str, Skill] = {}
+        self._references: dict[str, tuple[Path, bool]] = {}
+        self._selection: frozenset[str] | None = None
+
+    def register(self, skill: Skill | None = None, *, directory: Path | None = None,
+                 name: str | None = None) -> SkillRepo:
+        """Register a source, rejecting conflicting definitions instead of replacing."""
+        if self._selection is not None:
+            raise ValueError('Register on the original skill repo, not a selected subset')
+        if (skill is None) == (directory is None):
+            raise ValueError('Register exactly one skill or directory')
+        candidate = self._copy()
+        if skill is not None:
+            from xdog.agent.skills.types import validate_active_skill
+            validate_active_skill(skill.slug, skill)
+            existing = self.load_skill(skill.slug)
+            if existing is not None and existing != skill:
+                raise ValueError(f'Duplicate skill: {skill.slug}')
+            candidate._fixed[skill.slug] = skill
+        else:
+            assert directory is not None
+            name = str(directory) if name is None else name
+            if name in self._directories and self._directories[name] != directory:
+                raise ValueError(f'Duplicate skill directory name: {name}')
+            candidate._directories[name] = directory
+        # Inspect only source identities here. Registration must not read an
+        # unsafe FIFO/symlink body before the bounded skill reader can reject it.
+        sources: dict[str, Path | None] = {
+            slug: row.directory for slug, row in candidate._fixed.items()}
+        contributions = list(candidate._packaged.items())
+        contributions.extend((slug, root) for slug, (root, _) in candidate._references.items())
+        for root in candidate._directories.values():
+            if root.is_dir():
+                contributions.extend((child.name, child) for child in root.iterdir()
+                                     if child.is_dir() and (child / 'SKILL.md').exists())
+        for slug, directory in contributions:
+            if slug in sources and sources[slug] != directory:
+                raise ValueError(f'Duplicate skill: {slug}')
+            sources[slug] = directory
+        self._directories, self._fixed = candidate._directories, candidate._fixed
+        return self
+
+    def unregister(self, name: str) -> None:
+        """Withdraw a directory registration or named skill, never delete its files."""
+        if self._selection is not None:
+            raise ValueError('Selected skill repos are read-only')
+        if name in self._directories:
+            del self._directories[name]
+            return
+        removed = False
+        for source in (self._packaged, self._references, self._fixed):
+            if name in source:
+                del source[name]
+                removed = True
+        if not removed:
+            raise ValueError(f'Unknown skill source: {name}')
+
+    def _copy(self) -> SkillRepo:
+        result = copy.copy(self)
+        result._directories = dict(self._directories)
+        result._packaged = dict(self._packaged)
+        result._fixed = dict(self._fixed)
+        result._references = dict(self._references)
+        return result
+
+    def select(self, names: Iterable[str]) -> SkillRepo:
+        if isinstance(names, str):
+            raise TypeError('Skill names must be an iterable, not a string')
+        chosen = tuple(names)
+        if len(set(chosen)) != len(chosen):
+            raise ValueError('Duplicate skill selection')
+        for slug in chosen:
+            if not isinstance(slug, str) or not is_valid_skill_name(slug) or self.load_skill(slug) is None:
+                raise ValueError(f'Unknown skill: {slug}')
+        result = self._copy()
+        result._selection = frozenset(chosen)
+        return result
+
+    def merge(self, *others: SkillRepo) -> SkillRepo:
+        """Create an independent union, retaining source paths and subset fences."""
+        result = SkillRepo(builtin=False)
+        for repo in (self, *others):
+            for row in repo.list_skills():
+                skill = repo.load_skill(row.slug)
+                assert skill is not None
+                previous = result.load_skill(row.slug)
+                if previous is not None and previous != skill:
+                    raise ValueError(f'Duplicate skill: {row.slug}')
+                if row.slug in repo._fixed or skill.directory is None:
+                    result._fixed[row.slug] = skill
+                else:
+                    assert skill.directory is not None
+                    result._references[row.slug] = (skill.directory, skill.packaged)
+        return result
+
+    @classmethod
+    def from_packaged(cls, slugs: Iterable[str]) -> SkillRepo:
+        """A read-only catalog of explicitly selected installed skills.
+
+        No user/project directories, directory creation or local overrides.
+        Explicitly missing/invalid skills fail instead of silently disappearing.
+        """
+        from xdog.agent.skills.types import validate_active_skill
+
+        if isinstance(slugs, str):
+            raise TypeError('Skill slugs must be an iterable, not a string')
+        selected = tuple(slugs)
+        if (any(not isinstance(slug, str) or not is_valid_skill_name(slug) for slug in selected)
+                or len(set(selected)) != len(selected)):
+            raise ValueError('Packaged skill slugs must be valid and unique')
+        available = packaged_skills() if selected else {}
+        catalog: dict[str, Path] = {}
+        for slug in selected:
+            directory = available.get(slug)
+            skill = None if directory is None else _load_skill_from_dir(directory, slug=slug, packaged=True)
+            validate_active_skill(slug, skill)
+            assert directory is not None
+            catalog[slug] = directory
+        return cls(builtin=False, packaged=catalog)
 
     def list_skills(self) -> list[Skill]:
-        """List all skills. Later tiers override earlier ones on slug conflict."""
-        by_slug: dict[str, Skill] = {}
-
-        for slug, skill_dir in self._packaged.items():
-            skill = _load_skill_from_dir(skill_dir, slug=slug, packaged=True)
-            if skill:
-                by_slug[slug] = _without_body(skill)
-
-        for skill in self._list_from_dir(self._shared_dir):
-            by_slug[skill.slug] = skill
-
-        # Group overrides shared
-        if self._group_dir:
-            for skill in self._list_from_dir(self._group_dir):
-                by_slug[skill.slug] = skill
-
-        return sorted(by_slug.values(), key=lambda s: s.slug)
+        """Metadata only, never silently shadow another source."""
+        names = set(self._packaged) | set(self._fixed) | set(self._references)
+        for directory in self._directories.values():
+            names.update(row.slug for row in self._list_from_dir(directory))
+        if self._selection is not None:
+            names.intersection_update(self._selection)
+        rows = [self.load_skill(slug) for slug in sorted(names)]
+        return [_without_body(skill) for skill in rows if skill is not None]
 
     def load_skill(self, slug: str) -> Skill | None:
-        """Load full skill content, most specific tier first."""
-        if self._group_dir:
-            skill = _load_skill_from_dir(self._group_dir / slug)
-            if skill:
-                return skill
-        shared = _load_skill_from_dir(self._shared_dir / slug)
-        if shared:
-            return shared
-        packaged_dir = self._packaged.get(slug)
-        if packaged_dir:
-            return _load_skill_from_dir(packaged_dir, slug=slug, packaged=True)
-        return None
+        if self._selection is not None and slug not in self._selection:
+            return None
+        candidates = [self._fixed[slug]] if slug in self._fixed else []
+        if slug in self._references:
+            directory, packaged = self._references[slug]
+            skill = _load_skill_from_dir(directory, slug=slug, packaged=packaged)
+            if skill is not None:
+                candidates.append(skill)
+        if slug in self._packaged:
+            skill = _load_skill_from_dir(self._packaged[slug], slug=slug, packaged=True)
+            if skill is not None:
+                candidates.append(skill)
+        for directory in self._directories.values():
+            skill = _load_skill_from_dir(directory / slug)
+            if skill is not None:
+                candidates.append(skill)
+        if not candidates:
+            return None
+        first = candidates[0]
+        if any(skill != first for skill in candidates[1:]):
+            raise ValueError(f'Duplicate skill: {slug}')
+        return first
 
     def save_skill(
         self,
@@ -271,11 +370,16 @@ class SkillManager:
         if not slug:
             slug = _slugify(name or "untitled")
 
-        if scope == "group" and self._group_dir:
-            target_dir = self._group_dir
-        else:
-            target_dir = self._shared_dir
-
+        if self._selection is not None:
+            raise ValueError('Selected skill repos are read-only')
+        target_dir = self._directories.get(scope)
+        if target_dir is None and self._directories:
+            target_dir = next(iter(self._directories.values()))
+        if target_dir is None:
+            raise ValueError('Packaged-only skill catalogs are read-only')
+        current = self.load_skill(slug)
+        if current is not None and current.directory != target_dir / slug:
+            raise ValueError(f'Duplicate skill: {slug}; unregister the original source first')
         skill_dir = target_dir / slug
         skill_dir.mkdir(parents=True, exist_ok=True)
         skill_file = skill_dir / "SKILL.md"
@@ -332,8 +436,10 @@ class SkillManager:
         distribution to satisfy what is only a request to hide a skill. Users
         who want one gone should uninstall the package that ships it.
         """
+        if self._selection is not None:
+            raise ValueError("Selected skill repos are read-only")
         removed = False
-        for d in [self._group_dir, self._shared_dir]:
+        for d in self._directories.values():
             if d and (d / slug).exists():
                 shutil.rmtree(d / slug)
                 removed = True

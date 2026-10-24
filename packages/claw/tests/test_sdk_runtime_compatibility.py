@@ -17,7 +17,7 @@ from xdog.agent.events import (
     UsageEvent,
 )
 from xdog.agent.messages import messages_to_dicts
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.ai.types import (
     AssistantMessage,
     Context,
@@ -75,7 +75,7 @@ async def owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "MEMORY.md").write_text("DURABLE-MEMORY-MARKER")
-    manager = SkillManager(tmp_path / "skills", packaged={})
+    manager = SkillRepo(builtin=False).register(directory=tmp_path / "skills", name="shared")
     for slug, scope, body in (("guard", "session", "SESSION-BODY-ONCE"), ("task", "turn", "TURN-BODY-ONCE")):
         directory = tmp_path / "skills" / slug
         directory.mkdir(parents=True)
@@ -84,7 +84,7 @@ async def owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         )
     stream = OfflineStream()
     runtime = GroupRuntime(group=Group(id="compat"), data_dir=tmp_path / "data", workspace_dir=workspace,
-                           model="offline/model", stream_fn=stream, skill_manager=manager)
+                           model="offline/model", stream_fn=stream, skill_repo=manager)
     runtime._tools = []  # Explicit host tool set, no installed integrations or real services.
     session = runtime.get_or_create_session(allow_reset=False)
     try:

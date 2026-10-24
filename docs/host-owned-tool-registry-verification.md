@@ -1,5 +1,11 @@
 > Historical first-stage evidence: MCP was subsequently separated into McpRegistry for 2.4.8. See docs/release-2.4.8-verification.md for the final boundary and release checks.
 
+> **Historical / superseded SDK interface — 2026-10-24:** Historical test evidence: old ToolRegistry interfaces and retired test paths below are not current API instructions.
+> Current integration uses ToolRepo / SkillRepo, explicit registration and provider
+> selection before open; see [SDK capability assembly](sdk-capability-assembly.md).
+> Old names and result counts are retained as evidence, not compatibility aliases.
+
+
 # Host-owned tool registry verification
 
 ## Contract

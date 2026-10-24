@@ -882,16 +882,22 @@ rendering/forms/layouts, raw terminal interception/observation and host editor/s
 mutation APIs are removed. Code can deliberately escape normal process ownership;
 do not load untrusted code.
 
-Each group owns an Agent SDK `ToolRegistry` for ordinary built-in, capability and
+Each group owns an Agent SDK `ToolRepo` of actual ordinary built-in, capability and
 child control tools, plus a separate `McpRegistry` for external MCP tools. The
 session binds that MCP registry directly to its Agent; MCP tools never enter the
-ordinary ToolRegistry. MCP connect/refresh/disconnect/auth retirement syncs the
+ordinary ToolRepo. MCP connect/refresh/disconnect/auth retirement syncs the
 Agent's combined inventory while retaining explicit active-tool restrictions.
 Children receive connection-free delegated MCP registries containing only the
 original parent-authorized proxies; closing a child never closes its parent MCP
 connection. UI/permissions/grants use the full combined inventory; `local_tools`
-contains only ordinary tools. Claw adds only memory/message/skill/todo/generate_image factories; domain imports do not register
-tools. `generate_image` and the SDK `submit_result` factory are not enabled by default.
+contains only ordinary tools. Claw constructs memory/message/skill/todo and optional
+generate_image instances from the actual host configuration; domain imports do not
+register tools. `generate_image` and the SDK `submit_result` tool are not enabled by
+default. CLI onboarding uses explicit host tool-name metadata, not another runtime
+registry. Inventory replacements are validated and published before the host swaps
+its repository; a failed publication retains the original tools and selection.
+Skills use `SkillRepo` with explicitly named shared/group directories. Conflicting
+skill definitions fail rather than silently shadowing another source.
 Extension hooks, providers, commands and UI remain independent of tool registration.
 Configuration `extensions`, `extension_dir` and `extension_settings` use the same
 names/shape in `config.yaml`. Cached sessions own their processes; group/session

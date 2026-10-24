@@ -259,9 +259,9 @@ def test_same_environment_module_command_is_fixed():
 
 
 async def test_packaged_skill_is_discoverable_but_only_explicitly_activated(tmp_path, monkeypatch):
-    from xdog.agent import AgentConfig
+    from xdog.agent import AgentConfig, ToolRepo
     from xdog.agent.capabilities import CapabilityAssembly
-    from xdog.agent.skills import SkillManager
+    from xdog.agent.skills import SkillRepo
     from xdog.ai.types import AssistantMessage, system_prompt_text
     from xdog.ai.utils.event_stream import EventStream
 
@@ -272,15 +272,18 @@ async def test_packaged_skill_is_discoverable_but_only_explicitly_activated(tmp_
     try:
         await capabilities.start(object())
         assembly = CapabilityAssembly(capabilities)
-        manager = SkillManager(tmp_path / 'skills')
+        manager = SkillRepo().register(directory=tmp_path / 'skills', name='shared')
         assert 'flow' in {skill.slug for skill in manager.list_skills()}
         def stream(*_):
             return EventStream.empty(AssistantMessage())
         for active in ((), ('flow',)):
-            agent = assembly.create_agent(stream, skills=manager, config=AgentConfig(model='offline'),
-                                          active_skills=active)
+            # Empty supplemental selections cannot suppress capability contributions.
+            agent = assembly.create_agent(
+                stream, skill_repo=manager.select(()), tool_repo=ToolRepo(builtin=False).select(()),
+                config=AgentConfig(model='offline'), active_skills=active,
+            )
             agents.append(agent)
-            assert [tool.name for tool in agent.state.tools] == ['flow']
+            assert [tool.name for tool in agent.state.tools] == ['flow', 'skill']
             assert agent.active_skills == active
             prompt = system_prompt_text(agent.state.system_prompt) or ''
             assert 'flow' in prompt  # The index remains available in both cases.

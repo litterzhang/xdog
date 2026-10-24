@@ -27,7 +27,7 @@ async def test_cancelled_auxiliary_read_keeps_actual_group_owner_until_worker_ex
         await app.start()
         session = await runtime.prepare_session(allow_reset=False)
         if kind == "skill":
-            original = runtime.skill_manager.load_skill
+            original = runtime.skill_repo.load_skill
 
             def actual_read(*args):
                 value = original(*args)
@@ -38,7 +38,7 @@ async def test_cancelled_auxiliary_read_keeps_actual_group_owner_until_worker_ex
                 finally:
                     exited.set()
 
-            monkeypatch.setattr(runtime.skill_manager, "load_skill", actual_read)
+            monkeypatch.setattr(runtime.skill_repo, "load_skill", actual_read)
             operation = app.skills_control("main", session.meta.session_id, "load", "focus")
         elif kind == "navigation":
             original = runtime.navigation_entries

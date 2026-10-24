@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 from xdog.agent import Agent, AgentConfig, AgentTool, AgentToolResult
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.agent.types import HandledInput
 from xdog.ai.types import AssistantMessage, SystemPromptBlock, TextContent, ToolCall, UserMessage
 from xdog.ai.utils.event_stream import EventStream
@@ -20,7 +20,7 @@ def manager(tmp_path):
         (directory / "SKILL.md").write_text(
             f"---\nname: {slug}\ndescription: procedure\nmetadata:\n  scope: {scope}\n---\n{body}"
         )
-    return SkillManager(tmp_path, packaged={})
+    return SkillRepo(builtin=False, packaged={}).register(directory=tmp_path, name="shared")
 
 
 def make_agent(manager, selected=(), **kwargs):

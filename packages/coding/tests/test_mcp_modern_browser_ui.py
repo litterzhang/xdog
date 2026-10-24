@@ -75,7 +75,7 @@ async def browser(tmp_path, host, transport):
             session = AgentSession(agent=Agent(adapter, config=AgentConfig(model='explicit-model')),
                 session_data=store.create_session(model='explicit-model', working_dir=tmp_path), session_manager=store,
                 settings=SettingsManager(global_path=settings), working_dir=tmp_path,
-                tool_registry=None, bash=None, permissions=PermissionManager('deny'))
+                tool_repo=None, bash=None, permissions=PermissionManager('deny'))
             manager = session.mcp
             ui = InteractiveMode(session)
             agent = session.agent

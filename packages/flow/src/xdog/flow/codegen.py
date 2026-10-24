@@ -48,7 +48,7 @@ _PLACEHOLDER = re.compile(r"\{\{\s*(.+?)\s*\}\}")
 # ---------------------------------------------------------------------------
 _SDK_IMPORTS = (
     "from xdog import ai\n"
-    "from xdog.agent import Agent\n"
+    "from xdog.agent import Agent, ToolRepo\n"
     "from xdog.agent.core import AgentConfig, AgentTool, AgentToolResult, StreamFn, WebSearchFn\n"
     "from xdog.agent.events import TurnEndEvent\n"
     # One line: the generated import block is assembled line by line, so a
@@ -60,32 +60,8 @@ _SDK_IMPORTS = (
 )
 
 _SDK_REGISTRY = '''# ---------------------------------------------------------------------------
-# Inlined tool registry (equivalent to flow.tools) so this module does not
-# import the flow package for tool resolution either.  Tools themselves are an
-# agent concept, so this still depends on agent.core / agent.tools / ai.types.
+# Flow-owned tool helpers only; SDK ToolRepo is imported, not copied.
 # ---------------------------------------------------------------------------
-class ToolRegistry:
-    """Registry mapping tool names to agent AgentTool objects."""
-
-    def __init__(self) -> None:
-        from xdog.agent.tools import ToolRegistry as AgentToolRegistry
-
-        self._registry = AgentToolRegistry(builtins=False)
-
-    def register(self, tool: AgentTool) -> None:
-        self._registry.replace_source(tool.name, (tool,))
-
-    def get(self, name: str) -> AgentTool:
-        try:
-            return next(tool for tool in self._registry.tools if tool.name == name)
-        except StopIteration:
-            known = ", ".join(sorted(tool.name for tool in self._registry.tools)) or "<none>"
-            raise WorkflowExecutionError(f"Unknown tool {name!r}. Known tools: {known}") from None
-
-    def resolve(self, names: "tuple[str, ...]") -> tuple[AgentTool, ...]:
-        return tuple(self.get(n) for n in names)
-
-
 async def _echo_execute(
     tool_call_id: str,
     params: dict[str, Any],
@@ -106,22 +82,9 @@ _ECHO_TOOL = AgentTool(
 )
 
 
-def _agent_builtin_tools() -> tuple[AgentTool, ...]:
-    try:
-        from xdog.agent.tools import ToolRegistry as AgentToolRegistry
-    except ImportError:
-        return ()
-    registry = AgentToolRegistry()
-    return tuple(registry.create_tools(names=(*registry.default_names(), "submit_result")))
-
-
-def default_registry() -> ToolRegistry:
-    """A fresh SDK-backed registry with defaults and structured submission."""
-    registry = ToolRegistry()
-    registry.register(_ECHO_TOOL)
-    for tool in _agent_builtin_tools():
-        registry.register(tool)
-    return registry
+def default_repo() -> ToolRepo:
+    """A fresh SDK repo with defaults and Flow's structured submission."""
+    return ToolRepo(_ECHO_TOOL, create_submit_result_tool())
 
 
 def _coerce_tool(obj: object) -> AgentTool:
@@ -207,7 +170,7 @@ _SDK_RUN_AGENT = '''async def _run_agent(
         ),
         tools=tools,
         tool_ctx=_tool_ctx,
-        skills=_skill_manager(),
+        skills=_skill_repo(),
         active_skills=skills,
         web_search_fn=_web_search_fn,
     )
@@ -740,7 +703,7 @@ def _render_agent_node(node: NodeDef, fn_name: str, wf: WorkflowDef) -> str:
     _call_args = [f'provider, "{model}", _sys, _usr']
     if node.tools:
         tool_names = ", ".join(f'"{t}"' for t in node.tools)
-        lines.append(f"    _tools = _REGISTRY.resolve(({tool_names},))")
+        lines.append(f"    _tools = _REGISTRY.select(({tool_names},)).tools")
         _call_args.append("_tools")
     _structured = agent_is_structured(node)
     if _structured:
@@ -926,9 +889,9 @@ def _render_third_party_imports(wf: WorkflowDef, safe_ids: dict[str, str], *, sd
 def _render_script_imports(wf: WorkflowDef, safe_ids: dict[str, str]) -> str:
     """Emit imports for custom-tool manifest refs and run-ref scripts.
 
-    The flow-internal helpers (errors / coerce / runtime) AND the tool registry
-    (ToolRegistry / default_registry / bind_tool) are inlined into the template,
-    so the generated module never imports the ``flow`` package for them. Only
+    Flow-owned helpers (errors / coerce / runtime / default_repo / bind_tool)
+    are inlined into the template; SDK ToolRepo is imported, never copied.
+    The generated module never imports the ``flow`` package for them. Only
     external references remain: a workflow's custom-tool manifest ``module:attr``
     entries and its script nodes' ``run: module:func`` references.
     """
@@ -966,7 +929,7 @@ def _render_tool_registration(wf: WorkflowDef) -> str:
     """Emit ``_REGISTRY.register(...)`` calls for the custom-tool manifest.
 
     Returns an empty string when there is no manifest, so the template line stays
-    ``_REGISTRY = default_registry()`` unchanged.  Each ref (imported as
+    ``_REGISTRY = default_repo()`` unchanged.  Each ref (imported as
     ``_tool_i`` by :func:`_render_script_imports`) is coerced to an AgentTool and
     re-named to its manifest key, mirroring ``register_workflow_tools``.
     """
@@ -974,7 +937,10 @@ def _render_tool_registration(wf: WorkflowDef) -> str:
         return ""
     lines = [""]
     for i, (name, _ref) in enumerate(wf.tool_refs):
-        lines.append(f"_REGISTRY.register(bind_tool(_tool_{i}, {name!r}))")
+        lines.append(f"_manifest_tool_{i} = bind_tool(_tool_{i}, {name!r})")
+        lines.append(f"if {name!r} in _REGISTRY.names():")
+        lines.append(f"    _REGISTRY.unregister({name!r})")
+        lines.append(f"_REGISTRY.register(_manifest_tool_{i})")
     return "\n".join(lines)
 
 
@@ -1257,7 +1223,7 @@ def generate(wf: WorkflowDef) -> str:
     if _needs_sdk:
         sdk_registry = _SDK_REGISTRY
         sdk_run_agent = _SDK_RUN_AGENT
-        registry_line = f"_REGISTRY = default_registry(){_render_tool_registration(wf)}"
+        registry_line = f"_REGISTRY = default_repo(){_render_tool_registration(wf)}"
     else:
         sdk_registry = "# (no SDK agent node — agent/ai tool registry omitted)"
         sdk_run_agent = "# (no SDK agent node — SDK turn helper omitted)"

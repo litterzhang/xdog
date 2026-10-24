@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 from xdog.agent import Agent, AgentConfig
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.ai.types import AssistantMessage, DoneEvent, TextContent, ToolCall
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core.agent_session import AgentSession
@@ -32,12 +32,12 @@ def create(tmp_path, mode="ask"):
         return EventStream.from_async_generator(generate(), result_future=future)
     store = SessionManager(tmp_path / "sessions")
     session = AgentSession(agent=Agent(stream,
-                                       skills=SkillManager(tmp_path / "skills"),
+                                       skills=SkillRepo().register(directory=tmp_path / 'skills', name="shared"),
                                        config=AgentConfig(model="test/model"),
                                        tools=get_default_tools(tmp_path), tool_ctx={"fs_workspace": str(tmp_path)}),
                            session_data=store.create_session(model="test/model", working_dir=tmp_path),
                            session_manager=store, settings=SettingsManager(global_path=tmp_path / "settings.json"),
-                           tool_registry=None, bash=None, working_dir=tmp_path, permissions=PermissionManager(mode))
+                           tool_repo=None, bash=None, working_dir=tmp_path, permissions=PermissionManager(mode))
     return session, turns
 
 
@@ -143,7 +143,7 @@ def test_saved_read_only_gate_restores_in_fresh_python_without_model_or_replay(t
         data = store.load_session(sid)
         session = AgentSession(agent=Agent(no_model, config=AgentConfig(model='test/model'),
             tools=get_default_tools(root)), session_data=data, session_manager=store,
-            settings=SettingsManager(global_path=root / 'settings.json'), tool_registry=None,
+            settings=SettingsManager(global_path=root / 'settings.json'), tool_repo=None,
             bash=None, working_dir=root, permissions=PermissionManager('allow-all'))
         try:
             args = {'action':'write', 'path':'target', 'content':'bad'}

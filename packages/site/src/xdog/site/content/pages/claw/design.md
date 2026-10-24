@@ -12,7 +12,7 @@ Claw owns application lifecycle, configuration, channels and group tool policy.
 Python embedding SDK; the root `xdog.claw` package re-exports no runtime classes.
 Coding's session SDK is separate.
 
-Reusable functionality belongs to `xdog.agent`: `Agent`, its host-owned `ToolRegistry`,
+Reusable functionality belongs to `xdog.agent`: `Agent`, its host-owned `ToolRepo`,
 `xdog.agent.mcp.McpRegistry`, extension APIs and inert child contracts such as
 `ChildClient`/`ChildHandle`. Agent owns no child supervisor, child execution loop,
 store or extension-worker runtime. Claw's `core/runtime/child_agents.py` and
@@ -128,8 +128,14 @@ on real group/application owners, not another execution owner. Discovery/import 
 inert; bodies load on demand, and skill loading grants no tools. Extension workers
 retain hooks/commands/basic dialogs/providers, not model tools or UI interception.
 
+SDK consumers configure `CapabilitySet(scope, tool_repo=..., skill_repo=...)`,
+then select provider subsets before `.open(host)`. Only selected bindings start.
+Assembly repo arguments add by union, never remove capability contributions;
+Claw's own application tool policy remains separate. Native Agent keeps tools/skills.
+
 Eyes' application binding ensures its shared user-local daemon via the public CLI;
-Flow invokes public CLI argv without a daemon. Their tools return actual
+Flow invokes public CLI argv without a daemon. Its child process does not inherit
+host sandbox, approval hooks or tool allowlists; workflows remain trusted code. Their tools return actual
 `exit_code`/`stdout`/`stderr`; failure/cancellation is not proof no effect occurred.
 Eyes JSON defines sources/routes/destinations; owner is management metadata, not
 authentication or a restriction to the current group/workspace. Claw owns no

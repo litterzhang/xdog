@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import threading
 
-from xdog.agent.skills import SkillManager, packaged_skills, render_skill_body
+from xdog.agent.skills import SkillRepo, packaged_skills, render_skill_body
 from xdog.ai.types import AssistantMessage, Model
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core import resource_loader, slash_commands
@@ -24,8 +24,8 @@ async def test_real_sdk_model_receives_supported_instructions_and_single_skill_i
     skill = shared / 'sample'
     skill.mkdir(parents=True)
     (skill / 'SKILL.md').write_text('---\nname: sample\ndescription: UNIQUE_SKILL_INDEX\n---\nSKILL_BODY')
-    manager = SkillManager(shared_dir=shared, packaged={"goal": packaged_skills()["goal"]})
-    monkeypatch.setattr(slash_commands, 'skill_manager', lambda: manager)
+    manager = SkillRepo(packaged={'goal': packaged_skills()['goal']}).register(directory=shared, name="shared")
+    monkeypatch.setattr(slash_commands, 'skill_repo', lambda: manager)
     monkeypatch.setenv('CODING_DIR', str(tmp_path / 'data'))
     provider = _Provider(Model(id='offline/model', context_window=100_000))
     contexts = []
@@ -86,11 +86,12 @@ async def test_project_preparation_uses_owned_worker_not_model_owner(coding_sess
 
 
 async def test_builtin_skill_activation_prepares_off_owner_loop(coding_session, tmp_path, monkeypatch):
-    manager = SkillManager(shared_dir=tmp_path / 'skills', packaged={"goal": packaged_skills()["goal"]})
+    manager = SkillRepo(packaged={"goal": packaged_skills()["goal"]}).register(
+        directory=tmp_path / "skills", name="shared")
     skill = tmp_path / 'skills' / 'sample'
     skill.mkdir(parents=True)
     (skill / 'SKILL.md').write_text('---\nname: sample\ndescription: example\n---\nBODY')
-    monkeypatch.setattr(slash_commands, 'skill_manager', lambda: manager)
+    monkeypatch.setattr(slash_commands, 'skill_repo', lambda: manager)
     runtime = coding_session.enable_runtime(bound=True)
     runtime.start(own_thread=True, setup_pending=True)
     reads = []

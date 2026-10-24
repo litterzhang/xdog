@@ -8,7 +8,7 @@ from dataclasses import replace
 
 import pytest
 from xdog.agent import AgentTool, AgentToolResult
-from xdog.agent.skills.manager import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.agent.skills.tool import create_skill_tool
 from xdog.ai.types import AssistantMessage, DoneEvent, TextContent, ToolCall, UserMessage
 from xdog.ai.utils.event_stream import EventStream
@@ -31,7 +31,7 @@ def install_skills(session, tmp_path):
         directory = root / slug
         directory.mkdir()
         (directory / 'SKILL.md').write_text(f'---\nname: {slug}\ndescription: {slug} description\n---\n{body}')
-    manager = SkillManager(root, packaged={})
+    manager = SkillRepo(packaged={}).register(directory=root, name="shared")
     session.agent._skills = manager
     session.agent.set_tools((*session.agent.state.tools, create_skill_tool(manager)))
     return manager, root
@@ -440,7 +440,7 @@ async def test_child_extensions_keep_independent_hooks_not_delegated_tools(tmp_p
     async def factory(spec, publish):
         agent = await original(spec, publish)
         agents.append(agent)
-        assert session.children.tool_registries[spec.id].tools == tuple(agent.state.tools)
+        assert session.children.tool_repos[spec.id].tools == tuple(agent.state.tools)
         return agent
     session.children.runtime.factory = factory
     try:

@@ -37,7 +37,7 @@ async def reopen(session):
         pytest.fail("cold query must not call a model")
     agent = Agent(forbidden_stream, config=AgentConfig(model="test/model"))
     restored = AgentSession(agent=agent, session_data=data, session_manager=session.session_manager,
-        settings=session.settings, tool_registry=None, bash=None, working_dir=session.working_dir,
+        settings=session.settings, tool_repo=None, bash=None, working_dir=session.working_dir,
         permissions=session.permissions)
     return restored, await SessionCapabilityHost.open(restored)
 

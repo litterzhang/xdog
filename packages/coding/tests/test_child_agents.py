@@ -5,7 +5,7 @@ import json
 
 import pytest
 from xdog.agent import Agent, AgentConfig
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.ai.types import AssistantMessage, DoneEvent, TextContent, ToolCall, UserMessage
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core.agent_session import AgentSession
@@ -19,7 +19,7 @@ from xdog.tui.keys import KeyEvent
 
 
 def create(tmp_path, mode="ask", block=False, *, skills=None):
-    skills = skills if skills is not None else SkillManager(tmp_path / "skills")
+    skills = skills if skills is not None else SkillRepo().register(directory=tmp_path / 'skills', name="shared")
     contexts = []
     def stream(model, context, options):
         contexts.append(context)
@@ -41,7 +41,7 @@ def create(tmp_path, mode="ask", block=False, *, skills=None):
                                        tools=get_default_tools(tmp_path), tool_ctx={"fs_workspace": str(tmp_path)},
                                        skills=skills),
         session_data=store.create_session(model="test/model", working_dir=tmp_path), session_manager=store,
-        settings=SettingsManager(global_path=tmp_path / "settings.json"), tool_registry=None, bash=None,
+        settings=SettingsManager(global_path=tmp_path / "settings.json"), tool_repo=None, bash=None,
         working_dir=tmp_path, permissions=PermissionManager(mode))
     return session, contexts
 

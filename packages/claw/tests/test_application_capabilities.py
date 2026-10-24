@@ -71,7 +71,7 @@ async def test_live_application_defaults_merge_in_list_selection_and_turn_withou
     app.register_group(Group(id='main', workspace=str(tmp_path / 'workspace')))
     runtime = app._runtimes['main']
     for slug in ('application-instructions', 'group-instructions', 'chosen'):
-        runtime.skill_manager.save_skill(slug, f'Unique body for {slug}.')
+        runtime.skill_repo.save_skill(slug, f'Unique body for {slug}.')
     try:
         assert not application.opens and not group.opens and not contexts
         assert not runtime.default_skills
@@ -126,7 +126,7 @@ async def test_application_defaults_do_not_override_tool_selection(tmp_path, mon
     runtime = app._runtimes['main']
     slug = provider.default_skills[0]
     body = f'Unique body for {slug}.'
-    runtime.skill_manager.save_skill(slug, body)
+    runtime.skill_repo.save_skill(slug, body)
     try:
         await app.start()
         await app.application_capabilities.start(ApplicationPort())

@@ -72,13 +72,13 @@ def test_resume_restores_thinking_and_provider_context_window(tmp_path, monkeypa
     resumed.session.dispose()
 
 
-def test_skill_manager_construction_failure_is_not_silently_downgraded(monkeypatch):
-    from xdog.coding.core.sdk import _coding_skill_manager
+def test_skill_repo_construction_failure_is_not_silently_downgraded(monkeypatch):
+    from xdog.coding.core.sdk import _coding_skill_repo
 
     error = OSError("skill catalog cannot be read")
     def fail():
         raise error
-    monkeypatch.setattr("xdog.coding.core.slash_commands.skill_manager", fail)
+    monkeypatch.setattr("xdog.coding.core.slash_commands.skill_repo", fail)
     with pytest.raises(OSError, match="skill catalog cannot be read") as raised:
-        _coding_skill_manager()
+        _coding_skill_repo()
     assert raised.value is error

@@ -37,7 +37,7 @@ DOCS = PackageDocs(
         ),
         Feature(
             "Host-owned tools",
-            "ToolRegistry supplies default bash/filesystem/current_time factories; submit_result is opt-in.",
+            "ToolRepo supplies actual default bash/filesystem/current_time tools; submit_result is opt-in.",
             "Composition",
         ),
         Feature(

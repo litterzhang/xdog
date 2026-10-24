@@ -816,9 +816,9 @@ async def test_agent_tools() -> None:
         execute=_spy_execute,
     )
 
-    from xdog.flow.tools import ToolRegistry
+    from xdog.agent import ToolRepo
 
-    registry = ToolRegistry()
+    registry = ToolRepo(builtin=False)
     registry.register(spy_tool)
 
     original_init = Agent.__init__
@@ -843,7 +843,7 @@ async def test_agent_tools() -> None:
             edges=(),
         )
 
-        result = await execute(wf, stream_fn_factory=factory, tool_registry=registry)
+        result = await execute(wf, stream_fn_factory=factory, tool_repo=registry)
     finally:
         _agent_module.Agent.__init__ = original_init  # type: ignore[method-assign]
 

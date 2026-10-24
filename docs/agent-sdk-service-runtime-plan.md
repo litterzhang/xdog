@@ -1,5 +1,11 @@
 # xdog-agent 后台服务运行时：功能 Review 与实施计划
 
+> **Historical / superseded SDK interface — 2026-10-24:** Historical implementation/verification plan: use the current SDK guide for live interfaces, not this release-era API baseline.
+> Current integration uses ToolRepo / SkillRepo, explicit registration and provider
+> selection before open; see [SDK capability assembly](sdk-capability-assembly.md).
+> Old names and result counts are retained as evidence, not compatibility aliases.
+
+
 日期：**2026-10-12**。状态：**本轮实施与当前Linux验收完成；准备随2.4.0发行**。
 
 本文覆盖跨进程恢复、compaction、宿主工具注册、运行事件和关闭，以及正在进行的skill实现。
@@ -24,7 +30,7 @@
 
 ### F1. Skill加载与生命周期
 
-- 宿主显式配置SkillManager、加载来源和激活的skills；不让快照自行发现或安装代码。
+- 宿主显式配置 SkillRepo（原计划使用旧接口）、加载来源和激活的skills；不让快照自行发现或安装代码。
 - 提供可显式注册的只读`skill`工具，支持`list`和`load`；支持限制可见slug和读取大小。
 - `load`返回skill内容，不执行其中命令，不自动激活，不授予新工具权限。
 - session scope进入稳定system prefix；turn scope在实际进入模型调用的本次逻辑run中有效。

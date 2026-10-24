@@ -11,7 +11,7 @@ from typing import cast
 from xdog.agent.async_work import run_owned
 from xdog.agent.capabilities.runtime import CapabilitySet
 from xdog.agent.extensions.command_result import ExtensionCommandResult
-from xdog.agent.skills import Skill, SkillManager
+from xdog.agent.skills import Skill, SkillRepo
 from xdog.ai.types import ThinkingLevel
 from xdog.coding.config import get_skills_dir
 from xdog.coding.core.agent_session import AgentSession
@@ -65,22 +65,22 @@ BUILTIN_COMMANDS: dict[str, str] = {
 
 
 @lru_cache(maxsize=1)
-def skill_manager() -> SkillManager:
+def skill_repo() -> SkillRepo:
     """The skill source for slash commands.
 
     Cached because it is consulted on every unrecognised command, and because
-    constructing one creates its directory. Discovery of packaged skills is
-    left at its default, so installing a distribution that ships one is all it
+    the same explicit shared-directory registration is reused. Packaged skill
+    discovery is left at its default, so installing a distribution is all it
     takes for a new command to appear.
     """
-    return SkillManager(shared_dir=get_skills_dir())
+    return SkillRepo().register(directory=get_skills_dir(), name="shared")
 
 
 def available_skills() -> list[Skill]:
     """Skills usable as commands right now. Never raises — a broken skills
     directory should not take the command dispatcher down with it."""
     try:
-        return skill_manager().list_skills()
+        return skill_repo().list_skills()
     except OSError:
         return []
 
@@ -319,7 +319,7 @@ def parse_slash_command(text: str) -> tuple[str, str] | None:
 
 def _load_skill(slug: str) -> Skill | None:
     try:
-        return skill_manager().load_skill(slug)
+        return skill_repo().load_skill(slug)
     except OSError:
         return None
 

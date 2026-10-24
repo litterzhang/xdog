@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from xdog.agent.skills import SkillManager
+    from xdog.agent.skills import SkillRepo
 
 import asyncio
 import concurrent.futures
@@ -20,8 +20,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from xdog.agent import ToolRepo
 from xdog.agent.agent import Agent
-from xdog.agent.tools import ToolContext, ToolRegistry
 from xdog.ai.types import ThinkingLevel
 from xdog.coding.config import (
     RuntimeConfig,
@@ -106,7 +106,7 @@ def _build_agent_session(options: CreateSessionOptions, *, new_session_id: str) 
     2. Creates SessionManager and SettingsManager
     3. Creates or resumes a session
     4. Resolves the model (from options, session, settings, or defaults)
-    5. Creates tools from agent built-in factories
+    5. Creates real SDK built-in tools
     6. Constructs agent.Agent with stream_fn from ai provider
     7. Wraps in AgentSession for lifecycle management
 
@@ -201,9 +201,8 @@ def _build_agent_session(options: CreateSessionOptions, *, new_session_id: str) 
     context_window = (model.context_window if model is not None else 0) or MAX_CONTEXT_TOKENS
     max_prompt_tokens = model.max_prompt_tokens if model is not None else 0
 
-    # Create tools from agent built-in factories
-    tool_registry = ToolRegistry()
-    tool_registry.replace_source("inventory", tool_registry.create_tools(context=ToolContext(cwd=wd)))
+    # Create real tools owned by this session, bound to its workspace.
+    tool_repo = ToolRepo(cwd=wd)
 
     # Create Agent with explicit stream_fn from provider
     permissions = PermissionManager(config.permission_mode)
@@ -224,12 +223,12 @@ def _build_agent_session(options: CreateSessionOptions, *, new_session_id: str) 
                 thinking=effective_thinking,
             ),
         ),
-        tools=tool_registry.tools,
+        tools=tool_repo.tools,
         tool_ctx={"fs_workspace": str(wd)},
         before_tool_call=permissions.before_tool_call,
         # The Agent owns where the index and the bodies go; this only says which
         # manager to read them from.
-        skills=_coding_skill_manager(),
+        skills=_coding_skill_repo(),
     )
 
     # Restore messages if resuming
@@ -246,7 +245,7 @@ def _build_agent_session(options: CreateSessionOptions, *, new_session_id: str) 
         session_data=session_data,
         session_manager=session_mgr,
         settings=settings,
-        tool_registry=tool_registry,
+        tool_repo=tool_repo,
         bash=None,
         working_dir=wd,
         context_window=context_window,
@@ -291,13 +290,13 @@ def _build_agent_session(options: CreateSessionOptions, *, new_session_id: str) 
         raise
 
 
-def _coding_skill_manager() -> "SkillManager":
+def _coding_skill_repo() -> "SkillRepo":
     """Construct the host's skill manager; do not hide activation dependencies.
 
     Optional package/index discovery handles unavailable entries itself. Failure
     to build the manager is different: callers need the real error, not a later
     "active skill has no manager" failure or a session missing instructions.
     """
-    from xdog.coding.core.slash_commands import skill_manager
+    from xdog.coding.core.slash_commands import skill_repo
 
-    return skill_manager()
+    return skill_repo()

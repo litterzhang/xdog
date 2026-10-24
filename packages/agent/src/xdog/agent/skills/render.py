@@ -56,7 +56,7 @@ def resolve_skills(slugs: "Sequence[str]", search_dirs: "Sequence[Path]" = ()) -
     every caller gets the same prompt-cache behaviour without deciding it.
     """
     from xdog.agent.skills.discovery import load_packaged_skill
-    from xdog.agent.skills.manager import _load_skill_from_dir
+    from xdog.agent.skills.repo import _load_skill_from_dir
 
     found = []
     for slug in slugs:
@@ -96,7 +96,7 @@ def skills_preamble(slugs: "Sequence[str]", search_dirs: "Sequence[Path]" = ()) 
     way or the same workflow gets two different system prompts.
     """
     from xdog.agent.skills.discovery import load_packaged_skill
-    from xdog.agent.skills.manager import _load_skill_from_dir
+    from xdog.agent.skills.repo import _load_skill_from_dir
 
     bodies = []
     for slug in slugs:
@@ -115,7 +115,7 @@ def skills_preamble(slugs: "Sequence[str]", search_dirs: "Sequence[Path]" = ()) 
 def resolvable_skill(slug: str, search_dirs: "Sequence[Path]" = ()) -> bool:
     """Whether *slug* resolves at all — for validating before anything runs."""
     from xdog.agent.skills.discovery import load_packaged_skill
-    from xdog.agent.skills.manager import _load_skill_from_dir
+    from xdog.agent.skills.repo import _load_skill_from_dir
 
     for directory in search_dirs:
         if _load_skill_from_dir(Path(directory) / slug, slug=slug) is not None:

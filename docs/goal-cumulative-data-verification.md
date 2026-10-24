@@ -1,5 +1,11 @@
 # Goal cumulative state and exact bounded reads — source verification
 
+> **Historical / superseded SDK interface — 2026-10-24:** Historical Goal verification: old SkillManager references below describe measured artifacts, not current SDK names or integration instructions.
+> Current integration uses ToolRepo / SkillRepo, explicit registration and provider
+> selection before open; see [SDK capability assembly](sdk-capability-assembly.md).
+> Old names and result counts are retained as evidence, not compatibility aliases.
+
+
 Date: 2026-10-19. Corrects F06 found during parent47 source audit. This is not
 whole47/final review/current installed-artifact parity or overall completion.
 

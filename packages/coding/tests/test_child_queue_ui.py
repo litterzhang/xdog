@@ -39,7 +39,7 @@ async def test_actual_native_child_queue_is_list_only_and_keeps_parent_draft_and
         session = AgentSession(agent=Agent(stream, config=AgentConfig(model='offline/model')),
             session_data=manager.create_session(model='offline/model', working_dir=tmp_path),
             session_manager=manager, settings=SettingsManager(global_path=tmp_path / 'settings.json'),
-            working_dir=tmp_path, tool_registry=None, bash=None, permissions=PermissionManager('deny'))
+            working_dir=tmp_path, tool_repo=None, bash=None, permissions=PermissionManager('deny'))
         ui = InteractiveMode(session)
     else:
         config = ClawConfig(model='offline/model', data_dir=str(tmp_path / 'data'),

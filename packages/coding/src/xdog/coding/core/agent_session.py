@@ -24,6 +24,7 @@ from xdog.agent import (
     InputHandledEvent,
     MessageEndEvent,
     ToolExecutionEndEvent,
+    ToolRepo,
 )
 from xdog.agent.access import AccessScope, AccessState
 from xdog.agent.agent import Agent
@@ -36,7 +37,6 @@ from xdog.agent.extensions.state import ExtensionEntries, validate_entries
 from xdog.agent.history import history_points, validate_checkpoint
 from xdog.agent.mcp import McpRegistry
 from xdog.agent.tool_effects import ToolEffect
-from xdog.agent.tools import ToolContext, ToolRegistry
 from xdog.agent.types import HandledInput, InputTransformFn, TransformContextFn
 from xdog.ai.types import (
     AssistantMessage,
@@ -188,7 +188,7 @@ class AgentSession:
     session_data: SessionData
     session_manager: SessionManager
     settings: SettingsManager
-    tool_registry: ToolRegistry | None
+    tool_repo: ToolRepo | None
     bash: Any  # kept for backward compat, may be None
     working_dir: Path
     context_window: int = MAX_CONTEXT_TOKENS
@@ -256,9 +256,7 @@ class AgentSession:
     _tool_selection_retiring: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        if self.tool_registry is None:
-            self.tool_registry = ToolRegistry()
-        self.tool_registry.replace_source("inventory", self.agent.local_tools)
+        self.tool_repo = ToolRepo(*self.agent.local_tools, builtin=False)
         self._refresh_session_hint()
         # Restore session-level settings
         if self.session_data.settings:
@@ -568,9 +566,9 @@ class AgentSession:
         CapabilityAssembly and the actual child/session bindings determine
         replacement by identity. MCP is bound independently through McpRegistry.
         """
-        assert self.tool_registry is not None
-        self.tool_registry.replace_source("inventory", tools)
-        self.tool_registry.publish(self.agent)
+        replacement = ToolRepo(*tools, builtin=False)
+        replacement.publish(self.agent)
+        self.tool_repo = replacement
 
     async def _persist_tool_retirement(self) -> None:
         """Persist only narrowing after inventory changes; never grant a new selection."""
@@ -1463,8 +1461,7 @@ class AgentSession:
                               credential_dir=get_data_dir() / "mcp-credentials",
                               credential_backend=settings.mcp_credential_backend)
         if directory != self.working_dir:
-            assert self.tool_registry is not None
-            defaults = {tool.name: tool for tool in self.tool_registry.create_tools(context=ToolContext(cwd=directory))}
+            defaults = {tool.name: tool for tool in ToolRepo(cwd=directory).tools}
             tools = tuple(defaults.get(tool.name, tool) for tool in tools)
         try:
             staged = self._stage_navigation(settings, directory, loaded.session_id, selected_model,

@@ -39,9 +39,8 @@ def packaged_skills() -> dict[str, Path]:
     requires, and it means one distribution can carry several skills — which a
     single fixed ``skill/`` directory could not.
 
-    Never raises: a package that fails to introspect is skipped with a log
-    line. Skill discovery is a convenience, and it must not be able to stop an
-    agent from starting.
+    Unreadable optional packages are skipped with a log line. Conflicting
+    packaged skill names fail explicitly rather than depending on import order.
     """
     found: dict[str, Path] = {}
     try:
@@ -56,9 +55,10 @@ def packaged_skills() -> dict[str, Path]:
                 continue
             for skill_dir in sorted(container.iterdir()):
                 if (skill_dir / "SKILL.md").is_file():
-                    # First package wins, so discovery order is not a silent
-                    # coin flip between two packages claiming the same name.
-                    found.setdefault(skill_dir.name, skill_dir)
+                    previous = found.get(skill_dir.name)
+                    if previous is not None and previous.resolve() != skill_dir.resolve():
+                        raise ValueError(f'Duplicate packaged skill: {skill_dir.name}')
+                    found[skill_dir.name] = skill_dir
         except (ImportError, TypeError, OSError, ModuleNotFoundError) as exc:
             logger.debug("skipping %s while looking for skills: %s", module.name, exc)
 
@@ -68,7 +68,7 @@ def packaged_skills() -> dict[str, Path]:
 def load_packaged_skill(slug: str) -> "Skill | None":
     """Load one skill by slug, from installed packages only.
 
-    Deliberately narrower than :meth:`SkillManager.load_skill`, which also reads
+    Deliberately narrower than :meth:`SkillRepo.load_skill`, which also reads
     user and group directories. A flow workflow is a shareable artifact: if its
     agent nodes picked up whatever skills happened to be on the machine, the same
     workflow would behave differently for two people and neither could tell from
@@ -80,7 +80,7 @@ def load_packaged_skill(slug: str) -> "Skill | None":
     told to write a format it was never shown will write something plausible and
     wrong.
     """
-    from xdog.agent.skills.manager import _load_skill_from_dir
+    from xdog.agent.skills.repo import _load_skill_from_dir
 
     directory = packaged_skills().get(slug)
     if directory is None:

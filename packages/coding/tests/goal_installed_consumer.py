@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from xdog.agent import Agent, AgentConfig
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.ai.types import AssistantMessage, TextContent, ToolCall
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core import agent_session as installed_coding
@@ -48,7 +48,7 @@ async def main():
     assert not names.intersection({'xdog-claw', 'xdog-eyes', 'xdog-flow', 'xdog-site'})
     root, base_only = Path.cwd(), '--base-only' in sys.argv
     root.joinpath('result.txt').write_text('real installed result')
-    skills = SkillManager(root / 'not-created-skills')
+    skills = SkillRepo().register(directory=root / 'not-created-skills', name="shared")
     assert skills.load_skill('goal').scope == 'session'
     if not base_only:
         root.joinpath('settings.json').write_text(json.dumps({
@@ -57,7 +57,7 @@ async def main():
     session = AgentSession(agent=Agent(model, config=AgentConfig(model='test/installed'),
         tools=get_default_tools(root), tool_ctx={'fs_workspace': str(root)}, skills=skills),
         session_data=manager.create_session(model='test/installed', working_dir=root), session_manager=manager,
-        settings=SettingsManager(global_path=root / 'settings.json'), tool_registry=None, bash=None,
+        settings=SettingsManager(global_path=root / 'settings.json'), tool_repo=None, bash=None,
         working_dir=root, permissions=PermissionManager('allow-all'))
     try:
         assert session.capabilities.get('goal') is None

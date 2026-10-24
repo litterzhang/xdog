@@ -16,7 +16,7 @@ from xdog.agent.events import (
     UsageEvent,
 )
 from xdog.agent.messages import messages_to_dicts
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.ai.types import (
     AssistantMessage,
     Context,
@@ -77,21 +77,21 @@ async def owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(ai, "provider", forbidden)
     # Real installed capabilities may select packaged defaults (e.g. goal). Keep
     # their trusted skill identities available for versioned dump/restore too.
-    manager = SkillManager(tmp_path / "skills")
+    manager = SkillRepo().register(directory=tmp_path / 'skills', name="shared")
     for slug, scope, body in (("guard", "session", "SESSION-BODY-ONCE"), ("task", "turn", "TURN-BODY-ONCE")):
         directory = tmp_path / "skills" / slug
         directory.mkdir(parents=True)
         (directory / "SKILL.md").write_text(
             f"---\nname: {slug}\ndescription: test skill\nmetadata:\n  scope: {scope}\n---\n{body}\n"
         )
-    monkeypatch.setattr("xdog.coding.core.slash_commands.skill_manager", lambda: manager)
+    monkeypatch.setattr("xdog.coding.core.slash_commands.skill_repo", lambda: manager)
     stream = OfflineStream()
     store = SessionManager(tmp_path / "sessions")
     session = AgentSession(
         agent=Agent(stream, config=AgentConfig(model="offline/model", supports_tool_calls=True), skills=manager),
         session_data=store.create_session(model="offline/model", working_dir=tmp_path), session_manager=store,
         settings=SettingsManager(global_path=tmp_path / "settings.json", project_dir=tmp_path),
-        working_dir=tmp_path, tool_registry=None, bash=None, permissions=PermissionManager("ask"),
+        working_dir=tmp_path, tool_repo=None, bash=None, permissions=PermissionManager("ask"),
     )
     try:
         yield session, stream

@@ -6,7 +6,8 @@ import copy
 import inspect
 import re
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable, Iterable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from importlib.metadata import entry_points
 from typing import TYPE_CHECKING, Any
@@ -15,9 +16,12 @@ from weakref import WeakValueDictionary
 from xdog.agent.agent import Agent
 from xdog.agent.async_work import settle_cleanup, wait_owned
 from xdog.agent.core import AgentTool, AgentToolResult
+from xdog.agent.skills import SkillRepo
 from xdog.agent.tool_effects import ToolEffect
+from xdog.agent.tools.repo import ToolRepo
 
 if TYPE_CHECKING:
+    from xdog.agent.capabilities.assembly import CapabilityAssembly
     from xdog.agent.capabilities.children import ChildPort
     from xdog.agent.children import ChildSpec
     from xdog.agent.extensions.runtime import ExtensionRuntime
@@ -56,19 +60,24 @@ def _names(value: Any, *, scopes: bool = False) -> tuple[str, ...]:
     return tuple(value)
 
 
-def discover(scope: str) -> tuple[Any, ...]:
+def discover(scope: str, *, names: Iterable[str] | None = None) -> tuple[Any, ...]:
     """Only trusted installed entry points, never modules named by saved data."""
     if scope not in _SCOPES:
         raise ValueError("Unknown capability host scope")
+    if isinstance(names, str):
+        raise TypeError("Capability names must be an iterable of names, not a string")
+    requested = None if names is None else frozenset(_names(tuple(names)))
     providers = []
-    names: set[str] = set()
+    found: set[str] = set()
     tools: set[str] = set()
     for entry in sorted(entry_points(group="xdog.capabilities"), key=lambda value: value.name):
+        if requested is not None and entry.name not in requested:
+            continue  # Do not even import unselected providers (or start their resources).
         provider = entry.load()
         supported = _names(provider.scopes, scopes=True)
         if scope not in supported:
             continue
-        if (not isinstance(provider.name, str) or provider.name != entry.name or provider.name in names
+        if (not isinstance(provider.name, str) or provider.name != entry.name or provider.name in found
                 or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", provider.name)
                 or not callable(getattr(provider, "open", None))):
             raise ValueError("Invalid or duplicate installed capability identity")
@@ -80,17 +89,27 @@ def discover(scope: str) -> tuple[Any, ...]:
         _names(getattr(provider, "skill_names", ()))
         if tools.intersection(selected):
             raise ValueError("Duplicate installed capability tool name")
-        names.add(provider.name)
+        found.add(provider.name)
         tools.update(selected)
         providers.append(provider)
+    if requested is not None and requested - found:
+        missing = ', '.join(sorted(requested - found))
+        raise ValueError(f"Capabilities unavailable in {scope} scope: {missing}")
     return tuple(providers)
 
 
 class CapabilitySet:
     """One host owner; feature code owns its own tools, data and business lifetime."""
 
-    def __init__(self, scope: str) -> None:
-        self.providers = discover(scope)
+    def __init__(self, scope: str, *, tool_repo: ToolRepo | None = None,
+                 skill_repo: SkillRepo | None = None, names: Iterable[str] | None = None) -> None:
+        self.providers = discover(scope) if names is None else discover(scope, names=names)
+        self._scope = scope
+        self.tool_repo = ToolRepo(builtin=False) if tool_repo is None else tool_repo
+        self.skill_repo = SkillRepo() if skill_repo is None else skill_repo
+        self._initialize()
+
+    def _initialize(self) -> None:
         self._bindings: dict[str, Any] = {}
         self._tools: dict[int, tuple[Any, AgentTool, Any]] = {}
         self._owned: WeakValueDictionary[int, AgentTool] = WeakValueDictionary()
@@ -99,6 +118,56 @@ class CapabilitySet:
         self._close_task: asyncio.Task[None] | None = None
         self._closing = False
         self._owner_loop: asyncio.AbstractEventLoop | None = None
+
+    def select(self, names: Iterable[str]) -> CapabilitySet:
+        """Filter an inert catalog without rediscovery or sharing live bindings.
+
+        The original remains an unopened catalog. Each selection owns its own
+        resources; selecting an already-started/closed owner is rejected.
+        """
+        if self._host is not None or self._start_task is not None or self._closing:
+            raise RuntimeError('Select capabilities before starting their owner')
+        if isinstance(names, str):
+            raise TypeError('Capability names must be an iterable, not a string')
+        requested = frozenset(_names(tuple(names)))
+        missing = requested - {provider.name for provider in self.providers}
+        if missing:
+            raise ValueError('Capabilities unavailable in catalog: ' + ', '.join(sorted(missing)))
+        result = CapabilitySet.__new__(CapabilitySet)
+        result.providers = tuple(provider for provider in self.providers if provider.name in requested)
+        result._scope = self._scope
+        result.tool_repo = self.tool_repo
+        result.skill_repo = self.skill_repo
+        result._initialize()
+        return result
+
+    @asynccontextmanager
+    async def open(self, host: object | None = None) -> AsyncIterator[CapabilityAssembly]:
+        """Open this selection and yield its native Agent composition SDK.
+
+        Nest Agent contexts inside this context. No Agent, event loop, sandbox,
+        routing or permissions are implicitly created. Advanced hosts may keep
+        using start/aclose and CapabilityAssembly for shared/multiple scopes.
+        """
+        from xdog.agent.capabilities.assembly import CapabilityAssembly
+
+        if self._host is not None or self._start_task is not None or self._closing:
+            raise RuntimeError('Capability context requires an unopened owner')
+        if host is None:
+            if self._scope != 'application':
+                raise ValueError('Session/group capabilities require an explicit host owner')
+            host = ApplicationPort()
+        try:
+            await self.start(host)
+            yield CapabilityAssembly(self)
+        except BaseException as error:
+            try:
+                await self.aclose()
+            except BaseException as cleanup:
+                raise BaseExceptionGroup('Capability use and cleanup failed', [error, cleanup]) from None
+            raise
+        else:
+            await self.aclose()
 
     @property
     def started(self) -> bool:
@@ -121,7 +190,7 @@ class CapabilitySet:
         """Inert optional discoverable names, independent of skill body scanning.
 
         A declaration does not require a tool/runtime/extension or activate a
-        skill. SkillManager still discovers packaged skills independently.
+        skill. SkillRepo still discovers packaged skills independently.
         """
         return frozenset(name for provider in self.providers
                          for name in (*getattr(provider, "skill_names", ()),

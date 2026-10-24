@@ -20,8 +20,8 @@ from xdog.agent import AgentConfig, AgentTool, StreamFn
 from xdog.agent.capabilities import CapabilityAssembly, CapabilitySet
 from xdog.agent.history import history_points
 from xdog.agent.mcp import McpRegistry
-from xdog.agent.skills import SkillManager
-from xdog.agent.tools import ToolContext
+from xdog.agent.skills import SkillRepo
+from xdog.agent.tools import ToolRepo
 from xdog.ai.types import ImageContent, SystemPromptBlock
 from xdog.ai.utils.image_files import validate_references
 from xdog.claw.core.compaction.flush_runner import FlushRunner
@@ -32,7 +32,7 @@ from xdog.claw.core.persistence.transcript_store import TranscriptStore
 from xdog.claw.core.prompt import build_system_prompt, init_workspace, workspace_path
 from xdog.claw.core.runtime.display_events import display_arguments, display_result
 from xdog.claw.core.runtime.transcript_source import SourceCapture
-from xdog.claw.core.tools import new_tool_registry
+from xdog.claw.core.tools import AVAILABLE_TOOL_NAMES, new_tool_repo
 from xdog.claw.core.types import Group
 from xdog.tui.transcript_browser import TranscriptRecord
 
@@ -103,7 +103,7 @@ class GroupRuntime:
         workspace_dir: Path | None = None,
         transcript_store: TranscriptStore | None = None,
         memory: MemoryManager | None = None,
-        skill_manager: SkillManager | None = None,
+        skill_repo: SkillRepo | None = None,
         flush_runner: FlushRunner | None = None,
         summarizer: Summarizer | None = None,
         message_delivery: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
@@ -133,16 +133,15 @@ class GroupRuntime:
         self.application_capabilities = application_capabilities
         self._capability_host: Any = None
         self._capability_start: asyncio.Task[None] | None = None
-        self.skill_manager = skill_manager or SkillManager(
-            shared_dir=data_dir / "skills",
-            group_dir=(workspace_dir or data_dir / "groups" / group.id / "workspace") / "skills",
-        )
+        self.skill_repo = skill_repo or (SkillRepo()
+            .register(directory=data_dir / "skills", name="shared")
+            .register(directory=self.workspace_dir / "skills", name="group"))
         self.flush_runner = flush_runner
         self.summarizer = summarizer
         self.message_delivery = message_delivery
         self.input_address: Callable[[], dict[str, Any] | None] = lambda: None
         self._enabled_tools = group.enabled_tools
-        self.tool_registry = new_tool_registry()
+        self.tool_repo = ToolRepo(builtin=False)
         self._tools: list[AgentTool] | None = None
         self.mcp = McpRegistry(mcp_servers or {}, self.workspace_dir,
                               credential_dir=data_dir / "groups" / group.id / "mcp-credentials",
@@ -214,7 +213,8 @@ class GroupRuntime:
         # Validate/load durable context and instruction roots before allocating
         # optional search workers; malformed current data must not orphan them.
         transcript_store = TranscriptStore(group_dir / "sessions", owner_group=group.id)
-        skill_manager = SkillManager(shared_dir=data_dir / "skills", group_dir=ws / "skills")
+        skill_repo = (SkillRepo().register(directory=data_dir / "skills", name="shared")
+                      .register(directory=ws / "skills", name="group"))
         flush_runner = FlushRunner(resolved_model, stream_fn) if resolved_model else None
         summarizer = Summarizer(resolved_model) if resolved_model else None
 
@@ -228,7 +228,7 @@ class GroupRuntime:
             agent_config=cfg,
             workspace_dir=ws,
             transcript_store=transcript_store,
-            skill_manager=skill_manager,
+            skill_repo=skill_repo,
             flush_runner=flush_runner,
             summarizer=summarizer,
             message_delivery=message_delivery,
@@ -262,22 +262,32 @@ class GroupRuntime:
     def tools(self) -> list[AgentTool]:
         if self._tools is None:
             self._tools = self._builtin_tools()  # Explicit synchronous fixture/composition fallback.
-        return list(self.capability_assembly.compose_tools(
-            self._tools, enabled_tools=self._enabled_tools))
+        assembly = self.capability_assembly
+        # Validate the complete composition before filtering: disabled collisions
+        # must not hide ambiguous ownership. Existing base tools stay unchanged.
+        composed = assembly.compose_tools(self._tools)
+        base = {id(tool) for tool in self._tools if not assembly.owns_tool(tool)}
+        return [tool for tool in composed if self._enabled_tools is None
+                or id(tool) in base or tool.name in self._enabled_tools]
 
     def publish_tools(self, session: AgentSession) -> None:
         """Publish host inventory only; extension hooks cannot contribute tools."""
-        session._tool_registration = self.tool_registry.replace_source("host", (*self.tools, *session._child_tools))
-        self.tool_registry.publish(session.agent)
+        replacement = ToolRepo(*self.tools, *session._child_tools, builtin=False)
+        replacement.publish(session.agent)
+        previous = getattr(session, '_tool_repo', None)
+        session._tool_repo = replacement
+        self.tool_repo = replacement
+        if previous is not None:
+            for name in previous.names():
+                previous.unregister(name)
 
     def _builtin_tools(self) -> list[AgentTool]:
         enabled = self._enabled_tools
         if enabled is not None:
             declared = self.capability_assembly.declared_tools | {tool.name for tool in self.capability_assembly.tools}
-            builtins = self.tool_registry.registered_names()
+            builtins = AVAILABLE_TOOL_NAMES
             enabled = tuple(name for name in enabled if name not in declared or name in builtins)
-        return self.tool_registry.create_tools(
-            enabled, context=ToolContext(cwd=self.workspace_dir, image_model=self.group.image_model))
+        return list(new_tool_repo(enabled, cwd=self.workspace_dir, image_model=self.group.image_model).tools)
 
     async def initialize_capabilities(self, inputs: InputService) -> None:
         self.require_open()
@@ -425,7 +435,7 @@ class GroupRuntime:
                     or self.stream_fn is not configured_stream):
                 raise ValueError("Model adapter owner changed during preparation")
             data = await run_owned(partial(prepare, self.transcript_store, self.group.id,
-                self.workspace_dir, self._configured_model, plan.meta, reset=plan.reset_due, skills=self.skill_manager,
+                self.workspace_dir, self._configured_model, plan.meta, reset=plan.reset_due, skills=self.skill_repo,
                 extension_root=self.extension_root, stream_fn=adapter))
             if (self._active_session is not None or self._source_revision != generation
                     or self.stream_fn is not configured_stream):

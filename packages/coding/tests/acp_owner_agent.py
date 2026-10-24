@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from xdog.agent import Agent, AgentConfig
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.ai.types import AssistantMessage, TextContent
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.acp.server import serve_local
@@ -24,12 +24,12 @@ async def main():
         agent=Agent(
             lambda *_: EventStream.empty(AssistantMessage(content=(TextContent(text="owner reviewed"),))),
             config=AgentConfig(model="test"),
-            skills=SkillManager(root / "skills"),
+            skills=SkillRepo().register(directory=root / 'skills', name="shared"),
         ),
         session_data=manager.create_session(model="test", working_dir=root),
         session_manager=manager,
         settings=SettingsManager(),
-        tool_registry=None,
+        tool_repo=None,
         bash=None,
         working_dir=root,
     )

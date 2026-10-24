@@ -57,16 +57,17 @@ async def isolated_daemon_directory(monkeypatch):
 
 
 @pytest.fixture
-def host_skill_manager(tmp_path):
+def host_skill_repo(tmp_path):
     """Manual host Agents still need the SDK's real skill placement inputs.
 
     Limit discovery to the real installed Goal skill. Explicit placement can
     resolve its body, but discovering/reading it does not activate it on an Agent.
     """
-    from xdog.agent.skills import SkillManager, SkillPlacement, packaged_skills
+    from xdog.agent.skills import SkillPlacement, SkillRepo, packaged_skills
 
-    manager = SkillManager(tmp_path / 'shared-skills', group_dir=tmp_path / 'project-skills',
-                           packaged={'goal': packaged_skills()['goal']})
+    manager = SkillRepo(packaged={'goal': packaged_skills()['goal']}).register(
+        directory=tmp_path / 'shared-skills', name='shared').register(
+        directory=tmp_path / 'project-skills', name='group')
     placement = SkillPlacement.read(manager, ('goal',))
     goal, = placement.resolved
     assert goal.packaged and goal.path.is_file() and goal.content.strip()
@@ -75,12 +76,12 @@ def host_skill_manager(tmp_path):
 
 
 @pytest.fixture
-def assert_host_goal_discoverable(host_skill_manager):
+def assert_host_goal_discoverable(host_skill_repo):
     """Goal remains discoverable without default body activation on automatic input."""
     from xdog.agent.skills import render_skill_body
     from xdog.ai.types import system_prompt_text
 
-    goal = host_skill_manager.load_skill('goal')
+    goal = host_skill_repo.load_skill('goal')
     assert goal is not None
     body = render_skill_body(goal)
 

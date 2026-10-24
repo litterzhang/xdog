@@ -66,11 +66,11 @@ Keep provider/authentication, model routing, and wire-protocol adaptation separa
 
 `packages/agent/src/xdog/agent/agent.py` owns stateful conversations, lifecycle events, cancellation, steering/follow-ups, skills, and persistence snapshots. `agent_loop.py` converts history to an `xdog.ai` context, streams a response, validates and executes tool calls, appends results, and repeats until the turn ends.
 
-Coding, claw, and SDK-backed flow agent nodes reuse this runtime. Flow's external CLI backends intentionally use `CliRunner`; do not introduce a second in-process tool loop for SDK-backed nodes. Tool calls execute in parallel by default, while preparation/finalization hooks are serial. Callers enforce tool permissions through hooks—the generic tools themselves are not a security boundary. Agent provides a host-owned `ToolRegistry` SDK, not a process-global runtime.
-Each host creates its own registry. SDK defaults are `bash`, `filesystem`, and
-`current_time`; `submit_result` has an opt-in factory. Imports do not register
+Coding, claw, and SDK-backed flow agent nodes reuse this runtime. Flow's external CLI backends intentionally use `CliRunner`; do not introduce a second in-process tool loop for SDK-backed nodes. Tool calls execute in parallel by default, while preparation/finalization hooks are serial. Callers enforce tool permissions through hooks—the generic tools themselves are not a security boundary. Agent provides a host-owned `ToolRepo` SDK, not a process-global runtime.
+Each host creates its own repo. SDK default instances are `bash`, `filesystem`, and
+`current_time`; `submit_result` is explicitly constructed. Imports do not register
 mutable global state. Extension workers do not provide model tools; Capability
-tool contributions enter the host ToolRegistry. MCP uses a separate McpRegistry
+tool contributions enter the host ToolRepo. MCP uses a separate McpRegistry
 consumed directly by Agent; the existing loop and permissions remain shared.
 
 ### `xdog.flow`: typed workflow engine and primary product surface
@@ -115,9 +115,9 @@ Scheduler and goal work re-enter through the same orchestrator path as system in
 
 Prompt construction intentionally separates a cacheable static prefix from mutable workspace, memory, environment, and goal content. Compaction flushes durable memory, summarizes through the LLM, archives the transcript, then replaces older history. Memory uses vector+BM25 search when optional dependencies initialize and falls back to keyword search otherwise.
 
-Claw explicitly creates a host-owned Agent `ToolRegistry` for its groups. Domain
-imports do not register tools; Claw adds only its own tool factories to the SDK
-defaults. See `docs/host-owned-tool-registry.md`.
+Claw explicitly creates a host-owned Agent `ToolRepo` for its groups. Domain
+imports do not register tools; Claw registers actual tools in its SDK repo,
+creating optional tools only when configured. See `docs/host-owned-tool-registry.md`.
 
 ### `xdog.tui` and `xdog.site`
 

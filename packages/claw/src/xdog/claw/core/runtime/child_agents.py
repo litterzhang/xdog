@@ -23,7 +23,7 @@ from xdog.agent.core import AgentTool, AgentToolResult, StreamFn, ToolExecutionM
 from xdog.agent.cross_loop import settle_on
 from xdog.agent.mcp import McpRegistry
 from xdog.agent.tool_effects import ToolEffect
-from xdog.agent.tools import ToolRegistry
+from xdog.agent.tools import ToolRepo
 from xdog.agent.tools.filesystem_constraints import (
     capture_filesystem_roots as _filesystem_roots,
 )
@@ -403,9 +403,10 @@ class ClawChildren:
             return any(tool is proxy for proxy in delegated_mcp)
         tools = tuple(tool for tool in delegated if not is_mcp_proxy(tool)) + role_tools
         mcp = McpRegistry.from_tools(delegated_mcp)
-        registry = ToolRegistry()
+        repo = ToolRepo(*tools, builtin=False)
 
         def refresh_delegated_tools() -> None:
+            nonlocal repo
             current = self.parent.capture_tools(None).tools if self.parent.live else ()
             selected_tools = [proxy for source, proxy in zip(grant.tools, delegated, strict=True)
                               if any(source is item for item in current)]
@@ -413,10 +414,11 @@ class ClawChildren:
             # never regains authority. Hooks/providers/UI do not supply tools.
             selected_tools.extend(tool for tool in role_tools if self.parent.live
                                   and self.capabilities.permits(spec.id, tool.name, (tool,)))
+            replacement = ToolRepo(*(tool for tool in selected_tools if not is_mcp_proxy(tool)), builtin=False)
             mcp.replace_delegated_tools(tool for tool in selected_tools if is_mcp_proxy(tool))
             agent.sync_mcp_tools()
-            registry.replace_source("delegated", (tool for tool in selected_tools if not is_mcp_proxy(tool)))
-            registry.publish(agent)
+            replacement.publish(agent)
+            repo = replacement
         async def before(ctx: BeforeToolCallContext, cancel: asyncio.Event | None = None
                          ) -> BeforeToolCallResult | None:
             try:
@@ -496,9 +498,9 @@ class ClawChildren:
             context_window=selected.context_window, max_prompt_tokens=selected.max_prompt_tokens,
             supports_tool_calls=selected.supports_tool_calls, options=selected.options,
             compaction=selected.compaction(child_stream)),
-            tools=tools, mcp_registry=mcp, parent=self.parent,
+            tools=repo.tools, mcp_registry=mcp, parent=self.parent,
             skills=skills, active_skills=skills.slugs,
-            tool_ctx={**state.context, '_skill_manager': skills},
+            tool_ctx={**state.context, '_skill_repo': skills},
             transform_context=context, before_tool_call=before, after_tool_call=after, input_transform=input_transform)
         from xdog.agent.extensions.inspection import capture
         inspection_session = str(extension.context().get("session_id", ""))

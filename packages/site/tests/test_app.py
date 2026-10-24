@@ -533,14 +533,11 @@ def test_sitemap_tracks_the_registries_it_is_built_from(client: FlaskClient) -> 
 def test_home_shows_how_to_install_from_pypi(client: FlaskClient) -> None:
     """The front page has to answer "how do I get this" without a detour."""
     body = client.get("/").get_data(as_text=True)
-    assert "pip install xdog-coding xdog-claw xdog-flow xdog-eyes" in body
+    assert "pip install xdog-coding" in body
+    assert "pip install xdog-flow xdog-eyes xdog-claw" in body
+    assert "xdog-ai login copilot" in body
+    assert "xdog-coding --permission-mode ask" in body
     assert "https://pypi.org/project/xdog-ai/" in body
-    # The namespace (installed as xdog-flow, imported as xdog.flow) is no
-    # longer stated here. It is a real surprise -- the dist name and the import
-    # name differ -- and this used to assert the front page named it. Dropped
-    # deliberately to keep the landing page short, not because it stopped being
-    # true. Checked while removing it: no page on the site states it now, so a
-    # visitor learns the import name from the READMEs or by trying.
 
 
 def test_every_package_links_to_its_actual_installation_surface(client: FlaskClient) -> None:

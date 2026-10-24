@@ -16,10 +16,10 @@ Hosts retain permissions, resources and storage ownership.
 | `StreamFn / EmbedFn / WebSearchFn` | `xdog.agent` | Injected model/search/embedding contracts. |
 | `stream_fn_from_provider` | `xdog.agent` | Adapter over the actual AI provider/runtime and cached metadata. |
 | `ToolDef / action / Param` | `xdog.agent` | Declarative multi-action tool definitions. |
-| `ToolRegistry / ToolContext` | `xdog.agent.tools` | Host-local factory catalog and ordinary tool bindings. |
-| `McpRegistry` | `xdog.agent.mcp` | Separate MCP connections/proxies; inject into Agent, not ToolRegistry. |
+| `ToolRepo` | `xdog.agent` or `xdog.agent.tools.repo` | Host-local actual tools, atomic registration and identity-preserving subsets. |
+| `McpRegistry` | `xdog.agent.mcp` | Separate MCP connections/proxies; inject into Agent, not ToolRepo. |
 | `CapabilitySet / CapabilityAssembly / ApplicationPort` | `xdog.agent.capabilities` | Explicit installed-capability owner startup and tool/skill composition. |
-| `SkillManager / SkillPlacement / create_skill_tool` | `xdog.agent.skills` | Discovery, prepared body placement and optional read-only list/load tool. |
+| `SkillRepo / SkillPlacement / create_skill_tool` | `xdog.agent.skills` | Packaged/registered sources, collision checks, explicit body placement and read-only list/load. |
 | `CompactionConfig` | `xdog.agent` | Built-in compaction policy; `auto=False` by default. |
 | `ChildClient / ChildHandle / ChildBackend / ChildSpec / ParentHandle` | `xdog.agent` | Host-backed child contracts, not a child runtime/store/supervisor. |
 
@@ -52,35 +52,45 @@ shell/filesystem tools or capabilities.
 
 | Tool | Availability | Actions / purpose |
 |---|---|---|
-| `filesystem` | Default ToolRegistry factory selection, not automatic Agent installation | read · write · delete · edit · ls · grep · find. |
-| `bash` | Default factory selection | Shell commands. |
-| `current_time` | Default factory selection | Current time. |
-| `submit_result` | Opt-in factory or `create_submit_result_tool()` from `xdog.agent.tools` | Validate structured output against injected `result_schema`; retain in `result_sink["result"]`. |
+| `filesystem` | Default ToolRepo instance, not automatic Agent installation | read · write · delete · edit · ls · grep · find. |
+| `bash` | Default ToolRepo instance | Shell commands. |
+| `current_time` | Default ToolRepo instance | Current time. |
+| `submit_result` | Explicit `create_submit_result_tool()` from `xdog.agent.tools` | Validate structured output against injected `result_schema`; retain in `result_sink["result"]`. |
 | `web_search` | Explicit tool or injected `web_search_fn` | Provider-backed search. |
 | `embed` | Explicit tool or injected `embed_fn` | Provider-backed embedding. |
-| `skill` | Explicit `create_skill_tool(manager, ...)` | Read-only list/load; no activation, unload, execution or permission changes. |
+| `skill` | Explicit `create_skill_tool(skills, ...)` | Read-only list/load; no activation, unload, execution or permission changes. |
 
-A registry example inside an async host with an existing idle `agent`:
+A repo example inside an async host with an existing idle `agent`:
 
 ```python
 from pathlib import Path
-from xdog.agent.tools import ToolContext, ToolRegistry
+from xdog.agent import ToolRepo
+from xdog.agent.tools import create_submit_result_tool
 
-registry = ToolRegistry()
-created = registry.create_tools(["current_time"], context=ToolContext(cwd=Path.cwd()))
-binding = registry.replace_source("host", created)
-registry.publish(agent)
-# Later: remove this revision, then publish the reduced inventory explicitly.
-binding.close()
-registry.publish(agent)
+repo = ToolRepo(cwd=Path.cwd())
+selected = repo.select(("current_time",))
+assert selected.get("current_time") is repo.get("current_time")
+receipt = selected.register(create_submit_result_tool())
+selected.publish(agent)
+receipt.close()  # Only this registration; never a later replacement.
+selected.publish(agent)
 ```
 
-`create_tools(None)` selects defaults; `create_tools([])` selects none.
-Creation, binding and publication are separate. Duplicate names fail; removing a
-binding does not close resources. `agent.local_tools` is ordinary inventory,
+`ToolRepo(builtin=False)` starts empty; `register(*tools)` is atomic and never
+silently replaces a different same-name tool. Replacement explicitly calls
+`unregister(name)` then `register(replacement)`. `names()` returns a frozenset;
+`get(name)` raises ValueError when missing; `tools` is a tuple. Removal does not
+close resources or undo effects. `agent.local_tools` is ordinary inventory,
 `state.tools` is combined inventory and `active_tools` is effective selection.
-MCP registration does not connect; hosts explicitly connect and close their own
-registry after Agent cleanup. Extensions cannot register model tools.
+MCP connects separately and closes after Agent cleanup; extensions do not register
+model tools.
+
+`SkillRepo(builtin=True, packaged=None)` discovers installed packaged skills.
+`SkillRepo(builtin=False)` disables default discovery. Add sources with chainable
+`.register(directory=path, name="host")`. Directory-name and different same-slug
+conflicts fail, never shadow. `from_packaged` / `select` / `merge` are SDK methods.
+The read-only skill entry exposes list/load; bodies are not injected by default.
+Native Agent retains its `tools` and `skills` parameters.
 
 For `submit_result`, inject a new shared sink per collection through
 `tool_ctx={"result_schema": schema, "result_sink": sink}`. The outer context is
@@ -102,16 +112,20 @@ the caller must check the sink and overall outcome.
 | `compact(instructions="")` | Idle manual compaction; does not enable auto mode or archive to disk. |
 | `AgentConfig(compaction=CompactionConfig(auto=True))` | Explicit auto opt-in; real adapter metadata or trusted limits/reserves required. |
 | `abort / cancel_and_wait / wait_for_idle / aclose` | Cooperative stop request, owned producer cancellation/join, passive wait and owned cleanup respectively. No effect rollback. |
-| `CapabilitySet.start / aclose` | Explicit provider resource lifetime on a real owner; discovery alone is inert. |
-| `CapabilityAssembly.create_agent` | Compose already-started Sets, base tools and selected/default skills into a native Agent. |
+| `CapabilitySet(...).select(names).open(host)` | Only selected provider startup; yields Assembly, closes after nested Agents. Explicit start/aclose remains available. |
+| `CapabilityAssembly.create_agent` | Add tool_repo/skill_repo by union to selected capability and Set contributions; returns a native Agent. |
 | `CapabilityAssembly.restore_agent / restore_agent_parts` | Validate saved bindings and merge current default session skills without rearming consumed turn bodies. |
 
-Assembly `enabled_tools=None` includes all capability tools; `[]` includes none
-and does not filter base tools. `declared_skills` is not activation; Flow/Eyes/Goal
-bodies need explicit selection. Skill text never grants tools or approval.
-Closing an Eyes binding detaches from its independent daemon, not daemon stop.
-Close Agents before shared Sets; child Agents receive explicit grants, not the
-whole application Set. Coding/Claw own child runtimes and persistence.
+Configure Set repositories before selection/open. Select provider names before
+startup; application scope may omit host, session/group need real owner ports.
+Assembly takes additive `tool_repo` / `skill_repo`, not native `tools` / `skills`
+or separate enable lists. An empty supplemental subset cannot remove capability
+contributions. `compose_tools(existing)` / `publish_tools(agent)` have no extra
+filter parameter. Flow/Eyes/Goal bodies are not default-active; skill text never
+grants tools or approval. Closing Eyes detaches from its daemon, not daemon stop.
+Flow CLI does not inherit host sandbox, approval hooks or tool allowlists.
+Close Agents before shared Sets; children receive actual grants, not the whole
+application Set. Coding/Claw own child runtimes and persistence.
 
 ## CLI — `xdog-agent`
 
@@ -123,7 +137,7 @@ whole application Set. Coding/Claw own child runtimes and persistence.
 | `chat --tool-ctx JSON` | Shared context object or `@file`; does not enable submit_result by itself. |
 | `acp [--model MODEL] [--no-tools]` | Optional standard stdio ACP adapter; requires the `acp` extra. |
 
-Without `--no-tools`, the CLI prepares default registry tools, injects search and
+Without `--no-tools`, the CLI constructs default ToolRepo tools, injects search and
 opens application capabilities. It is not a host approval sandbox.
 
 ## Chat slash commands

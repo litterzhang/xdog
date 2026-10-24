@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 from xdog.coding.core import slash_commands
 from xdog.coding.core.slash_commands import (
     BUILTIN_COMMANDS,
@@ -50,8 +50,8 @@ def skills(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point the command dispatcher at a temporary skills directory."""
     shared = tmp_path / "skills"
     shared.mkdir(parents=True)
-    manager = SkillManager(shared_dir=shared, packaged={})
-    monkeypatch.setattr(slash_commands, "skill_manager", lambda: manager)
+    manager = SkillRepo(packaged={}).register(directory=shared, name="shared")
+    monkeypatch.setattr(slash_commands, "skill_repo", lambda: manager)
     return shared
 
 
@@ -200,8 +200,8 @@ async def test_skills_command_marks_which_skills_came_from_a_package(
     (packaged_dir / "SKILL.md").write_text(
         "---\nname: flow\ndescription: from a package\n---\n\nbody", encoding="utf-8"
     )
-    manager = SkillManager(shared_dir=shared, packaged={"flow": packaged_dir})
-    monkeypatch.setattr(slash_commands, "skill_manager", lambda: manager)
+    manager = SkillRepo(packaged={'flow': packaged_dir}).register(directory=shared, name="shared")
+    monkeypatch.setattr(slash_commands, "skill_repo", lambda: manager)
 
     result = await execute_command("skills", "", session)  # type: ignore[arg-type]
 
@@ -226,7 +226,7 @@ async def test_a_broken_skills_directory_does_not_break_the_dispatcher(
     def _boom() -> Any:
         raise OSError("permission denied")
 
-    monkeypatch.setattr(slash_commands, "skill_manager", _boom)
+    monkeypatch.setattr(slash_commands, "skill_repo", _boom)
 
     assert "model" in list_commands()
     result = await execute_command("nope", "", session)  # type: ignore[arg-type]
@@ -259,8 +259,8 @@ def test_the_system_prompt_gains_and_loses_the_body(
     shared = tmp_path / "skills"
     shared.mkdir(parents=True)
     _write(shared, "flow", "STEP ONE: validate the graph.", description="write a workflow")
-    manager = SkillManager(shared_dir=shared, packaged={})
-    monkeypatch.setattr(slash_commands, "skill_manager", lambda: manager)
+    manager = SkillRepo(packaged={}).register(directory=shared, name="shared")
+    monkeypatch.setattr(slash_commands, "skill_repo", lambda: manager)
 
     idle = _skills_context(frozenset())
     assert idle == '', 'Coding must not render a second Agent-owned skill index'
@@ -288,8 +288,8 @@ def test_the_skills_section_is_empty_when_nothing_is_installed(
 ) -> None:
     from xdog.coding.core.agent_session import _skills_context
 
-    manager = SkillManager(shared_dir=tmp_path / "empty", packaged={})
-    monkeypatch.setattr(slash_commands, "skill_manager", lambda: manager)
+    manager = SkillRepo(packaged={}).register(directory=tmp_path / 'empty', name="shared")
+    monkeypatch.setattr(slash_commands, "skill_repo", lambda: manager)
 
     assert _skills_context(frozenset()) == ""
 
@@ -302,7 +302,7 @@ def test_an_unreadable_skills_directory_does_not_break_the_system_prompt(
     def _boom() -> Any:
         raise OSError("permission denied")
 
-    monkeypatch.setattr(slash_commands, "skill_manager", _boom)
+    monkeypatch.setattr(slash_commands, "skill_repo", _boom)
     assert 'cannot deactivate' in _skills_context(frozenset({'flow'}))
     # Rendering this product note must not consult a filesystem skill manager.
 
@@ -391,7 +391,7 @@ def test_expiry_survives_an_unreadable_skills_directory(
     def _boom() -> Any:
         raise OSError("permission denied")
 
-    monkeypatch.setattr(slash_commands, "skill_manager", _boom)
+    monkeypatch.setattr(slash_commands, "skill_repo", _boom)
     session = FakeExpiringSession({"flow"})
 
     _expire(session)
@@ -409,8 +409,8 @@ def test_the_model_is_told_it_may_suggest_but_not_unload(
     shared = tmp_path / "skills"
     shared.mkdir(parents=True)
     _write(shared, "guard", "Always run the tests before deploying.")
-    manager = SkillManager(shared_dir=shared, packaged={})
-    monkeypatch.setattr(slash_commands, "skill_manager", lambda: manager)
+    manager = SkillRepo(packaged={}).register(directory=shared, name="shared")
+    monkeypatch.setattr(slash_commands, "skill_repo", lambda: manager)
 
     prompt = _skills_context(frozenset({"guard"}))
 
@@ -479,7 +479,7 @@ def test_an_unresolvable_model_still_gets_its_tools_described(tmp_path: Path, ca
     session = AgentSession(agent=Agent(unexpected, config=AgentConfig(model=name, supports_tool_calls=capability)),
         session_data=manager.create_session(model=name, working_dir=tmp_path), session_manager=manager,
         settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-        tool_registry=None, bash=None, permissions=PermissionManager('deny'))
+        tool_repo=None, bash=None, permissions=PermissionManager('deny'))
     try:
         assert model_supports_tool_calls(name) is None
         native = session._native_tool_calls()
@@ -506,8 +506,8 @@ def test_completion_offers_skills_not_only_builtins(
     shared = tmp_path / "skills"
     shared.mkdir(parents=True)
     _write(shared, "flow", "body", description="write a workflow")
-    manager = SkillManager(shared_dir=shared, packaged={})
-    monkeypatch.setattr(slash_commands, "skill_manager", lambda: manager)
+    manager = SkillRepo(packaged={}).register(directory=shared, name="shared")
+    monkeypatch.setattr(slash_commands, "skill_repo", lambda: manager)
 
     commands = list_commands()
 
@@ -524,7 +524,7 @@ def test_a_builtin_wins_a_name_clash(tmp_path: Path, monkeypatch: pytest.MonkeyP
     shared = tmp_path / "skills"
     shared.mkdir(parents=True)
     _write(shared, "quit", "body", description="a skill pretending to be quit")
-    manager = SkillManager(shared_dir=shared, packaged={})
-    monkeypatch.setattr(slash_commands, "skill_manager", lambda: manager)
+    manager = SkillRepo(packaged={}).register(directory=shared, name="shared")
+    monkeypatch.setattr(slash_commands, "skill_repo", lambda: manager)
 
     assert list_commands()["quit"] == BUILTIN_COMMANDS["quit"]

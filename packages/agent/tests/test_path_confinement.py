@@ -154,8 +154,8 @@ def test_a_workspace_alone_does_not_confine(tmp_path: Path) -> None:
 
 
 def _manager(tmp_path: Path, *skills: tuple[str, str, bool]) -> object:
-    """A SkillManager over a temp directory — the same loader every product uses."""
-    from xdog.agent.skills import SkillManager
+    """A SkillRepo over a temp directory — the same loader every product uses."""
+    from xdog.agent.skills import SkillRepo
 
     for name, body, expires in skills:
         d = tmp_path / "skills" / name
@@ -165,7 +165,7 @@ def _manager(tmp_path: Path, *skills: tuple[str, str, bool]) -> object:
             f"---\nname: {name}\ndescription: desc-{name}{meta}\n---\n\n{body}\n",
             encoding="utf-8",
         )
-    return SkillManager(shared_dir=tmp_path / "skills", packaged={})
+    return SkillRepo(builtin=False, packaged={}).register(directory=tmp_path / "skills", name="shared")
 
 
 def _agent(**kw: object) -> object:
@@ -197,14 +197,14 @@ async def _assert_turn_skill_at_model_boundary(
     from typing import cast
 
     from xdog.agent import Agent, AgentConfig
-    from xdog.agent.skills import SkillManager
+    from xdog.agent.skills import SkillRepo
     from xdog.ai.types import AssistantMessage, Context, StreamOptions, SystemPromptBlock, TextContent, UserMessage
     from xdog.ai.utils.event_stream import EventStream
 
     skills = [("temp", turn_body, True)]
     if fixed_body is not None:
         skills.insert(0, ("fixed", fixed_body, False))
-    manager = cast(SkillManager, _manager(tmp_path, *skills))
+    manager = cast(SkillRepo, _manager(tmp_path, *skills))
     seen: list[Context] = []
 
     def user_text(message: UserMessage) -> str:

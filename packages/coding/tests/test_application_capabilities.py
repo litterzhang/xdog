@@ -82,9 +82,9 @@ async def test_application_tool_does_not_override_explicit_active_tool_selection
 
 @pytest.mark.parametrize('mode,accepted', [('allow-all', True), ('deny', False)])
 async def test_installed_eyes_tool_is_loaded_by_real_coding_and_uses_normal_permissions(tmp_path, mode, accepted):
-    from xdog.agent.skills import SkillManager
+    from xdog.agent.skills import SkillRepo
 
-    session, _ = create(tmp_path, mode, skills=SkillManager(tmp_path / 'skills'))
+    session, _ = create(tmp_path, mode, skills=SkillRepo().register(directory=tmp_path / 'skills', name="shared"))
     data = {'version': 2, 'name': 'coding-explicit-owner',
         'sources': [{'id': 'source', 'type': 'file', 'root': '.', 'include': ['*.txt']}],
         'detectors': [{'id': 'changes', 'type': 'file.change', 'source': 'source'}],
@@ -122,7 +122,7 @@ async def test_installed_eyes_tool_is_loaded_by_real_coding_and_uses_normal_perm
 
 async def test_application_and_session_default_skills_merge_without_granting_active_tools(tmp_path, monkeypatch):
     from xdog.agent import Agent, AgentConfig
-    from xdog.agent.skills import SkillManager
+    from xdog.agent.skills import SkillRepo
     from xdog.ai.types import system_prompt_text
     from xdog.coding.core.agent_session import AgentSession
     from xdog.coding.core.session_manager import SessionManager
@@ -142,7 +142,7 @@ async def test_application_and_session_default_skills_merge_without_granting_act
     scoped.open = open_session
     monkeypatch.setattr('xdog.agent.capabilities.runtime.discover',
         lambda scope: {'application': (application,), 'session': (scoped,)}.get(scope, ()))
-    skills = SkillManager(tmp_path / 'skills', packaged={})
+    skills = SkillRepo(packaged={}).register(directory=tmp_path / 'skills', name="shared")
     for slug in ('application-instructions', 'session-instructions', 'chosen'):
         skills.save_skill(slug, f'Unique body for {slug}.')
     contexts = []
@@ -153,7 +153,7 @@ async def test_application_and_session_default_skills_merge_without_granting_act
     session = AgentSession(agent=Agent(stream, config=AgentConfig(model='test/model'), skills=skills),
         session_data=manager.create_session(model='test/model', working_dir=tmp_path), session_manager=manager,
         settings=SettingsManager(global_path=tmp_path / 'settings.json'),
-        tool_registry=None, bash=None, working_dir=tmp_path)
+        tool_repo=None, bash=None, working_dir=tmp_path)
     try:
         assert not application.opens and not session.active_skills and not contexts
         session.agent.set_active_tools([], expected_revision=session.agent.tool_selection_revision)

@@ -1,11 +1,11 @@
 """Packaged prompt contracts, not a semantic or programmatic Goal acceptance judge."""
 import pytest
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 
 
 @pytest.fixture
 def skill(tmp_path):
-    loaded = SkillManager(tmp_path / "absent").load_skill("goal")
+    loaded = SkillRepo().register(directory=tmp_path / "absent", name="shared").load_skill("goal")
     assert loaded is not None and loaded.packaged
     return " ".join(loaded.content.split())
 

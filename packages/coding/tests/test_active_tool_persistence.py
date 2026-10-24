@@ -22,7 +22,7 @@ async def create(tmp_path, data=None):
     agent = Agent(stream, config=AgentConfig(model='offline/model'), tools=get_default_tools(tmp_path))
     owner = AgentSession(agent=agent,
         session_data=data, session_manager=store, settings=SettingsManager(global_path=tmp_path / 'settings.json'),
-        working_dir=tmp_path, tool_registry=None, bash=None, permissions=PermissionManager('deny'))
+        working_dir=tmp_path, tool_repo=None, bash=None, permissions=PermissionManager('deny'))
     return owner, calls
 
 

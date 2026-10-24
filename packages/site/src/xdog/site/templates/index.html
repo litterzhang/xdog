@@ -1,50 +1,121 @@
 {% extends "base.html" %}
-{% block ctitle %}{% endblock %}
+{% block title %} — From prompts to repeatable work{% endblock %}
+{% block meta_description %}Build an agent, turn repeatable work into tested workflows, and connect changes to action. Local-first Python apps and SDKs you can compose.{% endblock %}
 
 {% block content %}
-<section>
-  <p>Eight composable Python packages for local-first model APIs, Agents, terminal applications,
-    typed workflows, observations and skills. Each host owns its execution and permissions;
-    no hosted control plane or external database is required.</p>
-  <p>Linux and Python 3.12+. Durable features use local files and SQLite.
-    Real model calls require an authenticated, configured provider.</p>
+<section id="home-start" aria-labelledby="home-title">
+  <h2 id="home-title">Stop repeating the prompt. Build the process.</h2>
+  <p>Start with an agent in your repository. Turn a useful sequence of steps into a workflow you can test
+    and run again. Connect file changes or schedules when it is time to automate.</p>
+  <p>XDOG gives you ready-to-use apps and composable Python SDKs.
+    Your host keeps control of tools, permissions and state; no hosted control plane is required.</p>
+  <p>
+    <a class="btn btn-ghost btn-primary" href="#get-started">Get started &rarr;</a>
+    <a class="btn btn-ghost btn-default" href="{{ url_for('main.package_static', name='flow', page='examples') }}">Explore workflows</a>
+  </p>
+  <p class="muted">Linux &middot; Python 3.12+ &middot; Open source</p>
 </section>
 
-<section>
-  <h2>Choose an entry point</h2>
-  <pre><code>pip install xdog-coding xdog-claw xdog-flow xdog-eyes
+<section id="use-cases" aria-labelledby="use-cases-title">
+  <h2 id="use-cases-title">What do you want to put to work?</h2>
+  <dl>
+    <dt><a href="{{ url_for('main.package_detail', name='coding') }}">Work on a codebase &rarr; Coding</a></dt>
+    <dd>Read and edit files, run checks, and delegate to child agents. Keep approvals and conversation history
+      with your coding session.</dd>
+    <dt><a href="{{ url_for('main.package_detail', name='flow') }}">Run a process again &rarr; Flow</a></dt>
+    <dd>Connect scripts, agents and human steps with typed inputs and outputs. Test the workflow,
+      resume from checkpoints, or generate Python.</dd>
+    <dt><a href="{{ url_for('main.package_detail', name='claw') }}">Keep an assistant available &rarr; Claw</a></dt>
+    <dd>Talk through a terminal or Weixin. Add <a href="{{ url_for('main.package_detail', name='eyes') }}">Eyes</a>
+      to send file-change or schedule inputs to the assistant. Its main agent decides the next step.</dd>
+  </dl>
+</section>
+
+<section id="get-started" aria-labelledby="get-started-title">
+  <h2 id="get-started-title">Start with one useful task</h2>
+  <p>Try Coding in a repository. You do not need the whole stack to get started.</p>
+  <pre><code>pip install xdog-coding
 xdog-ai login copilot
-xdog-ai models copilot --sync
 xdog-coding --permission-mode ask</code></pre>
-  <p>Install these packages in the same environment for installed capability discovery.
-    Coding and Claw include <code>xdog-skills</code>. Flow and Eyes provide their own
-    discoverable skills and CLI-backed tools; skill bodies are not activated by default.</p>
-  <p>Eight distributions publish to PyPI. This site is the ninth workspace package:
-    use <code>uv sync --locked</code> and <code>uv run xdog-site</code> in a checkout.</p>
+  <p>Real model calls need an authenticated provider. Choose a model from your configured catalog.
+    The <code>ask</code> mode allows read-only calls by default and requests approval for mutations.</p>
+  <details>
+    <summary>Want workflows and observations too?</summary>
+    <pre><code>pip install xdog-flow xdog-eyes xdog-claw</code></pre>
+    <p>Install in the same Python environment for capability discovery. Coding and Claw include
+      <code>xdog-skills</code>. Installed capabilities contribute tools and discoverable skills;
+      skill bodies are not activated by default.</p>
+  </details>
 </section>
 
-{% for title, pkgs in layers %}
-<section>
-  <h2>{{ title }}</h2>
+<section id="workflow" aria-labelledby="workflow-title">
+  <h2 id="workflow-title">From a good prompt to a repeatable review</h2>
+  <p>A repository review can be a process, not a conversation you reconstruct each time:</p>
+  <ol>
+    <li><strong>Collect:</strong> a script gathers the diff and project context.</li>
+    <li><strong>Review:</strong> an agent uses the model and tools you choose.</li>
+    <li><strong>Check:</strong> scripts run checks and assemble a structured report.</li>
+  </ol>
+  <p>Each step gets explicit inputs and outputs. Add workflow test cases before relying on the next run.</p>
+  <pre><code>xdog-flow validate ./workflows/review.json
+xdog-flow test ./workflows/</code></pre>
+  <p class="muted">Illustrative workflow, not a live run or an included review recipe.
+    Commands assume you have created the workflow and its tests.</p>
+  <p><a href="{{ url_for('main.package_static', name='flow', page='examples') }}">Start from the shipped Flow examples &rarr;</a></p>
+</section>
+
+<section id="sdk" aria-labelledby="sdk-title">
+  <h2 id="sdk-title">Build the parts only you can build</h2>
+  <p>Use the same Agent loop behind the apps. Register your tools, load skills from your own directories,
+    and open only the capabilities you need. Keep permission checks in your host.</p>
+  <div id="sdk-example">
+    <pre><code>from xdog.agent import ToolRepo, SkillRepo
+from xdog.agent.capabilities import CapabilitySet
+
+catalog = CapabilitySet(
+    "application",
+    tool_repo=ToolRepo(),
+    skill_repo=SkillRepo(),
+)
+
+async with catalog.select(["flow"]).open() as capabilities:
+    async with capabilities.create_agent(
+        stream_fn,
+        config=config,
+        before_tool_call=permission_hook,
+    ) as agent:
+        async for event in await agent.prompt(task):
+            handle(event)</code></pre>
+  </div>
+  <p class="muted">Source SDK excerpt. Your host supplies the model stream, config, permission hook,
+    task and event handler. Install <code>xdog-flow</code> for its capability.
+    Use the API docs matching your installed release.</p>
+  <p><a href="{{ url_for('main.package_static', name='agent', page='reference') }}">Read the Agent SDK reference &rarr;</a>
+    &middot; <a href="https://github.com/litterzhang/xdog/tree/main/packages/agent#capability-sdk-quick-start">Runnable SDK quick start</a></p>
+</section>
+
+<section id="package-catalog" aria-labelledby="packages-title">
+  <h2 id="packages-title">One toolbox. Pick the pieces.</h2>
+  <p>{{ packages|length }} public packages. Use an app, build on the SDKs, or combine just what your project needs.</p>
   <div class="cards grid">
-    {% for pkg in pkgs %}
-      <div class="card -5of12 cell" id="{{ pkg.name }}">
-        <header class="card-header">
-          <a href="{{ url_for('main.package_detail', name=pkg.name) }}">{{ pkg.name }}</a>
-          &nbsp;|&nbsp;<a href="{{ pkg.pypi_url }}" title="on PyPI"><code>{{ pkg.dist }}</code></a>
-        </header>
-        <div class="card-content">
-          <div class="inner">
-            <div>{{ pkg.tagline }}.</div>
-            <div><a href="{{ url_for('main.package_detail', name=pkg.name) }}">Details &rarr;</a></div>
-          </div>
+    {% for pkg in packages %}
+    <article class="card -5of12 cell" id="{{ pkg.name }}">
+      <header class="card-header">
+        <a href="{{ url_for('main.package_detail', name=pkg.name) }}">{{ pkg.name }}</a>
+      </header>
+      <div class="card-content">
+        <div class="inner">
+          <p>{{ pkg.tagline }}.</p>
+          <a href="{{ pkg.pypi_url }}" title="on PyPI"><code>{{ pkg.dist }}</code></a>
         </div>
       </div>
-      <div class="cell -1of12 spacer"></div>
+    </article>
+    <div class="cell -1of12 spacer" aria-hidden="true"></div>
     {% endfor %}
   </div>
+  <p class="muted">Local-first does not mean local-model-only: choose your provider and keep execution in your host.
+    Durable features use local files and SQLite. AGPL-3.0-or-later.</p>
 </section>
-{% endfor %}
 {% endblock %}
 
 {% block content_nav %}

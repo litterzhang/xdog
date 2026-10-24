@@ -6,10 +6,11 @@ pinning are the ones a second caller can easily break: the two-tier override,
 and progressive disclosure — ``list_skills`` must NOT carry bodies, or every
 skill on disk lands in the prompt.
 """
+
 from pathlib import Path
 
 import pytest
-from xdog.agent.skills import SkillManager
+from xdog.agent.skills import SkillRepo
 
 
 def _mk(root: Path, slug: str, text: str) -> Path:
@@ -20,7 +21,7 @@ def _mk(root: Path, slug: str, text: str) -> Path:
 
 
 def test_save_then_load_round_trips(tmp_path: Path) -> None:
-    m = SkillManager(shared_dir=tmp_path / "shared", packaged={})
+    m = SkillRepo(builtin=False, packaged={}).register(directory=tmp_path / "shared", name="shared")
     m.save_skill("deploy", "Run `make deploy`.", name="Deploy", description="Ship it")
 
     got = m.load_skill("deploy")
@@ -29,24 +30,25 @@ def test_save_then_load_round_trips(tmp_path: Path) -> None:
     assert got.content == "Run `make deploy`."
 
 
-def test_group_skill_overrides_shared_of_the_same_slug(tmp_path: Path) -> None:
+def test_directory_conflicts_require_explicit_unregistration(tmp_path: Path) -> None:
     shared, group = tmp_path / "shared", tmp_path / "group"
-    _mk(shared, "notes", "---\nname: shared one\n---\n\nshared body")
-    _mk(group, "notes", "---\nname: group one\n---\n\ngroup body")
-
-    m = SkillManager(shared_dir=shared, group_dir=group, packaged={})
-
-    loaded = m.load_skill("notes")
-    assert loaded is not None and loaded.content == "group body"
-    # ...and the override collapses to a single entry rather than listing twice.
-    assert [s.name for s in m.list_skills()] == ["group one"]
+    _mk(shared, "notes", "---\nname: notes\n---\nshared body")
+    _mk(group, "notes", "---\nname: notes\n---\ngroup body")
+    repo = SkillRepo(builtin=False).register(directory=shared, name="shared")
+    with pytest.raises(ValueError, match="Duplicate skill"):
+        repo.register(directory=group, name="group")
+    assert repo.load_skill("notes").content == "shared body"
+    repo.unregister("shared")
+    repo.register(directory=group, name="group")
+    assert repo.load_skill("notes").content == "group body"
+    assert (shared / "notes" / "SKILL.md").exists()
 
 
 def test_listing_omits_bodies_so_the_prompt_stays_small(tmp_path: Path) -> None:
     shared = tmp_path / "shared"
     _mk(shared, "big", "---\nname: big\ndescription: d\n---\n\n" + "x" * 5000)
 
-    m = SkillManager(shared_dir=shared, packaged={})
+    m = SkillRepo(builtin=False, packaged={}).register(directory=shared, name="shared")
 
     listed = m.list_skills()
     assert [s.description for s in listed] == ["d"]
@@ -60,7 +62,7 @@ def test_description_falls_back_to_first_body_line(tmp_path: Path) -> None:
     shared = tmp_path / "shared"
     _mk(shared, "undescribed", "---\nname: u\n---\n\n# Heading\n\nThe real summary.")
 
-    skill = SkillManager(shared_dir=shared, packaged={}).load_skill("undescribed")
+    skill = SkillRepo(builtin=False, packaged={}).register(directory=shared, name="shared").load_skill("undescribed")
     assert skill is not None
     assert skill.description == "The real summary."
 
@@ -69,7 +71,7 @@ def test_updating_keeps_the_original_created_date(tmp_path: Path) -> None:
     shared = tmp_path / "shared"
     _mk(shared, "old", "---\nname: old\ncreated: 2020-01-01\nupdated: 2020-01-01\n---\n\nbody")
 
-    m = SkillManager(shared_dir=shared, packaged={})
+    m = SkillRepo(builtin=False, packaged={}).register(directory=shared, name="shared")
     updated = m.save_skill("old", "new body", name="old")
 
     assert updated.created == "2020-01-01"
@@ -77,7 +79,7 @@ def test_updating_keeps_the_original_created_date(tmp_path: Path) -> None:
 
 
 def test_patch_appends_and_preserves_metadata(tmp_path: Path) -> None:
-    m = SkillManager(shared_dir=tmp_path / "shared", packaged={})
+    m = SkillRepo(builtin=False, packaged={}).register(directory=tmp_path / "shared", name="shared")
     m.save_skill("s", "first", name="S", description="keep me")
 
     patched = m.patch_skill("s", "second")
@@ -88,21 +90,23 @@ def test_patch_appends_and_preserves_metadata(tmp_path: Path) -> None:
     assert m.patch_skill("does-not-exist", "x") is None
 
 
-def test_remove_clears_both_tiers(tmp_path: Path) -> None:
+def test_remove_only_deletes_the_registered_host_skill(tmp_path: Path) -> None:
     shared, group = tmp_path / "shared", tmp_path / "group"
-    _mk(shared, "dup", "---\nname: a\n---\n\na")
-    _mk(group, "dup", "---\nname: b\n---\n\nb")
-
-    m = SkillManager(shared_dir=shared, group_dir=group, packaged={})
-    assert m.remove_skill("dup") is True
-    assert m.load_skill("dup") is None
-    assert m.remove_skill("dup") is False
+    _mk(shared, "a", "---\nname: a\n---\na")
+    _mk(group, "b", "---\nname: b\n---\nb")
+    repo = SkillRepo(builtin=False).register(directory=shared).register(directory=group)
+    assert repo.remove_skill("a") is True
+    assert repo.load_skill("a") is None and repo.load_skill("b") is not None
+    assert repo.remove_skill("a") is False
 
 
 def test_summary_is_empty_when_there_are_no_skills(tmp_path: Path) -> None:
     # An empty string is what the prompt builder tests for; a header with no
     # entries under it would be worse than nothing.
-    assert SkillManager(shared_dir=tmp_path / "shared", packaged={}).skills_summary() == ""
+    assert (
+        SkillRepo(builtin=False, packaged={}).register(directory=tmp_path / "shared", name="shared").skills_summary()
+        == ""
+    )
 
 
 def test_summary_lists_every_slug_with_its_description(tmp_path: Path) -> None:
@@ -110,7 +114,7 @@ def test_summary_lists_every_slug_with_its_description(tmp_path: Path) -> None:
     _mk(shared, "b-skill", "---\nname: B\ndescription: does b\n---\n\nbody")
     _mk(shared, "a-skill", "---\nname: A\ndescription: does a\n---\n\nbody")
 
-    summary = SkillManager(shared_dir=shared, packaged={}).skills_summary()
+    summary = SkillRepo(builtin=False, packaged={}).register(directory=shared, name="shared").skills_summary()
 
     assert "`a-skill` — does a" in summary
     assert "`b-skill` — does b" in summary
@@ -124,7 +128,9 @@ def test_non_directories_and_dirs_without_skill_md_are_ignored(tmp_path: Path) -
     (shared / "empty").mkdir()
     _mk(shared, "real", "---\nname: real\n---\n\nbody")
 
-    assert [s.slug for s in SkillManager(shared_dir=shared, packaged={}).list_skills()] == ["real"]
+    assert [
+        s.slug for s in SkillRepo(builtin=False, packaged={}).register(directory=shared, name="shared").list_skills()
+    ] == ["real"]
 
 
 def _flow_skill_dir() -> Path:
@@ -147,7 +153,9 @@ def _flow_skill_dir() -> Path:
 
 def test_a_packaged_skill_is_listed_and_loadable(tmp_path: Path) -> None:
     """The packaging path: `pip install xdog-flow` teaches an agent flow."""
-    m = SkillManager(shared_dir=tmp_path / "shared", packaged={"flow": _flow_skill_dir()})
+    m = SkillRepo(builtin=False, packaged={"flow": _flow_skill_dir()}).register(
+        directory=tmp_path / "shared", name="shared"
+    )
 
     listed = m.list_skills()
     assert [s.slug for s in listed] == ["flow"]
@@ -160,39 +168,35 @@ def test_a_packaged_skill_is_listed_and_loadable(tmp_path: Path) -> None:
     assert "workflow" in loaded.content.lower()
 
 
-def test_a_user_skill_shadows_a_packaged_one_of_the_same_slug(tmp_path: Path) -> None:
+def test_host_skill_cannot_implicitly_shadow_packaged_definition(tmp_path: Path) -> None:
     shared = tmp_path / "shared"
-    _mk(shared, "flow", "---\nname: mine\ndescription: my own\n---\n\nmy body")
-
-    m = SkillManager(shared_dir=shared, packaged={"flow": _flow_skill_dir()})
-
-    loaded = m.load_skill("flow")
-    assert loaded is not None
-    assert loaded.content == "my body"
-    assert loaded.packaged is False
-    # Shadowed, not duplicated.
-    assert [s.name for s in m.list_skills()] == ["mine"]
+    _mk(shared, "flow", "---\nname: flow\n---\nCUSTOM_BODY")
+    repo = SkillRepo(builtin=False, packaged={"flow": _flow_skill_dir()})
+    with pytest.raises(ValueError, match="Duplicate skill"):
+        repo.register(directory=shared)
+    assert repo.load_skill("flow").packaged
 
 
 def test_removing_a_packaged_skill_does_not_touch_site_packages(tmp_path: Path) -> None:
     """`remove_skill` calls rmtree. Pointed at site-packages it would delete
     part of an installed distribution to satisfy a request to hide a skill."""
     flow_skill = _flow_skill_dir()
-    m = SkillManager(shared_dir=tmp_path / "shared", packaged={"flow": flow_skill})
+    m = SkillRepo(builtin=False, packaged={"flow": flow_skill}).register(directory=tmp_path / "shared", name="shared")
 
     assert m.remove_skill("flow") is False
     assert (flow_skill / "SKILL.md").exists(), "the packaged skill was deleted!"
     assert m.load_skill("flow") is not None
 
 
-def test_removing_a_shadow_reveals_the_packaged_skill_again(tmp_path: Path) -> None:
+def test_explicit_skill_unregistration_does_not_delete_package_files(tmp_path: Path) -> None:
     shared = tmp_path / "shared"
-    _mk(shared, "flow", "---\nname: mine\n---\n\nmy body")
-    m = SkillManager(shared_dir=shared, packaged={"flow": _flow_skill_dir()})
-
-    assert m.remove_skill("flow") is True
-    revealed = m.load_skill("flow")
-    assert revealed is not None and revealed.packaged is True
+    _mk(shared, "flow", "---\nname: flow\n---\nCUSTOM_BODY")
+    packaged = _flow_skill_dir()
+    repo = SkillRepo(builtin=False, packaged={"flow": packaged})
+    repo.unregister("flow")
+    repo.register(directory=shared)
+    assert repo.load_skill("flow").content == "CUSTOM_BODY"
+    assert (packaged / "SKILL.md").is_file()
 
 
 def test_discovery_is_safe_to_call_and_finds_only_real_skills() -> None:
@@ -216,7 +220,7 @@ def test_a_quoted_description_does_not_keep_its_quotes(tmp_path: Path) -> None:
     shared = tmp_path / "shared"
     _mk(shared, "q", '---\nname: q\ndescription: "You MUST use this before creative work"\n---\n\nbody')
 
-    skill = SkillManager(shared_dir=shared, packaged={}).load_skill("q")
+    skill = SkillRepo(builtin=False, packaged={}).register(directory=shared, name="shared").load_skill("q")
     assert skill is not None
     assert skill.description == "You MUST use this before creative work"
 
@@ -227,7 +231,7 @@ def test_a_colon_in_a_description_survives_the_round_trip(tmp_path: Path) -> Non
     Formatted straight into `description: {}` this is a YAML syntax error, and
     the skill reloads with no metadata at all.
     """
-    m = SkillManager(shared_dir=tmp_path / "shared", packaged={})
+    m = SkillRepo(builtin=False, packaged={}).register(directory=tmp_path / "shared", name="shared")
     m.save_skill("s", "body", name="s", description="Fix bug: retry on 500")
 
     back = m.load_skill("s")
@@ -237,7 +241,7 @@ def test_a_colon_in_a_description_survives_the_round_trip(tmp_path: Path) -> Non
 
 
 def test_unicode_descriptions_are_not_mangled(tmp_path: Path) -> None:
-    m = SkillManager(shared_dir=tmp_path / "shared", packaged={})
+    m = SkillRepo(builtin=False, packaged={}).register(directory=tmp_path / "shared", name="shared")
     m.save_skill("cn", "正文", name="工作流", description="把流程固化成 workflow.json")
 
     back = m.load_skill("cn")
@@ -250,7 +254,7 @@ def test_a_horizontal_rule_in_the_body_is_not_read_as_the_delimiter(tmp_path: Pa
     shared = tmp_path / "shared"
     _mk(shared, "hr", "---\nname: hr\ndescription: d\n---\n\nStep one\n\n---\n\nStep two")
 
-    skill = SkillManager(shared_dir=shared, packaged={}).load_skill("hr")
+    skill = SkillRepo(builtin=False, packaged={}).register(directory=shared, name="shared").load_skill("hr")
     assert skill is not None
     assert skill.description == "d"
     assert "Step two" in skill.content
@@ -261,7 +265,7 @@ def test_malformed_frontmatter_loses_metadata_but_not_the_skill(tmp_path: Path) 
     shared = tmp_path / "shared"
     _mk(shared, "broken", "---\nname: [unclosed\n---\n\nthe body is still here")
 
-    skill = SkillManager(shared_dir=shared, packaged={}).load_skill("broken")
+    skill = SkillRepo(builtin=False, packaged={}).register(directory=shared, name="shared").load_skill("broken")
     assert skill is not None
     assert skill.content == "the body is still here"
     assert skill.name == "broken", "falls back to the directory name"
@@ -271,7 +275,7 @@ def test_list_valued_fields_are_flattened_rather_than_dropped(tmp_path: Path) ->
     shared = tmp_path / "shared"
     _mk(shared, "l", "---\nname: l\ndescription:\n  - first\n  - second\n---\n\nbody")
 
-    skill = SkillManager(shared_dir=shared, packaged={}).load_skill("l")
+    skill = SkillRepo(builtin=False, packaged={}).register(directory=shared, name="shared").load_skill("l")
     assert skill is not None
     assert skill.description == "first, second"
 
@@ -283,7 +287,7 @@ def test_what_we_write_carries_no_fields_outside_the_standard() -> None:
     """The reference validator rejects a file with unknown top-level keys, so
     one stray bookkeeping field makes every skill we write unportable."""
     import yaml
-    from xdog.agent.skills.manager import SPEC_FIELDS, _build_frontmatter
+    from xdog.agent.skills.repo import SPEC_FIELDS, _build_frontmatter
 
     block = _build_frontmatter("s", "d", "2026-01-01", "2026-08-06")
     loaded = yaml.safe_load(block.strip("-\n"))
@@ -293,7 +297,7 @@ def test_what_we_write_carries_no_fields_outside_the_standard() -> None:
 
 
 def test_dates_still_round_trip_through_metadata(tmp_path: Path) -> None:
-    m = SkillManager(shared_dir=tmp_path / "shared", packaged={})
+    m = SkillRepo(builtin=False, packaged={}).register(directory=tmp_path / "shared", name="shared")
     m.save_skill("s", "body", name="s", description="d")
     first = m.load_skill("s")
     assert first is not None and first.created
@@ -308,7 +312,7 @@ def test_dates_written_at_the_top_level_by_older_versions_are_still_read(
     shared = tmp_path / "shared"
     _mk(shared, "legacy", "---\nname: legacy\ncreated: 2020-01-01\n---\n\nbody")
 
-    skill = SkillManager(shared_dir=shared, packaged={}).load_skill("legacy")
+    skill = SkillRepo(builtin=False, packaged={}).register(directory=shared, name="shared").load_skill("legacy")
     assert skill is not None
     assert skill.created == "2020-01-01"
 
@@ -317,7 +321,7 @@ def test_metadata_cannot_shadow_a_real_field(tmp_path: Path) -> None:
     shared = tmp_path / "shared"
     _mk(shared, "s", "---\nname: real\nmetadata:\n  name: impostor\n---\n\nbody")
 
-    skill = SkillManager(shared_dir=shared, packaged={}).load_skill("s")
+    skill = SkillRepo(builtin=False, packaged={}).register(directory=shared, name="shared").load_skill("s")
     assert skill is not None
     assert skill.name == "real"
 
@@ -333,7 +337,7 @@ def test_generated_slugs_always_satisfy_the_name_rules(raw: str) -> None:
     violates the rules is rejected by other clients, not by us, so nothing
     here would catch it.
     """
-    from xdog.agent.skills.manager import _slugify, is_valid_skill_name
+    from xdog.agent.skills.repo import _slugify, is_valid_skill_name
 
     slug = _slugify(raw)
     assert is_valid_skill_name(slug), f"{raw!r} produced invalid name {slug!r}"
@@ -341,7 +345,7 @@ def test_generated_slugs_always_satisfy_the_name_rules(raw: str) -> None:
 
 def test_a_saved_skill_is_named_after_its_directory(tmp_path: Path) -> None:
     """The standard requires frontmatter `name` to match the parent directory."""
-    m = SkillManager(shared_dir=tmp_path / "shared", packaged={})
+    m = SkillRepo(builtin=False, packaged={}).register(directory=tmp_path / "shared", name="shared")
     saved = m.save_skill("", "body", name="My Great Skill")
 
     assert saved.slug == "my-great-skill"
@@ -365,7 +369,7 @@ def test_a_package_can_ship_more_than_one_skill(tmp_path: Path) -> None:
         )
 
     packaged = {p.name: p for p in sorted(container.iterdir())}
-    m = SkillManager(shared_dir=tmp_path / "shared", packaged=packaged)
+    m = SkillRepo(builtin=False, packaged=packaged).register(directory=tmp_path / "shared", name="shared")
 
     assert [s.slug for s in m.list_skills()] == ["first-skill", "second-skill"]
     loaded = m.load_skill("second-skill")
@@ -374,7 +378,7 @@ def test_a_package_can_ship_more_than_one_skill(tmp_path: Path) -> None:
 
 def test_our_own_shipped_skill_conforms() -> None:
     """`name` must equal the directory it lives in, or other clients reject it."""
-    from xdog.agent.skills.manager import SPEC_FIELDS, _parse_frontmatter, is_valid_skill_name
+    from xdog.agent.skills.repo import SPEC_FIELDS, _parse_frontmatter, is_valid_skill_name
 
     skill_dir = _flow_skill_dir()
     meta, body = _parse_frontmatter((skill_dir / "SKILL.md").read_text(encoding="utf-8"))
@@ -400,7 +404,7 @@ def test_anything_that_is_not_turn_means_session(tmp_path: Path) -> None:
     _mk(shared, "absent", "---\nname: absent\ndescription: d\n---\n\nbody")
     _mk(shared, "unknown", "---\nname: unknown\ndescription: d\nmetadata:\n  scope: forever\n---\n\nb")
 
-    m = SkillManager(shared_dir=shared, packaged={})
+    m = SkillRepo(builtin=False, packaged={}).register(directory=shared, name="shared")
     for slug in ("absent", "unknown"):
         skill = m.load_skill(slug)
         assert skill is not None
@@ -411,7 +415,7 @@ def test_an_author_can_declare_a_turn_scoped_skill(tmp_path: Path) -> None:
     shared = tmp_path / "shared"
     _mk(shared, "once", "---\nname: once\ndescription: d\nmetadata:\n  scope: turn\n---\n\nbody")
 
-    skill = SkillManager(shared_dir=shared, packaged={}).load_skill("once")
+    skill = SkillRepo(builtin=False, packaged={}).register(directory=shared, name="shared").load_skill("once")
     assert skill is not None
     assert skill.expires_after_turn is True
 
@@ -421,7 +425,7 @@ def test_scope_survives_the_listing_projection(tmp_path: Path) -> None:
     shared = tmp_path / "shared"
     _mk(shared, "once", "---\nname: once\ndescription: d\nmetadata:\n  scope: turn\n---\n\nbody")
 
-    listed = SkillManager(shared_dir=shared, packaged={}).list_skills()
+    listed = SkillRepo(builtin=False, packaged={}).register(directory=shared, name="shared").list_skills()
     assert [s.expires_after_turn for s in listed] == [True]
 
 
@@ -433,7 +437,7 @@ def test_the_skill_directory_is_stated_so_relative_paths_resolve(tmp_path: Path)
 
     shared = tmp_path / "shared"
     _mk(shared, "s", "---\nname: s\ndescription: d\n---\n\nSee `examples/x.json`.")
-    skill = SkillManager(shared_dir=shared, packaged={}).load_skill("s")
+    skill = SkillRepo(builtin=False, packaged={}).register(directory=shared, name="shared").load_skill("s")
     assert skill is not None
 
     rendered = render_skill_body(skill)
@@ -449,7 +453,7 @@ def test_skill_dir_variables_are_substituted(tmp_path: Path, variable: str) -> N
 
     shared = tmp_path / "shared"
     _mk(shared, "s", f"---\nname: s\ndescription: d\n---\n\nRun {variable}/scripts/go.sh")
-    skill = SkillManager(shared_dir=shared, packaged={}).load_skill("s")
+    skill = SkillRepo(builtin=False, packaged={}).register(directory=shared, name="shared").load_skill("s")
     assert skill is not None
 
     rendered = render_skill_body(skill)
@@ -475,7 +479,7 @@ def test_every_file_our_shipped_skill_points_at_actually_exists() -> None:
     """
     import re
 
-    from xdog.agent.skills.manager import _parse_frontmatter
+    from xdog.agent.skills.repo import _parse_frontmatter
 
     skill_dir = _flow_skill_dir()
     _, body = _parse_frontmatter((skill_dir / "SKILL.md").read_text(encoding="utf-8"))
@@ -502,7 +506,7 @@ def test_our_parser_agrees_with_pyyaml_on_a_checked_in_corpus() -> None:
     mistakes for the end of the frontmatter.
     """
     import yaml
-    from xdog.agent.skills.manager import _parse_frontmatter
+    from xdog.agent.skills.repo import _parse_frontmatter
 
     corpus = sorted((Path(__file__).parent / "fixtures" / "frontmatter").glob("*.md"))
     assert len(corpus) >= 5, "the corpus went missing — this test is worthless without it"
@@ -527,16 +531,20 @@ def test_agent_keeps_skill_prefix_when_structured_prompt_is_rebuilt(tmp_path):
     from xdog.ai.types import AssistantMessage, SystemPromptBlock
     from xdog.ai.utils.event_stream import EventStream
 
-    _mk(tmp_path, 'guard', '---\nname: guard\ndescription: guard\n---\nFIXED-SKILL-BODY')
-    manager = SkillManager(tmp_path, packaged={})
-    blocks = (SystemPromptBlock(text='STATIC', cache=True), SystemPromptBlock(text='MUTABLE', cache=False))
-    agent = Agent(lambda *args: EventStream.empty(AssistantMessage()),
-                  config=AgentConfig(system_prompt=blocks), skills=manager, active_skills=('guard',))
+    _mk(tmp_path, "guard", "---\nname: guard\ndescription: guard\n---\nFIXED-SKILL-BODY")
+    manager = SkillRepo(builtin=False, packaged={}).register(directory=tmp_path, name="shared")
+    blocks = (SystemPromptBlock(text="STATIC", cache=True), SystemPromptBlock(text="MUTABLE", cache=False))
+    agent = Agent(
+        lambda *args: EventStream.empty(AssistantMessage()),
+        config=AgentConfig(system_prompt=blocks),
+        skills=manager,
+        active_skills=("guard",),
+    )
     assert agent.state.system_prompt[-2:] == blocks
     assert agent.state.system_prompt[0].cache is True
-    assert 'FIXED-SKILL-BODY' in agent.state.system_prompt[0].text
+    assert "FIXED-SKILL-BODY" in agent.state.system_prompt[0].text
     agent.set_system_prompt(blocks)
     assert len(agent.state.system_prompt) == 3
     agent.set_active_skills(())
     assert agent.state.system_prompt[-2:] == blocks
-    assert 'FIXED-SKILL-BODY' not in str(agent.state.system_prompt)
+    assert "FIXED-SKILL-BODY" not in str(agent.state.system_prompt)

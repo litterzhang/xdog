@@ -6,7 +6,7 @@ keep in the system prompt for every skill on disk; the body is only read when th
 agent decides it needs that skill. That two-step disclosure is the whole point —
 a hundred skills cost a hundred one-line descriptions, not a hundred documents.
 
-**Who does what.** A `SkillManager` answers *which skills exist and where* —
+**Who does what.** A `SkillRepo` answers *which skills exist and where* —
 each product builds one over its own directories, because only it knows where to
 look: flow beside its workflow file, coding and claw in their group and shared
 directories, all of them plus whatever packages ship. The `Agent` answers *where
@@ -33,20 +33,20 @@ write flow workflows.
 """
 
 from xdog.agent.skills.discovery import load_packaged_skill, packaged_skills
-from xdog.agent.skills.manager import SkillManager
 from xdog.agent.skills.render import (
     render_skill_body,
     resolvable_skill,
     resolve_skills,
     skills_preamble,
 )
+from xdog.agent.skills.repo import SkillRepo
 from xdog.agent.skills.tool import create_skill_tool
 from xdog.agent.skills.types import Skill, SkillPlacement
 
 __all__ = [
     "Skill",
     "SkillPlacement",
-    "SkillManager",
+    "SkillRepo",
     "create_skill_tool",
     "load_packaged_skill",
     "packaged_skills",

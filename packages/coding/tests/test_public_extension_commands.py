@@ -65,10 +65,10 @@ async def test_public_extension_cannot_shadow_builtin_native_command_or_installe
 
 async def test_new_conflicting_skill_keeps_help_snapshot_and_unload_recoverable(tmp_path, monkeypatch):
     import pytest
-    from xdog.agent.skills import SkillManager
+    from xdog.agent.skills import SkillRepo
     from xdog.coding.core import slash_commands
-    manager = SkillManager(shared_dir=tmp_path / 'skills')
-    monkeypatch.setattr(slash_commands, 'skill_manager', lambda: manager)
+    manager = SkillRepo().register(directory=tmp_path / 'skills', name="shared")
+    monkeypatch.setattr(slash_commands, 'skill_repo', lambda: manager)
     session, calls = session_with_display(tmp_path)
     try:
         await session.send_message('Ready')

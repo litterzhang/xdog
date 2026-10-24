@@ -36,9 +36,9 @@ from xdog.flow.models import (
 )
 
 if TYPE_CHECKING:
+    from xdog.agent import ToolRepo
     from xdog.agent.core import StreamFn, WebSearchFn
-    from xdog.agent.skills import SkillManager
-    from xdog.flow.tools import ToolRegistry
+    from xdog.agent.skills import SkillRepo
 
 
 class AgentRunner(Protocol):
@@ -172,20 +172,20 @@ class StubRunner:
         return value, tokens
 
 
-def _skill_manager(skill_dirs: "Sequence[Path]") -> "SkillManager":
-    """A SkillManager over the workflow's own `skills/` plus installed packages.
+def _skill_repo(skill_dirs: "Sequence[Path]") -> "SkillRepo":
+    """A SkillRepo over the workflow's own `skills/` plus installed packages.
 
     The same loader every product uses, rather than a flow-specific resolver:
     what differs between products is *where to look*, and that is exactly what a
-    manager is parameterised by.
+    repository is parameterised by.
     """
-    from xdog.agent.skills import SkillManager, packaged_skills
+    from xdog.agent.skills import SkillRepo
 
     local = list(skill_dirs)
-    return SkillManager(
-        shared_dir=local[0] if local else Path("/nonexistent"),
-        packaged=packaged_skills(),
-    )
+    repo = SkillRepo()
+    if local:
+        repo.register(directory=local[0], name="shared")
+    return repo
 
 
 class SdkRunner:
@@ -201,7 +201,7 @@ class SdkRunner:
         self,
         *,
         stream_fn_factory: Callable[[str], StreamFn],
-        tool_registry: ToolRegistry,
+        tool_repo: ToolRepo,
         web_search_fn_factory: Callable[[str], WebSearchFn] | None,
         workspace: Path | None = None,
         allow_paths: Sequence[Path] = (),
@@ -209,7 +209,7 @@ class SdkRunner:
         confine_to: Sequence[Path] | None = None,
     ) -> None:
         self._stream_fn_factory = stream_fn_factory
-        self._tool_registry = tool_registry
+        self._tool_repo = tool_repo
         self._web_search_fn_factory = web_search_fn_factory
         # Where "here" is. A relative path resolves inside it; None leaves the
         # tool's historical behaviour, where a relative path is an error.
@@ -250,7 +250,7 @@ class SdkRunner:
         from xdog.ai.types import AssistantMessage, TextContent
 
         stream_fn = self._stream_fn_factory(model)
-        resolved_tools: tuple[AgentTool, ...] = self._tool_registry.resolve(node.tools)
+        resolved_tools: tuple[AgentTool, ...] = self._tool_repo.select(node.tools).tools
 
         ctx_bits: dict[str, object] = {}
         if self._workspace is not None:
@@ -295,7 +295,7 @@ class SdkRunner:
             ),
             tools=resolved_tools,
             tool_ctx=tool_ctx,
-            skills=_skill_manager(self._skill_dirs),
+            skills=_skill_repo(self._skill_dirs),
             active_skills=node.skills,
             web_search_fn=web_search_fn,
         )

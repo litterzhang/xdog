@@ -1,17 +1,17 @@
-"""Tests for flow.tools — ToolRegistry and built-in demo tools."""
+"""Tests for flow.tools — ToolRepo and built-in demo tools."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
+from xdog.agent import ToolRepo
 from xdog.agent.core import AgentTool
 from xdog.flow.errors import WorkflowValidationError
 from xdog.flow.models import WorkflowDef
 from xdog.flow.tools import (
-    ToolRegistry,
     coerce_tool,
-    default_registry,
+    default_repo,
     load_tool_ref,
     register_workflow_tools,
 )
@@ -19,27 +19,27 @@ from xdog.flow.tools import (
 _FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def test_default_registry_has_echo() -> None:
-    reg = default_registry()
+def test_default_repo_has_echo() -> None:
+    reg = default_repo()
     tool = reg.get("echo")
     assert tool.name == "echo"
 
 
 def test_get_unknown_raises() -> None:
-    reg = default_registry()
-    with pytest.raises(WorkflowValidationError, match="nope"):
+    reg = default_repo()
+    with pytest.raises(ValueError, match="nope"):
         reg.get("nope")
 
 
-def test_resolve_returns_tuple() -> None:
-    reg = default_registry()
-    result = reg.resolve(["echo"])
+def test_select_preserves_actual_tool_identity() -> None:
+    reg = default_repo()
+    result = reg.select(["echo"]).tools
     assert len(result) == 1
-    assert result[0].name == "echo"
+    assert result[0] is reg.get("echo")
 
 
 async def test_echo_execute() -> None:
-    reg = default_registry()
+    reg = default_repo()
     tool = reg.get("echo")
     assert tool.execute is not None
     result = await tool.execute("id1", {"text": "hello"})
@@ -50,7 +50,7 @@ async def test_echo_execute() -> None:
 
 
 def test_names_includes_builtins() -> None:
-    names = default_registry().names()
+    names = default_repo().names()
     assert {"echo", "bash", "filesystem"} <= names
 
 
@@ -98,7 +98,7 @@ def test_register_workflow_tools_uses_manifest_name() -> None:
         edges=(),
         tool_refs=(("reverse", "mytools:make_reverse"), ("rev2", "mytools:REVERSE_TOOL")),
     )
-    reg = ToolRegistry()
+    reg = ToolRepo(builtin=False)
     register_workflow_tools(wf, reg, _FIXTURES)
     # Manifest key is authoritative, overriding each tool's internal name.
     assert {"reverse", "rev2"} <= reg.names()
@@ -192,3 +192,42 @@ def test_read_run_source_missing_returns_none(tmp_path: Path) -> None:
     from xdog.flow.tools import read_run_source
 
     assert read_run_source("nonexistent:fn", tmp_path) is None
+
+
+def test_default_repo_is_sdk_repo_with_actual_fresh_builtins() -> None:
+    first, second = default_repo(), default_repo()
+    assert type(first) is ToolRepo
+    assert {"echo", "bash", "filesystem", "current_time", "submit_result"} == first.names()
+    for name in ("bash", "filesystem", "current_time", "submit_result"):
+        assert first.get(name) is not second.get(name)
+
+
+def test_manifest_explicit_replacement_fences_original_receipt() -> None:
+    old = AgentTool(name="echo", description="original")
+    repo = ToolRepo(builtin=False)
+    receipt = repo.register(old)
+    wf = WorkflowDef(
+        name="replacement", provider="offline", entry="n", nodes=(), edges=(),
+        tool_refs=(("echo", "mytools:make_reverse"),),
+    )
+    register_workflow_tools(wf, repo, _FIXTURES)
+    replacement = repo.get("echo")
+    assert replacement is not old
+    assert replacement.description == "Reverse the given text."
+    receipt.close()
+    assert repo.get("echo") is replacement
+    with pytest.raises(ValueError):
+        repo.register(old)
+    assert repo.get("echo") is replacement
+
+
+def test_invalid_manifest_ref_does_not_unregister_existing_tool() -> None:
+    repo = default_repo()
+    original = repo.get("echo")
+    wf = WorkflowDef(
+        name="invalid", provider="offline", entry="n", nodes=(), edges=(),
+        tool_refs=(("echo", "mytools:NOT_A_TOOL"),),
+    )
+    with pytest.raises(WorkflowValidationError):
+        register_workflow_tools(wf, repo, _FIXTURES)
+    assert repo.get("echo") is original

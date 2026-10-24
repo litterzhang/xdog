@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "xdog-agent"
-version = "2.4.9"
+version = "2.5.0"
 description = "Agent runtime with tool calling and state management"
 requires-python = ">=3.12"
 classifiers = [
@@ -22,9 +22,9 @@ readme = "README.md"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE", "LICENSE-EXCEPTION.md"]
 dependencies = [
-    "xdog-ai>=2.4.9",
+    "xdog-ai>=2.5.0",
     "fastjsonschema",
-    # Skill frontmatter is YAML; see xdog.agent.skills.manager for why it is
+    # Skill frontmatter is YAML; see xdog.agent.skills.repo for why it is
     # parsed rather than approximated.
     "pyyaml>=6.0",
     "jsonschema>=4.18",
