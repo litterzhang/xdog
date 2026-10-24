@@ -12,21 +12,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_path(path: str) -> tuple[str, int, str]:
+def run_path(path: str) -> tuple[str, int]:
     label = Path(path).parent.name
     # Balance the larger packages (owned workers, sockets, CLI and build I/O).
     # A small worker pool overlaps that I/O without collecting unrelated packages.
     workers = {"agent": 2, "coding": 2, "flow": 2, "claw": 2}.get(label, 0)
     command = [
         sys.executable, "-m", "pytest", "-c", str(ROOT / "pyproject.toml"),
-        path, "-q", "-n", str(workers),
+        path, "-v", "-n", str(workers),
+        "-o", "faulthandler_timeout=120",
         "-o", f"cache_dir={ROOT / '.pytest_cache' / 'packages' / label}",
     ]
-    result = subprocess.run(
-        command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, errors="replace", check=False,
-    )
-    return path, result.returncode, result.stdout
+    # Inherit stdout so CI retains the last test and diagnostics even when a
+    # worker never exits. Capturing an entire package hides exactly that evidence.
+    print(f"\n--- Starting {path} ---", flush=True)
+    result = subprocess.run(command, cwd=ROOT, stderr=subprocess.STDOUT, check=False)
+    return path, result.returncode
 
 
 def main() -> int:
@@ -49,8 +50,8 @@ def main() -> int:
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         futures = [pool.submit(run_path, path) for path in paths]
         for future in as_completed(futures):
-            path, code, output = future.result()
-            print(f"\n--- {path} ---\n{output}", end="" if output.endswith("\n") else "\n", flush=True)
+            path, code = future.result()
+            print(f"\n--- Finished {path}: exit {code} ---", flush=True)
             if code:
                 failed.append(path)
     elapsed = time.perf_counter() - start

@@ -15,16 +15,19 @@ def test_package_runner_explicitly_selects_root_configuration(monkeypatch):
     commands = []
     def run(command, **kwargs):
         commands.append((command, kwargs))
-        return SimpleNamespace(returncode=0, stdout='passed')
+        return SimpleNamespace(returncode=0)
     monkeypatch.setattr(subprocess, 'run', run)
-    assert run_path('packages/coding/tests') == ('packages/coding/tests', 0, 'passed')
+    assert run_path('packages/coding/tests') == ('packages/coding/tests', 0)
     command, options = commands[0]
     assert command[command.index('-c') + 1] == str(SCRIPT.parents[1] / 'pyproject.toml')
     assert command[command.index('-n') + 1] == '2'
     assert options['cwd'] == SCRIPT.parents[1]
+    assert 'stdout' not in options  # Do not hide live test/worker diagnostics.
+    assert options['stderr'] == subprocess.STDOUT
+    assert '-v' in command and 'faulthandler_timeout=120' in command
 
 
-def test_nested_config_cannot_turn_an_unhandled_worker_exception_into_success(tmp_path, monkeypatch):
+def test_nested_config_cannot_turn_an_unhandled_worker_exception_into_success(tmp_path, monkeypatch, capfd):
     (tmp_path / 'pyproject.toml').write_text('''[tool.pytest.ini_options]
 filterwarnings = ["error::pytest.PytestUnhandledThreadExceptionWarning"]
 ''')
@@ -49,7 +52,8 @@ def test_worker():
     assert before.returncode == 0, before.stdout + before.stderr
     run_path = runpy.run_path(str(SCRIPT))['run_path']
     monkeypatch.setitem(run_path.__globals__, 'ROOT', tmp_path)
-    path, code, output = run_path('nested/tests')
+    path, code = run_path('nested/tests')
+    output = capfd.readouterr().out
     assert path == 'nested/tests' and code != 0, output
     assert 'PytestUnhandledThreadExceptionWarning' in output
     assert 'owned worker did not settle' in output

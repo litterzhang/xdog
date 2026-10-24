@@ -8,6 +8,11 @@ project follows [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Stream package test logs and emit diagnostic thread stacks for long-running
+  tests so CI stalls retain the original test evidence. No tests are skipped.
+
 ---
 
 ## [2.5.0] — 2026-10-25
