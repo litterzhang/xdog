@@ -8,11 +8,6 @@ project follows [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Changed
-
-- Stream package test logs and emit diagnostic thread stacks for long-running
-  tests so CI stalls retain the original test evidence. No tests are skipped.
-
 ---
 
 ## [2.5.0] — 2026-10-25
@@ -33,6 +28,8 @@ project follows [semantic versioning](https://semver.org/).
 - Refresh package documentation and the Agent SDK quick start. Reorganize the
   site homepage around use cases, getting started, workflow and SDK examples,
   while retaining the existing hack.css theme and shared layout.
+- Stream package test logs and emit diagnostic thread stacks for long-running
+  tests so CI stalls retain the original test evidence. No tests are skipped.
 
 ---
 

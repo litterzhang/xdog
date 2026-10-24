@@ -92,3 +92,8 @@ SDK 节点仍依赖 Agent/AI；subflow 的 Flow 运行时依赖保持原有明�
 - 首页只使用现有 hack.css/site.css，基础模板和全站样式未修改；真实 Chromium 检查
   360/390/800/1440 像素宽度，无页面横向溢出，锚点与折叠交互正常。
 - 这是本地发布前证据，不把它等同于 GitHub Actions、PyPI 上传或线上部署成功。
+
+跨日补充（2026-10-25）：全部 20 个 wheel/sdist 的 `twine check` 通过。
+Coding 全量再次独立复跑：**2,597 passed、12 skipped，253.90 秒**。
+测试脚本现逐条透传 pytest 日志，并为超过 120 秒的测试输出线程诊断（不终止或跳过测试）；
+脚本自身的 root 配置/异步异常门禁回归 **2 passed**。正式发布时间以 Git 标签及发布流程为准。
