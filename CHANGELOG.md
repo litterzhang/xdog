@@ -29,7 +29,9 @@ project follows [semantic versioning](https://semver.org/).
   site homepage around use cases, getting started, workflow and SDK examples,
   while retaining the existing hack.css theme and shared layout.
 - Stream package test logs and emit diagnostic thread stacks for long-running
-  tests so CI stalls retain the original test evidence. No tests are skipped.
+  tests so CI stalls retain the original test evidence. Match package concurrency
+  to available CPUs and use the same full-suite runner for CI and publishing;
+  no tests are skipped.
 
 ---
 

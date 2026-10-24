@@ -81,13 +81,14 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
       - run: uv sync
-      - run: uv run pytest -q
+      - run: uv run python scripts/test.py
       - run: uv run ruff check packages
       - run: uv run mypy --strict -p xdog.flow -p xdog.skills -p xdog.eyes
 

@@ -1,11 +1,14 @@
 """The CI runner must not let package-local configs bypass root async error gates."""
 from __future__ import annotations
 
+import os
 import runpy
 import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 SCRIPT = Path(__file__).resolve().parents[3] / 'scripts' / 'test.py'
 
@@ -57,3 +60,17 @@ def test_worker():
     assert path == 'nested/tests' and code != 0, output
     assert 'PytestUnhandledThreadExceptionWarning' in output
     assert 'owned worker did not settle' in output
+
+
+@pytest.mark.parametrize("cpus,expected", [(1, 1), (2, 1), (4, 2), (8, 4), (64, 4)])
+def test_default_jobs_respects_cpu_affinity(monkeypatch, cpus, expected):
+    default_jobs = runpy.run_path(str(SCRIPT))["default_jobs"]
+    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: set(range(cpus)), raising=False)
+    assert default_jobs() == expected
+
+
+def test_default_jobs_falls_back_without_affinity_support(monkeypatch):
+    default_jobs = runpy.run_path(str(SCRIPT))["default_jobs"]
+    monkeypatch.delattr(os, "sched_getaffinity", raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: None)
+    assert default_jobs() == 1

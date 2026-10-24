@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -30,9 +31,19 @@ def run_path(path: str) -> tuple[str, int]:
     return path, result.returncode
 
 
+def default_jobs() -> int:
+    """Each large package starts two pytest workers; respect the host CPU ceiling."""
+    try:
+        cpus = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        cpus = os.cpu_count() or 1
+    return min(4, max(1, cpus // 2))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--jobs", type=int, default=4, help="maximum concurrent package test processes (default: 4)")
+    parser.add_argument("--jobs", type=int, default=default_jobs(),
+                        help="maximum concurrent package processes (default: CPU-aware, at most 4)")
     args = parser.parse_args()
     if args.jobs < 1:
         parser.error("--jobs must be positive")
