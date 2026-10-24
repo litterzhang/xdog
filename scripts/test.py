@@ -20,8 +20,8 @@ def run_path(path: str) -> tuple[str, int]:
     workers = {"agent": 2, "coding": 2, "flow": 2, "claw": 2}.get(label, 0)
     command = [
         sys.executable, "-m", "pytest", "-c", str(ROOT / "pyproject.toml"),
-        path, "-v", "-n", str(workers),
-        "-o", "faulthandler_timeout=120",
+        path, "-q", "-n", str(workers),
+        "--timeout=120", "--timeout-method=thread",
         "-o", f"cache_dir={ROOT / '.pytest_cache' / 'packages' / label}",
     ]
     # Inherit stdout so CI retains the last test and diagnostics even when a

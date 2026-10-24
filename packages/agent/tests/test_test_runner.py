@@ -27,7 +27,8 @@ def test_package_runner_explicitly_selects_root_configuration(monkeypatch):
     assert options['cwd'] == SCRIPT.parents[1]
     assert 'stdout' not in options  # Do not hide live test/worker diagnostics.
     assert options['stderr'] == subprocess.STDOUT
-    assert '-v' in command and 'faulthandler_timeout=120' in command
+    assert '-q' in command
+    assert '--timeout=120' in command and '--timeout-method=thread' in command
 
 
 def test_nested_config_cannot_turn_an_unhandled_worker_exception_into_success(tmp_path, monkeypatch, capfd):
@@ -74,3 +75,16 @@ def test_default_jobs_falls_back_without_affinity_support(monkeypatch):
     monkeypatch.delattr(os, "sched_getaffinity", raising=False)
     monkeypatch.setattr(os, "cpu_count", lambda: None)
     assert default_jobs() == 1
+
+
+def test_hung_test_fails_with_its_stack_instead_of_stranding_ci(tmp_path):
+    (tmp_path / "test_hung.py").write_text(
+        "import threading\ndef test_hung():\n    threading.Event().wait()\n")
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "test_hung.py", "-q", "-n", "0",
+         "--timeout=1", "--timeout-method=thread"],
+        cwd=tmp_path, capture_output=True, text=True, timeout=15,
+    )
+    assert result.returncode != 0
+    assert "Timeout" in result.stdout + result.stderr
+    assert "test_hung" in result.stdout + result.stderr

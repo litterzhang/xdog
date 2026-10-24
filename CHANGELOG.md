@@ -31,7 +31,8 @@ project follows [semantic versioning](https://semver.org/).
 - Stream package test logs and emit diagnostic thread stacks for long-running
   tests so CI stalls retain the original test evidence. Match package concurrency
   to available CPUs and use the same full-suite runner for CI and publishing;
-  no tests are skipped.
+  no tests are skipped. A test-only watchdog fails stuck tests with their thread
+  stacks instead of leaving the release job running indefinitely.
 
 ---
 
