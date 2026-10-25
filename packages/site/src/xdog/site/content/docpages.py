@@ -14,6 +14,7 @@ package it imports.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
 
 import frontmatter
@@ -65,11 +66,39 @@ def render_markdown(text: str) -> Markup:
     return Markup(md.convert(text))
 
 
-def _render(path: Path, page: str) -> RenderedPage:
-    """Parse frontmatter and render the markdown body to safe HTML."""
+@dataclass(frozen=True)
+class SourcePage:
+    """Authored source, with no inferred deployment/publication timestamp."""
+
+    title: str
+    content: str
+    updated_at: str | None
+
+
+def _read(path: Path, page: str) -> SourcePage:
     post = frontmatter.loads(path.read_text(encoding="utf-8"))
-    title = str(post.get("title") or page.capitalize())
-    return RenderedPage(html=render_markdown(post.content), title=title)
+    updated = post.get("updated_at")
+    if isinstance(updated, (date, datetime)):
+        updated = updated.isoformat()
+    if isinstance(updated, str):
+        try:
+            datetime.fromisoformat(updated.replace("Z", "+00:00"))
+        except ValueError:
+            updated = None
+    else:
+        updated = None
+    return SourcePage(str(post.get("title") or page.capitalize()), post.content, updated)
+
+
+def read_page(name: str, page: str) -> SourcePage | None:
+    """Read original Markdown only after the existing resource allowlist."""
+    path = _page_path(name, page)
+    return _read(path, page) if path is not None else None
+
+
+def _render(path: Path, page: str) -> RenderedPage:
+    source = _read(path, page)
+    return RenderedPage(html=render_markdown(source.content), title=source.title)
 
 
 def render_page(name: str, page: str) -> RenderedPage | None:

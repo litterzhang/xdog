@@ -12,36 +12,19 @@ from xdog.site.content.docpages import render_page
 from xdog.site.content.docs import PackageDocs
 from xdog.site.content.faq import FAQS
 from xdog.site.content.packages import LAYERS, PACKAGES, PACKAGES_BY_NAME
+from xdog.site.content.product import OPTIONAL_INSTALL, QUICKSTART_COMMANDS
+from xdog.site.content.registry import PACKAGE_DOCS as PACKAGE_DOCS
 
 bp = Blueprint("main", __name__)
 
 _MAX_UPLOAD_BYTES = 256 * 1024  # generous cap for a workflow JSON
 
 
-def _load_package_docs() -> dict[str, PackageDocs]:
-    """Registry of packages whose Features + Roadmap are Python-authored (all of them)."""
-    from xdog.site.content.agent import DOCS as AGENT_DOCS
-    from xdog.site.content.ai import DOCS as AI_DOCS
-    from xdog.site.content.claw import DOCS as CLAW_DOCS
-    from xdog.site.content.coding import DOCS as CODING_DOCS
-    from xdog.site.content.eyes import DOCS as EYES_DOCS
-    from xdog.site.content.flow_docs import DOCS as FLOW_DOCS
-    from xdog.site.content.skills import DOCS as SKILLS_DOCS
-    from xdog.site.content.tui import DOCS as TUI_DOCS
-
-    return {
-        d.name: d
-        for d in (AI_DOCS, AGENT_DOCS, TUI_DOCS, CODING_DOCS, CLAW_DOCS, FLOW_DOCS, EYES_DOCS, SKILLS_DOCS)
-    }
-
-
-PACKAGE_DOCS: dict[str, PackageDocs] = _load_package_docs()
-
-
 @bp.route("/")
 def home() -> str:
     layers = [(title, [PACKAGES_BY_NAME[name] for name in names]) for title, names in LAYERS]
-    return render_template("index.html", packages=PACKAGES, layers=layers)
+    return render_template("index.html", packages=PACKAGES, layers=layers,
+                           quickstart_commands=QUICKSTART_COMMANDS, optional_install=OPTIONAL_INSTALL)
 
 
 @bp.route("/packages/all")

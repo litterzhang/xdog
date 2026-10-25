@@ -34,14 +34,12 @@
 <section id="get-started" aria-labelledby="get-started-title">
   <h2 id="get-started-title">Start with one useful task</h2>
   <p>Try Coding in a repository. You do not need the whole stack to get started.</p>
-  <pre><code>pip install xdog-coding
-xdog-ai login copilot
-xdog-coding --permission-mode ask</code></pre>
+  <pre><code>{{ quickstart_commands | join("\n") }}</code></pre>
   <p>Real model calls need an authenticated provider. Choose a model from your configured catalog.
     The <code>ask</code> mode allows read-only calls by default and requests approval for mutations.</p>
   <details>
     <summary>Want workflows and observations too?</summary>
-    <pre><code>pip install xdog-flow xdog-eyes xdog-claw</code></pre>
+    <pre><code>{{ optional_install }}</code></pre>
     <p>Install in the same Python environment for capability discovery. Coding and Claw include
       <code>xdog-skills</code>. Installed capabilities contribute tools and discoverable skills;
       skill bodies are not activated by default.</p>

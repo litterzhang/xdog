@@ -73,3 +73,16 @@ execution tests use local/stubbed integration, not live paid providers.
 Source is AGPL-3.0-or-later. See [LICENSE](LICENSE) and the
 [Generated Output Exception](LICENSE-EXCEPTION.md); it is not an MIT grant for
 the site or the libraries.
+
+## Native reading API
+
+`GET /api/public/v1/home`, `/packages`, `/packages/{name}/{section}` and `/faq`
+export the existing first-party content without authentication or runtime imports.
+Sections are overview/features/design/reference/roadmap; Markdown remains source
+Markdown and dynamic sections retain their structured metadata. Responses provide
+schema version, canonical path, content revision and ETag/conditional GET.
+`updated_at` is null unless the source explicitly authors it; deployment mtime is
+not a publication date. Chinese mobile summaries and the HTML homepage share the
+same quickstart command constants. This API exposes no Blog, HaveFun or execution
+endpoints. Future Blog integration will use an articles-service channel, not a
+second article feed maintained by this API.
