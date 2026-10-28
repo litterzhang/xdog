@@ -34,6 +34,7 @@ class DaemonControl:
         self.location: RuntimeLocation | None = None
         self.closed = False
         self._negotiated = ''
+        self._features: set[str] = set()
 
     @classmethod
     async def open(cls, *, owner: str, directory: Path | None = None) -> DaemonControl:
@@ -58,6 +59,16 @@ class DaemonControl:
             require_compatible(response)
             self.location = replace(self.location, generation=text(response['generation']))
             self._negotiated = self.location.generation
+            features = object_value(response['body'])['features']
+            self._features = ({item for item in features if isinstance(item, str)}
+                              if isinstance(features, list) else set())
+        if action == 'register' and 'remote-sources-v1' not in self._features:
+            definition = body.get('definition')
+            sources = definition.get('sources', []) if isinstance(definition, dict) else []
+            if isinstance(sources, list) and any(isinstance(item, dict) and item.get('type') in ('http', 'github')
+                                                 for item in sources):
+                raise RuntimeError('Running Eyes daemon lacks remote-sources-v1; stop/restart it explicitly. '
+                                   'No registration was submitted and no live daemon was replaced.')
         if scoped:
             body = {**body, 'owner': self.owner}
         response = await request(self.location, action, body, timeout=120)
@@ -127,7 +138,10 @@ class DaemonControl:
                     except (ConnectionError, FileNotFoundError, TimeoutError):
                         self.location = None  # read owner generation again; never start or mutate
                     else:
-                        if result['state'] == 'watching':
+                        degraded_ready = (result['state'] == 'degraded' and all(
+                            state in {'watching', 'completed'} or key in result.get('source_health', {})
+                            for key, state in result.get('sources', {}).items()))
+                        if result['state'] == 'watching' or degraded_ready:
                             return result
                         if result['state'] not in {'running', 'baselining', 'needs-start'}:
                             raise ValueError('Eyes registration not ready: ' + str(result))

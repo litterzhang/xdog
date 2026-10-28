@@ -17,7 +17,7 @@ class EyesTool:
         'exit_code != 0 is command failure, never success; inspect stderr and registration status before retrying. '
         'Failure or cancellation does not prove that no registration was durably accepted. '
         'Cancellation only stops this CLI call wait, never shared daemon work or accepted registrations. '
-        'Manage Eyes daemon observations from saved Eyes v2 JSON; use the eyes skill for complete examples. '
+        'Manage file/scheduler/HTTP/GitHub observations from saved Eyes v2 JSON; use the eyes skill for examples. '
         'Tool availability ensures the shared daemon is running, without creating an observation. '
         'The caller chooses an explicit stable owner for management. '
         'Write a JSON definition with filesystem, then create with owner/definition_path. '

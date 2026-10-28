@@ -28,7 +28,7 @@ def test_eyes_wheel_has_only_approved_dependencies_and_no_harness_host(artifacts
         names=wheel.namelist()
         metadata=email.message_from_bytes(wheel.read(next(n for n in names if n.endswith('.dist-info/METADATA'))))
         requirements=[Requirement(line) for line in metadata.get_all('Requires-Dist',[])]
-        assert {r.name for r in requirements}=={'agent-client-protocol', 'croniter'}
+        assert {r.name for r in requirements}=={'agent-client-protocol', 'croniter', 'httpx'}
         sdk=next(r for r in requirements if r.name=='agent-client-protocol')
         assert sdk.marker.evaluate({'python_version':'3.14'})
         assert not sdk.marker.evaluate({'python_version':'3.15'})

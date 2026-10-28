@@ -124,6 +124,46 @@ A canceled peer cannot withdraw its message from an already running shared batch
 or cancel other members. Tools still require the target's normal permissions;
 unattended restricted tools fail closed without explicit `allow-all`.
 
+## HTTP and GitHub observations
+
+The same daemon can observe external facts without a model call:
+
+- `http`: bounded GET, `status` or JSON Pointer-selected values/record arrays;
+  conditional JSON requests retain the committed baseline on 304.
+- `github`: explicit `issues`, `issue_comments` or `workflow_runs` for one repository;
+  bounded pagination, overlap/deduplication and workflow attempt identity.
+- `record.change`: created/updated, optionally removed only for complete snapshots.
+- `value.condition`: finite typed scalar predicates, per-record condition edges.
+- `availability`: consecutive/duration failures and real recovery, including first abnormal policy.
+
+Copy `http-announcements.json`, `http-service-health.json`, `github-feedback.json`
+or `github-actions.json` from the packaged examples. Replace the source and actual
+ACP endpoint/session, validate, then use the existing tool/CLI. No new host adapter
+or source-specific model tool is needed. HTML, Feed, Release/PR review, browser,
+event ingress/webhook and shell sources are not implemented in this first batch.
+
+Sources return candidate state; the original executor commits source cursor,
+detector state and immutable pending delivery together before handler IO. Partial
+pages, invalid selection, oversized responses and timeouts never imply empty data
+or deletion. GitHub incremental windows never infer removals; unfillable gaps and
+capacity limits are explicit, not silently rebaselined. First content is a baseline,
+not a historical notification storm. Actions watches a bounded created window plus
+known active runs, not every later rerun of an arbitrarily old completed run.
+
+Credentials use an optional `bearer_env` reference in the daemon's environment,
+never inline secrets or implicit `gh`/host login. Bearer requires HTTPS; redirects
+cannot change origin, GitHub page/redirect paths stay inside the repository, and
+known credential echoes/errors are redacted. HTTPX uses the daemon environment's
+proxy/certificate settings. Rate limits/backoff survive daemon restart.
+
+Status includes independent `source_health` and `source_errors`; `degraded` means
+collection is still running but unhealthy, not paused. Recovery clears the source
+error, never a separate unknown handler outcome. Intake ACK still does not prove
+Agent execution or user-channel delivery. Existing file/scheduler registrations
+remain compatible. An older daemon lacking `remote-sources-v1` requires explicit
+stop/start before accepting external sources; it is never silently replaced.
+See [external-source definitions, boundaries and verification](../../docs/eyes-remote-sources.md).
+
 ## Scheduler sources
 
 Sources can also generate timed observations: one-off `at`, fixed

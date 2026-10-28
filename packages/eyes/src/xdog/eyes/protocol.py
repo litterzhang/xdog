@@ -4,12 +4,13 @@ from __future__ import annotations
 from xdog.eyes.local_control import JsonValue
 
 FEATURES = ('owner-registrations', 'durable-events', 'async-activation')
+SUPPORTED_FEATURES = (*FEATURES, 'remote-sources-v1')
 
 
 def hello() -> dict[str, JsonValue]:
     return {'runtime_type': 'eyes-daemon',
             'control_protocol': 1, 'feature_version': 1,
-            'features': list(FEATURES)}
+            'features': list(SUPPORTED_FEATURES)}
 
 
 def require_compatible(response: dict[str, JsonValue]) -> None:

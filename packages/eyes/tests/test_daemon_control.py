@@ -711,3 +711,96 @@ async def test_wait_ready_requires_committed_file_baseline(daemon, tmp_path, obs
         release.set()
         waiting.cancel()
         await asyncio.gather(waiting, return_exceptions=True)
+
+
+async def test_remote_http_event_persists_across_daemon_restart_without_acp(daemon, tmp_path, observer_data):
+    """Real local HTTP + daemon + journal + CLI control wire, no model or hosted API."""
+    from packages.eyes.tests.test_remote_config import external
+
+    boot, client, current, _ = daemon
+    rows = []
+    requests = []
+    async def handle(reader, writer):
+        try:
+            await reader.readuntil(b'\r\n\r\n')
+            requests.append(True)
+            body = json.dumps(rows, ensure_ascii=False).encode()
+            writer.write(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n'
+                         + f'Content-Length: {len(body)}\r\n\r\n'.encode() + body)
+            await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+    server = await asyncio.start_server(handle, '127.0.0.1', 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        control = await client('external')
+        data = external(observer_data, {'id': 'outside', 'type': 'http',
+            'url': f'http://127.0.0.1:{port}/announcements', 'key_pointer': '/id', 'poll_interval_seconds': 1})
+        data['handlers'] = [{'id': 'notify', 'type': 'events'}]
+        result = await control.start(definition_data(parse(data, base_dir=tmp_path)), delivery='events')
+        assert result['state'] == 'watching' and requests
+        assert result['source_health']['outside']['last_success'] is not None
+        rows.append({'id': 'announcement', 'title': '新增招聘公告'})
+        events = await control.events(wait=5)
+        assert events and events[0]['delivery']['events'][0]['type'] == 'record.created'
+        original = events[0]
+        identifier = result['registration_id']
+        old = current()
+        old.stop.set()
+        async with asyncio.timeout(5):
+            while old._lease >= 0:
+                await asyncio.sleep(.01)
+        await boot()
+        restored = await client('external')
+        again = await restored.events(after=0)
+        assert again[0] == original  # Durable events reuse the exact original delivery.
+        await restored.ack(original['sequence'])
+        await restored.pause(identifier)
+        paused = await restored.status(identifier)
+        assert paused['state'] == 'paused' and not paused['source_errors']
+        assert paused['source_health']['outside']['last_success'] is not None
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+async def test_remote_failure_is_degraded_not_paused_and_recovery_clears_source_error(daemon, tmp_path, observer_data):
+    from packages.eyes.tests.test_remote_config import external
+
+    _, client, _, _ = daemon
+    status = [500]
+    async def handle(reader, writer):
+        try:
+            await reader.readuntil(b'\r\n\r\n')
+            writer.write(f'HTTP/1.1 {status[0]} Test\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'.encode())
+            await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+    server = await asyncio.start_server(handle, '127.0.0.1', 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        control = await client('health')
+        data = external(observer_data, {'id': 'outside', 'type': 'http', 'mode': 'status',
+            'url': f'http://127.0.0.1:{port}/health', 'poll_interval_seconds': 1},
+            {'id': 'change', 'source': 'outside', 'type': 'availability', 'failures': 1})
+        data['handlers'] = [{'id': 'notify', 'type': 'events'}]
+        data['routes'][0]['event_types'] = ['availability.unavailable', 'availability.recovered']
+        result = await control.start(definition_data(parse(data, base_dir=tmp_path)), delivery='events')
+        identifier = result['registration_id']
+        assert result['state'] == 'degraded' and result['source_errors']['outside'] == 'HTTP status 500'
+        events = await control.events(wait=3)
+        assert events[0]['delivery']['events'][0]['type'] == 'availability.unavailable'
+        await control.ack(events[0]['sequence'])
+        status[0] = 200
+        recovered = await control.events(wait=8)
+        assert recovered[0]['delivery']['events'][0]['type'] == 'availability.recovered'
+        await control.ack(recovered[0]['sequence'])
+        ready = await control.wait_ready(identifier, timeout=3)
+        assert ready['state'] == 'watching' and not ready['source_errors']
+        assert ready['source_health']['outside']['failures'] == 0
+        await control.cancel(identifier)
+    finally:
+        server.close()
+        await server.wait_closed()

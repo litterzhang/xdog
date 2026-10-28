@@ -7,7 +7,16 @@ from typing import Any
 
 from xdog.eyes.deliveries import Delivery
 from xdog.eyes.local_control import JsonValue, object_value
-from xdog.eyes.models import Event, FileEvidence, FileState, ObserverDef, SchedulerEvidence
+from xdog.eyes.models import (
+    AvailabilityEvidence,
+    Event,
+    Evidence,
+    FileEvidence,
+    FileState,
+    ObserverDef,
+    RecordEvidence,
+    SchedulerEvidence,
+)
 from xdog.eyes.sources.file import FileSnapshot
 
 
@@ -30,10 +39,14 @@ def restore_delivery(value: Any, definition: ObserverDef, registration_id: str) 
         if (event['source_id'] != detector.source or event['detector_id'] != detector.id
                 or event['type'] not in route.event_types):
             raise ValueError('Checkpoint event does not match its definition')
-        evidence: list[FileEvidence | SchedulerEvidence] = []
+        evidence: list[Evidence] = []
         for item in event['evidence']:
             if event['type'] == 'scheduler.due':
                 evidence.append(SchedulerEvidence(**item))
+            elif event['type'].startswith(('record.', 'condition.')):
+                evidence.append(RecordEvidence(**item))
+            elif event['type'].startswith('availability.'):
+                evidence.append(AvailabilityEvidence(**item))
             else:
                 evidence.append(FileEvidence(**{**item,
                     'before': FileState(**item['before']) if item['before'] is not None else None,

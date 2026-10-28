@@ -38,6 +38,7 @@ class Active:
     resume: asyncio.Event = field(default_factory=asyncio.Event)
     sources: dict[str, str] = field(default_factory=dict)
     routes: dict[str, str] = field(default_factory=dict)
+    source_errors: dict[str, str] = field(default_factory=dict)
     handlers: dict[str, EventHandler] = field(default_factory=dict)
     error: str = ''
     ready: bool = False
@@ -135,7 +136,11 @@ class DaemonObservers:
                                                     'source_error': 'error'}[event.kind]
             if event.route_id:
                 active.routes[event.route_id] = event.kind
-            if event.error:
+            if event.kind == 'source_error':
+                active.source_errors[event.source_id] = event.error
+            elif event.kind == 'watching':
+                active.source_errors.pop(event.source_id, None)
+            elif event.error:
                 active.error = event.error
 
         async def deliver(value: Delivery) -> DeliveryResult:
@@ -310,6 +315,8 @@ class DaemonObservers:
                 state = 'needs-start'
             elif active.error:
                 state = 'paused'
+            elif active.source_errors:
+                state = 'degraded'
             elif active.ready and all(value in {'watching', 'completed'} for value in active.sources.values()):
                 state = 'watching'
             else:
@@ -321,7 +328,11 @@ class DaemonObservers:
                 'key': row['key'], 'state': state,
                 'next_due': min(deadlines) if deadlines else None,
                 'duplicate': False, 'sources': active.sources if active else {},
-                'routes': active.routes if active else {}, 'error': (active.error if active else '') or row['error']}
+                'routes': active.routes if active else {}, 'error': (active.error if active else '') or row['error'],
+                'source_health': {key: {field: value.get(field) for field in
+                    ('last_success', 'last_status', 'failures', 'next_poll_at', 'gap', 'error')}
+                    for key, value in (checkpoint or {}).get('remote_sources', {}).items()},
+                'source_errors': dict(active.source_errors) if active else {}}
 
     async def events(self, owner: str, body: dict[str, JsonValue]) -> dict[str, JsonValue]:
         after, limit = body.get('after'), body.get('limit', 64)

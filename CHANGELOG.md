@@ -8,6 +8,14 @@ project follows [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Eyes HTTP status/JSON and GitHub Issues/comments/Actions observations, using
+  bounded read-only requests, explicit windows and credential environment references.
+- Deterministic record-change, typed-condition and availability detectors, with
+  durable cursor/detector/delivery commits, source-health diagnostics and recovery tests.
+
+
 ### Changed
 
 - Separate Claw gateway/peer protocol, owner-bound controls, and session

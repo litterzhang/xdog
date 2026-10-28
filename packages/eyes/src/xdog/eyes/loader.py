@@ -114,6 +114,9 @@ def _schedule(value: object, path: str) -> Schedule:
 
 
 def _source(value: object, path: str, base_dir: Path) -> SourceDefinition:
+    if isinstance(value, dict) and isinstance(value.get('type'), str) and value.get('type') in {'http', 'github'}:
+        from xdog.eyes.remote_config import source
+        return source(value, path)
     if isinstance(value, dict) and value.get("type") == "scheduler":
         data = _object(value, path, {"id", "type", "schedule"})
         return SchedulerSourceDef(_text(data.get("id"), path + ".id"), "scheduler",
@@ -122,7 +125,7 @@ def _source(value: object, path: str, base_dir: Path) -> SourceDefinition:
         value, path, {"id", "type", "root", "include", "exclude", "poll_interval_ms", "max_files", "max_file_bytes"}
     )
     if data.get("type") != "file":
-        raise ObserverValidationError("Expected file or scheduler source", path=path, code="unknown_type")
+        raise ObserverValidationError("Expected file, scheduler, http or github source", path=path, code="unknown_type")
     root = Path(_text(data.get("root"), path + ".root", maximum=4096))
     # Absolute lexical roots retain symlink components for the no-follow scanner to reject.
     root = Path(os.path.abspath(base_dir / root))
@@ -139,6 +142,10 @@ def _source(value: object, path: str, base_dir: Path) -> SourceDefinition:
 
 
 def _detector(value: object, path: str) -> DetectorDefinition:
+    if (isinstance(value, dict) and isinstance(value.get('type'), str)
+            and value.get('type') in {'record.change', 'value.condition', 'availability'}):
+        from xdog.eyes.remote_config import detector
+        return detector(value, path)
     if isinstance(value, dict) and value.get("type") == "scheduler.due":
         data = _object(value, path, {"id", "type", "source"})
         return SchedulerDetectorDef(_text(data.get("id"), path + ".id"), "scheduler.due",
@@ -213,12 +220,18 @@ def parse(value: object, *, base_dir: Path, handler_registry: HandlerRegistry | 
     for detector in detectors:
         if detector.source not in source_ids:
             raise ObserverValidationError(f"Missing source: {detector.source}", code="missing_reference")
-        if (detector.type == "scheduler.due") != (source_by_id[detector.source].type == "scheduler"):
+        compatible = {'file.change': {'file'}, 'scheduler.due': {'scheduler'},
+                      'record.change': {'http', 'github'}, 'value.condition': {'http', 'github'},
+                      'availability': {'http', 'github'}}
+        if source_by_id[detector.source].type not in compatible[detector.type]:
             raise ObserverValidationError("Detector type does not match its source", code="wrong_shape")
     for route in routes:
         if route.detector not in detector_ids or route.handler not in handler_ids:
             raise ObserverValidationError(f"Missing reference in route: {route.id}", code="missing_reference")
-        expected = (("scheduler.due",) if detector_by_id[route.detector].type == "scheduler.due" else FILE_EVENT_TYPES)
+        from xdog.eyes.models import AVAILABILITY_EVENT_TYPES, CONDITION_EVENT_TYPES, RECORD_EVENT_TYPES
+        expected = {'scheduler.due': ("scheduler.due",), 'file.change': FILE_EVENT_TYPES,
+                    'record.change': RECORD_EVENT_TYPES, 'value.condition': CONDITION_EVENT_TYPES,
+                    'availability': AVAILABILITY_EVENT_TYPES}[detector_by_id[route.detector].type]
         if any(kind not in expected for kind in route.event_types):
             raise ObserverValidationError("Route event types do not match its detector", code="wrong_shape")
     return ObserverDef(2, name, sources, detectors, handlers, routes)

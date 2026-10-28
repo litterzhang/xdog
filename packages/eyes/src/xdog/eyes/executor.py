@@ -13,12 +13,28 @@ from typing import Any
 from xdog.eyes.checkpoint import data, delivery_data, restore_delivery
 from xdog.eyes.deliveries import Delivery
 from xdog.eyes.detectors.file_change import FileChangeDetector
+from xdog.eyes.detectors.records import RecordDetector
 from xdog.eyes.detectors.scheduler_due import SchedulerDueDetector
 from xdog.eyes.errors import SourceError
 from xdog.eyes.events import DeliveryResult, RuntimeEvent
-from xdog.eyes.models import DetectorDef, Event, FileEvidence, ObserverDef, SourceDef
+from xdog.eyes.models import (
+    AvailabilityDetectorDef,
+    ConditionDetectorDef,
+    DetectorDef,
+    Event,
+    FileEvidence,
+    GithubSourceDef,
+    HttpSourceDef,
+    ObserverDef,
+    RecordDetectorDef,
+    RemoteSourceDef,
+    SchedulerDetectorDef,
+    SourceDef,
+)
 from xdog.eyes.router import EventRouter
 from xdog.eyes.sources.file import FileSnapshot
+from xdog.eyes.sources.records import PollResult
+from xdog.eyes.sources.remote import RemoteSampler
 from xdog.eyes.sources.scheduler import SchedulerSource, prepare_schedulers
 
 MAX_PENDING = 128
@@ -68,14 +84,22 @@ async def observe(
     checkpoint: dict[str, Any] | None = None,
     save: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     replay_safe: bool = False,
+    remote_sampler: RemoteSampler | None = None,
 ) -> None:
-    sources = {item.id: item for item in definition.sources if isinstance(item, SourceDef)}
-    detectors = {
-        item.id: FileChangeDetector(item, source_root=str(sources[item.source].root))
+    files = {item.id: item for item in definition.sources if isinstance(item, SourceDef)}
+    remotes = {item.id: item for item in definition.sources if isinstance(item, (HttpSourceDef, GithubSourceDef))}
+    sources: dict[str, SourceDef | RemoteSourceDef] = {**files, **remotes}
+    remote = remote_sampler if remote_sampler is not None else RemoteSampler()
+    remote_state: dict[str, dict[str, Any]] = (checkpoint or {}).get('remote_sources', {})
+    detectors: dict[str, FileChangeDetector | RecordDetector] = {
+        item.id: FileChangeDetector(item, source_root=str(files[item.source].root))
         for item in definition.detectors if isinstance(item, DetectorDef)
     }
+    detectors.update({item.id: RecordDetector(item, max_records=remotes[item.source].max_records)
+        for item in definition.detectors
+        if isinstance(item, (RecordDetectorDef, ConditionDetectorDef, AvailabilityDetectorDef))})
     timed_detectors = {item.id: SchedulerDueDetector(item) for item in definition.detectors
-                       if not isinstance(item, DetectorDef)}
+                       if isinstance(item, SchedulerDetectorDef)}
     schedulers = ({} if checkpoint is not None else
                   prepare_schedulers(definition, wall_now=wall_clock(), monotonic_now=clock())
                   if scheduler_sources is None else scheduler_sources)
@@ -84,13 +108,14 @@ async def observe(
         schedulers = {item.id: SchedulerSource.restore(item, checkpoint['schedulers'][item.id],
                       wall_now=wall_clock(), monotonic_now=clock())
                       for item in definition.sources if isinstance(item, SchedulerSourceDef)}
-    active_detectors: tuple[FileChangeDetector | SchedulerDueDetector, ...] = (
+    active_detectors: tuple[FileChangeDetector | RecordDetector | SchedulerDueDetector, ...] = (
         *detectors.values(), *timed_detectors.values())
     router = EventRouter(definition)
     detector_sources = {item.id: item.source for item in definition.detectors}
     route_sources = {item.id: detector_sources[item.detector] for item in definition.routes}
-    scans: dict[str, asyncio.Task[FileSnapshot]] = {}
-    next_scan = {item.id: clock() for item in definition.sources}
+    scans: dict[str, asyncio.Task[FileSnapshot | PollResult]] = {}
+    next_scan = {item.id: clock() + max(0.0, remote_state.get(item.id, {}).get('next_poll_at', wall_clock())
+                                      - wall_clock()) for item in sources.values()}
     baselined: set[str] = set()
     source_errors: set[str] = set()
     pending: dict[str, _Pending] = {}
@@ -100,7 +125,7 @@ async def observe(
     if checkpoint is not None:
         for key, value in checkpoint['detectors'].items():
             detectors[key].restore(value, now=clock())
-            if value['baseline'] is not None:
+            if value.get('baseline') is not None or value.get('records') is not None:
                 baselined.add(detectors[key].definition.source)
         for key, value in checkpoint['pending'].items():
             ambiguous = value['inflight'] and not replay_safe
@@ -110,11 +135,13 @@ async def observe(
         backlog = {key: restore_delivery(value, definition, registration_id)
                    for key, value in checkpoint['backlog'].items()}
         overflowed = checkpoint['overflowed']
+        baselined.update(key for key, state in remote_state.items() if state.get('last_success') is not None)
 
     async def persist() -> None:
         if save is not None:
             await save(data({'version': 1,
                 'detectors': {key: detector.checkpoint() for key, detector in detectors.items()},
+                'remote_sources': remote_state,
                 'schedulers': {key: source.export_checkpoint(wall_now=wall_clock(), monotonic_now=clock())
                                for key, source in schedulers.items()},
                 'pending': {key: {'delivery': delivery_data(item.delivery), 'attempts': item.attempts,
@@ -164,8 +191,10 @@ async def observe(
         report("delivery_pending", delivery=candidate)
         return True
 
-    async def collect(source: SourceDef) -> FileSnapshot:
-        return await scanner(source)
+    async def collect(source: SourceDef | RemoteSourceDef) -> FileSnapshot | PollResult:
+        if isinstance(source, SourceDef):
+            return await scanner(source)
+        return await remote.poll(source, dict(remote_state.get(source.id, {})), now=wall_clock())
 
     async def send(value: Delivery) -> DeliveryResult:
         return await deliver(value)
@@ -177,6 +206,10 @@ async def observe(
         if item.terminal:
             report('delivery_outcome_unknown', delivery=item.delivery,
                    error='Interrupted delivery is unknown; never automatically replayed')
+    for identifier, state in remote_state.items():
+        if state.get('failures', 0) or state.get('gap'):
+            source_errors.add(identifier)
+            report('source_error', source=identifier, error=state.get('error', 'Previous remote read failed'))
     for identifier in schedulers:
         report("watching", source=identifier)
     try:
@@ -246,9 +279,9 @@ async def observe(
                 if timed_snapshot.completed and not was_completed:
                     report("source_completed", source=source_id)
                 if not paused:
-                    for detector in timed_detectors.values():
-                        if detector.definition.source == source_id:
-                            detector.observe(timed_snapshot)
+                    for timed_detector in timed_detectors.values():
+                        if timed_detector.definition.source == source_id:
+                            timed_detector.observe(timed_snapshot)
             if paused:
                 await persist()
                 await sleep(0.05)
@@ -258,17 +291,31 @@ async def observe(
                 task = scans.get(source.id)
                 if task is not None and task.done():
                     del scans[source.id]
-                    next_scan[source.id] = now + source.poll_interval_ms / 1000
+                    next_scan[source.id] = now + (source.poll_interval_ms / 1000 if isinstance(source, SourceDef)
+                                                  else source.poll_interval_seconds)
                     try:
                         snapshot = task.result()
                     except SourceError as exc:
                         source_errors.add(source.id)
                         report("source_error", source=source.id, error=str(exc))
                     else:
-                        for detector_def in definition.detectors:
-                            if isinstance(detector_def, DetectorDef) and detector_def.source == source.id:
-                                detectors[detector_def.id].observe(snapshot, now=now)
-                        if source.id not in baselined or source.id in source_errors:
+                        if isinstance(snapshot, PollResult):
+                            remote_state[source.id] = snapshot.state
+                            next_scan[source.id] = now + max(snapshot.delay, snapshot.state.get(
+                                'next_poll_at', wall_clock()) - wall_clock())
+                            for detector in detectors.values():
+                                if isinstance(detector, RecordDetector) and detector.definition.source == source.id:
+                                    detector.observe(snapshot.snapshot, now=now)
+                            healthy = snapshot.snapshot.healthy
+                            if not healthy:
+                                source_errors.add(source.id)
+                                report('source_error', source=source.id, error=snapshot.snapshot.error)
+                        else:
+                            healthy = True
+                            for detector in detectors.values():
+                                if isinstance(detector, FileChangeDetector) and detector.definition.source == source.id:
+                                    detector.observe(snapshot, now=now)
+                        if healthy and (source.id not in baselined or source.id in source_errors):
                             baselined.add(source.id)
                             source_errors.discard(source.id)
                             watching.append(source.id)
@@ -324,6 +371,13 @@ async def observe(
                     await asyncio.shield(cleanup)
                 except asyncio.CancelledError:
                     continue
+        closing = asyncio.create_task(remote.close())
+        while not closing.done():
+            try:
+                await asyncio.shield(closing)
+            except asyncio.CancelledError:
+                continue
+        closing.result()
         report("stopped")
 
 

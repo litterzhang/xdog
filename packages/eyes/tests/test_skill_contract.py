@@ -69,3 +69,19 @@ def test_tool_schema_itself_explains_the_workflow_and_exact_action_fields():
     for detail in ('eyes skill', 'owner', 'JSON', 'destinations', 'permissions'):
         assert detail in EyesTool.description
     assert not re.search(r'\b(claw|coding|goal|flow)\b', json.dumps(schema) + EyesTool.description, re.IGNORECASE)
+
+
+@pytest.mark.parametrize('name', ['http-announcements', 'http-service-health', 'github-feedback', 'github-actions'])
+def test_packaged_external_examples_validate_without_credentials_or_network(tmp_path, name):
+    value = json.loads((files('xdog.eyes')/'examples'/f'{name}.json').read_text())
+    definition = parse(value, base_dir=tmp_path)
+    assert definition.sources and all(source.type in {'http', 'github'} for source in definition.sources)
+    assert all(handler.delivery == 'enqueue' for handler in definition.handlers)
+    assert all('EXPLICIT_SESSION_ID' == handler.session for handler in definition.handlers)
+
+
+def test_external_skill_keeps_observation_separate_from_agent_execution():
+    body = skill()
+    for term in ('record.change', 'value.condition', 'availability', 'bearer_env', 'source_health',
+                 'remote-sources-v1', 'untrusted evidence', 'not yet supported', 'does not choose the delivery'):
+        assert term in body

@@ -7,9 +7,15 @@ from typing import Literal, TypeAlias
 
 from xdog.eyes.connections import ConnectionDef
 
-EventType = Literal["file.created", "file.modified", "file.deleted", "scheduler.due"]
+EventType = Literal["file.created", "file.modified", "file.deleted", "scheduler.due",
+                    "record.created", "record.updated", "record.removed", "condition.met", "condition.cleared",
+                    "availability.unavailable", "availability.recovered"]
 FILE_EVENT_TYPES: tuple[EventType, ...] = ("file.created", "file.modified", "file.deleted")
-EVENT_TYPES: tuple[EventType, ...] = (*FILE_EVENT_TYPES, "scheduler.due")
+RECORD_EVENT_TYPES: tuple[EventType, ...] = ("record.created", "record.updated", "record.removed")
+CONDITION_EVENT_TYPES: tuple[EventType, ...] = ("condition.met", "condition.cleared")
+AVAILABILITY_EVENT_TYPES: tuple[EventType, ...] = ("availability.unavailable", "availability.recovered")
+EVENT_TYPES: tuple[EventType, ...] = (*FILE_EVENT_TYPES, "scheduler.due", *RECORD_EVENT_TYPES,
+                                    *CONDITION_EVENT_TYPES, *AVAILABILITY_EVENT_TYPES)
 
 
 @dataclass(frozen=True)
@@ -66,8 +72,77 @@ class SchedulerDetectorDef:
     source: str
 
 
-SourceDefinition: TypeAlias = SourceDef | SchedulerSourceDef
-DetectorDefinition: TypeAlias = DetectorDef | SchedulerDetectorDef
+@dataclass(frozen=True, kw_only=True)
+class HttpSourceDef:
+    id: str
+    type: Literal["http"] = "http"
+    url: str
+    mode: Literal["status", "json"] = "json"
+    pointer: str = ""
+    key_pointer: str | None = None
+    bearer_env: str | None = None
+    poll_interval_seconds: float = 60.0
+    timeout_seconds: float = 10.0
+    max_bytes: int = 1024 * 1024
+    max_records: int = 256
+
+
+@dataclass(frozen=True, kw_only=True)
+class GithubSourceDef:
+    id: str
+    type: Literal["github"] = "github"
+    repository: str
+    resource: Literal["issues", "issue_comments", "workflow_runs"]
+    api_url: str = "https://api.github.com"
+    bearer_env: str | None = None
+    poll_interval_seconds: float = 60.0
+    timeout_seconds: float = 10.0
+    max_bytes: int = 1024 * 1024
+    max_records: int = 256
+    max_pages: int = 10
+    lookback_seconds: float = 86400.0
+    overlap_seconds: float = 120.0
+
+
+RemoteSourceDef: TypeAlias = HttpSourceDef | GithubSourceDef
+
+
+@dataclass(frozen=True, kw_only=True)
+class RecordDetectorDef:
+    id: str
+    type: Literal["record.change"] = "record.change"
+    source: str
+    removals: bool = False
+
+
+@dataclass(frozen=True)
+class Predicate:
+    pointer: str
+    op: Literal["eq", "ne", "gt", "ge", "lt", "le"]
+    value: str | int | float | bool | None
+
+
+@dataclass(frozen=True, kw_only=True)
+class ConditionDetectorDef:
+    id: str
+    type: Literal["value.condition"] = "value.condition"
+    source: str
+    all: tuple[Predicate, ...]
+
+
+@dataclass(frozen=True, kw_only=True)
+class AvailabilityDetectorDef:
+    id: str
+    type: Literal["availability"] = "availability"
+    source: str
+    failures: int = 3
+    for_seconds: float = 0.0
+    initial_abnormal: bool = True
+
+
+RemoteDetectorDef: TypeAlias = RecordDetectorDef | ConditionDetectorDef | AvailabilityDetectorDef
+SourceDefinition: TypeAlias = SourceDef | SchedulerSourceDef | RemoteSourceDef
+DetectorDefinition: TypeAlias = DetectorDef | SchedulerDetectorDef | RemoteDetectorDef
 
 
 @dataclass(frozen=True)
@@ -130,10 +205,31 @@ class SchedulerEvidence:
 
 
 @dataclass(frozen=True)
+class RecordEvidence:
+    key: str
+    url: str
+    before: str | None
+    after: str | None
+    observed_at: float
+
+
+@dataclass(frozen=True)
+class AvailabilityEvidence:
+    healthy: bool
+    failures: int
+    status_code: int | None
+    reason: str
+    observed_at: float
+
+
+Evidence: TypeAlias = FileEvidence | SchedulerEvidence | RecordEvidence | AvailabilityEvidence
+
+
+@dataclass(frozen=True)
 class Event:
     id: str
     source_id: str
     detector_id: str
     type: EventType
     observed_at: float
-    evidence: tuple[FileEvidence | SchedulerEvidence, ...]
+    evidence: tuple[Evidence, ...]
