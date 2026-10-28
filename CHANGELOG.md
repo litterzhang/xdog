@@ -8,6 +8,15 @@ project follows [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Separate Claw gateway/peer protocol, owner-bound controls, and session
+  prompt/tool/compaction operations without adding another execution runtime.
+- Centralize control admission in the existing GroupController; queued controls
+  revalidate the original context and overlapping context changes retain their
+  own fences. Shutdown prevents late Agent publication and new control admission.
+
+
 ### Fixed
 
 - Claw rotates contexts with a durable source-referenced handoff rather than

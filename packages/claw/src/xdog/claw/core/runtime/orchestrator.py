@@ -3,25 +3,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import threading
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine
 from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, TypeVar, cast
+from typing import Any, TypeVar
 
 from xdog.agent.async_work import run_owned, wait_owned
 from xdog.agent.capabilities import CapabilitySet
-from xdog.agent.core import CatalogStreamFn, ModelStreamFn
+from xdog.agent.core import ModelStreamFn
 from xdog.agent.extensions.command_result import ExtensionCommandResult
-from xdog.agent.mcp.completion import McpCompletion, request_arguments
+from xdog.agent.mcp.completion import McpCompletion
 from xdog.agent.mcp.context import McpDocument, McpEntry
 from xdog.agent.session_input import SessionInput
-from xdog.ai.types import ImageContent, Model, ThinkingLevel
+from xdog.ai.types import ImageContent, Model
 from xdog.claw.channels.base import Channel
 from xdog.claw.config import ClawConfig
-from xdog.claw.core.chunker import BlockChunker
 from xdog.claw.core.inputs.consumer import Admit, InputOutcome, InputService
 from xdog.claw.core.inputs.models import InputEnvelope, InputScope, ReplyTarget
 from xdog.claw.core.inputs.store import InputRecord, InputStore
@@ -29,10 +27,11 @@ from xdog.claw.core.outputs.delivery import OutputDelivery
 from xdog.claw.core.outputs.store import OutputStore
 from xdog.claw.core.outputs.targets import ReplyReference
 from xdog.claw.core.runtime.channel_adapter import ChannelReplies, ChannelReply, durable_reply
+from xdog.claw.core.runtime.extension_controls import command_menu_handler, pending_messages_reader
 from xdog.claw.core.runtime.group import GroupRuntime
 from xdog.claw.core.runtime.group_controller import GroupController, GroupReservation, InputExecution
 from xdog.claw.core.runtime.input_adapter import freeze_input, restore_input
-from xdog.claw.core.runtime.session import AgentSession, TurnResult
+from xdog.claw.core.runtime.session import TurnResult
 from xdog.claw.core.runtime.transcript_source import SourceCapture
 from xdog.claw.core.types import (
     ExternalInput,
@@ -46,7 +45,6 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar('T')
 CommandMenuHost = tuple[Callable[[], bool], int]
-
 
 
 @dataclass(frozen=True)
@@ -90,12 +88,10 @@ class Orchestrator:
         self._group_start_lock = asyncio.Lock()
         self._group_initializers: set[asyncio.Task[None]] = set()
         self._stop_task: asyncio.Task[None] | None = None
-        self._navigation_groups: set[str] = set()
         self._background_slots = asyncio.Semaphore(config.max_concurrent_agents)
         self._controllers: dict[str, GroupController] = {}
         self._acp_endpoints: dict[object, tuple[Path, Callable[[], bool]]] = {}
         self.application_capabilities = CapabilitySet("application")
-        self._chunker = BlockChunker()
         self._inputs: InputService | None = None
         self._input_lock = asyncio.Lock()
         self._input_start_task: asyncio.Task[InputService] | None = None
@@ -298,6 +294,8 @@ class Orchestrator:
     def request_stop(self) -> None:
         """Fence intake and signal owned execution before transport cleanup waits."""
         self._inputs_stopping = True
+        for controller in self._controllers.values():
+            controller.close_admission()
         if self._inputs is not None:
             self._inputs.request_stop()
         elif self._input_start_task is not None and not self._input_start_task.done():
@@ -524,10 +522,10 @@ class Orchestrator:
             session.agent.set_tool_context({**session.agent.tool_context,
                                            '_reply_reference': reply_reference, '_message_port': message_port})
             previous_menu = session.extensions.command_menu_handler
-            menu_handler = self._command_menu_handler(session, command_menu) if command_menu is not None else None
+            menu_handler = command_menu_handler(session, command_menu) if command_menu is not None else None
             previous_pending = session.extensions.pending_messages
             session.extensions.command_menu_handler = menu_handler
-            session.extensions.pending_messages = self._pending_messages_reader(session)
+            session.extensions.pending_messages = pending_messages_reader(session)
             try:
                 # Channel commands use the same admitted Core input owner and
                 # durable output path, never re-enter the group controller.
@@ -567,47 +565,9 @@ class Orchestrator:
                 if session.extensions.command_menu_handler is menu_handler:
                     session.extensions.command_menu_handler = previous_menu
 
-    def _command_menu_handler(self, session: AgentSession, binding: CommandMenuHost
-                              ) -> Callable[[str, dict[str, Any]], Awaitable[Any]]:
-        runtime, session_id = session._runtime, session.meta.session_id
-        def alive() -> bool:
-            return (binding[0]() and runtime._active_session is session
-                and runtime.get_new_session_id() == session_id)
-        async def read(extension: str, dialog: dict[str, Any]) -> Any:
-            from xdog.agent.extensions.command_catalog import invocation_scope
-            identity = invocation_scope(dialog.get('command_menu'))
-            if identity is None or identity['child_id'] or identity['session_id'] != session_id or not alive():
-                return None
-            revision = runtime._source_revision
-            result = await session.extension_dialogs.ask(extension,
-                {**dialog, 'command_menu_generation': binding[1]})
-            return result if alive() and runtime._source_revision == revision else None
-        return read
-
-    def _pending_messages_reader(self, session: AgentSession) -> Callable[[], Awaitable[bool | None]]:
-        loop, runtime, agent = asyncio.get_running_loop(), session._runtime, session.agent
-        session_id = session.meta.session_id
-        async def read() -> bool | None:
-            from xdog.agent.cross_loop import settle_on
-            async def inspect() -> bool | None:
-                if (runtime._active_session is not session or session.agent is not agent
-                        or runtime.get_new_session_id() != session_id or session.extensions._closed):
-                    return None
-                return bool(agent.pending_inputs()) or agent.has_queued_messages()
-            return await settle_on(loop, inspect())
-        return read
-
-
 
     # -- Channel delivery ------------------------------------------------------
 
-    async def _send_response(self, group_id: str, text: str, *, require_delivery: bool = False) -> None:
-        channels = [channel for channel in self._channels if channel.accepts_group(group_id)]
-        if require_delivery and not channels:
-            raise RuntimeError(f"No delivery channel for group {group_id}")
-        for chunk in self._chunker.chunk(text) or [text]:
-            for channel in channels:
-                await channel.send_chunk(group_id, chunk)
 
     def register_reply_channel(self, channel: Channel) -> str:
         return self._channel_replies.register(channel)
@@ -625,21 +585,6 @@ class Orchestrator:
 
     # -- Group operations (internal gateway boundary) -----------------------------
 
-    def reset_group(self, group_id: str) -> bool:
-        """Reset the active session. Returns True on success."""
-        runtime = self._runtimes.get(group_id)
-        if not runtime:
-            return False
-        runtime.reset_session()
-        return True
-
-    def abort_group(self, group_id: str) -> bool:
-        """Abort the active session for a known group."""
-        runtime = self._runtimes.get(group_id)
-        if not runtime:
-            return False
-        runtime.abort()
-        return True
 
     async def abort_native_input(self, group_id: str, message_id: str,
                                  binding: Callable[[InputExecution], None],
@@ -679,16 +624,14 @@ class Orchestrator:
                     self._input_calls.pop(key, None)
             return False
 
-    async def wait_group_idle(self, group_id: str) -> None:
-        runtime = self._runtimes.get(group_id)
-        if runtime:
-            await runtime.wait_for_idle()
 
     def group_controller(self, group_id: str) -> GroupController:
         if group_id not in self._runtimes:
             raise ValueError('Unknown execution group')
         if group_id not in self._controllers:
             controller = GroupController(group_id, self._background_slots)
+            if self._inputs_stopping:
+                controller.close_admission()
             self._controllers[group_id] = controller
             def available() -> None:
                 workspace = self.get_group_workspace(group_id)
@@ -696,6 +639,10 @@ class Orchestrator:
                     self._inputs.publish_available(InputScope(group_id, workspace))
             controller.subscribe_available(available)
         return self._controllers[group_id]
+
+    def context_changing(self, group_id: str) -> bool:
+        controller = self._controllers.get(group_id)
+        return controller is not None and controller.context_changing
 
     def _execution_snapshot(self, scope: InputScope) -> dict[str, Any]:
         runtime = self._runtimes.get(scope.group_id)
@@ -706,7 +653,8 @@ class Orchestrator:
         controller = self.group_controller(scope.group_id)
         session = runtime._active_session
         state = ('closing' if self._inputs_stopping or runtime._closing else 'running'
-                 if controller.busy or session is not None and not session.agent.is_idle else 'idle')
+                 if controller.busy or controller.context_changing
+                 or session is not None and not session.agent.is_idle else 'idle')
         return {'state': state, 'user_pending': controller.user_pending,
                 'children_active': bool(session is not None and session.children.runtime.active),
                 'generation': controller.generation}
@@ -773,11 +721,12 @@ class Orchestrator:
     def is_group_running(self, group_id: str) -> bool:
         controller = self._controllers.get(group_id)
         workspace = self.get_group_workspace(group_id)
-        return bool(controller is not None and controller.busy or self._inputs is not None and workspace is not None
+        return bool(controller is not None and (controller.busy or controller.context_changing)
+                    or self._inputs is not None and workspace is not None
                     and self._inputs.has_work(InputScope(group_id, workspace)))
 
     def try_reserve_group(self, group_id: str) -> GroupReservation | None:
-        if group_id not in self._runtimes or self.is_group_running(group_id):
+        if self._inputs_stopping or group_id not in self._runtimes or self.is_group_running(group_id):
             return None
         return self.group_controller(group_id).reserve()
 
@@ -808,7 +757,7 @@ class Orchestrator:
         if images and action not in {'start', 'steer', 'follow-up'}:
             raise ValueError('Child images belong only to start/steer/follow-up')
         runtime = self._runtimes.get(group_id)
-        if (runtime is None or group_id in self._navigation_groups
+        if (runtime is None or self.context_changing(group_id)
                 or (runtime.get_new_session_id() or "") != expected_session):
             raise ValueError("Child session/group changed; refresh before retrying")
         if action in {"list", "presets"} and not expected_session:
@@ -818,7 +767,8 @@ class Orchestrator:
         # Inspection/control must remain usable while the parent is waiting for a
         # child. Only start needs an idle group for prompt/tool snapshot rebuilding.
         if action == "start":
-            async with self.group_controller(group_id).acquire(is_user=True):
+            async with self.group_controller(group_id).operation(
+                validate=lambda: runtime.require_current(expected_session)):
                 session = await runtime.prepare_session(allow_reset=False)
                 session.children.extensions.default_ui = child_ui
                 owner = session.children
@@ -831,14 +781,14 @@ class Orchestrator:
                                                        return_owner=return_owner, return_alive=return_alive)
         current_session = runtime._active_session
         if (current_session is None or current_session is not session or current_session.children is not owner
-                or group_id in self._navigation_groups):
+                or self.context_changing(group_id)):
             raise ValueError('Child session/branch owner changed after control; inspect, no replay')
         return {"session_id": runtime.get_new_session_id() or "", "data": result}
 
     def answer_child_dialog(self, group_id: str, session_id: str, child: str, identifier: str,
                             token: str, value: Any) -> bool:
         runtime = self._runtimes.get(group_id)
-        if (runtime is None or runtime._active_session is None or group_id in self._navigation_groups
+        if (runtime is None or runtime._active_session is None or self.context_changing(group_id)
                 or (runtime.get_new_session_id() or "") != session_id):
             return False
         return runtime._active_session.children.extensions.answer(child, identifier, token, value)
@@ -850,248 +800,58 @@ class Orchestrator:
                 runtime._active_session.children.extensions.detach(token)
 
     async def manage_access(self, group_id: str, action: str, expected_session: str) -> dict[str, Any]:
-        from xdog.agent.access import AccessState
+        from xdog.claw.core.runtime.access_controls import manage_access
         runtime = self._runtimes.get(group_id)
         if runtime is None:
-            raise ValueError("Unknown group")
-        if (runtime.get_new_session_id() or "") != expected_session:
-            raise ValueError("Access session changed; refresh before retrying")
-        if action == "status":
-            if runtime._active_session is not None:
-                state = runtime._active_session.access.state
-            elif expected_session:
-                generation = runtime._source_revision
-                raw = await run_owned(runtime.transcript_store.get_access, expected_session)
-                if (runtime._source_revision != generation
-                        or (runtime.get_new_session_id() or '') != expected_session):
-                    raise ValueError('Access status owner changed; refresh the current group')
-                state = AccessState.from_dict(raw)
-            else:
-                state = AccessState()
-        elif action in {"restrict", "release"}:
-            async with self.group_controller(group_id).acquire(is_user=True):
-                if (runtime.get_new_session_id() or "") != expected_session:
-                    raise ValueError("Access session changed; refresh before retrying")
-                session = await runtime.prepare_session(allow_reset=False)
-                session._children_idle()
-                state = await run_owned(lambda: session.access.set_read_only(action == "restrict"))
-                runtime._source_revision += 1
-        else:
-            raise ValueError("Unknown access action")
-        return {"session_id": runtime.get_new_session_id() or "", "access": state.to_dict()}
+            raise ValueError('Unknown group')
+        return await manage_access(runtime, self.group_controller(group_id), action, expected_session)
 
     async def compact_session(self, group_id: str, expected_session: str, instructions: str,
                               alive: Callable[[], bool]) -> dict[str, Any]:
         runtime = self._runtimes.get(group_id)
         if (runtime is None or (runtime.get_new_session_id() or "") != expected_session
-                or group_id in self._navigation_groups):
+                or self.context_changing(group_id)):
             raise ValueError("Compaction group/session changed; refresh before retrying")
-        session = await runtime.prepare_session(allow_reset=False)
-        def owner_alive() -> bool:
-            return (alive() and runtime._active_session is session
-                    and group_id not in self._navigation_groups)
-        return await session.compact(instructions, owner_alive)
+        async with self.group_controller(group_id).operation(
+                validate=lambda: runtime.require_current(expected_session)):
+            session = await runtime.prepare_session(allow_reset=False)
+            def owner_alive() -> bool:
+                return (alive() and runtime._active_session is session
+                        and not self.context_changing(group_id))
+            return await session.compact(instructions, owner_alive)
 
     async def skills_control(self, group_id: str, expected_session: str, action: str, slug: str,
                              alive: Callable[[], bool] = lambda: True) -> dict[str, Any]:
         runtime = self._runtimes.get(group_id)
         if (runtime is None or expected_session and runtime.get_new_session_id() != expected_session
-                or group_id in self._navigation_groups):
+                or self.context_changing(group_id)):
             raise ValueError('Skill group/session owner changed')
-        session = await runtime.prepare_session(allow_reset=False)
-        def owner_alive() -> bool:
-            return (alive() and runtime._active_session is session
-                    and group_id not in self._navigation_groups)
-        return await session.skills_control(action, slug, owner_alive)
+        async with self.group_controller(group_id).operation(
+                validate=lambda: runtime.require_current(expected_session)):
+            session = await runtime.prepare_session(allow_reset=False)
+            def owner_alive() -> bool:
+                return (alive() and runtime._active_session is session
+                        and not self.context_changing(group_id))
+            return await session.skills_control(action, slug, owner_alive)
 
     async def reasoning(self, group_id: str, expected_session: str, level: str | None = None) -> dict[str, Any]:
+        from xdog.claw.core.runtime.model_controls import reasoning
         runtime = self._runtimes.get(group_id)
-        if runtime is None or (runtime.get_new_session_id() or "") != expected_session:
-            raise ValueError("Reasoning session changed; refresh before changing settings")
-        session = await runtime.prepare_session(allow_reset=False)
-        # An initially empty owner may explicitly bootstrap its first session.
-        owner_session = session.meta.session_id
-        await session.initialize_extensions()
-        if session.agent.state.is_streaming:
-            raise ValueError("Reasoning changes require an idle agent")
-        if level is not None:
-            session._children_idle()
-        model_id = session.agent.state.model
-        stream = session.agent.stream_fn
-        model = await run_owned(stream.resolve_model, model_id) if isinstance(stream, ModelStreamFn) else None
-        if (runtime._active_session is not session or runtime.get_new_session_id() != owner_session
-                or session.agent.state.model != model_id or session.agent.stream_fn is not stream
-                or session.agent.state.is_streaming):
-            raise ValueError("Reasoning owner changed during metadata read")
-        levels = ("minimal", "low", "medium", "high", "xhigh")
-        available = (model.supported_efforts if model is not None and model.supported_efforts is not None
-                     else levels if model is not None and model.reasoning else ())
-        available = tuple(item for item in available if item in levels) if model is not None and model.reasoning else ()
-        if level is not None:
-            if level != "off" and level not in available:
-                raise ValueError("Thinking level not advertised; choose a supported level or off")
-            task = asyncio.current_task()
-            def owner_alive() -> bool:
-                return (runtime._active_session is session and runtime.get_new_session_id() == owner_session
-                        and session.agent.state.model == model_id and not session.agent.state.is_streaming)
-            def alive() -> bool:
-                return task is not None and not task.cancelling() and owner_alive()
-            committed = [False]
-            def persist() -> None:
-                runtime.transcript_store.save_reasoning(owner_session, model_id, level, alive)
-                committed[0] = True
-            def apply() -> None:
-                session.agent.set_options(replace(session.agent.options,
-                    thinking=None if level == "off" else cast(ThinkingLevel, level)))
-                session._model_metadata = replace(session._model_metadata, metadata=model)
-                runtime._source_revision += 1
-            try:
-                await run_owned(persist)
-            except asyncio.CancelledError:
-                # A lost acknowledgement does not roll back an already admitted
-                # atomic commit. Keep live/persisted options aligned on this owner;
-                # do not replay the write or apply it to another session/model.
-                if committed[0] and owner_alive():
-                    apply()
-                raise
-            if not owner_alive():
-                raise ValueError("Reasoning owner changed before applying settings")
-            apply()
-        return {"session_id": owner_session, "model": model_id,
-                "thinking": session.agent.options.thinking or "off",
-                "levels": ["off", *available],
-                "efforts_reported": model is not None and model.supported_efforts is not None}
+        if runtime is None:
+            raise ValueError('Unknown group')
+        async with self.group_controller(group_id).operation(
+                validate=lambda: runtime.require_current(expected_session)):
+            return await reasoning(runtime, expected_session, level)
 
     async def extension_models(self, group_id: str, expected_session: str, selected: str = "") -> dict[str, Any]:
+        from xdog.claw.core.runtime.model_controls import extension_models
         runtime = self._runtimes.get(group_id)
-        if runtime is None or (runtime.get_new_session_id() or "") != expected_session:
-            raise ValueError("Extension model session changed; refresh before selecting")
-        session = await runtime.prepare_session(allow_reset=False)
-        # An initially empty owner may explicitly bootstrap its first session.
-        owner_session = session.meta.session_id
-        await session.initialize_extensions()
-        stream = session.agent.stream_fn
-        original_model = session.agent.state.model
+        if runtime is None:
+            raise ValueError('Unknown group')
+        async with self.group_controller(group_id).operation(
+                validate=lambda: runtime.require_current(expected_session)):
+            return await extension_models(runtime, expected_session, selected)
 
-        def owner_current() -> bool:
-            return (runtime._active_session is session and runtime.get_new_session_id() == owner_session
-                    and session.agent.state.model == original_model and session.agent.stream_fn is stream)
-
-        models = (await run_owned(stream.models) if isinstance(stream, CatalogStreamFn)
-                  else session.extensions.provider_models())
-        if not owner_current():
-            raise ValueError("Model catalog owner changed during metadata read")
-        if len(models) > 576 or len({model.id for model in models}) != len(models):
-            raise ValueError("Invalid/duplicate/oversized configured model catalog")
-        for model in models:
-            if (not model.id or len(model.id.encode()) > 256 or not isinstance(model.name, str)
-                    or len(model.name.encode()) > 512 or any(ord(char) < 33 or ord(char) == 127 for char in model.id)):
-                raise ValueError("Invalid configured model catalog identity")
-        if selected:
-            session._children_idle()
-            if session.agent.state.is_streaming:
-                raise ValueError("Model selection requires an idle session")
-            resolved = await run_owned(stream.resolve_model, selected) if isinstance(stream, ModelStreamFn) else None
-            if not owner_current() or session.agent.state.is_streaming:
-                raise ValueError("Model selection owner changed during metadata read")
-            if (resolved is None or resolved.model_type != "chat" or not resolved.supports_streaming
-                    or resolved.context_window <= 0):
-                raise ValueError("Model is not an available streaming chat model on configured adapter; no fallback")
-            model = resolved
-            selected = model.id  # Persist and route the canonical identity, not a short lookup alias.
-            target_thinking = session.agent.options.thinking
-            if selected != session.agent.state.model:
-                saved = await run_owned(runtime.transcript_store.get_reasoning,
-                                                session.meta.session_id, selected)
-                if not owner_current() or session.agent.state.is_streaming:
-                    raise ValueError("Model selection owner changed during saved reasoning read")
-                target_thinking = (None if saved == "off" else cast(ThinkingLevel, saved) if saved is not None
-                                   else runtime.agent_config.options.thinking)
-            if not model.reasoning:
-                target_thinking = None
-            if (target_thinking is not None and model.supported_efforts is not None
-                    and target_thinking not in model.supported_efforts):
-                raise ValueError("Model does not advertise current thinking level; choose off before switching")
-            previous_model, owner_task = session.agent.state.model, asyncio.current_task()
-            def owner_alive() -> bool:
-                return (runtime._active_session is session and runtime.get_new_session_id() == owner_session
-                        and session.agent.state.model == previous_model and not session.agent.state.is_streaming)
-            def admit() -> bool:
-                return owner_task is not None and not owner_task.cancelling() and owner_alive()
-            committed = [False]
-            def persist() -> None:
-                runtime.transcript_store.save_model(session.meta.session_id, selected, admit)
-                committed[0] = True
-            def apply() -> None:
-                session.agent.set_model(selected)
-                session.agent.set_options(replace(session.agent.options, thinking=target_thinking))
-                session.agent.set_model_capabilities(context_window=model.context_window,
-                                                     max_prompt_tokens=model.max_prompt_tokens,
-                                                     supports_tool_calls=model.supports_tool_calls)
-                session._model_metadata = replace(session._model_metadata, model_id=selected,
-                    metadata=model, supports_tool_calls=model.supports_tool_calls)
-                runtime.model, runtime.context_window = selected, model.context_window
-                runtime.max_prompt_tokens = model.max_prompt_tokens
-                runtime._source_revision += 1
-            try:
-                await run_owned(persist)
-            except asyncio.CancelledError:
-                if committed[0] and owner_alive():
-                    apply()  # Lost acknowledgement is not a rollback/replay of the admitted atomic setting.
-                raise
-            if not owner_alive():
-                raise ValueError("Model session changed before applying stored selection")
-            apply()
-        active_id = session.agent.state.model
-        active_model = await run_owned(stream.resolve_model, active_id) if isinstance(stream, ModelStreamFn) else None
-        if (runtime._active_session is not session or runtime.get_new_session_id() != owner_session
-                or session.agent.state.model != active_id or session.agent.stream_fn is not stream):
-            raise ValueError("Active model owner changed during metadata read")
-        context_window = (active_model.context_window if active_model is not None else
-                          0 if session.agent.state.model.startswith("ext-") else session.agent.context_window)
-        return {"session_id": runtime.get_new_session_id() or "", "model": session.agent.state.model,
-                "model_context_window": context_window, "thinking": session.agent.options.thinking or "off",
-                "models": [{"id": model.id, "name": model.name, "context_window": model.context_window,
-                            "max_prompt_tokens": model.max_prompt_tokens, "max_tokens": model.max_tokens,
-                            "reasoning": model.reasoning, "supports_tool_calls": model.supports_tool_calls}
-                           for model in models]}
-
-    async def _manage_provider_auth(self, session: AgentSession, arguments: str,
-                                    publish: Callable[[dict[str, Any]], None] | None,
-                                    host_alive: Callable[[], bool] | None) -> dict[str, Any]:
-        import json
-
-        from xdog.agent.extensions.provider_oauth_host import ProviderAuthHost
-        if publish is None or host_alive is None or not host_alive():
-            raise ValueError('Provider authentication needs an explicit original native viewer')
-        await session.initialize_extensions()
-        runtime, agent, sid = session._runtime, session.agent, session.meta.session_id
-        revision = runtime._source_revision
-        def alive() -> bool:
-            return (host_alive() and runtime._active_session is session and session.agent is agent
-                    and runtime.get_new_session_id() == sid and runtime._source_revision == revision
-                    and not agent.is_streaming and not session.children.runtime.active and not session._compacting
-                    and runtime.group.id not in self._navigation_groups)
-        async def ask(extension: str, dialog: dict[str, Any]) -> Any:
-            if not alive() or not (host.owns(dialog) or host.owns_menu(dialog)):
-                raise ValueError('Foreign provider authentication view')
-            return await session.extension_dialogs.ask(extension, dialog)
-        host = ProviderAuthHost(session.extensions, ask, alive, native_storage=True)
-        previous = session.extension_dialogs.publish
-        session.extension_dialogs.publish = publish
-        try:
-            result = await host(arguments)
-            if not alive():
-                raise ValueError('Provider authentication owner changed; no replay')
-            await session.initialize_extensions()
-            model = session.extensions.provider_model(session.agent.state.model)
-            return {'session_id': sid, 'snapshot': session.extensions.snapshot(), 'output': json.dumps(result),
-                    'notices': [], 'model': session.agent.state.model,
-                    'model_context_window': model.context_window if model is not None else session.agent.context_window}
-        finally:
-            host.revoke()
-            session.extension_dialogs.publish = previous
-            await session._persist_tool_retirement()
 
     async def manage_extensions(self, group_id: str, action: str, name: str, args: str,
                                 expected_session: str,
@@ -1099,127 +859,23 @@ class Orchestrator:
                                 provider_auth_alive: Callable[[], bool] | None = None,
                                 command_menu: CommandMenuHost | None = None,
                                 ) -> dict[str, Any]:
-        """Execute trusted extension commands with basic dialogs and read-only host queries."""
+        from xdog.claw.core.runtime.extension_controls import manage_extensions
         runtime = self._runtimes.get(group_id)
-        if runtime is None or (runtime.get_new_session_id() or "") != expected_session:
-            raise ValueError("Extension session/group changed; refresh before retrying")
-        async with self.group_controller(group_id).acquire(is_user=True):
-            session = await runtime.prepare_session(allow_reset=False)
-            if action == 'command' and session.extensions.is_native_command(name):
-                if (session.agent.is_streaming or session._compacting
-                        or session._tool_selection_changing or session._tool_selection_retiring):
-                    raise RuntimeError('Native command requires an idle parent and settled context')
-            else:
-                session._children_idle()
-            await session.initialize_extensions()
-            if action == "auth":
-                return await self._manage_provider_auth(session, args, on_dialog, provider_auth_alive)
-            notices: list[str] = []
-            owner_session = session.meta.session_id
-            original_agent, source_revision = session.agent, runtime._source_revision
-            host_loop = asyncio.get_running_loop()
-            def owned() -> bool:
-                current = runtime._active_session
-                return (current is not None and current is session and current.agent is original_agent
-                    and (runtime.get_new_session_id() or "") == owner_session
-                    and runtime._source_revision == source_revision and group_id not in self._navigation_groups)
-            def publish(event: dict[str, Any]) -> None:
-                if event.get("type") == "extension_notice" and len(notices) < 8 and owned():
-                    notices.append(str(event.get("text", ""))[:4000])
-            async def catalog(extension: str, request: dict[str, Any]) -> dict[str, Any] | None:
-                from xdog.agent.extensions.catalog import page
-                if (action != "command" or session.extensions.command_owner(name) != extension
-                        or not owner_session or not owned()):
-                    return None
-                scope = ("sessions" if request["scope"] == "sessions" else
-                         "tree|" + (request["session_id"] or owner_session) + "|" + request["branch_id"])
-                rows = await run_owned(runtime.navigation_entries, scope)
-                result = await run_owned(page, rows, request, owner_session)
-                return result if owned() else None
-            async def host_dialog(extension: str, dialog: dict[str, Any]) -> Any:
-                from xdog.agent.cross_loop import settle_on
-                from xdog.agent.extensions.dialogs import validate_sdk_dialog
-                validate_sdk_dialog(dialog)  # Retired writes cannot borrow this read-only bridge.
-                if not owned() or session.extensions.command_owner(name) != extension:
-                    return None
-                if dialog.get('kind') == 'session' and dialog.get('operation') == 'active_tools':
-                    from xdog.agent.extensions.active_tools import snapshot
-                    async def inspect() -> dict[str, Any] | None:
-                        return snapshot(session.agent, owner_session) if owned() else None
-                    return await settle_on(host_loop, inspect())
-                result = await session.extension_dialogs.ask(extension, dialog)
-                return result if owned() else None
-            previous_publish, previous_dialog_publish = session.extensions.publish, session.extension_dialogs.publish
-            previous_dialog = session.extensions.dialog_handler
-            previous_catalog = session.extensions.catalog_handler
-            previous_menu = session.extensions.command_menu_handler
-            previous_pending = session.extensions.pending_messages
-            menu_handler = (self._command_menu_handler(session, command_menu)
-                            if command_menu is not None and on_dialog is not None else None)
-            session.extensions.publish = publish
-            session.extension_dialogs.publish = on_dialog or (lambda event: None)
-            session.extensions.dialog_handler = host_dialog if on_dialog is not None else None
-            session.extensions.dialog_cancel = session.extension_dialogs.cancel_extension
-            session.extensions.catalog_handler = catalog if action == "command" and on_dialog is not None else None
-            session.extensions.command_menu_handler = menu_handler
-            session.extensions.pending_messages = self._pending_messages_reader(session)
-            previous_authority = session._user_operation_authorized
-            try:
-                await runtime.initialize_capabilities(await self.input_service())
-                await session.initialize_extensions()
-                if action == "command":
-                    session._user_operation_authorized = True
-                    try:
-                        output = await session.extensions.command(name, args)
-                    finally:
-                        session._user_operation_authorized = previous_authority
-                else:
-                    await session.extensions.manage(action, name)
-                    output = ""
-                await session.initialize_extensions()
-                active_model = session.extensions.provider_model(session.agent.state.model)
-                context_window = (active_model.context_window if active_model is not None else
-                                  0 if session.agent.state.model.startswith("ext-") else session.agent.context_window)
-                payload: dict[str, Any] = {"session_id": runtime.get_new_session_id() or "",
-                    "snapshot": session.extensions.snapshot(), "output": output, "notices": notices,
-                    "model": session.agent.state.model, "model_context_window": context_window}
-                if isinstance(output, ExtensionCommandResult):
-                    payload["output"] = output.summary
-                    payload["command_content"] = output.to_dict()
-                return payload
-            finally:
-                session._user_operation_authorized = previous_authority
-                session.extensions.pending_messages = previous_pending
-                if session.extensions.command_menu_handler is menu_handler:
-                    session.extensions.command_menu_handler = previous_menu
-                if session.extensions.catalog_handler is catalog:
-                    session.extensions.catalog_handler = previous_catalog
-                if session.extensions.dialog_handler is host_dialog or on_dialog is None:
-                    session.extensions.dialog_handler = previous_dialog
-                if session.extensions.publish is publish:
-                    session.extensions.publish = previous_publish
-                session.extension_dialogs.publish = previous_dialog_publish
-                await session._persist_tool_retirement()
+        if runtime is None:
+            raise ValueError('Unknown group')
+        return await manage_extensions(runtime, self.group_controller(group_id),
+            action, name, args, expected_session, on_dialog,
+            provider_auth_alive=provider_auth_alive, command_menu=command_menu, input_service=self.input_service)
 
     async def complete_extension_argument(self, group_id: str, expected_session: str,
                                           command: str, prefix: str, identity: str,
                                           argument_input: dict[str, Any] | None = None) -> dict[str, Any]:
+        from xdog.claw.core.runtime.extension_controls import complete_extension_argument
         runtime = self._runtimes.get(group_id)
-        if (runtime is None or runtime.get_new_session_id() != expected_session
-                or runtime._active_session is None or runtime._active_session.meta.session_id != expected_session):
-            raise ValueError('Argument completion owner changed; no activation')
-        async with self.group_controller(group_id).acquire(is_user=True):
-            session = runtime._active_session
-            session._children_idle()
-            if session.agent.is_streaming:
-                raise ValueError('Argument completion requires an idle current owner')
-            try:
-                result = await session.complete_command(command, prefix, identity, argument_input=argument_input)
-                if runtime._active_session is not session or runtime.get_new_session_id() != expected_session:
-                    raise ValueError('Argument completion owner changed')
-                return {**result, 'snapshot': session.extensions.snapshot()}
-            finally:
-                await session._persist_tool_retirement()
+        if runtime is None:
+            raise ValueError('Unknown group')
+        return await complete_extension_argument(runtime, self.group_controller(group_id),
+            expected_session, command, prefix, identity, argument_input)
 
     def extension_failure_snapshot(self, group_id: str, expected_session: str) -> dict[str, Any] | None:
         """Descriptive failure data only; never bootstrap/switch a viewer or activate a worker."""
@@ -1235,7 +891,7 @@ class Orchestrator:
         """Read actual reserved command owner state, not a viewer's stale model/usage cache."""
         runtime = self._runtimes.get(group_id)
         if (runtime is None or (runtime.get_new_session_id() or "") != session_id
-                or runtime._active_session is None or group_id in self._navigation_groups):
+                or runtime._active_session is None or self.context_changing(group_id)):
             return None
         session = runtime._active_session
         if not session.extension_dialogs.contains(identifier) or session.agent.state.is_streaming:
@@ -1243,7 +899,6 @@ class Orchestrator:
         if operation == 'name':
             value = session._extension_session_name()
             return {'session_id': session_id, 'name': value['name']} if value is not None else None
-        from xdog.agent.core import ModelStreamFn
         from xdog.agent.extensions.inspection import snapshot
         from xdog.ai.types import Model
         stream = session.agent.stream_fn
@@ -1262,110 +917,63 @@ class Orchestrator:
 
 
     async def manage_mcp(self, group_id: str, action: str, server: str) -> tuple[dict[str, Any], ...]:
+        from xdog.claw.core.runtime.mcp_controls import manage_mcp
         runtime = self._runtimes.get(group_id)
         if runtime is None:
-            raise ValueError("Unknown group")
-        if action in {"list", "status"}:
-            return runtime.mcp.status()
-        self._navigation_groups.add(group_id)
-        try:
-            async with self.group_controller(group_id).acquire(is_user=True):
-                return await runtime.manage_mcp(action, server)
-        finally:
-            self._navigation_groups.discard(group_id)
+            raise ValueError('Unknown group')
+        return await manage_mcp(runtime, self.group_controller(group_id), action, server)
+
 
     async def manage_mcp_auth(self, group_id: str, server: str, action: str, receipt: str,
                               session: str, lease: str, alive: Callable[[], bool]) -> dict[str, Any]:
+        from xdog.claw.core.runtime.mcp_controls import manage_mcp_auth
         runtime = self._runtimes.get(group_id)
-        if runtime is None or (runtime.get_new_session_id() or "") != session:
-            raise ValueError("Authorization session changed; prepare a fresh view")
-        if action in {"status", "cancel"}:
-            return await runtime.mcp.manage_auth(server, action, receipt, lease=lease, alive=alive)
-        async with self.group_controller(group_id).acquire(is_user=True):
-            if runtime._active_session is not None:
-                runtime._active_session._children_idle()
-            result = await runtime.mcp.manage_auth(server, action, receipt, lease=lease, alive=alive)
-            if action == "forget":
-                if runtime._active_session is not None:
-                    runtime._active_session.agent.sync_mcp_tools()
-                    await runtime._active_session._persist_tool_retirement()
-            return result
+        if runtime is None:
+            raise ValueError('Unknown group')
+        return await manage_mcp_auth(runtime, self.group_controller(group_id),
+                                     server, action, receipt, session, lease, alive)
 
     async def mcp_context(self, group_id: str, action: str, server: str, name: str,
                           arguments: dict[str, str]) -> tuple[McpEntry, ...] | McpDocument | McpCompletion:
+        from xdog.claw.core.runtime.mcp_controls import mcp_context
         runtime = self._runtimes.get(group_id)
         if runtime is None:
-            raise ValueError("Unknown group")
-        if action in {"resources", "templates", "prompts"}:
-            kind = {"resources": "resource", "templates": "template", "prompts": "prompt"}[action]
-            return await runtime.mcp.catalog(server, kind)
-        if action == "read":
-            return await runtime.mcp.resource(server, name)
-        if action == "prompt":
-            return await runtime.mcp.prompt(server, name, arguments)
-        if action in {"complete_prompt", "complete_template", "complete_resource"}:
-            argument, value, context = request_arguments(arguments)
-            return await runtime.mcp.complete(server, action.removeprefix("complete_"), name, argument, value, context)
-        raise ValueError("Unknown MCP context action")
+            raise ValueError('Unknown group')
+        return await mcp_context(runtime, action, server, name, arguments)
 
     async def navigation_entries(self, group_id: str, scope: str) -> list[dict[str, Any]]:
+        from xdog.claw.core.runtime.context_controls import navigation_entries
         runtime = self._runtimes.get(group_id)
         if runtime is None:
-            raise ValueError("Unknown group")
-        return await run_owned(runtime.navigation_entries, scope)
+            raise ValueError('Unknown group')
+        return await navigation_entries(runtime, scope)
 
     async def navigate_session(self, group_id: str, action: str, session_id: str, branch_id: str,
                                index: int, expected_session: str) -> None:
-        runtime = self._runtimes.get(group_id)
-        if runtime is None:
-            raise ValueError("Unknown group")
-        if action != 'new':
-            raise ValueError('Claw history is read-only; historical route activation is not supported')
-        if session_id or branch_id or index != -1:
-            raise ValueError('New context cannot select historical data')
-        self._navigation_groups.add(group_id)
-        try:
-            async with self.group_controller(group_id).acquire(is_user=True):
-                await runtime.reset_context(expected_session)
-        finally:
-            self._navigation_groups.discard(group_id)
-
-    async def read_session_name(self, group_id: str, expected_session: str) -> dict[str, str]:
+        from xdog.claw.core.runtime.context_controls import navigate_session
         runtime = self._runtimes.get(group_id)
         if runtime is None:
             raise ValueError('Unknown group')
-        # Metadata reads do not reserve the group, instantiate a session, read
-        # history, or block the gateway loop waiting for a disk owner's lock.
-        async with asyncio.timeout(10):
-            while True:
-                if group_id not in self._navigation_groups:
-                    value = runtime.transcript_store.read_session_name(group_id, expected_session)
-                    if value is not None:
-                        return value
-                await asyncio.sleep(0.005)
+        return await navigate_session(runtime, self.group_controller(group_id),
+                                      action, session_id, branch_id, index, expected_session)
+
+
+    async def read_session_name(self, group_id: str, expected_session: str) -> dict[str, str]:
+        from xdog.claw.core.runtime.context_controls import read_session_name
+        runtime = self._runtimes.get(group_id)
+        if runtime is None:
+            raise ValueError('Unknown group')
+        return await read_session_name(runtime, self.group_controller(group_id), expected_session)
 
     async def rename_session(self, group_id: str, expected_session: str, name: str, *,
                              expected_name: str | None = None, alive: Callable[[], bool] | None = None) -> str:
+        from xdog.claw.core.runtime.context_controls import rename_session
         runtime = self._runtimes.get(group_id)
         if runtime is None:
             raise ValueError('Unknown group')
-        self._navigation_groups.add(group_id)
-        try:
-            async with self.group_controller(group_id).acquire(is_user=True):
-                canceled = threading.Event()
-                task = asyncio.create_task(asyncio.to_thread(
-                    runtime.rename_session, expected_session, name,
-                    lambda: not canceled.is_set() and (alive is None or alive()),
-                    **({'expected_name': expected_name} if expected_name is not None else {})))
-                # Once disk admission happens, settle publication before releasing group ownership.
-                while not task.done():
-                    try:
-                        await asyncio.shield(task)
-                    except asyncio.CancelledError:
-                        canceled.set()
-                return task.result()
-        finally:
-            self._navigation_groups.discard(group_id)
+        return await rename_session(runtime, self.group_controller(group_id), expected_session, name,
+                                    expected_name=expected_name, alive=alive)
+
 
     def control_input(self, group_id: str, action: str, input_id: str, content: str = "",
                       delivery: str = "", direction: int = 0, images: tuple[ImageContent, ...] = (),
@@ -1424,20 +1032,20 @@ class Orchestrator:
         runtime = self._runtimes.get(group_id)
         if runtime is None:
             raise ValueError("Unknown group")
-        if group_id in self._navigation_groups:
+        if self.context_changing(group_id):
             raise RuntimeError("Session context is changing; refresh after navigation")
         return runtime.capture_source(expected_session)
 
     def capture_saved_source(self, group_id: str, expected_session: str, target_session: str,
                              branch_id: str) -> SourceCapture:
         runtime = self._runtimes.get(group_id)
-        if runtime is None or group_id in self._navigation_groups:
+        if runtime is None or self.context_changing(group_id):
             raise ValueError('Saved source group/context unavailable')
         return runtime.capture_saved_source(expected_session, target_session, branch_id)
 
     def source_lease(self, group_id: str) -> tuple[str, int]:
         runtime = self._runtimes.get(group_id)
-        if runtime is None or group_id in self._navigation_groups:
+        if runtime is None or self.context_changing(group_id):
             return "", -1
         return runtime.get_new_session_id() or "", runtime._source_revision
 

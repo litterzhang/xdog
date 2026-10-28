@@ -36,6 +36,21 @@ The native gateway socket and default ACP endpoint are private local communicati
 surfaces, not a hosted API or permission bypass. Native clients must negotiate
 capabilities and preserve ownership, cancellation and no-blind-replay fences.
 
+## Internal runtime ownership
+
+Gateway owns process/endpoints/channels; `NativeConnection` owns only its peer's
+protocol/UI jobs, with `NativeRequests` handling request/reply projections.
+Application input execution still belongs to InputService and the original
+GroupController. Context/model/MCP/extension/access controls use narrow actual
+resource arguments, not a second application runtime. Group preparation/reset/close
+live together in `group_lifecycle`; session prompt, tool-policy and compaction
+operations are separate modules using the same owning AgentSession.
+
+Controller operation scopes revalidate context after waiting for admission and
+retain context-change fences through actual settlement. Shutdown closes new
+admission; detached old requests cannot publish into a successor. See
+[runtime ownership/refactor verification](../../docs/claw-runtime-refactor.md).
+
 ## Quick start
 
 ```bash

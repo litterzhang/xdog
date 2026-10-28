@@ -402,60 +402,8 @@ class GroupRuntime:
         return session
 
     async def prepare_session(self, *, allow_reset: bool = True) -> AgentSession:
-        """Owned preparation IO; publish/construct the Agent only on this loop."""
-        from functools import partial
-
-        from xdog.agent.async_work import run_owned
-        from xdog.claw.core.persistence.session_preparation import check, default_stream, prepare
-        from xdog.claw.core.runtime.session import AgentSession
-
-        self.require_open()
-        async with self._session_prepare_lock:
-            self.require_open()
-            previous = self._active_session
-            generation = self._source_revision
-            config = self.group.config
-            children_active = previous is not None and previous.children.runtime.active
-            plan = await run_owned(partial(check, self.transcript_store, self.group.id,
-                config.daily_reset_hour, config.idle_reset_seconds, allow_reset=allow_reset and not children_active))
-            if self._active_session is not previous or self._source_revision != generation:
-                raise ValueError('Session preparation owner changed during metadata read')
-            if previous is not None:
-                if plan.meta is None or plan.meta.session_id != previous.meta.session_id:
-                    raise ValueError('Cached session owner changed during preparation')
-                if not plan.reset_due:
-                    self._session_last_active = time.time()
-                    return previous
-            generation = self._source_revision
-            configured_stream = self.stream_fn
-            adapter: StreamFn = configured_stream if configured_stream is not None else await run_owned(default_stream)
-            if (self._source_revision != generation or self._active_session is not previous
-                    or self.stream_fn is not configured_stream):
-                raise ValueError("Model adapter owner changed during preparation")
-            draft = None
-            if plan.reset_due and plan.meta is not None:
-                from xdog.claw.core.runtime.context_handoff import prepare as prepare_handoff
-                draft = await prepare_handoff(self, plan.meta, plan.reset_reason, previous, adapter)
-                if (self._source_revision != generation or self._active_session is not previous
-                        or self.stream_fn is not configured_stream):
-                    raise ValueError('Handoff owner changed before rotation')
-            if previous is not None:
-                self._drop_session()
-            generation = self._source_revision
-            data = await run_owned(partial(prepare, self.transcript_store, self.group.id,
-                self.workspace_dir, self._configured_model, plan.meta, reset=plan.reset_due, skills=self.skill_repo,
-                extension_root=self.extension_root, stream_fn=adapter, handoff=draft,
-                reset_reason=plan.reset_reason or 'automatic_reset'))
-            if (self._active_session is not None or self._source_revision != generation
-                    or self.stream_fn is not configured_stream):
-                raise ValueError('Session preparation owner changed before publication')
-            self.model = data.saved_model or self._configured_model
-            self.context_window, self.max_prompt_tokens = self._configured_limits
-            session = AgentSession(runtime=self, session_meta=data.meta, prepared=data, prepared_stream=adapter)
-            self._active_session = session
-            self._attach_capabilities(session)
-            self._session_last_active = time.time()
-            return session
+        from xdog.claw.core.runtime.group_lifecycle import prepare_session
+        return await prepare_session(self, allow_reset=allow_reset)
 
     def navigation_entries(self, scope: str) -> list[dict[str, Any]]:
         store = self.transcript_store
@@ -557,6 +505,12 @@ class GroupRuntime:
     def require_open(self) -> None:
         if self._closing:
             raise RuntimeError('Group runtime is closing or closed')
+
+    def require_current(self, expected_session: str) -> None:
+        """Revalidate the original context at actual control-operation admission."""
+        self.require_open()
+        if (self.get_new_session_id() or '') != expected_session:
+            raise ValueError('Original session changed; refresh before retrying')
 
     async def reset_context(self, expected_session: str) -> None:
         from xdog.claw.core.runtime.group_lifecycle import reset_context

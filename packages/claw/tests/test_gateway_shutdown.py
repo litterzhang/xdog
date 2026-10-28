@@ -211,8 +211,9 @@ async def test_channel_workers_settle_before_resources_and_mcp_failure_still_clo
 async def test_stop_settles_idle_client_even_when_dispatch_does_not_reply(tmp_path, monkeypatch):
     """A failed control reply must not strand test/host shutdown on an open peer."""
     server = make_server(tmp_path, monkeypatch)
+    from xdog.claw.core.runtime.native_requests import NativeRequests
     dispatch = AsyncMock(return_value=None)
-    monkeypatch.setattr(server, '_dispatch', dispatch)
+    monkeypatch.setattr(NativeRequests, '_dispatch', dispatch)
     await server.start()
     reader, writer = await asyncio.open_unix_connection(str(tmp_path / 'gateway.sock'))
     stopping = None

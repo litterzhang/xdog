@@ -241,3 +241,90 @@ async def test_busy_group_waiter_does_not_hold_global_capacity():
             async with GroupController('other', slots).acquire():
                 assert q.busy
     await waiter
+
+
+async def test_context_operations_keep_the_fence_until_every_scope_has_settled():
+    controller = GroupController('main', asyncio.Semaphore(1))
+    first_entered, first_release, second_entered, second_release = (asyncio.Event() for _ in range(4))
+    observed = []
+    controller.subscribe_available(lambda: observed.append(controller.context_changing))
+
+    async def change(entered, release):
+        async with controller.operation(context_change=True):
+            entered.set()
+            await release.wait()
+
+    first = asyncio.create_task(change(first_entered, first_release))
+    await asyncio.wait_for(first_entered.wait(), 2)
+    second = asyncio.create_task(change(second_entered, second_release))
+    await asyncio.sleep(0)
+    assert controller.context_changing
+    first_release.set()
+    await first
+    await asyncio.wait_for(second_entered.wait(), 2)
+    assert controller.context_changing  # First cleanup cannot clear the second operation.
+    second_release.set()
+    await second
+    assert not controller.context_changing and not controller.busy
+    assert observed[-1] is False
+
+
+async def test_operation_revalidates_owner_after_waiting_for_actual_admission():
+    controller = GroupController('main', asyncio.Semaphore(1))
+    current = ['old']
+    checked = []
+
+    def validate():
+        checked.append(current[0])
+        if current[0] != 'old':
+            raise ValueError('Original context changed')
+
+    async def change():
+        async with controller.operation(validate=validate):
+            pytest.fail('A queued stale operation must never execute')
+
+    async with controller.acquire(is_user=True):
+        work = asyncio.create_task(change())
+        await asyncio.sleep(0)
+        current[0] = 'new'
+    with pytest.raises(ValueError, match='context changed'):
+        await work
+    assert checked == ['new'] and not controller.busy
+
+
+async def test_cancelled_context_waiter_cannot_clear_the_running_context_scope():
+    controller = GroupController('main', asyncio.Semaphore(1))
+
+    async def waiter():
+        async with controller.operation(context_change=True):
+            pytest.fail('Cancelled waiter must not enter')
+
+    async with controller.operation(context_change=True):
+        work = asyncio.create_task(waiter())
+        await asyncio.sleep(0)
+        work.cancel()
+        await asyncio.gather(work, return_exceptions=True)
+        assert controller.context_changing and controller.busy
+    assert not controller.context_changing and not controller.busy
+
+
+async def test_closing_fences_new_and_queued_operations_but_not_original_cleanup():
+    controller = GroupController('main', asyncio.Semaphore(1))
+
+    async def queued():
+        async with controller.operation(context_change=True):
+            pytest.fail('A queued operation cannot start after shutdown admission closes')
+
+    async with controller.acquire(is_user=True):
+        work = asyncio.create_task(queued())
+        await asyncio.sleep(0)
+        controller.close_admission()
+        assert controller.reserve() is None
+        async with controller.acquire(is_user=True):
+            assert controller.busy  # The original task may still settle nested work.
+    with pytest.raises(RuntimeError, match='closed'):
+        await work
+    assert not controller.busy and not controller.context_changing
+    with pytest.raises(RuntimeError, match='closed'):
+        async with controller.operation():
+            pytest.fail('Closed controller admitted new work')

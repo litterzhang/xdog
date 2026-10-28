@@ -128,3 +128,35 @@ async def test_group_close_keeps_cleanup_error_and_still_closes_later_resources(
         session.dispose()
         await runtime.mcp.aclose()
         await memory_close()
+
+
+@pytest.mark.parametrize('stage', ['check', 'prepare'])
+async def test_close_during_preparation_cannot_publish_an_agent_after_shutdown(tmp_path, monkeypatch, stage):
+    from xdog.claw.core.persistence import session_preparation
+
+    runtime, calls = create(tmp_path)
+    entered, release = threading.Event(), threading.Event()
+    original = getattr(session_preparation, stage)
+
+    def held(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(session_preparation, stage, held)
+    opening = asyncio.create_task(runtime.prepare_session(allow_reset=False))
+    closing = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 3)
+        closing = asyncio.create_task(runtime.aclose())
+        await asyncio.sleep(0)
+        assert runtime._closing and not closing.done()
+        release.set()
+        with pytest.raises(RuntimeError, match='clos'):
+            await asyncio.wait_for(opening, 3)
+        await asyncio.wait_for(closing, 3)
+        assert runtime._active_session is None and not calls
+    finally:
+        release.set()
+        await asyncio.gather(*(task for task in (opening, closing) if task is not None), return_exceptions=True)
+        await runtime.aclose()

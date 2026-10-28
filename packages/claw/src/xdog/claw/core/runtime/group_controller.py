@@ -50,6 +50,8 @@ class GroupController:
         self.group_id, self._background_slots = group_id, background_slots
         self.generation = uuid.uuid4().hex
         self._waiting_users = 0
+        self._context_operations = 0
+        self._closing = False
         self._listeners: list[Callable[[], None]] = []
         self._owner: _Owner | None = None
         self._available = asyncio.Event()
@@ -62,6 +64,36 @@ class GroupController:
     @property
     def user_pending(self) -> bool:
         return self._waiting_users > 0
+
+    @property
+    def context_changing(self) -> bool:
+        """Derived from live scopes, including queued context mutations."""
+        return self._context_operations > 0
+
+    def close_admission(self) -> None:
+        """Fence new work; actual owners still settle through their original lease."""
+        self._closing = True
+        self._notify_available()
+
+    @asynccontextmanager
+    async def operation(self, *, validate: Callable[[], None] | None = None,
+                        context_change: bool = False) -> AsyncIterator[None]:
+        """Use the existing task owner and validate only after actual admission.
+
+        Count scopes rather than storing a second application navigation set:
+        an earlier operation's cleanup must not clear a queued successor's fence.
+        Read/control operations that must remain live during a turn do not use it.
+        """
+        self._context_operations += int(context_change)
+        try:
+            async with self.acquire(is_user=True):
+                if validate is not None:
+                    validate()
+                yield
+        finally:
+            self._context_operations -= int(context_change)
+            if context_change:
+                self._notify_available()
 
     def subscribe_available(self, callback: Callable[[], None]) -> Callable[[], None]:
         self._listeners.append(callback)
@@ -78,7 +110,7 @@ class GroupController:
                 logger.warning('Group availability listener failed', exc_info=True)
 
     def reserve(self) -> GroupReservation | None:
-        if self._owner is not None:
+        if self._closing or self._owner is not None:
             return None
         reservation = GroupReservation(self.group_id, uuid.uuid4().hex)
         self._owner = _Owner(reservation)
@@ -115,6 +147,8 @@ class GroupController:
                 raise ValueError('Nested operation cannot change the original execution owner')
             yield
             return
+        if self._closing:
+            raise RuntimeError('Group execution admission is closed')
         self._waiting_users += int(is_user)
         try:
             if reservation is not None:
@@ -124,6 +158,8 @@ class GroupController:
             else:
                 while self._owner is not None:
                     await self._available.wait()
+                if self._closing:
+                    raise RuntimeError('Group execution admission is closed')
                 reservation = self.reserve()
                 assert reservation is not None
         finally:
