@@ -8,6 +8,17 @@ project follows [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Claw rotates contexts with a durable source-referenced handoff rather than
+  silently starting empty. Summary failure retains bounded original-message
+  previews and source references; rotation also runs managed-memory maintenance.
+- Memory search includes canonical same-group JSONL and compaction recovery
+  history, with exact message/character pagination and tool-call/result evidence.
+  Historical context grants no permissions and never replays old execution.
+- Preserve canonical ACP input during summarization and recheck effective memory
+  maintenance parameters after host extension rewrites.
+
 ---
 
 ## [2.5.0] — 2026-10-25

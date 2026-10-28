@@ -45,7 +45,10 @@ async def test_context_rotation_releases_settled_extension_owner_before_applicat
         assert all(reference() is None for reference in previous), (
             "Retired generic extension owners retain old conversations until application shutdown"
         )
-        assert len(calls) == 4
+        summaries = [args for args in calls if isinstance(args[1].system_prompt, str)
+                     and args[1].system_prompt.startswith('You are a conversation summarizer.')]
+        assert len(calls) == 7 and len(summaries) == 3
+        assert all(not args[1].tools for args in summaries)
     finally:
         await app.stop()
 

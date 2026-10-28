@@ -41,10 +41,15 @@ class Summarizer:
         if instructions:
             prompt_text += "\n\nUser's compaction focus (not a tool request):\n" + instructions
         from xdog.agent.extensions.context_message import summary_text
+        from xdog.agent.session_input import llm_message as input_message
         sendable: list[Message] = []
-        for message in messages:
+        from xdog.claw.core.persistence.handoff import project
+        for original in messages:
+            message = project(original)
             if not isinstance(message, CustomAgentMessage):
                 sendable.append(message)
+            elif external := input_message(message):
+                sendable.append(external)
             elif custom_text := summary_text(message):
                 sendable.append(UserMessage(content=custom_text))
 

@@ -114,7 +114,12 @@ async def test_foreign_session_unknown_group_and_context_rotation_fence_source(g
         assert current != meta.session_id
         assert len(await source(reader, writer, current, nonce="fresh")) == 0
         assert len(runtime.transcript_store.load_transcript(meta.session_id)) == 2
-        assert not calls
+        # Source requests remain model-free. Rotation alone maintains memory and summarizes.
+        assert len(calls) == 2
+        assert [tool.name for tool in calls[0].tools] == ['memory']
+        assert isinstance(calls[1].system_prompt, str)
+        assert calls[1].system_prompt.startswith('You are a conversation summarizer.')
+        assert not calls[1].tools
     finally:
         release.set()
         writer.close()

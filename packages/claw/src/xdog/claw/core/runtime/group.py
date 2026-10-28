@@ -382,7 +382,7 @@ class GroupRuntime:
                      allow_reset=allow_reset and not children_active)
         if plan.reset_due:
             self._drop_session()
-            meta = self.transcript_store.reset_session(group_id)
+            meta = self.transcript_store.reset_session(group_id, reason=plan.reset_reason)
         else:
             meta = plan.meta or self.transcript_store.create_session(group_id)
 
@@ -426,17 +426,26 @@ class GroupRuntime:
                 if not plan.reset_due:
                     self._session_last_active = time.time()
                     return previous
-            if previous is not None:
-                self._drop_session()
             generation = self._source_revision
             configured_stream = self.stream_fn
             adapter: StreamFn = configured_stream if configured_stream is not None else await run_owned(default_stream)
-            if (self._source_revision != generation or self._active_session is not None
+            if (self._source_revision != generation or self._active_session is not previous
                     or self.stream_fn is not configured_stream):
                 raise ValueError("Model adapter owner changed during preparation")
+            draft = None
+            if plan.reset_due and plan.meta is not None:
+                from xdog.claw.core.runtime.context_handoff import prepare as prepare_handoff
+                draft = await prepare_handoff(self, plan.meta, plan.reset_reason, previous, adapter)
+                if (self._source_revision != generation or self._active_session is not previous
+                        or self.stream_fn is not configured_stream):
+                    raise ValueError('Handoff owner changed before rotation')
+            if previous is not None:
+                self._drop_session()
+            generation = self._source_revision
             data = await run_owned(partial(prepare, self.transcript_store, self.group.id,
                 self.workspace_dir, self._configured_model, plan.meta, reset=plan.reset_due, skills=self.skill_repo,
-                extension_root=self.extension_root, stream_fn=adapter))
+                extension_root=self.extension_root, stream_fn=adapter, handoff=draft,
+                reset_reason=plan.reset_reason or 'automatic_reset'))
             if (self._active_session is not None or self._source_revision != generation
                     or self.stream_fn is not configured_stream):
                 raise ValueError('Session preparation owner changed before publication')
@@ -452,9 +461,15 @@ class GroupRuntime:
         store = self.transcript_store
         active = store.get_active_session(self.group.id)
         if scope == "sessions":
+            def detail(data: dict[str, Any]) -> str:
+                value = f"{data.get('message_count', '?')} messages · {data.get('last_active', '')}"
+                if isinstance(handoff := data.get('handoff'), dict):
+                    value += (f" · from {handoff.get('source_session_id', '')}"
+                              f" · {handoff.get('reason', '')} · handoff: {handoff.get('status', '')}")
+                return value
             return [{"id": data["session_id"], "kind": "session", "session_id": data["session_id"],
                      "title": data.get("label") or data.get("summary") or data["session_id"],
-                     "detail": f"{data.get('message_count', '?')} messages · {data.get('last_active', '')}",
+                     "detail": detail(data),
                      "active": active is not None and active.session_id == data["session_id"]}
                     for data in store.list_sessions(self.group.id)]
         parts = scope.split("|")

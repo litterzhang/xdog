@@ -32,6 +32,11 @@ async def test_actual_cold_context_metadata_fsync_runs_off_the_event_loop(tmp_pa
 
     def model(*args):
         assert threading.get_ident() == owner, "Do not move Agent execution to another loop to hide blocking IO"
+        if (isinstance(args[1].system_prompt, str)
+                and args[1].system_prompt.startswith('You are a conversation summarizer.')):
+            # Rotation now has a tool-free handoff request before persistence.
+            # The original probe gates the actual incoming user turn, not that summary.
+            return EventStream.empty(AssistantMessage(content=(TextContent(text='Original context retained.'),)))
         calls.append(args)
         if gate.is_set():
             capture.clear()  # Preparation only; durable turn commit is a separate required gate.

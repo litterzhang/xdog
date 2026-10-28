@@ -2962,3 +2962,19 @@ contain `exit_code`, `stdout`, `stderr`; nonzero exit is failure. Workflow code,
 imports, models and scheduling can have effects even during validation, so normal
 host policy still applies. Cancellation settles the owned CLI process group,
 never automatically replays interrupted effects. See [Flow](../flow/README.md).
+
+## Context rotation and memory continuity
+
+Daily/idle rotation and explicit new-context controls now save a source-referenced
+handoff before publishing the new context. The first turn loads it automatically;
+summary failure retains recent original-message previews and an explicit incomplete
+marker, rather than silently starting blank. Rotation also runs the existing
+managed daily/long-term memory maintenance, without regaining disabled tools.
+
+`memory` search covers ordinary memory **and canonical same-group JSONL history**.
+Use `memory(action="history", mode="recent")` without keywords, or `mode="get"`
+with a session ID and message position to verify original scope and tool results.
+Live pagination is bounded; follow the returned continuation offsets. Historical
+content and handoffs are evidence, not new permissions or permission to replay work.
+
+See [context continuity design and verification](https://github.com/litterzhang/xdog/blob/main/docs/claw-context-continuity.md).

@@ -12,6 +12,7 @@ from xdog.agent.extensions.compaction import saved_record
 from xdog.agent.extensions.location import ExtensionRoot
 from xdog.agent.skills.types import SkillPlacement
 from xdog.ai.types import Model, SystemPromptBlock
+from xdog.claw.core.persistence.handoff import Draft
 from xdog.claw.core.persistence.transcript_convert import transcript_to_messages
 from xdog.claw.core.persistence.transcript_store import TranscriptStore
 from xdog.claw.core.runtime.child_store import ChildStore
@@ -118,6 +119,7 @@ def read(store: TranscriptStore, meta: SessionMeta, workspace: Path, configured_
 class SessionCheck:
     meta: SessionMeta | None
     reset_due: bool
+    reset_reason: str = ''
 
 
 def check(store: TranscriptStore, group: str, daily_hour: int, idle_seconds: int, *, allow_reset: bool) -> SessionCheck:
@@ -128,18 +130,24 @@ def check(store: TranscriptStore, group: str, daily_hour: int, idle_seconds: int
         if meta is not None:
             store.load_transcript(meta.session_id)  # Check before reset can replace its pointer.
         restricted = meta is not None and AccessState.from_dict(store.get_access(meta.session_id)).read_only
-        due = allow_reset and not restricted and (store.needs_daily_reset(group, daily_hour)
-                                                  or store.needs_idle_reset(group, idle_seconds))
-        return SessionCheck(meta, due)
+        reason = ''
+        if allow_reset and not restricted:
+            if store.needs_daily_reset(group, daily_hour):
+                reason = 'daily_reset'
+            elif store.needs_idle_reset(group, idle_seconds):
+                reason = 'idle_reset'
+        return SessionCheck(meta, bool(reason), reason)
 
 
 def prepare(store: TranscriptStore, group: str, workspace: Path, configured_model: str,
             expected: SessionMeta | None, *, reset: bool, skills: SkillRepo | None = None,
-            extension_root: Path, stream_fn: StreamFn) -> PreparedSession:
+            extension_root: Path, stream_fn: StreamFn, handoff: Draft | None = None,
+            reset_reason: str = 'automatic_reset') -> PreparedSession:
     with store._lock:
         if store.get_active_session(group) != expected:
             raise ValueError('Session preparation owner changed before persistence')
-        meta = store.reset_session(group) if reset else expected or store.create_session(group)
+        meta = (store.reset_session(group, reason=reset_reason, handoff=handoff) if reset
+                else expected or store.create_session(group))
         return read(store, meta, workspace, configured_model, skills=skills,
                     extension_root=extension_root, stream_fn=stream_fn)
 
@@ -157,11 +165,12 @@ def prompt(workspace: Path, tools: tuple[PromptTool, ...], model: str,
                                bootstrap_content=run_bootstrap(workspace) if bootstrap else None)
 
 
-def reset(store: TranscriptStore, group: str, expected: SessionMeta | None) -> SessionMeta:
+def reset(store: TranscriptStore, group: str, expected: SessionMeta | None,
+          handoff: Draft | None = None) -> SessionMeta:
     """Original binding only; no Runtime/Session/Agent mutation in its worker."""
     with store._lock:
         if store.get_active_session(group) != expected or store._load_index() != store._index:
             raise ValueError('Reset pointer owner changed before persistence')
         if expected is None and store.list_sessions(group):
             raise ValueError('Committed current pointer missing; readonly archives cannot authorize reset')
-        return store.reset_session(group)
+        return store.reset_session(group, reason='manual_reset', handoff=handoff)

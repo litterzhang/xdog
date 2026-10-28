@@ -35,8 +35,9 @@ it directly to the user before continuing.
 you might need later in your response, as the original tool result may \
 be cleared during context compaction.
 - Your conversation is not limited by the context window. Old messages \
-are automatically compacted with a summary. Important information is \
-preserved in your long-term memory (MEMORY.md and daily logs).
+are automatically compacted with a summary. Original chat is evidence; \
+host handoff preserves continuity of current work. Long-term memory \
+(MEMORY.md and daily logs) stores selected important facts, not all history.
 - When you save information to memory, it persists across conversation \
 resets and compaction. Use this to preserve facts, preferences, and \
 decisions the user would want you to remember."""
@@ -145,78 +146,76 @@ with a period — tool calls may not be shown directly in the output."""
 MEMORY_GUIDANCE = """\
 # Using your memory
 
-You have a persistent memory system with two storage targets:
+Keep these responsibilities separate:
 
-- **MEMORY.md** — evergreen facts that stay relevant long-term. Use the \
-memory tool (action: write, target: memory) to append here. This is for \
-durable preferences, context, and reference information. MEMORY.md has a \
-2,200 character limit — when it's full, consolidate related entries or \
-remove outdated information before adding new facts.
-- **Daily log** — timestamped entries in `memory/YYYY-MM-DD.md`. Use the \
-memory tool (action: write, target: daily) to append here. This is for \
-observations, decisions, and context from today's work that may be \
-useful later.
+- **Original chat** is evidence of what was actually said and done. Use \
+read-only history from this same group, backed by authoritative JSONL, \
+to verify claims; a summary is not the original evidence.
+- **Host handoff** carries continuity for current work across session \
+rotation: current scope, blockers, unfinished steps, and source references. \
+Use the host-provided handoff to resume work, not the daily log as a \
+substitute handoff or a second task tracker.
+- **Authoritative task files** in the existing task workspace remain \
+the authoritative task state. Reference \
+existing files rather than copying their status or checklists into memory, \
+a handoff, or a compaction summary. Read current files before updating them.
+- **Daily/long-term memory** stores only important decisions, durable \
+preferences, and non-obvious lessons or facts worth remembering beyond \
+the current task. It is not a transcript, tool activity log, or work queue.
 
-Use MEMORY.md for things that are true indefinitely (user preferences, \
-project context, reference pointers). Use the daily log for things tied \
-to a specific day or session (what was discussed, decisions made, tasks \
-completed).
+## What and when to save
 
-## Types of information worth saving
+- **MEMORY.md** — use memory(action=write, target=memory) for durable \
+preferences, important decisions, non-obvious lessons, and useful reference \
+pointers not already available in authoritative files. It has a 2,200 \
+character limit; consolidate related entries or remove stale ones before \
+adding more when full.
+- **Daily log** — use memory(action=write, target=daily) for important \
+date-specific decisions or non-obvious lessons worth retaining in \
+`memory/YYYY-MM-DD.md`. Convert relative dates to absolute dates.
 
-- **User**: The user's preferences, communication style, expertise, \
-role, and recurring needs. Understanding who you're working with helps \
-you tailor your responses. Example: "User prefers direct answers, \
-dislikes lengthy explanations. Works in data science."
+Save a worthwhile fact when it becomes established; do not wait for \
+compaction. During compaction maintenance, check for any unsaved important \
+facts. If there are no new facts worth saving, write nothing. There is no \
+requirement to write every day, every session, or to both targets. Avoid \
+duplicating facts already saved.
 
-- **Feedback**: Corrections and confirmed approaches from the user — \
-both what to avoid and what to keep doing. Lead with the rule, then \
-why. Example: "Always use bullet points for action items. Why: user \
-finds paragraphs harder to scan in quick reviews."
-
-- **Project**: Ongoing objectives, deadlines, decisions, and context \
-about the user's work or life that isn't derivable from files. Convert \
-relative dates to absolute. Example: "Tax filing deadline is 2026-04-15. \
-User wants to review deductions before submitting."
-
-- **Reference**: Pointers to external resources — URLs, accounts, \
-tools, contacts — that the user has mentioned and may need again. \
-Example: "Household budget spreadsheet is in Google Drive, shared \
-folder 'Finance 2026'."
-
-## What NOT to save
-
-- File contents, code patterns, or directory structure — these can \
-be read directly from the filesystem.
-- Ephemeral task details: in-progress work state, current conversation \
-context, temporary plans.
-- Anything already written in the workspace identity files (AGENTS.md, \
-SOUL.md, USER.md).
-- Activity logs or summaries of what was done — the daily log already \
-captures this during compaction.
-
-These exclusions apply even when the user explicitly asks. If they ask \
-you to save a summary of today's work, ask what was surprising or \
-non-obvious — that is the part worth keeping.
-
-## Before acting on a memory
-
-A memory is a snapshot of what was true when it was written. Before \
-recommending or acting based on a memory:
-- If the memory names a file or resource: check that it still exists.
-- If the memory references a deadline or date: check if it has passed.
-- If the memory conflicts with what you observe now: trust what you \
-observe now, and update or remove the stale memory.
-
-"The memory says X" is not the same as "X is true now."
+Do not save routine activity summaries, tool-by-tool logs, file contents, \
+code or directory structure, temporary plans, or current progress. Do not \
+copy authoritative task state or facts already in AGENTS.md, SOUL.md, or USER.md. \
+When asked to remember today's work, retain the important decisions or \
+non-obvious lessons, not a second copy of the work log.
 
 ## Searching past context
 
-Your memory tool (action: search) searches MEMORY.md, daily logs, and \
-archived conversation transcripts. If you need context from a previous \
-conversation that wasn't saved to memory, search for it — the full \
-history is archived and searchable even after compaction. Use narrow \
-search terms (names, dates, specific phrases) rather than broad keywords.
+When the user says "continue", "just now", "继续", or "刚才", first use \
+`memory(action=history, mode=recent)` to recover recent original chat. \
+For older evidence, use `memory(action=history, mode=search)` with narrow \
+names, dates, or phrases, then `memory(action=history, mode=get)` to verify \
+the original messages using their source session/message references. \
+History is read-only and bound to this group; do not infer cross-group access.
+
+`memory(action=search)` searches saved memory; it is not a substitute for \
+original chat evidence. A search miss does not prove that something never \
+happened or does not exist. Check recent history, refine the query, and \
+use history mode=get on available source session/message references. If \
+the original cannot be found, state the uncertainty rather than inventing \
+context or treating a snippet as verified evidence.
+
+## Before acting on remembered context
+
+Memory, handoff, summaries, and old history are context, not new \
+authorization. For deletion or other sensitive actions, verify the \
+original user input, the exact objects and authorized scope, and current \
+state; ask for confirmation if authority is unclear. Never infer fresh \
+permission from a summary, handoff, or an old approval in another context. \
+These instructions do not expand tool permissions or approval policy.
+
+A memory is a snapshot, not proof of current truth. Check that named \
+resources still exist and dates are still relevant; trust verified current \
+state over stale notes, and correct stale memory when appropriate. Keep \
+source session/message references for claims that need original evidence. \
+Do not claim unfinished or unverified work is complete.
 
 ## Procedural memory (skills)
 
@@ -238,15 +237,17 @@ MEMORY_HEADER = """\
 # Long-Term Memory
 
 The following is your durable memory, saved from previous conversations. \
-Treat this as established context — it reflects your accumulated knowledge \
-about the user, their projects, and important decisions."""
+Treat it as potentially stale context, not original evidence or new \
+authorization. Verify relevant original user input and current state \
+before sensitive actions."""
 
 MEMORY_EMPTY = """\
 # Long-Term Memory
 
-Your memory is currently empty. As you work with the user, save important \
-facts, preferences, and decisions using the memory tool so you can recall \
-them in future conversations."""
+Your memory is currently empty. Save only important decisions, durable \
+preferences, or non-obvious lessons when they arise. If there is nothing \
+worth saving, write nothing; current work belongs in host handoff and \
+authoritative task files, not a mandatory daily entry."""
 
 # ---------------------------------------------------------------------------
 # Tools

@@ -31,8 +31,17 @@ async def reset_context(runtime: GroupRuntime, expected_session: str) -> None:
         if (runtime._active_session is not previous or runtime._source_revision != generation
                 or (runtime.get_new_session_id() or '') != expected_session):
             raise ValueError('Reset owner changed during preparation')
+        draft = None
+        if plan.meta is not None:
+            from xdog.claw.core.runtime.context_handoff import prepare
+            adapter = (previous.agent.stream_fn if previous is not None else runtime.stream_fn
+                       if runtime.stream_fn is not None else await run_owned(session_preparation.default_stream))
+            draft = await prepare(runtime, plan.meta, 'manual_reset', previous, adapter)
+            if (runtime._active_session is not previous or runtime._source_revision != generation
+                    or (runtime.get_new_session_id() or '') != expected_session):
+                raise ValueError('Reset owner changed during handoff')
         runtime._drop_session()  # Retire on the Agent owner, never its IO worker.
-        await run_owned(session_preparation.reset, runtime.transcript_store, runtime.group.id, plan.meta)
+        await run_owned(session_preparation.reset, runtime.transcript_store, runtime.group.id, plan.meta, draft)
 
 
 async def close(runtime: GroupRuntime) -> None:

@@ -225,6 +225,7 @@ class AgentSession:
                 "data_dir": str(runtime.data_dir),
                 "_memory_search": runtime.memory.search if runtime.memory else None,
                 "_memory_manager": runtime.memory,
+                "_history_reader": self._history_reader(),
                 "_skill_repo": runtime.skill_repo,
             },
             transform_context=self._extension_context,
@@ -245,7 +246,7 @@ class AgentSession:
         self._persisted_count: int = 0
         self._history_fault = False
         self._history_commit_task: asyncio.Task[SessionMeta] | None = None
-        self._restored = False
+        self._restored: bool = False
         self._source_channels: dict[int, str] = {}
         self._source_tools: dict[str, SourceTool] = {}
         self._source_call_ids: dict[str, str] = {}
@@ -419,11 +420,16 @@ class AgentSession:
             base = previous.base if isinstance(previous, ExtensionProviderStream) else previous
             self._agent.set_stream_fn(ExtensionProviderStream(self.extensions, base))
 
+    def _history_reader(self) -> Any:
+        from xdog.claw.core.persistence.history_reader import HistoryReader
+        return HistoryReader(self._runtime.transcript_store, self._group_id, self._meta.session_id)
+
     async def _extension_context(self, messages: list[Any]) -> list[Any]:
         try:
             # Use the Agent extension runtime's transient context projection.
+            from xdog.claw.core.persistence.handoff import project
             result = await self.extensions.transform(messages)
-            return result
+            return [project(message) for message in result]
         finally:
             await self._persist_tool_retirement()
 
@@ -579,6 +585,9 @@ class AgentSession:
         active = tuple(tool for tool in self._agent.active_tools if tool.name == ctx.tool_call.name)
         supplied = tuple(tool for tool in (ctx.context.tools or ()) if tool.name == ctx.tool_call.name)
         if len(active) == len(supplied) == 1 and active[0] is supplied[0]:
+            if (ctx.tool_call.name == 'memory' and ctx.args.get('action') in {'get', 'search', 'history'}
+                    and any(active[0] is original for original in self._runtime._tools or ())):
+                return True  # Actual host memory reader, never a same-named external tool.
             effect = self._runtime.capability_assembly.tool_effect(active[0], dict(ctx.args))
             if effect is not None:
                 return effect.access == "read"
@@ -586,9 +595,13 @@ class AgentSession:
 
     async def _before_tool_call(
         self, ctx: BeforeToolCallContext, cancel: asyncio.Event | None = None,
+        *, memory_maintenance: bool = False,
     ) -> BeforeToolCallResult | None:
+        from xdog.claw.core.compaction.managed_memory import allowed
         try:
-            if self.access.state.read_only and not self._read_only_tool_call(ctx):
+            metadata = (memory_maintenance and ctx.tool_call.name == 'memory'
+                        and await allowed(self._runtime.workspace_dir, ctx.args))
+            if self.access.state.read_only and not metadata and not self._read_only_tool_call(ctx):
                 return BeforeToolCallResult(block=True, reason="Host access scope is read-only")
             if self.extensions.enabled:
                 await self.extensions.event("tool_start", {"tool_name": ctx.tool_call.name})
@@ -608,7 +621,13 @@ class AgentSession:
                     ctx.args.update(effective)
                 except Exception as exc:
                     return BeforeToolCallResult(block=True, reason=str(exc))
-            if self.access.state.read_only and not self._read_only_tool_call(ctx):
+            # pre hooks may replace arguments. Validate the final effective call,
+            # not just the model's initial proposal, before executing maintenance.
+            metadata = (memory_maintenance and ctx.tool_call.name == 'memory'
+                        and await allowed(self._runtime.workspace_dir, ctx.args))
+            if memory_maintenance and not metadata:
+                return BeforeToolCallResult(block=True, reason='Outside managed memory maintenance scope')
+            if self.access.state.read_only and not metadata and not self._read_only_tool_call(ctx):
                 return BeforeToolCallResult(block=True, reason="Host access scope is read-only")
             logger.info("Tool call: %s (group=%s)", ctx.tool_call.name, self._group_id)
             mcp = self._runtime.mcp
@@ -1086,7 +1105,7 @@ class AgentSession:
     async def _persist_turn(self, input: GroupInput, usage: dict[str, int]) -> None:
         await self._persist_history(input, usage)
 
-    def _compaction_tools(self) -> list[AgentTool]:
+    def _compaction_tools(self, *, memory_only: bool = False) -> list[AgentTool]:
         from xdog.agent import AgentContext, AgentToolResult
         if self._agent.supports_tool_calls is False:
             return []  # Silent flush also cannot grant a native execution path.
@@ -1094,21 +1113,25 @@ class AgentSession:
         active = {tool.name for tool in self._agent.active_tools}
         from xdog.agent.children import RESERVED_TOOLS
         for tool in self._agent.state.tools:
-            if tool.name not in active or tool.name in RESERVED_TOOLS:
+            if (tool.name not in active or tool.name in RESERVED_TOOLS
+                    or memory_only and tool.name != 'memory'):
                 continue  # Silent compaction is not authority to regain excluded parent tools.
             def guarded(original: AgentTool) -> AgentTool:
                 async def execute(call_id: str, params: dict[str, Any], *args: Any, **kwargs: Any) -> AgentToolResult:
-                    # Managed durable-memory writes are compaction metadata, not
-                    # permission to run shell/workspace mutations in planning.
-                    metadata = (self.access.state.read_only and original.name == "memory"
-                                and params.get("action") == "write" and params.get("target") in {"daily", "memory"})
                     ctx = BeforeToolCallContext(assistant_message=AssistantMessage(), args=params,
                         tool_call=ToolCall(id=call_id, name=original.name, arguments=params), context=AgentContext())
-                    block = None if metadata else await self._before_tool_call(ctx)
+                    # Even maintenance keeps actual host veto/rewrite hooks. Only
+                    # explicitly managed memory gets the existing readonly exception.
+                    from xdog.claw.core.compaction.managed_memory import allowed
+                    metadata = original.name == 'memory' and await allowed(self._runtime.workspace_dir, params)
+                    block = await self._before_tool_call(ctx, memory_maintenance=memory_only or metadata)
                     if block is not None and block.block:
-                        return AgentToolResult(content=(TextContent(text=block.reason),))
+                        return AgentToolResult.from_text(block.reason, is_error=True)
+                    if not any(original is current for current in self._agent.active_tools):
+                        return AgentToolResult.from_text('Original maintenance tool was retired', is_error=True)
                     if original.execute is None:
                         raise ValueError("Compaction tool has no executor")
+                    kwargs['ctx'] = self._agent.tool_context
                     return await original.execute(call_id, params, *args, **kwargs)
                 return replace(original, execute=execute)
             tools.append(guarded(tool))

@@ -20,6 +20,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from xdog.claw.core.persistence.handoff import Draft
 from xdog.claw.core.persistence.transcript_validation import validate_entry
 from xdog.claw.core.types import SessionMeta
 
@@ -383,7 +384,8 @@ class TranscriptStore:
     def active_branch(self, session_id: str) -> str:
         return str(self._catalog["active_branches"].get(session_id, ""))
 
-    def create_session(self, group_id: str) -> SessionMeta:
+    def create_session(self, group_id: str, *, reason: str = 'new_context',
+                       handoff: Draft | None = None) -> SessionMeta:
         """Rotate context without weakening the group's current access scope.
 
         The inherited scope is durable in catalog/index before the active pointer
@@ -396,8 +398,12 @@ class TranscriptStore:
         with self._lock:
             self._require_navigation_ready()
             current = self.get_active_session(group_id)
-            if current is not None:
-                self.load_transcript(current.session_id)  # Rotation cannot hide unavailable history.
+            from xdog.claw.core.persistence.handoff import TYPE, capture, digest, record
+            rows = self.load_transcript(current.session_id) if current is not None else []
+            if handoff is not None and (current is None or handoff.source_session_id != current.session_id
+                                       or handoff.source_digest != digest(rows)):
+                raise ValueError('Handoff source changed before rotation; original context retained')
+            draft = handoff or (capture(current.session_id, rows, reason) if current is not None else None)
             access = self.get_access(current.session_id) if current is not None else AccessState().to_dict()
             preferences = inherited(self, current.session_id) if current is not None else {}
             session_id = str(uuid.uuid4())
@@ -407,6 +413,13 @@ class TranscriptStore:
             row = {"session_id": meta.session_id, "group_id": meta.group_id,
                    "created_at": meta.created_at, "last_active": meta.last_active,
                    "turn_count": meta.turn_count, "label": meta.label, "access": access}
+            initial = []
+            if draft is not None:
+                handoff_record = record(draft, session_id, now)
+                row['previous_session_id'] = draft.source_session_id
+                row['handoff'] = {key: value for key, value in handoff_record.items()
+                                  if key not in {'summary', 'diagnostic', 'recent'}}
+                initial = [{'role': 'custom', 'type': TYPE, 'data': handoff_record}]
             catalog, index = copy.deepcopy(self._catalog), copy.deepcopy(self._index)
             catalog["sessions"][session_id] = copy.deepcopy(row)
             index[group_id] = copy.deepcopy(row)
@@ -415,7 +428,7 @@ class TranscriptStore:
                 raise ValueError('New context transcript already exists; no history was overwritten')
             destinations = {transcript.with_suffix(f".{key}.json"): value for key, value in preferences.items()}
             with transaction(self, {self._catalog_file, self._index_file, transcript, *destinations}):
-                self._atomic(transcript, [], jsonl=True)
+                self._atomic(transcript, initial, jsonl=True)
                 for path, value in destinations.items():
                     self._atomic(path, value)
                 self._atomic(self._catalog_file, catalog)
@@ -439,9 +452,10 @@ class TranscriptStore:
             )
         return None
 
-    def reset_session(self, group_id: str) -> SessionMeta:
-        """Archive current session, start a new one."""
-        return self.create_session(group_id)
+    def reset_session(self, group_id: str, *, reason: str = 'manual_reset',
+                      handoff: Draft | None = None) -> SessionMeta:
+        """Retain original evidence and commit handoff before the new pointer is visible."""
+        return self.create_session(group_id, reason=reason, handoff=handoff)
 
     def append_turn(self, session_id: str, turn: dict[str, Any]) -> None:
         """Append a turn to the JSONL file."""

@@ -1,4 +1,4 @@
-"""New conversation contexts keep explicit group choices, not old history."""
+"""Rotation keeps explicit choices and evidence, never old execution authority."""
 from __future__ import annotations
 
 import json
@@ -32,7 +32,10 @@ def test_context_rotation_inherits_choices_but_not_context_state(tmp_path, mode,
     reopened = TranscriptStore(tmp_path)
     assert new.session_id != identifier and new.turn_count == 0 and new.label == ""
     assert reopened.get_active_session("main") == new
-    assert reopened.load_transcript(new.session_id) == []
+    handoff = reopened.load_transcript(new.session_id)[0]
+    assert handoff['type'] == 'xdog.claw.handoff.v1'
+    assert handoff['data']['source_session_id'] == identifier
+    assert 'old conversation' in str(handoff['data']['recent'])
     assert reopened.get_model(new.session_id) == "test/chosen"
     assert reopened.get_reasoning(new.session_id, "test/chosen") == "high"
     assert reopened.get_reasoning(new.session_id, "test/other") is None
@@ -140,8 +143,12 @@ async def test_application_rotation_uses_selected_model_reasoning_skills_and_too
         assert fresh.agent.state.model == "test/chosen" and fresh.agent.options.thinking == "high"
         assert fresh.agent.context_window == runtime.context_window == 64_000
         assert fresh.agent.active_tool_selection == () and fresh.agent.active_skills == ("focus",)
-        assert runtime.transcript_store.load_transcript(fresh.meta.session_id) == []
-        assert len(calls) == 1  # Selection, reset and preparation do not run a model.
+        handoff = runtime.transcript_store.load_transcript(fresh.meta.session_id)[0]
+        assert handoff['type'] == 'xdog.claw.handoff.v1'
+        assert handoff['data']['source_session_id'] == original
+        assert len(calls) == 2  # Original turn + one tool-free handoff summary; no task replay.
+        assert calls[-1][0] == 'test/chosen' and calls[-1][2].thinking == 'high'
+        assert not calls[-1][1].tools
     finally:
         await app.stop()
 

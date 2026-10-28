@@ -1,6 +1,6 @@
-"""Flush runner — pre-compaction memory flush via direct agent loop.
+"""Silent memory maintenance before compaction or rotation via the existing loop.
 
-Before compaction summarizes and discards old context, the flush runner
+Before context reduction or rotation, the flush runner
 executes a silent agent turn that saves durable facts to long-term memory
 and the daily log.  Uses ``run_agent_loop()`` directly — no Agent wrapper
 needed since we don't need state management, event subscriptions, or queues.
@@ -15,17 +15,13 @@ from xdog.agent.core import AgentContext, AgentMessage, AgentTool, StreamFn
 from xdog.agent.types import AgentLoopConfig
 from xdog.ai.types import StreamOptions, UserMessage
 from xdog.claw.core.compaction.prompts import build_flush_prompt
+from xdog.claw.core.persistence.handoff import project
 
 logger = logging.getLogger(__name__)
 
 
-async def _noop_emit(event: Any) -> None:
-    """Discard all events from the flush turn."""
-    pass
-
-
 class FlushRunner:
-    """Runs a silent flush turn to save durable context before compaction.
+    """Runs silent memory maintenance before compaction or rotation.
 
     Reusable — create once per group, call ``run()`` each time compaction fires.
     """
@@ -39,7 +35,8 @@ class FlushRunner:
         messages: list[AgentMessage],
         system_prompt: str,
         tools: list[AgentTool],
-    ) -> None:
+        *, options: StreamOptions | None = None, ctx: dict[str, Any] | None = None,
+    ) -> bool:
         """Execute a silent flush turn with access to memory tools."""
         try:
             sfn = self._stream_fn
@@ -50,14 +47,25 @@ class FlushRunner:
 
             context = AgentContext(
                 system_prompt=system_prompt,
-                messages=list(messages),
+                messages=[project(message) for message in messages],
                 tools=tools,
             )
             prompts: list[AgentMessage] = [UserMessage(content=build_flush_prompt())]
 
+            failed = False
+
+            async def emit(event: Any) -> None:
+                nonlocal failed
+                if event.type == "tool_execution_end" and (event.is_error or event.interrupted):
+                    failed = True
+                if event.type == "message_end" and getattr(event.message, "stop_reason", None) in {"error", "aborted"}:
+                    failed = True
+
             await run_agent_loop(
-                prompts, context, AgentLoopConfig(), _noop_emit,
-                sfn, self._model, StreamOptions(),
+                prompts, context, AgentLoopConfig(), emit,
+                sfn, self._model, options if options is not None else StreamOptions(), tool_ctx=ctx,
             )
+            return not failed
         except Exception:
-            logger.exception("Pre-compaction flush failed")
+            logger.exception("Silent memory maintenance failed")
+            return False

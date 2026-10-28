@@ -79,7 +79,10 @@ async def test_restart_preserves_selection_new_context_does_not_switch_back(tmp_
         assert fresh.agent.active_tool_selection == (None if expected is None else ())
         await fresh.initialize_extensions()
         assert fresh.agent.active_tool_selection == expected
-        assert reopened.transcript_store.load_transcript(fresh.meta.session_id) == []
+        handoff = reopened.transcript_store.load_transcript(fresh.meta.session_id)[0]
+        assert handoff['type'] == 'xdog.claw.handoff.v1'
+        assert handoff['data']['source_session_id'] == identifier
+        assert handoff['data']['status'] == 'recent_only'  # Sync composition never calls a model.
         with pytest.raises(ValueError, match='read-only'):
             await asyncio.to_thread(reopened.navigate_session, 'resume', identifier, '', -1, fresh.meta.session_id)
         assert reopened._active_session is fresh

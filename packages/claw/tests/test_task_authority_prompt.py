@@ -1,4 +1,4 @@
-"""The generic Claw prompt must not introduce a second task authority."""
+"""Task guidance reuses authoritative files rather than mandating another checklist."""
 from types import SimpleNamespace
 
 import pytest
@@ -18,7 +18,6 @@ def test_built_prompt_reuses_authoritative_tasks_and_makes_todo_optional(tmp_pat
     assert "use `todo` only when it helps track progress, not as a requirement for every task" in static
     assert "Use `todo` to show progress on multi-step tasks" not in static
     assert "Mark each task as completed as you finish it" not in static
-    assert "goal" not in static.lower()
     assert ("`todo` — Track local tasks" in static) is with_todo
 
 

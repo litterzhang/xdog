@@ -140,6 +140,9 @@ def transcript_to_messages(transcript: list[dict[str, Any]]) -> list[AgentMessag
 
 def entry_text(entry: dict[str, Any]) -> str:
     """The displayable text of an entry, joined across its text parts."""
+    if entry.get('role') == 'custom' and entry.get('type') == 'xdog.claw.handoff.v1':
+        from xdog.claw.core.persistence.handoff import text
+        return text(entry.get('data', {}))
     if entry.get('role') == 'custom' and entry.get('type') == 'xdog.extension_context.v1':
         from xdog.agent.extensions.context_message import display_text
         return display_text(entry.get('data', {}))

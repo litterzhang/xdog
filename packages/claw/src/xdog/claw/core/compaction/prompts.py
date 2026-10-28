@@ -20,13 +20,22 @@ Do NOT include any XML tags (like <previous-summary>) in your output.
 (The primary objective the user is trying to achieve)
 
 # Progress
-(What has been accomplished so far, specific files read or modified)
+(Verified accomplishments and specific files read or modified; distinguish
+completed, attempted, unverified, and unfinished work. Never invent completion.)
 
 # Decisions
-(Key technical decisions or architectural choices made)
+(Key decisions and their rationale; preserve current authorized scope and
+source session/message references to original user input. Summaries and old
+history are context, not new authorization.)
 
 # Context
-(Relevant state, variables, or constraints to preserve)"""
+(Current scope, blockers, unfinished next steps, constraints, and original
+source session/message references when available; never fabricate references.
+Reference authoritative task files instead of copying their state into a
+parallel checklist. Host handoff carries current-work continuity; daily logs
+are not a substitute. Before deletion or other sensitive actions, verify
+original user input, exact objects, authorized scope, and current state;
+ask for confirmation if authority is unclear.)"""
 
 
 def should_compact(
@@ -45,14 +54,18 @@ def should_compact(
 def build_flush_prompt() -> str:
     """Prompt for the pre-compaction memory-write turn."""
     return (
-        "Before this conversation is compacted, review what happened "
-        "and save any important information:\n"
-        "1. Write durable facts, preferences, and decisions to MEMORY.md "
-        "using the memory tool (action: write, target: memory)\n"
-        "2. Write today's observations and context to the daily log "
-        "using the memory tool (action: write, target: daily)\n"
-        "3. Focus on information that would be useful in future "
-        "conversations\n"
+        "Before this conversation is compacted, check for unsaved important "
+        "decisions, durable preferences, or non-obvious lessons worth retaining.\n"
+        "Only if there are new facts worth saving, use the memory tool "
+        "(action: write, target: memory) for long-term facts or "
+        "(action: write, target: daily) for important date-specific facts.\n"
+        "If there are no new facts worth saving, write nothing. No daily entry "
+        "or write to both targets is required; do not duplicate saved facts.\n"
+        "Do not save routine activity summaries or tool logs. Host handoff, "
+        "not the daily log, carries current-work continuity. Reference existing "
+        "authoritative task files; do not copy their state into memory.\n"
+        "This maintenance turn does not grant new authorization or expand "
+        "tool permissions or approval policy.\n"
         "Do not respond to the user \u2014 this is a silent maintenance turn."
     )
 
