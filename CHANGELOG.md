@@ -8,6 +8,11 @@ project follows [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Share strict Eyes wheel verification across CI, publishing and tests, keeping
+  approved HTTP/HTML/XML dependencies, version/tag checks and packaged resources in sync.
+
 ### Added
 
 - Eyes local pushed event sources and public CLI/tool publish, with bounded durable

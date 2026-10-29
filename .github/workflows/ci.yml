@@ -105,22 +105,7 @@ jobs:
           uv run xdog-eyes validate packages/eyes/src/xdog/eyes/examples/source-test-review.json
           uv run xdog-eyes validate packages/eyes/src/xdog/eyes/examples/scheduled-review.json
           uv build --package xdog-eyes --out-dir /tmp/eyes-wheelcheck
-          python - <<'PY'
-          import glob, zipfile
-          wheel = zipfile.ZipFile(glob.glob("/tmp/eyes-wheelcheck/xdog_eyes-*.whl")[0])
-          need = {"xdog/eyes/skills/eyes/SKILL.md",
-                  "xdog/eyes/examples/source-test-review.json", "xdog/eyes/py.typed",
-                  "xdog/eyes/examples/scheduled-review.json", "xdog/eyes/sources/scheduler.py",
-                  "xdog/eyes/detectors/scheduler_due.py"}
-          assert need <= set(wheel.namelist()), need - set(wheel.namelist())
-          from email.parser import Parser
-          metadata = Parser().parsestr(wheel.read(
-              next(n for n in wheel.namelist() if n.endswith("METADATA"))).decode())
-          # Eyes is independent of every XDOG harness. Only its ACP SDK and
-          # bounded cron calendar dependency are approved; reject any extras.
-          expected = ["agent-client-protocol<0.13,>=0.12.1; python_version < '3.15'", "croniter<7,>=2.0"]
-          assert sorted(metadata.get_all("Requires-Dist", [])) == sorted(expected), metadata.get_all("Requires-Dist")
-          PY
+          python scripts/verify_eyes_artifact.py /tmp/eyes-wheelcheck
 
       - name: Common skills hub ships domain and extension resources
         run: |
