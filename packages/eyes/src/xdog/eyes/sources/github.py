@@ -10,8 +10,8 @@ from urllib.parse import urlencode, urlsplit
 
 from xdog.eyes.errors import SourceError
 from xdog.eyes.models import GithubSourceDef
-from xdog.eyes.sources.http import HttpTransport, Response, backoff, credential, origin, redact, within_path
-from xdog.eyes.sources.records import PollResult, Record, RecordSnapshot, canonical, decode
+from xdog.eyes.sources.http import HttpTransport, Response, backoff, credential, origin, within_path
+from xdog.eyes.sources.records import PollResult, Record, RecordSnapshot, decode, record
 
 
 def utc(value: float) -> str:
@@ -32,6 +32,12 @@ def project(row: Any, source: GithubSourceDef, secret: str | None) -> Record | N
         raise ValueError("Expected GitHub resource object with integer ID")
     if source.resource == "issues" and "pull_request" in row:
         return None  # The issues API also lists PRs; this source deliberately does not.
+    if source.resource == "releases":
+        if type(row.get("draft")) is not bool or type(row.get("prerelease")) is not bool:
+            raise ValueError("Release visibility must be explicit")
+        if row["draft"] or row["prerelease"] and not source.include_prerelease or not row.get("published_at"):
+            return None
+        timestamp(row['published_at'])
     fields = (
         "id",
         "number",
@@ -48,6 +54,11 @@ def project(row: Any, source: GithubSourceDef, secret: str | None) -> Record | N
         "workflow_id",
         "name",
         "issue_url",
+        "tag_name",
+        "target_commitish",
+        "draft",
+        "prerelease",
+        "published_at",
     )
     data = {field: row[field] for field in fields if field in row}
     if isinstance(row.get("user"), dict):
@@ -68,13 +79,24 @@ def project(row: Any, source: GithubSourceDef, secret: str | None) -> Record | N
     if source.resource == "workflow_runs" and (type(attempt) is not int or attempt < 1):
         raise ValueError("Invalid workflow run attempt")
     key = f"{row['id']}:{attempt}" if source.resource == "workflow_runs" else str(row["id"])
-    return Record(key, redact(canonical(data), secret), redact(url, secret), timestamp(row.get("updated_at")))
+    updated = (
+        timestamp(row["updated_at"])
+        if row.get("updated_at") is not None
+        else None
+        if source.resource == "releases"
+        else timestamp(None)
+    )
+    return record(key, data, url, secret=secret, updated_at=updated)
 
 
 async def poll(source: GithubSourceDef, state: dict[str, Any], transport: HttpTransport, *, now: float) -> PollResult:
     secret = credential(source)
     last = state.get("last_success")
-    if isinstance(last, (float, int)) and (now - last > source.lookback_seconds or last > now):
+    if (
+        source.resource != "releases"
+        and isinstance(last, (float, int))
+        and (now - last > source.lookback_seconds or last > now)
+    ):
         return PollResult(
             RecordSnapshot(
                 (),
@@ -92,7 +114,12 @@ async def poll(source: GithubSourceDef, state: dict[str, Any], transport: HttpTr
     if secret:
         headers["authorization"] = "Bearer " + secret
     root = source.api_url + "/repos/" + source.repository
-    paths = {"issues": "/issues", "issue_comments": "/issues/comments", "workflow_runs": "/actions/runs"}
+    paths = {
+        "issues": "/issues",
+        "issue_comments": "/issues/comments",
+        "workflow_runs": "/actions/runs",
+        "releases": "/releases",
+    }
     floor = (
         max(now - source.lookback_seconds, float(last) - source.overlap_seconds)
         if last is not None
@@ -103,7 +130,7 @@ async def poll(source: GithubSourceDef, state: dict[str, Any], transport: HttpTr
     params: dict[str, str] = {"per_page": "100"}
     if source.resource == "workflow_runs":
         params["created"] = ">=" + utc(now - source.lookback_seconds)
-    else:
+    elif source.resource != "releases":
         params.update(since=utc(floor), sort="updated", direction="asc")
         if source.resource == "issues":
             params["state"] = "all"
@@ -114,6 +141,7 @@ async def poll(source: GithubSourceDef, state: dict[str, Any], transport: HttpTr
     visited: set[str] = set()
     remaining = source.max_bytes
     pages = 0
+    collected = 0
 
     async def read(target: str) -> tuple[Any, dict[str, str], int]:
         nonlocal remaining, pages
@@ -161,15 +189,18 @@ async def poll(source: GithubSourceDef, state: dict[str, Any], transport: HttpTr
             )
             if not isinstance(items, list):
                 raise SourceError("Invalid GitHub collection; cursor retained")
+            collected += len(items)
+            if source.resource == "releases" and collected > source.max_records:
+                raise SourceError("Release collection exceeds max_records before filtering")
             for row in items:
-                record = project(row, source, secret)
-                if record is None:
+                item = project(row, source, secret)
+                if item is None:
                     continue
                 if source.resource == "workflow_runs":
                     seen_runs.add(row["id"])
                     if row.get("status") != "completed":
                         active.add(row["id"])
-                records[record.key] = record
+                records[item.key] = item
                 if len(records) > source.max_records:
                     raise SourceError("GitHub max_records exceeded; no partial snapshot committed")
             links = response_headers.get("link", "")
@@ -196,7 +227,14 @@ async def poll(source: GithubSourceDef, state: dict[str, Any], transport: HttpTr
                 raise SourceError("GitHub max_records exceeded; cursor retained")
     # Incremental results are not authoritative membership sets. No inferred deletion.
     return PollResult(
-        RecordSnapshot(tuple(records.values()), now, complete=False, status_code=200, window_start=floor),
+        RecordSnapshot(
+            tuple(records.values()),
+            now,
+            complete=False,
+            status_code=200,
+            window_start=floor if source.resource != "releases" else None,
+            retain_current=source.resource == "releases",
+        ),
         {"last_success": now, "failures": 0, "active_runs": sorted(active), "last_status": 200},
         source.poll_interval_seconds,
     )

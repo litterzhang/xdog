@@ -500,8 +500,9 @@ async def test_two_routes_deliver_independent_callbacks_without_a_shared_wake_bu
     await sdk_file_batch(tmp_path,observer_data,2,host_skill_repo,assert_host_goal_discoverable,eyes_control)
 
 
+@pytest.mark.parametrize('content_mode', ['json', 'html', 'feed', 'event'])
 async def test_remote_http_to_original_coding_agent_keeps_evidence_untrusted(
-    tmp_path, observer_data, coding_session, eyes_control,
+    tmp_path, observer_data, coding_session, eyes_control, content_mode,
 ):
     import json
 
@@ -516,8 +517,16 @@ async def test_remote_http_to_original_coding_agent_keeps_evidence_untrusted(
     async def handle(reader, writer):
         try:
             await reader.readuntil(b'\r\n\r\n')
-            body = json.dumps(data).encode()
-            writer.write(b'HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\n'
+            if content_mode == 'html':
+                body = ('<ul class=list>'+''.join(f'<li><a href="/{row["id"]}">{row["text"]}</a></li>'
+                                                for row in data)+'</ul>').encode()
+            elif content_mode == 'feed':
+                body = ('<rss version="2.0"><channel>'+''.join(
+                    f'<item><guid>{row["id"]}</guid><title>{row["text"]}</title></item>'
+                    for row in data)+'</channel></rss>').encode()
+            else:
+                body = json.dumps(data).encode()
+            writer.write(b'HTTP/1.1 200 OK\r\nConnection: close\r\n'
                          + f'Content-Length: {len(body)}\r\n\r\n'.encode() + body)
             await writer.drain()
         finally:
@@ -534,6 +543,17 @@ async def test_remote_http_to_original_coding_agent_keeps_evidence_untrusted(
     await owner.open_endpoint()
     value = external(observer_data, {'id': 'outside', 'type': 'http', 'url': f'http://127.0.0.1:{port}/feedback',
                                      'key_pointer': '/id', 'poll_interval_seconds': 1})
+    if content_mode == 'html':
+        from packages.eyes.tests.test_html_source import html_source
+        value['sources'][0] = {**html_source(), 'url': f'http://127.0.0.1:{port}/feedback',
+                               'poll_interval_seconds': 1, 'allow_empty': True}
+    elif content_mode == 'feed':
+        value['sources'][0] = {'id': 'outside', 'type': 'feed', 'url': f'http://127.0.0.1:{port}/feedback',
+                               'poll_interval_seconds': 1}
+    if content_mode == 'event':
+        value['sources'][0] = {'id': 'outside', 'type': 'event', 'key_pointer': '/id'}
+        value['detectors'][0]['type'] = 'event.received'
+        value['routes'][0]['event_types'] = ['event.received']
     value['handlers'][0].update(connection={'transport': 'unix', 'path': str(owner.record.address)},
                                 session=coding_session.session_id, delivery='enqueue')
     identifier = None
@@ -541,6 +561,8 @@ async def test_remote_http_to_original_coding_agent_keeps_evidence_untrusted(
         identifier = (await eyes_control.start(definition_data(parse(value, base_dir=tmp_path))))['registration_id']
         assert not turns
         data.append({'id': 'feedback', 'text': malicious})
+        if content_mode == 'event':
+            await eyes_control.publish(identifier, source_id='outside', event_id='producer-feedback', payload=data[0])
         await wait_for(lambda: len(turns) == 1)
         await wait_for(lambda: owner.controller.store.records()[-1].status == 'succeeded')
         record = owner.controller.store.records()[-1]

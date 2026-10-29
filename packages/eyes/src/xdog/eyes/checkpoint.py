@@ -43,7 +43,7 @@ def restore_delivery(value: Any, definition: ObserverDef, registration_id: str) 
         for item in event['evidence']:
             if event['type'] == 'scheduler.due':
                 evidence.append(SchedulerEvidence(**item))
-            elif event['type'].startswith(('record.', 'condition.')):
+            elif event['type'].startswith(('record.', 'condition.')) or event['type'] == 'event.received':
                 evidence.append(RecordEvidence(**item))
             elif event['type'].startswith('availability.'):
                 evidence.append(AvailabilityEvidence(**item))

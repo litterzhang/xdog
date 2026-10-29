@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 from xdog.eyes.errors import SourceError
-from xdog.eyes.models import HttpSourceDef, RemoteSourceDef
+from xdog.eyes.models import FeedSourceDef, HttpSourceDef, RemoteSourceDef
 from xdog.eyes.sources import github, http
 from xdog.eyes.sources.records import PollResult, RecordSnapshot
 
@@ -22,7 +22,7 @@ class RemoteSampler:
         try:
             result = (
                 await http.poll(source, state, self.transport, now=now)
-                if isinstance(source, HttpSourceDef)
+                if isinstance(source, (HttpSourceDef, FeedSourceDef))
                 else await github.poll(source, state, self.transport, now=now)
             )
         except (

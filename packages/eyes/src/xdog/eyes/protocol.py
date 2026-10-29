@@ -4,7 +4,38 @@ from __future__ import annotations
 from xdog.eyes.local_control import JsonValue
 
 FEATURES = ('owner-registrations', 'durable-events', 'async-activation')
-SUPPORTED_FEATURES = (*FEATURES, 'remote-sources-v1')
+SUPPORTED_FEATURES = (*FEATURES, 'remote-sources-v1', 'content-sources-v1',
+                      'observation-contracts-v1', 'event-sources-v1')
+
+
+def source_features(definition: JsonValue) -> set[str]:
+    """Finite built-in feature negotiation; no code or plugins named by JSON."""
+    sources = definition.get('sources', []) if isinstance(definition, dict) else []
+    needed: set[str] = set()
+    if isinstance(sources, list):
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            if source.get('type') == 'event':
+                needed.update(('event-sources-v1', 'observation-contracts-v1'))
+            if source.get('format') == 'json':
+                needed.add('observation-contracts-v1')
+            if source.get('type') in ('http', 'github', 'feed'):
+                needed.add('remote-sources-v1')
+            if (source.get('type') == 'feed' or source.get('mode') == 'html'
+                    or source.get('resource') == 'releases'):
+                needed.add('content-sources-v1')
+    detectors = definition.get('detectors', []) if isinstance(definition, dict) else []
+    by_id = ({item.get('id'): item.get('type') for item in sources if isinstance(item, dict)}
+             if isinstance(sources, list) else {})
+    for detector in detectors if isinstance(detectors, list) else []:
+        if not isinstance(detector, dict):
+            continue
+        if (detector.get('compare_fields') or detector.get('type') == 'event.received' or
+                detector.get('type') in ('record.change', 'value.condition', 'availability') and
+                by_id.get(detector.get('source')) in ('file', 'scheduler', 'event')):
+            needed.add('observation-contracts-v1')
+    return needed
 
 
 def hello() -> dict[str, JsonValue]:

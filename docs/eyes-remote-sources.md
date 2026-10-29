@@ -4,7 +4,9 @@
 
 第一批只支持 HTTP GET（status/JSON）、GitHub Issues / 普通评论 / Actions，及
 `record.change`、`value.condition`、`availability` 三种确定性 detector。
-HTML/CSS、Feed、Release/PR review、浏览器、event ingress/webhook 均未实现，不作为本次支持承诺。
+这是第一批的范围记录；第二批已补 HTML/CSS、RSS 2.0/Atom 1.0 与 Release，见
+[第二批内容源](eyes-content-sources.md)。PR review、浏览器、公网 webhook 仍未实现。本地 event 与 Source/Detector 组合见
+[第三批观察契约](eyes-observation-contracts.md)。
 没有 shell source、模型调用、业务优先级规则、公共 Python EyesClient、插件安装器或额外服务。
 
 ```text

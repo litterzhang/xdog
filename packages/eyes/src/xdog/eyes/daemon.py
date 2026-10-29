@@ -13,13 +13,14 @@ from typing import Any
 from xdog.eyes.checkpoint import delivery_data
 from xdog.eyes.daemon_store import DaemonStore
 from xdog.eyes.deliveries import Delivery
+from xdog.eyes.event_intake import EventIntake
 from xdog.eyes.events import DeliveryResult, RuntimeEvent
 from xdog.eyes.executor import observe
 from xdog.eyes.handlers.contracts import EventHandler, HandlerHealthError
 from xdog.eyes.handlers.registry import builtin_handlers
 from xdog.eyes.loader import definition_data, parse
 from xdog.eyes.local_control import JsonValue, RuntimeLocation, object_value, text
-from xdog.eyes.models import ObserverDef
+from xdog.eyes.models import EventSourceDef, ObserverDef
 from xdog.eyes.sources.file import scan_async
 
 
@@ -51,6 +52,7 @@ class DaemonObservers:
                  sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
         self.clock, self.wall_clock, self.sleep = clock, wall_clock, sleep
         self.store = DaemonStore(location.directory)
+        self.intake = EventIntake(self.store)
         self.active: dict[str, Active] = {}
         self.lock = asyncio.Lock()
         self.closing = False
@@ -174,7 +176,8 @@ class DaemonObservers:
             emit=emit, clock=self.clock, sleep=self.sleep, cancel=active.cancel,
             resume=active.resume, validate=validate,
             checkpoint=checkpoint, save=lambda value: self.store.checkpoint(identifier, value),
-            replay_safe=row['mode'] == 'events', wall_clock=self.wall_clock)
+            replay_safe=row['mode'] == 'events', wall_clock=self.wall_clock,
+            event_reader=lambda source, after: self.intake.next(identifier, source, after))
 
     async def halt(self, identifier: str) -> None:
         active = self.active.pop(identifier, None)
@@ -188,7 +191,7 @@ class DaemonObservers:
             object_value(body, allowed=set())
             return 'ok', {'state': 'running', 'registrations': len(await self.store.rows())}
         allowed = {'owner', 'registration_id', 'definition', 'key', 'delivery', 'recover',
-                   'after', 'limit', 'sequence', 'source_checkpoints'}
+                   'after', 'limit', 'sequence', 'source_checkpoints', 'source_id', 'event_id', 'payload'}
         object_value(body, allowed=allowed, required={'owner'})
         owner = text(body['owner'])
         async with self.lock:
@@ -261,8 +264,26 @@ class DaemonObservers:
             if selected_row is None:
                 raise ValueError('Unknown Eyes registration in this owner')
             row = selected_row
+            if action == 'publish':
+                object_value(body, allowed={'owner', 'registration_id', 'source_id', 'event_id', 'payload'},
+                             required={'owner', 'registration_id', 'source_id', 'event_id', 'payload'})
+                source_id, event_id = text(body['source_id']), text(body['event_id'])
+                if len(event_id.encode('utf-8')) > 256:
+                    raise ValueError('Event ID exceeds 256 bytes')
+                definition = _normalized_definition(json.loads(row['content']))
+                source = next((item for item in definition.sources if item.id == source_id), None)
+                if not isinstance(source, EventSourceDef):
+                    raise ValueError('Publish requires a declared event source in this registration')
+                active = self.active.get(row['id'])
+                # Persisted pause/cancel and active delivery freezes both stop new
+                # intake. Duplicates remain inspectable even in those states.
+                admission = dict(row)
+                if active is not None and active.error:
+                    admission['state'] = 'paused'
+                return await self.intake.publish(admission, source, event_id=event_id,
+                    payload=body['payload'], received_at=self.wall_clock())
             if action == 'owner-status':
-                return 'ok', self.snapshot(row)
+                return 'ok', {**self.snapshot(row), 'event_intake': await self.intake.status(row['id'])}
             if action in {'pause', 'cancel'}:
                 await self.halt(row['id'])
                 row = next(item for item in await self.store.rows(owner) if item['id'] == row['id'])

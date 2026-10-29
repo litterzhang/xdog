@@ -14,11 +14,12 @@ from xdog.eyes.models import (
     Event,
     EventType,
     Predicate,
+    ReceivedDetectorDef,
     RecordDetectorDef,
+    RecordDetectorDefinition,
     RecordEvidence,
-    RemoteDetectorDef,
 )
-from xdog.eyes.sources.records import Record, RecordSnapshot, pointer
+from xdog.eyes.sources.records import Record, RecordSnapshot, canonical, pointer
 
 
 def matches(value: str, predicates: tuple[Predicate, ...]) -> bool:
@@ -48,7 +49,7 @@ def matches(value: str, predicates: tuple[Predicate, ...]) -> bool:
 
 
 class RecordDetector:
-    def __init__(self, definition: RemoteDetectorDef, *, max_records: int) -> None:
+    def __init__(self, definition: RecordDetectorDefinition, *, max_records: int) -> None:
         self.definition = definition
         self.max_records = max_records
         self._records: dict[str, Record] | None = None
@@ -72,11 +73,25 @@ class RecordDetector:
             return
         if not snapshot.valid or snapshot.unchanged:
             return
+        if isinstance(definition, ReceivedDetectorDef):
+            for item in snapshot.records:
+                self._event("event.received", snapshot, (
+                    RecordEvidence(item.key, item.url, None, item.value, snapshot.observed_at, item.input_id),))
+            return
+        # Validate all projections before changing the baseline or producing any event.
+        def comparison(item: Record) -> str:
+            if isinstance(definition, RecordDetectorDef) and definition.compare_fields:
+                value = json.loads(item.value)
+                return canonical({name: pointer(value, name) for name in definition.compare_fields})
+            return item.value
+
         current = {item.key: item for item in snapshot.records}
-        if self._records is None:
+        for item in current.values():
+            comparison(item)
+        if self._records is None and not snapshot.stream:
             self._records = current  # Initial content is a baseline, not a notification storm.
             return
-        previous = self._records
+        previous = self._records or {}
         # Discard only history older than a source's explicit safe overlap floor.
         # This is dedup retention, never a claim that a remote resource was deleted.
         if snapshot.window_start is not None:
@@ -85,15 +100,18 @@ class RecordDetector:
                 for key, item in previous.items()
                 if key in current or item.updated_at is None or item.updated_at >= snapshot.window_start
             }
-        combined = current if snapshot.complete else {**previous, **current}
+        combined = current if snapshot.complete or snapshot.retain_current else {**previous, **current}
         if len(combined) > self.max_records:
             raise ValueError("Detector deduplication capacity exceeded; explicitly rebaseline")
         for key, record in current.items():
             old = previous.get(key)
-            if old is not None and old.value == record.value:
-                continue
+            if old is not None:
+                unchanged = comparison(old) == comparison(record)
+                if unchanged:
+                    continue
             evidence = (
-                RecordEvidence(key, record.url, old.value if old else None, record.value, snapshot.observed_at),
+                RecordEvidence(key, record.url, old.value if old else None, record.value,
+                               snapshot.observed_at, record.input_id),
             )
             if isinstance(definition, RecordDetectorDef):
                 self._event("record.created" if old is None else "record.updated", snapshot, evidence)
@@ -102,7 +120,8 @@ class RecordDetector:
                 after = matches(record.value, definition.all)
                 if before != after:
                     self._event("condition.met" if after else "condition.cleared", snapshot, evidence)
-        if snapshot.complete and isinstance(definition, RecordDetectorDef) and definition.removals:
+        if (snapshot.complete and not snapshot.stream
+                and isinstance(definition, RecordDetectorDef) and definition.removals):
             for key in previous.keys() - current.keys():
                 old = previous[key]
                 self._event(

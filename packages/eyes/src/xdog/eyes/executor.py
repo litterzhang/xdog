@@ -7,10 +7,12 @@ import json
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from copy import copy
 from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 from xdog.eyes.checkpoint import data, delivery_data, restore_delivery
+from xdog.eyes.contracts import source_contract
 from xdog.eyes.deliveries import Delivery
 from xdog.eyes.detectors.file_change import FileChangeDetector
 from xdog.eyes.detectors.records import RecordDetector
@@ -22,18 +24,23 @@ from xdog.eyes.models import (
     ConditionDetectorDef,
     DetectorDef,
     Event,
+    EventSourceDef,
+    FeedSourceDef,
     FileEvidence,
     GithubSourceDef,
     HttpSourceDef,
     ObserverDef,
+    ReceivedDetectorDef,
     RecordDetectorDef,
     RemoteSourceDef,
     SchedulerDetectorDef,
     SourceDef,
 )
 from xdog.eyes.router import EventRouter
+from xdog.eyes.sources.event import EventInput
 from xdog.eyes.sources.file import FileSnapshot
-from xdog.eyes.sources.records import PollResult
+from xdog.eyes.sources.file import records as file_records
+from xdog.eyes.sources.records import PollResult, RecordSnapshot, record
 from xdog.eyes.sources.remote import RemoteSampler
 from xdog.eyes.sources.scheduler import SchedulerSource, prepare_schedulers
 
@@ -85,19 +92,26 @@ async def observe(
     save: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     replay_safe: bool = False,
     remote_sampler: RemoteSampler | None = None,
+    event_reader: Callable[[EventSourceDef, int], Awaitable[EventInput | None]] | None = None,
 ) -> None:
     files = {item.id: item for item in definition.sources if isinstance(item, SourceDef)}
-    remotes = {item.id: item for item in definition.sources if isinstance(item, (HttpSourceDef, GithubSourceDef))}
+    remotes = {item.id: item for item in definition.sources
+               if isinstance(item, (HttpSourceDef, FeedSourceDef, GithubSourceDef))}
+    pushed = {item.id: item for item in definition.sources if isinstance(item, EventSourceDef)}
+    if pushed and event_reader is None:
+        raise ValueError("Event sources require the daemon's durable intake reader")
+    event_state: dict[str, int] = dict((checkpoint or {}).get('event_sources', {}))
     sources: dict[str, SourceDef | RemoteSourceDef] = {**files, **remotes}
+    contracts = {item.id: source_contract(item) for item in definition.sources}
     remote = remote_sampler if remote_sampler is not None else RemoteSampler()
     remote_state: dict[str, dict[str, Any]] = (checkpoint or {}).get('remote_sources', {})
     detectors: dict[str, FileChangeDetector | RecordDetector] = {
         item.id: FileChangeDetector(item, source_root=str(files[item.source].root))
         for item in definition.detectors if isinstance(item, DetectorDef)
     }
-    detectors.update({item.id: RecordDetector(item, max_records=remotes[item.source].max_records)
+    detectors.update({item.id: RecordDetector(item, max_records=contracts[item.source].max_records)
         for item in definition.detectors
-        if isinstance(item, (RecordDetectorDef, ConditionDetectorDef, AvailabilityDetectorDef))})
+        if isinstance(item, (RecordDetectorDef, ConditionDetectorDef, AvailabilityDetectorDef, ReceivedDetectorDef))})
     timed_detectors = {item.id: SchedulerDueDetector(item) for item in definition.detectors
                        if isinstance(item, SchedulerDetectorDef)}
     schedulers = ({} if checkpoint is not None else
@@ -108,8 +122,6 @@ async def observe(
         schedulers = {item.id: SchedulerSource.restore(item, checkpoint['schedulers'][item.id],
                       wall_now=wall_clock(), monotonic_now=clock())
                       for item in definition.sources if isinstance(item, SchedulerSourceDef)}
-    active_detectors: tuple[FileChangeDetector | RecordDetector | SchedulerDueDetector, ...] = (
-        *detectors.values(), *timed_detectors.values())
     router = EventRouter(definition)
     detector_sources = {item.id: item.source for item in definition.detectors}
     route_sources = {item.id: detector_sources[item.detector] for item in definition.routes}
@@ -142,6 +154,7 @@ async def observe(
             await save(data({'version': 1,
                 'detectors': {key: detector.checkpoint() for key, detector in detectors.items()},
                 'remote_sources': remote_state,
+                'event_sources': event_state,
                 'schedulers': {key: source.export_checkpoint(wall_now=wall_clock(), monotonic_now=clock())
                                for key, source in schedulers.items()},
                 'pending': {key: {'delivery': delivery_data(item.delivery), 'attempts': item.attempts,
@@ -191,6 +204,24 @@ async def observe(
         report("delivery_pending", delivery=candidate)
         return True
 
+    def observe_records(source_id: str, snapshot: RecordSnapshot, *, now: float) -> bool:
+        # Stage each detector independently, then publish the whole acquisition.
+        # A bad field projection cannot consume another detector's source cursor.
+        candidates: dict[str, RecordDetector] = {}
+        try:
+            for key, detector in detectors.items():
+                if isinstance(detector, RecordDetector) and detector.definition.source == source_id:
+                    candidate = copy(detector)
+                    candidate.observe(snapshot, now=now)
+                    candidates[key] = candidate
+        except (ValueError, KeyError, TypeError, IndexError, RecursionError):
+            source_errors.add(source_id)
+            report('source_error', source=source_id,
+                   error='Observation does not satisfy detector fields or capacity; source cursor retained')
+            return False
+        detectors.update(candidates)
+        return True
+
     async def collect(source: SourceDef | RemoteSourceDef) -> FileSnapshot | PollResult:
         if isinstance(source, SourceDef):
             return await scanner(source)
@@ -210,7 +241,7 @@ async def observe(
         if state.get('failures', 0) or state.get('gap'):
             source_errors.add(identifier)
             report('source_error', source=identifier, error=state.get('error', 'Previous remote read failed'))
-    for identifier in schedulers:
+    for identifier in (*schedulers, *pushed):
         report("watching", source=identifier)
     try:
         while not cancel.is_set():
@@ -272,21 +303,56 @@ async def observe(
             paused = blocked or suspended is not None and suspended.is_set()
             if cancel.is_set():
                 break
-            for source_id, scheduler in schedulers.items():
+            for source_id, scheduler in tuple(schedulers.items()):
+                previous_scheduler = copy(scheduler)
                 was_completed = scheduler.completed
                 timed_snapshot = scheduler.poll(wall_now=wall_clock(), monotonic_now=now,
                     suspended=bool(paused or source_id in busy_sources))
-                if timed_snapshot.completed and not was_completed:
-                    report("source_completed", source=source_id)
                 if not paused:
+                    if timed_snapshot.occurrences:
+                        if not observe_records(source_id, RecordSnapshot(tuple(
+                                record(item.schedule_id, asdict(item), '') for item in timed_snapshot.occurrences),
+                                wall_clock(), complete=False, stream=True), now=now):
+                            schedulers[source_id] = previous_scheduler
+                            continue
                     for timed_detector in timed_detectors.values():
                         if timed_detector.definition.source == source_id:
                             timed_detector.observe(timed_snapshot)
+                if timed_snapshot.completed and not was_completed:
+                    report("source_completed", source=source_id)
             if paused:
                 await persist()
                 await sleep(0.05)
                 continue
             watching: list[str] = []
+            if event_reader is not None:
+                for source_id, event_source in pushed.items():
+                    # The output outbox is also a bounded queue. Do not absorb
+                    # more pushed input while this source has an unsettled output.
+                    if any(route_sources[key] == source_id for key in (*pending, *backlog)):
+                        continue
+                    incoming = await event_reader(event_source, event_state.get(source_id, 0))
+                    if incoming is not None:
+                        original_detectors = dict(detectors)
+                        original_pending = {key: copy(value) for key, value in pending.items()}
+                        original_backlog = dict(backlog)
+                        if not observe_records(source_id, incoming.snapshot(), now=now):
+                            continue
+                        events = tuple(event for detector in detectors.values()
+                            if isinstance(detector, RecordDetector) and detector.definition.source == source_id
+                            for event in detector.flush(now=now))
+                        if not all(enqueue(routed.route_id, routed.events) for routed in router.route(events)):
+                            detectors = original_detectors
+                            pending, backlog = original_pending, original_backlog
+                            overflowed = True  # Intake remains unprocessed, never silently ACKed.
+                            break
+                        event_state[source_id] = incoming.sequence
+                        for event in events:
+                            emit(RuntimeEvent('event_detected', registration_id, source_id=source_id,
+                                              event_ids=(event.id,)))
+                        if source_id in source_errors:
+                            source_errors.discard(source_id)
+                            watching.append(source_id)
             for source in sources.values():
                 task = scans.get(source.id)
                 if task is not None and task.done():
@@ -298,23 +364,30 @@ async def observe(
                     except SourceError as exc:
                         source_errors.add(source.id)
                         report("source_error", source=source.id, error=str(exc))
+                        observe_records(source.id, RecordSnapshot((), wall_clock(), healthy=False,
+                            complete=False, valid=False, error=str(exc)), now=now)
                     else:
                         if isinstance(snapshot, PollResult):
-                            remote_state[source.id] = snapshot.state
                             next_scan[source.id] = now + max(snapshot.delay, snapshot.state.get(
                                 'next_poll_at', wall_clock()) - wall_clock())
-                            for detector in detectors.values():
-                                if isinstance(detector, RecordDetector) and detector.definition.source == source.id:
-                                    detector.observe(snapshot.snapshot, now=now)
-                            healthy = snapshot.snapshot.healthy
-                            if not healthy:
+                            valid = observe_records(source.id, snapshot.snapshot, now=now)
+                            if valid:
+                                remote_state[source.id] = snapshot.state
+                            healthy = snapshot.snapshot.healthy and valid
+                            if not snapshot.snapshot.healthy:
                                 source_errors.add(source.id)
                                 report('source_error', source=source.id, error=snapshot.snapshot.error)
                         else:
-                            healthy = True
-                            for detector in detectors.values():
-                                if isinstance(detector, FileChangeDetector) and detector.definition.source == source.id:
-                                    detector.observe(snapshot, now=now)
+                            assert isinstance(source, SourceDef)
+                            healthy = (observe_records(source.id,
+                                file_records(source, snapshot, now=wall_clock()), now=now)
+                                if any(isinstance(item, RecordDetector) and item.definition.source == source.id
+                                       for item in detectors.values()) else True)
+                            if healthy:
+                                for detector in detectors.values():
+                                    if (isinstance(detector, FileChangeDetector)
+                                            and detector.definition.source == source.id):
+                                        detector.observe(snapshot, now=now)
                         if healthy and (source.id not in baselined or source.id in source_errors):
                             baselined.add(source.id)
                             source_errors.discard(source.id)
@@ -322,7 +395,7 @@ async def observe(
                 if not overflowed and source.id not in scans and now >= next_scan[source.id]:
                     scans[source.id] = asyncio.create_task(collect(source))
             if not overflowed:
-                for active_detector in active_detectors:
+                for active_detector in (*detectors.values(), *timed_detectors.values()):
                     events = active_detector.flush(now=now)
                     if not events:
                         continue

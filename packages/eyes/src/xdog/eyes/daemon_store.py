@@ -64,6 +64,14 @@ class DaemonStore:
                 CREATE TABLE IF NOT EXISTS acknowledgements (
                     owner TEXT NOT NULL, sequence INTEGER NOT NULL,
                     PRIMARY KEY(owner));
+                CREATE TABLE IF NOT EXISTS source_events (
+                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                    registration_id TEXT NOT NULL, source_id TEXT NOT NULL,
+                    event_id TEXT NOT NULL, record_key TEXT NOT NULL, digest TEXT NOT NULL,
+                    payload TEXT, received_at REAL NOT NULL, processed INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE(registration_id, source_id, event_id));
+                CREATE INDEX IF NOT EXISTS source_events_pending
+                    ON source_events(registration_id, source_id, processed, sequence);
                 PRAGMA user_version=2;
             ''')
         await self.run(schema)
@@ -75,5 +83,13 @@ class DaemonStore:
 
     async def checkpoint(self, identifier: str, value: dict[str, Any]) -> None:
         encoded = json.dumps(value, allow_nan=False, sort_keys=True)
-        await self.run(lambda db: db.execute('UPDATE registrations SET checkpoint=? WHERE id=? '
-                       'AND (checkpoint IS NULL OR checkpoint != ?)', (encoded, identifier, encoded)).rowcount)
+        def commit(db: sqlite3.Connection) -> None:
+            db.execute('UPDATE registrations SET checkpoint=? WHERE id=? '
+                       'AND (checkpoint IS NULL OR checkpoint != ?)', (encoded, identifier, encoded))
+            # Never ACK intake before detector state and immutable output identities.
+            # Retain hashes/IDs forever within the explicit finite ledger bound.
+            for source_id, sequence in value.get('event_sources', {}).items():
+                db.execute('UPDATE source_events SET processed=1, payload=NULL '
+                    'WHERE registration_id=? AND source_id=? AND sequence<=? AND processed=0',
+                    (identifier, source_id, sequence))
+        await self.run(commit)

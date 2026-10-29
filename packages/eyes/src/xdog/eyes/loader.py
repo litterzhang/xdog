@@ -19,6 +19,7 @@ from xdog.eyes.models import (
     CronSchedule,
     DetectorDef,
     DetectorDefinition,
+    EventSourceDef,
     EventType,
     IntervalSchedule,
     ObserverDef,
@@ -114,7 +115,24 @@ def _schedule(value: object, path: str) -> Schedule:
 
 
 def _source(value: object, path: str, base_dir: Path) -> SourceDefinition:
-    if isinstance(value, dict) and isinstance(value.get('type'), str) and value.get('type') in {'http', 'github'}:
+    if isinstance(value, dict) and value.get("type") == "event":
+        from xdog.eyes.config_values import bounded_int, json_pointer
+        data = _object(value, path, {"id", "type", "key_pointer", "max_bytes", "max_records",
+                                     "max_pending_events", "max_pending_bytes", "max_events"})
+        key = data.get("key_pointer")
+        return EventSourceDef(
+            id=_text(data.get("id"), path + ".id"),
+            key_pointer=None if key is None else json_pointer(key, path + ".key_pointer"),
+            max_bytes=bounded_int(data.get("max_bytes", 65536), path + ".max_bytes", 131072),
+            max_records=bounded_int(data.get("max_records", 256), path + ".max_records", 4096),
+            max_pending_events=bounded_int(
+                data.get("max_pending_events", 128), path + ".max_pending_events", 4096),
+            max_pending_bytes=bounded_int(
+                data.get("max_pending_bytes", 4194304), path + ".max_pending_bytes", 16777216),
+            max_events=bounded_int(data.get("max_events", 10000), path + ".max_events", 100000),
+        )
+    if (isinstance(value, dict) and isinstance(value.get('type'), str)
+            and value.get('type') in {'http', 'github', 'feed'}):
         from xdog.eyes.remote_config import source
         return source(value, path)
     if isinstance(value, dict) and value.get("type") == "scheduler":
@@ -122,13 +140,18 @@ def _source(value: object, path: str, base_dir: Path) -> SourceDefinition:
         return SchedulerSourceDef(_text(data.get("id"), path + ".id"), "scheduler",
                                   _schedule(data.get("schedule"), path + ".schedule"))
     data = _object(
-        value, path, {"id", "type", "root", "include", "exclude", "poll_interval_ms", "max_files", "max_file_bytes"}
+        value, path, {"id", "type", "root", "include", "exclude", "poll_interval_ms",
+                      "max_files", "max_file_bytes", "format"}
     )
     if data.get("type") != "file":
-        raise ObserverValidationError("Expected file, scheduler, http or github source", path=path, code="unknown_type")
+        raise ObserverValidationError("Expected file, scheduler, http, feed, github or event source",
+                                      path=path, code="unknown_type")
     root = Path(_text(data.get("root"), path + ".root", maximum=4096))
     # Absolute lexical roots retain symlink components for the no-follow scanner to reject.
     root = Path(os.path.abspath(base_dir / root))
+    file_format = data.get("format", "metadata")
+    if file_format not in ("metadata", "json"):
+        raise ObserverValidationError("File format must be metadata or json", path=path + ".format")
     return SourceDef(
         id=_text(data.get("id"), path + ".id"),
         type="file",
@@ -138,13 +161,14 @@ def _source(value: object, path: str, base_dir: Path) -> SourceDefinition:
         poll_interval_ms=_integer(data.get("poll_interval_ms", 1000), path + ".poll_interval_ms"),
         max_files=_integer(data.get("max_files", 10_000), path + ".max_files"),
         max_file_bytes=_integer(data.get("max_file_bytes", 10 * 1024 * 1024), path + ".max_file_bytes"),
+        format=file_format,
     )
 
 
 def _detector(value: object, path: str) -> DetectorDefinition:
     if (isinstance(value, dict) and isinstance(value.get('type'), str)
-            and value.get('type') in {'record.change', 'value.condition', 'availability'}):
-        from xdog.eyes.remote_config import detector
+            and value.get('type') in {'record.change', 'value.condition', 'availability', 'event.received'}):
+        from xdog.eyes.detector_config import detector
         return detector(value, path)
     if isinstance(value, dict) and value.get("type") == "scheduler.due":
         data = _object(value, path, {"id", "type", "source"})
@@ -220,18 +244,19 @@ def parse(value: object, *, base_dir: Path, handler_registry: HandlerRegistry | 
     for detector in detectors:
         if detector.source not in source_ids:
             raise ObserverValidationError(f"Missing source: {detector.source}", code="missing_reference")
-        compatible = {'file.change': {'file'}, 'scheduler.due': {'scheduler'},
-                      'record.change': {'http', 'github'}, 'value.condition': {'http', 'github'},
-                      'availability': {'http', 'github'}}
-        if source_by_id[detector.source].type not in compatible[detector.type]:
-            raise ObserverValidationError("Detector type does not match its source", code="wrong_shape")
+        from xdog.eyes.contracts import source_contract, validate_combination
+        try:
+            validate_combination(detector, source_contract(source_by_id[detector.source]))
+        except ValueError as exc:
+            raise ObserverValidationError(str(exc), path=f"detectors.{detector.id}", code="wrong_shape") from exc
     for route in routes:
         if route.detector not in detector_ids or route.handler not in handler_ids:
             raise ObserverValidationError(f"Missing reference in route: {route.id}", code="missing_reference")
         from xdog.eyes.models import AVAILABILITY_EVENT_TYPES, CONDITION_EVENT_TYPES, RECORD_EVENT_TYPES
         expected = {'scheduler.due': ("scheduler.due",), 'file.change': FILE_EVENT_TYPES,
                     'record.change': RECORD_EVENT_TYPES, 'value.condition': CONDITION_EVENT_TYPES,
-                    'availability': AVAILABILITY_EVENT_TYPES}[detector_by_id[route.detector].type]
+                    'availability': AVAILABILITY_EVENT_TYPES,
+                    'event.received': ('event.received',)}[detector_by_id[route.detector].type]
         if any(kind not in expected for kind in route.event_types):
             raise ObserverValidationError("Route event types do not match its detector", code="wrong_shape")
     return ObserverDef(2, name, sources, detectors, handlers, routes)
@@ -260,6 +285,27 @@ def definition_data(definition: ObserverDef) -> dict[str, object]:
     from dataclasses import asdict
 
     result = cast(dict[str, object], json.loads(json.dumps(asdict(definition), default=str, allow_nan=False)))
+    # New optional features must not rewrite old normalized definitions in the
+    # durable registry. Old file/scheduler/HTTP/JSON/GitHub rows stay equivalent.
+    for source in cast(list[dict[str, object]], result['sources']):
+        if source.get('type') == 'file' and source.get('format') == 'metadata':
+            source.pop('format', None)
+        if source.get('type') == 'http':
+            if source.get('mode') == 'html':
+                fields = cast(list[dict[str, object]], source['fields'])
+                source['fields'] = {str(item['name']): {'selector': item['selector'],
+                    **({'attribute': item['attribute']} if item['attribute'] is not None else {'text': True})}
+                    for item in fields}
+                source.pop('pointer', None)
+                source.pop('key_pointer', None)
+            else:
+                for name in ('items_selector', 'fields', 'key_field', 'allow_empty'):
+                    source.pop(name, None)
+        if source.get('type') == 'github' and not source.get('include_prerelease'):
+            source.pop('include_prerelease', None)
+    for detector in cast(list[dict[str, object]], result['detectors']):
+        if detector.get('type') == 'record.change' and not detector.get('compare_fields'):
+            detector.pop('compare_fields', None)
     # Preserve absent enqueue target assertions: a document/daemon base directory
     # must never become the destination workspace, including on normalized reload.
     for handler in cast(list[dict[str, object]], result['handlers']):

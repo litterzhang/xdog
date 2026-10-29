@@ -9,13 +9,13 @@ from xdog.eyes.connections import ConnectionDef
 
 EventType = Literal["file.created", "file.modified", "file.deleted", "scheduler.due",
                     "record.created", "record.updated", "record.removed", "condition.met", "condition.cleared",
-                    "availability.unavailable", "availability.recovered"]
+                    "availability.unavailable", "availability.recovered", "event.received"]
 FILE_EVENT_TYPES: tuple[EventType, ...] = ("file.created", "file.modified", "file.deleted")
 RECORD_EVENT_TYPES: tuple[EventType, ...] = ("record.created", "record.updated", "record.removed")
 CONDITION_EVENT_TYPES: tuple[EventType, ...] = ("condition.met", "condition.cleared")
 AVAILABILITY_EVENT_TYPES: tuple[EventType, ...] = ("availability.unavailable", "availability.recovered")
 EVENT_TYPES: tuple[EventType, ...] = (*FILE_EVENT_TYPES, "scheduler.due", *RECORD_EVENT_TYPES,
-                                    *CONDITION_EVENT_TYPES, *AVAILABILITY_EVENT_TYPES)
+                                    *CONDITION_EVENT_TYPES, *AVAILABILITY_EVENT_TYPES, "event.received")
 
 
 @dataclass(frozen=True)
@@ -28,6 +28,7 @@ class SourceDef:
     poll_interval_ms: int = 1000
     max_files: int = 10_000
     max_file_bytes: int = 10 * 1024 * 1024
+    format: Literal["metadata", "json"] = "metadata"
 
 
 @dataclass(frozen=True)
@@ -72,16 +73,39 @@ class SchedulerDetectorDef:
     source: str
 
 
+@dataclass(frozen=True)
+class HtmlField:
+    name: str
+    selector: str
+    attribute: str | None = None
+
+
 @dataclass(frozen=True, kw_only=True)
 class HttpSourceDef:
     id: str
     type: Literal["http"] = "http"
     url: str
-    mode: Literal["status", "json"] = "json"
+    mode: Literal["status", "json", "html"] = "json"
     pointer: str = ""
     key_pointer: str | None = None
+    items_selector: str | None = None
+    fields: tuple[HtmlField, ...] = ()
+    key_field: str | None = None
+    allow_empty: bool = False
     bearer_env: str | None = None
     poll_interval_seconds: float = 60.0
+    timeout_seconds: float = 10.0
+    max_bytes: int = 1024 * 1024
+    max_records: int = 256
+
+
+@dataclass(frozen=True, kw_only=True)
+class FeedSourceDef:
+    id: str
+    url: str
+    type: Literal["feed"] = "feed"
+    bearer_env: str | None = None
+    poll_interval_seconds: float = 300.0
     timeout_seconds: float = 10.0
     max_bytes: int = 1024 * 1024
     max_records: int = 256
@@ -92,7 +116,7 @@ class GithubSourceDef:
     id: str
     type: Literal["github"] = "github"
     repository: str
-    resource: Literal["issues", "issue_comments", "workflow_runs"]
+    resource: Literal["issues", "issue_comments", "workflow_runs", "releases"]
     api_url: str = "https://api.github.com"
     bearer_env: str | None = None
     poll_interval_seconds: float = 60.0
@@ -102,9 +126,29 @@ class GithubSourceDef:
     max_pages: int = 10
     lookback_seconds: float = 86400.0
     overlap_seconds: float = 120.0
+    include_prerelease: bool = False
 
 
-RemoteSourceDef: TypeAlias = HttpSourceDef | GithubSourceDef
+@dataclass(frozen=True, kw_only=True)
+class EventSourceDef:
+    id: str
+    type: Literal["event"] = "event"
+    key_pointer: str | None = None
+    max_bytes: int = 65536
+    max_records: int = 256
+    max_pending_events: int = 128
+    max_pending_bytes: int = 4 * 1024 * 1024
+    max_events: int = 10000  # Bounded lifetime idempotency ledger; never evict accepted IDs.
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReceivedDetectorDef:
+    id: str
+    source: str
+    type: Literal["event.received"] = "event.received"
+
+
+RemoteSourceDef: TypeAlias = HttpSourceDef | FeedSourceDef | GithubSourceDef
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -113,6 +157,7 @@ class RecordDetectorDef:
     type: Literal["record.change"] = "record.change"
     source: str
     removals: bool = False
+    compare_fields: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -140,9 +185,10 @@ class AvailabilityDetectorDef:
     initial_abnormal: bool = True
 
 
-RemoteDetectorDef: TypeAlias = RecordDetectorDef | ConditionDetectorDef | AvailabilityDetectorDef
-SourceDefinition: TypeAlias = SourceDef | SchedulerSourceDef | RemoteSourceDef
-DetectorDefinition: TypeAlias = DetectorDef | SchedulerDetectorDef | RemoteDetectorDef
+RecordDetectorDefinition: TypeAlias = (RecordDetectorDef | ConditionDetectorDef | AvailabilityDetectorDef
+                                      | ReceivedDetectorDef)
+SourceDefinition: TypeAlias = SourceDef | SchedulerSourceDef | RemoteSourceDef | EventSourceDef
+DetectorDefinition: TypeAlias = DetectorDef | SchedulerDetectorDef | RecordDetectorDefinition
 
 
 @dataclass(frozen=True)
@@ -211,6 +257,7 @@ class RecordEvidence:
     before: str | None
     after: str | None
     observed_at: float
+    input_id: str | None = None  # Producer identity, distinct from detector event/delivery IDs.
 
 
 @dataclass(frozen=True)

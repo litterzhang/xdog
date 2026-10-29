@@ -10,6 +10,18 @@ project follows [semantic versioning](https://semver.org/).
 
 ### Added
 
+- Eyes local pushed event sources and public CLI/tool publish, with bounded durable
+  idempotent intake, atomic detector/output checkpoints, pause/resume and recovery.
+- Source/Detector data-contract composition across files, remote content, schedules
+  and pushed records; detector-owned field comparison and safe file JSON extraction.
+- Eyes static HTML/CSS extraction, safe RSS 2.0/Atom 1.0 entry windows and published
+  GitHub Releases, reusing original observation, checkpoint and delivery owners.
+- Finite comparison-field projection suppresses metadata-only change events while
+  retaining full evidence; old definitions/checkpoints remain compatible.
+
+
+### Added
+
 - Eyes HTTP status/JSON and GitHub Issues/comments/Actions observations, using
   bounded read-only requests, explicit windows and credential environment references.
 - Deterministic record-change, typed-condition and availability detectors, with

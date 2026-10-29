@@ -52,7 +52,7 @@ def test_github_rejects_ambiguous_scopes(tmp_path, observer_data, field, value):
 def test_detector_source_and_route_types_are_checked(tmp_path, observer_data):
     data = external(observer_data)
     data['detectors'][0]['type'] = 'file.change'
-    with pytest.raises(ObserverValidationError, match='does not match'):
+    with pytest.raises(ObserverValidationError, match='requires the files observation contract'):
         parse(data, base_dir=tmp_path)
     data = external(observer_data)
     data['routes'][0]['event_types'] = ['scheduler.due']
@@ -99,4 +99,29 @@ async def test_old_daemon_rejects_external_registration_before_any_mutation(tmp_
     assert calls == ['hello']
     result = await control.start(parse(observer_data, base_dir=tmp_path), wait_ready=False)
     assert result['registration_id'] == 'file-registration' and calls == ['hello', 'register']
+    await control.aclose()
+
+
+@pytest.mark.parametrize('source', [
+    {'id': 'outside', 'type': 'feed', 'url': 'https://example.test/rss'},
+    {'id': 'outside', 'type': 'http', 'mode': 'html', 'url': 'https://example.test', 'items_selector': 'a',
+     'fields': {'id': {'selector': '', 'attribute': 'href'}}, 'key_field': 'id'},
+    {'id': 'outside', 'type': 'github', 'repository': 'o/r', 'resource': 'releases'},
+])
+async def test_content_features_fail_before_submission_to_first_batch_daemon(
+    tmp_path, observer_data, monkeypatch, source,
+):
+    from xdog.eyes._daemon_control import DaemonControl
+    from xdog.eyes.protocol import FEATURES, hello
+    calls = []
+    async def request(location, action, body, **kwargs):
+        calls.append(action)
+        assert action == 'hello'
+        return {'status': 'ok', 'generation': 'first-batch',
+                'body': {**hello(), 'features': [*FEATURES, 'remote-sources-v1']}}
+    monkeypatch.setattr('xdog.eyes._daemon_control.request', request)
+    control = DaemonControl(owner='test', directory=tmp_path/'private')
+    with pytest.raises(RuntimeError, match='content-sources-v1'):
+        await control.start(parse(external(observer_data, source), base_dir=tmp_path), wait_ready=False)
+    assert calls == ['hello']
     await control.aclose()

@@ -31,7 +31,7 @@ the PyPI release matrix. The root `xdog` project is the development umbrella.
 | [xdog-coding](packages/coding/README.md) | `xdog.coding` | `xdog-coding` | Coding assistant with TUI/print modes, permissions, sessions/branches and independent ACP intake |
 | [xdog-claw](packages/claw/README.md) | `xdog.claw` | `xdog-claw` | Persistent assistant gateway; one main Agent per group, TUI/Weixin channels, memory and durable input/output |
 | [xdog-flow](packages/flow/README.md) | `xdog.flow` | `xdog-flow` | Typed workflow JSON, validation, execution, code generation, tests, builder and local scheduling |
-| [xdog-eyes](packages/eyes/README.md) | `xdog.eyes` | `xdog-eyes` | Independent shared observation daemon; file/time sources, evidence, routes and explicit ACP delivery |
+| [xdog-eyes](packages/eyes/README.md) | `xdog.eyes` | `xdog-eyes` | Independent observation daemon; files, remote content, schedules and pushed events with explicit delivery |
 | [xdog-skills](packages/skills/README.md) | `xdog.skills` | Installed capabilities/skills | `goal` and `plan`, Goal records/reminders and optional readonly display extension; no Agent runner |
 | [xdog-site](packages/site/README.md) | `xdog.site` | `xdog-site` | Documentation, package catalog, blog and trusted/local workflow demonstration site |
 
@@ -139,16 +139,23 @@ Flow's installed application capability exposes a thin non-interactive CLI-backe
 `flow` tool. **Flow has no daemon.** The packaged `flow` skill is discoverable,
 not injected into every Agent's system prompt by default.
 
-## Eyes · 观察变化与时间，再投递证据
+## Eyes · 观察变化、接收事件，再投递证据
 
 Eyes owns one user-local daemon, normally at `~/.local/share/xdog/eyes` (honoring
 `XDG_DATA_HOME`). An explicit `--directory` isolates that same daemon implementation;
 there is no project/cwd observer runtime or supported embedded management SDK.
 
 ```text
-saved JSON → file / at / interval / cron sources → detectors → routes → handlers
-                                                               └─ ACP receiver
+saved JSON → file / remote / scheduler / event sources
+                         → detectors → routes → handlers → ACP receiver
 ```
+
+Sources acquire content; reusable detectors detect changes/conditions; routes select
+handlers. File JSON, HTTP/HTML, RSS/Atom, GitHub resources, schedules and local
+pushed events share the same bounded checkpoint/delivery path. Compare fields on
+each detector independently, not on the source. Local producers publish stable
+IDs through `xdog-eyes publish`; acceptance is not Agent execution or user notice.
+See [observation contracts and event intake](docs/eyes-observation-contracts.md).
 
 Copy and edit a [shipped definition](packages/eyes/src/xdog/eyes/examples/source-test-review.json)
 to name a real receiver and existing destination, then:

@@ -20,7 +20,7 @@ from xdog.eyes.loader import definition_data
 from xdog.eyes.local_control import JsonValue, RuntimeLocation, daemon_location, object_value, read_location, text
 from xdog.eyes.models import ObserverDef
 from xdog.eyes.process import ensure_runtime
-from xdog.eyes.protocol import require_compatible
+from xdog.eyes.protocol import require_compatible, source_features
 
 
 class DaemonUnavailable(ConnectionError):
@@ -62,13 +62,13 @@ class DaemonControl:
             features = object_value(response['body'])['features']
             self._features = ({item for item in features if isinstance(item, str)}
                               if isinstance(features, list) else set())
-        if action == 'register' and 'remote-sources-v1' not in self._features:
-            definition = body.get('definition')
-            sources = definition.get('sources', []) if isinstance(definition, dict) else []
-            if isinstance(sources, list) and any(isinstance(item, dict) and item.get('type') in ('http', 'github')
-                                                 for item in sources):
-                raise RuntimeError('Running Eyes daemon lacks remote-sources-v1; stop/restart it explicitly. '
-                                   'No registration was submitted and no live daemon was replaced.')
+        if action == 'register':
+            missing = source_features(body.get('definition')) - self._features
+            if missing:
+                raise RuntimeError('Running Eyes daemon lacks ' + ', '.join(sorted(missing))
+                    + '; stop/restart it explicitly. No registration was submitted and no live daemon was replaced.')
+        if action == 'publish' and 'event-sources-v1' not in self._features:
+            raise RuntimeError('Running Eyes daemon lacks event-sources-v1; restart explicitly. No event submitted.')
         if scoped:
             body = {**body, 'owner': self.owner}
         response = await request(self.location, action, body, timeout=120)
@@ -151,6 +151,11 @@ class DaemonControl:
 
     async def status(self, identifier: str | None = None) -> dict[str, Any]:
         return await self._request('owner-status', {'registration_id': identifier} if identifier is not None else {})
+
+    async def publish(self, identifier: str, *, source_id: str, event_id: str,
+                      payload: JsonValue) -> dict[str, Any]:
+        return await self._request('publish', {'registration_id': identifier, 'source_id': source_id,
+                                              'event_id': event_id, 'payload': payload})
 
     async def pause(self, identifier: str) -> dict[str, Any]:
         return await self._request('pause', {'registration_id': identifier})

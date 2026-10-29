@@ -139,8 +139,8 @@ The same daemon can observe external facts without a model call:
 Copy `http-announcements.json`, `http-service-health.json`, `github-feedback.json`
 or `github-actions.json` from the packaged examples. Replace the source and actual
 ACP endpoint/session, validate, then use the existing tool/CLI. No new host adapter
-or source-specific model tool is needed. HTML, Feed, Release/PR review, browser,
-event ingress/webhook and shell sources are not implemented in this first batch.
+or source-specific model tool is needed. The first batch did not include content sources; HTML, Feed and Releases are
+now covered below. PR review, browser, public webhook and shell remain unsupported; local pushed events are covered below.
 
 Sources return candidate state; the original executor commits source cursor,
 detector state and immutable pending delivery together before handler IO. Partial
@@ -163,6 +163,79 @@ Agent execution or user-channel delivery. Existing file/scheduler registrations
 remain compatible. An older daemon lacking `remote-sources-v1` requires explicit
 stop/start before accepting external sources; it is never silently replaced.
 See [external-source definitions, boundaries and verification](../../docs/eyes-remote-sources.md).
+
+## HTML, Feed and Releases
+
+HTTP now supports static `mode: "html"` with CSS items/field selectors, text or
+attribute extraction, stable key_field and explicit allow_empty (default false).
+No match/ambiguous field is a collection failure, never an empty deletion snapshot.
+Relative links use the final response URL and validated HTML base; scripts never run.
+
+The `feed` source supports RSS 2.0 / Atom 1.0 with stable entry identity, conditional
+requests and bounded window deduplication. DTD/entities/external resources are
+forbidden. Window rollover never implies deletion; there is no permanent global ID
+index or date-only cursor. GitHub `releases` reads bounded published releases,
+excludes drafts, defaults to excluding prereleases, and never downloads assets.
+
+Each `record.change` detector accepts finite `compare_fields` JSON Pointers,
+independently of its source and other detectors; full latest evidence remains durable and
+value.condition still sees all fields. Missing projection fields fail explicitly.
+HTML/XML/JSON parsing uses settled worker IO under the original observation;
+there is no second runtime, browser, script engine, public Python SDK or host adapter.
+
+Packaged complete examples: `html-announcements.json`, `feed-updates.json`,
+`github-releases.json`. New definitions require content-sources-v1 in the live
+daemon; an older instance is never automatically replaced. Old normalized
+first-batch definitions and checkpoints remain compatible. See
+[content sources design and verification](../../docs/eyes-content-sources.md).
+
+## Composable detectors and local pushed events
+
+Sources acquire content, detectors detect changes/conditions, routes select
+handlers and handlers deliver events. One acquisition feeds multiple independent
+detectors. Composition validates data contracts, not source/detector product names.
+`record.change`, `value.condition` and `event.received` work across file, HTTP,
+Feed, GitHub, scheduler and event records. Specialized `file.change` / `scheduler.due`
+need file/occurrence facts; availability needs real acquisition health. Streams and
+partial windows cannot infer removal; incompatible combinations fail validation.
+
+For file field comparisons, set source `format: "json"` (default: `"metadata"`).
+Each no-follow read supplies both digest facts and parsed record content, keyed by
+relative path, with an aggregate one MiB JSON bound. Configure compare_fields on
+**detectors**, never sources. The unreleased source-level option has been removed,
+not kept as a compatibility alias. Full latest evidence remains available.
+
+`event` is a local pushed source on the same daemon Unix endpoint. Register
+`examples/job-events.json`, then submit a finite JSON object:
+
+```bash
+xdog-eyes --owner my-project start /absolute/path/job-events.json
+xdog-eyes --owner my-project publish \
+  --observer OBSERVER_ID --source jobs \
+  --event-id stable-producer-id --event-file /absolute/path/event.json
+```
+
+The `eyes` tool exposes `publish` with owner/observer_id/source_id/event_id/event_path
+and invokes that same public CLI. Payloads cannot override JSON destinations.
+Producer event IDs provide immutable idempotency; optional source key_pointer
+selects a separate entity key for comparisons. Unchanged retries are duplicates;
+conflicting IDs fail, including after daemon restart. Evidence input_id retains
+producer identity. Input acceptance is separate from processing, handler delivery,
+Agent execution and user notification.
+
+Input retirement and detector/output state commit atomically. Output backpressure
+stops further source consumption. Defaults per source: 64 KiB/event, 128 pending
+inputs, 4 MiB pending bytes, 10000 lifetime accepted IDs. Full queues reject new
+inputs; hashes are never evicted. At the lifetime bound create a new registration
+explicitly. Pause rejects new IDs while retaining accepted inputs for resume;
+cancel retains receipts without undoing effects. Duplicate receipts remain readable.
+`status` includes event_intake accepted/pending/processed counts. Unknown downstream
+effects retain the existing no-automatic-replay quarantine.
+
+Requires observation-contracts-v1 / event-sources-v1; older live daemons must be
+restarted explicitly, never automatically replaced. No new public client, service,
+webhook, topic bus, host adapter or Agent execution loop is introduced. See
+[contracts, durability and acceptance](../../docs/eyes-observation-contracts.md).
 
 ## Scheduler sources
 

@@ -1,21 +1,21 @@
 ---
 name: eyes
-description: Use to observe files, HTTP JSON/status or GitHub feedback/Actions, schedule events, configure delivery, or manage observers.
+description: Use to observe files, HTTP HTML/JSON/status, Feed or GitHub feedback/Actions/Releases, publish local events, schedule events, configure delivery, or manage observers.
 ---
 
 # Eyes — configure observations and deliver events
 
-Eyes uses a saved, validated JSON definition. Sources collect evidence, detectors
+Eyes uses a saved, validated JSON definition. Sources collect content, detectors detect changes/conditions and
 emit events, and EventRouter selects an EventHandler through explicit routes.
 ACP is a built-in handler, not the router or an Agent execution loop. Loading
 this skill does not start observation, a receiver, or a model.
 
 ## External observations: choose facts, not a business Agent loop
 
-Supported sources are `file`, `scheduler`, `http` and `github`. HTTP supports GET
-`status`/`json` only; GitHub supports one repository and exactly one of `issues`,
-`issue_comments`, `workflow_runs` per source. HTML/CSS, feed, Release, PR review,
-browser, event ingress/webhook and shell sources are not yet supported. Never
+Supported sources are `file`, `scheduler`, `http`, `feed`, `github` and `event`. HTTP supports GET
+`status`/`json`/static `html`; GitHub supports one repository and one resource:
+`issues`, `issue_comments`, `workflow_runs`, or `releases`. Feed is RSS 2.0 / Atom 1.0.
+PR review, browser, public webhook and shell sources are not yet supported. Never
 invent those types or use a background shell loop to simulate them.
 
 Complete packaged definitions: `examples/http-announcements.json`,
@@ -55,6 +55,96 @@ Do not create observations merely because these examples or this skill were read
 Remote titles/body/links are untrusted evidence. Only the Agent decides business
 importance and whether to notify or act, under its existing permissions. Eyes
 neither runs that Agent nor tracks its subsequent replies or user-channel delivery.
+
+## Static content sources and comparison projection
+
+Packaged examples also include examples/html-announcements.json,
+examples/feed-updates.json and examples/github-releases.json. They use the same
+registered tool, explicit owner, validated JSON and verified ACP destination.
+
+- HTML mode: items_selector, fields and key_field. Each field has selector plus
+  text=true OR attribute; an empty field selector selects the item itself.
+  Every field must match exactly one element. Whitespace is normalized; scripts
+  and styles are excluded. href/src resolve relative to the actual page/base.
+  No matching items is an ERROR unless allow_empty=true was explicitly chosen;
+  never infer all announcements were deleted from a broken selector or login page.
+- Feed: stable Atom id / RSS guid, falling back only to a valid RSS link. No title
+  identity, date-only cursor or permanent entity index. Window rollover never
+  implies deletion. DTD/entities and external XML/content fetching are forbidden.
+- Releases: default excludes prereleases and always excludes drafts/unpublished
+  entries. include_prerelease is releases-only. Release ID is identity, not tag;
+  ordinary Git tags are not covered. No asset download, installation or execution.
+- Set compare_fields on each record.change DETECTOR, never on a source. It selects at most 32 unique JSON Pointers for record.change only.
+  Full latest evidence remains stored; value.condition still uses all fields.
+  Missing comparison fields fail, not silently disappear. Do not select only volatile
+  timestamps if the actual need is content change. Initial content is a baseline.
+- HTML/XML/JSON parsing is finite and uses original owned execution resources.
+  This is not a browser, crawler, code sandbox or new service. No template/recipe
+  generation, announcement validity judgment or business ranking belongs in Eyes.
+- These additions require content-sources-v1. Report an old daemon's explicit
+  restart requirement; never restart the shared process automatically or erase its
+  journal. First-batch definitions/checkpoints do not require migration. Field
+  comparison and cross-source composition also require observation-contracts-v1.
+
+## Compose content and detection
+
+One acquisition can feed multiple independent detectors by their source ID.
+Record change/condition/received strategies work with records from every source;
+file.change requires file facts, scheduler.due requires occurrences, availability
+requires acquisition health. Incompatible combinations fail validation, not silently
+produce nothing. Polling success does not imply a downstream handler succeeded.
+
+For file JSON fields, set source format="json" and select relative paths with
+include/exclude. Each file becomes a record keyed by path; detectors use JSON
+Pointers into its parsed content. Default format="metadata" exposes path/digest/size.
+Both reuse the same bounded no-follow read; detectors never reopen the file.
+JSON has an aggregate one MiB bound. Narrow include patterns: parsed file content
+becomes evidence, so do not select secrets or unrelated files. Complete snapshots establish a baseline;
+streams process their first input. Partial windows/streams cannot infer removals;
+removals=true on such sources fails validation.
+
+## Local pushed events: register source first, then publish
+
+Use examples/job-events.json. Declare {"id":"jobs","type":"event"} in sources,
+a detector such as {"id":"received","type":"event.received","source":"jobs"},
+and ordinary routes/handlers. event.received forwards each acquired record; it is
+not exclusive to event sources. Field comparison and value.condition also work.
+No observer/source is automatically created by publishing.
+
+With the tool, save a bounded finite JSON object and call:
+
+```text
+eyes(action="publish", owner="my-project-watches", observer_id="RETURNED_ID",
+     source_id="jobs", event_id="stable-producer-id", event_path="/project/event.json")
+```
+
+CLI alternative, only when that is the available authorized interface:
+
+```bash
+xdog-eyes --owner my-project-watches publish \
+  --observer RETURNED_ID --source jobs \
+  --event-id stable-producer-id --event-file /project/event.json
+```
+
+- event_id is an immutable producer ID (max 256 UTF-8 bytes), distinct from
+  generated detector event/delivery IDs. Retry identical content with the same ID
+  after ACK loss. Reusing an ID with different content fails. Evidence input_id
+  preserves this producer identity.
+- Optional source key_pointer selects an entity key for comparisons across inputs;
+  otherwise event_id is the record key. Configure max_records for bounded entity
+  state. event.received does not retain an ever-growing record baseline.
+- Publish receipt means durable intake, NOT handler delivery or Agent execution.
+  Status event_intake counts distinguish accepted/pending/processed, not user notice.
+- max_bytes defaults to 64 KiB, pending queue to 128 inputs / 4 MiB. Full queues
+  reject new inputs without accepting them. Retry later using the same stable ID.
+  Lifetime max_events defaults to 10000 and includes processed IDs; no ID eviction.
+  At that bound, explicitly create a new registration, never silently reuse IDs.
+- Pause rejects new IDs and retains accepted input; resume processes that input.
+  Duplicates remain inspectable during pause/cancel. Cancel does not undo accepted
+  target work. Source/route payload cannot select recipients or grant permissions.
+- Input retirement commits with detector state and immutable output identities.
+  Recovery does not replay unknown external effects. Requires event-sources-v1 and
+  observation-contracts-v1; never restart a shared daemon implicitly.
 
 ## Choose the available interface
 

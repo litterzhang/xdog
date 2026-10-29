@@ -17,7 +17,8 @@ class EyesTool:
         'exit_code != 0 is command failure, never success; inspect stderr and registration status before retrying. '
         'Failure or cancellation does not prove that no registration was durably accepted. '
         'Cancellation only stops this CLI call wait, never shared daemon work or accepted registrations. '
-        'Manage file/scheduler/HTTP/GitHub observations from saved Eyes v2 JSON; use the eyes skill for examples. '
+        'Manage file/scheduler/HTTP HTML/JSON/Feed/GitHub/event observations from saved Eyes v2 JSON; '
+        'use the eyes skill for examples. '
         'Tool availability ensures the shared daemon is running, without creating an observation. '
         'The caller chooses an explicit stable owner for management. '
         'Write a JSON definition with filesystem, then create with owner/definition_path. '
@@ -31,12 +32,14 @@ class EyesTool:
         'properties': {
             'action': {
                 'type': 'string',
-                'enum': ['create', 'list', 'status', 'pause', 'resume', 'cancel'],
+                'enum': ['create', 'list', 'status', 'pause', 'resume', 'cancel', 'publish'],
                 'description': (
                     'Result is {exit_code, stdout, stderr}; exit_code != 0 is failure, not successful admission. '
                     'Every action requires owner. list requires only action/owner. '
                     'create additionally requires definition_path. '
                     'status/pause/resume/cancel additionally require observer_id. '
+                    'publish requires observer_id, source_id, event_id, event_path; '
+                    'receipt confirms durable intake only. '
                     'pause stops collection reversibly; resume explicitly restores a paused source; '
                     'cancel permanently stops this registration, not already accepted messages. '
                     'Omit unrelated fields, including null/empty placeholders.'
@@ -64,10 +67,25 @@ class EyesTool:
                     'File capacity: one MiB. Later file edits do not alter an accepted normalized snapshot.'
                 ),
             },
+            'source_id': {
+                'type': 'string', 'minLength': 1,
+                'description': 'publish only: existing event source ID declared in the observation JSON.',
+            },
+            'event_id': {
+                'type': 'string', 'minLength': 1,
+                'description': 'publish only: stable ID, at most 256 UTF-8 bytes. '
+                               'Retry unchanged content with same ID.',
+            },
+            'event_path': {
+                'type': 'string', 'minLength': 1,
+                'description': 'publish only: saved absolute regular non-symlink JSON object file. '
+                               'Payload cannot change destinations. '
+                               'Pause rejects new inputs; duplicates remain safe.',
+            },
             'observer_id': {
                 'type': 'string', 'minLength': 1,
                 'description': (
-                    'status/pause/resume/cancel only: exact registration_id returned by create/list in this '
+                    'status/pause/resume/cancel/publish only: exact registration_id returned by create/list in this '
                     'daemon owner namespace. Status covers observation/handler delivery only, '
                     'not model completion or user notification. No cancel_notifications action exists.'
                 ),
@@ -88,7 +106,8 @@ class EyesTool:
                       on_update: Any = None, ctx: dict[str, Any] | None = None) -> str:
         self._check(cancel)
         fields = {'create': {'definition_path'}, 'list': set(), 'status': {'observer_id'},
-                  'pause': {'observer_id'}, 'resume': {'observer_id'}, 'cancel': {'observer_id'}}
+                  'pause': {'observer_id'}, 'resume': {'observer_id'}, 'cancel': {'observer_id'},
+                  'publish': {'observer_id', 'source_id', 'event_id', 'event_path'}}
         if not isinstance(params, dict) or any(not isinstance(key, str) for key in params):
             raise ValueError('Expected Eyes action parameters')
         action = params.get('action')
@@ -110,6 +129,15 @@ class EyesTool:
             if not Path(path).is_absolute():
                 raise ValueError('Eyes definition_path must be absolute')
             arguments += ('start', path, '--delivery', 'auto', '--no-wait')
+        elif action == 'publish':
+            for name in ('observer_id', 'source_id', 'event_id', 'event_path'):
+                value = params[name]
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(f'Expected nonempty {name}')
+            if not Path(params['event_path']).is_absolute():
+                raise ValueError('Eyes event_path must be absolute')
+            arguments += ('publish', '--observer=' + params['observer_id'], '--source=' + params['source_id'],
+                          '--event-id=' + params['event_id'], '--event-file=' + params['event_path'])
         elif action == 'list':
             arguments += ('list',)
         else:

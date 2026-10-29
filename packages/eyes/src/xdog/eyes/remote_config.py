@@ -2,21 +2,18 @@
 
 from __future__ import annotations
 
-import math
 import re
 from typing import Literal, TypedDict, cast
 from urllib.parse import urlsplit
 
+from xdog.eyes.config_values import boolean, bounded_int, json_pointer, number
 from xdog.eyes.errors import ObserverValidationError
-from xdog.eyes.loader import _integer, _object, _text
+from xdog.eyes.loader import _object, _text
 from xdog.eyes.models import (
-    AvailabilityDetectorDef,
-    ConditionDetectorDef,
+    FeedSourceDef,
     GithubSourceDef,
+    HtmlField,
     HttpSourceDef,
-    Predicate,
-    RecordDetectorDef,
-    RemoteDetectorDef,
     RemoteSourceDef,
 )
 
@@ -55,49 +52,72 @@ def url(value: object, path: str) -> str:
     return text
 
 
-def json_pointer(value: object, path: str) -> str:
-    if not isinstance(value, str) or len(value.encode("utf-8")) > 2048 or "\x00" in value:
-        raise ObserverValidationError("Expected bounded JSON pointer", path=path)
-    if value and not value.startswith("/") or re.search(r"~(?![01])", value):
-        raise ObserverValidationError("Expected RFC 6901 JSON pointer", path=path)
-    return value
+def selector(value: object, path: str, *, empty: bool = False) -> str:
+    import soupsieve
+
+    if value == "" and empty:
+        return ""
+    text = _text(value, path, maximum=2048)
+    try:
+        soupsieve.compile(text)
+    except soupsieve.SelectorSyntaxError as exc:
+        raise ObserverValidationError("Invalid CSS selector", path=path) from exc
+    return text
 
 
-def number(value: object, path: str, *, minimum: float, maximum: float) -> float:
-    if (
-        not isinstance(value, (float, int))
-        or isinstance(value, bool)
-        or not math.isfinite(value)
-        or not minimum <= value <= maximum
-    ):
-        raise ObserverValidationError(f"Expected finite number {minimum}..{maximum}", path=path)
-    return float(value)
-
-
-def bounded_int(value: object, path: str, maximum: int) -> int:
-    result = _integer(value, path)
-    if result > maximum:
-        raise ObserverValidationError(f"Expected integer at most {maximum}", path=path)
-    return result
-
-
-def boolean(value: object, path: str) -> bool:
-    if type(value) is not bool:
-        raise ObserverValidationError("Expected boolean", path=path)
-    return value
+def html_fields(value: object, path: str) -> tuple[HtmlField, ...]:
+    if not isinstance(value, dict) or not 1 <= len(value) <= 32:
+        raise ObserverValidationError("Expected 1..32 named HTML fields", path=path)
+    result = []
+    for name, spec in value.items():
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,63}", name):
+            raise ObserverValidationError("Invalid field name", path=path)
+        row = _object(spec, path + "." + name, {"selector", "text", "attribute"})
+        css = selector(row.get("selector", ""), path + "." + name + ".selector", empty=True)
+        attribute = row.get("attribute")
+        if attribute is not None:
+            if (
+                "text" in row
+                or not isinstance(attribute, str)
+                or not re.fullmatch(r"[A-Za-z_:][A-Za-z0-9_:.-]{0,63}", attribute)
+            ):
+                raise ObserverValidationError("Choose text or one valid attribute", path=path + "." + name)
+        elif row.get("text") is not True:
+            raise ObserverValidationError("Text fields require text=true", path=path + "." + name)
+        result.append(HtmlField(name, css, attribute))
+    return tuple(result)
 
 
 def source(value: object, path: str) -> RemoteSourceDef:
-    common = {"id", "type", "bearer_env", "poll_interval_seconds", "timeout_seconds", "max_bytes", "max_records"}
+    common = {
+        "id",
+        "type",
+        "bearer_env",
+        "poll_interval_seconds",
+        "timeout_seconds",
+        "max_bytes",
+        "max_records",
+    }
     is_http = isinstance(value, dict) and value.get("type") == "http"
+    is_feed = isinstance(value, dict) and value.get("type") == "feed"
     data = _object(
         value,
         path,
         common
         | (
-            {"url", "mode", "pointer", "key_pointer"}
+            {"url", "mode", "pointer", "key_pointer", "items_selector", "fields", "key_field", "allow_empty"}
             if is_http
-            else {"repository", "resource", "api_url", "max_pages", "lookback_seconds", "overlap_seconds"}
+            else {"url"}
+            if is_feed
+            else {
+                "repository",
+                "resource",
+                "api_url",
+                "max_pages",
+                "lookback_seconds",
+                "overlap_seconds",
+                "include_prerelease",
+            }
         ),
     )
     env = data.get("bearer_env")
@@ -109,16 +129,39 @@ def source(value: object, path: str) -> RemoteSourceDef:
         id=_text(data.get("id"), path + ".id"),
         bearer_env=env,
         poll_interval_seconds=number(
-            data.get("poll_interval_seconds", 60), path + ".poll_interval_seconds", minimum=1, maximum=86400
+            data.get("poll_interval_seconds", 300 if is_feed else 60),
+            path + ".poll_interval_seconds",
+            minimum=1,
+            maximum=86400,
         ),
         timeout_seconds=number(data.get("timeout_seconds", 10), path + ".timeout_seconds", minimum=0.1, maximum=120),
         max_bytes=bounded_int(data.get("max_bytes", 1048576), path + ".max_bytes", 16 * 1024 * 1024),
         max_records=bounded_int(data.get("max_records", 256), path + ".max_records", 4096),
     )
+    if is_feed:
+        return FeedSourceDef(**shared, url=url(data.get("url"), path + ".url"))
     if is_http:
         mode = data.get("mode", "json")
-        if not isinstance(mode, str) or mode not in {"json", "status"}:
-            raise ObserverValidationError("Expected json or status mode", path=path + ".mode")
+        if not isinstance(mode, str) or mode not in {"json", "status", "html"}:
+            raise ObserverValidationError("Expected json, status or html mode", path=path + ".mode")
+        if mode == "html":
+            if "pointer" in data or "key_pointer" in data:
+                raise ObserverValidationError("HTML does not accept JSON selection", path=path)
+            fields = html_fields(data.get("fields"), path + ".fields")
+            key_field = _text(data.get("key_field"), path + ".key_field", maximum=64)
+            if key_field not in {item.name for item in fields}:
+                raise ObserverValidationError("key_field must name an extracted field", path=path + ".key_field")
+            return HttpSourceDef(
+                **shared,
+                url=url(data.get("url"), path + ".url"),
+                mode="html",
+                items_selector=selector(data.get("items_selector"), path + ".items_selector"),
+                fields=fields,
+                key_field=key_field,
+                allow_empty=boolean(data.get("allow_empty", False), path + ".allow_empty"),
+            )
+        if {"items_selector", "fields", "key_field", "allow_empty"} & data.keys():
+            raise ObserverValidationError("HTML fields require mode=html", path=path)
         pointer = json_pointer(data.get("pointer", ""), path + ".pointer")
         key = None if data.get("key_pointer") is None else json_pointer(data["key_pointer"], path + ".key_pointer")
         if mode == "status" and (pointer or key is not None):
@@ -126,7 +169,7 @@ def source(value: object, path: str) -> RemoteSourceDef:
         return HttpSourceDef(
             **shared,
             url=url(data.get("url"), path + ".url"),
-            mode=cast(Literal["status", "json"], mode),
+            mode=cast(Literal["status", "json", "html"], mode),
             pointer=pointer,
             key_pointer=key,
         )
@@ -134,8 +177,12 @@ def source(value: object, path: str) -> RemoteSourceDef:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) or any(x in {".", ".."} for x in repo.split("/")):
         raise ObserverValidationError("Expected owner/repository", path=path + ".repository")
     resource = data.get("resource")
-    if not isinstance(resource, str) or resource not in {"issues", "issue_comments", "workflow_runs"}:
-        raise ObserverValidationError("Expected issues, issue_comments or workflow_runs", path=path + ".resource")
+    if not isinstance(resource, str) or resource not in {"issues", "issue_comments", "workflow_runs", "releases"}:
+        raise ObserverValidationError(
+            "Expected issues, issue_comments, workflow_runs or releases", path=path + ".resource"
+        )
+    if "include_prerelease" in data and resource != "releases":
+        raise ObserverValidationError("include_prerelease is only for releases", path=path)
     api = url(data.get("api_url", "https://api.github.com"), path + ".api_url").rstrip("/")
     if urlsplit(api).query:
         raise ObserverValidationError("API base cannot include query parameters", path=path + ".api_url")
@@ -144,62 +191,10 @@ def source(value: object, path: str) -> RemoteSourceDef:
     return GithubSourceDef(
         **shared,
         repository=repo,
-        resource=cast(Literal["issues", "issue_comments", "workflow_runs"], resource),
+        resource=cast(Literal["issues", "issue_comments", "workflow_runs", "releases"], resource),
         api_url=api,
         max_pages=bounded_int(data.get("max_pages", 10), path + ".max_pages", 100),
         lookback_seconds=lookback,
         overlap_seconds=overlap,
+        include_prerelease=boolean(data.get("include_prerelease", False), path + ".include_prerelease"),
     )
-
-
-def detector(value: object, path: str) -> RemoteDetectorDef:
-    kind = value.get("type") if isinstance(value, dict) else None
-    fields = {
-        "record.change": {"removals"},
-        "value.condition": {"all"},
-        "availability": {"failures", "for_seconds", "initial_abnormal"},
-    }
-    data = _object(value, path, {"id", "type", "source"} | fields.get(str(kind), set()))
-    identifier, source_id = _text(data.get("id"), path + ".id"), _text(data.get("source"), path + ".source")
-    if kind == "record.change":
-        return RecordDetectorDef(
-            id=identifier, source=source_id, removals=boolean(data.get("removals", False), path + ".removals")
-        )
-    if kind == "availability":
-        return AvailabilityDetectorDef(
-            id=identifier,
-            source=source_id,
-            failures=bounded_int(data.get("failures", 3), path + ".failures", 10000),
-            for_seconds=number(data.get("for_seconds", 0), path + ".for_seconds", minimum=0, maximum=2592000),
-            initial_abnormal=boolean(data.get("initial_abnormal", True), path + ".initial_abnormal"),
-        )
-    if kind == "value.condition":
-        conditions = data.get("all")
-        if not isinstance(conditions, list) or not 1 <= len(conditions) <= 16:
-            raise ObserverValidationError("Expected 1..16 scalar predicates", path=path + ".all")
-        predicates = []
-        for index, condition in enumerate(conditions):
-            loc = f"{path}.all[{index}]"
-            row = _object(condition, loc, {"pointer", "op", "value"})
-            op, expected = row.get("op"), row.get("value")
-            if not isinstance(op, str) or op not in {"eq", "ne", "gt", "ge", "lt", "le"} or "value" not in row:
-                raise ObserverValidationError("Expected supported op and scalar value", path=loc)
-            if (
-                not isinstance(expected, (str, int, float, bool, type(None)))
-                or isinstance(expected, float)
-                and not math.isfinite(expected)
-                or isinstance(expected, str)
-                and len(expected.encode()) > 4096
-            ):
-                raise ObserverValidationError("Expected bounded finite scalar", path=loc + ".value")
-            if op not in {"eq", "ne"} and (type(expected) not in {int, float}):
-                raise ObserverValidationError("Ordered comparisons require numeric values", path=loc)
-            predicates.append(
-                Predicate(
-                    json_pointer(row.get("pointer", ""), loc + ".pointer"),
-                    cast(Literal["eq", "ne", "gt", "ge", "lt", "le"], op),
-                    expected,
-                )
-            )
-        return ConditionDetectorDef(id=identifier, source=source_id, all=tuple(predicates))
-    raise ObserverValidationError("Unknown detector", path=path)

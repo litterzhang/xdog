@@ -58,6 +58,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                        help='Return registration receipt without waiting for baseline')
     start.add_argument('--source-checkpoints-json',
                        help='JSON object of definition-bound scheduler source checkpoints')
+    publish = commands.add_parser('publish', help='Durably submit an event to a declared source; no delivery guarantee')
+    publish.add_argument('--observer', required=True)
+    publish.add_argument('--source', required=True)
+    publish.add_argument('--event-id', required=True)
+    publish.add_argument('--event-file', required=True, help='Bounded regular JSON object file, or - for stdin')
     status = commands.add_parser('status')
     status.add_argument('registration_id', nargs='?')
     status.add_argument('--wait-ready', action='store_true', help='Read-only wait for original registration baseline')
@@ -115,6 +120,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 await output.write(await control.start(definition, delivery=delivery,
                     key=options.key, recover=not options.no_recover, wait_ready=not options.no_wait,
                     source_checkpoints=checkpoints))
+            elif options.command == 'publish':
+                if options.event_file == '-':
+                    payload = read_stdin_json()
+                else:
+                    payload, _ = await asyncio.to_thread(
+                        _read_definition, str(Path(options.event_file).absolute()))
+                await output.write(await control.publish(options.observer, source_id=options.source,
+                    event_id=options.event_id, payload=payload))
             elif options.command == 'events':
                 if options.follow:
                     await _follow(control, output, after=options.after, limit=options.limit)

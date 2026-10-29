@@ -57,7 +57,7 @@ def test_tool_schema_itself_explains_the_workflow_and_exact_action_fields():
     assert schema['required'] == ['action', 'owner'] and schema['additionalProperties'] is False
     assert 'workspace' not in schema['properties']
     action = schema['properties']['action']
-    assert set(action['enum']) == {'create', 'list', 'status', 'pause', 'resume', 'cancel'}
+    assert set(action['enum']) == {'create', 'list', 'status', 'pause', 'resume', 'cancel', 'publish'}
     assert all(name in action['description'] for name in action['enum'])
     for detail in ('definition_path', 'observer_id', 'Omit', 'null', 'accepted'):
         assert detail in action['description']
@@ -85,3 +85,14 @@ def test_external_skill_keeps_observation_separate_from_agent_execution():
     for term in ('record.change', 'value.condition', 'availability', 'bearer_env', 'source_health',
                  'remote-sources-v1', 'untrusted evidence', 'not yet supported', 'does not choose the delivery'):
         assert term in body
+
+
+@pytest.mark.parametrize('name', ['html-announcements', 'feed-updates', 'github-releases'])
+def test_second_batch_examples_are_complete_and_normalize_stably(tmp_path, name):
+    from xdog.eyes.loader import definition_data
+    from xdog.eyes.protocol import source_features
+    value = json.loads((files('xdog.eyes')/'examples'/f'{name}.json').read_text())
+    normalized = definition_data(parse(value, base_dir=tmp_path))
+    assert definition_data(parse(normalized, base_dir=tmp_path)) == normalized
+    assert source_features(normalized) == {'remote-sources-v1', 'content-sources-v1', 'observation-contracts-v1'}
+    assert all(handler['delivery'] == 'enqueue' for handler in value['handlers'])

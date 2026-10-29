@@ -1,4 +1,4 @@
-"""Finite immutable remote facts; no transport, detector or persistence ownership."""
+"""Finite immutable observations shared by sources; no comparison or delivery policy."""
 
 from __future__ import annotations
 
@@ -49,6 +49,29 @@ class Record:
     value: str  # Canonical JSON, immutable and bounded by the source.
     url: str
     updated_at: float | None = None
+    input_id: str | None = None
+
+
+def record(
+    key: str,
+    value: Any,
+    url: str,
+    *,
+    secret: str | None = None,
+    updated_at: float | None = None,
+) -> Record:
+    if not key or len(key.encode()) > 1024:
+        raise ValueError("Expected bounded stable record key")
+    full = canonical(value)
+    if secret:
+        key, url, full = (text.replace(secret, "[REDACTED]") for text in (key, url, full))
+    return Record(key, full, url, updated_at)
+
+
+def unique(records: tuple[Record, ...], maximum: int) -> tuple[Record, ...]:
+    if len(records) > maximum or len({item.key for item in records}) != len(records):
+        raise ValueError("Too many records or duplicate stable key")
+    return records
 
 
 @dataclass(frozen=True)
@@ -63,6 +86,8 @@ class RecordSnapshot:
     gap: bool = False
     valid: bool = True
     window_start: float | None = None
+    stream: bool = False  # Independent inputs: no initial baseline suppression or deletion inference.
+    retain_current: bool = False  # A bounded window, never proof of remote deletion.
 
 
 @dataclass(frozen=True)
