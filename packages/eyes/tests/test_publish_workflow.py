@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import json
-import textwrap
+import runpy
+import shlex
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 from zipfile import ZipFile
@@ -50,24 +53,29 @@ def test_eyes_wheel_release_gate_rejects_incomplete_or_mismatched_artifacts(tmp_
     target.parent.mkdir(parents=True)
     target.write_bytes(config.read_bytes())
     version = tomllib.loads(config.read_text())['project']['version']
+    verifier = ROOT / 'scripts/verify_eyes_artifact.py'
+    policy = runpy.run_path(str(verifier))
+    (tmp_path / 'scripts').mkdir()
+    (tmp_path / 'scripts/verify_eyes_artifact.py').write_bytes(verifier.read_bytes())
     (tmp_path / 'dist').mkdir()
     with ZipFile(tmp_path / 'dist/xdog_eyes-test-py3-none-any.whl', 'w') as wheel:
         wheel.writestr('xdog_eyes-test.dist-info/METADATA', '\n'.join([
             'Metadata-Version: 2.4', 'Name: xdog-eyes',
             f'Version: {version if damage != "version" else "0.0.0"}',
-            "Requires-Dist: agent-client-protocol<0.13,>=0.12.1; python_version < '3.15'",
-            'Requires-Dist: croniter<7,>=2.0',
+            *['Requires-Dist: ' + value for value in sorted(policy['APPROVED_REQUIREMENTS'])],
             *(['Requires-Dist: xdog-agent'] if damage == 'dependency' else []), '',
         ]))
-        for name in ('skills/eyes/SKILL.md', 'examples/source-test-review.json', 'examples/scheduled-review.json',
-                     'sources/scheduler.py', 'detectors/scheduler_due.py', 'py.typed'):
+        for name in policy['REQUIRED_RESOURCES']:
             if damage != 'skill' or not name.endswith('SKILL.md'):
-                wheel.writestr(f'xdog/eyes/{name}', '')
+                wheel.writestr(name, '')
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv('RELEASE_TAG', 'v0.0.0' if damage == 'tag' else f'v{version}')
-    script = textwrap.dedent(step['run']).split("python - <<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
+    command = shlex.split(step['run'])
+    assert command[0] == 'python'
+    result = subprocess.run([sys.executable, *command[1:]], capture_output=True, text=True, timeout=10)
     if damage is None:
-        exec(compile(script, '<release-artifact-check>', 'exec'), {})
+        assert result.returncode == 0, result.stderr
     else:
-        with pytest.raises(AssertionError):
-            exec(compile(script, '<release-artifact-check>', 'exec'), {})
+        expected = {'skill': 'missing resources', 'dependency': 'dependency policy mismatch',
+                    'version': 'version does not match', 'tag': 'release tag'}
+        assert result.returncode == 1 and expected[damage] in result.stderr, result.stderr
