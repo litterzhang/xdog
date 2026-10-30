@@ -119,6 +119,8 @@ class InputPanel(Component):
         self._preferred_column: int | None = None
         self._focused = False
         self._command_provider = command_provider or (lambda: {})
+        self._command_token = ""
+        self._command_end = 0
         self._completion_provider: CompletionProvider | None = None
         self._argument_provider: ArgumentCompletionFeed | None = None
         self._argument_active = False
@@ -245,12 +247,12 @@ class InputPanel(Component):
         """Consume worker results on the UI thread; unchanged polls do not repaint."""
         previous = (
             self._completion_span, self._completion_items, self._completion_labels,
-            self._completion_status, self._select_list is not None,
+            self._completion_status, self._select_list is not None, self._command_end,
         )
         self._update_select_list()
         return previous != (
             self._completion_span, self._completion_items, self._completion_labels,
-            self._completion_status, self._select_list is not None,
+            self._completion_status, self._select_list is not None, self._command_end,
         )
 
     def set_autocomplete_max_visible(self, max_visible: int) -> None:
@@ -301,9 +303,17 @@ class InputPanel(Component):
         for row_index in range(first_row, last_row):
             prefix = self._prefix(row_index, first_row)
             row = layout.rows[row_index]
-            row_text = row.text
+            # Source offsets precede visual styling. A command has no tabs or
+            # newlines, so its per-row prefix retains the source character count.
+            command_chars = max(0, min(self._command_end, row.end) - row.start)
+            command, rest = row.text[:command_chars], row.text[command_chars:]
             if row_index == cursor_row:
-                row_text = _with_cursor(row_text, cursor_column, self._focused)
+                command_width = max(0, wcswidth(command))
+                if cursor_column < command_width:
+                    command = _with_cursor(command, cursor_column, self._focused)
+                else:
+                    rest = _with_cursor(rest, cursor_column - command_width, self._focused)
+            row_text = (self._theme.accent(command) if command else "") + rest
             lines.append(prefix + row_text)
         if border_rows:
             lines.append(self._theme.border("─" * width))
@@ -630,12 +640,23 @@ class InputPanel(Component):
                 f"/{name.lstrip('/')}": description for name, description in self._command_provider().items()
             }
             is_command = self._value.casefold() in {name.casefold() for name in normalized}
+            self._command_token = self._value
+            self._command_end = len(self._value) if is_command else 0
             if is_command:
                 self._exact_command_context = (self._value, self._cursor)
             matching = [
                 (name, description) for name, description in sorted(normalized.items())
                 if name[1:].casefold().startswith(prefix.casefold()) and name.casefold() != self._value.casefold()
             ]
+        else:
+            match = re.match(r"/\S+", self._value)
+            token = match.group() if match is not None else ""
+            if token != self._command_token:
+                # Reuse recognition while editing arguments; rendering and cursor
+                # movement must not rescan a host's command/skill directories.
+                self._command_token = token
+                names = {f"/{name.lstrip('/')}".casefold() for name in self._command_provider()} if token else set()
+                self._command_end = len(token) if token.casefold() in names else 0
         if not matching and not is_command and self._argument_provider is not None:
             arguments = self._argument_provider.lookup(self._value, self._cursor)
             if arguments is not None:
@@ -681,6 +702,8 @@ class InputPanel(Component):
             return
         self._value = ""
         self._cursor = 0
+        self._command_token = ""
+        self._command_end = 0
         self._hist_idx = -1
         self._hist_stash = ""
         self._select_list = None

@@ -1117,7 +1117,19 @@ class Orchestrator:
 
     async def read_session_info(self, group_id: str) -> dict[str, Any]:
         runtime = self._runtimes.get(group_id)
-        return await runtime.read_session_info() if runtime is not None else {}
+        if runtime is None:
+            return {}
+        info = await runtime.read_session_info()
+        session_id = info.get('session_id', '')
+        if session_id and info.get('history') and self._inputs is not None and self._outputs is not None:
+            from xdog.claw.core.runtime.message_metadata import enrich_history
+            scope = InputScope(group_id, runtime.workspace_dir)
+            records = await self._inputs.store.records(scope)
+            outputs = await self._outputs.store.records(scope)
+            if runtime.get_new_session_id() != session_id:
+                raise ValueError('History owner changed while reading message receipts')
+            enrich_history(info['history'], records, outputs, session_id)
+        return info
 
     def capture_source(self, group_id: str, expected_session: str) -> SourceCapture:
         runtime = self._runtimes.get(group_id)

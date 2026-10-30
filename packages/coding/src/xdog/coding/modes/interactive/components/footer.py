@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from xdog.coding.modes.interactive.theme import Theme, format_tokens
-from xdog.tui.components.status_line import StatusLine
+from xdog.tui.components.status_line import StatusLine, format_model_label
 
 
 class FooterComponent(StatusLine):
@@ -26,14 +26,9 @@ class FooterComponent(StatusLine):
         max_context: int = 200_000,
     ) -> None:
         """Update footer content with current session state."""
-        self._model = model.rsplit("/", 1)[-1]
+        self._model = format_model_label(model, thinking)
         self._context = ""
-        parts: list[str] = []
-
-        if model:
-            parts.append(model)
-        if thinking and thinking != "off":
-            parts.append(f"thinking:{thinking}")
+        parts: list[str] = [self._model]
         if permission_mode:
             parts.append(f"permissions:{permission_mode}")
         if session_id:

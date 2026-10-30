@@ -1,0 +1,56 @@
+{
+  "cases": [
+    {
+      "name": "typed crawl to SDK summary to publication",
+      "scripts": {
+        "crawl": {
+          "crawl": {
+            "date": "2026-10-09",
+            "source": "https://blog.942295.xyz",
+            "first_run": true,
+            "discovered": 1,
+            "checked": 1,
+            "articles": [
+              {
+                "title": "Example",
+                "url": "https://blog.942295.xyz/2026/01/27/example/",
+                "published": "2026-01-27",
+                "change": "newly discovered",
+                "text": "Article content",
+                "truncated": false
+              }
+            ],
+            "warnings": [],
+            "fingerprints": {
+              "example": "abc"
+            }
+          }
+        },
+        "publish": {
+          "result": {
+            "daily_summary": "# Daily digest",
+            "summary_path": "/fixture/2026-10-09.md",
+            "changed_posts": 1
+          }
+        }
+      },
+      "agents": {
+        "summarize": {
+          "daily_summary": "# Daily digest"
+        }
+      },
+      "expect": {
+        "output": {
+          "result": {
+            "changed_posts": 1
+          }
+        },
+        "calls": {
+          "crawl": 1,
+          "summarize": 1,
+          "publish": 1
+        }
+      }
+    }
+  ]
+}

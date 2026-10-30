@@ -615,11 +615,7 @@ class GroupRuntime:
             info["session_name"] = meta.label
             transcript = self.transcript_store.load_transcript(meta.session_id)
             info["history_format"] = 2
-            info["history"] = [
-                display_entry
-                for entry in transcript
-                if (display_entry := _display_history_entry(entry)) is not None
-            ]
+            info["history"] = _display_history_entries(transcript, group_id)
             info["usage"] = _sum_transcript_usage(transcript)
         if self.model:
             info["model"] = self.model
@@ -740,6 +736,41 @@ class GroupRuntime:
             self._retired_extensions.add(self._active_session.extensions)
             self._active_session = None
         self._session_last_active = 0.0
+
+
+def _display_history_entries(entries: list[dict[str, Any]], group: str = '') -> list[dict[str, Any]]:
+    """Carry validated host actor markers across the corresponding turn's rows."""
+    from xdog.claw.core.identity import InputIdentity
+    from xdog.claw.core.runtime.message_metadata import identity_metadata
+
+    metadata: dict[str, Any] = {}
+    history = []
+    marked = False
+    for entry in entries:
+        if entry.get('role') == 'custom' and entry.get('type') == 'xdog.claw.actor.v1':
+            marked = True
+            metadata = {}  # Invalid/unknown context must not inherit a prior speaker.
+            data = entry.get('data', {})
+            try:
+                identity = InputIdentity.from_dict(data.get('identity'))
+                identifier = data.get('input_id')
+                if isinstance(identifier, str):
+                    metadata = identity_metadata(identity, group=group, input_id=identifier)
+            except (ValueError, TypeError, AttributeError):
+                pass
+            continue
+        projected = _display_history_entry(entry)
+        if projected is None:
+            continue
+        # A legacy human entry without a marker starts an unknown identity, not
+        # the previous turn's actor. Modern markers use the exact input ID.
+        if projected['role'] == 'user':
+            if not marked:
+                metadata = {}
+            marked = False
+        projected['message_metadata'] = dict(metadata)
+        history.append(projected)
+    return history
 
 
 def _display_history_entry(entry: dict[str, Any]) -> dict[str, Any] | None:

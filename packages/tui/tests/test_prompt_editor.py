@@ -163,3 +163,107 @@ def test_unfocused_editor_has_no_cursor_marker_or_reverse_video_cursor() -> None
     assert any(CURSOR_MARKER + "👩‍💻" in line for line in focused)
     assert not any("\x1b[7m" in line for line in focused)
     assert [strip_ansi(line) for line in focused] == [strip_ansi(line) for line in unfocused]
+
+
+class CommandColors(PlainTheme):
+    accent = staticmethod(lambda value: '\x1b[33m' + value + '\x1b[39m')
+    dim = staticmethod(lambda value: '\x1b[90m' + value + '\x1b[39m')
+
+
+def test_typed_registered_command_is_highlighted_but_not_its_arguments() -> None:
+    editor = PromptEditor(CommandColors(), command_provider=lambda: {'goal': 'Manage goal', '/help': 'Help'})
+    editor.set_autocomplete_visible(False)
+    editor.set_text('/goal status /help')
+    rows = editor.render(80)
+    assert any('\x1b[33m/goal\x1b[39m status /help' in row for row in rows)
+    assert editor.get_text() == '/goal status /help'
+    editor.set_text('/HELP')
+    assert any('\x1b[33m/HELP\x1b[39m' in row for row in editor.render(80))
+    editor.set_text('/go')
+    assert not any('\x1b[33m/go' in row for row in editor.render(80))
+    editor.set_text('/tmp/file')
+    assert not any('\x1b[33m/tmp' in row for row in editor.render(80))
+    editor.set_text('ordinary /help')
+    assert not any('\x1b[33m/help' in row for row in editor.render(80))
+
+
+def test_command_styling_preserves_wrapping_graphemes_tabs_and_hardware_cursor() -> None:
+    import re
+
+    from xdog.tui.components.input_panel import _with_cursor
+    from xdog.tui.editor_layout import layout_editor
+    from xdog.tui.utils import visible_width
+
+    text = '/测试👩‍💻\targ\nnext'
+    editor = PromptEditor(CommandColors(), command_provider=lambda: {'测试👩‍💻': 'Command'})
+    editor.set_render_budget(30, show_borders=False)
+    editor.set_autocomplete_visible(False)
+    editor.set_text(text)
+    for width in (5, 6, 9, 40):
+        layout = layout_editor(text, width - editor.content_column)
+        offsets = {offset for row in layout.rows for offset, _column in row.boundaries}
+        for focused in (True, False):
+            editor.focused = focused
+            for offset in offsets:
+                editor._cursor = offset
+                cursor_row, cursor_column = layout.position(offset)
+                actual = editor.render(width)
+                # Remove SGR only: the hardware cursor marker must survive at
+                # exactly its original position, including inside the command.
+                unstyled = [re.sub(r'\x1b\[[0-9;]*m', '', row) for row in actual]
+                expected = [('> ' if index == 0 else '  ') + (
+                    _with_cursor(row.text, cursor_column, focused) if index == cursor_row else row.text)
+                    for index, row in enumerate(layout.rows)]
+                assert unstyled == expected
+                assert all(visible_width(row) <= width for row in actual)
+    editor.focused = False
+    rows = editor.render(5)
+    assert any('\x1b[33m' in row[2:] for row in rows[1:])  # Wrapped command stays highlighted.
+    assert all('\x1b[33m' not in row for row in rows if 'arg' in strip_ansi(row) or 'next' in strip_ansi(row))
+
+
+def test_highlight_rendering_does_not_query_command_provider_or_change_submit() -> None:
+    calls = []
+
+    def commands():
+        calls.append(True)
+        return {'goal': 'Goal'}
+
+    editor = PromptEditor(CommandColors(), command_provider=commands)
+    editor.set_text('/goal status')
+    before = len(calls)
+    for _ in range(10):
+        editor.render(80)
+        editor.poll_autocomplete()
+        editor.handle_input(KeyEvent(key='left'))
+    assert len(calls) == before
+    submitted = []
+    editor.on_submit = submitted.append
+    editor.handle_input(KeyEvent(key='enter'))
+    assert submitted == ['/goal status'] and editor.get_text() == ''
+    editor.set_text('ordinary text')
+    assert not any('\x1b[33mordinary' in row for row in editor.render(80))
+
+
+def test_newly_registered_exact_command_invalidates_highlighting_without_suggestions() -> None:
+    commands = {}
+    editor = PromptEditor(CommandColors(), command_provider=lambda: commands)
+    editor.set_text('/new')
+    assert not editor.autocomplete_active
+    commands['new'] = 'New command'
+    assert editor.poll_autocomplete()
+    assert not editor.autocomplete_active
+    assert any('\x1b[33m/new\x1b[39m' in row for row in editor.render(80))
+    assert not editor.poll_autocomplete()
+    commands.clear()
+    assert editor.poll_autocomplete()
+    assert not any('\x1b[33m/new' in row for row in editor.render(80))
+
+
+def test_completion_list_styles_remain_unchanged() -> None:
+    from xdog.tui.components.input_panel import SlashSelectList
+
+    menu = SlashSelectList([('/goal', 'Goal'), ('/help', 'Help')])
+    selected, other = menu.render(80, CommandColors())
+    assert selected.startswith('\x1b[33m→ /goal')
+    assert other.startswith('\x1b[90m  /help') and other.endswith('\x1b[39m')

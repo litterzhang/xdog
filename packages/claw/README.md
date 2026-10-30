@@ -71,6 +71,23 @@ context rather than navigating to a saved branch.
 - [Eyes scheduling](SCHEDULER.md) and [Flow CLI tool](#installed-capabilities-eyes-and-flow)
 - [Child authority](#child-authority-and-persisted-constraints)
 
+## Weixin login from the terminal
+
+```bash
+uv run xdog-claw channel login --weixin --group main
+```
+
+The command prints the QR code directly in the terminal using the packaged
+`qrcode` dependency, then waits for scanning/confirmation in WeChat. No browser or
+graphical desktop is required; the login link is also printed as a fallback.
+Only a confirmed login updates the saved account and configuration. Restart the
+gateway afterwards to apply the binding.
+
+`--group` selects the conversation that receives this Weixin account's messages.
+The current gateway loads one configured Weixin account: logging into another
+account/group changes that selected binding; it does not add a second simultaneous
+Weixin AI. A failed/expired scan does not replace the existing binding.
+
 ## Input identities and XHS
 
 Claw binds each input to a host-verified actor and source channel. TUI and the
@@ -105,6 +122,18 @@ separately from group personality and commenter identities:
 ```bash
 uv run xdog-claw channel login --xhs --group main --base-url http://127.0.0.1:18060
 ```
+
+When scanning is needed, the CLI displays the supplied QR PNG directly in the
+terminal, with a saved-image path as a fallback. It does not create a second QR or
+require a graphical desktop. Widen very narrow terminals (at least 48 columns),
+or open the PNG if the rendered code cannot be scanned. The temporary PNG is
+removed when the login wait ends; already authenticated accounts need no new QR.
+
+Login-status reads tolerate up to three attempts for transient network/timeout and
+HTTP 408/500/502/503/504 failures. Auth denials, rate limits and invalid responses
+fail closed; QR creation and comment/publish requests are never automatically
+replayed. If the CLI reports a backend failure after scanning, keep the cookies
+and retry login to recheck the account rather than deleting the session.
 
 Use the existing group persona, then explicitly configure `xhs_replies_enabled` and/or
 `xhs_publish_enabled` (both default false). `message(action="channels")` lists
@@ -145,6 +174,29 @@ reply confidentiality is handled by the identity instructions, not a result filt
 
 See [configuration and identity design](../../docs/claw-input-identity-design.md)
 for a complete YAML example and the limits of tool-name allowlists.
+
+## Message identity and delivery labels
+
+Claw's TUI shows a muted metadata header on input, Agent, reasoning and tool
+messages. Inputs identify the host-bound role (`admin`, `user`, `external_user`
+or `system`), speaker, source channel and group. Agent messages distinguish the
+input source from the **reply destination**, including recorded transport status.
+Tool sends/publications show their selected channel separately; they do not change
+the ordinary reply route. Local Native output is labelled `本地显示`, not a
+verified external delivery.
+
+History labels come from persisted host actor markers and exact original
+input/attempt/tool receipts, never from nicknames or a model's claims. Older
+messages without those facts show `unknown`/`无投递记录`; a destination is not proof
+that anything was sent. XHS's `unknown` receipt displays as `未确认`, including when
+the browser backend reports submission success. It does not prove public visibility
+or moderation status and never authorizes an automatic resend.
+
+The TUI subscribes to group-scoped completion views for channel/ACP inputs through
+its existing Native connection (`input_updates: 1`). These are read-only views of
+ordinary accepted inputs, not extra sends to TUI, new execution, steering or human
+authorization. They preserve unsent drafts and do not enter the local input history.
+The existing ACP-only subscription retains its narrower behavior.
 
 ## Interactive terminal
 

@@ -54,6 +54,8 @@ from xdog.agent.mcp.oauth import normalize_auth_reply
 from xdog.ai.types import ImageContent
 from xdog.claw.channels.tui.history_panel import HistoryPanel
 from xdog.claw.channels.tui.mcp_data import McpDataReceiver
+from xdog.claw.channels.tui.message_metadata import clean_metadata
+from xdog.claw.channels.tui.message_metadata import label as metadata_label
 from xdog.claw.channels.tui.source_reader import SourceReceiver
 from xdog.claw.channels.tui.submission import TERMINAL, NativeSubmission, valid_namespace, validate_receipt
 from xdog.claw.config import get_config_dir, get_data_dir
@@ -74,13 +76,13 @@ from xdog.tui.components.inline_layout import CompactText, InlineLayout
 from xdog.tui.components.input_panel import InputPanel, SlashSelectList
 from xdog.tui.components.markdown import DefaultTextStyle, MarkdownTheme
 from xdog.tui.components.mcp_panel import McpPanel
-from xdog.tui.components.messages import AssistantMessages, ThinkingMessage, Transcript
+from xdog.tui.components.messages import AssistantMessages, NormalMessage, ThinkingMessage, Transcript
 from xdog.tui.components.messages import UserMessage as SharedUserMessage
 from xdog.tui.components.output_panel import OutputPanel
 from xdog.tui.components.panel import PanelTheme
 from xdog.tui.components.parent_draft_panel import ParentDraftPanel
 from xdog.tui.components.spacer import Spacer
-from xdog.tui.components.status_line import StatusLine
+from xdog.tui.components.status_line import StatusLine, format_model_label
 from xdog.tui.components.text import Text
 from xdog.tui.components.tool_inventory import ToolInventoryPanel, inventory_records
 from xdog.tui.components.tool_message import ToolMessage as ToolMessageView
@@ -101,7 +103,7 @@ from xdog.tui.transcript_browser import TranscriptRecord
 from xdog.tui.transcript_transfer import TransferOptions, parse_transfer
 from xdog.tui.tui import TUI, Component, Container
 from xdog.tui.url_open import ReviewedUrlOpener
-from xdog.tui.utils import sanitize_terminal_text
+from xdog.tui.utils import apply_background_to_line, sanitize_terminal_text, truncate_to_width
 
 logger = logging.getLogger(__name__)
 
@@ -336,25 +338,125 @@ def _build_waiting_status(tick: int, elapsed: str, conn_status: str, phrase: str
 # ── Message Components (matching OpenClaw components exactly) ─────────
 
 
-class UserMessage(SharedUserMessage):
-    """Claw style adapter for shared user messages."""
+class _MessageHeader(Text):
+    """Keep the shared three-column gutter, including on narrow terminals."""
 
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str = '') -> None:
+        super().__init__(text, 3, 0)
+        self._label_rows: tuple[int, list[str]] | None = None
+
+    def invalidate(self) -> None:
+        self._label_rows = None
+        super().invalidate()
+
+    def render(self, width: int) -> list[str]:
+        if width <= 0:
+            return []
+        if self._label_rows is None or self._label_rows[0] != width:
+            self._label_rows = (width, [truncate_to_width(row, width, ellipsis='')
+                                        for row in super().render(width)])
+        return self._label_rows[1]
+
+
+class UserMessage(SharedUserMessage):
+    """Claw input labels share the message's existing background and padding."""
+
+    def __init__(self, text: str, *, metadata: object = None) -> None:
         super().__init__(text, MD_THEME, DefaultTextStyle(color=theme_user_text, bg_color=theme_user_bg))
+        self._metadata_header = _MessageHeader()
+        self.set_metadata(metadata)
+
+    def set_metadata(self, metadata: object) -> None:
+        self._metadata_header.set_text(theme_dim(metadata_label(clean_metadata(metadata), 'user')))
+        self.invalidate()
+
+    def render(self, width: int) -> list[str]:
+        rows = super().render(width)
+        if not rows:
+            return rows
+        header = [apply_background_to_line(row, width, theme_user_bg)
+                  for row in self._metadata_header.render(width)]
+        return [rows[0], *header, *rows[1:]]
+
+
+class _AssistantText(NormalMessage):
+    def __init__(self, text: str, metadata: object, *, kind: str = 'agent') -> None:
+        super().__init__(text, MD_THEME, marker_style=theme_dim)
+        self.metadata = clean_metadata(metadata)
+        self._metadata_header = _MessageHeader(theme_dim(metadata_label(self.metadata, kind)))
+
+    def render(self, width: int) -> list[str]:
+        rows = super().render(width)
+        return self._metadata_header.render(width) + rows if rows else []
+
+
+class ExternalMessage(Component):
+    """Non-human input uses the Agent-style dot, never the human input marker."""
+
+    transcript_role = 'system'
+    detail_title = 'external input'
+
+    def __init__(self, text: str, metadata: object) -> None:
+        super().__init__()
+        self._text = _AssistantText(text, metadata, kind='system')
+
+    @property
+    def detail_body(self) -> str:
+        return self._text.source_text
+
+    def render(self, width: int) -> list[str]:
+        return self._text.render(width)
+
+    def invalidate(self) -> None:
+        self._text.invalidate()
+
+
+class _ThinkingText(ThinkingMessage):
+    def __init__(self, text: str, metadata: object) -> None:
+        super().__init__(text, theme_dim)
+        self.metadata = clean_metadata(metadata)
+        self._metadata_header = _MessageHeader(theme_dim(metadata_label(self.metadata, 'thinking')))
+
+    def render(self, width: int) -> list[str]:
+        rows = super().render(width)
+        return self._metadata_header.render(width) + rows if rows else []
 
 
 class AssistantMessage(AssistantMessages):
-    """Claw style adapter; transcript retains thinking and prose separately."""
+    """Retain ordinary reasoning/prose identities for shared transcript controls."""
 
-    def __init__(self, text: str, *, thinking: str = "") -> None:
+    thinking_message: _ThinkingText
+    normal_message: _AssistantText
+
+    def __init__(self, text: str, *, thinking: str = '', metadata: object = None) -> None:
         super().__init__(text, thinking, MD_THEME, theme_dim)
+        self.thinking_message = _ThinkingText(thinking, metadata)
+        self.normal_message = _AssistantText(text, metadata)
+        self.children[:] = [self.thinking_message, self.normal_message]
+        self._metadata = clean_metadata(metadata)
+
+    def set_metadata(self, metadata: object) -> None:
+        checked = clean_metadata(metadata)
+        if checked == self._metadata:
+            return
+        self._metadata = checked
+        self.thinking_message.metadata = checked
+        self.normal_message.metadata = checked
+        self.thinking_message._metadata_header.set_text(
+            theme_dim(metadata_label(self.thinking_message.metadata, 'thinking')))
+        self.normal_message._metadata_header.set_text(
+            theme_dim(metadata_label(self.normal_message.metadata, 'agent')))
+        self.invalidate()
 
 
 class ToolMessage(Container):
     """ID-keyed tool lifecycle retaining full output for expansion."""
 
-    def __init__(self, name: str, arguments: dict[str, Any] | None, *, tool_call_id: str = "") -> None:
+    def __init__(self, name: str, arguments: dict[str, Any] | None, *, tool_call_id: str = "",
+                 metadata: object = None) -> None:
         super().__init__()
+        self.metadata = clean_metadata(metadata)
+        self._metadata_header = _MessageHeader()
         self._view = ToolMessageView()
         self._name = sanitize_terminal_text(name)
         self._tool_call_id = sanitize_terminal_text(tool_call_id)
@@ -370,6 +472,7 @@ class ToolMessage(Container):
         self._header = Text("", 1, 0)
         self._body = Text("", 1, 0)
         self.add_child(Spacer(1))
+        self.add_child(self._metadata_header)
         self.add_child(self._header)
         self.add_child(self._body)
         self.add_child(Spacer(1))
@@ -393,7 +496,7 @@ class ToolMessage(Container):
             running=self._state == "running",
             style=theme_error if self._is_error else theme_dim,
         )
-        rows = self._view.render(width)[:-1]
+        rows = self._metadata_header.render(width) + self._view.render(width)[:-1]
         for child in self.children:
             if isinstance(child, Image):
                 rows.extend(child.render(width))
@@ -416,6 +519,15 @@ class ToolMessage(Container):
         if self._state == "canceled":
             return
         self._result = sanitize_terminal_text(result)
+        if self._name == 'message' and not is_error:
+            try:
+                receipt = json.loads(result)
+                if (isinstance(receipt, dict) and isinstance(receipt.get('channel'), str)
+                        and isinstance(receipt.get('status'), str)):
+                    self.metadata = clean_metadata({**self.metadata, 'destinations': [
+                        {**receipt, 'channel': receipt.get('channel_name', receipt['channel'])}]})
+            except (ValueError, TypeError):
+                pass
         self._is_error = is_error
         self._state = "error" if is_error else "success"
         self._completed = True
@@ -445,6 +557,7 @@ class ToolMessage(Container):
         super().invalidate()
 
     def _render(self) -> None:
+        self._metadata_header.set_text(theme_dim(metadata_label(self.metadata, 'tool')))
         self._header_mode = ToolMessageView.ascii_only()
         summary = ToolMessageView.summarize_args(self._arguments, self._name)
         self._argument_summary = summary
@@ -484,45 +597,61 @@ class ChatLog(Transcript):
         self._streaming_runs: dict[str, AssistantMessage] = {}
         self._tools: dict[str, ToolMessage] = {}
         self._details_expanded = False
+        self.input_ids: set[str] = set()
+        self.input_responses: dict[str, list[str]] = {}
 
-    def add_user(self, text: str) -> None:
-        self._append(UserMessage(text))
+    def add_user(self, text: str, *, metadata: object = None) -> None:
+        checked = clean_metadata(metadata)
+        if checked.get('input_id'):
+            self.input_ids.add(checked['input_id'])
+        if checked.get('role') == 'system':
+            self._append(ExternalMessage(text, checked))
+        else:
+            self._append(UserMessage(text, metadata=checked))
 
-    def add_assistant(self, text: str, *, thinking: str = "") -> None:
+    def add_assistant(self, text: str, *, thinking: str = "", metadata: object = None) -> None:
         """Add a completed assistant message (for history replay)."""
-        self._append(AssistantMessage(text, thinking=thinking))
+        checked = clean_metadata(metadata)
+        if checked.get('input_id') and text:
+            self.input_responses.setdefault(checked['input_id'], []).append(text)
+        self._append(AssistantMessage(text, thinking=thinking, metadata=checked))
 
     def add_system(self, text: str) -> None:
         self._append(Spacer(1))
-        self._append(Text(theme_system(sanitize_terminal_text(text)), 1, 0))
+        self._append(Text(theme_dim('system · 来源:tui') + '\n'
+                          + theme_system(sanitize_terminal_text(text)), 1, 0))
 
-    def start_assistant(self, text: str, run_id: str = "default") -> AssistantMessage:
+    def start_assistant(self, text: str, run_id: str = "default", *, metadata: object = None) -> AssistantMessage:
         """Start a new assistant message for streaming (matching OpenClaw)."""
         existing = self._streaming_runs.get(run_id)
         if existing is not None:
             existing.set_text(text)
             return existing
-        comp = AssistantMessage(text)
+        comp = AssistantMessage(text, metadata=metadata)
         self._streaming_runs[run_id] = comp
         self._append(comp)
         return comp
 
-    def update_assistant(self, text: str, run_id: str = "default") -> None:
+    def update_assistant(self, text: str, run_id: str = "default", *, metadata: object = None) -> None:
         """Update an existing streaming assistant message (matching OpenClaw)."""
         existing = self._streaming_runs.get(run_id)
         if existing is None:
-            self.start_assistant(text, run_id)
+            self.start_assistant(text, run_id, metadata=metadata)
             return
+        if metadata is not None:
+            existing.set_metadata(metadata)
         existing.set_text(text)
 
-    def finalize_assistant(self, text: str, run_id: str = "default") -> None:
+    def finalize_assistant(self, text: str, run_id: str = "default", *, metadata: object = None) -> None:
         """Finalize a streaming assistant message (matching OpenClaw)."""
         existing = self._streaming_runs.get(run_id)
         if existing is not None:
+            if metadata is not None:
+                existing.set_metadata(metadata)
             existing.set_text(text)
             del self._streaming_runs[run_id]
             return
-        self._append(AssistantMessage(text))
+        self._append(AssistantMessage(text, metadata=metadata))
 
     def retain_assistant(self, run_id: str = "default") -> None:
         """Retire the streaming owner but retain already displayed partial data."""
@@ -542,11 +671,12 @@ class ChatLog(Transcript):
         arguments: dict[str, Any] | None,
         *,
         tool_call_id: str,
+        metadata: object = None,
     ) -> ToolMessage:
         existing = self._tools.get(tool_call_id)
         if existing is not None:
             return existing
-        component = ToolMessage(name, arguments, tool_call_id=tool_call_id)
+        component = ToolMessage(name, arguments, tool_call_id=tool_call_id, metadata=metadata)
         self._tools[tool_call_id] = component
         self._append(component)
         return component
@@ -578,6 +708,8 @@ class ChatLog(Transcript):
         self.clear()
         self._streaming_runs.clear()
         self._tools.clear()
+        self.input_ids.clear()
+        self.input_responses.clear()
 
     def detail_records(self) -> tuple[DetailRecord, ...]:
         """Return immutable full-detail snapshots in transcript order."""
@@ -813,6 +945,7 @@ class ChatApp:
         self._history_tools: dict[str, ToolMessage] = {}
         self._acp_seen_session = ""
         self._acp_seen: set[str] = set()
+        self._pending_input_views: dict[str, dict[str, Any]] = {}
         self._replaying_history = False
 
         # Token usage tracking (matching OpenClaw's footer)
@@ -2934,11 +3067,10 @@ class ChatApp:
             pct = min(100.0, context_tokens / self._context_window * 100) if context_tokens else 0
             stats.append(f"{pct:.0f}%/{_format_tokens(self._context_window)}")
         thinking = st.get("thinking")
-        if isinstance(thinking, str) and thinking in {"minimal", "low", "medium", "high", "xhigh"}:
-            stats.append("thinking:" + str(thinking))
+        model_label = format_model_label(model, thinking if isinstance(thinking, str) else None)
         # Keep live usage/context visible at ordinary widths; long model/group/
         # session identities remain inspectable in the header and native catalogs.
-        return " | ".join((" ".join(stats), model, f"agent {group}", f"session {session_short}"))
+        return " | ".join((" ".join(stats), model_label, f"agent {group}", f"session {session_short}"))
 
     def _set_activity_status(self, status: str) -> None:
         """Set activity status and re-render status bar (matching OpenClaw)."""
@@ -3272,7 +3404,8 @@ class ChatApp:
                 content = self._transformed_inputs.pop(input_id, content)
                 self._chat_log.close_assistant(item.owner)
                 image_count = len(images)
-                self._chat_log.add_user(content + (f"\n[Images: {image_count}]" if image_count else ""))
+                self._chat_log.add_user(content + (f"\n[Images: {image_count}]" if image_count else ""),
+                                        metadata={'role': 'admin', 'source': 'tui', 'group': self.group_id})
                 self._editor.add_to_history(content)
             else:
                 self._transformed_inputs.pop(input_id, None)
@@ -3520,7 +3653,8 @@ class ChatApp:
         self._clear_todos()  # clear any finalized todos from previous turn
         self._active_images = images
         image_count = len(images)
-        self._chat_log.add_user(value + (f"\n[Images: {image_count}]" if image_count else ""))
+        self._chat_log.add_user(value + (f"\n[Images: {image_count}]" if image_count else ""),
+                                metadata={'role': 'admin', 'source': 'tui', 'group': self.group_id})
         self._active_run_id = f"run-{uuid.uuid4().hex}"
         self._active_text = value
         if self._native_supported:
@@ -3611,7 +3745,10 @@ class ChatApp:
             self._chat_log.add_system('Original input remains queued/running; no new submission')
             return
         if checked['response']:
-            self._chat_log.add_assistant(checked['response'])
+            self._chat_log.add_assistant(checked['response'], metadata={
+                'source': 'tui', 'role': 'admin', 'group': submission.group_id,
+                'input_id': 'native:' + submission.run_id,
+                'destinations': [{'channel': 'tui', 'status': 'local'}]})
         self._chat_log.add_system('Original input receipt: ' + checked['status']
                                   + (': ' + checked['error'] if checked['error'] else ''))
         self._native_submission = None
@@ -3714,6 +3851,11 @@ class ChatApp:
             if not isinstance(entry, dict):
                 continue
             role = entry.get("role")
+            metadata = {**entry.get('message_metadata', {}),
+                        'source': entry.get('message_metadata', {}).get('source') or entry.get('channel', ''),
+                        'group': self.group_id}
+            if entry.get('message_id'):
+                metadata.setdefault('input_id', entry['message_id'])
             raw_content = entry.get("content", "")
             channel = entry.get("channel", "")
             parts = raw_content if self._history_format >= 2 and isinstance(raw_content, list) else []
@@ -3731,12 +3873,11 @@ class ChatApp:
                     if self._acp_seen_session != self._gateway_session_id:
                         self._acp_seen_session = self._gateway_session_id
                         self._acp_seen.clear()
-                    if isinstance(entry.get("message_id"), str):
-                        self._acp_seen.add(entry["message_id"])
-                    self._chat_log.add_system(content)
+                    self._chat_log.add_user(content, metadata=metadata)
                 else:
-                    self._chat_log.add_user(content)
-                    self._editor.add_to_history(content)
+                    self._chat_log.add_user(content, metadata=metadata)
+                    if channel in {'', 'tui'}:
+                        self._editor.add_to_history(content)
             elif role == "assistant":
                 thinking = "".join(
                     str(part.get("thinking", ""))
@@ -3744,14 +3885,14 @@ class ChatApp:
                     if isinstance(part, dict) and part.get("type") == "thinking"
                 )
                 if content or thinking:
-                    self._chat_log.add_assistant(content, thinking=thinking)
+                    self._chat_log.add_assistant(content, thinking=thinking, metadata=metadata)
                 for part in parts:
                     if isinstance(part, dict) and part.get("type") == "toolCall":
                         call_id = str(part.get("id", ""))
                         self._history_tools[call_id] = self._chat_log.add_tool(
                             str(part.get("name", "tool")),
                             part.get("arguments") if isinstance(part.get("arguments"), dict) else None,
-                            tool_call_id=call_id,
+                            tool_call_id=call_id, metadata=metadata,
                         )
             elif role == "toolResult":
                 call_id = str(entry.get("tool_call_id", ""))
@@ -3765,8 +3906,10 @@ class ChatApp:
                     tool = self._chat_log.add_tool(
                         str(entry.get("tool_name", "tool")),
                         None,
-                        tool_call_id=call_id,
+                        tool_call_id=call_id, metadata=metadata,
                     )
+                elif metadata:
+                    tool.metadata = clean_metadata(metadata)
                 tool.set_result(result, is_error=bool(entry.get("is_error", False)))
 
     def _handle_response(self, msg: Mapping[str, Any]) -> None:
@@ -3778,10 +3921,11 @@ class ChatApp:
                 return  # Removed extension controls cannot touch a successor owner or draft.
         if msg_type == 'notification':
             if msg.get('group_id') == self.group_id and isinstance(msg.get('content'), str):
-                self._chat_log.add_system(msg['content'])
+                self._chat_log.add_assistant(msg['content'], metadata={'source': 'message', 'group': self.group_id,
+                    'destinations': [{'channel': 'tui', 'status': 'local'}]})
                 self._tui.request_render()
             return
-        if msg_type == "acp_input_completed":
+        if msg_type in {"acp_input_completed", "channel_input_completed"}:
             if (msg.get("group_id") != self.group_id or not isinstance(msg.get("session_id"), str)
                     or not msg.get("session_id") or self._gateway_session_id
                     and msg.get("session_id") != self._gateway_session_id):
@@ -3795,12 +3939,26 @@ class ChatApp:
             identifier = msg["message_id"]
             if not identifier or identifier in self._acp_seen:
                 return
+            if self._history_loading:
+                self._pending_input_views[identifier] = msg
+                return  # Finish the frozen history before merging completion notices.
             self._acp_seen.add(identifier)
             if not self._gateway_session_id:
                 self._chat_log.add_system("ACP group session: " + msg["session_id"])
-            self._chat_log.add_system(f"[External: {msg['source']}]\n{msg['instruction']}")
-            if msg["response"]:
-                self._chat_log.add_assistant(msg["response"])
+            metadata = {**clean_metadata(msg.get('message_metadata', {
+                'source': 'acp' if msg_type == 'acp_input_completed' else msg['source'],
+                'role': 'system' if msg_type == 'acp_input_completed' else 'unknown'})), 'input_id': identifier}
+            if identifier not in self._chat_log.input_ids:
+                self._chat_log.add_user((f"[External: {msg['source']}]\n" if msg_type == 'acp_input_completed' else '')
+                                        + msg['instruction'], metadata=metadata)
+            response = msg['response']
+            displayed = '\n\n'.join(self._chat_log.input_responses.get(identifier, ()))
+            if displayed and response == displayed:
+                response = ''
+            elif displayed and response.startswith(displayed + '\n\n'):
+                response = response[len(displayed) + 2:]
+            if response:
+                self._chat_log.add_assistant(response, metadata=metadata)
             if msg["error"]:
                 self._chat_log.add_system("External input failed: " + msg["error"])
             self._tui.request_render()
@@ -4664,6 +4822,9 @@ class ChatApp:
             self._replaying_history = False
             self._history_tools.clear()
             self._history_loading = False
+            pending, self._pending_input_views = self._pending_input_views, {}
+            for notice in pending.values():
+                self._handle_response(notice)
             self._connection_ready = True
             self._set_connection_status("connected")
             self._request_native_receipt()
@@ -4778,7 +4939,7 @@ class ChatApp:
             self._chat_log.add_tool(
                 str(msg.get("name", "tool")),
                 msg.get("arguments") if isinstance(msg.get("arguments"), dict) else None,
-                tool_call_id=str(msg.get("id", "")),
+                tool_call_id=str(msg.get("id", "")), metadata=msg.get('message_metadata'),
             )
             self._set_activity_status("running")
             return
@@ -4816,7 +4977,7 @@ class ChatApp:
             if not self._active_run_id:
                 self._active_run_id = run_id
                 self._streaming_output_chars = 0
-            self._chat_log.update_assistant(content, run_id)
+            self._chat_log.update_assistant(content, run_id, metadata=msg.get('message_metadata'))
             # content is accumulated text so far — use its length directly
             self._streaming_output_chars = len(content)
             self._update_busy_status()
@@ -4839,10 +5000,13 @@ class ChatApp:
 
             if content:
                 # Non-streamed response — finalize with full content
-                self._chat_log.finalize_assistant(content, run_id)
+                self._chat_log.finalize_assistant(content, run_id, metadata=msg.get('message_metadata'))
             else:
                 # Streamed deltas already delivered the content — just
                 # close the streaming run without appending a new component.
+                existing = self._chat_log._streaming_runs.get(run_id)
+                if existing is not None and msg.get('message_metadata') is not None:
+                    existing.set_metadata(msg['message_metadata'])
                 self._chat_log.close_assistant(run_id)
                 # If no existing run found, nothing to finalize — the
                 # content was already rendered via deltas.
@@ -5193,7 +5357,7 @@ class ChatApp:
 
                          "tool_inventory": 1,
                          "skill_controls": 1, "session_compaction": 1, "saved_source": 1, "saved_timeline": 1,
-                         "acp_updates": 0, "input_receipts": 1}
+                         "input_updates": 1, "input_receipts": 1}
                 writer.write((json.dumps(hello) + "\n").encode("utf-8"))
                 await asyncio.wait_for(writer.drain(), timeout=self._TRANSPORT_TIMEOUT)
                 await asyncio.wait_for(ready.wait(), timeout=self._TRANSPORT_TIMEOUT)

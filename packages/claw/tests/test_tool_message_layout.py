@@ -12,14 +12,19 @@ def rows(component, width=100):
 
 def test_claw_inline_list_flows_in_the_shared_markdown():
     message = AssistantMessage('- before `code` **after**')
-    assert [row for row in rows(message) if row.strip()] == [' • - before code after']
+    assert [row for row in rows(message) if row.strip()] == [
+        '   agent · 来源:unknown · 触发:unknown · → 未知（无路由记录）', ' • - before code after',
+    ]
 
 
 def test_claw_compact_success_and_full_arguments_result_expansion():
     tool = ToolMessage('filesystem', {'action': 'read', 'path': 'config.py', 'extra': 'FULL-ARG'})
     output = 'first\n' + 'x' * 600 + '\nFULL-TAIL'
     tool.set_result(output)
-    assert rows(tool)[:2] == [' • Ran filesystem read config.py', '   └ first · 2 hidden lines; Ctrl+O']
+    assert rows(tool)[:3] == [
+        '   tool · 来源:unknown · 触发:unknown · → 未知（无路由记录）',
+        ' • Ran filesystem read config.py', '   └ first · 2 hidden lines; Ctrl+O',
+    ]
     assert tool.detail_body == output
     assert 'FULL-ARG' in tool.transcript_body
     tool.set_expanded(True)
@@ -31,16 +36,19 @@ def test_claw_running_cancel_and_error_keep_real_state_and_stream_tail():
     for terminal in ('cancel', 'error'):
         tool = ToolMessage('bash', {'command': 'pytest -q'})
         tool.set_streaming('old\nLATEST')
-        assert rows(tool)[:2] == [' • Running pytest -q', '   └ LATEST · 1 hidden lines; Ctrl+O']
+        assert rows(tool)[:3] == [
+            '   tool · 来源:unknown · 触发:unknown · → 未知（无路由记录）',
+            ' • Running pytest -q', '   └ LATEST · 1 hidden lines; Ctrl+O',
+        ]
         if terminal == 'cancel':
             tool.set_canceled()
             tool.set_result('late success')
-            assert rows(tool)[0] == ' • Cancelled pytest -q'
+            assert rows(tool)[1] == ' • Cancelled pytest -q'
             assert tool.detail_body == 'old\nLATEST'
         else:
             tool.set_result('ERROR\nfull detail', is_error=True)
-            assert rows(tool)[0] == ' • Failed pytest -q'
-            assert 'ERROR' in rows(tool)[1]
+            assert rows(tool)[1] == ' • Failed pytest -q'
+            assert 'ERROR' in rows(tool)[2]
         before = tool.detail_body
         tool.set_streaming('late delta')
         assert tool.detail_body == before
@@ -62,9 +70,9 @@ def test_claw_tool_keeps_image_rendering_separate_from_text(monkeypatch):
 
     monkeypatch.setattr(Image, 'render', render_image)
     for _ in range(3):
-        assert tool.render(80)[2:-1] == sentinel
+        assert tool.render(80)[3:-1] == sentinel
     tool.invalidate()
-    assert tool.render(80)[2:-1] == sentinel
+    assert tool.render(80)[3:-1] == sentinel
     tool.set_expanded(True)
     for _ in range(3):
         assert sentinel[-1] in tool.render(80)
@@ -76,7 +84,7 @@ def test_claw_tool_marker_alignment_matches_prose_when_expanded_or_compact():
         tool = ToolMessage('bash', {'command': 'pwd'})
         tool.set_result('/workspace')
         tool.set_expanded(expanded)
-        assert next(row for row in rows(tool) if row.strip()).startswith(' • Ran pwd')
+        assert next(row for row in rows(tool) if 'Ran pwd' in row).startswith(' • Ran pwd')
 
 
 
@@ -108,10 +116,10 @@ def test_claw_unchanged_tool_frames_skip_header_summary_and_text_layout(monkeypa
     assert counts['make_header'] == baseline['make_header']
     assert counts['summarize_args'] == baseline['summarize_args']
     tool.set_streaming('first\nCHANGED')
-    assert 'CHANGED' in rows(tool, 80)[1]
+    assert 'CHANGED' in rows(tool, 80)[2]
     tool.set_result('FAILED\nfull detail', is_error=True)
-    assert rows(tool, 80)[0] == ' • Failed pwd'
-    assert 'FAILED' in rows(tool, 80)[1]
+    assert rows(tool, 80)[1] == ' • Failed pwd'
+    assert 'FAILED' in rows(tool, 80)[2]
     tool.set_streaming('late delta')
     assert tool.detail_body == 'FAILED\nfull detail'
     tool.set_expanded(True)
@@ -130,13 +138,13 @@ def test_claw_cached_tool_header_refreshes_for_ascii_and_theme(monkeypatch):
     monkeypatch.setenv('TERM', 'xterm-256color')
     monkeypatch.delenv('XDOG_TUI_ASCII', raising=False)
     tool = ToolMessage('bash', {'command': 'pwd'})
-    assert rows(tool)[0] == ' • Running pwd'
+    assert rows(tool)[1] == ' • Running pwd'
     monkeypatch.setenv('XDOG_TUI_ASCII', '1')
-    assert rows(tool)[0] == ' * Running pwd'
-    assert '->' in rows(tool)[1]
+    assert rows(tool)[1] == ' * Running pwd'
+    assert '->' in rows(tool)[2]
     tool.set_expanded(True)
     monkeypatch.delenv('XDOG_TUI_ASCII')
-    assert next(row for row in rows(tool) if row.strip()) == ' • Running pwd'
+    assert next(row for row in rows(tool) if 'Running pwd' in row) == ' • Running pwd'
     tool.set_expanded(False)
     tool.set_result('done')
     import xdog.claw.channels.tui.tui_app as host
@@ -144,5 +152,5 @@ def test_claw_cached_tool_header_refreshes_for_ascii_and_theme(monkeypatch):
     monkeypatch.setattr(host, 'theme_accent', lambda text: 'THEME ' + text)
     monkeypatch.setattr(host, 'theme_dim', lambda text: 'DIM ' + text)
     tool.invalidate()
-    assert 'THEME' in rows(tool)[0]
-    assert 'DIM' in rows(tool)[1]
+    assert 'THEME' in rows(tool)[1]
+    assert 'DIM' in rows(tool)[2]

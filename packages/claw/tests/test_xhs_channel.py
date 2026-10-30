@@ -524,3 +524,111 @@ async def test_external_post_tool_full_loop_shares_context_but_keeps_permission_
             await readers[0]()  # An old reader cannot be reused after its input settles.
     finally:
         await app.stop()
+
+
+@pytest.mark.parametrize('status', [408, 500, 502, 503, 504])
+async def test_login_status_retries_transient_http_error_without_repeating_other_operations(monkeypatch, status):
+    monkeypatch.setattr('xdog.claw.channels.xhs.api._STATUS_RETRY_DELAY', 0)
+    calls = []
+    def backend(request):
+        calls.append(request.url.path)
+        if len(calls) == 1:
+            return httpx.Response(status)
+        return httpx.Response(200, json={'success': True, 'data': {'is_logged_in': False}})
+    api = XhsApi('http://127.0.0.1:18060', transport=httpx.MockTransport(backend))
+    try:
+        assert await api.login_status() == {'is_logged_in': False}
+        assert calls == ['/api/v1/login/status'] * 2
+    finally:
+        await api.close()
+
+
+@pytest.mark.parametrize('status', [401, 403, 404, 429])
+async def test_login_status_does_not_retry_auth_denial_contract_errors_or_rate_limits(monkeypatch, status):
+    monkeypatch.setattr('xdog.claw.channels.xhs.api._STATUS_RETRY_DELAY', 0)
+    calls = []
+    def backend(request):
+        calls.append(request.url.path)
+        return httpx.Response(status)
+    api = XhsApi('http://127.0.0.1:18060', transport=httpx.MockTransport(backend))
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            await api.login_status()
+        assert calls == ['/api/v1/login/status']
+    finally:
+        await api.close()
+
+
+async def test_login_status_network_retry_is_bounded_and_write_requests_are_never_retried(monkeypatch):
+    monkeypatch.setattr('xdog.claw.channels.xhs.api._STATUS_RETRY_DELAY', 0)
+    calls = []
+    def backend(request):
+        calls.append(request.url.path)
+        raise httpx.ReadTimeout('Temporary backend failure')
+    api = XhsApi('http://127.0.0.1:18060', transport=httpx.MockTransport(backend))
+    try:
+        with pytest.raises(httpx.ReadTimeout):
+            await api.login_status()
+        assert calls == ['/api/v1/login/status'] * 3
+        calls.clear()
+        for action in ('login/qrcode', 'notifications/reply', 'publish'):
+            with pytest.raises(httpx.ReadTimeout):
+                await api.request('GET' if action == 'login/qrcode' else 'POST', action)
+        assert calls == ['/api/v1/login/qrcode', '/api/v1/notifications/reply', '/api/v1/publish']
+    finally:
+        await api.close()
+
+
+async def test_scan_survives_temporary_status_failure_and_binds_only_verified_account(tmp_path, monkeypatch):
+    import base64
+
+    from xdog.claw.channels.xhs.login import login
+    monkeypatch.setattr('xdog.claw.channels.xhs.api._STATUS_RETRY_DELAY', 0)
+    status_calls = 0
+    qr_calls = []
+    def backend(request):
+        nonlocal status_calls
+        if request.url.path.endswith('/login/qrcode'):
+            qr_calls.append(True)
+            data = {'is_logged_in': False, 'img': base64.b64encode(b'\x89PNG\r\n\x1a\nfixture').decode()}
+        elif request.url.path.endswith('/login/status'):
+            status_calls += 1
+            if status_calls == 2:
+                return httpx.Response(500)
+            data = ({'is_logged_in': False} if status_calls == 1 else
+                    {'is_logged_in': True, 'user_id': 'verified-account', 'username': 'Verified profile'})
+        else:
+            raise AssertionError('Unexpected operation: ' + request.url.path)
+        return httpx.Response(200, json={'success': True, 'data': data})
+    api = XhsApi('http://127.0.0.1:18060', transport=httpx.MockTransport(backend))
+    shown = []
+    def show(path):
+        assert path.is_file() and load_account(tmp_path, 'xhs', 'main') is None
+        shown.append(path)
+    try:
+        account = await login(api, tmp_path, 'main', show, timeout=5)
+        assert account.account_id == 'verified-account' and account.username == 'Verified profile'
+        assert len(qr_calls) == len(shown) == 1
+        assert not shown[0].exists()
+        assert status_calls == 4  # false, transient 500, success, independent identity verification
+        assert load_account(tmp_path, 'xhs', 'main') == account
+    finally:
+        await api.close()
+
+
+def test_login_cli_reports_backend_failure_without_traceback_secret_or_config_changes(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+    from xdog.claw.cli.cli import cli
+    async def fail(api, data_dir, group_id, show_qr):
+        request = httpx.Request('GET', 'http://127.0.0.1:18060/api/v1/login/status',
+                               headers={'Authorization': 'Bearer private-test-token'})
+        raise httpx.HTTPStatusError('Do not leak private-test-token', request=request, response=httpx.Response(500))
+    monkeypatch.setattr('xdog.claw.channels.xhs.login.login', fail)
+    path = tmp_path / 'config.yaml'
+    original = 'groups:\n  main:\n    name: Claw\nxhs_enabled: false\n'
+    path.write_text(original)
+    result = CliRunner().invoke(cli, ['channel', 'login', '--xhs', '--config', str(path)])
+    assert result.exit_code != 0 and 'HTTP 500' in result.output
+    assert 'keep existing cookies' in result.output
+    assert 'Traceback' not in result.output and 'private-test-token' not in result.output
+    assert path.read_text() == original

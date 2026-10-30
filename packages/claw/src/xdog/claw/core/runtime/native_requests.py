@@ -223,11 +223,19 @@ class NativeRequests:
         streamed_any_text = False
         pending_writes: list[asyncio.Task[None]] = []
         orchestrator = self._orchestrator
+        from xdog.claw.core.identity import IdentityResolver, MessageSource
+        from xdog.claw.core.runtime.message_metadata import identity_metadata
+        identity = (IdentityResolver.system(MessageSource('internal'))
+                    if request.get('_context_record') or request.get('_message_alive') is not None
+                    else IdentityResolver.local(MessageSource('tui')))
+        message_metadata = identity_metadata(identity, group=group_id, input_id='native:' + run_id)
+        message_metadata['destinations'] = [{'channel': 'tui', 'status': 'local'}]
 
         async def publish_accepted() -> None:
             namespace = await self._native_inputs.namespace(group_id) if self._native_inputs is not None else ''
             await write_response({'type': 'run_ack', 'group_id': group_id, 'run_id': run_id,
                 'message_id': 'native:' + run_id, 'inbox_namespace': namespace,
+                'message_metadata': message_metadata,
                 'session_id': orchestrator.get_new_session_id(group_id) or ''})
 
         def accepted() -> None:
@@ -257,7 +265,7 @@ class NativeRequests:
                     })
                 elif event_type == "tool_call":
                     accumulated_text = ""
-                payload.update({"group_id": group_id, "run_id": run_id})
+                payload.update({"group_id": group_id, "run_id": run_id, "message_metadata": message_metadata})
                 pending_writes.append(asyncio.create_task(write_response(payload)))
             except (AttributeError, TypeError, ValueError):
                 logger.exception("Failed to serialize TUI display event")
@@ -332,6 +340,7 @@ class NativeRequests:
                     "content": result.response_text or "(no response)",
                     "run_id": run_id,
                 }
+            resp['message_metadata'] = message_metadata
             if result.usage:
                 resp["usage"] = result.usage
             await write_response(resp)

@@ -134,14 +134,19 @@ def test_claw_uses_shared_user_spacing_and_role_markers_for_live_and_replayed_me
 
     log = ChatLog()
     log.add_user("user input")
-    assert [strip_ansi(row).rstrip() for row in log.render(40)] == ["", " › user input", ""]
+    assert [strip_ansi(row).rstrip() for row in log.render(100)] == [
+        "", "   unknown · 来源:unknown", " › user input", "",
+    ]
     log.start_assistant("", "run")
     log.update_assistant("live reply", "run")
     log.finalize_assistant("final reply", "run")
     log.add_user("next input")
     log.add_assistant("replayed reply")
-    assert [strip_ansi(row).rstrip() for row in log.render(40)] == [
-        "", " › user input", "", "", " • final reply", "", "", " › next input", "", "", " • replayed reply", "",
+    assert [strip_ansi(row).rstrip() for row in log.render(100)] == [
+        "", "   unknown · 来源:unknown", " › user input", "", "",
+        "   agent · 来源:unknown · 触发:unknown · → 未知（无路由记录）", " • final reply", "", "",
+        "   unknown · 来源:unknown", " › next input", "", "",
+        "   agent · 来源:unknown · 触发:unknown · → 未知（无路由记录）", " • replayed reply", "",
     ]
     assert [record.body for record in log.transcript_records()] == [
         "user input", "final reply", "next input", "replayed reply",
@@ -155,13 +160,16 @@ def test_user_background_includes_role_and_spacing_without_coloring_next_message
     log = ChatLog()
     log.add_user("hello **world**")
     log.add_assistant("reply")
-    rows = log.render(40)
-    assert [strip_ansi(row).rstrip() for row in rows] == ["", " › hello world", "", "", " • reply", ""]
-    for row in rows[:3]:
+    rows = log.render(100)
+    assert [strip_ansi(row).rstrip() for row in rows] == [
+        "", "   unknown · 来源:unknown", " › hello world", "", "",
+        "   agent · 来源:unknown · 触发:unknown · → 未知（无路由记录）", " • reply", "",
+    ]
+    for row in rows[:4]:
         assert row.startswith("\x1b[48;")
         assert row.endswith("\x1b[49m")
-        assert visible_width(row) == 40
-    assert "\x1b[48;" not in rows[-2] + rows[-1]
+        assert visible_width(row) == 100
+    assert "\x1b[48;" not in ''.join(rows[4:])
 
 
 def test_claw_status_and_hints_use_model_dim_color_after_updates() -> None:
@@ -187,3 +195,34 @@ def test_claw_status_and_shortcuts_align_with_input_text() -> None:
     assert next(row for row in rows if "ready" in row).index("ready") == 2
     assert next(row for row in rows if "INPUT" in row).index("INPUT") == 2
     assert next(row for row in rows if "Enter send" in row).index("Enter send") == 2
+
+
+def test_claw_model_label_combines_provider_and_thinking_and_updates_live() -> None:
+    from xdog.claw.channels.tui.tui_app import ChatApp
+    from xdog.tui.utils import visible_width
+
+    app = ChatApp('/tmp/unused-claw-test.sock')
+    app._state.update(model='copilot/gpt-6.1-sol', thinking='medium')
+    app._update_footer()
+    assert 'copilot/gpt-6.1-sol - medium' in strip_ansi(app._footer.render(180)[0])
+    assert 'thinking:' not in app._status_metadata()
+    app._state.update(model='antigravity/vendor/model', thinking='off')
+    app._update_footer()
+    assert 'antigravity/vendor/model - off' in strip_ansi(app._footer.render(180)[0])
+    assert 'copilot/' not in app._status_metadata()
+    for level in ('unknown', None):
+        app._state['thinking'] = level
+        app._update_footer()
+        assert ' | antigravity/vendor/model | ' in app._status_metadata()
+        assert ' - unknown' not in strip_ansi(app._footer.render(180)[0])
+    assert visible_width(app._footer.render(42)[0]) <= 42
+
+
+def test_claw_highlights_registered_command_in_input_not_arguments() -> None:
+    from xdog.claw.channels.tui.tui_app import CustomEditor
+
+    editor = CustomEditor()
+    editor.set_autocomplete_visible(False)
+    editor.set_text('/help model')
+    assert any(editor._theme.accent('/help') + ' model' in row for row in editor.render(80))
+    assert editor.get_text() == '/help model'

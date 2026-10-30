@@ -10,10 +10,19 @@ project follows [semantic versioning](https://semver.org/).
 
 ### Fixed
 
+- Retry bounded transient XHS login-status reads without replaying QR challenges or writes,
+  and report backend login failures without credential-bearing tracebacks.
+
 - Share strict Eyes wheel verification across CI, publishing and tests, keeping
   approved HTTP/HTML/XML dependencies, version/tag checks and packaged resources in sync.
 
 ### Added
+
+- Print XHS login QR PNGs directly in the terminal, retaining the image-path fallback
+  without changing challenge, account-binding or login cleanup behavior.
+
+- Claw TUI identity/source/group headers and explicit reply-channel delivery labels,
+  with exact receipt-based history and group-scoped read-only channel completion views.
 
 - Group-local identity permission profiles for Claw, including configurable admin/system
   ceilings and explicitly granted external business tools; retire `user_tools`.
@@ -46,6 +55,13 @@ project follows [semantic versioning](https://semver.org/).
 
 
 ### Changed
+
+- Coding and Claw highlight recognized slash commands inside the prompt editor,
+  without coloring arguments or changing completion-list styling.
+
+- Coding and Claw TUI model indicators preserve the provider and display the
+  current thinking level together as `provider/model - level`, including `off`;
+  unknown thinking levels are omitted.
 
 - Separate Claw gateway/peer protocol, owner-bound controls, and session
   prompt/tool/compaction operations without adding another execution runtime.

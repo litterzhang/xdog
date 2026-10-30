@@ -1,11 +1,16 @@
 """Pinned xiaohongshu-mcp HTTP protocol; no Agent, channel routing or retry loop."""
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
+
+logger = logging.getLogger(__name__)
+_STATUS_RETRY_DELAY = 2.0
 
 
 class XhsApi:
@@ -42,9 +47,26 @@ class XhsApi:
             raise ValueError('XHS backend response data must be an object')
         return value
 
+    async def login_status(self) -> dict[str, Any]:
+        """Retry only this read; a QR challenge, reply or publish is never replayed."""
+        for attempt in range(3):
+            try:
+                return await self.request('GET', 'login/status')
+            except httpx.HTTPError as exc:
+                transient = (isinstance(exc, (httpx.TimeoutException, httpx.NetworkError))
+                    or isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {408, 500, 502, 503, 504})
+                if not transient or attempt == 2:
+                    raise
+                detail = (f'HTTP {exc.response.status_code}' if isinstance(exc, httpx.HTTPStatusError)
+                          else type(exc).__name__)
+                logger.warning('XHS login status temporarily unavailable (%s); retrying read (%s/3)',
+                               detail, attempt + 2)
+                await asyncio.sleep(_STATUS_RETRY_DELAY)
+        raise AssertionError('Unreachable login status retry state')
+
     async def identity(self) -> tuple[str, str]:
         from xdog.claw.core.identity.models import label
-        data = await self.request('GET', 'login/status')
+        data = await self.login_status()
         if data.get('is_logged_in') is not True:
             raise ValueError('XHS backend needs an explicit account login')
         return label(data.get('user_id'), maximum=256), label(data.get('username', ''), empty=True)

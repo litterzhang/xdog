@@ -51,10 +51,10 @@ class NativeConnection:
     """One native peer's protocol work; application execution outlives this peer."""
 
     def __init__(self, application: Orchestrator | None, receipts: NativeInputReceipts | None,
-                 viewers: dict[int, tuple[str, Callable[[dict[str, Any]], Awaitable[None]]]],
+                 viewers: dict[int, tuple[str, Callable[[dict[str, Any]], Awaitable[None]], bool]],
                  write_response: Callable[[asyncio.StreamWriter, dict[str, Any]], Coroutine[Any, Any, None]]) -> None:
         self._orchestrator = application
-        self._acp_viewers = viewers
+        self._input_viewers = viewers
         self._write_response = write_response
         self._requests = NativeRequests(application, receipts, write_response)
 
@@ -381,14 +381,16 @@ class NativeConnection:
                     if (isinstance(selected_group, str) and self._orchestrator is not None
                             and self._orchestrator.get_group_workspace(selected_group) is not None):
                         notice_channel.bind_group(selected_group)
-                if msg_type == "ping" and "acp_updates" in request:
-                    value, group = request["acp_updates"], request.get("group_id", "main")
+                if msg_type == 'ping' and ('input_updates' in request or 'acp_updates' in request):
+                    all_inputs = 'input_updates' in request
+                    value = request['input_updates' if all_inputs else 'acp_updates']
+                    group = request.get('group_id', 'main')
                     if type(value) is not int or value not in (0, 1) or not isinstance(group, str):
-                        await write({"type": "protocol_error", "message": "Invalid ACP display subscription"})
+                        await write({'type': 'protocol_error', 'message': 'Invalid input display subscription'})
                         continue
-                    self._acp_viewers.pop(client_id, None)
+                    self._input_viewers.pop(client_id, None)
                     if value == 1:
-                        self._acp_viewers[client_id] = group, write
+                        self._input_viewers[client_id] = group, write, all_inputs
                 if msg_type == 'ping' and 'saved_source' in request:
                     saved_source_supported = type(request['saved_source']) is int and request['saved_source'] == 1
                     if not saved_source_supported:
@@ -1624,7 +1626,7 @@ class NativeConnection:
         except Exception:
             logger.exception("Error handling client %s", peer)
         finally:
-            self._acp_viewers.pop(client_id, None)
+            self._input_viewers.pop(client_id, None)
             async def cleanup_client() -> None:
                 nonlocal child_ui_connected
                 if self._orchestrator is not None:

@@ -83,6 +83,7 @@ from xdog.tui.components.mcp_panel import McpPanel
 from xdog.tui.components.navigation_panel import NavigationPanel
 from xdog.tui.components.output_panel import OutputPanel
 from xdog.tui.components.parent_draft_panel import ParentDraftPanel
+from xdog.tui.components.status_line import format_model_label
 from xdog.tui.components.text import Text
 from xdog.tui.components.tool_inventory import ToolInventoryPanel, inventory_records
 from xdog.tui.components.transcript_panel import TranscriptPanel
@@ -1734,7 +1735,7 @@ class InteractiveMode:
             model_name = self._session.model or "unknown"
             thinking = self._session.agent.options.thinking or "off"
             self._chat_log.add_system(
-                f"session:{self._session.session_id[:8]} | {model_name} | thinking:{thinking}"
+                f"session:{self._session.session_id[:8]} | {format_model_label(model_name, str(thinking))}"
             )
             self._replay_history()
             if self._keymap.error:
@@ -1811,7 +1812,9 @@ class InteractiveMode:
         if self._banner_added:
             return
         model_name = self._session.model or "unknown"
-        self._header.set_text(self._theme.header(f"  coding | {model_name}"))
+        thinking = self._session.agent.options.thinking or "off"
+        label = format_model_label(model_name, str(thinking))
+        self._header.set_text(self._theme.header(f"  coding | {label}"))
         self._chat_log.add_child(self._header)
         self._banner_added = True
 

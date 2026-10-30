@@ -138,6 +138,8 @@ class OutboundMessages:
 
     @staticmethod
     def _result(identifier: str, channel: str, rows: Sequence[OutputRecord]) -> dict[str, Any]:
-        return {'message_id': identifier, 'channel': channel, 'status': delivery_status(rows),
+        return {'message_id': identifier, 'channel': channel,
+                'channel_name': rows[0].envelope.reply.channel if rows and rows[0].envelope.reply else '',
+                'status': delivery_status(rows),
                 'outputs': [{'id': row.id, 'status': row.status} for row in rows],
                 'default_reply_route_changed': False}

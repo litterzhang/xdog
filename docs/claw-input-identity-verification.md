@@ -77,3 +77,21 @@ Compaction 使用一份 group 摘要及近期完整消息，原文检查点/归�
   身份撤销、工具门禁、steering、原帖目标与令牌约束等安全断言继续保留。
 - 全仓 `ruff check packages` 通过；九包 strict mypy 通过（681 source files）；
   `git diff --check` 通过。
+
+## 登录联调与临时后端错误恢复（2026-10-30）
+
+用户发起登录后，后端二维码请求成功，但一次 login/status 在约 31 秒后触发
+`context deadline exceeded` 并返回 HTTP 500。旧 CLI 因该临时错误提前结束；几秒后后端仍
+保存了 Cookie。只读复查确认后端 is_logged_in=true，账号 ID/昵称可读，不需要删除 Cookie
+或重新创建二维码。
+
+恢复操作通过正常 channel login 将核实的账号绑定到 maotao，再携 Token 重启 gateway。
+原账号、Cookie 保留，渠道已启用且初次通知扫描完成。自动回复、发布仍为 false；未验证
+真实新评论的模型处理/回复或平台发布，不把登录与基线成功当作端到端送达证明。
+
+Claw 增加仅限 login/status 的最多三次只读重试（瞬时网络/超时与 HTTP 408/500/502/503/504）。
+401/403/404/429 和无效响应不重试；二维码创建、评论回复、发布均不自动重放。最终账号
+绑定仍要求实际登录状态及真实账号字段，不能用 Cookie 文件存在或旧诊断数据替代验证。
+CLI 后端失败转换为不含凭据的可读错误，保留扫码可能仍在完成的说明，不打印原始异常正文。
+
+本增量验证：XHS 用例 38 passed，Claw strict mypy 133 source files 通过，Ruff 通过。

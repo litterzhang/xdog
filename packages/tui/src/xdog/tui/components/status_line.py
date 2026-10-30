@@ -7,6 +7,13 @@ from xdog.tui.components.text import Text
 from xdog.tui.utils import sanitize_terminal_text, string_width, truncate_to_width
 
 
+def format_model_label(model: str, thinking: str | None) -> str:
+    """Present the host's full model identity and actual reasoning level, without guessing routing."""
+    identity = " ".join(sanitize_terminal_text(model).split()) or "unknown"
+    level = " ".join(sanitize_terminal_text(thinking or "").split())
+    return f"{identity} - {level}" if level and level.casefold() != "unknown" else identity
+
+
 class StatusLine(Text):
     """Render plain status or prioritized activity/context/model fields."""
 

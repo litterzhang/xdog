@@ -15,7 +15,7 @@ from .api import XhsApi
 
 async def login(api: XhsApi, data_dir: Path, group_id: str, show_qr: Callable[[Path], None],
                 *, timeout: float = 480) -> ChannelAccount:
-    data = await api.request('GET', 'login/status')
+    data = await api.login_status()
     if data.get('is_logged_in') is not True:
         qr = await api.request('GET', 'login/qrcode')
         image = qr.get('img')
@@ -39,7 +39,7 @@ async def login(api: XhsApi, data_dir: Path, group_id: str, show_qr: Callable[[P
                 async with asyncio.timeout(timeout):
                     while True:
                         await asyncio.sleep(2)
-                        status = await api.request('GET', 'login/status')
+                        status = await api.login_status()
                         if status.get('is_logged_in') is True:
                             break
             finally:

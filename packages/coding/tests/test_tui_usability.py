@@ -559,3 +559,14 @@ def test_coding_status_and_shortcuts_align_with_input_text():
     assert next(row for row in rows if "ready" in row).index("ready") == 2
     assert next(row for row in rows if "INPUT" in row).index("INPUT") == 2
     assert next(row for row in rows if "Enter send" in row).index("Enter send") == 2
+
+
+def test_coding_highlights_registered_command_in_input_not_arguments():
+    from xdog.coding.modes.interactive.components.custom_editor import CustomEditorComponent
+    from xdog.coding.modes.interactive.theme import create_default_theme
+
+    editor = CustomEditorComponent(create_default_theme())
+    editor.set_autocomplete_visible(False)
+    editor.set_text('/help model')
+    assert any(editor._theme.accent('/help') + ' model' in row for row in editor.render(80))
+    assert editor.get_text() == '/help model'

@@ -5,6 +5,7 @@ import asyncio
 from pathlib import Path
 
 import click
+import httpx
 from xdog.claw.config import ClawConfig
 
 
@@ -12,6 +13,7 @@ def run(config: ClawConfig, config_file: Path, group_id: str, base_url: str) -> 
     import yaml
     from xdog.claw.channels.xhs.api import XhsApi
     from xdog.claw.channels.xhs.login import login
+    from xdog.claw.cli.qr_terminal import show_png
 
     # Refuse to overwrite invalid config. Existing unrelated keys are preserved.
     raw = yaml.safe_load(config_file.read_text()) if config_file.exists() else {}
@@ -28,12 +30,17 @@ def run(config: ClawConfig, config_file: Path, group_id: str, base_url: str) -> 
         api = XhsApi(endpoint, token_env=config.xhs_token_env)
         try:
             account = await login(api, Path(config.data_dir), group_id,
-                                  lambda path: click.echo(f'Scan the XHS QR image: {path}'))
+                                  show_png)
             return account.account_id
         finally:
             await api.close()
     try:
         account_id = asyncio.run(perform())
+    except httpx.HTTPError as exc:
+        detail = f'HTTP {exc.response.status_code}' if isinstance(exc, httpx.HTTPStatusError) else type(exc).__name__
+        raise click.ClickException('XHS backend login request failed (' + detail + '). '
+            'The scan may still be completing; keep existing cookies and retry login to recheck status. '
+            'No channel configuration was enabled by this failed attempt.') from exc
     except (ValueError, OSError, TimeoutError) as exc:
         raise click.ClickException(str(exc)) from exc
     config_file.parent.mkdir(parents=True, exist_ok=True)

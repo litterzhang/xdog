@@ -109,7 +109,7 @@ class GatewayServer:
         self._server: asyncio.Server | None = None
         self._bound_endpoint: BoundEndpoint | None = None
         self._acp_server: ClawAcpServer | None = None
-        self._acp_viewers: dict[int, tuple[str, Callable[[dict[str, Any]], Awaitable[None]]]] = {}
+        self._input_viewers: dict[int, tuple[str, Callable[[dict[str, Any]], Awaitable[None]], bool]] = {}
         self._orchestrator: Orchestrator | None = None
         self._native_inputs: NativeInputReceipts | None = None
         self._input_unsubscribe: Callable[[], None] | None = None
@@ -172,8 +172,8 @@ class GatewayServer:
                 return InputScope(group_id, workspace) if workspace is not None else None
             self._native_inputs = NativeInputReceipts(inputs, native_scope)
             def completed(record: InputRecord) -> None:
-                if record.envelope.message.origin == 'acp' and self._acp_viewers:
-                    task = asyncio.create_task(self._acp_completed(record))
+                if not record.envelope.message.id.startswith('native:') and self._input_viewers:
+                    task = asyncio.create_task(self._input_completed(record))
                     self._input_notices.add(task)
                     task.add_done_callback(self._input_notices.discard)
             self._input_unsubscribe = inputs.subscribe_completed(completed)
@@ -245,9 +245,18 @@ class GatewayServer:
             await self.stop()
             raise
 
-    async def _acp_completed(self, record: InputRecord) -> None:
+    async def _input_completed(self, record: InputRecord) -> None:
         from xdog.claw.core.runtime.display_events import display_result
-        payload = {"type": "acp_input_completed", "group_id": record.envelope.scope.group_id,
+        from xdog.claw.core.runtime.message_metadata import envelope_metadata, output_metadata
+        metadata = envelope_metadata(record.envelope)
+        if self._orchestrator is not None:
+            outputs = await self._orchestrator.output_service()
+            rows = await outputs.store.records(record.envelope.scope, message_id=record.envelope.message.id)
+            if rows:
+                metadata['destinations'] = output_metadata(rows)
+        is_acp = record.envelope.message.origin == 'acp'
+        payload = {"type": "acp_input_completed" if is_acp else "channel_input_completed",
+                   "message_metadata": metadata, "group_id": record.envelope.scope.group_id,
                    "session_id": record.session_id,
                    "message_id": record.envelope.message.id, "source": display_result(record.envelope.message.source),
                    "instruction": display_result(record.envelope.message.instruction), "status": record.status,
@@ -258,8 +267,8 @@ class GatewayServer:
                     await write(payload)
             except (OSError, TimeoutError):
                 pass  # Display failure cannot change the durable execution result.
-        await asyncio.gather(*(notify(write) for group, write in tuple(self._acp_viewers.values())
-                               if group == record.envelope.scope.group_id))
+        await asyncio.gather(*(notify(write) for group, write, all_inputs in tuple(self._input_viewers.values())
+                               if group == record.envelope.scope.group_id and (all_inputs or is_acp)))
 
     def _on_client_connect(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -278,7 +287,7 @@ class GatewayServer:
                              client_id: int = 0) -> None:
         from xdog.claw.core.runtime.native_connection import NativeConnection
         connection = NativeConnection(self._orchestrator, self._native_inputs,
-                                      self._acp_viewers, self._write_response)
+                                      self._input_viewers, self._write_response)
         await connection.handle(reader, writer, client_id)
 
 
