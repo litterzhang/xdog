@@ -45,7 +45,7 @@ async def test_ack_loss_keeps_actual_success_and_history_without_duplicate_send(
         assert sent_parts(accepted) == ("alice", "ctx:alice", "Scheduled report")
         assert accepted.client_id == rows[0].id
         history = orch._runtimes["main"].get_or_create_session().agent.messages
-        assert any("Scheduled report" in str(message.content) for message in history)
+        assert any("Scheduled report" in str(getattr(message, "content", "")) for message in history)
         await channel._accept_inbound(offered)
         await channel._on_inbound(offered)
         await outputs.resume()
@@ -77,7 +77,7 @@ async def test_positive_not_sent_restarts_the_same_output_without_another_model(
         await orch.stop()
     fresh_model = ScriptedModel()
     orch, channel, api = await application(tmp_path, fresh_model)
-    channel._user_id_map["main"] = "not-the-original"
+    channel._proactive_recipient = lambda: "not-the-original"
     try:
         outputs = await orch.output_service()
         await outputs.resume()

@@ -15,18 +15,19 @@ for snapshot provenance, sensitive message data, storage and business idempotenc
 
 Versioned custom messages support only ``xdog.extension_context.v1``, the context
 codec understood by Agent's default projection. Its canonical record is validated;
-unknown application types require a future explicit codec contract, not silent
-history loss. No snapshot-selected converter or executable registry is loaded.
+application types require explicit host-supplied validators, never silent
+history loss or snapshot-selected imports. No snapshot-selected converter or executable registry is loaded.
 """
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import math
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
-from typing import Any, Literal, NoReturn
+from typing import Any, Literal, NoReturn, cast
 
 from xdog.agent.core import AgentMessage, AgentState
 from xdog.agent.messages import dict_to_message, message_to_dict
@@ -45,6 +46,8 @@ from xdog.ai.types import (
     ToolResultMessage,
     UserMessage,
 )
+
+CustomValidators = Mapping[str, Callable[[dict[str, Any]], None]]
 
 SNAPSHOT_FORMAT = "xdog.agent.snapshot"
 SNAPSHOT_VERSION = 1
@@ -285,7 +288,8 @@ def _content(parts: Any, role: str, path: str) -> None:
             _fail(path, "unknown or invalid content codec")
 
 
-def _message(raw: Any, path: str, *, validate_custom: bool = True) -> AgentMessage:
+def _message(raw: Any, path: str, *, validate_custom: bool = True,
+             custom_validators: CustomValidators | None = None) -> AgentMessage:
     if type(raw) is not dict:
         _fail(path, "expected message object")
     role = raw.get("role")
@@ -301,10 +305,20 @@ def _message(raw: Any, path: str, *, validate_custom: bool = True) -> AgentMessa
             from xdog.agent.extensions.context_message import TYPE, record
             from xdog.agent.mcp.stdio import McpError
 
-            if raw["type"] != TYPE:
-                _fail(path, "unsupported custom context codec")
+            validator = record if raw['type'] == TYPE else (custom_validators or {}).get(raw['type'])
+            if validator is None:
+                _fail(path, 'unsupported custom context codec')
             try:
-                record(raw["data"])
+                # Explicit host code validates a detached copy; no snapshot-named
+                # imports and no mutation of the checked historical record.
+                if raw['type'] == TYPE:
+                    record(_json_copy(raw['data']))
+                else:
+                    checked = cast(Callable[[dict[str, Any]], object], validator)(_json_copy(raw['data']))
+                    if checked is not None:
+                        if inspect.iscoroutine(checked):
+                            checked.close()
+                        raise ValueError('Host custom validators must synchronously return None or raise')
             except (ValueError, TypeError, KeyError, McpError) as exc:
                 raise ValueError(f"{path}: invalid custom context record") from exc
     elif role == "user":
@@ -556,7 +570,8 @@ def validate_skill_bindings(snapshot: Snapshot, skills: Mapping[str, Skill | Non
     return tuple(bound)
 
 
-def decode_snapshot(value: str | bytes | dict[str, Any]) -> Snapshot:
+def decode_snapshot(value: str | bytes | dict[str, Any], *,
+                    custom_validators: CustomValidators | None = None) -> Snapshot:
     """Validate the entire v1 document and return a detached candidate.
 
     No fallback to legacy: missing format/version and unknown future versions fail.
@@ -566,10 +581,11 @@ def decode_snapshot(value: str | bytes | dict[str, Any]) -> Snapshot:
     Such candidates fail ``require_resumable``. Compatibility aliases are optional
     and checked against canonical fields; they never override them.
     """
-    return _decode_snapshot(_read(value))
+    return _decode_snapshot(_read(value), custom_validators=custom_validators)
 
 
-def _decode_snapshot(raw: dict[str, Any], messages: tuple[AgentMessage, ...] | None = None) -> Snapshot:
+def _decode_snapshot(raw: dict[str, Any], messages: tuple[AgentMessage, ...] | None = None, *,
+                     custom_validators: CustomValidators | None = None) -> Snapshot:
     """Shared schema and whole-history checks after bounded JSON detachment."""
     _object(raw, "snapshot", {
         "format", "version", "messages", "base_system_prompt", "model", "options", "settings", "skills",
@@ -596,7 +612,8 @@ def _decode_snapshot(raw: dict[str, Any], messages: tuple[AgentMessage, ...] | N
         _enum(setting, f"settings.{key}", _SETTING_VALUES[key])
     _list(raw["messages"], "messages")
     if messages is None:
-        messages = tuple(_message(message, f"messages[{i}]") for i, message in enumerate(raw["messages"]))
+        messages = tuple(_message(message, f"messages[{i}]", custom_validators=custom_validators)
+                         for i, message in enumerate(raw["messages"]))
     _boolean(raw["interrupted"], "interrupted")
     pending = _tool_pairs(messages, diagnostic=raw["interrupted"])
     _boolean(raw["run_active"], "run_active")
@@ -654,7 +671,8 @@ def _decode_snapshot(raw: dict[str, Any], messages: tuple[AgentMessage, ...] | N
 
 
 def decode_snapshot_parts(
-    metadata: str | bytes | dict[str, Any], messages: Sequence[AgentMessage],
+    metadata: str | bytes | dict[str, Any], messages: Sequence[AgentMessage], *,
+    custom_validators: CustomValidators | None = None,
 ) -> Snapshot:
     """Decode bounded metadata and separately bounded, detached typed history.
 
@@ -671,7 +689,8 @@ def decode_snapshot_parts(
     raw["messages"] = []
     # Recovery references need the actual history, so both routes use the same
     # decoder instead of validating those references against an empty history.
-    detached = tuple(_detach_message(message, index) for index, message in enumerate(messages))
+    detached = tuple(_detach_message(message, index, custom_validators=custom_validators)
+                     for index, message in enumerate(messages))
     return _decode_snapshot(raw, detached)
 
 
@@ -687,8 +706,10 @@ def _detach_message_row(raw: dict[str, Any], index: int) -> dict[str, Any]:
     return detached
 
 
-def _detach_message(message: AgentMessage, index: int) -> AgentMessage:
-    return _message(_detach_message_row(_encode_message(message), index), f"messages[{index}]")
+def _detach_message(message: AgentMessage, index: int, *,
+                    custom_validators: CustomValidators | None = None) -> AgentMessage:
+    return _message(_detach_message_row(_encode_message(message), index), f"messages[{index}]",
+                    custom_validators=custom_validators)
 
 
 def _check_message_boundary(messages: Sequence[AgentMessage], *, interrupted: bool) -> None:
@@ -699,6 +720,7 @@ def _check_message_boundary(messages: Sequence[AgentMessage], *, interrupted: bo
 
 def encode_snapshot_messages(
     messages: Sequence[AgentMessage], *, interrupted: bool = False,
+    custom_validators: CustomValidators | None = None,
 ) -> list[dict[str, Any]]:
     """Encode detached, lossless v1 message rows without a whole-history byte cap.
 
@@ -711,13 +733,15 @@ def encode_snapshot_messages(
     This is not a codec for arbitrary chunks beginning with orphan tool results.
     """
     rows = [_detach_message_row(_encode_message(message), index) for index, message in enumerate(messages)]
-    typed = tuple(_message(row, f"messages[{index}]") for index, row in enumerate(rows))
+    typed = tuple(_message(row, f"messages[{index}]", custom_validators=custom_validators)
+                  for index, row in enumerate(rows))
     _check_message_boundary(typed, interrupted=interrupted)
     return rows
 
 
 def decode_snapshot_messages(
     rows: Sequence[dict[str, Any]], *, interrupted: bool = False,
+    custom_validators: CustomValidators | None = None,
 ) -> tuple[AgentMessage, ...]:
     """Decode v1 message rows with per-header/part bounds and whole-history pairs.
 
@@ -726,7 +750,8 @@ def decode_snapshot_messages(
     decode_snapshot_parts must still validate the original recovery metadata.
     No executable codec is selected by data, and legacy formats are not inferred.
     """
-    messages = tuple(_message(_detach_message_row(row, index), f"messages[{index}]")
+    messages = tuple(_message(_detach_message_row(row, index), f"messages[{index}]",
+                              custom_validators=custom_validators)
                      for index, row in enumerate(rows))
     _check_message_boundary(messages, interrupted=interrupted)
     return messages
@@ -747,6 +772,7 @@ def encode_snapshot(
     interrupted: bool = False,
     interrupted_tools: Sequence[InterruptedTool] = (),
     omit_messages: bool = False,
+    custom_validators: CustomValidators | None = None,
 ) -> dict[str, Any]:
     """Export a checked JSON dict, dropping live state and non-whitelisted options.
 
@@ -788,9 +814,9 @@ def encode_snapshot(
     # Decode once before returning anything, so encoder and decoder have the same
     # validation boundary. The final copy detaches nested arguments/custom data.
     if omit_messages:
-        decode_snapshot_parts(raw, state.messages)
+        decode_snapshot_parts(raw, state.messages, custom_validators=custom_validators)
     else:
-        decode_snapshot(raw)
+        decode_snapshot(raw, custom_validators=custom_validators)
     return _read(raw)
 
 

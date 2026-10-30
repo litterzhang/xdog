@@ -791,6 +791,9 @@ async def _prepare_tool_call(
             "tool_call": tc,
             "tool": tool,
             "args": args,
+            "execute_guard": config.tool_execution_guard,
+            "execute_context": BeforeToolCallContext(assistant_message=assistant_message,
+                tool_call=tc, args=args, context=current_context),
         }
     except Exception as exc:
         return {
@@ -821,6 +824,16 @@ async def _execute_prepared_tool_call(
 
     try:
         assert tool.execute is not None
+        guard = prepared.get('execute_guard')
+        if guard is not None:
+            # No await between the final host check and entering the actual tool.
+            checked = guard(prepared['execute_context'])
+            if inspect.isawaitable(checked):
+                if inspect.iscoroutine(checked):
+                    checked.close()
+                raise TypeError('Tool execution guard must be synchronous')
+            if checked is not None:
+                raise TypeError('Tool execution guard must return None or raise')
         result = await tool.execute(tc.id, args, cancel, on_update, ctx=tool_ctx)
         if type(result.is_error) is not bool:
             raise ValueError("Tool result error flag must be a boolean")

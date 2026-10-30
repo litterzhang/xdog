@@ -57,6 +57,7 @@ class _ParentSnapshot:
     mcp_tools: tuple[AgentTool, ...]
     filesystem_roots: tuple[Path, ...] | None
     filesystem_ceiling: tuple[Path, ...] | None
+    identity_allows: Callable[[str], bool]
 
 
 @dataclass(frozen=True)
@@ -117,9 +118,15 @@ class ClawChildren:
         """Validate actual parent grants before any child ID/store/task admission."""
         spec = replace(spec, tool_scopes=spec.config().to_dict()["tool_scopes"])
         agent = self.session.agent
+        from xdog.claw.core.runtime.identity_scope import permission_guard
+        original_guard = self.snapshots[spec.id].identity_allows if spec.id in self.snapshots else lambda name: True
+        input_guard = permission_guard(self.session)
+        def identity_allows(name: str) -> bool:
+            return original_guard(name) and input_guard(name)
         owner = self.session._runtime.capabilities
         available = tuple(tool for tool in agent.active_tools
-                          if tool.name not in RESERVED_TOOLS and (self.capabilities.inherited(tool)
+                          if identity_allows(tool.name) and tool.name not in RESERVED_TOOLS
+                          and (self.capabilities.inherited(tool)
                               or (spec.tools is not None and tool.name in spec.tool_scopes
                                   and owner.can_delegate_child_tool(tool))))
         names = tuple(tool.name for tool in available) if spec.tools is None else spec.tools
@@ -143,10 +150,13 @@ class ClawChildren:
             context, agent.tool_execution, agent.context_window, agent.max_prompt_tokens, agent.supports_tool_calls,
             self.session._runtime.mcp,
             tuple(tool for tool in original.tools
-                  if self.session._runtime.mcp.owns_tool(tool)), _filesystem_roots(source), _filesystem_roots(source))
+                  if self.session._runtime.mcp.owns_tool(tool)), _filesystem_roots(source), _filesystem_roots(source),
+            identity_allows)
         skills = await run_owned(self.parent.capture_skills, spec.skills)
         # The owner may have closed, narrowed tools or replaced its skill source
         # while owned filesystem validation was settling. Never publish that work.
+        if not all(state.identity_allows(name) for name in original.names):
+            raise ValueError('Original input identity no longer permits child tools')
         current = self.parent.capture_tools(original.names, original.actions)
         if any(a is not b for a, b in zip(original.tools, current.tools, strict=True)):
             raise ValueError('Original parent tool delegation changed during child admission')
@@ -168,6 +178,8 @@ class ClawChildren:
             grant.scoped_parameters(tool.name, scoped[tool.name].parameters)
             if tool.name in scoped else grant.schemas[index]
             for index, tool in enumerate(grant.tools)))
+        if not all(state.identity_allows(name) for name in grant.names):
+            raise ValueError('Original input identity no longer permits child tools')
         current = self.parent.capture_tools(grant.names, grant.actions)
         if any(a is not b for a, b in zip(grant.tools, current.tools, strict=True)):
             raise ValueError("Parent tool delegation changed during scope validation")
@@ -220,6 +232,8 @@ class ClawChildren:
         scope_owner = self.scope_owners[spec.id]
         skills = self.skill_grants[spec.id]
         await run_owned(self.parent.check_skills, skills)
+        if not all(state.identity_allows(name) for name in grant.names):
+            raise ValueError('Original input identity no longer permits child tools')
         current = self.parent.capture_tools(grant.names, grant.actions)
         if any(source is not actual for source, actual in zip(grant.tools, current.tools, strict=True)):
             raise ValueError('Original parent tool delegation changed during child preparation')
@@ -254,6 +268,8 @@ class ClawChildren:
             return effect.access == "read"
 
         def check_policy(ctx: BeforeToolCallContext) -> None:
+            if not state.identity_allows(ctx.tool_call.name):
+                raise ValueError('Child tool is outside the original input identity permissions')
             if ctx.tool_call.name == "filesystem" and (
                     _filesystem_roots(parent_agent.tool_context) != state.filesystem_roots):
                 raise ValueError("Parent filesystem execution constraints changed; child delegation is invalid")
@@ -409,7 +425,7 @@ class ClawChildren:
             nonlocal repo
             current = self.parent.capture_tools(None).tools if self.parent.live else ()
             selected_tools = [proxy for source, proxy in zip(grant.tools, delegated, strict=True)
-                              if any(source is item for item in current)]
+                              if state.identity_allows(source.name) and any(source is item for item in current)]
             # Keep exact original capability identities; a same-named replacement
             # never regains authority. Hooks/providers/UI do not supply tools.
             selected_tools.extend(tool for tool in role_tools if self.parent.live
@@ -481,6 +497,8 @@ class ClawChildren:
             # Resolve filesystem skill revocation off-loop immediately before
             # EVERY model request, including native compaction summary calls.
             await run_owned(self.parent.check_skills, skills)
+            if not all(state.identity_allows(name) for name in grant.names):
+                raise ValueError('Original input identity no longer permits child tools')
             current = self.parent.capture_tools(grant.names, grant.actions)
             if any(source is not actual for source, actual in zip(grant.tools, current.tools, strict=True)):
                 raise ValueError('Original parent tool delegation changed; no child model request')

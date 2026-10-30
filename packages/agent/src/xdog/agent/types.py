@@ -116,7 +116,14 @@ BeforeToolCallFn = Callable[
     [BeforeToolCallContext, asyncio.Event | None],
     Awaitable[BeforeToolCallResult | None],
 ]
-"""Async hook called before each tool execution."""
+"""Async preparation hook; parallel calls are all prepared before execution."""
+
+ToolExecutionGuard = Callable[[BeforeToolCallContext], None]
+"""Synchronous host revalidation immediately at executor entry; raise to reject.
+
+This is not a preparation hook or a permission grant. It cannot await; hosts use
+it to validate final arguments. It is never serialized/restored from snapshots.
+"""
 
 AfterToolCallFn = Callable[
     [AfterToolCallContext, asyncio.Event | None],
@@ -151,3 +158,4 @@ class AgentLoopConfig:
     tool_execution: ToolExecutionMode = "parallel"
     before_tool_call: BeforeToolCallFn | None = None
     after_tool_call: AfterToolCallFn | None = None
+    tool_execution_guard: ToolExecutionGuard | None = None

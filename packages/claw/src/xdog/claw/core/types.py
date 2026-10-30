@@ -8,6 +8,8 @@ from typing import Any
 from xdog.agent import AgentConfig
 from xdog.agent.session_input import SessionInput
 from xdog.ai.types import ImageContent
+from xdog.claw.core.identity import InputIdentity
+from xdog.claw.core.identity.permissions import IdentityPermissions
 
 # ---------------------------------------------------------------------------
 # Group configuration
@@ -33,6 +35,7 @@ class Group:
     # None inherits defaults; an empty tuple explicitly disables all tools.
     enabled_tools: tuple[str, ...] | None = None
     image_model: str = ""
+    permissions: IdentityPermissions = field(default_factory=IdentityPermissions.from_config)
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +86,7 @@ class UserInput:
     timestamp: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
     images: tuple[ImageContent, ...] = ()
+    identity: InputIdentity | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -105,6 +109,7 @@ class SystemInput:
     group_id: str = ""
     content: str = ""
     kind: SystemInputKind = SystemInputKind.SCHEDULER
+    identity: InputIdentity | None = field(default=None, kw_only=True)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

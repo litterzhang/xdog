@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from xdog.ai.types import SystemPromptBlock
+from xdog.claw.core.identity.context import RULES as IDENTITY_RULES
 from xdog.claw.core.prompt.environment import environment_section
 from xdog.claw.core.prompt.sections import (
     action_safety_section,
@@ -66,6 +67,7 @@ def build_system_prompt(
     static_parts = [
         identity_section(),
         system_rules_section(),
+        IDENTITY_RULES,
         task_execution_section(),
         action_safety_section(),
         tool_usage_section(tools),

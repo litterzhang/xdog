@@ -15,6 +15,8 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
+from xdog.claw.core.identity.permissions import IdentityPermissions
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -78,11 +80,27 @@ class GroupDef:
     name: str = ""
     is_main: bool = False
     workspace: str = ""
+    permission_profiles: dict[str, Any] | None = None
+    principals: tuple[dict[str, str], ...] = ()
+    defaults: dict[str, str] | None = None
     # Agent config overrides (per-group; falls back to top-level ClawConfig.model)
     model_id: str = ""
     thinking_level: str = ""
     temperature: float | None = None
     max_tokens: int | None = None
+
+    def __post_init__(self) -> None:
+        try:
+            canonical = self.permissions.config()
+        except (ValueError, TypeError) as exc:
+            raise ToolConfigError('Invalid group identity permissions: ' + str(exc)) from exc
+        object.__setattr__(self, 'permission_profiles', canonical['permission_profiles'])
+        object.__setattr__(self, 'principals', tuple(canonical['principals']))
+        object.__setattr__(self, 'defaults', canonical['defaults'])
+
+    @property
+    def permissions(self) -> IdentityPermissions:
+        return IdentityPermissions.from_config(self.permission_profiles, self.principals, self.defaults)
 
 
 
@@ -122,11 +140,34 @@ class ClawConfig:
     weixin_token: str = ""
     weixin_base_url: str = ""
 
+    xhs_enabled: bool = False
+    xhs_group_id: str = 'main'
+    xhs_base_url: str = 'http://127.0.0.1:18060'
+    xhs_token_env: str = 'XHS_API_TOKEN'
+    xhs_poll_seconds: float = 60
+    xhs_replies_enabled: bool = False
+    xhs_publish_enabled: bool = False
+
+    # Exact host-owned identity bindings; channel names alone never grant admin.
+    identity_bindings: tuple[dict[str, Any], ...] = ()
+
     # Groups defined in config
     groups: tuple[GroupDef, ...] = ()
 
     def __post_init__(self) -> None:
         """Fill in XDG defaults for empty path fields."""
+        for name in ('xhs_enabled', 'xhs_replies_enabled', 'xhs_publish_enabled'):
+            if type(getattr(self, name)) is not bool:
+                raise ToolConfigError(name + ' must be a boolean')
+        if (type(self.xhs_poll_seconds) not in {int, float} or not 30 <= self.xhs_poll_seconds <= 86400
+                or not isinstance(self.xhs_group_id, str) or not self.xhs_group_id.strip()):
+            raise ToolConfigError('Invalid XHS group or poll interval')
+        from xdog.claw.core.identity import IdentityResolver
+        try:
+            resolver = IdentityResolver.from_config(self.identity_bindings)
+        except (ValueError, TypeError) as exc:
+            raise ToolConfigError("Invalid identity_bindings: " + str(exc)) from exc
+        object.__setattr__(self, "identity_bindings", resolver.describe())
         from xdog.agent.extensions.runtime import names
         object.__setattr__(self, "extensions", names(self.extensions))
         from xdog.agent.child_config import ChildPresets
@@ -178,6 +219,8 @@ def _parse_groups(raw_groups: dict[str, Any] | None) -> tuple[GroupDef, ...]:
     result = []
     for group_id, group_data in raw_groups.items():
         if isinstance(group_data, dict):
+            if 'user_tools' in group_data:
+                raise ToolConfigError('user_tools is removed; configure permission_profiles and defaults instead')
             workspace_raw = group_data.get("workspace", "")
             workspace = _expand_path(workspace_raw) if workspace_raw else ""
             result.append(
@@ -186,6 +229,9 @@ def _parse_groups(raw_groups: dict[str, Any] | None) -> tuple[GroupDef, ...]:
                     name=group_data.get("name", group_id),
                     is_main=group_data.get("is_main", False),
                     workspace=workspace,
+                    permission_profiles=group_data.get('permission_profiles'),
+                    principals=group_data.get('principals', ()),
+                    defaults=group_data.get('defaults'),
                     model_id=group_data.get("model_id", ""),
                     thinking_level=group_data.get("thinking_level", ""),
                     temperature=group_data.get("temperature"),

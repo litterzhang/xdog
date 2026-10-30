@@ -192,11 +192,12 @@ async def test_cancel_during_real_commit_keeps_original_owner_and_publishes_comm
         await asyncio.gather(work, return_exceptions=True)
         record = await asyncio.wait_for(service.wait(scope, "original"), 3)
         assert record.status == "interrupted" and record.attempt_id == executions[0].attempt_id
-        assert session._persisted_count == len(session.agent.messages) == 2 and session.meta.turn_count == 1
+        assert session._persisted_count == len(session.agent.messages) == 3 and session.meta.turn_count == 1
         assert len(writes) == 1 and len(calls) == 1
         raw = runtime.transcript_store.load_transcript(session.meta.session_id)
         assert await reading == raw
-        assert len(raw) == 2 and raw[0]["channel"] == "tui" and "usage" in raw[1]
+        assert len(raw) == 3 and raw[0]["type"] == "xdog.claw.actor.v1"
+        assert raw[1]["channel"] == "tui" and "usage" in raw[2]
         reopened = TranscriptStore(runtime.transcript_store._sessions_dir, owner_group="main")
         assert reopened.get_active_session("main").turn_count == 1
         assert reopened.load_transcript(session.meta.session_id) == raw
@@ -354,9 +355,9 @@ async def test_committed_cleanup_failure_does_not_poison_next_batch_or_duplicate
         second = await app.route_message(UserInput(group_id="main", content="second actual input"), message_id="two")
         assert second is not None and second.error is None and len(calls) == 2
         session = runtime._active_session
-        assert session.meta.turn_count == 2 and session._persisted_count == 4
+        assert session.meta.turn_count == 2 and session._persisted_count == 6
         rows = runtime.transcript_store.load_transcript(session.meta.session_id)
-        assert len(rows) == 4 and not (runtime.transcript_store._sessions_dir / JOURNAL).exists()
+        assert len(rows) == 6 and not (runtime.transcript_store._sessions_dir / JOURNAL).exists()
     finally:
         await app.stop()
 
@@ -427,7 +428,7 @@ async def test_actual_process_death_recovers_history_without_replaying_executed_
     before = {name: base64.b64decode(value) for name, value in encoded.items()}
     if point == "marker-after":
         assert store.get_active_session("main").turn_count == 1
-        assert len(store.load_transcript(identifier)) == 4
+        assert len(store.load_transcript(identifier)) == 5
     else:
         assert {name: (root / name).read_bytes() for name in before} == before
         assert store.get_active_session("main").turn_count == 0

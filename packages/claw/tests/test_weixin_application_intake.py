@@ -87,7 +87,7 @@ async def test_poll_accepts_while_agent_is_busy_and_replies_use_original_peer(tm
         assert [r.envelope.reply.recipient for r in records] == ["alice", "bob"]
         assert records[0].envelope.context["timestamp"] == 0
         # Neither later arrivals nor mutable caches may redirect accepted output.
-        channel._user_id_map["main"] = "wrong-peer"
+        channel._proactive_recipient = lambda: "wrong-peer"
         set_context_token("account", "alice", "newer-not-the-original-context")
         release.set()
         assert sent_parts(await wait(api.sent.get())) == ("alice", "ctx:alice", "Scheduled report")
@@ -124,7 +124,7 @@ async def test_accepted_messages_survive_receiver_disappearance_and_application_
         await orch.stop()
     recovered = ScriptedModel()
     orch, channel, api = await application(tmp_path, recovered)
-    channel._user_id_map["main"] = "wrong-peer"
+    channel._proactive_recipient = lambda: "wrong-peer"
     try:
         service = await orch.input_service()
         result = await wait(service.wait(InputScope("main", tmp_path), identifier))
@@ -209,7 +209,7 @@ async def test_duplicate_failed_input_does_not_resend_error_or_rerun_agent(tmp_p
         records = await service.store.records(InputScope("main", tmp_path))
         result = await wait(service.wait(InputScope("main", tmp_path), records[0].envelope.message.id))
         assert result.status == "failed"
-        assert sent_parts(await wait(api.sent.get())) == ("alice", "ctx:alice", "Error: expected failure")
+        assert sent_parts(await wait(api.sent.get())) == ("alice", "ctx:alice", "暂时无法处理这条消息，请稍后再试。")
         await channel._accept_inbound(offered)
         await channel._on_inbound(offered)
         assert model.calls == ["fail"] and api.sent.empty()

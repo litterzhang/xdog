@@ -114,7 +114,8 @@ async def test_generic_source_preserves_actual_ordinary_input_without_goal_polic
         runtime = app._runtimes['main']
         identifier = runtime.get_new_session_id()
         saved = await asyncio.to_thread(runtime.transcript_store.load_transcript, identifier)
-        assert saved[0]['content'][0]['text'] == text
+        assert saved[0]['type'] == 'xdog.claw.actor.v1'
+        assert saved[1]['content'][0]['text'] == text
         spool = await asyncio.to_thread(prepare_source, runtime.capture_source(identifier), threading.Event())
         projected = [json.loads(line) for line in (await asyncio.to_thread(spool.file.read)).splitlines()]
         assert any(row['role'] == 'user' and row['body'] == text for row in projected), (

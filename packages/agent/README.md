@@ -35,6 +35,20 @@ registration is an approval gate or OS sandbox. Use only in trusted environments
 SDK hosts must install their own `before_tool_call` policy.
 `--tool-ctx` accepts a JSON object or `@file`; it does not enable `submit_result`.
 
+### Final tool execution revalidation
+
+`before_tool_call` is asynchronous preparation: parallel batches prepare all calls
+before entering their executors. Hosts with revocable permissions can additionally
+provide `Agent(..., tool_execution_guard=guard)`. The synchronous callback receives
+`BeforeToolCallContext` immediately at actual executor entry and must return `None`
+or raise to reject. It is not awaited and does not rerun preparation/approval hooks.
+There is no await between this check and tool entry. Actual tool IO still needs its
+own original-owner/cancellation checks across awaits.
+
+This generic callback carries no role, channel or business policy and is not restored
+from snapshots. Claw uses it to revalidate its original input ceiling, active actual
+tool, readonly state and MCP grant after the rest of a batch has prepared.
+
 ## SDK quick start
 
 ```python
@@ -2321,3 +2335,23 @@ GNU Affero General Public License v3.0 or later — see
 [LICENSE](https://github.com/litterzhang/xdog/blob/main/LICENSE). Output compiled
 by `xdog-flow` is exempt; see the
 [Generated Output Exception](https://github.com/litterzhang/xdog/blob/main/LICENSE-EXCEPTION.md).
+
+
+### Host-owned custom history codecs
+
+`Agent(..., custom_message_validators={"host.record.v1": validate_record})` can
+validate explicitly supported custom message data during versioned snapshot
+export/restore. Supply the actual host's `transform_context` or `convert_to_llm`
+for model projection; no converter/validator is named, imported or restored by
+snapshot data. Validators are synchronous local data checks, copied per Agent,
+and receive detached JSON. Unknown custom types still fail closed by default.
+Historical actor labels grant no tool permissions or current input authority.
+The standalone snapshot/message-parts functions accept the corresponding
+`custom_validators` argument; live tools, callbacks and connection handles are
+never serialized.
+
+Identified `queue_input(..., context_messages=(custom_record,))` can attach bounded,
+validated host context atomically to the selected input. Edits keep its original
+context, and removed/handled inputs do not append it. The model sees it only after
+actual consumption under the host's existing projection. This is data carriage,
+not a role model or a permission grant; channel identity remains a host concern.

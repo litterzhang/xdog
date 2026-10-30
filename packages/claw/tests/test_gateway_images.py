@@ -8,10 +8,12 @@ import threading
 from unittest.mock import patch
 
 import pytest
-from xdog.ai.types import AssistantMessage, DoneEvent, ImageContent, Model, StartEvent, TextContent, UserMessage
+from xdog.ai.types import AssistantMessage, DoneEvent, ImageContent, Model, StartEvent, TextContent
 from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.config import ClawConfig, GroupDef
 from xdog.claw.core.runtime.gateway import GatewayServer
+
+from packages.claw.tests.core_inputs import model_input_bodies, transcript_bodies
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j5ioAAAAASUVORK5CYII=")
 
@@ -81,12 +83,14 @@ async def test_connection_scoped_image_upload_reaches_sdk_and_persists_typed_par
         assert not contexts
         await send(writer, dict(type="message", run_id="owned", group_id="main", content="", image_refs=["image"]))
         await read(reader, "response")
-        user = next(message for message in contexts[0].messages if isinstance(message, UserMessage))
+        user = model_input_bodies(contexts[0])[0]
         assert isinstance(user.content[1], ImageContent)
         assert base64.b64decode(user.content[1].data) == PNG
         runtime = server._orchestrator._runtimes["main"]
         meta = runtime.transcript_store.get_active_session("main")
         transcript = runtime.transcript_store.load_transcript(meta.session_id)
+        assert transcript[0]["type"] == "xdog.claw.actor.v1"
+        transcript = transcript_bodies(transcript)
         assert transcript[0]["content"][1]["type"] == "image"
         assert runtime.get_session_info()["history"][0]["image_count"] == 1
         assert "data" not in runtime.get_session_info()["history"][0]["content"][-1]
@@ -173,7 +177,7 @@ async def test_large_image_chunks_bypass_single_frame_limit_and_retain_exact_byt
             assert "error" not in await read(reader, "attachment_ack")
         await send(writer, dict(type="message", run_id="large", content="", image_refs=["large"]))
         await read(reader, "response")
-        user = next(message for message in contexts[0].messages if isinstance(message, UserMessage))
+        user = model_input_bodies(contexts[0])[0]
         assert base64.b64decode(user.content[1].data) == raw
     finally:
         writer.close()
@@ -263,7 +267,7 @@ async def test_image_follow_up_edit_consume_or_return_uses_identified_owner(gate
         assert receipt["id"] == "one" and receipt["content"] == "edited"
         await read(reader, "aborted" if abort else "response")
         assert not runtime._active_session.agent.pending_inputs()
-        users = [message for message in contexts[-1].messages if isinstance(message, UserMessage)]
+        users = [message for message in model_input_bodies(contexts[-1])]
         if abort:
             assert len(users) == 1
         else:

@@ -13,9 +13,10 @@ from xdog.claw.core.tools.tool_memory import create_memory_tool
 from xdog.claw.core.tools.tool_message import create_message_tool
 from xdog.claw.core.tools.tool_skill import create_skill_tool
 from xdog.claw.core.tools.tool_todo import create_todo_tool
+from xdog.claw.core.tools.tool_xhs_post import create_xhs_post_tool
 
 DEFAULT_TOOL_NAMES = ('bash', 'filesystem', 'current_time', 'memory', 'message', 'skill', 'todo')
-AVAILABLE_TOOL_NAMES = frozenset((*DEFAULT_TOOL_NAMES, 'submit_result', 'generate_image'))
+AVAILABLE_TOOL_NAMES = frozenset((*DEFAULT_TOOL_NAMES, 'submit_result', 'generate_image', 'xhs_post'))
 
 
 def new_tool_repo(names: Iterable[str] | None = None, *, cwd: Path | None = None,
@@ -50,6 +51,8 @@ def new_tool_repo(names: Iterable[str] | None = None, *, cwd: Path | None = None
             tools.append(create_message_tool())
         elif name == 'skill':
             tools.append(create_skill_tool())
+        elif name == 'xhs_post':
+            tools.append(create_xhs_post_tool())
         elif name == 'todo':
             tools.append(create_todo_tool())
         elif name == 'submit_result':

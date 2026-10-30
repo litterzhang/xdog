@@ -54,7 +54,7 @@ class GroupCapabilityHost:
             valid=lambda: self.valid() and not self._retiring and not self._runtime._closing
                 and self._runtime._active_session is session
                 and session.extensions is extensions,
-            user_authorized=lambda: session._user_operation_authorized)
+            user_authorized=lambda: session._user_operation_authorized and session._user_operation_current())
         self._watch_children(session, parent)
         return parent
 

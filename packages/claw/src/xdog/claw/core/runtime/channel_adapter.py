@@ -24,21 +24,24 @@ class ChannelReply:
     chunker: BlockChunker = field(default_factory=BlockChunker)
 
     async def __call__(self, text: str) -> None:
-        for chunk in self.chunker.chunk(text) or [text]:
+        if self.channel.reply_mode == 'none':
+            return
+        chunks = [text] if self.channel.reply_mode == 'final' else self.chunker.chunk(text) or [text]
+        for chunk in chunks:
             if isinstance(self.original, UserInput):
                 await self.channel.send_reply(self.original, chunk)
             else:
                 await self.channel.send_message(self.original.group_id, chunk)
 
 
-def durable_reply(delivery: OutputDelivery, record: InputRecord, binding: str
+def durable_reply(delivery: OutputDelivery, record: InputRecord, binding: str, *, atomic: bool = False
                   ) -> Callable[[str], Awaitable[None]]:
     ordinal = 0
     chunker = BlockChunker()
     async def send(text: str) -> None:
         nonlocal ordinal
         ordinal = await delivery.emit(record.envelope, record.attempt_id, binding,
-                                       chunker.chunk(text) or [text], ordinal=ordinal)
+                                       ([text] if atomic else chunker.chunk(text) or [text]), ordinal=ordinal)
     return send
 
 
@@ -58,7 +61,7 @@ class ChannelReplies:
         """Only explicit live bindings can be proactive destinations; never broadcast."""
         result = {}
         for binding, channel in tuple(self._channels.items()):
-            original = channel.bound_reply(scope.group_id)
+            original = channel.bound_reply(scope.group_id) or channel.bound_publication(scope.group_id)
             if original is not None:
                 if original.group_id != scope.group_id or original.channel != channel.name:
                     raise ValueError('Channel returned another group or channel binding')
@@ -87,6 +90,13 @@ class ChannelReplies:
 
     def reply(self, channel: Channel, original: GroupInput) -> ChannelReply:
         return ChannelReply(self.register(channel), channel, original)
+
+    def original_channel(self, original: UserInput) -> Channel | None:
+        """Resolve one actual original input binding, never a model-selected destination."""
+        available = [channel for channel in self._channels.values() if channel.accepts_saved_reply(original)]
+        if len(available) > 1:
+            raise ValueError('Ambiguous original input channel')
+        return available[0] if available else None
 
     def resolve(self, row: OutputRecord) -> Sender | None:
         original = restore_input(row.envelope)

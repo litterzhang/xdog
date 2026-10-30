@@ -149,6 +149,11 @@ def entry_text(entry: dict[str, Any]) -> str:
     if entry.get("role") == "custom" and entry.get("type") == "xdog.session_input.v1":
         from xdog.agent.session_input import render_input_data
         return render_input_data(entry.get("data"))
+    if entry.get('role') == 'custom' and entry.get('type') == 'xdog.claw.actor.v1':
+        from xdog.agent.core import CustomAgentMessage
+        from xdog.claw.core.identity.context import project
+        value = project(CustomAgentMessage(entry['type'], entry.get('data', {})))
+        return value.content if isinstance(value, UserMessage) and isinstance(value.content, str) else ''
     content = entry.get("content")
     if isinstance(content, str):
         return content

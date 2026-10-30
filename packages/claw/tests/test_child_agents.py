@@ -306,7 +306,7 @@ async def test_real_parent_turn_spawns_child_inheriting_message_port_and_settles
 
     api.send_message = send
     channel._api_client = api
-    channel._user_id_map["main"] = "original-peer"
+    channel._proactive_recipient = lambda: "original-peer"
     clear_context_tokens("child-outbound")
     set_context_token("child-outbound", "original-peer", "original-context")
     server._orchestrator.add_channel(channel)

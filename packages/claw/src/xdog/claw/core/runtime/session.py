@@ -96,6 +96,7 @@ class TurnResult:
     session_id: str = ""
     retain_partial: bool = False
     canceled: bool = False
+    final_response: str = ""  # Last final model message, never aggregated progress/tool text.
 
 
 @dataclass(frozen=True)
@@ -145,7 +146,10 @@ class AgentSession:
         self._human_inputs: dict[str, str] = {}
         self._authorized_messages: dict[int, UserMessage] = {}
         self._user_operation_authorized = False
+        self._user_operation_current: Callable[[], bool] = lambda: True
         self._human_prompt = False
+        from xdog.claw.core.runtime.identity_scope import InputExecution
+        self._input_execution: InputExecution | None = None
         self._compaction_metadata: dict[str, Any] | None = None
         self._has_compaction_entry = False
         self._compacting = False
@@ -181,7 +185,7 @@ class AgentSession:
         if native_metadata is not None:
             runtime.context_window = native_metadata.context_window or runtime.context_window
             runtime.max_prompt_tokens = native_metadata.max_prompt_tokens
-        from xdog.agent.extensions.providers import ExtensionProviderStream
+        from xdog.claw.core.runtime.identity_scope import SessionStream
         saved_thinking = data.thinking
         options = runtime.agent_config.options
         if saved_thinking is not None:
@@ -195,8 +199,9 @@ class AgentSession:
                 if (metadata is None or not metadata.reasoning or metadata.supported_efforts is not None
                         and options.thinking not in metadata.supported_efforts):
                     raise ValueError("Saved reasoning is unavailable on the selected model; no fallback")
+        from xdog.claw.core.identity.context import custom_validators
         self._agent: Agent = Agent(
-            ExtensionProviderStream(self.extensions, effective_stream_fn),
+            SessionStream(self, effective_stream_fn),
             config=AgentConfig(
                 model=runtime.model or "test/dummy",
                 supports_tool_calls=data.model.supports_tool_calls,
@@ -227,8 +232,10 @@ class AgentSession:
             },
             transform_context=self._extension_context,
             before_tool_call=self._before_tool_call,
+            tool_execution_guard=self._validate_tool_execution,
             after_tool_call=self._after_tool_call,
             input_transform=self._transform_user_input,
+            custom_message_validators=custom_validators(),
         )
 
         self._human_input_unsubscribe = self._agent.subscribe(self._observe_human_input)
@@ -415,7 +422,8 @@ class AgentSession:
             from xdog.agent.extensions.providers import ExtensionProviderStream
             previous = self._agent.stream_fn
             base = previous.base if isinstance(previous, ExtensionProviderStream) else previous
-            self._agent.set_stream_fn(ExtensionProviderStream(self.extensions, base))
+            from xdog.claw.core.runtime.identity_scope import SessionStream
+            self._agent.set_stream_fn(SessionStream(self, base))
 
     def _history_reader(self) -> Any:
         from xdog.claw.core.persistence.history_reader import HistoryReader
@@ -581,6 +589,10 @@ class AgentSession:
         from xdog.claw.core.runtime.session_tools import read_only_tool_call
         return read_only_tool_call(self, ctx)
 
+    def _validate_tool_execution(self, ctx: BeforeToolCallContext) -> None:
+        from xdog.claw.core.runtime.session_tools import validate_tool_execution
+        validate_tool_execution(self, ctx)
+
     async def _before_tool_call(
         self, ctx: BeforeToolCallContext, cancel: asyncio.Event | None = None,
         *, memory_maintenance: bool = False,
@@ -705,7 +717,10 @@ class AgentSession:
         from typing import cast
 
         from xdog.agent.input_queue import Delivery
-        if (isinstance(message, ExternalInput) or message.metadata.get('input_origin', 'user') != 'user'
+        if (self._input_execution is not None
+                and self._input_execution.identity.principal.role in {'user', 'external_user'}
+                or message.identity is not None and not message.identity.human_authorized
+                or isinstance(message, ExternalInput) or message.metadata.get('input_origin', 'user') != 'user'
                 or delivery not in {'steer', 'follow_up'}):
             raise ValueError('Only host-identified human input can authorize user controls')
         if message.images:
@@ -713,14 +728,25 @@ class AgentSession:
         pending = {item.id for item in self._agent.pending_inputs()}
         self._human_inputs = {key: value for key, value in self._human_inputs.items() if key in pending}
         identifier = 'claw-human-' + uuid.uuid4().hex
-        self._agent.queue_input(identifier, message.content, cast(Delivery, delivery), message.images)
+        from xdog.claw.core.identity import IdentityResolver, MessageSource
+        from xdog.claw.core.identity.context import marker
+        identity = message.identity or IdentityResolver.local(MessageSource(message.channel or 'local'))
+        self._agent.queue_input(identifier, message.content, cast(Delivery, delivery), message.images,
+                                context_messages=(marker(identity, identifier),))
         self._human_inputs[identifier] = message.channel or 'user'
 
     def steer(self, content: str) -> None:
-        self._agent.steer(content)
+        self._require_management_input()
+        self.queue_human_input(UserInput(content=content), "steer")
 
     def follow_up(self, content: str) -> None:
-        self._agent.follow_up(content)
+        self._require_management_input()
+        self.queue_human_input(UserInput(content=content), "follow_up")
+
+    def _require_management_input(self) -> None:
+        if (self._input_execution is not None
+                and self._input_execution.identity.principal.role in {'user', 'external_user'}):
+            raise ValueError("Management input cannot steer a different input authority scope")
 
     def abort(self) -> None:
         self.children.runtime.abort()
@@ -736,6 +762,8 @@ class AgentSession:
         on_display_event: Any = None,
         on_assistant_message: Callable[[str], Awaitable[None]] | None = None,
         child_ui: tuple[str, Callable[[dict[str, Any]], None]] | None = None,
+        input_id: str | None = None,
+        identity_current: Callable[[], bool] = lambda: True,
     ) -> TurnResult:
         """Execute a turn, optionally delivering each completed assistant message.
 
@@ -756,10 +784,11 @@ class AgentSession:
         self._restore_messages()
         self._user_operation_authorized = False
         self._authorized_messages.clear()
-        self._human_prompt = (isinstance(input, UserInput) and not isinstance(input, ExternalInput)
-                              and input.metadata.get('input_origin', 'user') == 'user')
-        context_snapshot = (await self.context_messages.capture()
-            if isinstance(input, UserInput) and input.metadata.get('input_origin', 'user') == 'user' else None)
+        from xdog.claw.core.runtime.identity_scope import resolve
+        self._input_execution = resolve(input, input_id or 'turn-' + uuid.uuid4().hex,
+                                        permissions=self._runtime.group.permissions, current=identity_current)
+        self._human_prompt = self._input_execution.policy.manage
+        context_snapshot = await self.context_messages.capture() if self._human_prompt else None
         self.children.extensions.default_ui = child_ui
         display_loop = asyncio.get_running_loop()
         self._host_loop = display_loop
@@ -783,8 +812,10 @@ class AgentSession:
             self._source_generation += 1
             channel = (input.channel if isinstance(input, UserInput)
                        else input.kind if isinstance(input, SystemInput) else "")
-            self._source_channels[previous_count] = channel
-            self._input_is_user = isinstance(input, UserInput) and not isinstance(input, ExternalInput)
+            from xdog.claw.core.types import ContextContinuation
+            source_offset = previous_count if isinstance(input, ContextContinuation) else previous_count + 1
+            self._source_channels[source_offset] = channel
+            self._input_is_user = self._input_execution.policy.manage
             self._input_channel = str(channel)
             from xdog.claw.core.types import ContextContinuation
             if isinstance(input, ContextContinuation):
@@ -799,10 +830,17 @@ class AgentSession:
                 event_stream = await self._agent.continue_()
             elif isinstance(input, ExternalInput):
                 from xdog.agent.session_input import encode_input
-                event_stream = await self._agent.prompt(encode_input(input.canonical))
+                from xdog.claw.core.identity.context import marker
+                event_stream = await self._agent.prompt([
+                    marker(self._input_execution.identity, input.canonical.id),
+                    encode_input(input.canonical)])
             else:
+                from xdog.claw.core.identity.context import marker
+                parts: tuple[TextContent | ImageContent, ...] = (TextContent(text=input.content),
+                         *(input.images if isinstance(input, UserInput) else ()))
                 event_stream = await self._agent.prompt(
-                    input.content, images=list(input.images) if isinstance(input, UserInput) and input.images else None,
+                    [marker(self._input_execution.identity, self._input_execution.input_id),
+                     UserMessage(content=parts)],
                     initial_prompt_context=(lambda: self.context_messages.admit(context_snapshot))
                         if context_snapshot is not None else None,
                 )
@@ -847,8 +885,11 @@ class AgentSession:
             await self._persist_turn(input, usage)
             await self.extensions.event("turn_end")
 
+            last = self._agent.messages[-1]
+            final_response = ('\n\n'.join(part.text for part in last.content if isinstance(part, TextContent))
+                              if isinstance(last, AssistantMessage) and last.stop_reason in {'stop', 'length'} else '')
             return TurnResult(
-                response_text=final_text,
+                response_text=final_text, final_response=final_response,
                 tool_calls=turn.tool_calls,
                 usage=usage,
             )
@@ -877,6 +918,7 @@ class AgentSession:
             self._user_operation_authorized = False
             self._authorized_messages.clear()
             self._human_prompt = False
+            self._input_execution = None
             await self._persist_tool_retirement()
             await self._expire_selected_skills()
 

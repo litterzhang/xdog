@@ -23,8 +23,8 @@ from xdog.claw.config import ClawConfig
 from xdog.claw.core.inputs.consumer import Admit, InputOutcome, InputService
 from xdog.claw.core.inputs.models import InputEnvelope, InputScope, ReplyTarget
 from xdog.claw.core.inputs.store import InputRecord, InputStore
-from xdog.claw.core.outputs.delivery import OutputDelivery
-from xdog.claw.core.outputs.store import OutputStore
+from xdog.claw.core.outputs.delivery import OutputDelivery, Policy
+from xdog.claw.core.outputs.store import OutputRecord, OutputStore
 from xdog.claw.core.outputs.targets import ReplyReference
 from xdog.claw.core.runtime.channel_adapter import ChannelReplies, ChannelReply, durable_reply
 from xdog.claw.core.runtime.extension_controls import command_menu_handler, pending_messages_reader
@@ -72,6 +72,8 @@ class Orchestrator:
         defer_inputs: bool = False,
     ) -> None:
         self._config = config
+        from xdog.claw.core.identity import IdentityResolver
+        self.identities = IdentityResolver.from_config(config.identity_bindings)
         # Application startup barrier, independent of installed capabilities.
         self._defer_inputs = defer_inputs
         # Application bootstrap/tests may supply metadata; sessions and alias routing
@@ -127,6 +129,8 @@ class Orchestrator:
             child_presets=self._config.child_presets,
         )
         runtime.input_address = lambda: self.input_address(group.id, runtime.workspace_dir)
+        runtime.channel_profiles = lambda: tuple(profile for channel in self._channels
+            if (profile := channel.account_profile(group.id)) is not None)
         return runtime
 
     def register_group(self, group: Group) -> None:
@@ -175,14 +179,29 @@ class Orchestrator:
         self._channels.append(channel)
         self._channel_replies.register(channel)
 
+        def identity(message: GroupInput) -> Any:
+            if not isinstance(message, UserInput) or isinstance(message, ExternalInput):
+                raise ValueError('Chat channels must supply platform user messages, not system work')
+            source = channel.input_source(message)
+            # Native TUI uses its private, authenticated local application entry;
+            # a channel merely naming itself tui must not impersonate that entry.
+            bound = self.identities.channel(message.group_id, source)
+            if bound.principal.role not in channel.input_roles:
+                raise ValueError('Configured role exceeds the actual channel identity ceiling')
+            return bound
+
         async def accept(message: GroupInput) -> None:
             await self.route_message(message, message_id=self._channel_message_id(message),
                 wait_for_result=False,
+                host_identity=identity(message), identity_binding="channel",
+                reply_mode=channel.reply_mode,
                 on_assistant_message=self._channel_replies.reply(channel, message))
 
         async def dispatch(message: GroupInput) -> None:
             await self.route_message(message, message_id=self._channel_message_id(message),
                 reserved=self._channel_message_id(message) is not None,
+                host_identity=identity(message), identity_binding="channel",
+                reply_mode=channel.reply_mode,
                 on_assistant_message=self._channel_replies.reply(channel, message))
 
         channel.set_on_accept(accept)
@@ -229,7 +248,7 @@ class Orchestrator:
         outputs: OutputDelivery | None = None
         try:
             output_store = await OutputStore.open(self._data_dir / 'outputs' / 'journal.sqlite3')
-            outputs = OutputDelivery(output_store, self._channel_replies.resolve)
+            outputs = OutputDelivery(output_store, self._channel_replies.resolve, gate=self._output_identity_policy)
             scopes = [InputScope(group, workspace) for group in tuple(self._runtimes)
                       if (workspace := self.get_group_workspace(group)) is not None]
             for scope in scopes:
@@ -336,6 +355,35 @@ class Orchestrator:
         maximum = self._runtimes[scope.group_id].group.config.max_queued_messages
         return await service.submit(envelope, max_pending=maximum)
 
+    def _bound_identity_current(self, group_id: str, raw: object, binding: object) -> bool:
+        from xdog.claw.core.identity import IdentityResolver, InputIdentity
+        if raw is None:
+            return False  # Retain old data, never guess a missing execution identity.
+        identity = InputIdentity.from_dict(raw)
+        if binding == 'channel':
+            return self.identities.current(group_id, identity)
+        if binding == 'local':
+            return identity == IdentityResolver.local(identity.source)
+        if binding == 'system':
+            return identity == IdentityResolver.system(identity.source)
+        return False
+
+    def _identity_current(self, record: InputRecord | None) -> bool:
+        if record is None:
+            return True  # Explicit trusted host composition, never restored intake.
+        context = record.envelope.context
+        return self._bound_identity_current(record.envelope.scope.group_id,
+                                            context.get('identity'), context.get('identity_binding'))
+
+    async def _output_identity_policy(self, row: OutputRecord) -> Policy:
+        # Execution and transport settle independently. Revocation must also
+        # fence a private answer generated before the binding was revoked.
+        context = row.envelope.context
+        raw = context.get('source_identity') if context.get('outbound_tool') == 'message' else context.get('identity')
+        binding = (context.get('source_identity_binding') if context.get('outbound_tool') == 'message'
+                   else context.get('identity_binding'))
+        return 'ready' if self._bound_identity_current(row.envelope.scope.group_id, raw, binding) else 'pending'
+
     async def _execute_input(self, record: InputRecord, admit: Admit) -> InputOutcome:
         scope, identifier = record.envelope.scope, record.envelope.message.id
         key = scope, identifier
@@ -350,6 +398,7 @@ class Orchestrator:
         options.pop('on_execution_started', None)
         reference = options.pop('reply_reference', None)
         on_error: Callable[[str], Awaitable[None]] | None = None
+        final_send: Callable[[str], Awaitable[None]] | None = None
         display = options.get('on_display_event')
         if call is not None and display is not None:
             def publish(event: Any) -> None:
@@ -358,6 +407,8 @@ class Orchestrator:
             options['on_display_event'] = publish
         try:
             value = restore_input(record.envelope)
+            if not self._identity_current(record):
+                raise ValueError('Original host identity is missing or changed; explicit resubmission is required')
             reply = options.get('on_assistant_message')
             recovered = (call is None and isinstance(value, UserInput) and not isinstance(value, ExternalInput)
                          and record.envelope.reply is not None)
@@ -376,15 +427,25 @@ class Orchestrator:
                 if self._outputs is None:
                     raise RuntimeError('Application output receipts were not initialized')
                 binding = reply.binding if isinstance(reply, ChannelReply) else 'saved-original-channel'
-                send = durable_reply(self._outputs, record, binding)
-                options['on_assistant_message'] = send
+                mode = record.envelope.context.get('reply_mode', 'stream')
+                if mode not in {'stream', 'final', 'none'}:
+                    raise ValueError('Invalid saved channel reply mode')
+                send = durable_reply(self._outputs, record, binding, atomic=mode == 'final')
+                final_send = send if mode == 'final' else None
+                options['on_assistant_message'] = None if mode in {'final', 'none'} else send
                 async def send_error(error: str) -> None:
-                    await send(f'Error: {error}')
-                on_error = send_error
+                    identity = value.identity
+                    public = identity is not None and identity.principal.role in {'user', 'external_user'}
+                    await send('暂时无法处理这条消息，请稍后再试。' if public else f'Error: {error}')
+                on_error = send_error if mode != 'none' else None
             result = await self._execute_owned_input(value, admit=admit, message_record=record, **options)
             if result is None:
                 # A host fence explicitly refused this unstarted submission.
                 result = TurnResult(error='Host input admission was withdrawn')
+            if not result.error and final_send is not None:
+                final = result.response_text if result.input_handled else result.final_response
+                if final:
+                    await final_send(final)
             if result.error and on_error is not None:
                 await on_error(result.error)
             if call is not None and not call.result.done():
@@ -405,6 +466,7 @@ class Orchestrator:
         wait_for_result: bool = True,
         on_execution_started: Callable[[InputExecution], None] | None = None,
         reply_reference: ReplyReference | None = None,
+        host_identity: Any = None, identity_binding: str = "local", reply_mode: str = "stream",
     ) -> TurnResult | None:
         """Persist ordinary input before ACK; busy never implicitly means steering."""
         group_id = message.group_id
@@ -423,8 +485,17 @@ class Orchestrator:
         identifier = message_id or (message.canonical.id if isinstance(message, ExternalInput)
                                     else 'input-' + uuid.uuid4().hex)
         binding = 'live-' + uuid.uuid4().hex if input_alive is not None or before_admission is not None else ''
-        envelope = freeze_input(message, workspace, message_id=identifier, admission_key=binding, reply=reply_target)
+        envelope = freeze_input(message, workspace, message_id=identifier, admission_key=binding, reply=reply_target,
+                                identity=host_identity, identity_binding=identity_binding,
+                                reply_mode=reply_mode)
         service = await self.input_service()
+        if identity_binding == 'channel':
+            existing = await service.store.get(envelope.scope, identifier)
+            if existing is not None:
+                from xdog.claw.core.runtime.input_adapter import same_channel_submission
+                if not same_channel_submission(existing.envelope, envelope):
+                    raise ValueError('Accepted channel input content conflict')
+                envelope = existing.envelope  # ACK retry cannot change original authorization or reply policy.
         key = envelope.scope, identifier
         call = self._input_calls.get(key)
         added = call is None
@@ -514,13 +585,28 @@ class Orchestrator:
                         and message_record is not None
                         and runtime.workspace_dir == message_record.envelope.scope.workspace
                         and runtime.group.id == message_record.envelope.scope.group_id
-                        and not session.access.state.read_only
+                        and not session.access.state.read_only and self._identity_current(message_record)
                         and message_tool is not None
                         and any(tool is message_tool for tool in actual_agent.active_tools))
             message_port = (OutboundMessages(message_record, self._channel_replies, self._outputs, message_valid)
                             if message_record is not None and self._outputs is not None else None)
+            from xdog.claw.core.runtime.identity_scope import allows_tool
+            from xdog.claw.core.runtime.xhs_posts import bind_reader
+            post_tool = next((tool for tool in actual_agent.active_tools if tool.name == 'xhs_post'), None)
+            def post_valid() -> bool:
+                return (not self._inputs_stopping and not runtime._closing
+                        and runtime._active_session is session and session.agent is actual_agent
+                        and message_record is not None and self._identity_current(message_record)
+                        and session._input_execution is not None
+                        and session._input_execution.input_id == message_record.envelope.message.id
+                        and post_tool is not None and any(tool is post_tool for tool in actual_agent.active_tools)
+                        and allows_tool(session, 'xhs_post'))
+            reader = bind_reader(self._channel_replies, message, post_valid) if post_tool is not None else None
             session.agent.set_tool_context({**session.agent.tool_context,
-                                           '_reply_reference': reply_reference, '_message_port': message_port})
+                                           '_reply_reference': reply_reference, '_message_port': message_port,
+                                           '_xhs_post_reader': reader})
+            previous_authority_guard = session._user_operation_current
+            session._user_operation_current = lambda: self._identity_current(message_record)
             previous_menu = session.extensions.command_menu_handler
             menu_handler = command_menu_handler(session, command_menu) if command_menu is not None else None
             previous_pending = session.extensions.pending_messages
@@ -530,10 +616,12 @@ class Orchestrator:
                 # Channel commands use the same admitted Core input owner and
                 # durable output path, never re-enter the group controller.
                 human_command = (isinstance(message, UserInput) and not isinstance(message, ExternalInput)
-                    and message.metadata.get('input_origin', 'user') == 'user' and not message.images
+                    and message.identity is not None and message.identity.human_authorized and not message.images
                     and message.content.startswith('/'))
                 if human_command:
                     await session.initialize_extensions()
+                    if not self._identity_current(message_record):
+                        raise ValueError("Original command identity grant changed before dispatch")
                     parts = message.content[1:].split(maxsplit=1)
                     if parts and session.extensions.is_native_command(parts[0]):
                         if (session.agent.is_streaming or session._compacting
@@ -551,7 +639,8 @@ class Orchestrator:
                             await on_assistant_message(text)
                         return TurnResult(response_text=text, input_handled=True, session_id=session.meta.session_id)
                 result: TurnResult | None = await session.run_turn(
-                    message,
+                    message, input_id=message_record.envelope.message.id if message_record is not None else None,
+                    identity_current=lambda: self._identity_current(message_record),
                     on_display_event=on_display_event,
                     on_text_delta=on_text_delta,
                     on_assistant_message=on_assistant_message,
@@ -560,8 +649,10 @@ class Orchestrator:
                 return replace(result, session_id=session.meta.session_id) if result is not None else None
             finally:
                 session.agent.set_tool_context({**session.agent.tool_context,
-                                               '_reply_reference': None, '_message_port': None})
+                                               '_reply_reference': None, '_message_port': None,
+                                               '_xhs_post_reader': None})
                 session.extensions.pending_messages = previous_pending
+                session._user_operation_current = previous_authority_guard
                 if session.extensions.command_menu_handler is menu_handler:
                     session.extensions.command_menu_handler = previous_menu
 

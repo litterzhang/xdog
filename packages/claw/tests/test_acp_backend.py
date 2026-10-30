@@ -81,6 +81,9 @@ async def test_enqueue_automatically_uses_real_agent_and_canonical_transcript(tm
         assert "Review changes" in text and "Untrusted evidence" in text and "sample.py" in text
         session_id = orch.get_new_session_id("main")
         transcript = orch._runtimes["main"].transcript_store.load_transcript(session_id)
+        assert transcript[0]["type"] == "xdog.claw.actor.v1"
+        assert transcript[0]["data"]["identity"]["principal"]["kind"] == "system"
+        transcript = transcript[1:]
         assert transcript[0]["type"] == "xdog.session_input.v1"
         assert transcript[0]["data"]["id"] == "event-1"
         assert transcript[0]["data"]["source"] == "Eyes"

@@ -140,6 +140,7 @@ class GroupRuntime:
         self.summarizer = summarizer
         self.message_delivery = message_delivery
         self.input_address: Callable[[], dict[str, Any] | None] = lambda: None
+        self.channel_profiles: Callable[[], tuple[dict[str, str], ...]] = lambda: ()
         self._enabled_tools = group.enabled_tools
         self.tool_repo = ToolRepo(builtin=False)
         self._tools: list[AgentTool] | None = None
@@ -559,6 +560,7 @@ class GroupRuntime:
     ) -> bool:
         if self._active_session is None:
             return False
+        self._active_session._require_management_input()
         agent = self._active_session.agent
         if action == "add":
             if len(agent.pending_inputs()) >= 50 or len(content.encode("utf-8")) > 64 * 1024:
@@ -568,7 +570,11 @@ class GroupRuntime:
             from xdog.agent import Delivery
             if not images_validated:
                 self.validate_images(images)
-            agent.queue_input(input_id, content, cast(Delivery, delivery), images)
+            from xdog.claw.core.identity import IdentityResolver, MessageSource
+            from xdog.claw.core.identity.context import marker
+            identity = IdentityResolver.local(MessageSource('tui'))
+            agent.queue_input(input_id, content, cast(Delivery, delivery), images,
+                              context_messages=(marker(identity, input_id),))
             self._active_session._human_inputs[input_id] = 'tui'
             return True
         changed = agent.change_input(input_id, action, content, direction)

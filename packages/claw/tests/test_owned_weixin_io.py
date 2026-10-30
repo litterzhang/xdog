@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from xdog.ai.types import AssistantMessage
 from xdog.ai.utils.event_stream import EventStream
-from xdog.claw.channels.weixin.channel import WeixinChannel, _save_user_id_map, _TypingTicketCache
+from xdog.claw.channels.weixin.channel import WeixinChannel, _TypingTicketCache
 from xdog.claw.channels.weixin.context_tokens import clear_context_tokens, persist_context_tokens, set_context_token
 from xdog.claw.config import ClawConfig, GroupDef
 from xdog.claw.core.runtime.gateway import GatewayServer
@@ -62,7 +62,6 @@ async def test_channel_connect_inbound_and_disconnect_persistence_is_off_loop(tm
     set_context_token(account, "seed", "original-token")
     persist_context_tokens(tmp_path, account)
     clear_context_tokens(account)
-    _save_user_id_map(tmp_path, account, {"main": "seed"})
     channel = WeixinChannel(tmp_path, account, "https://example.invalid", "")
     await channel._api_client.close()
     api = ChannelApi()

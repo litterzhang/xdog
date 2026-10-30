@@ -586,17 +586,23 @@ def channel() -> None:
               ))
 @click.option("--weixin", "use_weixin", is_flag=True, default=False,
               help="Log in to WeChat channel")
-@click.option("--base-url", default="", help="API base URL (WeChat only)")
-def login(config_path: str | None, group_id: str, use_weixin: bool, base_url: str) -> None:
+@click.option("--xhs", "use_xhs", is_flag=True, default=False, help="Bind a local XHS backend login")
+@click.option("--base-url", default="", help="Channel API base URL")
+def login(config_path: str | None, group_id: str, use_weixin: bool, base_url: str, use_xhs: bool) -> None:
     """Log in to a channel."""
-    if not use_weixin:
-        click.echo("Error: specify a channel, e.g. --weixin", err=True)
+    if use_weixin == use_xhs:
+        click.echo("Error: specify exactly one channel: --weixin or --xhs", err=True)
         sys.exit(1)
 
     import asyncio
 
     config_file = Path(config_path).expanduser() if config_path else get_config_path()
     config = _resolve_config(config_path)
+
+    if use_xhs:
+        from xdog.claw.cli.xhs_login import run
+        run(config, config_file, group_id, base_url)
+        return
 
     from xdog.claw.channels.weixin.auth import (
         DEFAULT_BASE_URL,

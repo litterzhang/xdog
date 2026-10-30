@@ -70,7 +70,8 @@ async def host(tmp_path):
     await weixin._api_client.close()
     api = ChannelApi()
     weixin._api_client = api
-    weixin._user_id_map['main'] = 'alice'
+    weixin._test_recipients = {'main': 'alice'}
+    weixin._proactive_recipient = lambda: weixin._test_recipients.get('main')
     set_context_token(account, 'alice', 'private-context')
     notices = []
 
@@ -102,7 +103,7 @@ async def host(tmp_path):
 async def test_catalog_only_exposes_current_bound_channel_ids_and_send_selects_one(host, tmp_path, selected):
     other = WeixinChannel(tmp_path / 'other', 'other-account', 'https://example.invalid', '', group_id='other')
     await other._api_client.close()
-    other._user_id_map['other'] = 'bob'
+    other._proactive_recipient = lambda: 'bob'
     other_id = host.registry.register(other)
     stdout_id = host.registry.register(TuiChannel())
     port = host.port()
@@ -199,7 +200,7 @@ async def test_listed_weixin_binding_change_requires_fresh_catalog_before_commit
     port = host.port()
     await port.channels()
     if change == 'peer':
-        host.weixin._user_id_map['main'] = 'bob'
+        host.weixin._test_recipients['main'] = 'bob'
     else:
         set_context_token(host.weixin._account_id, 'alice', 'changed-context')
     with pytest.raises(ValueError, match='recipient changed'):
@@ -264,10 +265,14 @@ async def test_committed_weixin_output_freezes_original_peer_account_and_context
     await port.channels()
     receipt = await port.send('committed', host.wx_id, 'for original')
     assert receipt['status'] == 'pending'
-    host.weixin._user_id_map['main'] = 'bob'
+    host.weixin._test_recipients['main'] = 'bob'
     set_context_token(host.weixin._account_id, 'alice', 'later-context')
     set_context_token(host.weixin._account_id, 'bob', 'bobs-context')
     host.ready = True
+    await host.outputs.resume()
+    assert host.api.sent.empty()  # A revoked owner binding cannot deliver the old private message.
+    assert (await host.outputs.store.records())[0].status == 'pending'
+    host.weixin._test_recipients['main'] = 'alice'
     await host.outputs.resume()
     sent = host.api.sent.get_nowait()
     assert sent_parts(sent) == ('alice', 'private-context', 'for original')
@@ -436,7 +441,7 @@ async def test_main_agent_real_acp_message_tool_sends_weixin_but_plain_reply_sta
         await wx._api_client.close()
         api = ChannelApi()
         wx._api_client = api
-        wx._user_id_map['main'] = 'bound-weixin-peer'
+        wx._proactive_recipient = lambda: 'bound-weixin-peer'
         set_context_token('acp-outbound', 'bound-weixin-peer', 'original-acp-context')
         gateway._orchestrator.add_channel(wx)
         writer = tui = None

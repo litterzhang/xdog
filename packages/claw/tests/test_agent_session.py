@@ -187,7 +187,8 @@ async def test_cancelled_turn_aborts_agent_producer_and_persists(setup):
     assert stopped.is_set()
     assert not session.agent.state.is_streaming
     transcript = session._store.load_transcript(session.meta.session_id)
-    assert transcript[0]["role"] == "user"
+    assert transcript[0]["type"] == "xdog.claw.actor.v1"
+    assert transcript[1]["role"] == "user"
 
 
 @pytest.mark.asyncio
@@ -236,9 +237,11 @@ async def test_run_turn_persists_transcript(setup):
     await session.run_turn(UserInput(group_id="g1", content="hello", sender="user"))
     meta = runtime.transcript_store.get_active_session("g1")
     transcript = runtime.transcript_store.load_transcript(meta.session_id)
-    assert len(transcript) == 2  # user + assistant
-    assert transcript[0]["role"] == "user"
-    assert transcript[1]["role"] == "assistant"
+    assert len(transcript) == 3  # host actor + user + assistant
+    assert transcript[0]["type"] == "xdog.claw.actor.v1"
+    assert transcript[0]["data"]["identity"]["principal"]["role"] == "admin"
+    assert transcript[1]["role"] == "user"
+    assert transcript[2]["role"] == "assistant"
 
 @pytest.mark.asyncio
 async def test_run_turn_includes_system_prompt(setup):

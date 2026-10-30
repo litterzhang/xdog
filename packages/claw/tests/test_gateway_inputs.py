@@ -6,10 +6,12 @@ import json
 from unittest.mock import patch
 
 import pytest
-from xdog.ai.types import AssistantMessage, DoneEvent, StartEvent, TextContent, UserMessage
+from xdog.ai.types import AssistantMessage, DoneEvent, StartEvent, TextContent
 from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.config import ClawConfig, GroupDef
 from xdog.claw.core.runtime.gateway import GatewayServer
+
+from packages.claw.tests.core_inputs import model_input_bodies
 
 
 @pytest.fixture
@@ -19,7 +21,7 @@ async def gateway(tmp_path):
 
     def stream_fn(model, context, options=None):
         users = [message.content if isinstance(message.content, str) else "".join(part.text for part in message.content)
-                 for message in context.messages if isinstance(message, UserMessage)]
+                 for message in model_input_bodies(context)]
         contexts.append(users)
         message = AssistantMessage(content=(TextContent(text="answer"),))
 

@@ -53,7 +53,8 @@ async def test_claw_large_tool_images_preserve_canonical_data_without_oversized_
         finished = next(event for event in events if isinstance(event, ToolFinished))
         assert not finished.images and "omitted from bounded live preview" in finished.result
         assert "original image data remains in the transcript" in finished.result
-        result = next(message for message in session.agent.state.messages if message.role == "toolResult")
+        result = next(message for message in session.agent.state.messages
+                      if getattr(message, "role", None) == "toolResult")
         assert any(isinstance(part, ImageContent) and part.data == data for part in result.content)
     finally:
         await server.stop()

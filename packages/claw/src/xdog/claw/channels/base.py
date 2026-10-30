@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Awaitable, Callable
+from pathlib import Path
+from typing import Any, Awaitable, Callable
 
+from xdog.claw.core.identity import MessageSource
 from xdog.claw.core.types import GroupInput, UserInput
 
 OnMessageCallback = Callable[[GroupInput], Awaitable[None]]
@@ -38,6 +40,38 @@ class Channel(ABC):
         (it may contain private transport context). No input is submitted here.
         """
         return None
+
+    @property
+    def reply_mode(self) -> str:
+        """Ordinary chats stream complete messages; public posts may require one final reply."""
+        return 'stream'
+
+    @property
+    def input_roles(self) -> frozenset[str]:
+        """The actual adapter's role ceiling, independent of configured mappings."""
+        return frozenset({'admin', 'user', 'external_user'})
+
+    def input_source(self, original: UserInput) -> MessageSource:
+        """Facts from this actual adapter, never a role claimed by remote content.
+
+        Platform adapters should override for verified thread/reply identifiers.
+        Private reply tokens stay in reply_context, not this public projection.
+        """
+        if original.channel != self.name:
+            raise ValueError('Input does not belong to this channel binding')
+        return MessageSource(self.name, original.metadata.get('account_id', ''),
+                             original.sender, original.metadata.get('channel_message_id', ''))
+
+    def account_profile(self, group_id: str) -> dict[str, str] | None:
+        """Public login-account information, never persona or credential state."""
+        return None
+
+    def bound_publication(self, group_id: str) -> UserInput | None:
+        """Optional account-bound publication destination, never a chat recipient."""
+        return None
+
+    async def prepare_publication(self, original: UserInput, payload: dict[str, Any], workspace: Path) -> str:
+        raise ValueError('This channel does not support publishing')
 
     async def send_chunk(self, group_id: str, chunk: str) -> None:
         """Send a single chunk of a longer response.

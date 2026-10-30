@@ -81,7 +81,8 @@ async def test_retained_plus_new_image_exceeds_actual_model_context_without_prun
             assert 'image-count' in result.error
         assert not adapter.calls
         retained = [part for message in owner.agent.messages
-                    for part in (() if isinstance(message.content, str) else message.content)
+                    for part in (() if isinstance(getattr(message, "content", ()), str)
+                                 else getattr(message, "content", ()))
                     if isinstance(part, ImageContent)]
         assert retained == [IMAGE, IMAGE]  # No image pruned to make the request appear valid.
         assert not owner.agent.is_streaming

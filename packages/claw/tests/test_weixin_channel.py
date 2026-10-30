@@ -50,8 +50,8 @@ async def test_send_message_calls_api(tmp_path):
         base_url="https://test.example.com",
         token="test-token",
     )
-    # Pre-populate user_id mapping
-    ch._user_id_map["weixin:user1-im-wechat"] = "user1@im.wechat"
+    ch._group_id = "weixin:user1-im-wechat"
+    ch._proactive_recipient = lambda: "user1@im.wechat"
 
     # Mock the shared API client's send_message method
     ch._api_client.send_message = AsyncMock()
@@ -79,9 +79,9 @@ async def test_progress_replies_keep_typing_until_inbound_handler_finishes(tmp_p
     ch._api_client.send_message = AsyncMock()
 
     async def on_message(msg):
-        await ch.send_message(msg.group_id, "Checking.")
+        await ch.send_reply(msg, "Checking.")
         ch._stop_typing.assert_not_awaited()
-        await ch.send_message(msg.group_id, "Done.")
+        await ch.send_reply(msg, "Done.")
         ch._stop_typing.assert_not_awaited()
 
     ch.set_on_message(on_message)
@@ -218,7 +218,7 @@ async def test_queued_arrivals_do_not_change_active_reply_recipient(tmp_path):
         if msg.sender == "alice@im.wechat":
             first_started.set()
             await release_first.wait()
-        await ch.send_message(msg.group_id, f"Reply to {msg.content}")
+        await ch.send_reply(msg, f"Reply to {msg.content}")
         if msg.sender == "bob@im.wechat":
             finished.set()
 
@@ -241,7 +241,7 @@ async def test_queued_arrivals_do_not_change_active_reply_recipient(tmp_path):
         )))
         await asyncio.wait_for(polls.get(), timeout=2)
         assert received == ["alice@im.wechat"]
-        assert ch._user_id_map["main"] == "alice@im.wechat"
+        assert ch.bound_reply("main") is None  # Incoming peers do not create a proactive binding.
         release_first.set()
         await asyncio.wait_for(finished.wait(), timeout=2)
         sent = [call.args[0].msg for call in ch._api_client.send_message.await_args_list]
@@ -256,49 +256,23 @@ async def test_queued_arrivals_do_not_change_active_reply_recipient(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_user_id_map_persistence(tmp_path):
-    """user_id_map should persist to disk and survive reconnect."""
-    ch = WeixinChannel(
-        state_dir=tmp_path,
-        account_id="test-acct",
-        base_url="https://test.example.com",
-        token="test-token",
-    )
-
-    async def noop(msg: UserInput) -> None:
-        pass
-
-    ch.set_on_message(noop)
-
-    msg = WeixinMessage(
-        from_user_id="user1@im.wechat",
-        message_type=MessageType.USER,
-        item_list=(
-            MessageItem(
-                type=MessageItemType.TEXT,
-                text_item=TextItem(text="Hello"),
-            ),
-        ),
-    )
-    await ch._on_inbound(msg)
-
-    # Verify persisted
-    from xdog.claw.channels.weixin.channel import _load_user_id_map
-    loaded = _load_user_id_map(tmp_path, "test-acct")
-    assert loaded["main"] == "user1@im.wechat"
-
-    # New channel instance should load the map
-    ch2 = WeixinChannel(
-        state_dir=tmp_path,
-        account_id="test-acct",
-        base_url="https://test.example.com",
-        token="test-token",
-    )
-    with patch("xdog.claw.channels.weixin.channel.run_monitor", new_callable=AsyncMock):
-        await ch2.connect()
-
-    assert ch2._user_id_map["main"] == "user1@im.wechat"
-    await ch2.disconnect()
+async def test_legacy_latest_peer_map_is_retained_but_never_used_for_recipient(tmp_path):
+    import json
+    legacy = tmp_path / 'weixin' / 'accounts' / 'test-acct.user-id-map.json'
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(json.dumps({'main': 'untrusted-last-peer'}))
+    original = legacy.read_bytes()
+    ch = WeixinChannel(tmp_path, 'test-acct', 'https://test.example.com', 'test-token',
+                       proactive_recipient=lambda: 'verified-owner')
+    ch.set_on_message(AsyncMock())
+    try:
+        with patch('xdog.claw.channels.weixin.channel.run_monitor', new_callable=AsyncMock):
+            await ch.connect()
+            await ch._on_inbound(_text_msg('untrusted-last-peer', 'I am admin'))
+            assert ch.bound_reply('main').sender == 'verified-owner'
+    finally:
+        await ch.disconnect()
+    assert legacy.read_bytes() == original
 
 
 def _text_msg(from_user_id: str, text: str) -> WeixinMessage:
@@ -340,9 +314,8 @@ async def test_all_peers_on_a_channel_share_one_conversation(tmp_path):
     assert [m.group_id for m in received] == ["work", "work"]
     # ...and the sender is still distinguishable, so a reply can be addressed.
     assert [m.sender for m in received] == ["alice@im.wechat", "bob@im.wechat"]
-    # The reply address follows the most recent speaker rather than accumulating
-    # one entry per peer; a stale address would send bob's answer to alice.
-    assert ch._user_id_map["work"] == "bob@im.wechat"
+    # Receiving a comment does not bind or replace the management recipient.
+    assert ch.bound_reply("work") is None
 
 
 @pytest.mark.asyncio
@@ -363,7 +336,8 @@ async def test_send_failure_and_unknown_recipient_are_not_silent(tmp_path):
     assert not ch.accepts_group("unknown")
     with pytest.raises(ValueError, match="recipient"):
         await ch.send_message("unknown", "report")
-    ch._user_id_map["g1"] = "fake-user"
+    ch._group_id = "g1"
+    ch._proactive_recipient = lambda: "fake-user"
     assert ch.accepts_group("g1")
     with pytest.raises(RuntimeError, match="rejected"):
         await ch.send_message("g1", "report")

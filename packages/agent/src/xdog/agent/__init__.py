@@ -113,6 +113,7 @@ from xdog.agent.types import (
     GetMessagesFn,
     HandledInput,
     InputTransformFn,
+    ToolExecutionGuard,
     TransformContextFn,
 )
 
@@ -175,6 +176,7 @@ __all__ = [
     "GetMessagesFn",
     "TransformContextFn",
     "InputTransformFn",
+    "ToolExecutionGuard",
     "HandledInput",
     # Agent class
     "Agent",

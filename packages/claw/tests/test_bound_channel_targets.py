@@ -33,35 +33,37 @@ def weixin(tmp_path):
     clear_context_tokens(account)
     channel = WeixinChannel(tmp_path, account, "https://example.invalid", "auth-secret", group_id="work")
     channel._api_client.send_message = AsyncMock()
+    channel._test_recipients = {}
+    channel._proactive_recipient = lambda: channel._test_recipients.get('work')
     yield channel
     clear_context_tokens(account)
 
 
 def test_weixin_only_captures_configured_group_with_actual_cached_peer(weixin):
     assert weixin.bound_reply("work") is None
-    weixin._user_id_map.update({"work": "alice", "other": "bob"})
-    assert weixin.accepts_group("other")  # Legacy broadcast eligibility is not a proactive grant.
+    weixin._test_recipients.update({"work": "alice", "other": "bob"})
+    assert not weixin.accepts_group("other")  # Only the configured group is eligible.
     assert weixin.bound_reply("other") is None
     assert weixin.bound_reply("alice") is None
     original = weixin.bound_reply("work")
     assert original is not None
     assert (original.group_id, original.channel, original.sender) == ("work", "weixin", "alice")
-    assert original.metadata == {"account_id": weixin._account_id, "weixin_user_id": "alice", "context_token": ""}
+    assert original.metadata == {"account_id": weixin._account_id, "weixin_user_id": "alice",
+                                 "context_token": "", "proactive_recipient": True}
     assert original.content == "" and original.images == ()
-    weixin._user_id_map["work"] = ""
+    weixin._test_recipients["work"] = ""
     assert weixin.bound_reply("work") is None
 
 
 async def test_weixin_capture_freezes_account_peer_context_without_logging_token(weixin, tmp_path, caplog):
     registry = ChannelReplies()
-    weixin._user_id_map["work"] = "alice"
+    weixin._test_recipients["work"] = "alice"
     with caplog.at_level(logging.DEBUG):
         set_context_token(weixin._account_id, "alice", "private-original-context")
         target = weixin.bound_reply("work")
         assert target is not None
         reference = registry.capture(InputScope("work", tmp_path), weixin, target)
         set_context_token(weixin._account_id, "alice", "private-new-context")
-        weixin._user_id_map["work"] = "bob"
         target.metadata.clear()
         restored = decode_reply(encode_reply(reference))
         await weixin.send_output(restored.original, "stable-output-id", "hello")
@@ -81,7 +83,7 @@ async def test_weixin_capture_freezes_account_peer_context_without_logging_token
     {"metadata": {"account_id": "other-account", "weixin_user_id": "alice", "context_token": "ctx"}},
 ])
 async def test_weixin_capture_does_not_relax_original_reply_validation(weixin, change):
-    weixin._user_id_map["work"] = "alice"
+    weixin._test_recipients["work"] = "alice"
     original = weixin.bound_reply("work")
     assert original is not None
     with pytest.raises(ValueError):

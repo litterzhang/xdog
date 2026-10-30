@@ -41,7 +41,7 @@ def estimate_tokens(turns: list[dict[str, Any]]) -> int:
     """
     total_chars = 0
     for t in turns:
-        total_chars += len(str(t.get("content", "")))
+        total_chars += len(entry_text(t) if t.get("role") == "custom" else str(t.get("content", "")))
         for tc in t.get("tool_calls", []):
             args = tc.get("arguments", {})
             total_chars += len(str(args))
@@ -57,7 +57,7 @@ def find_cut_point(turns: list[dict[str, Any]], target_tokens: int) -> int:
     running = 0
     for idx in range(len(turns) - 1, -1, -1):
         t = turns[idx]
-        running += len(str(t.get("content", ""))) // 4
+        running += len(entry_text(t) if t.get("role") == "custom" else str(t.get("content", ""))) // 4
         for tc in t.get("tool_calls", []):
             running += len(str(tc.get("arguments", {}))) // 4
         if running >= target_tokens:

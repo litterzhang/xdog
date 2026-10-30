@@ -35,10 +35,29 @@ def read_only_tool_call(session: AgentSession, ctx: BeforeToolCallContext) -> bo
         if (ctx.tool_call.name == 'memory' and ctx.args.get('action') in {'get', 'search', 'history'}
                 and any(active[0] is original for original in session._runtime._tools or ())):
             return True  # Actual host memory reader, never a same-named external tool.
+        if (ctx.tool_call.name == 'xhs_post' and not ctx.args
+                and any(active[0] is original for original in session._runtime._tools or ())):
+            return True
         effect = session._runtime.capability_assembly.tool_effect(active[0], dict(ctx.args))
         if effect is not None:
             return effect.access == "read"
     return read_only_call(ctx.tool_call.name, ctx.args)
+
+
+def validate_tool_execution(session: AgentSession, ctx: BeforeToolCallContext) -> None:
+    """Final synchronous ceiling check; another prepared call cannot lend a grant."""
+    from xdog.claw.core.runtime.identity_scope import allows_tool
+    if not allows_tool(session, ctx.tool_call.name):
+        raise ValueError('Tool execution is outside the original input scope')
+    actual = next((tool for tool in session.agent.active_tools if tool.name == ctx.tool_call.name), None)
+    if actual is None or not any(tool is actual for tool in ctx.context.tools or ()):
+        raise ValueError('Original tool registration or selection changed before execution')
+    if session.access.state.read_only and not read_only_tool_call(session, ctx):
+        raise ValueError('Host access scope is read-only')
+    mcp = session._runtime.mcp
+    if mcp.owns_tool(actual) and (session.agent.mcp_registry is not mcp
+                                or not mcp.is_current_tool(actual) or not mcp.allowed(actual.name)):
+        raise ValueError('Original MCP tool permission changed before execution')
 
 
 async def before_tool_call(
@@ -46,7 +65,11 @@ async def before_tool_call(
     *, memory_maintenance: bool = False,
 ) -> BeforeToolCallResult | None:
     from xdog.claw.core.compaction.managed_memory import allowed
+    from xdog.claw.core.runtime.identity_scope import allows_tool
     try:
+        scope = session._input_execution
+        if not allows_tool(session, ctx.tool_call.name):
+            return BeforeToolCallResult(block=True, reason='Tool execution is outside the original input scope')
         metadata = (memory_maintenance and ctx.tool_call.name == 'memory'
                     and await allowed(session._runtime.workspace_dir, ctx.args))
         if session.access.state.read_only and not metadata and not session._read_only_tool_call(ctx):
@@ -77,6 +100,8 @@ async def before_tool_call(
             return BeforeToolCallResult(block=True, reason='Outside managed memory maintenance scope')
         if session.access.state.read_only and not metadata and not session._read_only_tool_call(ctx):
             return BeforeToolCallResult(block=True, reason="Host access scope is read-only")
+        if scope is not session._input_execution or not allows_tool(session, ctx.tool_call.name):
+            return BeforeToolCallResult(block=True, reason='Original input identity scope changed')
         logger.info("Tool call: %s (group=%s)", ctx.tool_call.name, session._group_id)
         mcp = session._runtime.mcp
         actual = next((tool for tool in session._agent.state.tools if tool.name == ctx.tool_call.name), None)

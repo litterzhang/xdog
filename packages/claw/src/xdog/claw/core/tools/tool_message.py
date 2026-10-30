@@ -32,6 +32,15 @@ def create_message_tool() -> AgentTool:
                                               or '\x00' in reference or len(reference.encode()) > 256):
                     raise ValueError('message.send reference must be bounded nonempty text')
                 value = await scope.send(call_id, params['channel'], params['text'], cancel, reference=reference)
+            elif action == 'publish':
+                if set(params) != {'action', 'channel', 'title', 'text', 'images'}:
+                    raise ValueError('message.publish requires channel, title, text, images')
+                if (any(not isinstance(params[key], str) or not params[key].strip()
+                        for key in ('channel', 'title', 'text')) or not isinstance(params['images'], list)
+                        or any(not isinstance(item, str) for item in params['images'])):
+                    raise ValueError('Invalid publication text or image file references')
+                value = await scope.publish(call_id, params['channel'], params['title'], params['text'],
+                                            params['images'], cancel)
             else:
                 raise ValueError('Use message.channels with no fields, or message.send with channel and text')
             return AgentToolResult.from_text(json.dumps(value, ensure_ascii=False))
@@ -41,14 +50,19 @@ def create_message_tool() -> AgentTool:
 
     return AgentTool('message',
         'Proactively send one message to one currently bound channel of this group. '
-        'Use channels to list host-issued channel IDs, then send(channel,text). '
+        'Use channels to list host-issued channel IDs, then send(channel,text) for chat or '
+        'publish(channel,title,text,images) for an explicitly offered publishing account. '
+        'Publish requires admin/system input and workspace image files; it is a separate external side effect. '
         'No arbitrary group/recipient or multicast. Sending is one tool side effect; '
         'it does not change the normal reply route or end this turn. Inspect delivery status; '
         'do not repeat sent text as another ordinary reply or retry an unknown delivery.',
         {'type': 'object', 'additionalProperties': False, 'required': ['action'], 'properties': {
-            'action': {'type': 'string', 'enum': ['channels', 'send']},
+            'action': {'type': 'string', 'enum': ['channels', 'send', 'publish']},
             'channel': {'type': 'string', 'description': 'send: exact ID returned by channels'},
-            'text': {'type': 'string', 'description': 'send: user-visible message text'},
+            'text': {'type': 'string', 'description': 'send/publish: user-visible text'},
+            'title': {'type': 'string', 'description': 'publish: post title'},
+            'images': {'type': 'array', 'items': {'type': 'string'},
+                       'description': 'publish: workspace image files, not URLs'},
             'reference': {'type': 'string',
                           'description': 'send: optional correlation ID; grants no routing authority'},
         }}, execute=execute)

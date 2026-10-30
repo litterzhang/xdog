@@ -48,13 +48,33 @@ class OutboundMessages:
     async def channels(self) -> dict[str, Any]:
         async def read() -> dict[str, Any]:
             self._offered = self._catalog()
-            return {'channels': [{'id': identifier, 'name': reference.channel}
+            return {'channels': [self._channel_row(identifier, reference)
                                  for identifier, reference in self._offered.items()],
                     'scope': 'current_group', 'selection': 'one channel per message'}
         return await settle_on(self._loop, read())
 
+    @staticmethod
+    def _channel_row(identifier: str, reference: ReplyReference) -> dict[str, Any]:
+        value: dict[str, Any] = {'id': identifier, 'name': reference.channel}
+        if reference.original.metadata.get('publication') is True:
+            value.update(operations=['publish'], account_id=reference.original.metadata['account_id'])
+        return value
+
+    async def publish(self, call_id: str, channel: str, title: str, text: str, images: list[str],
+                      cancel: asyncio.Event | None = None) -> dict[str, Any]:
+        from xdog.claw.core.identity import InputIdentity
+        raw = self.record.envelope.context.get('identity')
+        if raw is None:
+            raise ValueError('Publishing requires an original host identity, not a legacy source label')
+        identity = InputIdentity.from_dict(raw)
+        if identity.principal.kind != 'system' and identity.principal.role != 'admin':
+            raise ValueError('Only group administrator or existing system work may publish')
+        return await self.send(call_id, channel, text, cancel,
+                               _publication={'title': title, 'text': text, 'images': images})
+
     async def send(self, call_id: str, channel: str, text: str,
-                   cancel: asyncio.Event | None = None, *, reference: str | None = None) -> dict[str, Any]:
+                   cancel: asyncio.Event | None = None, *, reference: str | None = None,
+                   _publication: dict[str, Any] | None = None) -> dict[str, Any]:
         # A child may execute on another loop; original application IO stays here.
         async def send_on_owner() -> dict[str, Any]:
             async with self._lock:
@@ -67,7 +87,21 @@ class OutboundMessages:
                 identifier = 'message-' + hashlib.sha256(json.dumps(key).encode()).hexdigest()
                 existing = await self._outputs.store.records(source.scope, message_id=identifier)
                 self._check(cancel)
-                chunks = BlockChunker().chunk(text) or [text]
+                if _publication is not None:
+                    if channel not in self._offered:
+                        raise ValueError('List message.channels before publishing')
+                    destination = self._catalog().get(channel)
+                    if (destination is None or self._offered[channel] != destination
+                            or destination.original.metadata.get('publication') is not True):
+                        raise ValueError('Original publication account is no longer bound to this group')
+                    adapter = self._channels.recipient(destination)
+                    if adapter is None:
+                        raise ValueError('Original publishing channel is unavailable')
+                    prepared = await adapter.prepare_publication(destination.original,
+                                                                _publication, source.scope.workspace)
+                    chunks = [prepared]  # One post, never chunk a publication into several effects.
+                else:
+                    chunks = BlockChunker().chunk(text) or [text]
                 if existing:
                     # A repeated tool call cannot choose a second channel or retry an unknown send.
                     if ({row.binding for row in existing} != {channel}
@@ -83,6 +117,8 @@ class OutboundMessages:
                 previous = self._offered.get(channel)
                 if previous is not None and previous != destination:
                     raise ValueError('Channel recipient changed after listing; refresh before sending')
+                if (destination.original.metadata.get('publication') is True) != (_publication is not None):
+                    raise ValueError('Use message.publish for account destinations, not message.send')
                 # Freeze the actual recipient/account/context before entering owned IO.
                 metadata = destination.original.metadata
                 envelope = InputEnvelope(source.scope,
@@ -91,7 +127,9 @@ class OutboundMessages:
                          'tool_call_id': call_id, 'worker': self._sender, 'reference': reference}),
                     ReplyTarget(destination.channel, destination.recipient), context={
                         'kind': 'external', 'channel': destination.channel, 'sender': destination.recipient,
-                        'timestamp': 0, 'metadata': metadata, 'outbound_tool': 'message'})
+                        'timestamp': 0, 'metadata': metadata, 'outbound_tool': 'message',
+                        'source_identity': source.context.get('identity'),
+                        'source_identity_binding': source.context.get('identity_binding')})
                 self._check(cancel)
                 await self._outputs.emit(envelope, self.record.attempt_id, channel, chunks)
                 rows = await self._outputs.store.records(source.scope, message_id=identifier)

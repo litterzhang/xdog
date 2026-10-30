@@ -188,7 +188,7 @@ def test_core_import_is_inert_and_explicit_inventory_contains_domain_tools(tmp_p
         tools = new_tool_repo(tuple(sorted(required))).tools
         assert {tool.name for tool in tools} == required
         message = next(tool for tool in tools if tool.name == 'message')
-        assert message.parameters['properties']['action']['enum'] == ['channels', 'send']
+        assert message.parameters['properties']['action']['enum'] == ['channels', 'send', 'publish']
         assert set(message.parameters['required']) == {'action'}
         assert message.parameters['additionalProperties'] is False
         assert not {'group_id', 'recipient', 'channels'} & message.parameters['properties'].keys()

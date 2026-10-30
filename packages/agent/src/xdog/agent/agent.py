@@ -100,6 +100,7 @@ from xdog.agent.types import (
     ConvertToLlmFn,
     HandledInput,
     InputTransformFn,
+    ToolExecutionGuard,
     TransformContextFn,
 )
 from xdog.ai.types import (
@@ -246,6 +247,8 @@ class Agent:
         Optional async context transform (summarisation, RAG, etc.).
     before_tool_call:
         Async hook called before each tool execution; can block calls.
+    tool_execution_guard:
+        Synchronous final host revalidation at executor entry; raise to reject.
     after_tool_call:
         Async hook called after each tool execution; can override results.
     """
@@ -265,12 +268,20 @@ class Agent:
         convert_to_llm: ConvertToLlmFn | None = None,
         transform_context: TransformContextFn | None = None,
         before_tool_call: BeforeToolCallFn | None = None,
+        tool_execution_guard: ToolExecutionGuard | None = None,
         after_tool_call: AfterToolCallFn | None = None,
         input_transform: InputTransformFn | None = None,
         input_settled: Callable[[tuple[QueuedInput, ...]], Awaitable[None]] | None = None,
         parent: ParentHandle | None = None,
         mcp_registry: McpRegistry | None = None,
+        custom_message_validators: Mapping[str, Callable[[dict[str, Any]], None]] | None = None,
     ) -> None:
+        self._custom_message_validators = dict(custom_message_validators or {})
+        if (len(self._custom_message_validators) > 32 or any(
+                not isinstance(name, str) or not name.strip() or len(name.encode()) > 128
+                or not callable(callback) or inspect.iscoroutinefunction(callback)
+                for name, callback in self._custom_message_validators.items())):
+            raise ValueError('Custom message validators require bounded names and host callables')
         self._parent = parent  # Host-injected capability; never encoded/restored from a snapshot.
         cfg = config or AgentConfig()
         if type(cfg.event_buffer_size) is not int or cfg.event_buffer_size <= 0:
@@ -376,6 +387,10 @@ class Agent:
         self._convert_to_llm = convert_to_llm
         self._transform_context = transform_context
         self._tool_execution: ToolExecutionMode = cfg.tool_execution
+        if tool_execution_guard is not None and (not callable(tool_execution_guard)
+                                                or inspect.iscoroutinefunction(tool_execution_guard)):
+            raise ValueError('tool_execution_guard must be a synchronous host callback')
+        self._tool_execution_guard = tool_execution_guard
         self._before_tool_call = before_tool_call
         self._after_tool_call = after_tool_call
         self._steering_mode = cfg.steering_mode
@@ -394,6 +409,7 @@ class Agent:
         self._follow_up_queue: list[AgentMessage] = []
         self._identified_inputs: dict[str, tuple[QueuedInput, UserMessage]] = {}
         self._input_message_ids: dict[int, str] = {}
+        self._queued_input_context: dict[str, tuple[CustomAgentMessage, ...]] = {}
 
         # Event listeners
         self._listeners: list[EventListener] = []
@@ -1005,7 +1021,7 @@ class Agent:
             session_id=self._session_id, run_id=self._run_id or None, run_active=run_active,
             interrupted=recovery or bool(pending),
             interrupted_tools=tuple(InterruptedTool(call_id, name) for call_id, name in pending.items()),
-            omit_messages=omit_messages,
+            omit_messages=omit_messages, custom_validators=self._custom_message_validators,
         )
 
     def restore(
@@ -1061,7 +1077,7 @@ class Agent:
                 self._compaction_state = CompactionSnapshot()
             return
 
-        candidate = decode_snapshot(raw)
+        candidate = decode_snapshot(raw, custom_validators=self._custom_message_validators)
         self._restore_candidate(candidate, tuple(raw["options"]), allowed_models=allowed_models,
                                 default_skills=default_skills)
 
@@ -1080,7 +1096,7 @@ class Agent:
         if not self._idle_event.is_set():
             raise RuntimeError("Cannot restore during an active run")
         raw = dict(metadata)
-        candidate = decode_snapshot_parts(raw, messages)
+        candidate = decode_snapshot_parts(raw, messages, custom_validators=self._custom_message_validators)
         self._restore_candidate(candidate, tuple(raw["options"]), allowed_models=allowed_models,
                                 default_skills=default_skills)
 
@@ -1181,6 +1197,7 @@ class Agent:
         self._follow_up_queue.clear()
         self._identified_inputs.clear()
         self._input_message_ids.clear()
+        self._queued_input_context.clear()
 
     def has_queued_messages(self) -> bool:
         """Return ``True`` if any steering or follow-up messages are queued."""
@@ -1335,16 +1352,25 @@ class Agent:
         (self._steering_queue if delivery == 'steer' else self._follow_up_queue).append(message)
 
     def queue_input(self, input_id: str, content: str, delivery: Delivery,
-                    images: tuple[ImageContent, ...] = ()) -> QueuedInput:
+                    images: tuple[ImageContent, ...] = (), *,
+                    context_messages: Sequence[CustomAgentMessage] = ()) -> QueuedInput:
         """Identify an input on the owning loop; acceptance is not consumption."""
         self._ensure_open()
         if not input_id or len(input_id) > 128 or input_id in self._identified_inputs:
             raise ValueError("Input ID is missing, too long, or already queued")
         if delivery not in {"steer", "follow_up"} or not (content.strip() or images):
             raise ValueError("Invalid input delivery or empty content")
+        if (len(context_messages) > 16
+                or any(not isinstance(message, CustomAgentMessage) for message in context_messages)):
+            raise ValueError('Queued context must contain typed custom messages')
+        from xdog.agent.snapshots import decode_snapshot_messages, encode_snapshot_messages
+        detached = decode_snapshot_messages(encode_snapshot_messages(context_messages,
+            custom_validators=self._custom_message_validators), custom_validators=self._custom_message_validators)
         item = QueuedInput(input_id, content, delivery, images=images)
         message = UserMessage(content=(TextContent(text=content), *images) if images else content)
         self._identified_inputs[input_id] = (item, message)
+        self._queued_input_context[input_id] = tuple(
+            part for part in detached if isinstance(part, CustomAgentMessage))
         self._input_message_ids[id(message)] = input_id
         (self._steering_queue if delivery == "steer" else self._follow_up_queue).append(message)
         return item
@@ -1372,6 +1398,7 @@ class Agent:
         if action == "remove":
             queue.pop(position)
             self._identified_inputs.pop(input_id)
+            self._queued_input_context.pop(input_id, None)
             self._input_message_ids.pop(id(message), None)
         elif action == "edit" and content.strip():
             replacement = UserMessage(content=(TextContent(text=content), *item.images) if item.images else content)
@@ -1397,6 +1424,7 @@ class Agent:
         self._follow_up_queue[:] = [message for message in self._follow_up_queue if id(message) not in identities]
         for key in keys:
             _item, message = self._identified_inputs.pop(key)
+            self._queued_input_context.pop(key, None)
             self._input_message_ids.pop(id(message), None)
         return items
 
@@ -1404,6 +1432,7 @@ class Agent:
         for input_id, (item, message) in tuple(self._identified_inputs.items()):
             if item.delivery == delivery:
                 self._identified_inputs.pop(input_id)
+                self._queued_input_context.pop(input_id, None)
                 self._input_message_ids.pop(id(message), None)
 
     def _select_inputs(self, messages: list[AgentMessage]) -> list[AgentMessage]:
@@ -1520,7 +1549,7 @@ class Agent:
         return await self._prepare_inputs(self._dequeue_follow_ups(), "follow_up")
 
     async def _prepare_inputs(self, messages: list[AgentMessage], source: str) -> list[AgentMessage]:
-        if self._input_transform is None and not self._custom_queue:
+        if self._input_transform is None and not self._custom_queue and not self._queued_input_context:
             return messages
         prepared: list[AgentMessage] = []
         receipts: list[tuple[UserMessage, UserMessage, str, str]] = []
@@ -1535,10 +1564,11 @@ class Agent:
                         continue
                     prepared.append(message)
                     continue
+                key = self._input_message_ids.get(id(message), "")
                 if self._input_transform is None:
+                    prepared.extend(self._queued_input_context.get(key, ()))
                     prepared.append(message)
                     continue
-                key = self._input_message_ids.get(id(message), "")
                 delivery = self._identified_inputs[key][0].delivery if key else source
                 if self._cancel.is_set():
                     raise asyncio.CancelledError
@@ -1560,6 +1590,7 @@ class Agent:
                         if key:
                             self._input_message_ids.pop(id(message), None)
                             self._identified_inputs.pop(key, None)
+                            self._queued_input_context.pop(key, None)
                         completed = self._emit(completed)
                         self._handled_inputs.append(completed)
                         if self._current_stream is not None:
@@ -1569,6 +1600,7 @@ class Agent:
                         continue  # Logical handler consumption, never canonical/model input admission.
                     if not isinstance(transformed, UserMessage):
                         raise ValueError("Input transform must return a UserMessage")
+                    prepared.extend(self._queued_input_context.get(key, ()))
                     prepared.append(transformed)
                     receipts.append((message, transformed, key, delivery))
                 finally:
@@ -1704,6 +1736,7 @@ class Agent:
         config = AgentLoopConfig(
             tool_execution=self._tool_execution,
             before_tool_call=self._before_tool_call,
+            tool_execution_guard=self._tool_execution_guard,
             after_tool_call=self._after_tool_call,
             convert_to_llm=self._convert_to_llm or _default_convert_to_llm,
             transform_context=skill_context,
@@ -1875,6 +1908,7 @@ class Agent:
                 input_id = self._input_message_ids.pop(id(event.message), None)
                 if input_id is not None:
                     item, _message = self._identified_inputs.pop(input_id)
+                    self._queued_input_context.pop(input_id, None)
                     consumed = InputConsumedEvent(replace(item, selected=False))
                     consumed = self._emit(consumed)
                     await stream.send(consumed)

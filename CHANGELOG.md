@@ -15,6 +15,18 @@ project follows [semantic versioning](https://semver.org/).
 
 ### Added
 
+- Group-local identity permission profiles for Claw, including configurable admin/system
+  ceilings and explicitly granted external business tools; retire `user_tools`.
+- Opt-in `xhs_post` for explicit, original-comment-bound post reads without eager fetching,
+  exposed access tokens.
+- Claw host-bound admin/user/external/system identities, shared group context with
+  identity-aware reply instructions, and per-input tool/steering authority fences.
+- Optional XHS account binding/comment intake and explicit `message.publish`,
+  reusing durable inputs/outputs, frozen media and honest unknown-send receipts.
+- Explicit host custom-history snapshot validators and atomic queued-input context
+  in the Agent SDK, without snapshot-selected code or restored authority.
+
+
 - Eyes local pushed event sources and public CLI/tool publish, with bounded durable
   idempotent intake, atomic detector/output checkpoints, pause/resume and recovery.
 - Source/Detector data-contract composition across files, remote content, schedules

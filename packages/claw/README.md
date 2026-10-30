@@ -71,6 +71,81 @@ context rather than navigating to a saved branch.
 - [Eyes scheduling](SCHEDULER.md) and [Flow CLI tool](#installed-capabilities-eyes-and-flow)
 - [Child authority](#child-authority-and-persisted-constraints)
 
+## Input identities and XHS
+
+Claw binds each input to a host-verified actor and source channel. TUI and the
+exact verified Weixin login owner can identify the same `owner/admin`; explicit
+`identity_bindings` override login defaults. Unknown channel senders are
+`external_user`, never administrators. ACP is `system` work with the existing
+configured system tool profile (within group grants), not a model-protocol system message or human approval.
+
+Every identity uses the group's existing context, daily logs, long-term memory and
+compaction/handoff mechanism; there is no audience-based history filtering or
+separate public summary. Host-bound speaker/source markers and the current identity
+in the system prompt instruct the model how to reply: external replies must not
+reveal administrator/private conversations, credentials or host details. The normal
+group persona is used; no `PUBLIC.md` file is required. This is model-mediated reply
+policy, **not hard context or confidentiality isolation**: the model can see shared
+context, and tool restrictions cannot prevent disclosure of text already in it.
+
+External users receive no tools by default; group-local permission profiles can
+explicitly grant bounded business tools. Admin/system are also constrained by their
+configured profiles at model and executor boundaries. Steering cannot mix different
+execution authority scopes. Speaker/source attribution is retained in JSONL and
+ordinary summaries so the model need not guess who said what.
+Weixin proactive messages use an unambiguous verified owner binding, never the
+latest sender. Ordinary replies remain pinned to their original sender/context;
+legacy latest-peer map files are retained unchanged but no longer read or written.
+
+An optional `xhs` channel uses an independently operated local
+`xiaohongshu-mcp` HTTP backend. Claw does not install/start that backend or log in
+on discovery. Explicit login binds the verified platform account and nickname
+separately from group personality and commenter identities:
+
+```bash
+uv run xdog-claw channel login --xhs --group main --base-url http://127.0.0.1:18060
+```
+
+Use the existing group persona, then explicitly configure `xhs_replies_enabled` and/or
+`xhs_publish_enabled` (both default false). `message(action="channels")` lists
+host-bound destinations; a publishing destination exposes `operations: ["publish"]`.
+Admin/system work can call `message(action="publish", channel=..., title=...,
+text=..., images=["poster.png"])`. Images must be bounded workspace files and are
+frozen before sending; arbitrary recipients, URLs and multicast are not accepted.
+The existing output journal owns both ordinary replies and posts.
+
+The pinned browser backend supplies no independently verifiable delivery receipt:
+HTTP success remains **unknown**, never `delivered` or an automatic resend.
+Initial comment scans establish a baseline without replying to history; gaps,
+edits, login changes and account-revision fences are explicit. Private messages
+and a per-output review UI are not implemented. Default tests use synthetic
+HTTP/model fixtures and never send a real comment/post.
+
+See [identity/XHS design and configuration](../../docs/claw-input-identity-design.md)
+for permissions, lifecycle and the superseding changes to the earlier proposal.
+
+### Identity tool permissions and original posts
+
+Group `permission_profiles` contain explicit `tools` lists. `principals` assign a
+profile to a stable identity; `defaults` select profiles for admin/system/user/external_user.
+Roles remain in identity bindings, not duplicated in permission assignments.
+`[]` denies all; `["*"]` inherits existing group tools. Profiles never install or
+activate tools or override readonly/MCP/delegation fences. History remains group-shared.
+Without custom configuration admin/system inherit group tools and other roles have none.
+The old `user_tools` setting is removed and rejected. Restart after config changes;
+there is no configuration hot-reload service.
+
+Opt into `xhs_post` through `enabled_tools`, then grant it to the desired profile.
+The model calls `xhs_post({})` to read the current comment's post title/body.
+The host pins the original account/comment/post, verifies the live notification,
+and keeps access tokens out of model context. Intake never eagerly fetches posts.
+The tool is unavailable outside an admitted XHS comment; it does not fetch arbitrary
+posts, images/video, or all comments. Its results stay in ordinary shared history;
+reply confidentiality is handled by the identity instructions, not a result filter.
+
+See [configuration and identity design](../../docs/claw-input-identity-design.md)
+for a complete YAML example and the limits of tool-name allowlists.
+
 ## Interactive terminal
 
 Auxiliary browsers use the main UI's existing semantic colors: warm accent

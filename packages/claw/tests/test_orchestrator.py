@@ -121,7 +121,11 @@ async def test_channel_delivers_progress_before_turn_finishes(tmp_path, fail_aft
             await release_final.wait()
 
     stream_fn = _scripted_stream_fn([_progress_message("Checking.", path, "c1"), final], before_message)
-    config = ClawConfig(data_dir=str(tmp_path / "data"))
+    # This fixture is an explicitly bound local owner, not an arbitrary channel
+    # that merely calls itself tui. Unknown senders remain external users.
+    config = ClawConfig(data_dir=str(tmp_path / "data"), identity_bindings=({
+        'group_id': 'main', 'channel': 'tui', 'account_id': '', 'sender_id': 'user',
+        'principal_id': 'owner', 'role': 'admin'},))
     orch = Orchestrator(config, model=_TEST_MODEL, stream_fn=stream_fn)
     orch.register_group(Group(id="main", name="Main"))
     channel = TuiChannel()

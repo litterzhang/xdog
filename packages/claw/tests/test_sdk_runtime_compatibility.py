@@ -144,15 +144,15 @@ async def test_cached_agent_survives_bounded_turns_with_single_skill_injection_a
         assert "TURN-BODY-ONCE" not in _message_text(stream.contexts[1])
         assert runtime.transcript_store.get_active_skills(session.meta.session_id) == ("guard",)
         stored = runtime.transcript_store.load_transcript(session.meta.session_id)
-        assert len(stored) == 4
+        assert len(stored) == 6
         restored = messages_to_dicts(transcript_to_messages(stored))
         current = messages_to_dicts(list(agent.messages))
         # Claw owns write timestamps and its four-counter usage envelope; calling
         # messages_to_transcript twice deliberately produces new timestamps.
-        assert [(row["role"], row["content"]) for row in restored] == [
-            (row["role"], row["content"]) for row in current
+        assert [(row["role"], row.get("content"), row.get("data")) for row in restored] == [
+            (row["role"], row.get("content"), row.get("data")) for row in current
         ]
-        assert stored[1]["usage"] == stored[3]["usage"] == {
+        assert stored[2]["usage"] == stored[5]["usage"] == {
             "input": 10, "output": 4, "cache_read": 0, "cache_write": 0,
         }
         dump.assert_not_called()  # Claw keeps its own transcript format, not SDK snapshot persistence.

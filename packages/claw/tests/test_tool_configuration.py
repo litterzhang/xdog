@@ -18,13 +18,14 @@ def test_repo_contains_only_actual_selected_tools():
     repo = new_tool_repo()
     assert isinstance(repo, ToolRepo)
     assert repo.names() == frozenset(DEFAULT_TOOL_NAMES)
-    assert {'generate_image', 'submit_result'}.isdisjoint(repo.names())
+    assert {'generate_image', 'submit_result', 'xhs_post'}.isdisjoint(repo.names())
     assert new_tool_repo(image_model="antigravity/image").names() == repo.names()
     assert new_tool_repo(()).tools == ()
     assert new_tool_repo([]).tools == ()
     assert new_tool_repo(("filesystem",)).names() == {'filesystem'}
     assert new_tool_repo(("submit_result",)).names() == {'submit_result'}
-    assert AVAILABLE_TOOL_NAMES == repo.names() | {'generate_image', 'submit_result'}
+    assert new_tool_repo(('xhs_post',)).names() == {'xhs_post'}
+    assert AVAILABLE_TOOL_NAMES == repo.names() | {'generate_image', 'submit_result', 'xhs_post'}
 
 
 def test_groups_own_isolated_actual_tool_repositories(tmp_path):

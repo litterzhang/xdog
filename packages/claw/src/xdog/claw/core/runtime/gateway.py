@@ -78,6 +78,7 @@ def _groups_from_config(config: ClawConfig) -> list[Group]:
             name=gdef.name,
             is_main=gdef.is_main,
             workspace=gdef.workspace,
+            permissions=gdef.permissions,
             enabled_tools=config.enabled_tools,
             image_model=config.image_model,
             agent_config=AgentConfig(
@@ -190,6 +191,18 @@ class GatewayServer:
                         await channel.disconnect()
                         self._orchestrator._channels.remove(channel)
                     logger.exception("Failed to connect WeChat channel — gateway continues without it")
+            if self._config.xhs_enabled:
+                from xdog.claw.channels.xhs import XhsChannel
+                from xdog.claw.channels.xhs.api import XhsApi
+                cfg = self._config
+                if cfg.xhs_group_id not in self._orchestrator.get_group_ids():
+                    raise ValueError('XHS target group must be explicitly configured')
+                xhs = XhsChannel(Path(cfg.data_dir), cfg.xhs_group_id,
+                    XhsApi(cfg.xhs_base_url, token_env=cfg.xhs_token_env), poll_seconds=cfg.xhs_poll_seconds,
+                    replies_enabled=cfg.xhs_replies_enabled, publish_enabled=cfg.xhs_publish_enabled)
+                self._orchestrator.add_channel(xhs)
+                await xhs.connect()
+                self._orchestrator.channels_ready()
             from xdog.claw.acp.server import ClawAcpServer
             endpoint = (Path(self._config.acp_socket_path) if self._config.acp_socket_path else
                         data_dir / 'acp' / 'agent.sock')
@@ -309,13 +322,14 @@ class GatewayServer:
         base_url = config.weixin_base_url
         group_id = "main"
 
-        # Try loading token from account file if not in config
-        if account_id and not token:
-            account_data = await run_owned(load_account, state_dir, account_id)
-            if account_data:
+        # The locally saved QR login binds its verified owner, not every Weixin
+        # sender. Explicit per-sender config takes precedence over this default.
+        account_data = await run_owned(load_account, state_dir, account_id) if account_id else None
+        if account_data is not None:
+            group_id = account_data.group_id or 'main'
+            if not token:
                 token = account_data.token
                 base_url = base_url or account_data.base_url
-                group_id = account_data.group_id or "main"
 
         if not token:
             logger.warning(
@@ -326,21 +340,21 @@ class GatewayServer:
 
         base_url = base_url or DEFAULT_BASE_URL
 
-        weixin = WeixinChannel(
-            state_dir=state_dir,
-            account_id=account_id,
-            base_url=base_url,
-            token=token,
-            group_id=group_id,
-        )
-        if self._orchestrator is None:
-            # Every other use in this file guards; this one did not, so adding
-            # the channel before `start()` raised AttributeError instead of
-            # saying what was wrong.
+        application = self._orchestrator
+        if application is None:
             logger.error("Cannot add the WeChat channel: the orchestrator is not running")
             return None
-
-        self._orchestrator.add_channel(weixin)
+        # Validate pure identity descriptors before acquiring an HTTP client.
+        if account_data is not None and account_data.user_id and token == account_data.token:
+            from xdog.claw.core.identity import IdentityBinding
+            application.identities = application.identities.with_default(IdentityBinding(
+                group_id, 'weixin', account_id, account_data.user_id, 'owner', 'admin'))
+        weixin = WeixinChannel(
+            state_dir=state_dir, account_id=account_id, base_url=base_url,
+            token=token, group_id=group_id,
+            proactive_recipient=lambda: application.identities.owner_recipient(group_id, 'weixin', account_id),
+        )
+        application.add_channel(weixin)
         logger.info(
             "WeChat channel added: account=%s group=%s base_url=%s",
             account_id,

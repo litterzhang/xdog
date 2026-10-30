@@ -59,7 +59,7 @@ async def test_continue_after_rotation_loads_scope_and_checks_exact_original_mes
             stage += 1
             return EventStream.empty(AssistantMessage(content=(ToolCall(
                 id='source', name='memory', arguments={'action': 'history', 'mode': 'get',
-                                                     'session_id': original_id, 'position': 0}),)))
+                                                     'session_id': original_id, 'position': 1}),)))
         source = json.loads(''.join(part.text for part in last.content if isinstance(part, TextContent)))
         assert source['session_id'] == original_id and source['role'] == 'user'
         assert 'owner/one' in source['text'] and 'owner/two' in source['text'] and '仅限这两个' in source['text']

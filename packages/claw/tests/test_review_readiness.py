@@ -72,7 +72,7 @@ async def test_gateway_restart_recovers_original_weixin_output_after_channel_rea
             await server.start()  # Actual channel registration/connect happens AFTER application.start().
             app = server._orchestrator
             channel, = app._channels
-            channel._user_id_map["main"] = "wrong-peer"
+            channel._proactive_recipient = lambda: "wrong-peer"
             message = await asyncio.wait_for(second.sent.get(), 2)
             assert sent_parts(message) == ("original", "ctx:original", "Scheduled report")
             assert message.client_id == identifier

@@ -72,7 +72,9 @@ def test_escape_promotes_all_native_next_turn_messages_once_without_cancelling(c
             ticket.id for ticket in tickets})
         release.set()
         results = [ticket.result.result(timeout=8) for ticket in tickets]
-        until(lambda: controller._batch is None, ui)
+        # Backend settlement can precede its UI completion event. Wait for the
+        # actual UI owner too, rather than racing a single poll under CI load.
+        until(lambda: controller._batch is None and not ui._is_busy, ui)
         ui._poll()
         assert all(result.status == 'succeeded' and result.batch_id == original_batch for result in results)
         assert len(contexts) == 1 + len(tickets)  # existing ONE steering mode; all rounds share one batch

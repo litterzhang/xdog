@@ -97,7 +97,7 @@ async def test_output_journal_failure_settles_agent_before_terminal_receipt_and_
         while not api.sent.empty():
             notices.append(api.sent.get_nowait())
         assert all('must not escape' not in str(notice) for notice in notices)
-        assert not any('must not escape' in str(message.content) for message in session.agent.messages)
+        assert not any('must not escape' in str(getattr(message, "content", "")) for message in session.agent.messages)
         saved = session._store.load_transcript(session.meta.session_id)
         if not persist_failure:
             assert 'Checking.' in str(saved)

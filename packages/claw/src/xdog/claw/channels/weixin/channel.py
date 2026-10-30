@@ -11,6 +11,7 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,7 @@ from xdog.claw.channels.weixin.types import (
     TextItem,
     WeixinMessage,
 )
+from xdog.claw.core.outputs.delivery import DeliveryNotSent
 from xdog.claw.core.types import UserInput
 
 logger = logging.getLogger(__name__)
@@ -87,35 +89,6 @@ def _generate_client_id() -> str:
 # ---------------------------------------------------------------------------
 
 
-def _user_id_map_file(state_dir: Path, account_id: str) -> Path:
-    return state_dir / "weixin" / "accounts" / f"{account_id}.user-id-map.json"
-
-
-def _load_user_id_map(state_dir: Path, account_id: str) -> dict[str, str]:
-    path = _user_id_map_file(state_dir, account_id)
-    try:
-        if path.exists():
-            raw: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
-            return {k: v for k, v in raw.items() if isinstance(v, str)}
-    except Exception:
-        pass
-    return {}
-
-
-def _save_user_id_map(
-    state_dir: Path, account_id: str, mapping: dict[str, str]
-) -> None:
-    path = _user_id_map_file(state_dir, account_id)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(mapping), encoding="utf-8")
-    except Exception as exc:
-        logger.warning("Failed to save user_id_map: %s", exc)
-
-
-# ---------------------------------------------------------------------------
-# Typing ticket cache — fetched from getConfig, cached per user for 24h
-# ---------------------------------------------------------------------------
 
 
 class _TypingTicketCache:
@@ -215,6 +188,7 @@ class WeixinChannel(Channel):
         base_url: str,
         token: str,
         group_id: str = "main",
+        proactive_recipient: Callable[[], str | None] | None = None,
     ) -> None:
         self._state_dir = state_dir
         self._account_id = account_id
@@ -229,8 +203,7 @@ class WeixinChannel(Channel):
         self._monitor_task: asyncio.Task[Any] | None = None
         self._api_client = WeixinApiClient(base_url, token)
         self._typing_tickets = _TypingTicketCache(self._api_client)
-        # Reverse map: group_id → real weixin user_id (persisted to disk)
-        self._user_id_map: dict[str, str] = {}
+        self._proactive_recipient = proactive_recipient
         self._cache_ready = False
         # Active typing indicators: group_id → _TypingIndicator
         self._active_typing: dict[str, _TypingIndicator] = {}
@@ -241,19 +214,17 @@ class WeixinChannel(Channel):
 
     async def connect(self) -> None:
         """Read caches on owned IO; only this loop adopts data/starts the monitor."""
-        def read_state() -> tuple[str, str]:
-            return (json.dumps(read_context_tokens(self._state_dir, self._account_id)),
-                    json.dumps(_load_user_id_map(self._state_dir, self._account_id)))
+        def read_state() -> str:
+            return json.dumps(read_context_tokens(self._state_dir, self._account_id))
 
         loading = asyncio.create_task(asyncio.to_thread(read_state))
         try:
             await wait_owned(loading)
         finally:
             if loading.done() and not loading.cancelled() and loading.exception() is None:
-                tokens, users = loading.result()
+                tokens = loading.result()
                 for user, token in json.loads(tokens).items():
                     set_context_token(self._account_id, user, token)
-                self._user_id_map = json.loads(users)
                 self._cache_ready = True
 
         opts = MonitorOpts(
@@ -292,24 +263,23 @@ class WeixinChannel(Channel):
         if self._cache_ready:
             await run_owned(write_context_tokens, self._state_dir, self._account_id,
                             context_token_snapshot(self._account_id))
-            await run_owned(_save_user_id_map, self._state_dir, self._account_id, dict(self._user_id_map))
         await self._api_client.close()
         logger.info("WeixinChannel disconnected: account=%s", self._account_id)
 
     def accepts_group(self, group_id: str) -> bool:
-        return group_id in self._user_id_map
+        return group_id == self._group_id
 
     def bound_reply(self, group_id: str) -> UserInput | None:
         """Snapshot this account's actual bound conversation, never an arbitrary peer."""
         if group_id != self._group_id or self._cancel_event.is_set():
             return None
-        user_id = self._user_id_map.get(group_id)
+        user_id = self._proactive_recipient() if self._proactive_recipient is not None else None
         if not user_id:
             return None
         return UserInput(
             group_id=group_id, sender=user_id, channel=self.name,
             metadata={"account_id": self._account_id, "weixin_user_id": user_id,
-                      "context_token": get_context_token(self._account_id, user_id) or ""},
+                      "context_token": get_context_token(self._account_id, user_id) or "", "proactive_recipient": True},
         )
 
     async def send_message(self, group_id: str, text: str) -> None:
@@ -317,19 +287,14 @@ class WeixinChannel(Channel):
         if not text:
             return
 
-        # A message may be progress before more tool calls, not the end of the
-        # turn. _on_inbound owns typing cleanup when processing actually ends.
-        # Resolve the real WeChat user ID
-        real_user_id = self._user_id_map.get(group_id)
-        if real_user_id is None:
-            raise ValueError(f"Cannot resolve Weixin recipient for group {group_id}")
-
-        context_token = get_context_token(self._account_id, real_user_id) or ""
-
-        await self._send_text(real_user_id, context_token, text)
+        original = self.bound_reply(group_id)
+        if original is None:
+            raise ValueError(f"Cannot resolve a verified Weixin recipient for group {group_id}")
+        await self.send_reply(original, text)
 
     def reply_context(self, original: UserInput) -> dict[str, object]:
-        return {key: original.metadata.get(key, '') for key in ('account_id', 'weixin_user_id', 'context_token')}
+        return {key: original.metadata[key] for key in
+                ('account_id', 'weixin_user_id', 'context_token', 'proactive_recipient') if key in original.metadata}
 
     def accepts_saved_reply(self, original: UserInput) -> bool:
         return (original.channel == self.name and original.group_id == self._group_id
@@ -352,6 +317,10 @@ class WeixinChannel(Channel):
         user_id, context = original.metadata.get("weixin_user_id"), original.metadata.get("context_token")
         if not isinstance(user_id, str) or user_id != original.sender or not user_id or not isinstance(context, str):
             raise ValueError("Invalid original Weixin output binding")
+        if original.metadata.get('proactive_recipient') is True:
+            current = self.bound_reply(original.group_id)
+            if current is None or current.sender != original.sender:
+                raise DeliveryNotSent('Original verified Weixin destination was revoked or changed')
         await self._send_text(user_id, context, text, client_id=output_id)
 
     async def _send_text(self, real_user_id: str, context_token: str, text: str, *, client_id: str = '') -> None:
@@ -447,15 +416,9 @@ class WeixinChannel(Channel):
         if msg.context_token:
             set_context_token(self._account_id, from_user_id, msg.context_token)
             self._cache_ready = True
+            self._cache_ready = True
             await run_owned(write_context_tokens, self._state_dir, self._account_id,
                             context_token_snapshot(self._account_id))
-        previous = self._user_id_map.get(group_id)
-        if previous != from_user_id:
-            # Retained only for explicit unsolicited group sends. Input replies
-            # use send_reply's immutable binding, never this convenience map.
-            self._user_id_map[group_id] = from_user_id
-            self._cache_ready = True
-            await run_owned(_save_user_id_map, self._state_dir, self._account_id, dict(self._user_id_map))
         if hasattr(self, "_on_message"):
             try:
                 await self._start_typing(group_id, from_user_id, msg.context_token)

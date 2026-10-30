@@ -49,7 +49,7 @@ class Model:
             name, args = self.attacks[step - 1]
             call = ToolCall(id=f'attack-{step}', name=name, arguments=args)
         elif step == len(self.attacks) + 1:
-            read = next(message for message in context.messages if message.role == 'toolResult'
+            read = next(message for message in context.messages if getattr(message, 'role', None) == 'toolResult'
                         and message.tool_call_id == 'read-one')
             assert not read.is_error, text(read)
             task, = json.loads(text(read))['tasks']
@@ -117,7 +117,7 @@ async def test_parent_agent_spawn_uses_real_group_child_route_not_a_goal_worker(
             response = await app.route_message(UserInput(group_id='main',
                 content='Delegate this task with the ordinary agent tool', channel='tui'))
             assert response is not None and not response.error
-            reply, = [message for message in session.agent.messages if message.role == 'toolResult'
+            reply, = [message for message in session.agent.messages if getattr(message, 'role', None) == 'toolResult'
                       and message.tool_call_id == 'spawn-scoped']
             assert not reply.is_error, text(reply)
             record = await session.children.runtime.control('wait', text(reply))

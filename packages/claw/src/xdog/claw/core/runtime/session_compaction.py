@@ -110,6 +110,14 @@ async def compact_history(session: AgentSession, *, force: bool = False, instruc
                                      if session._agent.active_tool_selection is not None else None)}
         metadata = {**metadata, 'recovery_branch_id': recovery_id}
         compacted[0]['compaction'] = metadata
+        from xdog.claw.core.identity.context import actor
+        # The engine retains a user boundary. Keep its immediately preceding host
+        # actor with it; the ordinary group summary carries removed history.
+        actor_offset = cut - 1 if cut > 0 and actor(original[cut - 1]) is not None else cut
+        carried = []
+        if actor_offset < cut:
+            carried.extend(messages_to_dicts([original[actor_offset]]))
+        compacted[1:1] = carried
         compacted_messages = transcript_to_messages(compacted)
         async def commit() -> None:
             # A failed checkpoint write cannot discard original context.

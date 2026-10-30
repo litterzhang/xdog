@@ -102,7 +102,7 @@ async def question_host(tmp_path, outcome):
             raise ConnectionError('Upstream accepted the question; acknowledgement lost')
         api.send_message = ack_lost
     wx._api_client = api
-    wx._user_id_map['main'] = 'original-user'
+    wx._proactive_recipient = lambda: 'original-user'
     set_context_token(account, 'original-user', 'original-context')
     server = None
     try:
