@@ -15,15 +15,10 @@ design/implementation and related simplification; do not add repeat approval gat
 or auto-commit/push/version/tag changes. All experiments use temporary state.
 
 Coding supports its own configuration and the generic AGENTS.md convention.
-Automatic project context is exactly these files relative to the current working
-directory, nonrecursive:
-
-- AGENTS.md
-- .coding/INSTRUCTIONS.md
-- .coding/instructions.md
-
-Each file is limited to 64 KiB. No parent-directory walk and no symbolic-link
-following for automatic instructions. Missing files are optional; an existing
+Automatic project context is only AGENTS.md in the current working directory,
+nonrecursive (updated November 3, 2026: legacy .coding instruction Markdown
+loading has been removed). The file is limited to 64 KiB. No parent-directory
+walk and no symbolic-link following for automatic instructions. Missing files are optional; an existing
 unreadable, nonregular, invalid UTF-8 or oversized configured instruction file
 must produce an explicit preparation error, not silently drop constraints. This
 is configuration discovery, not a file-access restriction or filename denylist.

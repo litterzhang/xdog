@@ -14,8 +14,9 @@
 会话事实由当前真正暴露的 `ext_coding_session` 工具提供，其 schema 描述查询方式；
 不因提示词拼装而重新启用被关闭的工具。副作用、批准和会话所有权仍归原控制器。
 
-项目指令只有当前目录的 AGENTS.md、.coding/INSTRUCTIONS.md、
-.coding/instructions.md，保持原有 no-follow、UTF-8、64 KiB 上限和显式失败行为。
+自动项目指令只读取当前目录的 AGENTS.md，保持原有 no-follow、UTF-8、
+64 KiB 上限和显式失败行为。不扫描 .coding 目录里的指令 Markdown；
+.coding/settings.json 仍是配置文件，不受本次指令入口清理影响。
 已验证来源通过 `ContextFile` 进入构建器，带路径 JSON 编码，不再混入通用的
 file/image/reference 字典入口。用户后来读取的普通文件和外部事件不会自动升级成
 项目或宿主指令。此重构不自动创建或改写项目文件。

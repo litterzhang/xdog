@@ -10,6 +10,10 @@ project follows [semantic versioning](https://semver.org/).
 
 ### Fixed
 
+- Load Coding automatic project instructions only from the current directory's
+  AGENTS.md; remove legacy .coding instruction Markdown discovery and nested-path
+  handling without fallback. Remove the repository's obsolete CLAUDE.md.
+
 - Align Coding tool descriptions with Agent's actual True/unknown/False native-tool
   behavior; keep text-only inventories explicitly read-only and empty inventories absent.
   Split fixed host contracts from dynamic project/user/environment/read-only context

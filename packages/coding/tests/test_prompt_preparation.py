@@ -44,14 +44,16 @@ async def test_real_sdk_model_receives_supported_instructions_and_single_skill_i
         assert goal is not None and render_skill_body(goal) not in prompt
         assert 'goal' not in session.agent.active_skills
         assert '- `goal`' in prompt
-        assert 'OTHER_HARNESS_CONFIG_MARKER' not in prompt
-        for marker in ('PROJECT_AGENT_MARKER', 'PROJECT_UPPER_MARKER', 'PROJECT_LOWER_MARKER',
-                       'UNIQUE_SKILL_INDEX', 'SKILL_BODY'):
+        for ignored in ('OTHER_HARNESS_CONFIG_MARKER', 'PROJECT_UPPER_MARKER', 'PROJECT_LOWER_MARKER'):
+            assert ignored not in prompt
+        for marker in ('PROJECT_AGENT_MARKER', 'UNIQUE_SKILL_INDEX', 'SKILL_BODY'):
             assert prompt.count(marker) == 1, (marker, prompt)
         (tmp_path / 'AGENTS.md').write_text('UPDATED_PROJECT_MARKER')
         await session.send_message('second turn')
         assert 'UPDATED_PROJECT_MARKER' in system_prompt_text(contexts[-1].system_prompt)
         assert 'PROJECT_AGENT_MARKER' not in system_prompt_text(contexts[-1].system_prompt)
+        assert 'PROJECT_UPPER_MARKER' not in system_prompt_text(contexts[-1].system_prompt)
+        assert 'PROJECT_LOWER_MARKER' not in system_prompt_text(contexts[-1].system_prompt)
         assert session.permissions.mode == 'ask'
     finally:
         await session.aclose()

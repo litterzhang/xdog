@@ -2756,9 +2756,10 @@ used from an async application. A receiver accepting a queued message does not
 require message approval; existing approval applies to tool execution only.
 
 Automatic project instructions come **only** from the working directory's
-`AGENTS.md`, `.coding/INSTRUCTIONS.md` and `.coding/instructions.md`. There is no
-parent walk. Other harness configuration files are not automatic instruction
-sources; they remain ordinary files that users can explicitly read or attach under
+`AGENTS.md`. There is no parent walk or legacy instruction-file fallback.
+The `.coding` directory is not scanned for instruction Markdown; ordinary project
+settings in `.coding/settings.json` are unchanged. Other harness configuration files
+are not automatic instruction sources; they remain ordinary files that users can explicitly read or attach under
 normal file-access and permission rules. There is no filename denylist.
 Each automatic source must be a regular UTF-8 file of at most 64 KiB; symlinks,
 special files and unreadable/oversized sources cause an explicit preparation error. Missing files are optional. These
