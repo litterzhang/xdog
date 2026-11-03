@@ -13,13 +13,14 @@ from unittest.mock import patch
 
 from xdog.ai.types import AssistantMessage, DoneEvent, StartEvent, TextContent
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.channels.weixin.api import WeixinApiClient
+from xdog.claw.channels.weixin.auth import WeixinAccountData, save_account
 from xdog.claw.channels.weixin.types import MessageItem, MessageItemType, MessageType, TextItem, WeixinMessage
 from xdog.claw.config import ClawConfig, GroupDef
 from xdog.claw.core.inputs.models import InputScope
 from xdog.claw.core.outputs import delivery as installed
 from xdog.claw.core.outputs.delivery import DeliveryNotSent
-from xdog.claw.core.runtime.gateway import GatewayServer
 
 assert Path(installed.__file__).is_relative_to(Path(sys.prefix))
 
@@ -68,12 +69,13 @@ def no_model(*args, **kwargs):
 async def app(root, stream, reject):
     config = ClawConfig(
         data_dir=str(root / "data"), socket_path=str(root / "gateway.sock"), pid_file=str(root / "gateway.pid"),
-        weixin_enabled=True, weixin_account_id="account", weixin_token="fixture-only",
-        weixin_base_url="https://example.invalid",
+        weixin_accounts=("account",),
         groups=(GroupDef(id="main", workspace=str(root), is_main=True),),
     )
+    save_account(Path(config.data_dir), "account", WeixinAccountData(
+        token="fixture-only", base_url="https://example.invalid", group_id="main"))
     server, api = GatewayServer(config), API(reject)
-    with patch("xdog.claw.core.runtime.gateway._build_model_and_options", return_value=("test/dummy", stream)), \
+    with patch("xdog.claw.application.gateway._build_model_and_options", return_value=("test/dummy", stream)), \
          patch("xdog.claw.channels.weixin.channel.WeixinApiClient", return_value=api):
         await server.start()
     return server, server._orchestrator, server._orchestrator._channels[0], api
@@ -102,7 +104,7 @@ async def main():
     finally:
         await server.stop()
     server, runtime, channel, api = await app(root, no_model, False)
-    channel._user_id_map["main"] = "different-person"
+    channel._proactive_recipient = lambda: "different-person"
     try:
         outputs = await runtime.output_service()
         async with asyncio.timeout(5):

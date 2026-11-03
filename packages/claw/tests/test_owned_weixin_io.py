@@ -10,10 +10,10 @@ from unittest.mock import patch
 
 from xdog.ai.types import AssistantMessage
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.channels.weixin.channel import WeixinChannel, _TypingTicketCache
 from xdog.claw.channels.weixin.context_tokens import clear_context_tokens, persist_context_tokens, set_context_token
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 
 from packages.claw.tests.test_weixin_application_intake import ChannelApi, text
 
@@ -41,12 +41,12 @@ async def test_configured_account_lookup_is_off_loop_even_when_channel_is_unavai
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps({"token": "", "group_id": "main"}))  # No account/network/credentials activated.
     config = ClawConfig(data_dir=str(tmp_path / "data"), model="test/io", socket_path=str(tmp_path / "io.sock"),
-                        pid_file=str(tmp_path / "io.pid"), weixin_enabled=True, weixin_account_id="owned-fixture",
+                        pid_file=str(tmp_path / "io.pid"), weixin_accounts=("owned-fixture",),
                         groups=(GroupDef(id="main", is_main=True),))
     server = GatewayServer(config)
     owner = threading.get_ident()
     observed = trace_opens(monkeypatch, path.parent)
-    with patch("xdog.claw.core.runtime.gateway._build_model_and_options", return_value=(
+    with patch("xdog.claw.application.gateway._build_model_and_options", return_value=(
         "test/io", lambda *args: EventStream.empty(AssistantMessage())
     )):
         try:

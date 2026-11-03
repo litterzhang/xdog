@@ -1,152 +1,53 @@
-"""System prompt builder: assembles the full system prompt from templates."""
-
+"""Compose a stable host contract and separately mutable workspace context."""
 from __future__ import annotations
 
+import json
 from datetime import date
-from typing import Any
+from pathlib import Path
 
-from xdog.coding.config import RuntimeConfig
+from xdog.ai.types import SystemPromptBlock, Tool
+from xdog.coding.config import PlatformInfo
 from xdog.coding.core.prompt_templates import (
-    CUSTOM_INSTRUCTIONS_SECTION,
     ENVIRONMENT_SECTION,
-    FILE_CONTEXT_SECTION,
-    RUNTIME_SECTION,
-    SYSTEM_PROMPT_HEADER,
-    TOOL_DESCRIPTION_TEMPLATE,
-    TOOL_SECTION_HEADER,
+    HOST_CONTRACT,
+    INSPECTION_HEADER,
+    PROJECT_INSTRUCTIONS_HEADER,
+    USER_INSTRUCTIONS_HEADER,
 )
-
-
-def _format_parameters(params: dict[str, Any]) -> str:
-    """Format a JSON-schema-style parameters dict into a readable string."""
-    props = params.get("properties", {})
-    required_keys = set(params.get("required", []))
-    lines: list[str] = []
-    for name, schema in props.items():
-        if isinstance(schema, bool):
-            ptype, desc = ("any", "") if schema else ("never", "property is forbidden")
-        elif isinstance(schema, dict):
-            kind = schema.get("type", "any")
-            ptype = " | ".join(str(item) for item in kind) if isinstance(kind, list) else str(kind)
-            desc = schema.get("description", "")
-        else:
-            ptype, desc = "unknown", "invalid property schema"
-        req = " (required)" if name in required_keys else ""
-        lines.append(f"  - {name}: {ptype}{req} - {desc}")
-    return "\n".join(lines) if lines else "  (none)"
-
-
-def build_tool_section(tools: list[dict[str, Any]]) -> str:
-    """Build the tools section of the system prompt."""
-    parts = [TOOL_SECTION_HEADER]
-    for tool in tools:
-        parts.append(
-            TOOL_DESCRIPTION_TEMPLATE.format(
-                name=tool["name"],
-                description=tool.get("description", ""),
-                parameters=_format_parameters(tool.get("parameters", {})),
-            )
-        )
-    return "\n".join(parts)
-
-
-def build_runtime_section(config: RuntimeConfig, *, session_id: str | None = None,
-                          session_tool_available: bool = False) -> str:
-    """Static query instructions; mutable model/session facts are never embedded."""
-    query = ("Call `ext_coding_session` with `{}` when you need the current session, selected provider/model, "
-             "thinking level, permissions, capabilities or measured context usage. Query again after settings "
-             "change; an earlier result is only a snapshot. Use it only when exposed in your own tool definitions; "
-             "never substitute another agent/session's information. This read-only tool does not switch sessions."
-             if session_tool_available else
-             "Session inspection is not available in the selected tools. Do not guess current model/session "
-             "configuration or attempt to bypass the tool selection.")
-    return RUNTIME_SECTION.format(session_query=query)
-
-
-def build_environment_section(config: RuntimeConfig) -> str:
-    """Build the environment info section."""
-    pi = config.platform_info
-    return ENVIRONMENT_SECTION.format(
-        working_dir=config.working_dir,
-        os_name=pi.os_name,
-        os_version=pi.os_version,
-        python_version=pi.python_version,
-        shell=pi.shell,
-        date=date.today().isoformat(),
-    )
-
-
-def build_file_context_section(file_entries: list[dict[str, Any]]) -> str:
-    """Build the file-context section from processed file entries."""
-    if not file_entries:
-        return ""
-    lines: list[str] = []
-    for entry in file_entries:
-        etype = entry.get("type", "")
-        path = entry.get("path", "unknown")
-        if etype == "file_content":
-            content = entry.get("content", "")
-            lines.append(f"### {path}\n```\n{content}\n```\n")
-        elif etype == "image":
-            lines.append(f"### {path}\n(image file)\n")
-        elif etype == "file_reference":
-            note = entry.get("note", "")
-            lines.append(f"### {path}\n{note}\n")
-    return FILE_CONTEXT_SECTION.format(file_entries="\n".join(lines))
+from xdog.coding.core.resource_loader import ContextFile
 
 
 def build_system_prompt(
-    config: RuntimeConfig,
-    tools: list[dict[str, Any]],
+    working_dir: Path,
+    platform_info: PlatformInfo,
     *,
-    file_entries: list[dict[str, Any]] | None = None,
-    extra_context: str = "",
-    native_tool_calls: bool = False,
-    session_id: str | None = None,
-) -> str:
-    """Assemble the complete system prompt.
-
-    Parameters
-    ----------
-    config:
-        The resolved runtime configuration.
-    tools:
-        List of tool definition dicts (name, description, parameters).
-    file_entries:
-        Optional processed file context entries.
-    extra_context:
-        Optional extra text appended at the end.
-    session_id:
-        Retained call metadata; session identity is queried through the session tool, not embedded.
-    native_tool_calls:
-        True when the model receives tool definitions through the API, in which
-        case describing them again in the prompt sends every name, description
-        and parameter schema twice.
-
-        Defaults to False — *describe them* — because the two mistakes are not
-        symmetric. Describing tools to a model that already has them wastes
-        tokens in a cached prefix; omitting them for a model that has no other
-        way to see them leaves it unable to act, and that failure looks like the
-        model being useless rather than like a missing section.
-    """
-    sections: list[str] = [
-        SYSTEM_PROMPT_HEADER,
-        build_environment_section(config),
-        build_runtime_section(config, session_id=session_id, session_tool_available=any(
-            tool.get("name") == "ext_coding_session" for tool in tools)),
-    ]
-    if not native_tool_calls:
-        sections.append(build_tool_section(tools))
-
-    if config.custom_instructions:
-        sections.append(
-            CUSTOM_INSTRUCTIONS_SECTION.format(instructions=config.custom_instructions)
-        )
-
-    if file_entries:
-        sections.append(build_file_context_section(file_entries))
-
-    if extra_context:
-        sections.append(extra_context)
-
-    return "\n".join(sections)
+    custom_instructions: str = "",
+    project_files: tuple[ContextFile, ...] = (),
+    inspection_tools: tuple[Tool, ...] = (),
+    access_prompt: str = "",
+) -> tuple[SystemPromptBlock, ...]:
+    """Tool schemas/skills stay Agent-owned; inspection is only for text-only models."""
+    environment = ENVIRONMENT_SECTION.format(
+        working_dir=working_dir,
+        os_name=platform_info.os_name,
+        os_version=platform_info.os_version,
+        python_version=platform_info.python_version,
+        shell=platform_info.shell,
+        date=date.today().isoformat(),
+    )
+    context = [environment]
+    if custom_instructions:
+        context.append(USER_INSTRUCTIONS_HEADER + "\n\n" + custom_instructions)
+    if project_files:
+        sources = [{'path': item.relative_path, 'instructions': item.content} for item in project_files]
+        context.append(PROJECT_INSTRUCTIONS_HEADER + "\n\n" + json.dumps(sources, ensure_ascii=False))
+    if inspection_tools:
+        inventory = [{'name': tool.name, 'description': tool.description, 'parameters': tool.parameters}
+                     for tool in inspection_tools]
+        context.append(INSPECTION_HEADER + "\n\n" + json.dumps(inventory, ensure_ascii=False))
+    if access_prompt:
+        context.append(access_prompt)
+    return (
+        SystemPromptBlock(text=HOST_CONTRACT, cache=True),
+        SystemPromptBlock(text="\n\n".join(context), cache=False),
+    )

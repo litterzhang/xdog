@@ -8,8 +8,8 @@ from unittest.mock import patch
 import pytest
 from xdog.ai.types import AssistantMessage
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 
 from packages.coding.tests.extension_session_helpers import history
 
@@ -24,7 +24,7 @@ async def test_same_batch_extension_revocation_before_compaction_admission_has_r
         socket_path=str(tmp_path / 'socket'), pid_file=str(tmp_path / 'pid'),
         groups=(GroupDef(id='main', is_main=True, workspace=str(tmp_path)),))
     server = GatewayServer(config)
-    with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=('offline/model', stream)):
+    with patch('xdog.claw.application.gateway._build_model_and_options', return_value=('offline/model', stream)):
         await server.start()
     runtime = server._orchestrator._runtimes['main']
     owner = runtime.get_or_create_session(allow_reset=False)

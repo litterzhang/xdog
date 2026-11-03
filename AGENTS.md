@@ -148,7 +148,12 @@ The core invariant in `models.py` and `loader.py` is node-private typed ports co
 
 `packages/coding/src/xdog/coding/main.py` selects interactive TUI, one-shot print, or the independently managed ACP ingress/session client. Coding's former JSON-lines frontend-control RPC mode is removed. `core/sdk.py` resolves layered configuration, model metadata, permissions, skills, tools, and persisted state before constructing an `xdog.agent.Agent`. Configuration precedence is global settings, project `.coding/settings.json`, then CLI overrides.
 
-`core/agent_session.py` rebuilds the prompt and checks compaction before each turn, then adapts agent events to the selected UI mode. Session history, settings, summaries, and branches are persisted as JSON by `core/session_manager.py`. `core/sessions/` owns the single controller, writer lease, route ownership and separate durable automatically consumed inbox; TUI/SDK/ACP share that execution path, and offline ingress never constructs a second Agent. Project context discovery is non-recursive from the working directory: `AGENTS.md`, `AGENTS.md`, `.coding/INSTRUCTIONS.md`, and `.coding/instructions.md`, each capped at 64 KiB. Permissions belong in the coding client's pre-tool hook, not in the generic agent runtime. Preserve the default fail-closed behavior: read-only calls may run automatically, mutating calls require approval, and unattended execution may mutate only when `allow-all` was explicitly selected. Permission gates are not an OS sandbox.
+`core/agent_session.py` rebuilds the prompt and checks compaction before each turn, then adapts agent events to the selected UI mode. Session history, settings, summaries, and branches are persisted as JSON by `core/session_manager.py`. `core/sessions/` owns the single controller, writer lease, route ownership and separate durable automatically consumed inbox; TUI/SDK/ACP share that execution path, and offline ingress never constructs a second Agent. Project context discovery is non-recursive from the working directory: `AGENTS.md`, `AGENTS.md`, `.coding/INSTRUCTIONS.md`, and `.coding/instructions.md`, each capped at 64 KiB. Coding prompt construction uses one fixed cacheable host-contract block and separate
+mutable project/user/environment/read-only context. Agent owns schemas and skill placement;
+only explicit supports_tool_calls=False gets a selected, inspection-only text inventory.
+Unknown follows Agent's native-schema behavior. Skill selection errors propagate before
+publishing host selection. Retired resource-loader and prompt signatures have no aliases.
+See `docs/coding-system-prompt.md`. Permissions belong in the coding client's pre-tool hook, not in the generic agent runtime. Preserve the default fail-closed behavior: read-only calls may run automatically, mutating calls require approval, and unattended execution may mutate only when `allow-all` was explicitly selected. Permission gates are not an OS sandbox.
 
 Coding depends on `xdog-skills` by default (the skills extra remains compatible).
 Installed capability discovery provides the native /goal commands, actual Goal
@@ -169,6 +174,15 @@ protocols. The root package deliberately re-exports no runtime classes. Internal
 modules remain importable for application composition and tests, without a stable
 embedding API promise. Reusable agent functionality belongs in `xdog.agent`.
 Do not remove required gateway/MCP/extension-worker communication as SDK cleanup.
+
+Application composition lives in `application/` (gateway, bootstrap and combined
+tool factories); Native/TUI connection/protocol adapters live in `channels/tui/`.
+Core depends on channel-neutral contracts, not concrete channel implementations.
+XHS post-tool schema and input binding live in `channels/xhs/tools.py`, composed
+through the generic core `InputTool` contract with live original-owner checks.
+There are no `core/skills` or `core/planning` compatibility shells. USER.md holds
+editable profiles/preferences, never authenticated identity or tool authority.
+See `docs/claw-core-boundaries.md` for the layout and regression constraints.
 
 The main path is:
 
@@ -240,7 +254,14 @@ See `docs/claw-assistant-core-requirements.json` for exact acceptance status.
 
 Eyes callbacks use thin ACP intake into the application-owned Core Inbox as canonical external input; Goal reminders also use ACP enqueue into the same canonical automatic input path. Each group has one logical main Agent and one execution route; session files are context/history storage, never Goal ownership or event destinations. Both paths use the same GroupController and current AgentSession. A group runtime owns its workspace, tools, memory, prompt builder, transcript store, one active cached agent session and optional capability bindings; Goal owns its separate domain storage. Transcripts are JSONL with a `sessions.json` index; `SessionManager` is a compatibility alias for `TranscriptStore`, not an LRU multi-session manager.
 
-Prompt construction intentionally separates a cacheable static prefix from mutable workspace, memory and environment content. Goal facts are queried through the optional capability, never a hardcoded per-turn summary. Compaction flushes durable memory, summarizes through the LLM, archives the transcript, then replaces older history. Memory uses vector+BM25 search when optional dependencies initialize and falls back to keyword search otherwise.
+Prompt construction intentionally separates a cacheable static prefix from mutable workspace, memory and environment content.
+The fixed prefix is only host/identity/context contracts; coding/style/task mandates
+and the old section wrappers are removed. Actual tool schemas own operation guidance;
+native models get no duplicate textual catalog. Text-only inspection remains filtered
+by actual selection and input permissions. All four workspace identity/persona/user/
+instruction files have packaged defaults, used only for missing files at group creation
+or onboarding; explicit generated content is supported without an initialization model
+call. Existing custom files are preserved. See `docs/claw-system-prompt.md`. Goal facts are queried through the optional capability, never a hardcoded per-turn summary. Compaction flushes durable memory, summarizes through the LLM, archives the transcript, then replaces older history. Memory uses vector+BM25 search when optional dependencies initialize and falls back to keyword search otherwise.
 
 Claw explicitly creates its own Agent `ToolRepo` and registers actual Claw-specific
 tools there. Domain imports must not mutate a process-global tool registry;

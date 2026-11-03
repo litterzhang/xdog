@@ -6,11 +6,11 @@ from xdog.agent import AgentTool
 from xdog.agent.tools import ToolRepo
 from xdog.ai.types import AssistantMessage
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import _build_model_and_options, _groups_from_config
+from xdog.claw.application.tools import AVAILABLE_TOOL_NAMES, DEFAULT_TOOL_NAMES, new_tool_repo
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import _build_model_and_options, _groups_from_config
 from xdog.claw.core.runtime.group import GroupRuntime
 from xdog.claw.core.runtime.orchestrator import Orchestrator
-from xdog.claw.core.tools import AVAILABLE_TOOL_NAMES, DEFAULT_TOOL_NAMES, new_tool_repo
 from xdog.claw.core.types import Group
 
 

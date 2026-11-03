@@ -135,8 +135,8 @@ async def test_native_socket_cleanup_also_remains_owned_io(tmp_path, monkeypatch
 
     from xdog.ai.types import AssistantMessage
     from xdog.ai.utils.event_stream import EventStream
+    from xdog.claw.application.gateway import GatewayServer
     from xdog.claw.config import ClawConfig, GroupDef
-    from xdog.claw.core.runtime.gateway import GatewayServer
 
     endpoint = tmp_path / 'native.sock'
     server = GatewayServer(ClawConfig(model='test/cleanup', data_dir=str(tmp_path / 'data'),
@@ -150,7 +150,7 @@ async def test_native_socket_cleanup_also_remains_owned_io(tmp_path, monkeypatch
         return original(path, *args, **kwargs)
 
     try:
-        with patch('xdog.claw.core.runtime.gateway._build_model_and_options',
+        with patch('xdog.claw.application.gateway._build_model_and_options',
                    return_value=('test/cleanup', lambda *args: EventStream.empty(AssistantMessage()))):
             await server.start()
         with monkeypatch.context() as trace:

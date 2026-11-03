@@ -7,8 +7,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 
 
 @pytest.mark.parametrize('ending', ['cancel', 'duplicate-cancel', 'withdraw'])
@@ -23,7 +23,7 @@ async def test_unstarted_cancel_receipt_precedes_successor_without_borrowed_rese
     server = GatewayServer(config)
     def no_model(*args):
         pytest.fail('Argument inspection must never run a model')
-    with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=(config.model, no_model)):
+    with patch('xdog.claw.application.gateway._build_model_and_options', return_value=(config.model, no_model)):
         await server.start()
     orchestrator = server._orchestrator
     owner = orchestrator._runtimes['main'].get_or_create_session(allow_reset=False)
@@ -100,7 +100,7 @@ async def test_started_cancel_reader_stays_responsive_until_original_cleanup(tmp
         socket_path=str(tmp_path / 'started.sock'), pid_file=str(tmp_path / 'started.pid'),
         groups=(GroupDef(id='main', is_main=True, workspace=str(tmp_path / 'workspace')),))
     server = GatewayServer(config)
-    with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=(config.model, None)):
+    with patch('xdog.claw.application.gateway._build_model_and_options', return_value=(config.model, None)):
         await server.start()
     owner = server._orchestrator._runtimes['main'].get_or_create_session(allow_reset=False)
     entered, canceling, release = asyncio.Event(), asyncio.Event(), asyncio.Event()

@@ -152,16 +152,9 @@ def prepare(store: TranscriptStore, group: str, workspace: Path, configured_mode
                     extension_root=extension_root, stream_fn=stream_fn)
 
 
-@dataclass(frozen=True)
-class PromptTool:
-    name: str
-    description: str
-
-
-def prompt(workspace: Path, tools: tuple[PromptTool, ...], model: str,
-           *, bootstrap: bool) -> tuple[SystemPromptBlock, ...]:
+def prompt(workspace: Path, model: str, *, bootstrap: bool) -> tuple[SystemPromptBlock, ...]:
     from xdog.claw.core.prompt import build_system_prompt, run_bootstrap
-    return build_system_prompt(workspace, tools=list(tools), model=model,
+    return build_system_prompt(workspace, model=model,
                                bootstrap_content=run_bootstrap(workspace) if bootstrap else None)
 
 

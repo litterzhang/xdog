@@ -8,9 +8,9 @@ import pytest
 from xdog.agent.extensions.runtime import validate_snapshot
 from xdog.ai.types import AssistantMessage
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.channels.tui.tui_app import ChatApp
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 
 
 @pytest.mark.parametrize('capability', [None, False, 0])
@@ -23,7 +23,7 @@ async def test_argument_query_requires_its_own_explicit_viewer_negotiation(tmp_p
     def stream(*args):
         calls.append(args)
         return EventStream.empty(AssistantMessage())
-    with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=(config.model, stream)):
+    with patch('xdog.claw.application.gateway._build_model_and_options', return_value=(config.model, stream)):
         await server.start()
     reader, writer = await asyncio.open_unix_connection(config.socket_path)
     try:
@@ -78,7 +78,7 @@ async def test_cancel_before_argument_admission_is_negotiated_and_releases_only_
     server = GatewayServer(config)
     def unexpected(*args):
         pytest.fail('Argument cancellation cannot call a model')
-    with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=(config.model, unexpected)):
+    with patch('xdog.claw.application.gateway._build_model_and_options', return_value=(config.model, unexpected)):
         await server.start()
     runtime = server._orchestrator._runtimes['main']
     meta = runtime.transcript_store.create_session('main')
@@ -176,7 +176,7 @@ async def test_context_capability_withdrawal_before_job_start_settles_receipt_wi
     server = GatewayServer(config)
     def unexpected(*args):
         pytest.fail('Withdrawing completion metadata cannot submit model work')
-    with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=(config.model, unexpected)):
+    with patch('xdog.claw.application.gateway._build_model_and_options', return_value=(config.model, unexpected)):
         await server.start()
     runtime = server._orchestrator._runtimes['main']
     meta = runtime.transcript_store.create_session('main')

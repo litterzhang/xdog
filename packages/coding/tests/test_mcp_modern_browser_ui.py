@@ -11,9 +11,9 @@ from unittest.mock import patch
 
 import pytest
 from xdog.agent import Agent, AgentConfig
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.channels.tui.tui_app import ChatApp
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 from xdog.coding.core.agent_session import AgentSession
 from xdog.coding.core.permissions import PermissionManager
 from xdog.coding.core.session_manager import SessionManager
@@ -84,7 +84,7 @@ async def browser(tmp_path, host, transport):
                 socket_path=str(tmp_path / 'gateway.sock'), pid_file=str(tmp_path / 'gateway.pid'),
                 groups=(GroupDef(id='main', is_main=True, workspace=str(tmp_path / 'workspace')),), mcp_servers=configs)
             gateway = GatewayServer(config)
-            with patch('xdog.claw.core.runtime.gateway._build_model_and_options',
+            with patch('xdog.claw.application.gateway._build_model_and_options',
                        return_value=('explicit-model', adapter)):
                 await gateway.start()
             runtime = gateway._orchestrator._runtimes['main']

@@ -56,6 +56,9 @@ class OutboundMessages:
     @staticmethod
     def _channel_row(identifier: str, reference: ReplyReference) -> dict[str, Any]:
         value: dict[str, Any] = {'id': identifier, 'name': reference.channel}
+        account_id = reference.original.metadata.get('account_id')
+        if isinstance(account_id, str) and account_id:
+            value['account_id'] = account_id
         if reference.original.metadata.get('publication') is True:
             value.update(operations=['publish'], account_id=reference.original.metadata['account_id'])
         return value

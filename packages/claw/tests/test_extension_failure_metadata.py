@@ -52,8 +52,8 @@ async def test_wire_cancel_before_command_admission_settles_receipt_and_releases
 
     from xdog.ai.types import AssistantMessage
     from xdog.ai.utils.event_stream import EventStream
+    from xdog.claw.application.gateway import GatewayServer
     from xdog.claw.config import ClawConfig, GroupDef
-    from xdog.claw.core.runtime.gateway import GatewayServer
 
     config = ClawConfig(model='offline/model', data_dir=str(tmp_path / 'data'),
         socket_path=str(tmp_path / 'early.sock'), pid_file=str(tmp_path / 'early.pid'),
@@ -63,7 +63,7 @@ async def test_wire_cancel_before_command_admission_settles_receipt_and_releases
     def stream(*args):
         calls.append(args)
         return EventStream.empty(AssistantMessage())
-    with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=(config.model, stream)):
+    with patch('xdog.claw.application.gateway._build_model_and_options', return_value=(config.model, stream)):
         await server.start()
     runtime = server._orchestrator._runtimes['main']
     meta = runtime.transcript_store.create_session('main')

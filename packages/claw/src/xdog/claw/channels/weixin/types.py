@@ -40,6 +40,7 @@ class CDNMedia:
     encrypt_query_param: str = ""
     aes_key: str = ""
     encrypt_type: int = 0
+    full_url: str = ""
 
 
 @dataclass(frozen=True)
@@ -151,6 +152,7 @@ def _parse_cdn_media(raw: dict[str, Any]) -> CDNMedia | None:
         encrypt_query_param=raw.get("encrypt_query_param", ""),
         aes_key=raw.get("aes_key", ""),
         encrypt_type=raw.get("encrypt_type", 0),
+        full_url=raw.get("full_url", ""),
     )
 
 

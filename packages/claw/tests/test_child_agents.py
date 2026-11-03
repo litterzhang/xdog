@@ -7,9 +7,9 @@ from unittest.mock import patch
 import pytest
 from xdog.ai.types import AssistantMessage, DoneEvent, TextContent, ToolCall
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.channels.tui.tui_app import ChatApp
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 
 
 def stream_fn(contexts, block=False):
@@ -36,7 +36,7 @@ async def setup(tmp_path, contexts, block=False):
         socket_path=str(tmp_path / "gateway.sock"), pid_file=str(tmp_path / "gateway.pid"),
         groups=(GroupDef(id="main", is_main=True, workspace=str(tmp_path / "workspace")),))
     server = GatewayServer(config)
-    with patch("xdog.claw.core.runtime.gateway._build_model_and_options",
+    with patch("xdog.claw.application.gateway._build_model_and_options",
                return_value=("test/model", stream_fn(contexts, block))):
         await server.start()
     return server, config
@@ -596,7 +596,7 @@ async def test_claw_preset_catalog_cli_and_picker_apply_frozen_template_without_
         socket_path=str(tmp_path / "presets.sock"), pid_file=str(tmp_path / "presets.pid"),
         groups=(GroupDef(id="main", is_main=True, workspace=str(tmp_path / "workspace")),), child_presets=presets)
     server = GatewayServer(config)
-    with patch("xdog.claw.core.runtime.gateway._build_model_and_options",
+    with patch("xdog.claw.application.gateway._build_model_and_options",
                return_value=("test/model", stream_fn(calls))):
         await server.start()
     ui = ChatApp(config.socket_path)

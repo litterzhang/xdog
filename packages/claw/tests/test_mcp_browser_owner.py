@@ -7,9 +7,9 @@ from contextlib import asynccontextmanager
 from unittest.mock import patch
 
 import pytest
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.channels.tui.tui_app import ChatApp
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 
 from packages.agent.tests.mcp_helpers import Adapter
 
@@ -21,7 +21,7 @@ async def cold_gateway(tmp_path):
         socket_path=str(tmp_path / 'gateway.sock'), pid_file=str(tmp_path / 'gateway.pid'),
         groups=(GroupDef(id='main', is_main=True, workspace=str(tmp_path / 'workspace')),))
     gateway = GatewayServer(config)
-    with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=('explicit-model', adapter)):
+    with patch('xdog.claw.application.gateway._build_model_and_options', return_value=('explicit-model', adapter)):
         await gateway.start()
     reader, writer = await asyncio.open_unix_connection(config.socket_path)
     async def send(value):

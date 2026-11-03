@@ -14,6 +14,11 @@ class Channel(ABC):
     """Abstract base for messaging channels."""
 
     _on_accept: OnMessageCallback | None = None
+    _accepted_input_reader: Callable[[str, str], Awaitable[UserInput | None]] | None = None
+
+    def set_accepted_input_reader(self, reader: Callable[[str, str], Awaitable[UserInput | None]]) -> None:
+        """Host-scoped readonly receipts, for retrying intake without refetching media."""
+        self._accepted_input_reader = reader
 
     @property
     @abstractmethod
@@ -27,6 +32,10 @@ class Channel(ABC):
 
     @abstractmethod
     async def send_message(self, group_id: str, text: str) -> None: ...
+
+    def status_snapshot(self) -> dict[str, str]:
+        """Public descriptive transport facts, never credentials or tool authority."""
+        return {'channel': self.name, 'status': str(getattr(self, 'status', 'unknown'))}
 
     def accepts_group(self, group_id: str) -> bool:
         """Whether this channel can route reports to this group."""

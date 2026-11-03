@@ -7,15 +7,12 @@ import logging
 import os
 import time
 from collections.abc import Awaitable, Callable, Coroutine
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from xdog.claw.core.inputs.models import ReplyTarget
 from xdog.claw.core.runtime.input_queries import NativeInputReceipts
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.types import UserInput
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 
@@ -44,10 +41,12 @@ class NativeRequests:
     """Protocol operations using explicit application, receipt and transport ports."""
 
     def __init__(self, application: Orchestrator | None, receipts: NativeInputReceipts | None,
-                 write_response: Callable[[asyncio.StreamWriter, dict[str, Any]], Coroutine[Any, Any, None]]) -> None:
+                 write_response: Callable[[asyncio.StreamWriter, dict[str, Any]], Coroutine[Any, Any, None]], *,
+                 channel_statuses: Callable[[], list[dict[str, str]]] | None = None) -> None:
         self._orchestrator = application
         self._native_inputs = receipts
         self._write_response = write_response
+        self._channel_statuses = channel_statuses or (lambda: [])
 
     async def _read_native_receipt(self, request: dict[str, Any],
                                    write: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
@@ -390,4 +389,5 @@ class NativeRequests:
             "running": True,
             "pid": os.getpid(),
             "groups": groups,
+            "channels": self._channel_statuses(),
         })

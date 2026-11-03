@@ -121,7 +121,7 @@ assert not list(pathlib.Path.cwd().iterdir())
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-@pytest.mark.parametrize("module", ["xdog.coding.core.sdk", "xdog.claw.core.runtime.bootstrap"])
+@pytest.mark.parametrize("module", ["xdog.coding.core.sdk", "xdog.claw.application.bootstrap"])
 def test_ordinary_host_import_does_not_load_goal_business(module, tmp_path):
     script = r'''
 import importlib, sys

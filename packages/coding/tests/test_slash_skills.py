@@ -254,17 +254,12 @@ def test_the_system_prompt_gains_and_loses_the_body(
     """
     from xdog.agent.agent import Agent
     from xdog.agent.core import AgentConfig
-    from xdog.coding.core.agent_session import _skills_context
 
     shared = tmp_path / "skills"
     shared.mkdir(parents=True)
     _write(shared, "flow", "STEP ONE: validate the graph.", description="write a workflow")
     manager = SkillRepo(packaged={}).register(directory=shared, name="shared")
     monkeypatch.setattr(slash_commands, "skill_repo", lambda: manager)
-
-    idle = _skills_context(frozenset())
-    assert idle == '', 'Coding must not render a second Agent-owned skill index'
-    assert "STEP ONE" not in idle, "the body must wait to be asked for"
 
     agent = Agent(
         lambda *a, **k: None,
@@ -283,30 +278,6 @@ def test_the_system_prompt_gains_and_loses_the_body(
     assert agent.state.system_prompt == idle_prompt, "byte for byte, or /unload is theatre"
 
 
-def test_the_skills_section_is_empty_when_nothing_is_installed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from xdog.coding.core.agent_session import _skills_context
-
-    manager = SkillRepo(packaged={}).register(directory=tmp_path / 'empty', name="shared")
-    monkeypatch.setattr(slash_commands, "skill_repo", lambda: manager)
-
-    assert _skills_context(frozenset()) == ""
-
-
-def test_an_unreadable_skills_directory_does_not_break_the_system_prompt(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from xdog.coding.core.agent_session import _skills_context
-
-    def _boom() -> Any:
-        raise OSError("permission denied")
-
-    monkeypatch.setattr(slash_commands, "skill_repo", _boom)
-    assert 'cannot deactivate' in _skills_context(frozenset({'flow'}))
-    # Rendering this product note must not consult a filesystem skill manager.
-
-
 # -- Declared lifetime, and who is allowed to end it --
 
 
@@ -318,14 +289,10 @@ class FakeExpiringSession:
         self._active_skills = frozenset(active)
         self.agent = SimpleNamespace(active_skills=tuple(sorted(active)))
         self.rebuilds = 0
-        self.pushed: list[list[str]] = []
 
     def _rebuild_system_prompt(self) -> None:
         self.rebuilds += 1
 
-    def _push_skills(self) -> None:
-        """Expiry must tell the Agent too, or the body outlives the scope."""
-        self.pushed.append(sorted(self._active_skills))
 
 
 def _expire(session: Any) -> None:
@@ -397,99 +364,6 @@ def test_expiry_survives_an_unreadable_skills_directory(
     _expire(session)
 
     assert session._active_skills == {"flow"}
-
-
-def test_the_model_is_told_it_may_suggest_but_not_unload(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Layer three. A skill is often a constraint, and the constrained party
-    should not hold the release — so there is no tool, and the prompt says so."""
-    from xdog.coding.core.agent_session import _skills_context
-
-    shared = tmp_path / "skills"
-    shared.mkdir(parents=True)
-    _write(shared, "guard", "Always run the tests before deploying.")
-    manager = SkillRepo(packaged={}).register(directory=shared, name="shared")
-    monkeypatch.setattr(slash_commands, "skill_repo", lambda: manager)
-
-    prompt = _skills_context(frozenset({"guard"}))
-
-    assert "cannot deactivate" in prompt
-    assert "/unload" in prompt
-    assert "the user decides" in prompt.lower()
-
-
-# -- tool definitions were being sent twice ---------------------------------
-
-
-def _cfg(model: str = "copilot/x"):
-    from xdog.coding.config import PlatformInfo, RuntimeConfig
-
-    return RuntimeConfig(
-        model=model, thinking_level="normal", permission_mode="ask", allowed_tools=("read",),
-        custom_instructions="", extensions=(), working_dir="/tmp",
-        platform_info=PlatformInfo.detect(),
-    )
-
-
-_TOOLS = [{"name": "read", "description": "Read a file", "parameters": {"path": "string"}}]
-
-
-def test_a_native_tool_calling_model_is_not_told_its_tools_twice() -> None:
-    """They already arrive as structured tool definitions through the API.
-    Describing them again sends every name, description and parameter schema a
-    second time, in the cached prefix, for a model that did not need it."""
-    from xdog.coding.core.system_prompt import build_system_prompt
-
-    described = build_system_prompt(_cfg(), _TOOLS, native_tool_calls=False)
-    native = build_system_prompt(_cfg(), _TOOLS, native_tool_calls=True)
-
-    assert "Read a file" in described
-    assert "Read a file" not in native
-    assert len(native) < len(described)
-
-
-def test_the_default_keeps_tools_visible() -> None:
-    """The two mistakes are not symmetric. A duplicate costs tokens; a model
-    that cannot see its tools cannot act, and that reads as the model being
-    useless rather than as a missing prompt section — so unknown means describe.
-    """
-    from xdog.coding.core.system_prompt import build_system_prompt
-
-    assert "Read a file" in build_system_prompt(_cfg(), _TOOLS)
-
-
-@pytest.mark.parametrize('capability', [None, False, True])
-def test_an_unresolvable_model_still_gets_its_tools_described(tmp_path: Path, capability) -> None:
-    """Use the actual owning Agent capability; unknown/false never hide tool instructions."""
-    import asyncio
-
-    from xdog.agent import Agent, AgentConfig
-    from xdog.agent.helpers import model_supports_tool_calls
-    from xdog.coding.core.agent_session import AgentSession
-    from xdog.coding.core.permissions import PermissionManager
-    from xdog.coding.core.session_manager import SessionManager
-    from xdog.coding.core.settings_manager import SettingsManager
-    from xdog.coding.core.system_prompt import build_system_prompt
-
-    def unexpected(*args):
-        pytest.fail('Capability inspection must not submit model work')
-    name = 'no-such-provider/no-such-model'
-    manager = SessionManager(tmp_path / 'sessions')
-    session = AgentSession(agent=Agent(unexpected, config=AgentConfig(model=name, supports_tool_calls=capability)),
-        session_data=manager.create_session(model=name, working_dir=tmp_path), session_manager=manager,
-        settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-        tool_repo=None, bash=None, permissions=PermissionManager('deny'))
-    try:
-        assert model_supports_tool_calls(name) is None
-        native = session._native_tool_calls()
-        assert native is (capability is True)
-        prompt = build_system_prompt(_cfg(), _TOOLS, native_tool_calls=native)
-        assert ('Read a file' in prompt) is (capability is not True)
-    finally:
-        asyncio.run(session.children.runtime.aclose())
-        asyncio.run(session.extensions.aclose())
-        session.dispose()
 
 
 def test_completion_offers_skills_not_only_builtins(

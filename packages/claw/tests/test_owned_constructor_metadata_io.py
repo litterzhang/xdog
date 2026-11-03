@@ -10,8 +10,8 @@ from unittest.mock import patch
 import pytest
 from xdog.ai.types import AssistantMessage, Model, TextContent
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 from xdog.claw.core.types import UserInput
 
 
@@ -55,7 +55,7 @@ async def test_real_constructor_metadata_io_is_prepared_without_moving_agent_loo
         groups=(GroupDef(id='main', workspace=str(workspace)),))
     server = GatewayServer(config)
     try:
-        with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=('test/metadata', stream)):
+        with patch('xdog.claw.application.gateway._build_model_and_options', return_value=('test/metadata', stream)):
             with monkeypatch.context() as trace:
                 trace.setattr(Path, 'resolve', resolve)
                 trace.setattr(io, 'open', open_file)

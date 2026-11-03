@@ -2,11 +2,46 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import click
 import httpx
 from xdog.claw.config import ClawConfig
+
+
+async def confirm_scan() -> None:
+    """Wait for a line without a blocking input thread or browser/status polling."""
+    click.echo('After confirming successful login in the XHS app, press Enter here. Ctrl+C cancels.')
+    stream = click.get_text_stream('stdin')
+    try:
+        fd = stream.fileno()
+    except (OSError, ValueError) as exc:
+        raise ValueError('XHS login needs an interactive terminal for scan confirmation') from exc
+    loop = asyncio.get_running_loop()
+    confirmed: asyncio.Future[None] = loop.create_future()
+    def readable() -> None:
+        if confirmed.done():
+            return
+        try:
+            chunk = os.read(fd, 4096)
+            if not chunk:
+                raise ValueError('XHS scan confirmation input closed; no account was bound')
+            if b'\n' in chunk or b'\r' in chunk:
+                confirmed.set_result(None)
+        except (OSError, ValueError) as exc:
+            confirmed.set_exception(exc)
+    try:
+        loop.add_reader(fd, readable)
+    except (OSError, ValueError) as exc:
+        raise ValueError('XHS login needs an interactive terminal for scan confirmation') from exc
+    try:
+        await confirmed
+        # The backend's existing scan browser saves cookies after detecting the
+        # app confirmation; do not race that background commit with verification.
+        await asyncio.sleep(1)
+    finally:
+        loop.remove_reader(fd)
 
 
 def run(config: ClawConfig, config_file: Path, group_id: str, base_url: str) -> None:
@@ -30,13 +65,20 @@ def run(config: ClawConfig, config_file: Path, group_id: str, base_url: str) -> 
         api = XhsApi(endpoint, token_env=config.xhs_token_env)
         try:
             account = await login(api, Path(config.data_dir), group_id,
-                                  show_png)
+                                  show_png, confirm_scan=confirm_scan)
             return account.account_id
         finally:
             await api.close()
     try:
         account_id = asyncio.run(perform())
     except httpx.HTTPError as exc:
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {401, 403}:
+            raise click.ClickException(
+                'XHS backend access denied (HTTP ' + str(exc.response.status_code) + '). '
+                'Export the correct backend token in ' + config.xhs_token_env + ' before retrying. '
+                'This is backend authentication, not QR expiry; existing cookies and channel '
+                'configuration were retained.'
+            ) from exc
         detail = f'HTTP {exc.response.status_code}' if isinstance(exc, httpx.HTTPStatusError) else type(exc).__name__
         raise click.ClickException('XHS backend login request failed (' + detail + '). '
             'The scan may still be completing; keep existing cookies and retry login to recheck status. '

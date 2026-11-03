@@ -15,10 +15,11 @@ class BuiltApplication:
 
 
 def build(config: ClawConfig) -> BuiltApplication:
-    from xdog.claw.core.runtime.gateway import _build_model_and_options, _groups_from_config
+    from xdog.claw.application.gateway import _build_model_and_options, _groups_from_config
+    from xdog.claw.application.tools import group_tools
     model, stream = _build_model_and_options(config)
     app = Orchestrator(config, model=model, stream_fn=stream, data_dir=Path(config.data_dir),
-                       defer_inputs=True)
+                       defer_inputs=True, tool_factory=group_tools)
     try:
         for group in _groups_from_config(config):
             app.register_group(group)

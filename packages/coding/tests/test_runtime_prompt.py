@@ -2,48 +2,22 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
+from pathlib import Path
 
-import pytest
-from xdog.ai.types import AssistantMessage
+from xdog.ai.types import AssistantMessage, system_prompt_text
 from xdog.ai.utils.event_stream import EventStream
-from xdog.coding.config import PlatformInfo, RuntimeConfig
+from xdog.coding.config import PlatformInfo
 from xdog.coding.core.system_prompt import build_system_prompt
 
 
-def config():
-    return RuntimeConfig(model='copilot/configured-model', thinking_level='medium', permission_mode='ask',
-        allowed_tools=(), custom_instructions='', extensions=(), working_dir='/test',
-        platform_info=PlatformInfo('Linux', 'test', '3.12', '/home/test', '/bin/bash'))
-
-
-@pytest.mark.parametrize('native_tool_calls', [False, True])
-def test_runtime_query_instructions_work_with_either_tool_description_mode(native_tool_calls):
-    prompt = build_system_prompt(config(), [{'name': 'ext_coding_session'}], native_tool_calls=native_tool_calls)
-    assert '## Runtime' in prompt
-    assert '- Application: xdog-coding' in prompt
-    assert '- Agent runtime: xdog.agent' in prompt
-    assert 'copilot/configured-model' not in prompt
-    assert 'Thinking level:' not in prompt and 'Permission mode:' not in prompt
-    assert 'Call `ext_coding_session`' in prompt
-    assert 'host-reported configuration' in prompt
-    assert 'underlying model identity' in prompt
-    assert 'Session ID:' not in prompt  # Standalone builders do not invent a session.
-
-
-def test_session_id_is_not_baked_into_the_instruction_prefix():
-    prompt = build_system_prompt(config(), [], session_id='host-session')
-    assert 'host-session' not in prompt
-    assert 'host-session' not in build_system_prompt(config(), [])
-
-
-@pytest.mark.parametrize('thinking', ['off', 'high'])
-def test_runtime_section_does_not_embed_mutable_config(thinking):
-    prompt = build_system_prompt(replace(config(), model='opaque/model', thinking_level=thinking,
-                                        permission_mode='deny'), [])
-    assert 'opaque/model' not in prompt
-    assert 'Thinking level:' not in prompt and 'Permission mode:' not in prompt
-    assert 'copilot/configured-model' not in prompt
+def test_runtime_contract_has_no_mutable_configuration_or_tool_operations():
+    blocks = build_system_prompt(Path('/test'), PlatformInfo('Linux', 'test', '3.12', '/home/test', '/bin/bash'))
+    text = system_prompt_text(blocks)
+    assert '## Runtime' in text
+    assert '- Application: xdog-coding' in text and '- Agent runtime: xdog.agent' in text
+    assert 'host-reported configuration' in text and 'underlying model identity' in text
+    assert 'ext_coding_session' not in text
+    assert 'Thinking level:' not in text and 'Permission mode:' not in text and 'Session ID:' not in text
 
 
 async def test_real_turn_queries_reflect_changes_without_embedding_them_in_instructions(coding_session):
@@ -66,16 +40,19 @@ async def test_real_turn_queries_reflect_changes_without_embedding_them_in_instr
     await coding_session.send_message('After switching')
 
     assert len(calls) == 2
-    for index, (model, prompt, thinking, info) in enumerate(calls):
+    for index, (model, blocks, thinking, info) in enumerate(calls):
+        prompt = system_prompt_text(blocks)
         expected = 'copilot/first-model' if index == 0 else 'copilot/second-model'
         assert model == expected
         assert expected not in prompt
-        assert 'Call `ext_coding_session`' in prompt
+        assert 'ext_coding_session' not in prompt
         assert info['model']['id'] == expected
         assert info['model']['thinking'] == (thinking or 'off')
         assert info['permission_mode'] == ('ask' if index == 0 else 'deny')
         assert info['session_id'] == coding_session.session_id
         assert '- Application: xdog-coding' in prompt
         assert '- Agent runtime: xdog.agent' in prompt
-    assert 'copilot/first-model' not in calls[1][1]
+    assert 'copilot/first-model' not in system_prompt_text(calls[1][1])
+    host = [next(block for block in item[1] if block.text.startswith('# Coding host contract')) for item in calls]
+    assert host[0] == host[1] and host[0].cache
     assert calls[1][2] is None

@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -48,10 +49,6 @@ def _account_file(state_dir: Path, account_id: str) -> Path:
     return _accounts_dir(state_dir) / f"{account_id}.json"
 
 
-def _index_file(state_dir: Path) -> Path:
-    return state_dir / "weixin" / "accounts.json"
-
-
 def load_account(state_dir: Path, account_id: str) -> WeixinAccountData | None:
     """Load account data by ID from disk."""
     path = _account_file(state_dir, account_id)
@@ -78,43 +75,18 @@ def save_account(
     dir_path = _accounts_dir(state_dir)
     dir_path.mkdir(parents=True, exist_ok=True)
 
+    if not account_id or normalize_account_id(account_id) != account_id:
+        raise ValueError('Weixin account ID must be a filesystem-safe saved ID')
     file_path = _account_file(state_dir, account_id)
-    file_path.write_text(
-        json.dumps(asdict(data), indent=2), encoding="utf-8"
-    )
+    fd, temporary = tempfile.mkstemp(dir=dir_path, prefix='.account-', text=True)
     try:
-        os.chmod(str(file_path), 0o600)
-    except OSError:
-        pass  # best-effort
-
-
-def list_account_ids(state_dir: Path) -> list[str]:
-    """Read the registered account IDs from the index file."""
-    path = _index_file(state_dir)
-    try:
-        if not path.exists():
-            return []
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(raw, list):
-            return []
-        return [id_ for id_ in raw if isinstance(id_, str) and id_.strip()]
-    except Exception:
-        return []
-
-
-def register_account_id(state_dir: Path, account_id: str) -> None:
-    """Add an account ID to the persistent index (no-op if present)."""
-    existing = list_account_ids(state_dir)
-    if account_id in existing:
-        return
-
-    dir_path = state_dir / "weixin"
-    dir_path.mkdir(parents=True, exist_ok=True)
-
-    updated = [*existing, account_id]
-    _index_file(state_dir).write_text(
-        json.dumps(updated, indent=2), encoding="utf-8"
-    )
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(asdict(data), stream, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, file_path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def normalize_account_id(raw_id: str) -> str:

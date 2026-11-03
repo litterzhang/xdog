@@ -11,8 +11,8 @@ from unittest.mock import patch
 import pytest
 from xdog.ai.types import AssistantMessage
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 
 from packages.agent.tests.test_extension_provider_oauth import PROVIDER
 from packages.claw.tests.gateway_helpers import handshake, peer
@@ -32,7 +32,7 @@ async def auth_server(tmp_path, *, settings=None):
         extensions=('provideroauth',), extension_dir=str(root),
         extension_settings={'provideroauth': settings or {}})
     server = GatewayServer(config)
-    with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=('offline/model', stream)):
+    with patch('xdog.claw.application.gateway._build_model_and_options', return_value=('offline/model', stream)):
         await server.start()
     runtime = server._orchestrator._runtimes['main']
     assert runtime._active_session is None and not runtime.get_new_session_id()

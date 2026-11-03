@@ -10,6 +10,43 @@ project follows [semantic versioning](https://semver.org/).
 
 ### Fixed
 
+- Align Coding tool descriptions with Agent's actual True/unknown/False native-tool
+  behavior; keep text-only inventories explicitly read-only and empty inventories absent.
+  Split fixed host contracts from dynamic project/user/environment/read-only context
+  using cache-aware system blocks, with session query instructions on the actual tool.
+- Publish Coding skill selections only after SDK validation/application succeeds;
+  surface activation failures and remove duplicate skill UI notes. Delete obsolete
+  resource-loader/prompt entry points and parameters instead of compatibility forwarding.
+
+- Reduce Claw's fixed system prompt to host/identity/context contracts; remove
+  coding/style/task mandates and duplicate native-tool catalogs. Put tool usage
+  guidance with actual schemas and retain permission-filtered inspection for
+  text-only models; current input identity remains non-cacheable host metadata.
+- Seed all four group workspace documents from packaged editable defaults on group
+  creation/onboarding, accept explicit generated content, preserve existing files
+  and restrict explicit onboarding rename to the identity name line.
+
+- Separate Claw application composition and Native/TUI transport from channel-neutral
+  core; move XHS post-tool schema/binding into its channel and retain live original-input
+  permission fences through a generic tool contract. Remove obsolete skills/planning
+  shells; keep Agent's MCP registry and host-owned lifecycle controls.
+- Load editable Claw user profiles/preferences from workspace `USER.md` with a
+  packaged default; distinguish them from trusted speaker/tool authority and stop
+  treating message-body system-reminder tags as authenticated instructions.
+
+- Preserve bounded, allowlisted XHS reply failure stages from backend error responses,
+  without exposing raw diagnostics or treating HTTP failures as proof of non-submission.
+
+- Send XHS replies to the frozen original comment without requiring it to remain
+  in the notification window; retain account/group binding and unknown-send fences.
+
+- Stop XHS status polling during scans: require explicit app-success confirmation,
+  defer gateway identity checks with a host-local lease, and refuse parallel logins.
+- Bound XHS login waiting to the backend scan window, retain existing cookies and
+  bindings on timeout, and diagnose backend access denial separately from QR expiry.
+- Render XHS terminal QR codes on their verified module grid instead of inflating
+  or fractionally rescaling the symbol; keep per-attempt private PNG cleanup isolated.
+
 - Retry bounded transient XHS login-status reads without replaying QR challenges or writes,
   and report backend login failures without credential-bearing tracebacks.
 
@@ -17,6 +54,15 @@ project follows [semantic versioning](https://semver.org/).
   approved HTTP/HTML/XML dependencies, version/tag checks and packaged resources in sync.
 
 ### Added
+
+- Explicit multi-account Weixin startup with per-account group bindings, polling,
+  cursors, identities and replies; login appends enabled accounts atomically,
+  isolated failures remain visible in live gateway status. Retire global
+  single-account settings without enabling historical accounts implicitly.
+
+- Receive Weixin image-only and text/image messages as saved group-history paths,
+  with MD5-prefix filenames, CDN decryption, collision-safe private files and durable
+  acceptance before cursor advancement; preserve accepted paths over CDN expiry.
 
 - Print XHS login QR PNGs directly in the terminal, retaining the image-path fallback
   without changing challenge, account-binding or login cleanup behavior.

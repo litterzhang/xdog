@@ -5,8 +5,8 @@ from unittest.mock import patch
 
 from xdog.ai.types import AssistantMessage, ImageContent, TextContent, ToolCall
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 
 FIXTURE = Path(__file__).parents[2] / "agent/tests/fixtures/extensions"
 
@@ -43,7 +43,7 @@ async def test_claw_large_tool_images_preserve_canonical_data_without_oversized_
         groups=(GroupDef(id="main", is_main=True),),
     )
     server = GatewayServer(config)
-    with patch("xdog.claw.core.runtime.gateway._build_model_and_options", return_value=("test/model", stream)):
+    with patch("xdog.claw.application.gateway._build_model_and_options", return_value=("test/model", stream)):
         await server.start()
     try:
         session = server._orchestrator._runtimes["main"].get_or_create_session()

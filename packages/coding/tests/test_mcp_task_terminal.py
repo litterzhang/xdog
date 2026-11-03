@@ -10,8 +10,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 
 from packages.agent.tests.mcp_helpers import Adapter
 from packages.coding.tests.test_terminal_acceptance import Terminal
@@ -56,7 +56,7 @@ def test_physical_retired_keys_preserve_mcp_prompt_focus_resize_and_termios(tmp_
                             groups=(GroupDef(id='main', is_main=True, workspace=str(tmp_path / 'workspace')),),
                             mcp_servers=configs)
                         server = GatewayServer(config)
-                        with patch('xdog.claw.core.runtime.gateway._build_model_and_options',
+                        with patch('xdog.claw.application.gateway._build_model_and_options',
                                    return_value=('explicit-model', adapter)):
                             await server.start()
                             runtime = server._orchestrator._runtimes['main']

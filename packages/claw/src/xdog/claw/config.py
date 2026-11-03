@@ -135,10 +135,7 @@ class ClawConfig:
     idle_reset_seconds: int = 0
 
     # WeChat channel settings
-    weixin_enabled: bool = False
-    weixin_account_id: str = ""
-    weixin_token: str = ""
-    weixin_base_url: str = ""
+    weixin_accounts: tuple[str, ...] = ()
 
     xhs_enabled: bool = False
     xhs_group_id: str = 'main'
@@ -156,6 +153,13 @@ class ClawConfig:
 
     def __post_init__(self) -> None:
         """Fill in XDG defaults for empty path fields."""
+        import re
+        accounts = self.weixin_accounts
+        if (not isinstance(accounts, (tuple, list))
+                or any(not isinstance(value, str) or re.fullmatch(r'[A-Za-z0-9_-]{1,128}', value) is None
+                       for value in accounts) or len(set(accounts)) != len(accounts)):
+            raise ToolConfigError('weixin_accounts must be a list of unique saved account IDs')
+        object.__setattr__(self, 'weixin_accounts', tuple(accounts))
         for name in ('xhs_enabled', 'xhs_replies_enabled', 'xhs_publish_enabled'):
             if type(getattr(self, name)) is not bool:
                 raise ToolConfigError(name + ' must be a boolean')
@@ -256,6 +260,10 @@ def _flatten_gateway(raw: dict[str, Any]) -> dict[str, Any]:
 
 def _filter_known_fields(raw: dict[str, Any]) -> dict[str, Any]:
     """Filter raw dict to only include known ClawConfig fields."""
+    retired = {'weixin_enabled', 'weixin_account_id', 'weixin_token', 'weixin_base_url'} & raw.keys()
+    if retired:
+        raise ToolConfigError('Retired Weixin settings: ' + ', '.join(sorted(retired))
+                              + '. Use weixin_accounts and saved per-account credentials/group bindings.')
     known = {f.name for f in fields(ClawConfig)}
     return {k: v for k, v in raw.items() if k in known}
 
@@ -343,7 +351,7 @@ def save_config(config: ClawConfig, path: Path) -> None:
     data = asdict(config)
 
     # Security: never write api_key to disk
-    sensitive_keys = {"api_key", "weixin_token"}
+    sensitive_keys = {"api_key"}
     gateway_keys = {"max_concurrent_agents", "daily_reset_hour", "idle_reset_seconds"}
 
     # Build gateway section (immutable — no pop)

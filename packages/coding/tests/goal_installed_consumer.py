@@ -10,7 +10,7 @@ from pathlib import Path
 
 from xdog.agent import Agent, AgentConfig
 from xdog.agent.skills import SkillRepo
-from xdog.ai.types import AssistantMessage, TextContent, ToolCall
+from xdog.ai.types import AssistantMessage, TextContent, ToolCall, system_prompt_text
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core import agent_session as installed_coding
 from xdog.coding.core.agent_session import AgentSession
@@ -28,6 +28,11 @@ class Model:
 
     def __call__(self, selected, context, options):
         self.calls.append(context)
+        contract = next(block for block in context.system_prompt if block.text.startswith('# Coding host contract'))
+        dynamic = next(block for block in context.system_prompt if block.text.startswith('## Environment'))
+        assert contract.cache and not dynamic.cache
+        assert 'inspection only' not in system_prompt_text(context.system_prompt)
+        assert '# Active skills' not in system_prompt_text(context.system_prompt)
         assert not {'task_report', 'goal_context'}.intersection(t.name for t in context.tools)
         start = max((i for i, m in enumerate(context.messages) if m.role == 'user'), default=-1)
         turn = sum(m.role == 'assistant' for m in context.messages[start + 1:])
@@ -43,6 +48,10 @@ async def owned(session, operation):
 
 async def main():
     assert Path(installed_coding.__file__).is_relative_to(Path(sys.prefix))
+    from xdog.coding.core import prompt_templates, resource_loader
+    assert not hasattr(prompt_templates, 'SESSION_RESUME_TEMPLATE')
+    assert not hasattr(resource_loader, 'load_project_resources')
+    assert not hasattr(installed_coding, '_skills_context')
     names = {dist.metadata['Name'].lower().replace('_', '-') for dist in metadata.distributions()}
     assert 'xdog-skills' in names
     assert not names.intersection({'xdog-claw', 'xdog-eyes', 'xdog-flow', 'xdog-site'})

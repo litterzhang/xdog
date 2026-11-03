@@ -5,8 +5,8 @@ import asyncio
 import json
 from unittest.mock import patch
 
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 
 from packages.agent.tests.mcp_helpers import Adapter
 from packages.agent.tests.mcp_helpers import reverse_peer_config as peer_config
@@ -19,7 +19,7 @@ async def setup(tmp_path, adapter=None):
         socket_path=str(tmp_path / 'gateway.sock'), pid_file=str(tmp_path / 'gateway.pid'),
         groups=(GroupDef(id='main', is_main=True, workspace=str(tmp_path / 'workspace')),), mcp_servers=servers)
     server = GatewayServer(config)
-    with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=('explicit-model', adapter)):
+    with patch('xdog.claw.application.gateway._build_model_and_options', return_value=('explicit-model', adapter)):
         await server.start()
     runtime = server._orchestrator._runtimes['main']
     session = runtime.get_or_create_session(allow_reset=False)

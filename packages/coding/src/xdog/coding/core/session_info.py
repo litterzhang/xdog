@@ -49,7 +49,9 @@ def create_tool(session: AgentSession) -> AgentTool:
     tool = AgentTool(name=TOOL_NAME, label='Session info',
         description='Read the current Coding session, selected model/capabilities, thinking, permissions and measured '
                     'context usage. Host-reported configuration, not verified underlying model identity. '
-                    'Read-only, no arguments, no session switching or execution.',
+                    'Read-only, no arguments, no session switching or execution. '
+                    'Query again after settings change; an earlier result is only a snapshot. '
+                    'Never substitute another agent or session information for this owner.',
         parameters={'type': 'object', 'properties': {}, 'additionalProperties': False},
         execute=execute, validate_arguments=validate)
     return tool

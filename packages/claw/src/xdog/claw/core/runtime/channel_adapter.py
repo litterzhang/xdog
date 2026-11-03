@@ -68,6 +68,11 @@ class ChannelReplies:
                 result[binding] = self.capture(scope, channel, original)
         return result
 
+    def discard(self, channel: Channel) -> None:
+        for binding, actual in tuple(self._channels.items()):
+            if actual is channel:
+                del self._channels[binding]
+
     def unregister(self, binding: str) -> None:
         self._channels.pop(binding, None)
 

@@ -42,6 +42,7 @@ class MonitorOpts:
     long_poll_timeout_ms: int = DEFAULT_LONG_POLL_TIMEOUT_MS
     max_pending_messages: int = DEFAULT_MAX_PENDING_MESSAGES
     on_accept: Callable[[WeixinMessage], Awaitable[None]] | None = None
+    on_status: Callable[[str], None] | None = None
 
 
 def _sync_buf_file(state_dir: Path, account_id: str) -> Path:
@@ -173,10 +174,14 @@ async def _poll_updates(
                             resp.errcode,
                             SESSION_PAUSE_S,
                         )
+                        if opts.on_status is not None:
+                            opts.on_status('session_expired')
                         consecutive_failures = 0
                         await _cancellable_sleep(SESSION_PAUSE_S, opts.cancel_event)
                         continue
 
+                    if opts.on_status is not None:
+                        opts.on_status('unavailable')
                     consecutive_failures += 1
                     logger.error(
                         "getUpdates failed: ret=%d errcode=%d errmsg=%s (%d/%d)",
@@ -199,6 +204,8 @@ async def _poll_updates(
                     continue
 
                 # Success — reset failure counter
+                if opts.on_status is not None:
+                    opts.on_status('watching')
                 consecutive_failures = 0
 
                 # Enqueue without waiting for agent execution. Only a full
@@ -232,6 +239,8 @@ async def _poll_updates(
                     logger.info("Monitor stopped (cancelled)")
                     return
 
+                if opts.on_status is not None:
+                    opts.on_status('unavailable')
                 consecutive_failures += 1
                 logger.exception(
                     "getUpdates error (%d/%d)",

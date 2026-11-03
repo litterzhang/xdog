@@ -10,8 +10,8 @@ from unittest.mock import patch
 import pytest
 from xdog.ai.types import AssistantMessage, Model
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 from xdog.tui.child_draft_store import ChildDraftStore, encode_draft
 from xdog.tui.child_drafts import ChildDraft
 
@@ -33,7 +33,7 @@ async def gateway(tmp_path):
         socket_path=str(tmp_path / 'gateway.sock'), pid_file=str(tmp_path / 'gateway.pid'),
         groups=(GroupDef(id='main', is_main=True, workspace=str(tmp_path / 'workspace')),))
     server = GatewayServer(config)
-    with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=('offline/model', adapter)):
+    with patch('xdog.claw.application.gateway._build_model_and_options', return_value=('offline/model', adapter)):
         await server.start()
     runtime = server._orchestrator._runtimes['main']
     session = runtime.get_or_create_session(allow_reset=False)

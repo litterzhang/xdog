@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from xdog.agent.mcp.context import McpBlock, McpDocument
 from xdog.claw.channels.tui.mcp_data import McpDataReceiver, spool_mcp_data
-from xdog.claw.core.runtime.mcp_protocol import McpSender
+from xdog.claw.channels.tui.mcp_protocol import McpSender
 
 
 def request(identifier="one"):
@@ -74,7 +74,7 @@ async def test_cancel_during_spooling_settles_one_file_owner_before_successor():
     async def write(frame):
         frames.append(frame)
     sender = McpSender(fetch, lambda group: ("session", 1), write)
-    with patch("xdog.claw.core.runtime.mcp_protocol.spool_mcp_data", prepare):
+    with patch("xdog.claw.channels.tui.mcp_protocol.spool_mcp_data", prepare):
         try:
             sender.request(request())
             await wait(entered.is_set)

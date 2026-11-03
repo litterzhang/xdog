@@ -7,9 +7,9 @@ import threading
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.channels.tui.tui_app import ChatApp
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 from xdog.coding.core.permissions import PermissionRequest
 from xdog.tui.attachments import Attachment
 
@@ -46,6 +46,7 @@ async def test_coding_sync_access_controls_use_owned_worker_and_preserve_draft_p
         ui._handle_slash_command('plan', '')
         await wait(ui, lambda: ui._command is None)
         assert 'plan' in session.active_skills
+        assert 'plan' in session.agent.active_skills
         assert tuple(session.agent.messages) == before and session.permissions.mode == 'deny'
         ui._handle_slash_command('readonly', 'on extra')
         assert ui._command is None and not session.access.state.read_only
@@ -62,6 +63,7 @@ async def test_plan_skill_activation_does_not_release_readonly_or_tool_permissio
         ui._handle_slash_command('plan', '')
         await wait(ui, lambda: ui._command is None)
         assert 'plan' in session.active_skills
+        assert 'plan' in session.agent.active_skills
         assert session.access.state.read_only and session.permissions.mode == 'deny'
         assert tuple(session.agent.messages) == before
         assert not any(tool.name == 'update_plan' for tool in session.agent.state.tools)
@@ -210,7 +212,7 @@ async def test_claw_actual_gateway_readonly_controls_preserve_native_owner_and_d
                        socket_path=str(tmp_path / 'access.sock'), pid_file=str(tmp_path / 'access.pid'),
                        groups=(GroupDef(id='main', is_main=True, workspace=str(tmp_path)),))
     server = GatewayServer(config)
-    with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=(config.model, stream)):
+    with patch('xdog.claw.application.gateway._build_model_and_options', return_value=(config.model, stream)):
         await server.start()
     session = server._orchestrator._runtimes['main'].get_or_create_session(allow_reset=False)
     ui = ChatApp(config.socket_path)

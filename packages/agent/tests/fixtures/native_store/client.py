@@ -107,14 +107,14 @@ async def native_ui(kind):
         ui = InteractiveMode(session)
         actual = session.mcp
     else:
+        from xdog.claw.application.gateway import GatewayServer
         from xdog.claw.channels.tui.tui_app import ChatApp
         from xdog.claw.config import ClawConfig, GroupDef
-        from xdog.claw.core.runtime.gateway import GatewayServer
         app = ClawConfig(model='offline/model', data_dir=str(root / 'claw'),
             socket_path=str(root / 'claw.sock'), pid_file=str(root / 'claw.pid'),
             groups=(GroupDef(id='main', is_main=True),), mcp_servers=config, mcp_credential_backend='secret-service')
         server = GatewayServer(app)
-        with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=(app.model, stream)):
+        with patch('xdog.claw.application.gateway._build_model_and_options', return_value=(app.model, stream)):
             await server.start()
         actual = server._orchestrator._runtimes['main'].mcp
         ui = ChatApp(app.socket_path)

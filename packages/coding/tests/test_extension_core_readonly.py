@@ -14,8 +14,8 @@ from xdog.agent.extensions.compaction import CompactionVeto
 from xdog.agent.skills import SkillRepo
 from xdog.ai.types import AssistantMessage, TextContent, UserMessage
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 from xdog.coding.core.agent_session import AgentSession
 from xdog.coding.core.permissions import PermissionManager
 from xdog.coding.core.session_manager import SessionManager
@@ -46,7 +46,7 @@ async def test_real_child_readonly_worker_keeps_live_pending_boolean_and_native_
             groups=(GroupDef(id='main', is_main=True, workspace=str(tmp_path / 'workspace')),),
             extensions=('readonlyhost',), extension_dir=str(root))
         server = GatewayServer(config)
-        with patch('xdog.claw.core.runtime.gateway._build_model_and_options',
+        with patch('xdog.claw.application.gateway._build_model_and_options',
                    return_value=('test/model', stream_fn(calls, block=True))):
             await server.start()
         parent = server._orchestrator._runtimes['main'].get_or_create_session(allow_reset=False)

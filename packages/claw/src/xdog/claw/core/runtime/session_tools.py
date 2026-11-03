@@ -20,6 +20,7 @@ from xdog.ai.types import (
     TextContent,
     ToolCall,
 )
+from xdog.claw.core.tools.input_tool import InputTool
 
 if TYPE_CHECKING:
     from xdog.claw.core.runtime.session import AgentSession
@@ -35,7 +36,7 @@ def read_only_tool_call(session: AgentSession, ctx: BeforeToolCallContext) -> bo
         if (ctx.tool_call.name == 'memory' and ctx.args.get('action') in {'get', 'search', 'history'}
                 and any(active[0] is original for original in session._runtime._tools or ())):
             return True  # Actual host memory reader, never a same-named external tool.
-        if (ctx.tool_call.name == 'xhs_post' and not ctx.args
+        if (isinstance(active[0], InputTool) and active[0].read_only(ctx.args)
                 and any(active[0] is original for original in session._runtime._tools or ())):
             return True
         effect = session._runtime.capability_assembly.tool_effect(active[0], dict(ctx.args))

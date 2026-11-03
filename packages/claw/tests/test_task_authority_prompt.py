@@ -1,27 +1,52 @@
-"""Task guidance reuses authoritative files rather than mandating another checklist."""
-from types import SimpleNamespace
+"""The host contract is not a coding persona, tool catalog or mandatory task tracker."""
+from __future__ import annotations
+
+import importlib.util
 
 import pytest
-from xdog.claw.core.prompt import build_system_prompt
-from xdog.claw.core.prompt.templates import TOOL_USAGE_RULES
+from xdog.claw.core.prompt import build_system_prompt, init_workspace, templates
+from xdog.claw.core.tools import new_tool_repo
 
 
-@pytest.mark.parametrize("with_todo", [False, True])
-def test_built_prompt_reuses_authoritative_tasks_and_makes_todo_optional(tmp_path, with_todo):
-    tools = [SimpleNamespace(name="todo", description="Track local tasks")] if with_todo else []
-    blocks = build_system_prompt(tmp_path, tools=tools)
-    static = " ".join(blocks[0].text.split())
+def test_retired_prompt_sections_have_no_aliases_or_default_injection(tmp_path):
+    assert importlib.util.find_spec('xdog.claw.core.prompt.sections') is None
+    for name in ('TASK_EXECUTION', 'OUTPUT', 'TONE', 'ACTION_SAFETY', 'IDENTITY',
+                 'TOOL_SECTION_HEADER', 'TOOL_ENTRY', 'TOOL_USAGE_RULES'):
+        assert not hasattr(templates, name)
+    blocks = build_system_prompt(tmp_path)
+    static = blocks[0].text
+    assert blocks[0].cache and not blocks[1].cache
+    assert '# Host contract' in static
+    for retired in ('# Doing tasks', '# Communicating with the user', '# Tone and style',
+                    'Use Github-flavored markdown', 'Only use emojis', 'Before your first tool call',
+                    'Three similar lines of code', 'filesystem', 'bash', 'todo', 'memory(action=', 'skill tool'):
+        assert retired not in static
+    assert 'do not claim completion or delivery without checking' in static
+    assert 'Do not\nask again for an already authorized action' in static
+    assert 'do not bypass a\npermission denial' in static
 
-    assert blocks[0].cache
-    assert "existing authoritative task list" in static
-    assert "update it rather than copying it into a parallel checklist" in static
-    assert "use `todo` only when it helps track progress, not as a requirement for every task" in static
-    assert "Use `todo` to show progress on multi-step tasks" not in static
-    assert "Mark each task as completed as you finish it" not in static
-    assert ("`todo` — Track local tasks" in static) is with_todo
+
+def test_working_rules_and_persona_are_group_editable_not_fixed_defaults(tmp_path):
+    init_workspace(tmp_path)
+    before = build_system_prompt(tmp_path)
+    rules = '# Instructions\nRead relevant code before modifying it.\nUse emoji freely.'
+    (tmp_path / 'AGENTS.md').write_text(rules)
+    after = build_system_prompt(tmp_path)
+    assert before[0] == after[0]
+    assert rules in after[1].text and rules not in after[0].text
+    assert 'Read relevant code before modifying it' not in before[1].text
+    assert 'IDENTITY.md' in after[0].text and 'SOUL.md' in after[0].text
 
 
-def test_task_tracking_change_preserves_other_tool_guidance():
-    assert "`filesystem` (action: read)" in TOOL_USAGE_RULES
-    assert "`filesystem` (action: edit)" in TOOL_USAGE_RULES
-    assert "If there are no dependencies between calls, make them in parallel" in TOOL_USAGE_RULES
+@pytest.mark.parametrize('name', ['todo', 'memory', 'skill', 'message'])
+def test_tool_procedures_live_with_actual_schemas_not_system_prompt(tmp_path, name):
+    tool = new_tool_repo((name,)).get(name)
+    assert tool.description and tool.parameters['properties']
+    assert tool.description not in '\n'.join(block.text for block in build_system_prompt(tmp_path))
+    if name == 'todo':
+        assert 'authoritative task files' in tool.description and 'Not required' in tool.description
+    elif name == 'message':
+        assert 'unknown delivery' in tool.description and 'send.reference' in tool.description
+        assert 'same person' in tool.description
+    elif name == 'skill':
+        assert 'not after every successful task' in tool.description

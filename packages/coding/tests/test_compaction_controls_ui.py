@@ -13,9 +13,9 @@ from xdog.ai.types import (
     ToolResultMessage,
     UserMessage,
 )
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.channels.tui.tui_app import ChatApp
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 
 
 def history():
@@ -60,7 +60,7 @@ async def test_claw_coalesced_cancel_before_job_start_receipt_reservation_and_no
         calls.append(args)
         raise AssertionError('Canceled controls must not call a model')
     server = GatewayServer(config)
-    with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=('test/model', stream)):
+    with patch('xdog.claw.application.gateway._build_model_and_options', return_value=('test/model', stream)):
         await server.start()
     reader, writer = await asyncio.open_unix_connection(config.socket_path)
     async def receive(kind, identifier=''):

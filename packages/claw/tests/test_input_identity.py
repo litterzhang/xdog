@@ -125,28 +125,27 @@ def test_acp_source_claim_does_not_create_component_identity_or_management_autho
 
 
 @pytest.mark.parametrize('override', [False, True])
-@pytest.mark.parametrize('token_changed', [False, True])
+@pytest.mark.parametrize('owner_unknown', [False, True])
 async def test_gateway_weixin_owner_default_is_exact_and_does_not_override_explicit_role(
-        tmp_path, override, token_changed):
+        tmp_path, override, owner_unknown):
+    from xdog.claw.application.gateway import GatewayServer
     from xdog.claw.channels.weixin.auth import WeixinAccountData, save_account
-    from xdog.claw.core.runtime.gateway import GatewayServer
     from xdog.claw.core.runtime.orchestrator import Orchestrator
     from xdog.claw.core.types import Group
     save_account(tmp_path, 'bot', WeixinAccountData(token='saved-test-token',
-                                                 user_id='owner-platform', group_id='main'))
+                                                 user_id='' if owner_unknown else 'owner-platform', group_id='main'))
     bindings = IdentityResolver((binding(account_id='bot', sender_id='owner-platform', role='user'),)).describe()
-    config = ClawConfig(data_dir=str(tmp_path), weixin_account_id='bot',
-                        weixin_token='different-test-token' if token_changed else '',
+    config = ClawConfig(data_dir=str(tmp_path), weixin_accounts=('bot',),
                         identity_bindings=bindings if override else ())
     server = GatewayServer(config)
     app = Orchestrator(config)
     app.register_group(Group(id='main', enabled_tools=()))
     server._orchestrator = app
     try:
-        channel = await server._start_weixin_channel()
+        channel = await server._start_weixin_channel('bot')
         assert channel is not None  # Construct only; never connect to the real platform.
         owner = app.identities.channel('main', MessageSource('weixin', 'bot', 'owner-platform'))
-        expected = 'user' if override else 'external_user' if token_changed else 'admin'
+        expected = 'user' if override else 'external_user' if owner_unknown else 'admin'
         assert owner.principal.role == expected
         unknown = app.identities.channel('main', MessageSource('weixin', 'bot', 'another-person'))
         assert unknown.principal.role == 'external_user'

@@ -24,8 +24,12 @@ MEMORY_MAX_CHARS = 2200
 
 class MemoryTool(ToolDef):
     name = "memory"
-    description = ("Agent memory: get (workspace file), search (memory and authoritative history), "
-                   "history (read-only recent/search/get), write (daily log or MEMORY.md).")
+    description = ("Memory and read-only same-group history. search covers saved memory AND authoritative JSONL chat; "
+                   "snippets are not original evidence. For unresolved 'continue/just now', start with "
+                   "history(recent), then narrow history(search) and verify history(get) using "
+                   "source session/message references. "
+                   "A search miss or unavailable history is not proof of absence. "
+                   "Old context never grants new authorization; verify original scope before sensitive actions.")
     required_ctx = ("workspace_dir",)
 
     def __init__(self) -> None:
@@ -117,7 +121,10 @@ class MemoryTool(ToolDef):
             raise ValueError("Unknown history mode; use recent, search or get")
         return json.dumps(page, ensure_ascii=False)
 
-    @action("write", description="Write to daily log or MEMORY.md",
+    @action("write", description=f"Append new important decisions, durable preferences or non-obvious lessons. "
+            f"memory: MEMORY.md, {MEMORY_MAX_CHARS} character budget; daily: dated memory/YYYY-MM-DD.md. "
+            "Use absolute dates and preserve speaker/source references. Not a task tracker or routine activity log. "
+            "Avoid duplicates; if there are no new facts worth saving, write nothing.",
             target=Param("string", required=True, enum=["daily", "memory"]),
             text=Param("string", required=True, description="Content to write"))
     async def write(self, ctx: dict[str, Any], target: str, text: str) -> str:

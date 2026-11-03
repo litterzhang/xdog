@@ -16,6 +16,7 @@ from xdog.claw.core.outputs.delivery import DeliveryNotSent
 from xdog.claw.core.types import UserInput
 
 from .api import XhsApi
+from .login_access import LoginBusy, login_access
 from .state import ScanState
 
 
@@ -80,7 +81,10 @@ class XhsChannel(Channel):
         if saved != account:
             raise DeliveryNotSent('XHS account binding changed; reconnect explicitly')
         try:
-            current, _ = await self.api.identity()
+            async with login_access(self.data_dir):
+                current, _ = await self.api.identity()
+        except LoginBusy:
+            raise
         except Exception as exc:
             raise DeliveryNotSent('XHS login identity could not be verified') from exc
         if current != account.account_id:
@@ -180,6 +184,8 @@ class XhsChannel(Channel):
                 await self.poll_once()
             except asyncio.CancelledError:
                 raise
+            except LoginBusy:
+                self.status = 'login_pending'
             except Exception:
                 self.status = 'unavailable'  # Do not log account tokens or arbitrary backend response bodies.
             await asyncio.sleep(self.poll_seconds)
@@ -255,24 +261,14 @@ class XhsChannel(Channel):
                 raise DeliveryNotSent('XHS reply exceeds 1000 characters; no split comments were submitted')
             if not self.replies_enabled:
                 raise DeliveryNotSent('XHS automatic replies are disabled; no comment was submitted')
-            account = await self._verified()
-            try:
-                raw_items = await self.api.notifications()
-            except Exception as exc:
-                raise DeliveryNotSent('XHS original comment could not be fetched before submission') from exc
-            candidates = []
-            for raw in raw_items:
-                try:
-                    candidate = self._comment(raw, account)
-                except ValueError:
-                    continue
-                if (candidate is not None
-                        and candidate.metadata.get('comment_id') == original.metadata.get('comment_id')):
-                    candidates.append(candidate)
-            if len(candidates) != 1 or self.reply_context(candidates[0]) != self.reply_context(original):
-                raise DeliveryNotSent('XHS comment author/feed/account could not be revalidated')
+            comment_id = original.metadata.get('comment_id')
+            if not isinstance(comment_id, str) or not comment_id:
+                raise DeliveryNotSent('XHS reply requires its original comment target')
+            await self._verified()
+            # Reply to the admitted, frozen target. A moving notification window
+            # is not an authoritative lookup or a prerequisite for sending.
             await self.api.request('POST', 'notifications/reply',
-                json={'comment_id': original.metadata['comment_id'], 'content': text})
+                json={'comment_id': comment_id, 'content': text})
         # The pinned backend supplies no independently verifiable post/reply ID.
         # HTTP success is submission evidence, not delivery. OutputDelivery journals
         # this as unknown, never automatically retries an ambiguous platform effect.

@@ -104,6 +104,7 @@ class GroupRuntime:
         transcript_store: TranscriptStore | None = None,
         memory: MemoryManager | None = None,
         skill_repo: SkillRepo | None = None,
+        tool_factory: Callable[[Group, Path], ToolRepo] | None = None,
         flush_runner: FlushRunner | None = None,
         summarizer: Summarizer | None = None,
         message_delivery: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
@@ -142,6 +143,7 @@ class GroupRuntime:
         self.input_address: Callable[[], dict[str, Any] | None] = lambda: None
         self.channel_profiles: Callable[[], tuple[dict[str, str], ...]] = lambda: ()
         self._enabled_tools = group.enabled_tools
+        self._tool_factory = tool_factory
         self.tool_repo = ToolRepo(builtin=False)
         self._tools: list[AgentTool] | None = None
         self.mcp = McpRegistry(mcp_servers or {}, self.workspace_dir,
@@ -182,6 +184,7 @@ class GroupRuntime:
         extensions: tuple[str, ...] = (), extension_dir: str = "",
         extension_settings: dict[str, dict[str, Any]] | None = None,
         child_presets: dict[str, Any] | None = None,
+        tool_factory: Callable[[Group, Path], ToolRepo] | None = None,
     ) -> GroupRuntime:
         """Build a fully-initialized GroupRuntime from a Group config."""
         # Validate pure descriptors before any optional worker/resource allocation.
@@ -230,6 +233,7 @@ class GroupRuntime:
             workspace_dir=ws,
             transcript_store=transcript_store,
             skill_repo=skill_repo,
+            tool_factory=tool_factory,
             flush_runner=flush_runner,
             summarizer=summarizer,
             message_delivery=message_delivery,
@@ -283,6 +287,8 @@ class GroupRuntime:
                 previous.unregister(name)
 
     def _builtin_tools(self) -> list[AgentTool]:
+        if self._tool_factory is not None:
+            return list(self._tool_factory(self.group, self.workspace_dir).tools)
         enabled = self._enabled_tools
         if enabled is not None:
             declared = self.capability_assembly.declared_tools | {tool.name for tool in self.capability_assembly.tools}
@@ -359,11 +365,8 @@ class GroupRuntime:
     def build_system_prompt(
         self, bootstrap_content: str | None = None
     ) -> tuple[SystemPromptBlock, ...]:
-        tools = (list(self._active_session.agent.active_tools) if self._active_session is not None
-                 else [*self.tools, *self.mcp.tools()])
         return build_system_prompt(
             self.workspace_dir,
-            tools=tools,
             model=self.model,
             bootstrap_content=bootstrap_content,
             memory_content=self.get_memory_snapshot(),

@@ -7,8 +7,8 @@ from pathlib import Path
 
 from xdog.ai.types import AssistantMessage
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application import gateway
 from xdog.claw.config import ClawConfig
-from xdog.claw.core.runtime import gateway
 
 root = Path(sys.argv[1])
 with_memory = sys.argv[2] == "memory"

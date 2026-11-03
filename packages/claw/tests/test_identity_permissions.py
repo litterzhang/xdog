@@ -5,10 +5,10 @@ import pytest
 from xdog.agent import AgentTool, AgentToolResult
 from xdog.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import _groups_from_config
 from xdog.claw.config import ClawConfig, GroupDef, ToolConfigError, load_config, save_config
 from xdog.claw.core.identity import ExecutionPolicy, IdentityResolver, MessageSource
 from xdog.claw.core.identity.permissions import IdentityPermissions
-from xdog.claw.core.runtime.gateway import _groups_from_config
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.types import Group, UserInput
 

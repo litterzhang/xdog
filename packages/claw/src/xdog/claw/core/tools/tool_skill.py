@@ -10,7 +10,9 @@ from xdog.agent.tool_def import Param, ToolDef, action
 
 class SkillTool(ToolDef):
     name = "skill"
-    description = "Manage reusable skills (procedural memory) — create, update, remove, list, load."
+    description = ("Manage reusable skills — create, patch, remove, list, load. "
+                   "Save genuinely reusable procedures when worthwhile, not after every successful task. "
+                   "Loading a skill returns its instructions and resource paths; it does not grant tool permissions.")
     required_ctx = ("_skill_repo",)
 
     @action("create", description="Create a new skill from a successful workflow",

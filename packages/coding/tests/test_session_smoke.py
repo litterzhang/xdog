@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 from xdog.agent.agent import Agent
 from xdog.agent.core import AgentConfig
+from xdog.ai.types import system_prompt_text
 from xdog.coding.core.agent_session import AgentSession
 from xdog.coding.core.session_manager import SessionData, SessionManager
 from xdog.coding.core.settings_manager import SettingsManager
@@ -58,8 +59,8 @@ def test_rebuilding_the_system_prompt_does_not_raise(session: AgentSession) -> N
 
     assert session.agent.state.system_prompt
     assert session.agent.state.system_prompt != "placeholder"
-    assert "coding agent" in session.agent.state.system_prompt
-    assert "Available Tools" in session.agent.state.system_prompt
+    assert "coding agent" in system_prompt_text(session.agent.state.system_prompt)
+    assert "Tool inventory" not in system_prompt_text(session.agent.state.system_prompt)
 
 
 def test_rebuilding_survives_switching_model_and_thinking_level(
@@ -104,12 +105,12 @@ def test_cancel_clears_queued_agent_messages(session: AgentSession) -> None:
     assert not session.agent.has_queued_messages()
 
 
-def test_activating_a_skill_rebuilds_without_raising(session: AgentSession) -> None:
-    """Activation triggers a rebuild from a different entry point."""
-    session.activate_skill("does-not-exist")
-
-    assert session.active_skills == {"does-not-exist"}
-    assert session.agent.state.system_prompt
+def test_missing_skill_fails_without_publishing_a_selection(session: AgentSession) -> None:
+    original = session.agent.state.system_prompt
+    with pytest.raises(ValueError, match="skill|Skill"):
+        session.activate_skill("does-not-exist")
+    assert session.active_skills == frozenset()
+    assert session.agent.state.system_prompt == original
 
 
 def test_expiring_skills_on_an_empty_set_is_a_no_op(session: AgentSession) -> None:

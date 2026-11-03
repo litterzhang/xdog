@@ -6,8 +6,8 @@ from importlib.metadata import entry_points
 from pathlib import Path
 
 import pytest
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 from xdog.claw.core.runtime.session import AgentSession
 from xdog.claw.core.types import UserInput
 
@@ -28,7 +28,7 @@ async def test_gateway_cold_extension_restore_waits_for_application_inventory(
     monkeypatch.setattr('xdog.agent.capabilities.runtime.entry_points', lambda **_: entries)
     def no_fallback(*_args):
         raise AssertionError('Extension model must not call the base adapter')
-    monkeypatch.setattr('xdog.claw.core.runtime.gateway._build_model_and_options', lambda _: (ALIAS, no_fallback))
+    monkeypatch.setattr('xdog.claw.application.gateway._build_model_and_options', lambda _: (ALIAS, no_fallback))
     config = ClawConfig(model=ALIAS, data_dir=str(tmp_path / 'data'),
         socket_path=str(tmp_path / 'gateway.sock'), pid_file=str(tmp_path / 'gateway.pid'),
         extensions=('providermock',),

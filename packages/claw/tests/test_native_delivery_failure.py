@@ -5,9 +5,9 @@ import asyncio
 import json
 
 import pytest
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig
 from xdog.claw.core.inputs.store import InputStore
-from xdog.claw.core.runtime.gateway import GatewayServer
 from xdog.claw.core.runtime.input_adapter import freeze_input
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.runtime.outbound_messages import OutboundMessages

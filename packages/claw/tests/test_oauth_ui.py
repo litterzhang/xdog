@@ -15,9 +15,9 @@ import pytest
 from xdog.agent.mcp.oauth import OAuthError, OAuthOwner
 from xdog.ai.types import AssistantMessage
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.channels.tui.tui_app import ChatApp
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 from xdog.tui.keys import KeyEvent
 
 FIXTURE = Path(__file__).parents[2] / "agent/tests/fixtures/oauth_ui_peer.py"
@@ -79,7 +79,7 @@ async def oauth_server(tmp_path, monkeypatch):
         groups=(GroupDef(id="main", is_main=True),),
         mcp_servers={"peer": {"transport": "http", "url": module.RESOURCE, "oauth": module.PROFILE}})
     server = GatewayServer(config)
-    with patch("xdog.claw.core.runtime.gateway._build_model_and_options", return_value=("test/model", stream)):
+    with patch("xdog.claw.application.gateway._build_model_and_options", return_value=("test/model", stream)):
         await server.start()
     reader, writer = await asyncio.open_unix_connection(config.socket_path)
     sequence = 0

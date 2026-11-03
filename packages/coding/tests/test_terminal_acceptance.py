@@ -393,8 +393,8 @@ def test_actual_registered_argument_tab_enter_inserts_only_and_native_parent_res
 
     from xdog.ai.types import AssistantMessage
     from xdog.ai.utils.event_stream import EventStream
+    from xdog.claw.application.gateway import GatewayServer
     from xdog.claw.config import ClawConfig, GroupDef
-    from xdog.claw.core.runtime.gateway import GatewayServer
 
     root = tmp_path / 'extensions'
     shutil.copytree(Path(__file__).parents[2] / 'agent/tests/fixtures/extensions/argcomplete',
@@ -424,7 +424,7 @@ def test_actual_registered_argument_tab_enter_inserts_only_and_native_parent_res
             server = GatewayServer(config)
             owned['server'] = server
             try:
-                with patch('xdog.claw.core.runtime.gateway._build_model_and_options',
+                with patch('xdog.claw.application.gateway._build_model_and_options',
                            return_value=(config.model, stream)):
                     loop.run_until_complete(server.start())
                 ready.set()

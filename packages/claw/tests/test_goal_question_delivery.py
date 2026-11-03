@@ -66,7 +66,8 @@ class QuestionModel:
                 call = ToolCall(id='channels', name='message', arguments={'action': 'channels'})
             elif last.tool_call_id == 'channels':
                 channel, = data['channels']
-                assert set(channel) == {'id', 'name'} and channel['name'] == 'weixin'
+                assert set(channel) == {'id', 'name', 'account_id'}
+                assert channel['name'] == 'weixin' and channel['account_id'] == 'goal-question-delivery'
                 call = (ToolCall(id='after-send', name='goal', arguments={'action': 'summary'})
                         if self.outcome == 'untracked' else
                         ToolCall(id='send-question', name='message', arguments={

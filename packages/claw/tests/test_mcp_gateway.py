@@ -10,8 +10,8 @@ import pytest
 from xdog.agent import AgentContext, BeforeToolCallContext
 from xdog.ai.types import AssistantMessage, ToolCall
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 
 FIXTURE = Path(__file__).parents[2] / "agent" / "tests" / "fixtures" / "mcp_server.py"
 
@@ -33,7 +33,7 @@ async def test_gateway_owned_explicit_mcp_controls_tool_registration_policy_and_
                                      "args": [str(FIXTURE), "modern", str(tmp_path / "requests")],
                                      "allow_tools": allowed}})
     server = GatewayServer(config)
-    with patch("xdog.claw.core.runtime.gateway._build_model_and_options",
+    with patch("xdog.claw.application.gateway._build_model_and_options",
                return_value=("test/model", lambda *args: EventStream.empty(AssistantMessage()))):
         await server.start()
         reader, writer = await asyncio.open_unix_connection(config.socket_path)

@@ -47,7 +47,7 @@ def test_cli_prints_png_and_fallback_path_without_creating_another_challenge(tmp
     path = tmp_path / 'config.yaml'
     path.write_text(yaml.safe_dump({'data_dir': str(tmp_path / 'data')}))
     shown = []
-    async def fake_login(api, data_dir, group_id, show_qr):
+    async def fake_login(api, data_dir, group_id, show_qr, *, confirm_scan):
         qr = tmp_path / 'challenge.png'
         Image.new('L', (29, 29), 0).save(qr)
         shown.append(qr)
@@ -82,3 +82,49 @@ def test_display_failure_retains_challenge_path_and_returns_to_login(tmp_path, m
     assert 'Terminal QR unavailable' in out.err and str(path) in out.out
     assert path.read_bytes() == before
     assert 'PNG' in out.err and 'Traceback' not in out.err
+
+
+def terminal_pixels(text):
+    return {(x, 2 * y + offset)
+            for y, row in enumerate(text.splitlines())
+            for x, cell in enumerate(strip_ansi(row))
+            for offset in (0, 1)
+            if cell in (('▀', '█') if offset == 0 else ('▄', '█'))}
+
+
+@pytest.mark.parametrize('version', [1, 5, 9, 13])
+@pytest.mark.parametrize('pixels', [128, 400])
+def test_qr_grid_is_compact_and_preserves_every_original_module(tmp_path, version, pixels):
+    import qrcode
+    from PIL import ImageOps
+
+    qr = qrcode.QRCode(version=version, box_size=1, border=0)
+    qr.add_data('test-login')
+    qr.make(fit=False)
+    original = qr.get_matrix()
+    image = qr.make_image().convert('RGBA').resize((pixels, pixels), Image.Resampling.NEAREST)
+    # Transparent border is presentation, not QR data.
+    image = ImageOps.expand(image, border=8, fill=(0, 0, 0, 0))
+    path = tmp_path / 'fixture.png'
+    image.save(path)
+    rendered = render_png(path, 200)
+    size = len(original)
+    assert len(strip_ansi(rendered.splitlines()[0])) == size + 8
+    assert len(rendered.splitlines()) == (size + 9) // 2
+    assert terminal_pixels(rendered) == {
+        (x + 4, y + 4) for y, row in enumerate(original) for x, black in enumerate(row) if black
+    }
+    # A wider terminal must not inflate the same QR.
+    assert render_png(path, 500) == rendered
+
+
+def test_dense_qr_is_not_squeezed_into_an_unscannable_terminal(tmp_path):
+    import qrcode
+
+    qr = qrcode.QRCode(version=9, box_size=3, border=4)
+    qr.add_data('test-login')
+    qr.make(fit=False)
+    path = tmp_path / 'dense.png'
+    qr.make_image().save(path)
+    with pytest.raises(ValueError, match='too narrow for this QR'):
+        render_png(path, 48)

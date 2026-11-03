@@ -9,19 +9,28 @@ import asyncio
 import json
 import sys
 import tempfile
+from importlib import resources
+from importlib.util import find_spec
 from pathlib import Path
 from unittest.mock import patch
 
 from xdog.ai.types import AssistantMessage, DoneEvent, StartEvent, TextContent
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig, GroupDef
 from xdog.claw.core.inputs.models import InputScope
 from xdog.claw.core.runtime import group_controller
-from xdog.claw.core.runtime.gateway import GatewayServer
 
 
 async def main() -> None:
     assert Path(group_controller.__file__).is_relative_to(Path(sys.prefix))
+    for filename in ("IDENTITY.md", "SOUL.md", "USER.md", "AGENTS.md"):
+        assert (resources.files("xdog.claw") / "resources" / filename).is_file()
+    for module in ("core.skills", "core.planning", "core.runtime.gateway", "core.runtime.bootstrap",
+                   "core.runtime.mcp_protocol", "core.runtime.native_connection", "core.runtime.native_requests",
+                   "core.runtime.native_controls", "core.runtime.xhs_posts", "core.tools.tool_xhs_post",
+                   "core.prompt.sections"):
+        assert find_spec("xdog.claw." + module) is None, module
     root = Path(tempfile.mkdtemp(prefix="installed-native-"))
     entered, release = asyncio.Event(), asyncio.Event()
     calls: list[str] = []
@@ -51,7 +60,7 @@ async def main() -> None:
         groups=(GroupDef(id="main", workspace=str(root / "work")),),
     )
     server = GatewayServer(config)
-    with patch("xdog.claw.core.runtime.gateway._build_model_and_options", return_value=("test/dummy", model)):
+    with patch("xdog.claw.application.gateway._build_model_and_options", return_value=("test/dummy", model)):
         await server.start()
     writers = []
 

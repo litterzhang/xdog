@@ -10,8 +10,8 @@ import pytest
 from acp import PROTOCOL_VERSION, connect_to_agent
 from xdog.ai.types import AssistantMessage, TextContent
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig, GroupDef, load_config, save_config
-from xdog.claw.core.runtime.gateway import GatewayServer
 
 
 def make_config(tmp_path, acp_path=""):
@@ -36,7 +36,7 @@ def test_acp_address_override_round_trips_without_an_enable_switch(tmp_path):
 
 @pytest.mark.parametrize("updates", [0, 1])
 async def test_gateway_acp_completion_notice_requires_explicit_subscription(tmp_path, monkeypatch, updates):
-    monkeypatch.setattr("xdog.claw.core.runtime.gateway._build_model_and_options", lambda config: (
+    monkeypatch.setattr("xdog.claw.application.gateway._build_model_and_options", lambda config: (
         "test/dummy", lambda *args: EventStream.empty(AssistantMessage(content=(TextContent(text="reviewed"),)))))
 
     class Client:
@@ -87,7 +87,7 @@ async def test_gateway_acp_completion_notice_requires_explicit_subscription(tmp_
 
 
 async def test_invalid_acp_start_cleans_gateway_and_does_not_replace_file(tmp_path, monkeypatch):
-    monkeypatch.setattr("xdog.claw.core.runtime.gateway._build_model_and_options", lambda config: (
+    monkeypatch.setattr("xdog.claw.application.gateway._build_model_and_options", lambda config: (
         "test/dummy", lambda *args: EventStream.empty(AssistantMessage())))
     with tempfile.TemporaryDirectory(prefix="claw-gw-bad-") as private:
         endpoint = Path(private) / "acp.sock"
@@ -119,7 +119,7 @@ class NoAcp(importlib.abc.MetaPathFinder):
             raise AssertionError('Disabled Claw imported ACP SDK')
 sys.meta_path.insert(0, NoAcp())
 from xdog.claw.config import ClawConfig
-from xdog.claw.core.runtime.gateway import GatewayServer
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.cli import main
 assert not ClawConfig().acp_socket_path
 assert GatewayServer(ClawConfig())._acp_server is None

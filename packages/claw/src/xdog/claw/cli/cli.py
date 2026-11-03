@@ -33,29 +33,38 @@ def _resolve_config(config_path: str | None) -> ClawConfig:
 
 
 def _update_config_weixin(config_file: Path, account_id: str) -> None:
-    """Auto-update config.yaml with WeChat login credentials."""
-    try:
-        import yaml
-    except ImportError:
-        click.echo("Warning: pyyaml not installed, cannot auto-update config", err=True)
-        return
+    """Append one confirmed account, preserving unrelated config and parallel logins."""
+    import fcntl
+    import tempfile
+
+    import yaml
 
     config_file.parent.mkdir(parents=True, exist_ok=True)
-
-    existing: dict[str, Any] = {}
-    if config_file.exists():
+    lock = config_file.with_name(config_file.name + '.lock')
+    fd = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'a') as guard:
+        fcntl.flock(guard, fcntl.LOCK_EX)
+        raw = yaml.safe_load(config_file.read_text()) if config_file.exists() else {}
+        if raw is None:
+            raw = {}
+        if not isinstance(raw, dict):
+            raise click.ClickException('Invalid config; account was not enabled')
+        # Enforce the one current schema, never maintain a single-account fallback.
+        from xdog.claw.config import _filter_known_fields
+        _filter_known_fields(raw)
+        accounts = list(ClawConfig(weixin_accounts=raw.get('weixin_accounts', ())).weixin_accounts)
+        if account_id not in accounts:
+            accounts.append(account_id)
+        updated = {**raw, 'weixin_accounts': accounts}
+        output, temporary = tempfile.mkstemp(dir=config_file.parent, prefix='.config-', text=True)
         try:
-            raw = yaml.safe_load(config_file.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                existing = raw
-        except Exception:
-            pass
-
-    updated = {**existing, "weixin_enabled": True, "weixin_account_id": account_id}
-    config_file.write_text(
-        yaml.dump(updated, default_flow_style=False, sort_keys=False),
-        encoding="utf-8",
-    )
+            with os.fdopen(output, 'w') as stream:
+                yaml.safe_dump(updated, stream, sort_keys=False, allow_unicode=True)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, config_file)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
 
 
 def _get_version() -> str:
@@ -128,7 +137,7 @@ def generate_image(
 def _configure_tools(models: list[Any], existing: ClawConfig) -> tuple[tuple[str, ...], str]:
     """Choose an explicit tool set and, if needed, a confirmed image model."""
     from xdog.agent.capabilities import CapabilitySet
-    from xdog.claw.core.tools import AVAILABLE_TOOL_NAMES, DEFAULT_TOOL_NAMES
+    from xdog.claw.application.tools import AVAILABLE_TOOL_NAMES, DEFAULT_TOOL_NAMES
 
     # Metadata discovery only: onboarding never opens a capability or its storage.
     capability_names = CapabilitySet("group").declared_tools | CapabilitySet("application").declared_tools
@@ -368,7 +377,7 @@ def start(config_path: str | None, foreground: bool, acp_socket: Path | None = N
         raise click.ClickException("No primary model configured. Run `xdog-claw onboard` first.")
     pid_path = Path(config.pid_file)
 
-    from xdog.claw.core.runtime.gateway import read_pid
+    from xdog.claw.application.gateway import read_pid
     existing_pid = read_pid(pid_path)
     if existing_pid is not None:
         click.echo(f"Gateway already running (PID: {existing_pid})")
@@ -377,7 +386,7 @@ def start(config_path: str | None, foreground: bool, acp_socket: Path | None = N
 
     if foreground:
         click.echo("Starting gateway in foreground...")
-        from xdog.claw.core.runtime.gateway import run_gateway
+        from xdog.claw.application.gateway import run_gateway
         run_gateway(config)
     else:
         _daemonize(config)
@@ -391,7 +400,7 @@ def stop(config_path: str | None) -> None:
     config = _resolve_config(config_path)
     pid_path = Path(config.pid_file)
 
-    from xdog.claw.core.runtime.gateway import read_pid
+    from xdog.claw.application.gateway import read_pid
     pid = read_pid(pid_path)
     if pid is None:
         click.echo("Gateway is not running.")
@@ -431,13 +440,14 @@ def status(config_path: str | None) -> None:
     config = _resolve_config(config_path)
     pid_path = Path(config.pid_file)
 
-    from xdog.claw.core.runtime.gateway import read_pid
+    from xdog.claw.application.gateway import read_pid
     pid = read_pid(pid_path)
     if pid is not None:
         click.echo(f"Gateway running (PID: {pid})")
         click.echo(f"  Socket: {Path(config.socket_path)}")
         click.echo(f"  PID file: {pid_path}")
-        for line in _channel_lines(config):
+        live = _live_channels(Path(config.socket_path))
+        for line in _channel_lines(config, live):
             click.echo(line)
         stale = _config_newer_than_process(config_path, pid_path)
         if stale:
@@ -449,20 +459,39 @@ def status(config_path: str | None) -> None:
             pid_path.unlink()
 
 
-def _channel_lines(config: ClawConfig) -> list[str]:
-    """What is actually carrying messages, not just that a process exists.
+def _live_channels(socket_path: Path) -> list[dict[str, Any]] | None:
+    """One read-only Native status request; no model, connection or retry authority."""
+    import json
+    import socket
 
-    A channel enabled in the file and absent from the process looks identical
-    from outside: the gateway says "running", the user sends a message, and
-    nothing happens. Naming the channels is the difference between that and a
-    diagnosis.
-    """
-    lines = ["  Channels:"]
-    if config.weixin_enabled:
-        account = config.weixin_account_id or "(no account)"
-        lines.append(f"    weixin: enabled (account={account})")
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
+            peer.settimeout(2)
+            peer.connect(str(socket_path))
+            peer.sendall(b'{"type":"status"}\n')
+            with peer.makefile('rb') as stream:
+                value = json.loads(stream.readline(256 * 1024))
+        rows = value.get('channels') if isinstance(value, dict) else None
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            return None
+        return rows
+    except (OSError, ValueError):
+        return None
+
+
+def _channel_lines(config: ClawConfig, live: list[dict[str, Any]] | None = None) -> list[str]:
+    lines = ['  Channels:']
+    for account_id in config.weixin_accounts:
+        row = next((item for item in live or ()
+                    if item.get('channel') == 'weixin' and item.get('account_id') == account_id), None)
+        if row is not None:
+            lines.append(f"    weixin: {row.get('status', 'unknown')} (account={account_id}"
+                         + (f" group={row['group_id']}" if row.get('group_id') else '') + ')')
+        else:
+            state = 'not loaded' if live is not None else 'configured; live status unavailable'
+            lines.append(f'    weixin: {state} (account={account_id})')
     if len(lines) == 1:
-        lines.append("    (none enabled)")
+        lines.append('    (no Weixin accounts enabled)')
     return lines
 
 
@@ -505,7 +534,7 @@ def _daemonize(config: ClawConfig) -> None:
         if pid > 0:
             click.echo("Starting gateway in background...")
             pid_path = Path(config.pid_file)
-            from xdog.claw.core.runtime.gateway import read_pid
+            from xdog.claw.application.gateway import read_pid
 
             actual_pid = None
             for _ in range(30):
@@ -546,7 +575,7 @@ def _daemonize(config: ClawConfig) -> None:
     if log_fd > 2:
         os.close(log_fd)
 
-    from xdog.claw.core.runtime.gateway import run_gateway
+    from xdog.claw.application.gateway import run_gateway
     run_gateway(config)
 
 
@@ -610,13 +639,14 @@ def login(config_path: str | None, group_id: str, use_weixin: bool, base_url: st
         QrWaitResult,
         WeixinAccountData,
         normalize_account_id,
-        register_account_id,
         save_account,
         start_qr_login,
         wait_qr_login,
     )
 
-    api_base = base_url or config.weixin_base_url or DEFAULT_BASE_URL
+    if group_id not in ({group.id for group in config.groups} or {'main'}):
+        raise click.ClickException('Configure the target group before binding its Weixin account')
+    api_base = base_url or DEFAULT_BASE_URL
     state_dir = Path(config.data_dir)
 
     async def _run_login() -> None:
@@ -651,7 +681,6 @@ def login(config_path: str | None, group_id: str, use_weixin: bool, base_url: st
                 group_id=group_id or "main",
             )
             save_account(state_dir, normalized_id, account_data)
-            register_account_id(state_dir, normalized_id)
             _update_config_weixin(config_file, normalized_id)
             click.echo(f"\nWeChat connected: {normalized_id} → group {group_id or 'main'}")
             click.echo("Restart the gateway to apply: xdog-claw gateway stop && ... start")

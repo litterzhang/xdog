@@ -17,6 +17,7 @@ from xdog.agent.extensions.command_result import ExtensionCommandResult
 from xdog.agent.mcp.completion import McpCompletion
 from xdog.agent.mcp.context import McpDocument, McpEntry
 from xdog.agent.session_input import SessionInput
+from xdog.agent.tools import ToolRepo
 from xdog.ai.types import ImageContent, Model
 from xdog.claw.channels.base import Channel
 from xdog.claw.config import ClawConfig
@@ -70,8 +71,10 @@ class Orchestrator:
         stream_fn: Any = None,
         data_dir: Path | None = None,
         defer_inputs: bool = False,
+        tool_factory: Callable[[Group, Path], ToolRepo] | None = None,
     ) -> None:
         self._config = config
+        self._tool_factory = tool_factory
         from xdog.claw.core.identity import IdentityResolver
         self.identities = IdentityResolver.from_config(config.identity_bindings)
         # Application startup barrier, independent of installed capabilities.
@@ -126,7 +129,7 @@ class Orchestrator:
             mcp_credential_backend=self._config.mcp_credential_backend,
             extensions=self._config.extensions, extension_dir=self._config.extension_dir,
             extension_settings=self._config.extension_settings,
-            child_presets=self._config.child_presets,
+            child_presets=self._config.child_presets, tool_factory=self._tool_factory,
         )
         runtime.input_address = lambda: self.input_address(group.id, runtime.workspace_dir)
         runtime.channel_profiles = lambda: tuple(profile for channel in self._channels
@@ -204,8 +207,30 @@ class Orchestrator:
                 reply_mode=channel.reply_mode,
                 on_assistant_message=self._channel_replies.reply(channel, message))
 
+        async def accepted_input(group_id: str, message_id: str) -> UserInput | None:
+            workspace = self.get_group_workspace(group_id)
+            if workspace is None:
+                raise ValueError('Original channel workspace is unavailable')
+            service = await self.input_service()
+            record = await service.store.get(InputScope(group_id, workspace), message_id)
+            if self.get_group_workspace(group_id) != workspace:
+                raise ValueError('Original channel workspace changed while reading input')
+            if record is None:
+                return None
+            original = restore_input(record.envelope)
+            if (not isinstance(original, UserInput) or isinstance(original, ExternalInput)
+                    or original.channel != channel.name):
+                raise ValueError('Original input belongs to another channel binding')
+            return original
+
+        channel.set_accepted_input_reader(accepted_input)
         channel.set_on_accept(accept)
         channel.set_on_message(dispatch)
+
+    def remove_channel(self, channel: Channel) -> None:
+        if channel in self._channels:
+            self._channels.remove(channel)
+        self._channel_replies.discard(channel)
 
     @staticmethod
     def _channel_message_id(message: GroupInput) -> str | None:
@@ -590,21 +615,18 @@ class Orchestrator:
                         and any(tool is message_tool for tool in actual_agent.active_tools))
             message_port = (OutboundMessages(message_record, self._channel_replies, self._outputs, message_valid)
                             if message_record is not None and self._outputs is not None else None)
-            from xdog.claw.core.runtime.identity_scope import allows_tool
-            from xdog.claw.core.runtime.xhs_posts import bind_reader
-            post_tool = next((tool for tool in actual_agent.active_tools if tool.name == 'xhs_post'), None)
-            def post_valid() -> bool:
-                return (not self._inputs_stopping and not runtime._closing
-                        and runtime._active_session is session and session.agent is actual_agent
-                        and message_record is not None and self._identity_current(message_record)
-                        and session._input_execution is not None
-                        and session._input_execution.input_id == message_record.envelope.message.id
-                        and post_tool is not None and any(tool is post_tool for tool in actual_agent.active_tools)
-                        and allows_tool(session, 'xhs_post'))
-            reader = bind_reader(self._channel_replies, message, post_valid) if post_tool is not None else None
+            from xdog.claw.core.runtime.input_tools import bind_input_tools
+            channel = self._channel_replies.original_channel(message) if isinstance(message, UserInput) else None
+            def input_current() -> bool:
+                return (not self._inputs_stopping and message_record is not None
+                        and self._identity_current(message_record)
+                        and (channel is None or isinstance(message, UserInput)
+                             and self._channel_replies.original_channel(message) is channel))
+            bindings = bind_input_tools(session, message, channel,
+                message_record.envelope.message.id if message_record is not None else None, input_current)
             session.agent.set_tool_context({**session.agent.tool_context,
                                            '_reply_reference': reply_reference, '_message_port': message_port,
-                                           '_xhs_post_reader': reader})
+                                           '_input_tools': bindings})
             previous_authority_guard = session._user_operation_current
             session._user_operation_current = lambda: self._identity_current(message_record)
             previous_menu = session.extensions.command_menu_handler
@@ -650,7 +672,7 @@ class Orchestrator:
             finally:
                 session.agent.set_tool_context({**session.agent.tool_context,
                                                '_reply_reference': None, '_message_port': None,
-                                               '_xhs_post_reader': None})
+                                               '_input_tools': {}})
                 session.extensions.pending_messages = previous_pending
                 session._user_operation_current = previous_authority_guard
                 if session.extensions.command_menu_handler is menu_handler:

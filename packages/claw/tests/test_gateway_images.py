@@ -10,8 +10,8 @@ from unittest.mock import patch
 import pytest
 from xdog.ai.types import AssistantMessage, DoneEvent, ImageContent, Model, StartEvent, TextContent
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 
 from packages.claw.tests.core_inputs import model_input_bodies, transcript_bodies
 
@@ -36,7 +36,7 @@ async def gateway(tmp_path):
                         groups=(GroupDef(id="main", is_main=True),))
     info = Model(id="test/vision", input=("text", "image"))
     server = GatewayServer(config)
-    with patch("xdog.claw.core.runtime.gateway._build_model_and_options", return_value=("test/vision", stream_fn)), \
+    with patch("xdog.claw.application.gateway._build_model_and_options", return_value=("test/vision", stream_fn)), \
          patch("xdog.claw.core.runtime.group.GroupRuntime.image_model_info", return_value=info):
         await server.start()
         try:

@@ -7,8 +7,8 @@ import pytest
 from xdog.agent import Agent, AgentConfig
 from xdog.ai.types import AssistantMessage, ImageContent, Model, TextContent
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 from xdog.coding.core.agent_session import AgentSession
 from xdog.coding.core.permissions import PermissionManager
 from xdog.coding.core.session_manager import SessionManager
@@ -53,7 +53,7 @@ async def test_actual_host_child_checkpoint_is_durable_before_provider_and_cance
             socket_path=str(tmp_path / 'gateway.sock'), pid_file=str(tmp_path / 'gateway.pid'),
             groups=(GroupDef(id='main', is_main=True, workspace=str(tmp_path / 'workspace')),))
         server = GatewayServer(config)
-        with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=('offline/child', adapter)):
+        with patch('xdog.claw.application.gateway._build_model_and_options', return_value=('offline/child', adapter)):
             await server.start()
         session = server._orchestrator._runtimes['main'].get_or_create_session(allow_reset=False)
     cancellation = None

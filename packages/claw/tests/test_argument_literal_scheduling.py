@@ -11,9 +11,9 @@ from unittest.mock import patch
 
 import pytest
 from xdog.agent.extensions.runtime import _Client
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.channels.tui.tui_app import ChatApp
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 from xdog.tui.stdin_buffer import KeyBytes
 
 
@@ -96,7 +96,7 @@ async def test_literal_undo_end_clear_requires_frontend_settlement(
         assert ui._tui._handle_frame(KeyBytes(data))
 
     try:
-        with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=(config.model, no_model)):
+        with patch('xdog.claw.application.gateway._build_model_and_options', return_value=(config.model, no_model)):
             await server.start()
         runtime = server._orchestrator._runtimes['main']
         session = runtime.get_or_create_session(allow_reset=False)

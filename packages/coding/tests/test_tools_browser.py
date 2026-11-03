@@ -8,9 +8,9 @@ import pytest
 from xdog.agent import Agent, AgentConfig, AgentTool, AgentToolResult
 from xdog.ai.types import AssistantMessage, Model
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.channels.tui.tui_app import ChatApp
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 from xdog.coding.core.agent_session import AgentSession
 from xdog.coding.core.permissions import PermissionManager
 from xdog.coding.core.session_manager import SessionManager
@@ -52,7 +52,7 @@ async def test_actual_tools_browser_full_schema_query_refresh_no_model_and_nativ
             socket_path=str(tmp_path / 'tools.sock'), pid_file=str(tmp_path / 'tools.pid'),
             groups=(GroupDef(id='main', is_main=True),))
         server = GatewayServer(config)
-        with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=('test/model', Adapter())):
+        with patch('xdog.claw.application.gateway._build_model_and_options', return_value=('test/model', Adapter())):
             await server.start()
         session = server._orchestrator._runtimes['main'].get_or_create_session(allow_reset=False)
         session.agent.set_tools((*session.agent.state.tools, *tools))
@@ -140,7 +140,7 @@ async def test_gateway_inventory_capability_owner_cancel_and_reader_responsivene
         socket_path=str(tmp_path / 'caps.sock'), pid_file=str(tmp_path / 'caps.pid'),
         groups=(GroupDef(id='main', is_main=True),))
     server = GatewayServer(config)
-    with patch('xdog.claw.core.runtime.gateway._build_model_and_options',
+    with patch('xdog.claw.application.gateway._build_model_and_options',
                return_value=('test/model', lambda *args: EventStream.empty(AssistantMessage()))):
         await server.start()
     session = server._orchestrator._runtimes['main'].get_or_create_session(allow_reset=False)
@@ -340,7 +340,7 @@ async def test_actual_claw_tools_disconnect_reconnect_requires_explicit_current_
         socket_path=str(tmp_path / 'reconnect.sock'), pid_file=str(tmp_path / 'reconnect.pid'),
         groups=(GroupDef(id='main', is_main=True),))
     server = GatewayServer(config)
-    with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=('test/model', stream)):
+    with patch('xdog.claw.application.gateway._build_model_and_options', return_value=('test/model', stream)):
         await server.start()
     ui = ChatApp(config.socket_path)
     connections = []

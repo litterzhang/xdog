@@ -5,7 +5,7 @@ import asyncio
 import threading
 
 import pytest
-from xdog.claw.core.runtime import mcp_protocol
+from xdog.claw.channels.tui import mcp_protocol
 
 from packages.claw.tests.test_mcp_sender import document, request
 

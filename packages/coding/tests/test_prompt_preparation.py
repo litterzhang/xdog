@@ -5,7 +5,7 @@ import asyncio
 import threading
 
 from xdog.agent.skills import SkillRepo, packaged_skills, render_skill_body
-from xdog.ai.types import AssistantMessage, Model
+from xdog.ai.types import AssistantMessage, Model, system_prompt_text
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core import resource_loader, slash_commands
 from xdog.coding.core.sdk import CreateSessionOptions, create_agent_session
@@ -39,7 +39,7 @@ async def test_real_sdk_model_receives_supported_instructions_and_single_skill_i
     try:
         await asyncio.to_thread(session.activate_skill, 'sample')
         await session.send_message('show project instructions')
-        prompt = contexts[-1].system_prompt
+        prompt = system_prompt_text(contexts[-1].system_prompt)
         goal = manager.load_skill('goal')
         assert goal is not None and render_skill_body(goal) not in prompt
         assert 'goal' not in session.agent.active_skills
@@ -50,8 +50,8 @@ async def test_real_sdk_model_receives_supported_instructions_and_single_skill_i
             assert prompt.count(marker) == 1, (marker, prompt)
         (tmp_path / 'AGENTS.md').write_text('UPDATED_PROJECT_MARKER')
         await session.send_message('second turn')
-        assert 'UPDATED_PROJECT_MARKER' in contexts[-1].system_prompt
-        assert 'PROJECT_AGENT_MARKER' not in contexts[-1].system_prompt
+        assert 'UPDATED_PROJECT_MARKER' in system_prompt_text(contexts[-1].system_prompt)
+        assert 'PROJECT_AGENT_MARKER' not in system_prompt_text(contexts[-1].system_prompt)
         assert session.permissions.mode == 'ask'
     finally:
         await session.aclose()

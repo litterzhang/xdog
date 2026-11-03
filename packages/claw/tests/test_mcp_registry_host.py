@@ -188,7 +188,7 @@ async def test_local_name_collision_is_rejected_and_old_mcp_alias_is_not_an_iden
 
 
 @pytest.mark.parametrize('native', [False, True])
-async def test_full_mcp_prompt_and_ui_inventory_survive_disabled_native_tools(host, native):
+async def test_mcp_schema_and_inspection_only_inventory_follow_native_tool_support(host, native):
     from xdog.ai.types import system_prompt_text
     from xdog.claw.core.types import UserInput
 
@@ -203,13 +203,19 @@ async def test_full_mcp_prompt_and_ui_inventory_survive_disabled_native_tools(ho
     assert bool(session._compaction_tools()) is native
     advertised = next(tool for tool in inventory['tools'] if tool['name'] == remote.name)
     assert advertised['description'] == remote.description and advertised['parameters'] == remote.parameters
-    assert remote.name in system_prompt_text(runtime.build_system_prompt())
+    assert remote.name not in system_prompt_text(runtime.build_system_prompt())
     result = await session.run_turn(UserInput(group_id='main', content='Use the available tools'))
     assert result.error is None
     for context in host.calls:
         text = system_prompt_text(context.system_prompt)
-        assert remote.name in text and remote.description in text
         assert bool(context.tools) is native
+        if native:
+            schema = next(tool for tool in context.tools if tool.name == remote.name)
+            assert schema.description == remote.description and schema.parameters == remote.parameters
+            assert remote.name not in text and remote.description not in text
+        else:
+            assert remote.name in text and remote.description in text
+            assert 'inspection only' in text and 'cannot call native tools' in text
     assert len(remote_effects(host)) == int(native)
     assert any(tool is remote for tool in agent.state.tools)
     assert not any(tool is remote for tool in agent.local_tools)

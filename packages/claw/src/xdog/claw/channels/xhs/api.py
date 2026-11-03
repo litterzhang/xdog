@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from typing import Any
@@ -11,6 +12,47 @@ import httpx
 
 logger = logging.getLogger(__name__)
 _STATUS_RETRY_DELAY = 2.0
+
+
+# Backend details can contain account names, page URLs or browser diagnostics.
+# Retain a known failure stage, never arbitrary backend prose in model/tool errors.
+_REPLY_FAILURES = (
+    ('缺少 comment_id', 'missing_comment'),
+    ('回复内容不能为空', 'empty_reply'),
+    ('读取通知列表失败', 'notification_state_read'),
+    ('页面状态里没有分区', 'notification_state_missing'),
+    ('解析通知列表失败', 'notification_state_invalid'),
+    ('该评论已删除或不可见', 'comment_unavailable'),
+    ('未找到评论', 'comment_not_found'),
+    ('翻找 ', 'comment_not_found'),
+    ('通知条目渲染数', 'notification_not_rendered'),
+    ('该通知没有回复入口', 'reply_entry_missing'),
+    ('无法点击回复', 'reply_open_failed'),
+    ('回复输入框未出现', 'reply_input_missing'),
+    ('读不到回复框提示文字', 'reply_target_unreadable'),
+    ('回复对象不符', 'reply_target_mismatch'),
+    ('无法输入回复内容', 'reply_input_failed'),
+    ('未找到发送按钮', 'submit_button_missing'),
+    ('无法点击发送', 'submit_click_failed'),
+    ('回复未确认成功', 'submit_unconfirmed'),
+)
+
+
+def _backend_error(response: httpx.Response, data: bytearray) -> httpx.HTTPStatusError:
+    code, stage = 'unclassified', 'unclassified'
+    try:
+        raw = json.loads(data)
+    except (ValueError, UnicodeDecodeError):
+        raw = None
+    if isinstance(raw, dict) and raw.get('code') == 'REPLY_NOTIFICATION_FAILED':
+        code = 'REPLY_NOTIFICATION_FAILED'
+        details = raw.get('details')
+        if isinstance(details, str):
+            stage = next((name for prefix, name in _REPLY_FAILURES if details.startswith(prefix)), 'unclassified')
+    return httpx.HTTPStatusError(
+        f'XHS backend HTTP {response.status_code}; code={code}; stage={stage}. '
+        'A failed response does not prove that no platform action occurred.',
+        request=response.request, response=response)
 
 
 class XhsApi:
@@ -30,13 +72,20 @@ class XhsApi:
 
     async def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         async with self._http.stream(method, '/api/v1/' + path, **kwargs) as response:
+            if response.is_error:
+                diagnostic = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if len(diagnostic) + len(chunk) > 64 * 1024:
+                        diagnostic.clear()  # Oversized/unrecognized diagnostics stay generic.
+                        break
+                    diagnostic.extend(chunk)
+                raise _backend_error(response, diagnostic)
             response.raise_for_status()
             data = bytearray()
             async for chunk in response.aiter_bytes():
                 data.extend(chunk)
                 if len(data) > 2 * 1024 * 1024:
                     raise ValueError('XHS response exceeds capacity')
-        import json
         raw = json.loads(data)
         if not isinstance(raw, dict) or raw.get('success') is not True or not isinstance(raw.get('data'), dict):
             raise ValueError('XHS backend did not confirm a valid response')

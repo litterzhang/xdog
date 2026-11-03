@@ -70,9 +70,9 @@ async def base(root):
     finally:
         await app.stop()
     # Default optional ACP uses an actual owned private receiver when the SDK exists.
+    from xdog.claw.application import gateway as gateway_module
+    from xdog.claw.application.gateway import GatewayServer
     from xdog.claw.config import GroupDef
-    from xdog.claw.core.runtime import gateway as gateway_module
-    from xdog.claw.core.runtime.gateway import GatewayServer
     previous = gateway_module._build_model_and_options
     gateway_module._build_model_and_options = lambda _: ('test/installed', model)
     model.actions = ()

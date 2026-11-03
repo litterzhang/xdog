@@ -2,7 +2,7 @@
 import os
 
 import pytest
-from xdog.coding.core.resource_loader import discover_context_files, load_project_resources
+from xdog.coding.core.resource_loader import discover_context_files
 
 
 @pytest.mark.parametrize('name', ['CLAUDE.md', 'GEMINI.md', 'README.md'])
@@ -48,10 +48,11 @@ def test_discover_context_files_rejects_large_without_dropping_constraints(tmp_p
         discover_context_files(tmp_path)
 
 
-def test_project_resources_to_file_entries(tmp_path):
+def test_only_one_instruction_discovery_path(tmp_path):
     (tmp_path / 'AGENTS.md').write_text('Hello', encoding='utf-8')
-    entries = load_project_resources(tmp_path).to_file_entries()
-    assert entries == [{'type': 'file_content', 'path': 'AGENTS.md', 'content': 'Hello'}]
+    sources = discover_context_files(tmp_path)
+    assert len(sources) == 1
+    assert sources[0].relative_path == 'AGENTS.md' and sources[0].content == 'Hello'
 
 
 @pytest.mark.parametrize('kind', ['directory', 'fifo', 'invalid-utf8'])

@@ -13,22 +13,26 @@ from pathlib import Path
 
 import pytest
 import yaml
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig, GroupDef, load_config, save_config
-from xdog.claw.core import planning, types
-from xdog.claw.core.runtime.gateway import GatewayServer
+from xdog.claw.core import types
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.tools import new_tool_repo
 
 
 def test_retired_modules_types_and_tool_are_absent():
     for module in (
+        'xdog.claw.core.planning',
         'xdog.claw.core.planning.task_scheduler',
         'xdog.claw.core.tools.tool_task',
         'xdog.claw.core.observers',
         'xdog.claw.core.tools.tool_eyes',
     ):
-        assert importlib.util.find_spec(module) is None, module
-    assert not hasattr(planning, 'TaskScheduler')
+        try:
+            spec = importlib.util.find_spec(module)
+        except ModuleNotFoundError:
+            spec = None
+        assert spec is None, module
     for name in ('TaskSchedule', 'ScheduledTask'):
         assert not hasattr(types, name), name
     assert 'task' not in new_tool_repo().names()
@@ -65,7 +69,7 @@ async def test_gateway_never_reads_imports_or_modifies_old_scheduled_tasks(tmp_p
     from xdog.agent.capabilities.runtime import discover
     monkeypatch.setattr('xdog.agent.capabilities.runtime.discover',
                         lambda scope: tuple(p for p in discover(scope) if installed or p.name != 'eyes'))
-    monkeypatch.setattr('xdog.claw.core.runtime.gateway._build_model_and_options',
+    monkeypatch.setattr('xdog.claw.application.gateway._build_model_and_options',
                         lambda _: ('test/no-call', lambda *args: calls.append(args)))
     data = tmp_path / 'data'
     data.mkdir()

@@ -145,7 +145,7 @@ def test_onboard_reprompts_for_invalid_tools_and_image_choice(runtime, tmp_path)
 
 
 def test_onboard_all_tools_and_numeric_selection(runtime, tmp_path):
-    from xdog.claw.core.tools import AVAILABLE_TOOL_NAMES
+    from xdog.claw.application.tools import AVAILABLE_TOOL_NAMES
 
     runtime.sync_models.return_value = (_model("chat"), replace(_model("image"), output=("image",)))
     result = CliRunner().invoke(cli, ["onboard"], input="n\n1\nall\n1\nClaw\n")
@@ -168,7 +168,7 @@ def test_onboard_preserves_channels_paths_and_other_groups(runtime, tmp_path):
     path = tmp_path / "config.yaml"
     original = ClawConfig(
         model="copilot/chat", enabled_tools=("filesystem",),
-        data_dir=str(tmp_path / "custom-data"), weixin_enabled=True, weixin_account_id="account",
+        data_dir=str(tmp_path / "custom-data"), weixin_accounts=("account",),
         max_concurrent_agents=7,
         groups=(
             GroupDef(id="work", name="Existing", is_main=True, workspace=str(tmp_path / "workspace")),
@@ -179,7 +179,7 @@ def test_onboard_preserves_channels_paths_and_other_groups(runtime, tmp_path):
     result = CliRunner().invoke(cli, ["onboard"], input="n\n\n\nRenamed\n")
     assert result.exit_code == 0, result.output
     config = load_config(path)
-    assert config.weixin_enabled and config.weixin_account_id == "account"
+    assert config.weixin_accounts == ("account",)
     assert config.data_dir == original.data_dir and config.max_concurrent_agents == 7
     assert config.groups[0].id == "work" and config.groups[0].name == "Renamed"
     assert config.groups[0].workspace == str(tmp_path / "workspace")
@@ -244,3 +244,25 @@ def test_onboard_tool_metadata_does_not_construct_a_runtime_repo(runtime, tmp_pa
     assert result.exit_code == 0, result.output
     assert load_config(tmp_path / 'config.yaml').enabled_tools
     construct.assert_not_called()
+
+
+def test_onboard_seeds_four_templates_and_preserves_edits_on_rename(runtime, tmp_path):
+    runtime.sync_models.return_value = (_model('chat'),)
+    workspace = tmp_path / 'workspace'
+    path = tmp_path / 'config.yaml'
+    save_config(ClawConfig(data_dir=str(tmp_path / 'data'), groups=(
+        GroupDef(id='main', is_main=True, workspace=str(workspace)),)), path)
+    first = CliRunner().invoke(cli, ['onboard'], input='n\n1\nnone\n毛桃\n')
+    assert first.exit_code == 0, first.output
+    for name in ('IDENTITY.md', 'SOUL.md', 'USER.md', 'AGENTS.md'):
+        assert (workspace / name).read_text()
+    assert 'Name: 毛桃' in (workspace / 'IDENTITY.md').read_text()
+    for name in ('SOUL.md', 'USER.md', 'AGENTS.md'):
+        (workspace / name).write_text('Custom ' + name)
+    (workspace / 'IDENTITY.md').write_text('# Identity\nName: 毛桃\nBackground: golden cat\n')
+    second = CliRunner().invoke(cli, ['onboard'], input='n\n\nnone\n咪咪大王\n')
+    assert second.exit_code == 0, second.output
+    identity = (workspace / 'IDENTITY.md').read_text()
+    assert 'Name: 咪咪大王' in identity and 'Background: golden cat' in identity
+    for name in ('SOUL.md', 'USER.md', 'AGENTS.md'):
+        assert (workspace / name).read_text() == 'Custom ' + name

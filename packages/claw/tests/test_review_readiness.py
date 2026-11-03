@@ -8,10 +8,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig, GroupDef
 from xdog.claw.core.inputs.models import InputScope
 from xdog.claw.core.outputs.delivery import DeliveryNotSent
-from xdog.claw.core.runtime.gateway import GatewayServer
 from xdog.claw.core.types import UserInput
 from xdog.skills.goal.host import OperationContext
 
@@ -39,14 +39,16 @@ async def test_gateway_restart_recovers_original_weixin_output_after_channel_rea
 
     config = ClawConfig(
         data_dir=str(tmp_path / "data"), socket_path=str(tmp_path / "gateway.sock"),
-        pid_file=str(tmp_path / "gateway.pid"), weixin_enabled=True, weixin_token="fixture-only",
-        weixin_account_id="readiness-fixture", weixin_base_url="https://example.invalid",
+        pid_file=str(tmp_path / "gateway.pid"), weixin_accounts=("readiness-fixture",),
         groups=(GroupDef(id="main", workspace=str(tmp_path / "workspace"), is_main=True),),
     )
+    from xdog.claw.channels.weixin.auth import WeixinAccountData, save_account
+    save_account(tmp_path / 'data', 'readiness-fixture',
+                 WeixinAccountData(token='fixture-only', base_url='https://example.invalid'))
     model, first = ScriptedModel(), API(True)
     server = GatewayServer(config)
     scope = InputScope("main", tmp_path / "workspace")
-    with patch("xdog.claw.core.runtime.gateway._build_model_and_options", return_value=("test/dummy", model)), \
+    with patch("xdog.claw.application.gateway._build_model_and_options", return_value=("test/dummy", model)), \
          patch("xdog.claw.channels.weixin.channel.WeixinApiClient", return_value=first):
         try:
             await server.start()
@@ -66,7 +68,7 @@ async def test_gateway_restart_recovers_original_weixin_output_after_channel_rea
         raise AssertionError("Transport recovery must not rerun the Agent")
 
     second, server = API(False), GatewayServer(config)
-    with patch("xdog.claw.core.runtime.gateway._build_model_and_options", return_value=("test/dummy", no_model)), \
+    with patch("xdog.claw.application.gateway._build_model_and_options", return_value=("test/dummy", no_model)), \
          patch("xdog.claw.channels.weixin.channel.WeixinApiClient", return_value=second):
         try:
             await server.start()  # Actual channel registration/connect happens AFTER application.start().

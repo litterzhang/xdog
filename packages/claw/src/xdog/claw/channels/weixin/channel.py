@@ -17,6 +17,7 @@ from typing import Any
 
 from xdog.agent.async_work import run_owned, wait_owned
 from xdog.claw.channels.base import Channel
+from xdog.claw.channels.weixin import media
 from xdog.claw.channels.weixin.api import WeixinApiClient
 from xdog.claw.channels.weixin.context_tokens import (
     context_token_snapshot,
@@ -48,36 +49,26 @@ TYPING_TICKET_CACHE_TTL_S = 24 * 60 * 60  # 24h
 
 
 def _body_from_item_list(items: tuple[MessageItem, ...]) -> str:
-    """Extract text content from a WeixinMessage item_list."""
+    """Preserve all current text/transcriptions, not quoted-media attachments."""
+    bodies = []
     for item in items:
         if item.type == MessageItemType.TEXT and item.text_item is not None:
             text = item.text_item.text
             ref = item.ref_msg
-            if not ref:
-                return text
-            # Quoted media — just return current text
-            if ref.message_item and ref.message_item.type in (
-                MessageItemType.IMAGE,
-                MessageItemType.VIDEO,
-                MessageItemType.FILE,
-                MessageItemType.VOICE,
-            ):
-                return text
-            # Build quoted context
             parts: list[str] = []
-            if ref.title:
-                parts.append(ref.title)
-            if ref.message_item:
-                ref_body = _body_from_item_list((ref.message_item,))
-                if ref_body:
-                    parts.append(ref_body)
-            if not parts:
-                return text
-            return f"[引用: {' | '.join(parts)}]\n{text}"
-        # Voice-to-text
-        if item.type == MessageItemType.VOICE and item.voice_item and item.voice_item.text:
-            return item.voice_item.text
-    return ""
+            if ref and not (ref.message_item and ref.message_item.type in (
+                MessageItemType.IMAGE, MessageItemType.VIDEO, MessageItemType.FILE, MessageItemType.VOICE,
+            )):
+                if ref.title:
+                    parts.append(ref.title)
+                if ref.message_item:
+                    ref_body = _body_from_item_list((ref.message_item,))
+                    if ref_body:
+                        parts.append(ref_body)
+            bodies.append(f"[引用: {' | '.join(parts)}]\n{text}" if parts else text)
+        elif item.type == MessageItemType.VOICE and item.voice_item and item.voice_item.text:
+            bodies.append(item.voice_item.text)
+    return '\n'.join(body for body in bodies if body)
 
 
 def _generate_client_id() -> str:
@@ -189,6 +180,7 @@ class WeixinChannel(Channel):
         token: str,
         group_id: str = "main",
         proactive_recipient: Callable[[], str | None] | None = None,
+        media_dir: Path | None = None,
     ) -> None:
         self._state_dir = state_dir
         self._account_id = account_id
@@ -197,9 +189,16 @@ class WeixinChannel(Channel):
         # sender gave every peer its own session, memory and persona, which is
         # why the agent introduced itself by its routing key.
         self._group_id = group_id or "main"
+        if self._group_id in {'.', '..'} or any(c in self._group_id for c in ('/', '\\', '\x00')):
+            raise ValueError('Invalid Weixin group directory')
+        self._media_dir = media_dir or state_dir / 'groups' / self._group_id / 'sessions' / 'images'
+        # Only a transient handoff to the existing bounded monitor FIFO. The Core
+        # Inbox remains execution authority; no image receipt database/worker exists.
+        self._prepared_images: dict[int, UserInput] = {}
         self._base_url = base_url
         self._token = token
         self._cancel_event = asyncio.Event()
+        self.status = 'disconnected'
         self._monitor_task: asyncio.Task[Any] | None = None
         self._api_client = WeixinApiClient(base_url, token)
         self._typing_tickets = _TypingTicketCache(self._api_client)
@@ -236,7 +235,9 @@ class WeixinChannel(Channel):
             on_message=self._on_inbound,
             on_accept=self._accept_inbound if self._on_accept is not None else None,
             api_client=self._api_client,
+            on_status=lambda value: setattr(self, 'status', value),
         )
+        self.status = 'starting'
         self._monitor_task = asyncio.create_task(run_monitor(opts))
         logger.info(
             "WeixinChannel connected: account=%s base_url=%s",
@@ -259,12 +260,22 @@ class WeixinChannel(Channel):
         for indicator in self._active_typing.values():
             await indicator.stop()
         self._active_typing.clear()
+        self._prepared_images.clear()
         # Persist state on shutdown
         if self._cache_ready:
             await run_owned(write_context_tokens, self._state_dir, self._account_id,
                             context_token_snapshot(self._account_id))
         await self._api_client.close()
+        self.status = 'disconnected'
         logger.info("WeixinChannel disconnected: account=%s", self._account_id)
+
+    def status_snapshot(self) -> dict[str, str]:
+        return {'channel': self.name, 'account_id': self._account_id,
+                'group_id': self._group_id, 'status': self.status}
+
+    def account_profile(self, group_id: str) -> dict[str, str] | None:
+        return ({'channel': self.name, 'account_id': self._account_id, 'group_id': self._group_id}
+                if group_id == self._group_id else None)
 
     def accepts_group(self, group_id: str) -> bool:
         return group_id == self._group_id
@@ -379,11 +390,7 @@ class WeixinChannel(Channel):
             await indicator.stop()
             logger.debug("Typing indicator stopped for group %s", group_id)
 
-    def _project_inbound(self, msg: WeixinMessage, *, durable: bool) -> UserInput | None:
-        """Pure projection: replay does not read clocks or mutable routing caches."""
-        body = _body_from_item_list(msg.item_list)
-        if not body:
-            return None  # Unsupported media is not acknowledged as an Agent input.
+    def _inbound_metadata(self, msg: WeixinMessage, *, durable: bool) -> dict[str, Any]:
         if not msg.from_user_id:
             raise ValueError("Weixin input requires an original sender")
         metadata = {"account_id": self._account_id, "weixin_user_id": msg.from_user_id,
@@ -397,25 +404,73 @@ class WeixinChannel(Channel):
                 raise ValueError("Durable Weixin input requires a stable upstream message identity")
             identity = json.dumps([self._account_id, msg.from_user_id, *upstream], ensure_ascii=True)
             metadata["channel_message_id"] = "weixin-" + hashlib.sha256(identity.encode()).hexdigest()
-        return UserInput(group_id=self._group_id, sender=msg.from_user_id, content=body,
-                         timestamp=msg.create_time_ms / 1000.0, channel=self.name, metadata=metadata)
+        return metadata
+
+    def _project_inbound(self, msg: WeixinMessage, *, durable: bool,
+                         image_paths: tuple[Path, ...] = ()) -> UserInput | None:
+        """Pure projection: saved paths are text, not automatic model image input."""
+        body = _body_from_item_list(msg.item_list)
+        references = [f'The user uploaded an image, saved at: {path}' for path in image_paths]
+        content = '\n\n'.join(([body] if body else []) + references)
+        if not content:
+            return None
+        metadata = self._inbound_metadata(msg, durable=durable)
+        if image_paths:
+            metadata.update(weixin_image_count=len(image_paths),
+                            weixin_text_sha256=hashlib.sha256(body.encode()).hexdigest())
+        return UserInput(group_id=self._group_id, sender=msg.from_user_id, content=content,
+            timestamp=msg.create_time_ms / 1000.0, channel=self.name, metadata=metadata)
+
+    async def _prepare_inbound(self, msg: WeixinMessage, *, durable: bool) -> UserInput | None:
+        items = [item for item in msg.item_list if item.type == MessageItemType.IMAGE]
+        if not items:
+            return self._project_inbound(msg, durable=durable)
+        metadata = self._inbound_metadata(msg, durable=durable)  # Reject unidentified inputs before IO.
+        if durable and self._accepted_input_reader is not None:
+            original = await self._accepted_input_reader(self._group_id, metadata['channel_message_id'])
+            if original is not None:
+                if (original.sender != msg.from_user_id
+                        or original.metadata.get('account_id') != self._account_id
+                        or original.metadata.get('weixin_image_count') != len(items)
+                        or original.metadata.get('weixin_text_sha256') != hashlib.sha256(
+                            _body_from_item_list(msg.item_list).encode()).hexdigest()):
+                    raise ValueError('Weixin image replay differs from the original accepted input')
+                return original  # Original body/paths/recipient survive expired CDN links.
+        if len(items) > media.MAX_IMAGES:
+            raise ValueError('Too many Weixin images in one message')
+        paths = []
+        total = 0
+        for item in items:
+            if item.image_item is None:
+                raise ValueError('Weixin image item is missing its original media')
+            value = await media.download_image(item.image_item)
+            total += len(value)
+            if total > media.MAX_MESSAGE_BYTES:
+                raise ValueError('Weixin message images exceed the aggregate size limit')
+            paths.append(await run_owned(media.save_image, self._media_dir, value))
+        return self._project_inbound(msg, durable=durable, image_paths=tuple(paths))
 
     async def _accept_inbound(self, msg: WeixinMessage) -> None:
-        """Commit to the application's sole Inbox before the upstream cursor."""
+        """Persist images and Core Inbox before the upstream cursor can advance."""
         if self._on_accept is not None:
-            inbound = self._project_inbound(msg, durable=True)
+            inbound = await self._prepare_inbound(msg, durable=True)
             if inbound is not None:
                 await self._on_accept(inbound)
+                if any(item.type == MessageItemType.IMAGE for item in msg.item_list):
+                    self._prepared_images[id(msg)] = inbound
 
     async def _on_inbound(self, msg: WeixinMessage) -> None:
         """Serial presentation/result wait; disconnect never owns Agent execution."""
-        inbound = self._project_inbound(msg, durable=self._on_accept is not None)
+        if self._on_accept is not None and any(item.type == MessageItemType.IMAGE for item in msg.item_list):
+            # Never redownload mutable/expired CDN media after durable acceptance.
+            inbound = self._prepared_images.pop(id(msg), None)
+        else:
+            inbound = await self._prepare_inbound(msg, durable=self._on_accept is not None)
         if inbound is None:
             return
         from_user_id, group_id = inbound.sender, inbound.group_id
         if msg.context_token:
             set_context_token(self._account_id, from_user_id, msg.context_token)
-            self._cache_ready = True
             self._cache_ready = True
             await run_owned(write_context_tokens, self._state_dir, self._account_id,
                             context_token_snapshot(self._account_id))

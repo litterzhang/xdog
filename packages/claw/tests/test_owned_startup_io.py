@@ -11,8 +11,8 @@ from unittest.mock import patch
 
 from xdog.ai.types import AssistantMessage
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 
 
 async def test_gateway_bootstrap_and_pid_io_run_off_loop_before_receiver_readiness(tmp_path, monkeypatch):
@@ -38,7 +38,7 @@ async def test_gateway_bootstrap_and_pid_io_run_off_loop_before_receiver_readine
     monkeypatch.setattr(builtins, "open", lambda file, *a, **kw: opened(original_open, file, *a, **kw))
     monkeypatch.setattr(io, "open", lambda file, *a, **kw: opened(original_io_open, file, *a, **kw))
     monkeypatch.setattr(os, "fsync", synced)
-    with patch("xdog.claw.core.runtime.gateway._build_model_and_options", return_value=(
+    with patch("xdog.claw.application.gateway._build_model_and_options", return_value=(
         "test/startup", lambda *args: EventStream.empty(AssistantMessage())
     )):
         try:
@@ -55,7 +55,7 @@ async def test_gateway_bootstrap_and_pid_io_run_off_loop_before_receiver_readine
 
 async def test_cancelled_bootstrap_settles_late_resources_without_publishing_receiver(tmp_path, monkeypatch):
     import pytest
-    from xdog.claw.core.runtime import bootstrap
+    from xdog.claw.application import bootstrap
 
     entered, release, exited = (threading.Event() for _ in range(3))
     built = []
@@ -75,7 +75,7 @@ async def test_cancelled_bootstrap_settles_late_resources_without_publishing_rec
                         pid_file=str(tmp_path / "late.pid"), groups=(GroupDef(id="main", is_main=True),))
     server = GatewayServer(config)
     monkeypatch.setattr(bootstrap, "build", actual_build)
-    with patch("xdog.claw.core.runtime.gateway._build_model_and_options", return_value=(
+    with patch("xdog.claw.application.gateway._build_model_and_options", return_value=(
         "test/startup", lambda *args: EventStream.empty(AssistantMessage())
     )):
         starting = asyncio.create_task(server.start())
@@ -158,7 +158,7 @@ async def test_native_endpoint_never_replaces_an_existing_non_socket_file(tmp_pa
     config = ClawConfig(data_dir=str(tmp_path / "data"), model="test/socket", socket_path=str(path),
                         pid_file=str(tmp_path / "io.pid"), groups=(GroupDef(id="main", is_main=True),))
     server = GatewayServer(config)
-    with patch("xdog.claw.core.runtime.gateway._build_model_and_options", return_value=(
+    with patch("xdog.claw.application.gateway._build_model_and_options", return_value=(
         "test/socket", lambda *args: EventStream.empty(AssistantMessage())
     )):
         try:
@@ -188,7 +188,7 @@ async def test_cancelled_socket_acquisition_closes_late_inode_before_publication
                         pid_file=str(tmp_path / "late.pid"), groups=(GroupDef(id="main", is_main=True),))
     server = GatewayServer(config)
     monkeypatch.setattr(unix_endpoint, "bind", actual_bind)
-    with patch("xdog.claw.core.runtime.gateway._build_model_and_options", return_value=(
+    with patch("xdog.claw.application.gateway._build_model_and_options", return_value=(
         "test/socket", lambda *args: EventStream.empty(AssistantMessage())
     )):
         starting = asyncio.create_task(server.start())

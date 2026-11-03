@@ -8,9 +8,9 @@ import pytest
 from xdog.agent import Agent, AgentConfig
 from xdog.ai.types import AssistantMessage, Model, TextContent, UserMessage, VisionLimits
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.channels.tui.tui_app import ChatApp
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 from xdog.coding.core.agent_session import AgentSession
 from xdog.coding.core.permissions import PermissionManager
 from xdog.coding.core.session_manager import SessionManager
@@ -57,7 +57,7 @@ async def test_both_native_ui_catalog_canonical_id_caps_unknown_denial_no_global
             socket_path=str(tmp_path / 'owned.sock'), pid_file=str(tmp_path / 'owned.pid'),
             groups=(GroupDef(id='main', is_main=True),))
         server = GatewayServer(config)
-        with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=('owned/first', adapter)):
+        with patch('xdog.claw.application.gateway._build_model_and_options', return_value=('owned/first', adapter)):
             await server.start()
         ui = ChatApp(config.socket_path)
         reader, writer = await asyncio.open_unix_connection(config.socket_path, limit=4 * 1024 * 1024)

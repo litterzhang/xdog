@@ -11,8 +11,8 @@ import pytest
 from xdog.agent import Agent, AgentConfig
 from xdog.ai.types import AssistantMessage, ImageContent
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 from xdog.claw.core.types import UserInput
 from xdog.coding.core.agent_session import AgentSession
 from xdog.coding.core.permissions import PermissionManager
@@ -56,7 +56,7 @@ async def test_actual_turn_start_provider_withdrawal_refuses_image_before_model_
             groups=(GroupDef(id='main', is_main=True),), extensions=('visionchange',), extension_dir=str(root),
             extension_settings={'visionchange': {'called': str(marker)}})
         server = GatewayServer(config)
-        with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=(ALIAS, base)):
+        with patch('xdog.claw.application.gateway._build_model_and_options', return_value=(ALIAS, base)):
             await server.start()
         runtime = server._orchestrator._runtimes['main']
         owner = runtime.get_or_create_session(allow_reset=False)

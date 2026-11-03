@@ -11,7 +11,9 @@ _VALID_STATUSES = frozenset({"pending", "in_progress", "completed"})
 
 class TodoTool(ToolDef):
     name = "todo"
-    description = "Create or update a progress checklist. Send the FULL list each time."
+    description = ("Optional ephemeral progress checklist, not durable task state. Send the FULL list each time. "
+                   "Use existing authoritative task files instead when available; do not duplicate them. "
+                   "Not required for every multi-step task.")
 
     @action("write", description="Write the full todo list",
             todos=Param("array", required=True, description="Array of todo items", items={

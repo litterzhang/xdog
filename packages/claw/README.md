@@ -38,6 +38,22 @@ capabilities and preserve ownership, cancellation and no-blind-replay fences.
 
 ## Internal runtime ownership
 
+`application/` composes the process, channel instances and actual tool factories.
+`core/` owns channel-neutral group execution and data; it does not import concrete
+TUI/Weixin/XHS implementations. Native protocol/connection/request adapters live in
+`channels/tui/`, and XHS post-tool schema, binding and IO live in `channels/xhs/`.
+The application injects the combined tool factory into group runtimes; tool instances
+still use Agent's `ToolRepo`, and MCP connections still use its `McpRegistry`.
+There are no `core/skills` re-export or empty `core/planning` packages.
+
+Group `workspace/USER.md` holds editable profiles and interaction preferences and
+is loaded as dynamic context. Existing files are never overwritten by the packaged
+default. Current identities, source bindings and tool grants come from host
+configuration/admitted inputs, not editable profile text or message tags. Shared
+history and existing confidentiality rules are unchanged. See
+[internal boundaries](../../docs/claw-core-boundaries.md) for the module layout,
+input-bound tool contract and regression checks.
+
 Gateway owns process/endpoints/channels; `NativeConnection` owns only its peer's
 protocol/UI jobs, with `NativeRequests` handling request/reply projections.
 Application input execution still belongs to InputService and the original
@@ -50,6 +66,41 @@ Controller operation scopes revalidate context after waiting for admission and
 retain context-change fences through actual settlement. Shutdown closes new
 admission; detached old requests cannot publish into a successor. See
 [runtime ownership/refactor verification](../../docs/claw-runtime-refactor.md).
+
+## System prompt and workspace defaults
+
+The fixed system prefix contains only Claw's host contract, identity/trust rules
+and context-continuity principles. It does not impose a coding persona, emoji
+policy, compulsory task checklist or tool-call commentary. Group working rules
+and tone belong to editable workspace files, not hidden global instructions.
+
+Group creation (including automatic registration) and `onboard` initialize all four
+files from packaged templates, or use explicit host-generated content when supplied:
+
+| File | Purpose |
+| --- | --- |
+| `IDENTITY.md` | Assistant name, role and background; defaults to the configured group name |
+| `SOUL.md` | Group personality, voice and interaction style |
+| `USER.md` | Attributed user profiles and communication preferences |
+| `AGENTS.md` | Group-specific instructions, workflows and working agreements |
+
+Initialization fills missing files only, preserving existing contents, even empty
+files. Explicit onboarding rename updates only the `Name:` line in `IDENTITY.md`,
+not other profile/persona instructions. Default creation makes no model call and
+does not activate skill bodies; generated contents can be supplied before initialization.
+Existing groups are not silently rewritten with new defaults.
+
+Workspace content, environment, memory, current host-bound input identity, bound
+channel profiles and ACP address are dynamic context. Current identity is factual
+metadata, not a promotion of the message body to the system protocol role. Prior
+speakers/handoffs remain attributed in history. Editable Markdown cannot grant tools.
+
+Tool operation instructions live with actual tool schemas, filtered by the current
+input's permissions. Native-tool models do not receive a duplicate textual tool
+catalog. Text-only models retain an explicitly inspection-only inventory of their
+selected, permitted tools. Agent supplies the skill index and explicitly activated
+bodies through its existing skill placement; Claw adds no second loader or default
+activation. See [prompt boundaries](../../docs/claw-system-prompt.md).
 
 ## Quick start
 
@@ -84,9 +135,79 @@ Only a confirmed login updates the saved account and configuration. Restart the
 gateway afterwards to apply the binding.
 
 `--group` selects the conversation that receives this Weixin account's messages.
-The current gateway loads one configured Weixin account: logging into another
-account/group changes that selected binding; it does not add a second simultaneous
-Weixin AI. A failed/expired scan does not replace the existing binding.
+A confirmed login appends its account ID to the explicit enabled list; it does not
+replace another account. For example, log in separately for `main` and `maotao`:
+
+```bash
+uv run xdog-claw channel login --weixin --group main
+uv run xdog-claw channel login --weixin --group maotao
+```
+
+```yaml
+weixin_accounts:
+  - main-bot-id
+  - maotao-bot-id
+```
+
+Each enabled ID must name a saved `<data_dir>/weixin/accounts/<id>.json` credential
+file. That file owns its verified login user, token, endpoint and `group_id`;
+configuration does not duplicate its group mapping. Only explicitly listed IDs
+start polling: saved historical accounts and the retired `weixin/accounts.json`
+index are not automatically enabled. Remove an ID from the list and restart to
+stop that account without deleting its credentials.
+
+Each account uses its own poller, cursor, context tokens and original reply binding
+on the existing gateway loop. One expired or unavailable login does not stop the
+others. `xdog-claw gateway status` reports live account/group status (`starting`,
+`watching`, `session_expired`, `unavailable`), rather than treating configuration
+as proof of connectivity. An expired login needs an explicit new login; adding a
+second local account does not guarantee simultaneous platform-side validity.
+A failed/expired QR scan does not change enabled accounts or existing credentials.
+
+The former `weixin_enabled`, `weixin_account_id`, `weixin_token` and
+`weixin_base_url` configuration keys are rejected with a migration error. Remove
+those keys and list the intended saved account IDs under `weixin_accounts`;
+credentials/endpoints belong in their saved account files (or obtain them through
+login). Existing credential, cursor and context-token files remain unchanged.
+
+
+### Weixin image messages
+
+Image-only and mixed text/image messages download their original image media by
+default. The channel decrypts the supported Weixin CDN payload, validates the
+image, then atomically saves the original bytes under the current group's chat
+history directory:
+
+```text
+<data_dir>/groups/<group>/sessions/images/<md5hex-first-8>.<detected-extension>
+```
+
+The Agent receives **text paths**, not automatically attached image content:
+
+```text
+<original user text, if any>
+
+The user uploaded an image, saved at: /absolute/path/to/sessions/images/12ab34cd.png
+```
+
+Each direct image adds one such line; quoted images are not downloaded again.
+The model may inspect the file with its existing permitted tools. Receiving an
+image does not grant filesystem access, change identities or bypass tool policy.
+
+Files are private (0600), use detected image extensions, and identical bytes reuse
+the existing file within the group. An eight-character digest collision or symlink
+never overwrites another file. MD5 here is a filename, not a security guarantee.
+Images are retained with group history rather than removed after a turn or context
+rotation. PNG, JPEG, GIF, WebP, BMP and TIFF are accepted, with bounded size/count
+and dimensions (20 MiB per image, 16 images / 64 MiB per message, 32 megapixels).
+Only HTTPS Weixin CDN addresses are fetched, without bot credentials, redirects or
+signed-URL logging; arbitrary image URLs are not a download capability.
+
+Image writes and the original Core Inbox commit precede the upstream cursor ACK.
+Failures do not admit a text-only partial message. Already accepted input is read
+back from the same owner-bound Core Inbox on duplicate/recovered deliveries, so
+expired CDN links cannot change or re-execute that input. There is no second
+observer, media database or Agent loop.
 
 ## Input identities and XHS
 
@@ -123,17 +244,52 @@ separately from group personality and commenter identities:
 uv run xdog-claw channel login --xhs --group main --base-url http://127.0.0.1:18060
 ```
 
+Export the backend's shared access token using `xhs_token_env` (default
+`XHS_API_TOKEN`) in the same shell first. Backend HTTP 401/403 is access denial,
+not QR expiry or proof that the website login failed; the CLI reports it separately.
+
 When scanning is needed, the CLI displays the supplied QR PNG directly in the
-terminal, with a saved-image path as a fallback. It does not create a second QR or
-require a graphical desktop. Widen very narrow terminals (at least 48 columns),
-or open the PNG if the rendered code cannot be scanned. The temporary PNG is
-removed when the login wait ends; already authenticated accounts need no new QR.
+terminal, with a saved-image path as a fallback. Standard axis-aligned QR images
+are reduced to their verified module grid, not arbitrary terminal-width pixels;
+wide terminals do not inflate the symbol. A 53-module code takes 61 columns and
+31 rows including its white quiet border. A terminal too narrow for complete
+modules must be widened, or use the saved PNG instead. No QR payload is decoded
+or replaced, and no graphical desktop is required for terminal scanning.
+
+Scan the **latest** QR promptly, confirm successful login in the app, then press
+**Enter in the CLI** to verify and bind it. There is deliberately **no status
+polling while you scan**: v2.5.5's status read starts a new website browser and
+creates another platform QR. The CLI's host-local file lease also defers this
+Claw gateway's identity checks during the scan (`login_pending`), and rejects
+parallel explicit logins before another QR is requested. Process exit releases
+the lease automatically; it is synchronization, not a second service or login
+state database. Other applications sharing the backend must also avoid status
+checks/new QR requests while a scan is in progress. No backend cookies or browser
+internals are read by Claw.
+
+A new backend QR request replaces the preceding scan session; do not scan an old
+scrollback image. If the app reports expiry, stop the current CLI with Ctrl+C and
+run login again for a fresh challenge. The CLI respects the backend's advertised
+scan-wait window (four minutes for v2.5.5), not an eight-minute local wait; this
+window is not a guarantee of the platform QR's validity. No automatic QR refresh
+can replace an in-progress scan. Each login owns a separate private PNG, removed
+when its wait ends; already authenticated accounts need no new QR.
+
 
 Login-status reads tolerate up to three attempts for transient network/timeout and
 HTTP 408/500/502/503/504 failures. Auth denials, rate limits and invalid responses
 fail closed; QR creation and comment/publish requests are never automatically
 replayed. If the CLI reports a backend failure after scanning, keep the cookies
 and retry login to recheck the account rather than deleting the session.
+
+Comment replies use the original comment ID captured at intake. Sending does not
+refetch the moving notification window or require the original comment to remain
+in it. Current account identity, saved group/account binding, reply enablement and
+the frozen comment target remain enforced; uncertain submissions are not replayed.
+HTTP reply failures retain a bounded, allowlisted backend failure stage (for example
+`reply_target_mismatch` or `submit_unconfirmed`), not raw page/account diagnostics.
+These are diagnostic hints, never proof that no platform action occurred or
+permission to automatically retry. Older generic error records remain unchanged.
 
 Use the existing group persona, then explicitly configure `xhs_replies_enabled` and/or
 `xhs_publish_enabled` (both default false). `message(action="channels")` lists
@@ -380,7 +536,8 @@ This is message-level delivery, not token streaming. WeChat polls for new
 messages independently while the agent works. A FIFO inbox holds up to 50
 pending messages, and a single worker dispatches them in arrival order through
 the orchestrator. A later arrival does not change the active message's reply
-recipient or typing indicator. When the inbox fills, polling pauses until space
+recipient or typing indicator. Each enabled Weixin account has its own poller
+and staging FIFO on the existing gateway loop. When a FIFO fills, its polling pauses until space
 is available rather than dropping messages.
 
 The channel poller's FIFO is a bounded in-memory transport staging buffer, not
@@ -393,7 +550,9 @@ receipts before retrying uncertain work instead of blindly resending after resta
 ### Explicit proactive message tool
 
 The permission-gated `message` tool sends **one message to one currently bound
-channel of the current group**. These JSON objects are tool arguments:
+channel of the current group**. Its channel catalog includes the safe `account_id`
+for account-bound transports, so multiple Weixin accounts are distinguishable;
+it exposes no credential or context token. These JSON objects are tool arguments:
 
 ```json
 {"action":"channels"}

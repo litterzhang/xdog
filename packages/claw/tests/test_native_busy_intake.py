@@ -7,9 +7,9 @@ from contextlib import asynccontextmanager
 from unittest.mock import patch
 
 import pytest
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig, GroupDef
 from xdog.claw.core.inputs.models import InputScope
-from xdog.claw.core.runtime.gateway import GatewayServer
 
 from packages.claw.tests.eyes_helpers import ScriptedModel
 from packages.claw.tests.test_gateway_inputs import receive, send
@@ -28,7 +28,7 @@ async def application(tmp_path):
         groups=(GroupDef(id="main", workspace=str(tmp_path / "work")),),
     )
     server = GatewayServer(config)
-    with patch("xdog.claw.core.runtime.gateway._build_model_and_options", return_value=("test/dummy", model)):
+    with patch("xdog.claw.application.gateway._build_model_and_options", return_value=("test/dummy", model)):
         await server.start()
     try:
         yield server, model, config.socket_path

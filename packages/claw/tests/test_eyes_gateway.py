@@ -4,15 +4,15 @@ from pathlib import Path
 
 import pytest
 from xdog.agent.capabilities.runtime import discover
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 
 
 @pytest.mark.parametrize('installed', [False, True])
 async def test_gateway_default_acp_is_independent_from_eyes_and_goal(tmp_path, monkeypatch, installed):
     monkeypatch.setattr('xdog.agent.capabilities.runtime.discover',
         lambda scope: tuple(item for item in discover(scope) if installed and item.name == 'eyes'))
-    monkeypatch.setattr('xdog.claw.core.runtime.gateway._build_model_and_options', lambda _: ('test/dummy', None))
+    monkeypatch.setattr('xdog.claw.application.gateway._build_model_and_options', lambda _: ('test/dummy', None))
     config = ClawConfig(data_dir=str(tmp_path / 'data'), socket_path=str(tmp_path / 'g.sock'),
                        pid_file=str(tmp_path / 'g.pid'), groups=(GroupDef(id='main', workspace=str(tmp_path)),))
     gateway = GatewayServer(config)
@@ -43,7 +43,7 @@ async def test_gateway_default_acp_is_independent_from_eyes_and_goal(tmp_path, m
 
 async def test_main_prompt_has_its_normal_acp_address_and_enqueue_contract(tmp_path, monkeypatch):
     monkeypatch.setattr('xdog.agent.capabilities.runtime.discover', lambda _: ())
-    monkeypatch.setattr('xdog.claw.core.runtime.gateway._build_model_and_options', lambda _: ('test/dummy', None))
+    monkeypatch.setattr('xdog.claw.application.gateway._build_model_and_options', lambda _: ('test/dummy', None))
     gateway = GatewayServer(ClawConfig(data_dir=str(tmp_path / 'data'), socket_path=str(tmp_path / 'g.sock'),
         pid_file=str(tmp_path / 'g.pid'), groups=(GroupDef(id='main', workspace=str(tmp_path)),)))
     try:

@@ -42,6 +42,7 @@ from xdog.ai.types import (
     AssistantMessage,
     ImageContent,
     Model,
+    SystemPromptBlock,
     TextContent,
     ThinkingLevel,
     UserMessage,
@@ -868,30 +869,19 @@ class AgentSession:
 
     @_idle_change
     def activate_skill(self, slug: str) -> None:
-        """Put a skill's instructions in the system prompt until told otherwise.
-
-        The obvious implementation — append the skill body as a message — is
-        what the format's reference clients do, and it is a one-way door: a
-        message cannot be taken back out of a conversation, so the body keeps
-        occupying the window for the rest of the session whether or not it is
-        still relevant. Keeping it in the system prompt is what makes
-        deactivation possible at all.
-
-        `Agent.set_skills` does the placing, so that reasoning now lives in one
-        place instead of being re-derived by every product that has skills.
-        """
-        self._active_skills = self._active_skills | {slug}
-        self._push_skills()
-        self._rebuild_system_prompt()
+        """Select a skill only after Agent has validated and applied the selection."""
+        prompt = self._prompt_blocks()
+        self._select_skills(self._active_skills | {slug})
+        self.agent.set_system_prompt(prompt)
 
     @_idle_change
     def deactivate_skill(self, slug: str) -> bool:
-        """Drop a skill from the system prompt. False if it was not active."""
+        """Remove an explicit selection; failed application leaves both owners unchanged."""
         if slug not in self._active_skills:
             return False
-        self._active_skills = self._active_skills - {slug}
-        self._push_skills()
-        self._rebuild_system_prompt()
+        prompt = self._prompt_blocks()
+        self._select_skills(self._active_skills - {slug})
+        self.agent.set_system_prompt(prompt)
         return True
 
     def _retire_context_resources(self, *, mcp: bool = False) -> None:
@@ -1496,8 +1486,7 @@ class AgentSession:
         self.settings = settings
         self.permissions.clear_session_rules()
         self.agent.clear_all_queues()
-        self._active_skills = frozenset()
-        self._push_skills()
+        self._select_skills(frozenset())
         self.agent.replace_messages(list(loaded.messages))
         self._publish_tools(tuple(tool for tool in tools
                                   if not any(tool is item for item in self._retired_capability_tools)))
@@ -1656,8 +1645,7 @@ class AgentSession:
         self.session_data.active_tools = committed.active_tools
         self._load_children()
         self._publish_navigation_model(selected_model, staged.model, staged.thinking)
-        self._active_skills = frozenset()
-        self._push_skills()
+        self._select_skills(frozenset())
         self._restore_active_tools()
         self._rebuild_system_prompt()
         return True
@@ -1757,30 +1745,13 @@ class AgentSession:
 
     # -- Internal --
 
-    def _push_skills(self) -> None:
-        """Tell the Agent which skills are active; it decides where they go.
-
-        The index and the bodies are both its business now — this only says
-        *which*, which is the part a product legitimately differs on.
-        """
-        try:
-            self.agent.set_active_skills(sorted(self.active_skills))
-        except Exception:
-            logger.debug("could not push active skills to the agent", exc_info=True)
-
-    def _native_tool_calls(self) -> bool:
-        """Whether this model gets tool definitions through the API.
-
-        Reads the same answer the Agent uses to decide whether to send them, so
-        the two cannot disagree — a model whose tools are withheld from the API
-        while the prompt stays silent about them has no tools at all, and
-        nothing would report that.
-
-        Unknown answers False, so the tools stay described. Both halves then
-        fire, which wastes a few hundred tokens and cannot leave the model
-        unable to act.
-        """
-        return self.agent.supports_tool_calls is True
+    def _select_skills(self, selected: frozenset[str]) -> None:
+        """Validate through SDK placement before publishing the host selection."""
+        from xdog.agent.skills.types import SkillPlacement
+        active = tuple(sorted(self.capability_assembly.active_skills(selected)))
+        prepared = SkillPlacement.read(self.agent._skills, active)
+        self.agent.set_active_skills(active, prepared_skills=prepared)
+        self._active_skills = selected
 
     def _refresh_session_hint(self) -> None:
         """Nonsecret routing hint only; never an authorization capability."""
@@ -1803,39 +1774,26 @@ class AgentSession:
         self.agent.set_active_skills(active, prepared_skills=prepared.skills)
         self._rebuild_system_prompt()
 
-    def _rebuild_system_prompt(self) -> None:
-        """Rebuild and set the system prompt from config and tools."""
-        self._refresh_session_hint()
-        from xdog.coding.config import PlatformInfo, RuntimeConfig
+    def _prompt_blocks(self) -> tuple[SystemPromptBlock, ...]:
+        """Build detached host/context blocks; SDK alone supplies native tools and skills."""
+        from xdog.ai.types import Tool
+        from xdog.coding.config import PlatformInfo
 
-        # Get tool definitions from the agent's current tools
-        tool_defs = [
-            {"name": t.name, "description": t.description, "parameters": t.parameters}
-            for t in self.agent.active_tools
-        ]
-
-        # Build a minimal RuntimeConfig for system prompt generation
-        prompt = build_system_prompt(
-            RuntimeConfig(
-                model=self.agent.state.model or "unknown",
-                thinking_level=str(self.agent.options.thinking or "off"),
-                permission_mode=self.permissions.mode,
-                allowed_tools=tuple(t.name for t in self.agent.active_tools),
-                custom_instructions=self.settings.custom_instructions,
-                extensions=(),
-                working_dir=str(self.working_dir),
-                platform_info=PlatformInfo.detect(),
-            ),
-            tool_defs,
-            file_entries=[{'type': 'file_content', 'path': item.relative_path, 'content': item.content}
-                          for item in self._project_files if self._project_directory == self.working_dir],
-            extra_context=_skills_context(frozenset(
-                slug for slug, skill in self.agent._resolved_skills.items()
-                if slug in self._active_skills and not skill.expires_after_turn)),
-            native_tool_calls=self._native_tool_calls(),
-            session_id=self.session_id,
+        inspection = (tuple(Tool(tool.name, tool.description, tool.parameters) for tool in self.agent.active_tools)
+                      if self.agent.supports_tool_calls is False else ())
+        return build_system_prompt(
+            self.working_dir,
+            PlatformInfo.detect(),
+            custom_instructions=self.settings.custom_instructions,
+            project_files=self._project_files if self._project_directory == self.working_dir else (),
+            inspection_tools=inspection,
+            access_prompt=self.access.state.prompt(),
         )
-        self.agent.set_system_prompt(prompt + self.access.state.prompt())
+
+    def _rebuild_system_prompt(self) -> None:
+        self._refresh_session_hint()
+        self.agent.set_system_prompt(self._prompt_blocks())
+
     def _on_agent_event(self, event: AgentEvent) -> None:
         """Handle agent lifecycle events."""
         if (isinstance(event, MessageEndEvent) and isinstance(event.message, UserMessage)
@@ -2001,15 +1959,3 @@ class AgentSession:
         settle_sync(self.extension_dialogs.close, self.access.close, self.permissions.close,
                     unsubscribe, self._release_retired_leases, release_writer,
                     message='Coding session finalization failed')
-
-
-def _skills_context(active: frozenset[str] = frozenset()) -> str:
-    """Coding's UI instruction only; Agent alone renders skill index and bodies."""
-    if not active:
-        return ''
-    return (
-        '# Active skills\n\nThe user activated these; follow them.\n\n'
-        'You cannot deactivate a skill — there is no tool for it, by design. '
-        'If one looks finished or irrelevant, suggest `/unload <name>`; the user decides.\n\n'
-        '(active: ' + ', '.join(sorted(active)) + ')'
-    )

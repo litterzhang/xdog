@@ -100,7 +100,8 @@ async def test_disabled_session_tool_is_not_advertised_or_implicitly_reenabled(c
         assert not session.agent.active_tools
         prompt = session.agent.state.system_prompt
         assert 'Call `ext_coding_session`' not in prompt
-        assert 'not available' in prompt
+        assert 'Tool inventory' not in str(prompt)
+        assert 'ext_coding_session' not in str(prompt)
     finally:
         await session.aclose()
 

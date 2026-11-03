@@ -9,8 +9,8 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 
 
 @pytest.fixture
@@ -19,7 +19,7 @@ def gateway_config(monkeypatch):
     # No turn is submitted: even an accidental model call must fail locally.
     stream = Mock(side_effect=AssertionError("Gateway startup must not call a model"))
     monkeypatch.setattr(
-        "xdog.claw.core.runtime.gateway._build_model_and_options",
+        "xdog.claw.application.gateway._build_model_and_options",
         Mock(return_value=("test/dummy", stream)),
     )
     # pytest's nested tmp_path can exceed the Unix-domain socket path limit.

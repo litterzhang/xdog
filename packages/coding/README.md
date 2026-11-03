@@ -29,6 +29,26 @@ an unknown session associates it with the current directory; canceling leaves it
 unchanged. Sessions known to belong to other directories are excluded. Existing
 saved model, messages and usage are preserved.
 
+## System prompt ownership
+
+Coding builds a cacheable host contract and a separate non-cacheable context block.
+The contract explains Coding's role, trust/authorization boundaries and evidence-based
+reporting; user preferences and project working instructions do not grant permissions.
+Environment, source-labelled project instructions and actual read-only state stay dynamic.
+No temporary full runtime configuration or duplicate skill UI instructions are embedded.
+
+Agent supplies native tool schemas when `supports_tool_calls` is `True` **or unknown**.
+Only explicit `False` adds a textual, inspection-only inventory of selected tools;
+it does not claim that a text-only model can execute tools. Empty inventories stay absent.
+The exposed session-information tool owns current configuration query instructions.
+
+Skill index/body placement remains Agent-owned. Explicit activation/deactivation reports
+failure rather than swallowing loader/SDK errors or publishing a false selection. Existing
+`/skills`, skill commands and `/unload` remain UI controls. Project instructions still refresh
+through owned off-loop preparation; old alternate resource-loader and resume-template
+branches are removed, without compatibility forwarding. See
+[prompt and skill boundaries](../../docs/coding-system-prompt.md).
+
 ## Interactive terminal
 
 Auxiliary browsers use the main UI's existing semantic colors: warm accent

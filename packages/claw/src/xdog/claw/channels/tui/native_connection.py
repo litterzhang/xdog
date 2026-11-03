@@ -11,7 +11,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from xdog.agent.async_work import run_owned, wait_owned
 from xdog.agent.child_config import ChildConfig
@@ -20,18 +20,15 @@ from xdog.agent.mcp.context import McpDocument, McpEntry
 from xdog.ai.types import ImageContent
 from xdog.claw.channels.tui.channel import NativeNoticeChannel
 from xdog.claw.channels.tui.image_upload import ImageUploads
+from xdog.claw.channels.tui.mcp_protocol import McpSender
+from xdog.claw.channels.tui.native_controls import access_control, extension_model_control, reasoning_control
+from xdog.claw.channels.tui.native_requests import NativeRequests, _history_chunks
 from xdog.claw.core.runtime.group_controller import GroupReservation, InputExecution
 from xdog.claw.core.runtime.input_queries import NativeInputReceipts
-from xdog.claw.core.runtime.mcp_protocol import McpSender
-from xdog.claw.core.runtime.native_controls import access_control, extension_model_control, reasoning_control
-from xdog.claw.core.runtime.native_requests import NativeRequests, _history_chunks
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.runtime.source_protocol import SourceSender
 from xdog.claw.core.runtime.transcript_source import SourceCapture
 from xdog.claw.core.types import UserInput
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 
@@ -52,11 +49,12 @@ class NativeConnection:
 
     def __init__(self, application: Orchestrator | None, receipts: NativeInputReceipts | None,
                  viewers: dict[int, tuple[str, Callable[[dict[str, Any]], Awaitable[None]], bool]],
-                 write_response: Callable[[asyncio.StreamWriter, dict[str, Any]], Coroutine[Any, Any, None]]) -> None:
+                 write_response: Callable[[asyncio.StreamWriter, dict[str, Any]], Coroutine[Any, Any, None]], *,
+                 channel_statuses: Callable[[], list[dict[str, str]]] | None = None) -> None:
         self._orchestrator = application
         self._input_viewers = viewers
         self._write_response = write_response
-        self._requests = NativeRequests(application, receipts, write_response)
+        self._requests = NativeRequests(application, receipts, write_response, channel_statuses=channel_statuses)
 
     async def handle(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter,

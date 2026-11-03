@@ -11,10 +11,10 @@ from unittest.mock import patch
 import pytest
 from xdog.ai.types import AssistantMessage, DoneEvent, TextContent
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.channels.tui.source_reader import SourceReceiver
 from xdog.claw.channels.tui.tui_app import ChatApp
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 from xdog.claw.core.runtime.transcript_source import SourceCapture, prepare_source
 from xdog.tui.transcript_browser import TranscriptRecord
 
@@ -34,7 +34,7 @@ async def gateway(tmp_path):
                         pid_file=str(tmp_path / "source.pid"),
                         groups=(GroupDef(id="main", is_main=True), GroupDef(id="other")))
     server = GatewayServer(config)
-    with patch("xdog.claw.core.runtime.gateway._build_model_and_options", return_value=("test/source", stream_fn)):
+    with patch("xdog.claw.application.gateway._build_model_and_options", return_value=("test/source", stream_fn)):
         await server.start()
         try:
             yield server, config.socket_path, calls

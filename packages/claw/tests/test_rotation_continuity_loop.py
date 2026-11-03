@@ -10,6 +10,7 @@ import json
 from xdog.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage, system_prompt_text
 from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.config import ClawConfig
+from xdog.claw.core.prompt.templates import MEMORY_GUIDANCE
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.types import Group, UserInput
 
@@ -90,6 +91,6 @@ async def test_continue_after_rotation_loads_scope_and_checks_exact_original_mes
         assert current[0]['data']['memory_status'] == 'checked'
         assert current[0]['data']['status'] == 'summarized'
         assert len(normal_turns) == 3
-        assert 'Original chat' in system_prompt_text(normal_turns[0].system_prompt)
+        assert MEMORY_GUIDANCE in system_prompt_text(normal_turns[0].system_prompt)
     finally:
         await app.stop()

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from xdog.agent import Agent, AgentConfig
+from xdog.agent.skills import SkillRepo
 from xdog.ai.types import AssistantMessage, TextContent, UserMessage
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core.agent_session import AgentSession
@@ -21,7 +22,8 @@ def app(tmp_path: Path):
         pytest.fail('Session naming cannot make model calls')
         return EventStream.empty(AssistantMessage())
     manager = SessionManager(tmp_path / 'sessions')
-    session = AgentSession(agent=Agent(stream, config=AgentConfig(model='offline/model')),
+    session = AgentSession(agent=Agent(stream, config=AgentConfig(model='offline/model'),
+        skills=SkillRepo().register(directory=tmp_path / 'skills', name='shared')),
         session_data=manager.create_session(working_dir=tmp_path), session_manager=manager,
         settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
         tool_repo=None, bash=None, permissions=PermissionManager('deny'))

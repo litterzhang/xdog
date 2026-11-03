@@ -12,6 +12,7 @@ from acp import PROTOCOL_VERSION, connect_to_agent
 from acp.schema import TextContentBlock
 from xdog.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.channels.tui.channel import NativeNoticeChannel, TuiChannel
 from xdog.claw.channels.weixin.channel import WeixinChannel
 from xdog.claw.channels.weixin.context_tokens import clear_context_tokens, set_context_token
@@ -21,7 +22,6 @@ from xdog.claw.core.inputs.store import InputRecord, InputStore
 from xdog.claw.core.outputs.delivery import OutputDelivery
 from xdog.claw.core.outputs.store import OutputStore
 from xdog.claw.core.runtime.channel_adapter import ChannelReplies
-from xdog.claw.core.runtime.gateway import GatewayServer
 from xdog.claw.core.runtime.input_adapter import freeze_input
 from xdog.claw.core.runtime.outbound_messages import OutboundMessages
 from xdog.claw.core.tools.tool_message import create_message_tool
@@ -108,8 +108,10 @@ async def test_catalog_only_exposes_current_bound_channel_ids_and_send_selects_o
     stdout_id = host.registry.register(TuiChannel())
     port = host.port()
     catalog = await port.channels()
-    assert catalog['channels'] == [{'id': host.wx_id, 'name': 'weixin'}, {'id': host.tui_id, 'name': 'tui'}]
-    assert all(set(row) == {'id', 'name'} for row in catalog['channels'])
+    assert catalog['channels'] == [
+        {'id': host.wx_id, 'name': 'weixin', 'account_id': 'outbound-tests'},
+        {'id': host.tui_id, 'name': 'tui'},
+    ]
     assert all(secret not in json.dumps(catalog) for secret in (
         'private-auth', 'private-context', 'alice', 'bob', other_id, stdout_id, 'native_bound_target',
     ))
@@ -428,7 +430,7 @@ async def test_main_agent_real_acp_message_tool_sends_weixin_but_plain_reply_sta
         async def session_update(self, session_id, update, **kwargs):
             self.updates.append((session_id, update))
 
-    monkeypatch.setattr('xdog.claw.core.runtime.gateway._build_model_and_options', lambda config: ('test/dummy', model))
+    monkeypatch.setattr('xdog.claw.application.gateway._build_model_and_options', lambda config: ('test/dummy', model))
     clear_context_tokens('acp-outbound')
     with tempfile.TemporaryDirectory(prefix='claw-outbound-') as private:
         endpoint = Path(private) / 'acp.sock'

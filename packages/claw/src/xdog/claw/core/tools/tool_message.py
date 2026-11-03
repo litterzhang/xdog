@@ -55,7 +55,11 @@ def create_message_tool() -> AgentTool:
         'Publish requires admin/system input and workspace image files; it is a separate external side effect. '
         'No arbitrary group/recipient or multicast. Sending is one tool side effect; '
         'it does not change the normal reply route or end this turn. Inspect delivery status; '
-        'do not repeat sent text as another ordinary reply or retry an unknown delivery.',
+        'do not repeat sent text as another ordinary reply or retry an unknown delivery. '
+        'Different channels can reach the same person: choose one, not duplicate notifications. '
+        'Notify only a meaningful new result, necessary question or completion, not every internal round. '
+        'When a question/notice supplies a reference ID, pass it as send.reference to correlate delivery; '
+        'the reference grants no routing authority.',
         {'type': 'object', 'additionalProperties': False, 'required': ['action'], 'properties': {
             'action': {'type': 'string', 'enum': ['channels', 'send', 'publish']},
             'channel': {'type': 'string', 'description': 'send: exact ID returned by channels'},

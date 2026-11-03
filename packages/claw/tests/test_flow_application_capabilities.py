@@ -10,8 +10,8 @@ import pytest
 from xdog.agent.capabilities.runtime import ApplicationPort, CapabilitySet
 from xdog.ai.types import AssistantMessage, Model, TextContent, ToolCall, ToolResultMessage, system_prompt_text
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 from xdog.claw.core.types import UserInput
 from xdog.coding.core.sdk import CreateSessionOptions, create_agent_session
 
@@ -81,7 +81,7 @@ async def test_installed_flow_tool_and_skill_in_actual_hosts_keep_original_permi
     provider = _Provider(Model(id='offline/model', context_window=200_000))
     provider.stream = stream
     monkeypatch.setattr('xdog.ai.load', lambda: provider)
-    monkeypatch.setattr('xdog.claw.core.runtime.gateway._build_model_and_options',
+    monkeypatch.setattr('xdog.claw.application.gateway._build_model_and_options',
                         lambda _: ('offline/model', stream))
     original_spawn = asyncio.create_subprocess_exec
     async def spawn(*args, **kwargs):

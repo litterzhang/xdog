@@ -201,7 +201,7 @@ def test_internal_application_entry_points_remain_importable(tmp_path: Path) -> 
     _run_python(tmp_path, """
         from xdog.claw.acp.backend import ClawBackend
         from xdog.claw.channels.tui.tui_app import ChatApp
-        from xdog.claw.core.runtime.gateway import GatewayServer, run_gateway
+        from xdog.claw.application.gateway import GatewayServer, run_gateway
         from xdog.claw.core.runtime.group import GroupRuntime
         from xdog.claw.core.runtime.orchestrator import Orchestrator
         from xdog.claw.core.runtime.session import AgentSession

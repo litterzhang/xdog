@@ -119,6 +119,7 @@ class GatewayServer:
         self._client_counter = 0
         self._shutdown_event = asyncio.Event()
         self._stop_task: asyncio.Task[None] | None = None
+        self._failed_channels: dict[str, dict[str, str]] = {}
 
     async def start(self) -> None:
         """Start the gateway: orchestrator + socket server."""
@@ -141,7 +142,7 @@ class GatewayServer:
 
         # Acquire still-unpublished IO resources on a worker. Actual Agent,
         # consumer and capability owner loops start only after adoption here.
-        from xdog.claw.core.runtime.bootstrap import build
+        from xdog.claw.application.bootstrap import build
         building = asyncio.create_task(asyncio.to_thread(build, self._config))
         try:
             built = await wait_owned(building)
@@ -179,18 +180,25 @@ class GatewayServer:
             self._input_unsubscribe = inputs.subscribe_completed(completed)
             # Await this owned connection before restoring overdue managed work.
             # Keep the existing ability to use TUI when WeChat is unavailable.
-            if self._config.weixin_enabled:
+            self._failed_channels.clear()
+            for account_id in self._config.weixin_accounts:
                 channel = None
                 try:
-                    channel = await self._start_weixin_channel()
-                    if channel is not None:
-                        await channel.connect()
-                        self._orchestrator.channels_ready()
+                    channel = await self._start_weixin_channel(account_id)
+                    await channel.connect()
+                    self._orchestrator.channels_ready()
                 except Exception:
                     if channel is not None:
-                        await channel.disconnect()
-                        self._orchestrator._channels.remove(channel)
-                    logger.exception("Failed to connect WeChat channel — gateway continues without it")
+                        try:
+                            await channel.disconnect()
+                        except Exception:
+                            logger.warning('Failed Weixin account %s cleanup needs inspection', account_id)
+                        finally:
+                            self._orchestrator.remove_channel(channel)
+                    self._failed_channels[account_id] = {
+                        'channel': 'weixin', 'account_id': account_id, 'status': 'unavailable'}
+                    # No credentials or arbitrary account-file contents enter logs.
+                    logger.warning('Weixin account %s unavailable; inspect saved login/group binding', account_id)
             if self._config.xhs_enabled:
                 from xdog.claw.channels.xhs import XhsChannel
                 from xdog.claw.channels.xhs.api import XhsApi
@@ -285,9 +293,10 @@ class GatewayServer:
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
                              client_id: int = 0) -> None:
-        from xdog.claw.core.runtime.native_connection import NativeConnection
+        from xdog.claw.channels.tui.native_connection import NativeConnection
         connection = NativeConnection(self._orchestrator, self._native_inputs,
-                                      self._input_viewers, self._write_response)
+                                      self._input_viewers, self._write_response,
+                                      channel_statuses=self._channel_statuses)
         await connection.handle(reader, writer, client_id)
 
 
@@ -315,62 +324,33 @@ class GatewayServer:
         except OSError:
             pass
 
-    async def _start_weixin_channel(self) -> Channel | None:
-        """Initialize and add the WeChat channel to the orchestrator."""
+    def _channel_statuses(self) -> list[dict[str, str]]:
+        channels = self._orchestrator._channels if self._orchestrator is not None else ()
+        return [*(channel.status_snapshot() for channel in channels), *self._failed_channels.values()]
+
+    async def _start_weixin_channel(self, account_id: str) -> Channel:
+        """One explicit saved account, one independent channel and bound group."""
         from xdog.claw.channels.weixin import WeixinChannel
-        from xdog.claw.channels.weixin.auth import (
-            DEFAULT_BASE_URL,
-            load_account,
-        )
+        from xdog.claw.channels.weixin.auth import DEFAULT_BASE_URL, load_account
+        from xdog.claw.core.identity import IdentityBinding
 
-        config = self._config
-        state_dir = Path(config.data_dir)
-
-        account_id = config.weixin_account_id
-        token = config.weixin_token
-        base_url = config.weixin_base_url
-        group_id = "main"
-
-        # The locally saved QR login binds its verified owner, not every Weixin
-        # sender. Explicit per-sender config takes precedence over this default.
-        account_data = await run_owned(load_account, state_dir, account_id) if account_id else None
-        if account_data is not None:
-            group_id = account_data.group_id or 'main'
-            if not token:
-                token = account_data.token
-                base_url = base_url or account_data.base_url
-
-        if not token:
-            logger.warning(
-                "WeChat channel enabled but no token configured. "
-                "Run 'xdog-claw channel login --weixin' first."
-            )
-            return None
-
-        base_url = base_url or DEFAULT_BASE_URL
-
+        state_dir = Path(self._config.data_dir)
+        account = await run_owned(load_account, state_dir, account_id)
+        if account is None or not account.token:
+            raise ValueError('Weixin account needs explicit login')
+        group_id = account.group_id or 'main'
         application = self._orchestrator
-        if application is None:
-            logger.error("Cannot add the WeChat channel: the orchestrator is not running")
-            return None
-        # Validate pure identity descriptors before acquiring an HTTP client.
-        if account_data is not None and account_data.user_id and token == account_data.token:
-            from xdog.claw.core.identity import IdentityBinding
+        if application is None or group_id not in application.get_group_ids():
+            raise ValueError('Weixin account target group must be explicitly configured')
+        if account.user_id:
             application.identities = application.identities.with_default(IdentityBinding(
-                group_id, 'weixin', account_id, account_data.user_id, 'owner', 'admin'))
-        weixin = WeixinChannel(
-            state_dir=state_dir, account_id=account_id, base_url=base_url,
-            token=token, group_id=group_id,
-            proactive_recipient=lambda: application.identities.owner_recipient(group_id, 'weixin', account_id),
-        )
-        application.add_channel(weixin)
-        logger.info(
-            "WeChat channel added: account=%s group=%s base_url=%s",
-            account_id,
-            group_id,
-            base_url,
-        )
-        return weixin
+                group_id, 'weixin', account_id, account.user_id, 'owner', 'admin'))
+        channel = WeixinChannel(state_dir=state_dir, account_id=account_id,
+            base_url=account.base_url or DEFAULT_BASE_URL, token=account.token, group_id=group_id,
+            proactive_recipient=lambda: application.identities.owner_recipient(group_id, 'weixin', account_id))
+        application.add_channel(channel)
+        logger.info('Weixin channel added: account=%s group=%s', account_id, group_id)
+        return channel
 
     async def stop(self) -> None:
         """Join one cleanup owner; caller cancellation is not resource settlement."""

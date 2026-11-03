@@ -7,10 +7,10 @@ from unittest.mock import patch
 import pytest
 from xdog.ai.types import AssistantMessage
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.channels.tui.tui_app import ChatApp
 from xdog.claw.config import ClawConfig, GroupDef
 from xdog.claw.core.persistence.transcript_store import SessionNameOwnerChanged, TranscriptStore
-from xdog.claw.core.runtime.gateway import GatewayServer
 
 
 @pytest.fixture
@@ -26,7 +26,7 @@ async def peers(tmp_path):
     def stream(*args):
         calls.append(args)
         return EventStream.empty(AssistantMessage())
-    with patch('xdog.claw.core.runtime.gateway._build_model_and_options', return_value=(config.model, stream)):
+    with patch('xdog.claw.application.gateway._build_model_and_options', return_value=(config.model, stream)):
         await server.start()
     clients = []
     async def wait(predicate):

@@ -12,11 +12,11 @@ from xdog.agent.session_input import SessionInput
 from xdog.ai.types import AssistantMessage, TextContent
 from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.acp.server import ClawAcpServer
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig, GroupDef
 from xdog.claw.core.inputs.consumer import InputOutcome, InputService
 from xdog.claw.core.inputs.models import InputEnvelope, InputScope
 from xdog.claw.core.inputs.store import InputStore
-from xdog.claw.core.runtime.gateway import GatewayServer
 from xdog.claw.core.runtime.group_controller import GroupController
 from xdog.claw.core.runtime.orchestrator import Orchestrator
 from xdog.claw.core.types import Group
@@ -213,8 +213,8 @@ async def test_gateway_default_acp_is_independent_of_optional_capability_require
     monkeypatch.setattr('xdog.agent.capabilities.runtime.discover',
                         lambda owner: (Provider(),) if owner == scope else ())
     if not available:
-        monkeypatch.setattr('xdog.claw.core.runtime.gateway.find_spec', lambda name: None)
-    monkeypatch.setattr('xdog.claw.core.runtime.gateway._build_model_and_options',
+        monkeypatch.setattr('xdog.claw.application.gateway.find_spec', lambda name: None)
+    monkeypatch.setattr('xdog.claw.application.gateway._build_model_and_options',
                         lambda config: ('test/dummy', stream))
     with tempfile.TemporaryDirectory(prefix='group-ports-') as short:
         root = Path(short)

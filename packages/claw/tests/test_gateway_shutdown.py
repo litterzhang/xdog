@@ -13,13 +13,13 @@ from unittest.mock import AsyncMock
 import pytest
 from xdog.ai.types import AssistantMessage
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig
 from xdog.claw.core.memory.manager import MemoryManager
-from xdog.claw.core.runtime.gateway import GatewayServer
 
 
 def make_server(tmp_path, monkeypatch):
-    monkeypatch.setattr("xdog.claw.core.runtime.gateway._build_model_and_options",
+    monkeypatch.setattr("xdog.claw.application.gateway._build_model_and_options",
                         lambda config: ("offline/test", lambda *args: EventStream.empty(AssistantMessage())))
     return GatewayServer(ClawConfig(model="offline/test", data_dir=str(tmp_path / "data"),
         socket_path=str(tmp_path / "gateway.sock"), pid_file=str(tmp_path / "gateway.pid")))
@@ -211,7 +211,7 @@ async def test_channel_workers_settle_before_resources_and_mcp_failure_still_clo
 async def test_stop_settles_idle_client_even_when_dispatch_does_not_reply(tmp_path, monkeypatch):
     """A failed control reply must not strand test/host shutdown on an open peer."""
     server = make_server(tmp_path, monkeypatch)
-    from xdog.claw.core.runtime.native_requests import NativeRequests
+    from xdog.claw.channels.tui.native_requests import NativeRequests
     dispatch = AsyncMock(return_value=None)
     monkeypatch.setattr(NativeRequests, '_dispatch', dispatch)
     await server.start()
@@ -241,7 +241,7 @@ async def test_stop_settles_idle_client_even_when_dispatch_does_not_reply(tmp_pa
 @pytest.mark.parametrize("extra_cancel", [False, True])
 async def test_stop_joins_client_already_cleaning_up_after_eof(tmp_path, monkeypatch, extra_cancel):
     """Shutdown cancellation must not interrupt a peer's admitted resource cleanup."""
-    from xdog.claw.core.runtime.mcp_protocol import McpSender
+    from xdog.claw.channels.tui.mcp_protocol import McpSender
 
     server = make_server(tmp_path, monkeypatch)
     entered, release, settled = asyncio.Event(), asyncio.Event(), asyncio.Event()

@@ -86,16 +86,16 @@ def test_status_names_the_enabled_channels() -> None:
     from xdog.claw.cli.cli import _channel_lines
     from xdog.claw.config import ClawConfig
 
-    on = _channel_lines(ClawConfig(weixin_enabled=True, weixin_account_id="acct-1"))
-    assert any("weixin: enabled (account=acct-1)" in line for line in on)
+    on = _channel_lines(ClawConfig(weixin_accounts=("acct-1",)))
+    assert any("account=acct-1" in line for line in on)
 
     off = _channel_lines(ClawConfig())
-    assert any("(none enabled)" in line for line in off)
+    assert any("(no Weixin accounts enabled)" in line for line in off)
 
 
 def test_a_config_edited_after_startup_is_reported(tmp_path: Path) -> None:
     """The exact failure that cost an afternoon: the channel was enabled while
-    the gateway was already running, so it read `weixin_enabled: false`, started
+    the gateway was already running, so it read `weixin_accounts: []`, started
     nothing, and said "running" the whole time."""
     import os
 
@@ -104,7 +104,7 @@ def test_a_config_edited_after_startup_is_reported(tmp_path: Path) -> None:
     pid = tmp_path / "gateway.pid"
     pid.write_text("123")
     cfg = tmp_path / "config.yaml"
-    cfg.write_text("weixin_enabled: true\n")
+    cfg.write_text("weixin_accounts: [acct-1]\n")
     os.utime(cfg, (pid.stat().st_mtime + 900, pid.stat().st_mtime + 900))
 
     warning = _config_newer_than_process(str(cfg), pid)

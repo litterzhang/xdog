@@ -16,8 +16,8 @@ def test_weixin_login_prints_terminal_qr_before_polling_and_preserves_failed_bin
 
     data_dir = tmp_path / 'data'
     config_file = tmp_path / 'config.yaml'
-    config_file.write_text(yaml.safe_dump({'data_dir': str(data_dir), 'weixin_account_id': 'existing-bot',
-                                         'weixin_enabled': True, 'model': 'test/model'}))
+    config_file.write_text(yaml.safe_dump({'data_dir': str(data_dir),
+                                         'weixin_accounts': ['existing-bot'], 'model': 'test/model'}))
     before = config_file.read_bytes()
     url = 'https://example.invalid/weixin-login?challenge=synthetic'
     start = AsyncMock(return_value=auth.QrStartResult(qrcode_url=url, qrcode='synthetic-qr-ticket'))
@@ -41,7 +41,7 @@ def test_weixin_login_prints_terminal_qr_before_polling_and_preserves_failed_bin
         saved = auth.load_account(data_dir, 'new-bot')
         assert saved is not None and saved.group_id == 'main' and saved.user_id == 'owner'
         config = yaml.safe_load(config_file.read_text())
-        assert config['model'] == 'test/model' and config['weixin_account_id'] == 'new-bot'
+        assert config['model'] == 'test/model' and config['weixin_accounts'] == ['existing-bot', 'new-bot']
     else:
         assert 'QR expired' in result.output
         assert config_file.read_bytes() == before and not (data_dir / 'weixin').exists()

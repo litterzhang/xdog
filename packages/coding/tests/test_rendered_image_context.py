@@ -9,8 +9,8 @@ from xdog.agent import Agent, AgentConfig
 from xdog.agent.skills import SkillRepo
 from xdog.ai.types import AssistantMessage, ImageContent, Model, TextContent, UserMessage, VisionLimits
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 from xdog.claw.core.types import UserInput
 from xdog.coding.core.agent_session import AgentSession
 from xdog.coding.core.permissions import PermissionManager
@@ -56,7 +56,7 @@ async def test_retained_plus_new_image_exceeds_actual_model_context_without_prun
             socket_path=str(tmp_path / 'image.sock'), pid_file=str(tmp_path / 'image.pid'),
             groups=(GroupDef(id='main', is_main=True),))
         server = GatewayServer(config)
-        with patch('xdog.claw.core.runtime.gateway._build_model_and_options',
+        with patch('xdog.claw.application.gateway._build_model_and_options',
                    return_value=(adapter.profile.id, adapter)):
             await server.start()
         runtime = server._orchestrator._runtimes['main']

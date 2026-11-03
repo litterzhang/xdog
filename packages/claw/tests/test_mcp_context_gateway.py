@@ -7,9 +7,9 @@ from unittest.mock import patch
 
 from xdog.ai.types import AssistantMessage
 from xdog.ai.utils.event_stream import EventStream
+from xdog.claw.application.gateway import GatewayServer
 from xdog.claw.channels.tui.tui_app import ChatApp
 from xdog.claw.config import ClawConfig, GroupDef
-from xdog.claw.core.runtime.gateway import GatewayServer
 
 FIXTURE = Path(__file__).parents[2] / "agent" / "tests" / "fixtures" / "mcp_server.py"
 
@@ -26,7 +26,7 @@ async def test_slow_context_read_keeps_gateway_ping_and_cancel_responsive(tmp_pa
             await asyncio.Event().wait()
         finally:
             canceled.set()
-    with patch("xdog.claw.core.runtime.gateway._build_model_and_options",
+    with patch("xdog.claw.application.gateway._build_model_and_options",
                return_value=("test/model", lambda *args: EventStream.empty(AssistantMessage()))):
         await server.start()
     reader, writer = await asyncio.open_unix_connection(config.socket_path)

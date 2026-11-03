@@ -87,6 +87,7 @@ def test_legacy_event_replay_retains_handling_instruction_and_evidence_without_h
 
 def test_initial_replay_and_unpainted_completed_live_events_do_not_duplicate_answer(coding_session):
     import asyncio
+    import time
 
     from xdog.ai.types import DoneEvent
     from xdog.ai.utils.event_stream import EventStream
@@ -111,8 +112,15 @@ def test_initial_replay_and_unpainted_completed_live_events_do_not_duplicate_ans
         item = SessionInput("r1", "acp", "watcher", "Inspect live file", ({"path": "live.py"},), {})
         controller.submit(item, peer_id="acp").result.result(timeout=3)
         ui._replay_history()
-        ui._poll()
-        output = "\n".join(strip_ansi(line) for line in ui._chat_log.render(100))
+        # A poll has a finite frame budget; receipt events can need another frame
+        # under load. Wait for the actual terminal receipt, not one guessed tick.
+        deadline = time.monotonic() + 3
+        while True:
+            ui._poll()
+            output = "\n".join(strip_ansi(line) for line in ui._chat_log.render(100))
+            if "Status: succeeded" in output or time.monotonic() >= deadline:
+                break
+            time.sleep(.003)
         assert output.count("ONE-EXTERNAL-ANSWER") == 1
         assert output.count("External input") == 1
         assert "Status: succeeded" in output and "live.py" in output
